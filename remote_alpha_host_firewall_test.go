@@ -35,6 +35,9 @@ func hostFirewallBaseEnv(t *testing.T, fakeBin string, extra ...string) []string
 		"REMOTE_ALPHA_HOST_FIREWALL_NFTABLES_CONF":         filepath.Join(dir, "absent-nftables.conf"),
 		"REMOTE_ALPHA_HOST_FIREWALL_SETTINGS_FILE":         filepath.Join(dir, "absent-settings.env"),
 	}
+	for key, value := range hostFirewallSSHDFixture(t, dir) {
+		settings[key] = value
+	}
 	for _, entry := range extra {
 		key, value, ok := strings.Cut(entry, "=")
 		if !ok {
@@ -58,6 +61,83 @@ func hostFirewallBaseEnv(t *testing.T, fakeBin string, extra ...string) []string
 	}
 	return env
 }
+
+// hostFirewallSSHDFixture writes a small sshd configuration tree shaped like
+// Ubuntu's (sshd_config includes sshd_config.d/*.conf first, and a later
+// drop-in turns passwords on) and returns the settings that point at it.
+func hostFirewallSSHDFixture(t *testing.T, dir string) map[string]string {
+	t.Helper()
+	sshdDir := filepath.Join(dir, "ssh")
+	dropInDir := filepath.Join(sshdDir, "sshd_config.d")
+	if err := os.MkdirAll(dropInDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	config := filepath.Join(sshdDir, "sshd_config")
+	writeFile(t, config, []byte("Include "+dropInDir+"/*.conf\nKbdInteractiveAuthentication no\nX11Forwarding yes\nUsePAM yes\n"), 0o644)
+	writeFile(t, filepath.Join(dropInDir, "50-cloud-init.conf"), []byte("PasswordAuthentication yes\n"), 0o644)
+	return map[string]string{
+		"REMOTE_ALPHA_HOST_FIREWALL_SSHD_CONFIG":  config,
+		"REMOTE_ALPHA_HOST_FIREWALL_SSHD_DROP_IN": filepath.Join(dropInDir, "00-execution-substrate-host-access.conf"),
+		"REMOTE_ALPHA_HOST_FIREWALL_SSHD_SERVICE": "ssh.service",
+	}
+}
+
+// hostFirewallFakeSSHD emulates sshd -t and -T for the tests that do not
+// need the real sshd: first value wins, Include globs are expanded in place,
+// a Match Address block (exact addresses only) ends at the end of its file.
+// FAKE_SSHD_T_FAIL makes -t fail; FAKE_SSHD_WRONG_FOR=<config> makes -T on
+// that config report passwords on for every address.
+const hostFirewallFakeSSHD = `#!/bin/bash
+mode="" config="" spec=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -t|-T) mode=$1; shift ;;
+    -f) config=$2; shift 2 ;;
+    -C) spec=$2; shift 2 ;;
+    *) shift ;;
+  esac
+done
+if [[ "$mode" == "-t" ]]; then
+  [[ -n "${FAKE_SSHD_T_FAIL:-}" ]] && { echo "fake sshd: bad configuration" >&2; exit 1; }
+  exit 0
+fi
+addr=${spec##*addr=}
+expand() {
+  local line g
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$line" =~ ^Include[[:space:]]+(.*)$ ]]; then
+      for g in ${BASH_REMATCH[1]}; do [[ -f "$g" ]] && expand "$g"; done
+    else
+      printf '%s\n' "$line"
+    fi
+  done <"$1"
+  echo "#END-OF-FILE"
+}
+declare -A global=() inmatch=()
+in_match=0 matched=0
+while IFS= read -r line; do
+  [[ "$line" == "#END-OF-FILE" ]] && { in_match=0; continue; }
+  line="${line#"${line%%[![:space:]]*}"}"
+  [[ -z "$line" || "$line" == \#* ]] && continue
+  key=${line%%[[:space:]]*}; key=${key,,}; value=${line#*[[:space:]]}; value=${value,,}
+  if [[ "$key" == match ]]; then
+    in_match=1; matched=0
+    IFS=, read -ra nets <<<"${value#address }"
+    for n in "${nets[@]}"; do [[ "$n" == "$addr" || "$n" == "$addr/32" || "$n" == "$addr/128" ]] && matched=1; done
+    continue
+  fi
+  if (( in_match )); then
+    (( matched )) && [[ -z "${inmatch[$key]+x}" ]] && inmatch[$key]=$value
+    continue
+  fi
+  [[ -z "${global[$key]+x}" ]] && global[$key]=$value
+done < <(expand "$config")
+for k in passwordauthentication kbdinteractiveauthentication x11forwarding; do
+  v=${inmatch[$k]:-${global[$k]:-yes}}
+  [[ -n "${FAKE_SSHD_WRONG_FOR:-}" && "$config" == "$FAKE_SSHD_WRONG_FOR" && "$k" == passwordauthentication ]] && v=yes
+  echo "$k $v"
+done
+`
 
 func runHostFirewall(t *testing.T, env []string, args ...string) (string, string, int) {
 	t.Helper()
@@ -299,6 +379,117 @@ func TestRemoteAlphaHostFirewallSettingsFile(t *testing.T) {
 	}
 }
 
+// TestRemoteAlphaHostFirewallSSHDDropInWithRealSSHD checks the rendered
+// sshd drop-in against the real sshd's own evaluation (sshd -T), in a
+// configuration tree shaped like Ubuntu's where a later drop-in and
+// sshd_config itself turn passwords and X11 forwarding on. It needs sshd and
+// ssh-keygen and skips itself without them;
+// .github/ci/environment-only-tests.txt lists it.
+func TestRemoteAlphaHostFirewallSSHDDropInWithRealSSHD(t *testing.T) {
+	sshd, err := exec.LookPath("sshd")
+	if err != nil {
+		if _, statErr := os.Stat("/usr/sbin/sshd"); statErr != nil {
+			t.Skip("needs sshd (openssh-server) to check the drop-in against the real sshd")
+		}
+		sshd = "/usr/sbin/sshd"
+	}
+	keygen, err := exec.LookPath("ssh-keygen")
+	if err != nil {
+		t.Skip("needs ssh-keygen to make a host key for sshd -t")
+	}
+	if os.Geteuid() != 0 {
+		t.Skip("needs root: sshd -t checks its privilege separation setup")
+	}
+	if err := os.MkdirAll("/run/sshd", 0o755); err != nil {
+		t.Fatalf("sshd -t needs /run/sshd: %v", err)
+	}
+	dir := t.TempDir()
+	fixture := hostFirewallSSHDFixture(t, dir)
+	config := fixture["REMOTE_ALPHA_HOST_FIREWALL_SSHD_CONFIG"]
+	dropIn := fixture["REMOTE_ALPHA_HOST_FIREWALL_SSHD_DROP_IN"]
+	hostKey := filepath.Join(dir, "host_ed25519")
+	if output, err := exec.Command(keygen, "-q", "-t", "ed25519", "-N", "", "-f", hostKey).CombinedOutput(); err != nil {
+		t.Fatalf("ssh-keygen: %v\n%s", err, output)
+	}
+	writeFile(t, config, []byte(mustRead(t, config)+"HostKey "+hostKey+"\n"), 0o644)
+	sshdBin := filepath.Dir(sshd)
+
+	env := hostFirewallBaseEnv(t, "",
+		"REMOTE_ALPHA_HOST_FIREWALL_SSH_PASSWORD_SOURCES=192.168.1.210/32",
+		"REMOTE_ALPHA_HOST_FIREWALL_SSHD_CONFIG="+config,
+		"REMOTE_ALPHA_HOST_FIREWALL_SSHD_DROP_IN="+dropIn,
+	)
+	for i, entry := range env {
+		if strings.HasPrefix(entry, "PATH=") {
+			env[i] = entry + string(os.PathListSeparator) + sshdBin
+		}
+	}
+	internal := filepath.Join(executionSubstrateRepoRoot, "scripts", "internal", "remote_alpha_host_firewall.sh")
+	run := func(call string) (string, int) {
+		t.Helper()
+		script := fmt.Sprintf("source %q\nremote_alpha_host_firewall_defaults\n%s\n", internal, call)
+		cmd := exec.Command("/bin/bash", "-c", script)
+		cmd.Dir = executionSubstrateRepoRoot
+		cmd.Env = env
+		output, err := cmd.CombinedOutput()
+		code := 0
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			code = exitErr.ExitCode()
+		} else if err != nil {
+			t.Fatal(err)
+		}
+		return string(output), code
+	}
+
+	// Before: the fixture lets passwords and X11 in from everywhere.
+	if output, code := run("remote_alpha_host_firewall_sshd_check " + config); code == 0 || !strings.Contains(output, "FAIL  from 192.0.2.1") {
+		t.Fatalf("without the drop-in sshd must allow passwords elsewhere: %d\n%s", code, output)
+	}
+
+	// The plan-time simulation, with the drop-in not installed yet.
+	candidate := filepath.Join(dir, "candidate-sshd.conf")
+	output, code := run("remote_alpha_host_firewall_sshd_checks " + candidate)
+	if code != 0 {
+		t.Fatalf("simulated sshd checks: %d\n%s", code, output)
+	}
+	assertContainsAll(t, "simulated sshd checks", output,
+		"sshd -t (configuration valid): pass",
+		"pass  from 192.168.1.210",
+		"pass  from 192.0.2.1",
+		"pass  from 2001:db8::1",
+		"pass  from 192.168.1.1",
+		"pass  from fe80::1",
+	)
+
+	// Installed where it belongs, sshd agrees.
+	writeFile(t, dropIn, []byte(mustRead(t, candidate)), 0o644)
+	output, code = run("remote_alpha_host_firewall_sshd_check " + config)
+	if code != 0 {
+		t.Fatalf("installed drop-in: %d\n%s", code, output)
+	}
+	assertContainsAll(t, "installed drop-in", output,
+		"pass  from 192.168.1.210                password yes, keyboard-interactive no, X11 no",
+		"pass  from 192.0.2.1                    password no, keyboard-interactive no, X11 no",
+	)
+
+	// A drop-in that sorts before ours wins in sshd; the check notices.
+	earlier := filepath.Join(filepath.Dir(dropIn), "00-aaa.conf")
+	writeFile(t, earlier, []byte("PasswordAuthentication yes\n"), 0o644)
+	if output, code := run("remote_alpha_host_firewall_sshd_check " + config); code == 0 || !strings.Contains(output, "FAIL  from 192.0.2.1") {
+		t.Fatalf("an earlier drop-in turning passwords on must fail the check: %d\n%s", code, output)
+	}
+	if err := os.Remove(earlier); err != nil {
+		t.Fatal(err)
+	}
+
+	// Without any password source, passwords are off everywhere.
+	env = append(env, "REMOTE_ALPHA_HOST_FIREWALL_SSH_PASSWORD_SOURCES= ")
+	output, code = run("remote_alpha_host_firewall_py render-sshd >" + dropIn + " && remote_alpha_host_firewall_sshd_check " + config)
+	if code != 0 || strings.Contains(output, "password yes") || strings.Contains(mustRead(t, dropIn), "Match") {
+		t.Fatalf("keys-only drop-in: %d\n%s\n%s", code, output, mustRead(t, dropIn))
+	}
+}
+
 func TestRemoteAlphaHostFirewallAutoDNSFollowsDockerResolverChoice(t *testing.T) {
 	dir := t.TempDir()
 	daemonJSON := filepath.Join(dir, "daemon.json")
@@ -520,6 +711,7 @@ func hostFirewallFakes(t *testing.T, ssEstablished string) (string, string) {
 	writeExecutable(t, fakeBin, "id", "#!/bin/sh\nif [ \"$1\" = \"-u\" ]; then echo 0; exit 0; fi\nexec /usr/bin/id \"$@\"\n")
 	writeExecutable(t, fakeBin, "install", fmt.Sprintf("#!/bin/sh\necho \"install $*\" >>%q\nexit 0\n", log))
 	writeExecutable(t, fakeBin, "chown", "#!/bin/sh\nexit 0\n")
+	writeExecutable(t, fakeBin, "sshd", hostFirewallFakeSSHD)
 	writeExecutable(t, fakeBin, "nft", fmt.Sprintf(`#!/bin/bash
 state=%q
 echo "nft $*" >>%q
@@ -582,8 +774,20 @@ func TestRemoteAlphaHostFirewallApplyConfirmRollbackOrderWithFakes(t *testing.T)
 		"REMOTE_ALPHA_HOST_FIREWALL_STATE_DIR="+filepath.Join(root, "state"),
 		"REMOTE_ALPHA_HOST_FIREWALL_RUN_DIR="+filepath.Join(root, "run"),
 		"REMOTE_ALPHA_HOST_FIREWALL_UNIT_PATH="+unitPath,
+		"REMOTE_ALPHA_HOST_FIREWALL_SSH_PASSWORD_SOURCES=192.168.1.23/32",
 		"FAKE_UNIT_PATH="+unitPath,
 	)
+	envValue := func(key string) string {
+		for _, entry := range env {
+			if k, v, _ := strings.Cut(entry, "="); k == key {
+				return v
+			}
+		}
+		t.Fatalf("no %s in env", key)
+		return ""
+	}
+	dropIn := envValue("REMOTE_ALPHA_HOST_FIREWALL_SSHD_DROP_IN")
+	sshdConfig := envValue("REMOTE_ALPHA_HOST_FIREWALL_SSHD_CONFIG")
 	for _, dir := range []string{filepath.Join(root, "state"), filepath.Join(root, "run")} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			t.Fatal(err)
@@ -596,7 +800,33 @@ func TestRemoteAlphaHostFirewallApplyConfirmRollbackOrderWithFakes(t *testing.T)
 		t.Fatalf("plan: exit %d\n%s\n%s", code, stdout, stderr)
 	}
 	calls := readCalls(t, state)
-	assertContainsNone(t, "plan calls", calls, "nft -f", "systemd-run", "systemctl stop", "systemctl enable", "systemctl restart", "install ")
+	assertContainsNone(t, "plan calls", calls, "nft -f", "systemd-run", "systemctl stop", "systemctl enable", "systemctl restart", "systemctl reload", "install ")
+	assertContainsAll(t, "plan sshd checks", stdout,
+		"includes "+filepath.Dir(dropIn)+"/*.conf: pass",
+		"no other Match blocks in the sshd configuration: pass",
+		"pass  from 192.168.1.23",
+		"password yes",
+		"pass  from 192.0.2.1",
+		"== sshd drop-in "+dropIn+" ==",
+		"Match Address 192.168.1.23/32",
+	)
+	if _, err := os.Stat(dropIn); !os.IsNotExist(err) {
+		t.Fatalf("plan must not write the sshd drop-in, stat err=%v", err)
+	}
+
+	// An sshd configuration the script cannot reason about stops plan.
+	otherMatch := filepath.Join(filepath.Dir(dropIn), "60-other.conf")
+	writeFile(t, otherMatch, []byte("Match User backup\n\tPasswordAuthentication yes\n"), 0o644)
+	if stdout, _, code := runHostFirewall(t, env, "--plan"); code != 1 || !strings.Contains(stdout, "no other Match blocks in the sshd configuration: FAIL") {
+		t.Fatalf("plan with another Match block: exit %d\n%s", code, stdout)
+	}
+	if err := os.Remove(otherMatch); err != nil {
+		t.Fatal(err)
+	}
+	// An invalid sshd configuration stops plan.
+	if stdout, _, code := runHostFirewall(t, append(append([]string{}, env...), "FAKE_SSHD_T_FAIL=1"), "--plan"); code != 1 || !strings.Contains(stdout, "sshd -t (configuration valid): FAIL") {
+		t.Fatalf("plan with invalid sshd configuration: exit %d\n%s", code, stdout)
+	}
 
 	// A failing kernel check stops apply before any effect.
 	failEnv := append(append([]string{}, env...), "FAKE_NFT_CHECK_FAIL=1")
@@ -627,8 +857,23 @@ func TestRemoteAlphaHostFirewallApplyConfirmRollbackOrderWithFakes(t *testing.T)
 	}
 	assertContainsAll(t, "apply timer", calls, "--on-active=180s", "--collect", "--unit=es-host-firewall-rollback")
 	rollbackCommand := readIfExists(filepath.Join(state, "rollback-command"))
-	if !strings.Contains(rollbackCommand, filepath.Join(root, "run", "rollback.nft")) {
-		t.Fatalf("rollback command must load the rollback file, got %q", rollbackCommand)
+	if !strings.Contains(rollbackCommand, filepath.Join(root, "run", "rollback.sh")) {
+		t.Fatalf("rollback command must run the rollback script, got %q", rollbackCommand)
+	}
+	rollbackScript := mustRead(t, filepath.Join(root, "run", "rollback.sh"))
+	assertContainsAll(t, "rollback script", rollbackScript,
+		"-f '"+filepath.Join(root, "run", "rollback.nft")+"'",
+		"-f '"+dropIn+"'",
+		"is-active --quiet 'ssh.service'",
+		"reload 'ssh.service'",
+	)
+	sshdIndex := strings.Index(calls, "systemctl reload ssh.service")
+	if sshdIndex < 0 || sshdIndex < runIndex {
+		t.Fatalf("sshd must reload after the rollback timer is armed:\n%s", calls)
+	}
+	renderedDropIn, _ := runHostFirewallPython(t, env, "", "render-sshd")
+	if got := mustRead(t, dropIn); got != renderedDropIn {
+		t.Fatalf("apply must install the rendered sshd drop-in, got:\n%s", got)
 	}
 	rollbackFile := mustRead(t, filepath.Join(root, "run", "rollback.nft"))
 	if rollbackFile != "table inet es_host_firewall\ndelete table inet es_host_firewall\ntable bridge es_host_firewall\ndelete table bridge es_host_firewall\n" {
@@ -684,6 +929,19 @@ func TestRemoteAlphaHostFirewallApplyConfirmRollbackOrderWithFakes(t *testing.T)
 	if code != 0 || !strings.Contains(stdout, "RESULT: installed and unchanged") {
 		t.Fatalf("status: exit %d\n%s", code, stdout)
 	}
+	// Drift: the sshd drop-in edited by hand.
+	writeFile(t, dropIn, []byte(renderedDropIn+"PasswordAuthentication yes\n"), 0o644)
+	stdout, _, code = runHostFirewall(t, env, "--status")
+	if code != 1 || !strings.Contains(stdout, "DIFFERS from the current settings") {
+		t.Fatalf("status after sshd drift: exit %d\n%s", code, stdout)
+	}
+	writeFile(t, dropIn, []byte(renderedDropIn), 0o644)
+	// Drift: sshd itself no longer does what the drop-in says.
+	stdout, _, code = runHostFirewall(t, append(append([]string{}, env...), "FAKE_SSHD_WRONG_FOR="+sshdConfig), "--status")
+	if code != 1 || !strings.Contains(stdout, "FAIL  from 192.0.2.1") {
+		t.Fatalf("status with sshd granting passwords elsewhere: exit %d\n%s", code, stdout)
+	}
+
 	// Drift: the loaded tables change behind the script's back.
 	loaded := filepath.Join(state, "loaded")
 	writeFile(t, loaded, []byte(strings.Replace(mustRead(t, loaded), "tcp dport 8200 accept", "tcp dport 8201 accept", 1)), 0o644)
@@ -697,11 +955,35 @@ func TestRemoteAlphaHostFirewallApplyConfirmRollbackOrderWithFakes(t *testing.T)
 	if code != 0 || !strings.Contains(stdout, "RESULT: removed") {
 		t.Fatalf("rollback: exit %d\n%s\n%s", code, stdout, stderr)
 	}
-	for _, path := range []string{unitPath, filepath.Join(root, "state", "es-host-firewall.nft"), loaded} {
+	for _, path := range []string{unitPath, filepath.Join(root, "state", "es-host-firewall.nft"), loaded, dropIn} {
 		if _, err := os.Stat(path); !os.IsNotExist(err) {
 			t.Fatalf("rollback must remove %s, stat err=%v", path, err)
 		}
 	}
+
+	// If sshd does not do what the installed drop-in says, apply undoes
+	// itself at once: tables, drop-in and the timer.
+	if err := os.WriteFile(filepath.Join(state, "calls.log"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// (install is faked here, so recreate the run directory --rollback removed.)
+	if err := os.MkdirAll(filepath.Join(root, "run"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	wrongEnv := append(append([]string{}, env...), "FAKE_SSHD_WRONG_FOR="+sshdConfig)
+	stdout, stderr, code = runHostFirewall(t, wrongEnv, "--apply")
+	if code != 1 || !strings.Contains(stderr, "sshd does not do what the drop-in says; restored the state from before --apply") {
+		t.Fatalf("apply with sshd disagreeing: exit %d\n%s\n%s", code, stdout, stderr)
+	}
+	for _, path := range []string{dropIn, loaded} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("a self-undone apply must leave no %s, stat err=%v", path, err)
+		}
+	}
+	if timer := strings.TrimSpace(readIfExists(filepath.Join(state, "timer"))); timer != "dead" {
+		t.Fatalf("a self-undone apply must stop the timer, got %q", timer)
+	}
+	assertContainsNone(t, "self-undone apply", readCalls(t, state), "systemctl reload ssh.service\nsystemctl reload")
 }
 
 // ---------------------------------------------------------------------------
@@ -1088,6 +1370,7 @@ func TestRemoteAlphaHostFirewallRealKernelApplyConfirmRollback(t *testing.T) {
 	state := t.TempDir()
 	root := t.TempDir()
 	unitPath := filepath.Join(root, "es-host-firewall.service")
+	writeExecutable(t, fakeBin, "sshd", hostFirewallFakeSSHD)
 	writeExecutable(t, fakeBin, "systemd-run", fmt.Sprintf(`#!/bin/bash
 cmd=()
 for arg in "$@"; do case "$arg" in --*) ;; *) cmd+=("$arg") ;; esac; done

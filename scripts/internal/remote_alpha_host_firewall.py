@@ -209,6 +209,18 @@ def load_settings():
     settings = {}
     settings["ssh_port"] = parse_port("SSH_PORT", env("SSH_PORT"))
     settings["ssh_sources"] = parse_networks("SSH_SOURCES", env("SSH_SOURCES"), True)
+    settings["ssh_password_sources"] = parse_networks(
+        "SSH_PASSWORD_SOURCES", env("SSH_PASSWORD_SOURCES", ""), False
+    )
+    for network in settings["ssh_password_sources"]:
+        if not any(
+            network.version == source.version and network.subnet_of(source)
+            for source in settings["ssh_sources"]
+        ):
+            raise SettingsError(
+                f"SSH_PASSWORD_SOURCES: {network} is not inside SSH_SOURCES "
+                "(the firewall would drop its SSH connections)"
+            )
     settings["service_ports"] = []
     for raw in words(env("SERVICE_PORTS")):
         port = parse_port("SERVICE_PORTS", raw)
@@ -462,6 +474,65 @@ def cmd_render(_args):
     sys.stdout.write(render(settings))
 
 
+def render_sshd(settings):
+    """The sshd drop-in that the script installs next to the ruleset. Keys
+    keep working from every address the firewall lets reach SSH; passwords
+    only from SSH_PASSWORD_SOURCES; no keyboard-interactive login, no X11
+    forwarding."""
+    lines = [
+        "# Managed by Execution-Substrate scripts/remote_alpha_host_firewall.sh.",
+        f"# Schema: {SCHEMA}",
+        "# Do not edit by hand. Change SSH_PASSWORD_SOURCES in the settings file and",
+        "# run the script again; --status reports any difference.",
+        "#",
+        "# sshd keeps the first value it reads for each keyword. This file sorts",
+        "# first in sshd_config.d, which sshd_config includes before its own",
+        "# settings, so these values win; the script checks the effective result",
+        "# with sshd -T before it reloads sshd.",
+        "PasswordAuthentication no",
+        "KbdInteractiveAuthentication no",
+        "X11Forwarding no",
+    ]
+    if settings["ssh_password_sources"]:
+        lines.append(
+            "Match Address "
+            + ",".join(str(network) for network in settings["ssh_password_sources"])
+        )
+        lines.append("\tPasswordAuthentication yes")
+    return "\n".join(lines) + "\n"
+
+
+def sshd_expectations(settings):
+    """(address, password_allowed) pairs that sshd -T must agree with: one
+    address in each password source, and addresses outside all of them (one
+    in each SSH source when there is one, plus documentation addresses)."""
+    pairs = []
+    sources = settings["ssh_password_sources"]
+    for network in sources:
+        pairs.append((str(network.network_address), True))
+    candidates = [ipaddress.ip_address("192.0.2.1"), ipaddress.ip_address("2001:db8::1")]
+    for network in settings["ssh_sources"]:
+        for offset in (1, 0):
+            if network.num_addresses > offset:
+                candidates.append(network.network_address + offset)
+                break
+    for address in candidates:
+        if any(address.version == n.version and address in n for n in sources):
+            continue
+        if (str(address), False) not in pairs:
+            pairs.append((str(address), False))
+    return pairs
+
+
+def cmd_render_sshd(_args):
+    sys.stdout.write(render_sshd(load_settings()))
+
+
+def cmd_sshd_expectations(_args):
+    for address, allowed in sshd_expectations(load_settings()):
+        print(f"{address} {'yes' if allowed else 'no'}")
+
+
 def cmd_render_unit(args):
     if len(args) != 2:
         raise SettingsError("render-unit needs RULESET_PATH NFT_PATH")
@@ -477,6 +548,10 @@ def cmd_describe(_args):
     print(f"schema: {SCHEMA}")
     print(f"ruleset_sha256: {hashlib.sha256(text.encode('utf-8')).hexdigest()}")
     print(f"ssh: tcp/{settings['ssh_port']} from {' '.join(map(str, settings['ssh_sources']))}")
+    print(
+        "ssh password login from: "
+        + (" ".join(map(str, settings["ssh_password_sources"])) or "(nowhere; keys only)")
+    )
     print(
         "services: tcp/"
         + ",".join(map(str, settings["service_ports"]))
@@ -887,6 +962,8 @@ COMMANDS = {
     "probe-plan": cmd_probe_plan,
     "render": cmd_render,
     "render-unit": cmd_render_unit,
+    "render-sshd": cmd_render_sshd,
+    "sshd-expectations": cmd_sshd_expectations,
     "describe": cmd_describe,
     "listeners": cmd_listeners,
     "ssh-peers": cmd_ssh_peers,

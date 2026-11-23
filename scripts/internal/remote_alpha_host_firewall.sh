@@ -10,7 +10,11 @@
 #     LAN, not the box's other services, not each other;
 #   - from the LAN, the box accepts SSH from SSH_SOURCES, the ES and AGS
 #     listener ports from SERVICE_CALLERS, DHCP replies and basic ICMP, and
-#     drops everything else.
+#     drops everything else, for IPv4 and IPv6.
+#
+# It also owns one sshd drop-in (SSHD_DROP_IN): password login only from
+# SSH_PASSWORD_SOURCES, no keyboard-interactive login, no X11 forwarding.
+# The drop-in is applied, confirmed and rolled back together with the rules.
 #
 # Contract: .docs/system_overview/remote_supported_host_alpha.md, section
 # "Remote Alpha Host Firewall". Entry point: scripts/remote_alpha_host_firewall.sh.
@@ -36,7 +40,7 @@ remote_alpha_host_firewall_schema_version="execution-substrate.remote-alpha.host
 # ===========================================================================
 
 # Names the settings file may set. Paths stay environment-only (tests).
-remote_alpha_host_firewall_file_settings="SSH_SOURCES SSH_PORT SERVICE_CALLERS SERVICE_PORTS VAULT_ADDRESS VAULT_PORT CONTAINER_DNS_SERVERS CONTAINER_INTERFACES CONTAINER_BRIDGE_SUBNETS ACCEPT_BLOCKED_LISTENERS ROLLBACK_SECONDS PROBE_IMAGE PROBE_LAN_ADDRESS PROBE_LAN_GATEWAY PROBE_DNS_NAME PROBE_INTERNET_PORT"
+remote_alpha_host_firewall_file_settings="SSH_SOURCES SSH_PASSWORD_SOURCES SSH_PORT SERVICE_CALLERS SERVICE_PORTS VAULT_ADDRESS VAULT_PORT CONTAINER_DNS_SERVERS CONTAINER_INTERFACES CONTAINER_BRIDGE_SUBNETS ACCEPT_BLOCKED_LISTENERS ROLLBACK_SECONDS PROBE_IMAGE PROBE_LAN_ADDRESS PROBE_LAN_GATEWAY PROBE_DNS_NAME PROBE_INTERNET_PORT"
 
 remote_alpha_host_firewall_defaults() {
   # Who may open SSH to the box. The whole home LAN by default, so that a new
@@ -44,6 +48,11 @@ remote_alpha_host_firewall_defaults() {
   # authentication protects the login.
   : "${REMOTE_ALPHA_HOST_FIREWALL_SSH_SOURCES:=192.168.1.0/24 fe80::/10}"
   : "${REMOTE_ALPHA_HOST_FIREWALL_SSH_PORT:=22}"
+
+  # Who may log in over SSH with a password (sshd "Match Address"); each
+  # entry must lie inside SSH_SOURCES. Keys keep working from every
+  # SSH_SOURCES address. Empty: passwords from nowhere, keys only.
+  : "${REMOTE_ALPHA_HOST_FIREWALL_SSH_PASSWORD_SOURCES:=}"
 
   # Who may reach the ES (8445) and AGS (8444) listeners from the LAN. No
   # default: set it in the settings file to the operator Mac's address (a
@@ -99,11 +108,15 @@ remote_alpha_host_firewall_defaults() {
   : "${REMOTE_ALPHA_HOST_FIREWALL_RESOLV_CONF:=/etc/resolv.conf}"
   : "${REMOTE_ALPHA_HOST_FIREWALL_SYSTEMD_RESOLV_CONF:=/run/systemd/resolve/resolv.conf}"
   : "${REMOTE_ALPHA_HOST_FIREWALL_NFTABLES_CONF:=/etc/nftables.conf}"
+  : "${REMOTE_ALPHA_HOST_FIREWALL_SSHD_CONFIG:=/etc/ssh/sshd_config}"
+  : "${REMOTE_ALPHA_HOST_FIREWALL_SSHD_DROP_IN:=/etc/ssh/sshd_config.d/00-execution-substrate-host-access.conf}"
+  : "${REMOTE_ALPHA_HOST_FIREWALL_SSHD_SERVICE:=ssh.service}"
   # Set to 1 only when confirming at the box's own console, where no SSH
   # connection can prove that SSH still works.
   : "${REMOTE_ALPHA_HOST_FIREWALL_CONFIRM_WITHOUT_NEW_SSH:=0}"
 
   export REMOTE_ALPHA_HOST_FIREWALL_SSH_SOURCES REMOTE_ALPHA_HOST_FIREWALL_SSH_PORT \
+    REMOTE_ALPHA_HOST_FIREWALL_SSH_PASSWORD_SOURCES \
     REMOTE_ALPHA_HOST_FIREWALL_SERVICE_CALLERS REMOTE_ALPHA_HOST_FIREWALL_SERVICE_PORTS \
     REMOTE_ALPHA_HOST_FIREWALL_VAULT_ADDRESS REMOTE_ALPHA_HOST_FIREWALL_VAULT_PORT \
     REMOTE_ALPHA_HOST_FIREWALL_CONTAINER_DNS_SERVERS REMOTE_ALPHA_HOST_FIREWALL_CONTAINER_INTERFACES \
@@ -213,21 +226,26 @@ Usage:
 Modes:
   --plan      Default. Read-only: show the settings, host facts, inbound SSH
               connections, listening sockets and what the firewall does to
-              each, the rendered ruleset, and every check --apply makes.
-  --apply     Run the checks, arm a rollback timer, then load the ruleset.
-              The previous rules come back after ROLLBACK_SECONDS unless
-              --confirm runs from an SSH connection opened after --apply.
+              each, the rendered ruleset and sshd drop-in, what sshd -T says
+              the drop-in does, and every check --apply makes.
+  --apply     Run the checks, arm a rollback timer, then load the ruleset,
+              install the sshd drop-in, check it with sshd -T and reload
+              sshd (existing sessions stay). The previous rules and drop-in
+              come back after ROLLBACK_SECONDS unless --confirm runs from an
+              SSH connection opened after --apply.
   --confirm   From a new SSH connection: install the ruleset and the
               es-host-firewall.service unit so the rules load at every boot,
-              then cancel the rollback timer.
+              keep the sshd drop-in, then cancel the rollback timer.
   --status    Read-only: report whether the installed rules are loaded and
-              unchanged, the unit state, a pending rollback and the drop
-              counters. Exit 0 only when installed and unchanged.
+              unchanged, whether the sshd drop-in matches the settings and
+              sshd -T agrees, the unit state, a pending rollback and the
+              drop counters. Exit 0 only when installed and unchanged.
   --probe     Start two short-lived containers from PROBE_IMAGE and check
               from inside one of them that Vault, DNS and the internet work
               and that the box's LAN services, the LAN gateway and the other
               container are unreachable. Checks the drop counters moved.
-  --rollback  Remove both tables, the unit and the installed files.
+  --rollback  Remove both tables, the unit, the sshd drop-in and the
+              installed files (the settings file stays).
   --render    Print the ruleset for the current settings and exit.
 
 Settings:
@@ -244,13 +262,17 @@ Scope:
   Changes only the nftables tables inet and bridge es_host_firewall, the
   files it installs under /etc/execution-substrate/host-firewall (it reads
   the settings file there and never writes it), the unit
-  /etc/systemd/system/es-host-firewall.service and a transient
-  es-host-firewall-rollback timer. It does not touch Docker's, ufw's or any
-  other rules, sshd, Vault, Nomad or ES. It reads no secrets.
+  /etc/systemd/system/es-host-firewall.service, the sshd drop-in
+  /etc/ssh/sshd_config.d/00-execution-substrate-host-access.conf (password
+  login only from SSH_PASSWORD_SOURCES, no keyboard-interactive login, no X11
+  forwarding) and a transient es-host-firewall-rollback timer. It reloads
+  sshd and does not touch Docker's, ufw's or any other rules, other sshd
+  files, Vault, Nomad or ES. It reads no secrets.
 
 Non-claims:
   Not egress lanes (a container still reaches the whole internet), not a
-  per-run network grant, not Docker or Nomad hardening, not sshd hardening.
+  per-run network grant, not Docker or Nomad hardening, not a full sshd
+  hardening (root login, forwarding and accounts are unchanged).
 EOF
 }
 
@@ -291,12 +313,21 @@ remote_alpha_host_firewall_validate_numbers() {
     return 1
   fi
   local path
-  for path in "${REMOTE_ALPHA_HOST_FIREWALL_STATE_DIR}" "${REMOTE_ALPHA_HOST_FIREWALL_UNIT_PATH}" "${REMOTE_ALPHA_HOST_FIREWALL_RUN_DIR}"; do
+  for path in "${REMOTE_ALPHA_HOST_FIREWALL_STATE_DIR}" "${REMOTE_ALPHA_HOST_FIREWALL_UNIT_PATH}" "${REMOTE_ALPHA_HOST_FIREWALL_RUN_DIR}" \
+    "${REMOTE_ALPHA_HOST_FIREWALL_SSHD_CONFIG}" "${REMOTE_ALPHA_HOST_FIREWALL_SSHD_DROP_IN}"; do
     if [[ ! "${path}" =~ ^/[A-Za-z0-9_./-]+$ || "${path}" == *"/../"* || "${path}" == */.. ]]; then
       remote_alpha_host_firewall_die "${path} is not a plain absolute path"
       return 1
     fi
   done
+  if [[ "${REMOTE_ALPHA_HOST_FIREWALL_SSHD_DROP_IN}" != *.conf ]]; then
+    remote_alpha_host_firewall_die "REMOTE_ALPHA_HOST_FIREWALL_SSHD_DROP_IN must end in .conf"
+    return 1
+  fi
+  if [[ ! "${REMOTE_ALPHA_HOST_FIREWALL_SSHD_SERVICE}" =~ ^[A-Za-z0-9@_.-]+\.service$ ]]; then
+    remote_alpha_host_firewall_die "REMOTE_ALPHA_HOST_FIREWALL_SSHD_SERVICE must be a unit name ending in .service"
+    return 1
+  fi
 }
 
 remote_alpha_host_firewall_ruleset_path() {
@@ -374,6 +405,99 @@ remote_alpha_host_firewall_print_host_facts() {
 
 # Runs every check that --apply needs. Prints a line per check. Writes the
 # rendered ruleset to "$1". Returns 0 only when every check passed.
+remote_alpha_host_firewall_sshd_managed_marker="# Managed by Execution-Substrate scripts/remote_alpha_host_firewall.sh."
+
+# Check what sshd would do with the configuration CONFIG: it must be valid,
+# and sshd -T must agree with every expected (address, password) pair from
+# the settings, with keyboard-interactive login and X11 forwarding off.
+remote_alpha_host_firewall_sshd_check() {
+  local config=$1
+  local failed=0 address expected output password kbd x11 err expectations
+  err=$(mktemp)
+  if ! sshd -t -f "${config}" >/dev/null 2>"${err}"; then
+    printf 'sshd -t (configuration valid): FAIL\n'
+    sed 's/^/  /' "${err}"
+    rm -f "${err}"
+    return 1
+  fi
+  rm -f "${err}"
+  printf 'sshd -t (configuration valid): pass\n'
+  if ! expectations=$(remote_alpha_host_firewall_py sshd-expectations); then
+    return 1
+  fi
+  while read -r address expected; do
+    [[ -n "${address}" ]] || continue
+    output=$(sshd -T -f "${config}" -C "user=es-host-firewall-check,host=es-host-firewall-check,addr=${address}" 2>/dev/null) || output=""
+    password=$(awk '$1 == "passwordauthentication" {print $2}' <<<"${output}")
+    kbd=$(awk '$1 == "kbdinteractiveauthentication" {print $2}' <<<"${output}")
+    x11=$(awk '$1 == "x11forwarding" {print $2}' <<<"${output}")
+    if [[ "${password}" == "${expected}" && "${kbd}" == "no" && "${x11}" == "no" ]]; then
+      printf '  pass  from %-28s password %s, keyboard-interactive no, X11 no\n' "${address}" "${expected}"
+    else
+      printf '  FAIL  from %-28s want password %s, keyboard-interactive no, X11 no; sshd -T says password %s, keyboard-interactive %s, X11 %s\n' \
+        "${address}" "${expected}" "${password:-?}" "${kbd:-?}" "${x11:-?}"
+      failed=1
+    fi
+  done <<<"${expectations}"
+  return "${failed}"
+}
+
+# Uncommented Match blocks elsewhere in sshd's configuration could grant
+# passwords to other addresses; the script cannot reason about them.
+remote_alpha_host_firewall_sshd_other_matches() {
+  local file
+  for file in "${REMOTE_ALPHA_HOST_FIREWALL_SSHD_CONFIG}" "$(dirname "${REMOTE_ALPHA_HOST_FIREWALL_SSHD_DROP_IN}")"/*.conf; do
+    [[ -f "${file}" && "${file}" != "${REMOTE_ALPHA_HOST_FIREWALL_SSHD_DROP_IN}" ]] || continue
+    grep -HnEi '^[[:space:]]*Match[[:space:]]' "${file}" 2>/dev/null || true
+  done
+}
+
+remote_alpha_host_firewall_sshd_reload() {
+  if systemctl is-active --quiet "${REMOTE_ALPHA_HOST_FIREWALL_SSHD_SERVICE}" 2>/dev/null; then
+    systemctl reload "${REMOTE_ALPHA_HOST_FIREWALL_SSHD_SERVICE}"
+  fi
+}
+
+# The sshd part of the checks: render the drop-in to SSHD_CANDIDATE and
+# evaluate it the way it will sit, before everything else sshd reads.
+remote_alpha_host_firewall_sshd_checks() {
+  local sshd_candidate=$1
+  local failed=0 simulated others drop_in_dir
+  if ! remote_alpha_host_firewall_py render-sshd >"${sshd_candidate}"; then
+    printf 'sshd drop-in render: FAIL\n'
+    return 1
+  fi
+  drop_in_dir=$(dirname "${REMOTE_ALPHA_HOST_FIREWALL_SSHD_DROP_IN}")
+  if grep -Eq "^[[:space:]]*Include[[:space:]]+${drop_in_dir}/\*\.conf([[:space:]]|$)" "${REMOTE_ALPHA_HOST_FIREWALL_SSHD_CONFIG}" 2>/dev/null; then
+    printf '%s includes %s/*.conf: pass\n' "${REMOTE_ALPHA_HOST_FIREWALL_SSHD_CONFIG}" "${drop_in_dir}"
+  else
+    printf '%s includes %s/*.conf: FAIL (the drop-in would not be read)\n' "${REMOTE_ALPHA_HOST_FIREWALL_SSHD_CONFIG}" "${drop_in_dir}"
+    failed=1
+  fi
+  others=$(remote_alpha_host_firewall_sshd_other_matches)
+  if [[ -z "${others}" ]]; then
+    printf 'no other Match blocks in the sshd configuration: pass\n'
+  else
+    printf 'no other Match blocks in the sshd configuration: FAIL (review them; they could grant passwords elsewhere)\n'
+    printf '%s\n' "${others}" | sed 's/^/  /'
+    failed=1
+  fi
+  if [[ -e "${REMOTE_ALPHA_HOST_FIREWALL_SSHD_DROP_IN}" ]] \
+    && [[ "$(head -n 1 "${REMOTE_ALPHA_HOST_FIREWALL_SSHD_DROP_IN}" 2>/dev/null)" != "${remote_alpha_host_firewall_sshd_managed_marker}" ]]; then
+    printf '%s is not managed by this script: FAIL (move it away first)\n' "${REMOTE_ALPHA_HOST_FIREWALL_SSHD_DROP_IN}"
+    failed=1
+  fi
+  simulated="${sshd_candidate%.conf}-simulated.conf"
+  printf 'Include %s\nInclude %s\n' "${sshd_candidate}" "${REMOTE_ALPHA_HOST_FIREWALL_SSHD_CONFIG}" >"${simulated}"
+  printf 'sshd with the new drop-in first (as installed):\n'
+  if ! remote_alpha_host_firewall_sshd_check "${simulated}" >"${simulated}.out"; then
+    failed=1
+  fi
+  sed 's/^/  /' "${simulated}.out"
+  rm -f "${simulated}" "${simulated}.out"
+  return "${failed}"
+}
+
 remote_alpha_host_firewall_checks() {
   local candidate=$1
   local failed=0 ephemeral_low
@@ -418,6 +542,11 @@ remote_alpha_host_firewall_checks() {
     failed=1
   fi
 
+  printf 'sshd drop-in %s:\n' "${REMOTE_ALPHA_HOST_FIREWALL_SSHD_DROP_IN}"
+  if ! remote_alpha_host_firewall_sshd_checks "$(dirname "${candidate}")/candidate-sshd.conf"; then
+    failed=1
+  fi
+
   if remote_alpha_host_firewall_rollback_pending; then
     printf 'no earlier apply awaiting confirm: FAIL (run --confirm or --rollback first)\n'
     failed=1
@@ -430,7 +559,7 @@ remote_alpha_host_firewall_checks() {
 remote_alpha_host_firewall_plan() {
   local work candidate status=0
   remote_alpha_host_firewall_require_root || return 1
-  remote_alpha_host_firewall_require_commands nft ip ss systemctl python3 sha256sum || return 1
+  remote_alpha_host_firewall_require_commands nft ip ss systemctl python3 sha256sum sshd || return 1
   work=$(mktemp -d)
   candidate="${work}/candidate.nft"
 
@@ -444,6 +573,10 @@ remote_alpha_host_firewall_plan() {
     printf '== ruleset ==\n'
     cat "${candidate}"
   fi
+  if [[ -s "${work}/candidate-sshd.conf" ]]; then
+    printf '== sshd drop-in %s ==\n' "${REMOTE_ALPHA_HOST_FIREWALL_SSHD_DROP_IN}"
+    cat "${work}/candidate-sshd.conf"
+  fi
   if [[ "${status}" -eq 0 ]]; then
     printf 'RESULT: ready to apply\n'
   else
@@ -453,17 +586,46 @@ remote_alpha_host_firewall_plan() {
   return "${status}"
 }
 
+# Write RUN_DIR/rollback.sh: it restores the rules loaded before --apply
+# and the sshd drop-in as it was before --apply, then reloads sshd. Tool
+# paths are resolved now, so the transient timer unit does not depend on
+# its PATH.
+remote_alpha_host_firewall_write_rollback_script() {
+  local run_dir=$1
+  local nft_path systemctl_path cp_path rm_path drop_in service
+  nft_path=$(command -v nft)
+  systemctl_path=$(command -v systemctl)
+  cp_path=$(command -v cp)
+  rm_path=$(command -v rm)
+  drop_in="${REMOTE_ALPHA_HOST_FIREWALL_SSHD_DROP_IN}"
+  service="${REMOTE_ALPHA_HOST_FIREWALL_SSHD_SERVICE}"
+  {
+    printf '#!/bin/sh\n'
+    printf '# Restores the state from before es-host-firewall --apply.\n'
+    printf "'%s' -f '%s'\n" "${nft_path}" "${run_dir}/rollback.nft"
+    if [[ -f "${run_dir}/sshd-previous.conf" ]]; then
+      printf "'%s' -p '%s' '%s'\n" "${cp_path}" "${run_dir}/sshd-previous.conf" "${drop_in}"
+    else
+      printf "'%s' -f '%s'\n" "${rm_path}" "${drop_in}"
+    fi
+    printf "if '%s' is-active --quiet '%s'; then '%s' reload '%s'; fi\n" "${systemctl_path}" "${service}" "${systemctl_path}" "${service}"
+  } >"${run_dir}/rollback.sh"
+  chmod 0700 "${run_dir}/rollback.sh"
+}
+
 remote_alpha_host_firewall_apply() {
-  local run_dir candidate rollback applied peers nft_path at work
+  local run_dir candidate rollback applied peers at work sshd_candidate
   remote_alpha_host_firewall_require_root || return 1
-  remote_alpha_host_firewall_require_commands nft ip ss systemctl systemd-run python3 sha256sum install || return 1
+  remote_alpha_host_firewall_require_commands nft ip ss systemctl systemd-run python3 sha256sum install sshd || return 1
   run_dir="${REMOTE_ALPHA_HOST_FIREWALL_RUN_DIR}"
   candidate="${run_dir}/candidate.nft"
+  sshd_candidate="${run_dir}/candidate-sshd.conf"
   rollback="${run_dir}/rollback.nft"
   applied="${run_dir}/applied.listing"
   peers="${run_dir}/ssh-peers-at-apply"
 
   printf 'Remote Alpha host firewall: apply\n'
+  printf 'settings file: %s\n' "${remote_alpha_host_firewall_settings_file_state}"
   remote_alpha_host_firewall_py describe || return 2
   work=$(mktemp -d)
   if ! remote_alpha_host_firewall_checks "${work}/candidate.nft"; then
@@ -473,8 +635,10 @@ remote_alpha_host_firewall_apply() {
   fi
   # Only now, with no apply pending, replace the records of an earlier one.
   install -d -m 0700 -o root -g root "${run_dir}"
-  rm -f "${candidate}" "${rollback}" "${applied}" "${peers}"
+  rm -f "${candidate}" "${sshd_candidate}" "${rollback}" "${applied}" "${peers}" \
+    "${run_dir}/rollback.sh" "${run_dir}/sshd-previous.conf"
   mv "${work}/candidate.nft" "${candidate}"
+  mv "${work}/candidate-sshd.conf" "${sshd_candidate}"
   rm -rf "${work}"
 
   # The rollback file restores exactly what is loaded now: the current
@@ -484,22 +648,25 @@ remote_alpha_host_firewall_apply() {
     printf 'table bridge %s\ndelete table bridge %s\n' "${remote_alpha_host_firewall_table}" "${remote_alpha_host_firewall_table}"
     remote_alpha_host_firewall_live_listing
   } >"${rollback}"
-  chmod 0600 "${rollback}" "${candidate}"
+  chmod 0600 "${rollback}" "${candidate}" "${sshd_candidate}"
   if ! nft -c -f "${rollback}" >/dev/null 2>&1; then
     remote_alpha_host_firewall_die "the rollback file for the current rules does not load; nothing was changed"
     return 1
   fi
+  if [[ -f "${REMOTE_ALPHA_HOST_FIREWALL_SSHD_DROP_IN}" ]]; then
+    cp -p "${REMOTE_ALPHA_HOST_FIREWALL_SSHD_DROP_IN}" "${run_dir}/sshd-previous.conf"
+  fi
+  remote_alpha_host_firewall_write_rollback_script "${run_dir}"
 
   remote_alpha_host_firewall_ssh_connections | remote_alpha_host_firewall_py ssh-peer-list >"${peers}"
 
   # Arm the rollback before loading, so a lockout can never outlive the timer.
-  nft_path=$(command -v nft)
   systemctl reset-failed "${remote_alpha_host_firewall_rollback_unit}.service" "${remote_alpha_host_firewall_rollback_unit}.timer" >/dev/null 2>&1 || true
   if ! systemd-run --quiet --collect --unit="${remote_alpha_host_firewall_rollback_unit}" \
     --description="Roll back an unconfirmed es-host-firewall apply" \
     --on-active="${REMOTE_ALPHA_HOST_FIREWALL_ROLLBACK_SECONDS}s" \
     --timer-property=AccuracySec=1s \
-    "${nft_path}" -f "${rollback}"; then
+    /bin/sh "${run_dir}/rollback.sh"; then
     remote_alpha_host_firewall_die "could not arm the rollback timer; nothing was changed"
     return 1
   fi
@@ -514,8 +681,33 @@ remote_alpha_host_firewall_apply() {
     return 1
   fi
   remote_alpha_host_firewall_live_listing >"${applied}"
+
+  # The sshd drop-in: install, check what sshd would now do, then reload.
+  # Existing SSH sessions are not affected by a reload.
+  if ! remote_alpha_host_firewall_install_file "${sshd_candidate}" "${REMOTE_ALPHA_HOST_FIREWALL_SSHD_DROP_IN}"; then
+    systemctl stop "${remote_alpha_host_firewall_rollback_unit}.timer" >/dev/null 2>&1 || true
+    /bin/sh "${run_dir}/rollback.sh" || true
+    remote_alpha_host_firewall_die "could not install the sshd drop-in; restored the state from before --apply"
+    return 1
+  fi
+  printf 'sshd with the drop-in installed:\n'
+  if ! remote_alpha_host_firewall_sshd_check "${REMOTE_ALPHA_HOST_FIREWALL_SSHD_CONFIG}" >"${run_dir}/sshd-check.out"; then
+    sed 's/^/  /' "${run_dir}/sshd-check.out"
+    systemctl stop "${remote_alpha_host_firewall_rollback_unit}.timer" >/dev/null 2>&1 || true
+    /bin/sh "${run_dir}/rollback.sh" || true
+    remote_alpha_host_firewall_die "sshd does not do what the drop-in says; restored the state from before --apply"
+    return 1
+  fi
+  sed 's/^/  /' "${run_dir}/sshd-check.out"
+  rm -f "${run_dir}/sshd-check.out"
+  if ! remote_alpha_host_firewall_sshd_reload; then
+    systemctl stop "${remote_alpha_host_firewall_rollback_unit}.timer" >/dev/null 2>&1 || true
+    /bin/sh "${run_dir}/rollback.sh" || true
+    remote_alpha_host_firewall_die "sshd did not reload; restored the state from before --apply"
+    return 1
+  fi
   at=$(date -u -d "+${REMOTE_ALPHA_HOST_FIREWALL_ROLLBACK_SECONDS} seconds" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "in ${REMOTE_ALPHA_HOST_FIREWALL_ROLLBACK_SECONDS} s")
-  printf 'Loaded tables inet and bridge %s.\n' "${remote_alpha_host_firewall_table}"
+  printf 'Loaded tables inet and bridge %s and installed the sshd drop-in.\n' "${remote_alpha_host_firewall_table}"
   printf 'ROLLBACK at %s unless confirmed. Open a NEW SSH connection to the box and run --confirm with the same settings.\n' "${at}"
   printf 'RESULT: applied, awaiting confirm\n'
 }
@@ -531,11 +723,12 @@ remote_alpha_host_firewall_install_file() {
 }
 
 remote_alpha_host_firewall_confirm() {
-  local run_dir candidate rollback applied peers rendered work ruleset_path listing_path backup_dir nft_path
+  local run_dir candidate rollback applied peers rendered work ruleset_path listing_path backup_dir nft_path sshd_candidate
   remote_alpha_host_firewall_require_root || return 1
-  remote_alpha_host_firewall_require_commands nft ss systemctl python3 install || return 1
+  remote_alpha_host_firewall_require_commands nft ss systemctl python3 install sshd || return 1
   run_dir="${REMOTE_ALPHA_HOST_FIREWALL_RUN_DIR}"
   candidate="${run_dir}/candidate.nft"
+  sshd_candidate="${run_dir}/candidate-sshd.conf"
   rollback="${run_dir}/rollback.nft"
   applied="${run_dir}/applied.listing"
   peers="${run_dir}/ssh-peers-at-apply"
@@ -547,13 +740,15 @@ remote_alpha_host_firewall_confirm() {
     remote_alpha_host_firewall_die "no apply is awaiting confirm (no waiting rollback timer); nothing was changed"
     return 1
   fi
-  if [[ ! -f "${candidate}" || ! -f "${rollback}" || ! -f "${applied}" || ! -f "${peers}" ]]; then
+  if [[ ! -f "${candidate}" || ! -f "${rollback}" || ! -f "${applied}" || ! -f "${peers}" \
+    || ! -f "${sshd_candidate}" || ! -f "${run_dir}/rollback.sh" ]]; then
     remote_alpha_host_firewall_die "the apply records under ${run_dir} are missing; nothing was changed"
     return 1
   fi
   work=$(mktemp -d)
   rendered="${work}/rendered.nft"
-  if ! remote_alpha_host_firewall_py render >"${rendered}" || ! cmp -s "${rendered}" "${candidate}"; then
+  if ! remote_alpha_host_firewall_py render >"${rendered}" || ! cmp -s "${rendered}" "${candidate}" \
+    || ! remote_alpha_host_firewall_py render-sshd >"${rendered}.sshd" || ! cmp -s "${rendered}.sshd" "${sshd_candidate}"; then
     rm -rf "${work}"
     remote_alpha_host_firewall_die "the current settings do not render the applied ruleset; confirm with the same settings as --apply. Nothing was changed"
     return 1
@@ -575,9 +770,17 @@ remote_alpha_host_firewall_confirm() {
     return 1
   fi
   if ! remote_alpha_host_firewall_live_listing | cmp -s - "${applied}"; then
-    nft -f "${rollback}" || true
+    /bin/sh "${run_dir}/rollback.sh" || true
     rm -rf "${work}"
-    remote_alpha_host_firewall_die "the loaded tables changed since --apply (or the rollback already ran); restored the rules from before --apply. Nothing was installed"
+    remote_alpha_host_firewall_die "the loaded tables changed since --apply (or the rollback already ran); restored the state from before --apply. Nothing was installed"
+    return 1
+  fi
+  if ! cmp -s "${sshd_candidate}" "${REMOTE_ALPHA_HOST_FIREWALL_SSHD_DROP_IN}" \
+    || ! remote_alpha_host_firewall_sshd_check "${REMOTE_ALPHA_HOST_FIREWALL_SSHD_CONFIG}" >"${work}/sshd-check.out"; then
+    sed 's/^/  /' "${work}/sshd-check.out" 2>/dev/null || true
+    /bin/sh "${run_dir}/rollback.sh" || true
+    rm -rf "${work}"
+    remote_alpha_host_firewall_die "the sshd drop-in changed since --apply or sshd no longer does what it says; restored the state from before --apply. Nothing was installed"
     return 1
   fi
 
@@ -599,7 +802,7 @@ remote_alpha_host_firewall_confirm() {
       && remote_alpha_host_firewall_live_listing | cmp -s - "${applied}" \
       && remote_alpha_host_firewall_install_file "${applied}" "${listing_path}"
   }; then
-    printf 'install failed; restoring the previous files and the rules from before --apply\n' >&2
+    printf 'install failed; restoring the previous files and the state from before --apply\n' >&2
     if [[ -f "${backup_dir}/ruleset" ]]; then cp -p "${backup_dir}/ruleset" "${ruleset_path}"; else rm -f "${ruleset_path}"; fi
     if [[ -f "${backup_dir}/listing" ]]; then cp -p "${backup_dir}/listing" "${listing_path}"; else rm -f "${listing_path}"; fi
     if [[ -f "${backup_dir}/unit" ]]; then
@@ -609,21 +812,23 @@ remote_alpha_host_firewall_confirm() {
       rm -f "${REMOTE_ALPHA_HOST_FIREWALL_UNIT_PATH}"
     fi
     systemctl daemon-reload >/dev/null 2>&1 || true
-    nft -f "${rollback}" || printf 'error: nft could not restore the rules from before --apply\n' >&2
+    /bin/sh "${run_dir}/rollback.sh" || printf 'error: could not restore the state from before --apply\n' >&2
     rm -rf "${work}"
     return 1
   fi
 
-  rm -f "${candidate}" "${rollback}" "${applied}" "${peers}"
+  rm -f "${candidate}" "${sshd_candidate}" "${rollback}" "${applied}" "${peers}" \
+    "${run_dir}/rollback.sh" "${run_dir}/sshd-previous.conf"
   rm -rf "${work}"
-  printf 'Installed %s and %s (enabled). Rollback timer cancelled.\n' "${ruleset_path}" "${REMOTE_ALPHA_HOST_FIREWALL_UNIT_PATH}"
+  printf 'Installed %s and %s (enabled); the sshd drop-in %s stays. Rollback timer cancelled.\n' \
+    "${ruleset_path}" "${REMOTE_ALPHA_HOST_FIREWALL_UNIT_PATH}" "${REMOTE_ALPHA_HOST_FIREWALL_SSHD_DROP_IN}"
   printf 'RESULT: confirmed\n'
 }
 
 remote_alpha_host_firewall_status() {
   local ruleset_path listing_path status=0 work
   remote_alpha_host_firewall_require_root || return 1
-  remote_alpha_host_firewall_require_commands nft systemctl python3 || return 1
+  remote_alpha_host_firewall_require_commands nft systemctl python3 sshd || return 1
   ruleset_path=$(remote_alpha_host_firewall_ruleset_path)
   listing_path=$(remote_alpha_host_firewall_listing_path)
   printf 'Remote Alpha host firewall: status (read-only)\n'
@@ -650,6 +855,28 @@ remote_alpha_host_firewall_status() {
       printf 'current settings: do not render the installed ruleset (settings or host resolvers changed; --plan shows the new one)\n'
     fi
     rm -rf "${work}"
+  fi
+  if [[ ! -f "${REMOTE_ALPHA_HOST_FIREWALL_SSHD_DROP_IN}" ]]; then
+    printf 'sshd drop-in %s: none\n' "${REMOTE_ALPHA_HOST_FIREWALL_SSHD_DROP_IN}"
+    [[ "${status}" -eq 0 ]] && status=1
+  else
+    work=$(mktemp -d)
+    if remote_alpha_host_firewall_py render-sshd >"${work}/sshd.conf" 2>/dev/null && cmp -s "${work}/sshd.conf" "${REMOTE_ALPHA_HOST_FIREWALL_SSHD_DROP_IN}"; then
+      printf 'sshd drop-in %s: matches the current settings\n' "${REMOTE_ALPHA_HOST_FIREWALL_SSHD_DROP_IN}"
+    else
+      printf 'sshd drop-in %s: DIFFERS from the current settings (edited, or settings changed; --plan shows the new one)\n' "${REMOTE_ALPHA_HOST_FIREWALL_SSHD_DROP_IN}"
+      [[ "${status}" -eq 0 ]] && status=1
+    fi
+    rm -rf "${work}"
+    printf 'sshd as configured now:\n'
+    work=$(mktemp)
+    if remote_alpha_host_firewall_sshd_check "${REMOTE_ALPHA_HOST_FIREWALL_SSHD_CONFIG}" >"${work}"; then
+      sed 's/^/  /' "${work}"
+    else
+      sed 's/^/  /' "${work}"
+      [[ "${status}" -eq 0 ]] && status=1
+    fi
+    rm -f "${work}"
   fi
   if systemctl is-enabled --quiet "${remote_alpha_host_firewall_unit}" 2>/dev/null; then
     printf 'unit %s: enabled\n' "${remote_alpha_host_firewall_unit}"
@@ -698,6 +925,14 @@ remote_alpha_host_firewall_rollback() {
     return 1
   fi
   rm -rf "${work}"
+  if [[ -f "${REMOTE_ALPHA_HOST_FIREWALL_SSHD_DROP_IN}" ]]; then
+    if [[ "$(head -n 1 "${REMOTE_ALPHA_HOST_FIREWALL_SSHD_DROP_IN}")" == "${remote_alpha_host_firewall_sshd_managed_marker}" ]]; then
+      rm -f "${REMOTE_ALPHA_HOST_FIREWALL_SSHD_DROP_IN}"
+      remote_alpha_host_firewall_sshd_reload || printf 'warning: sshd did not reload; it reads the configuration again at its next start\n' >&2
+    else
+      printf 'warning: %s is not managed by this script; left in place\n' "${REMOTE_ALPHA_HOST_FIREWALL_SSHD_DROP_IN}" >&2
+    fi
+  fi
   rm -f "${ruleset_path}" "${listing_path}"
   rmdir "${REMOTE_ALPHA_HOST_FIREWALL_STATE_DIR}" 2>/dev/null || true
   rm -rf "${REMOTE_ALPHA_HOST_FIREWALL_RUN_DIR}"
@@ -705,7 +940,7 @@ remote_alpha_host_firewall_rollback() {
     remote_alpha_host_firewall_die "the tables are still loaded after removal"
     return 1
   fi
-  printf 'RESULT: removed (tables, unit and installed files; the settings file is kept)\n'
+  printf 'RESULT: removed (tables, unit, sshd drop-in and installed files; the settings file is kept)\n'
 }
 
 remote_alpha_host_firewall_counter_value() {
