@@ -12,11 +12,12 @@ import (
 func TestAdmissionPolicyPrepareRejectsSelectedStaticScriptPayloadSafely(t *testing.T) {
 	fixture := newPreparedArtifactFixture(t)
 	service, stagingRoot, resultsRoot := newWorkstreamCTestService(t, fixture)
-	request := fixture.prepareRequest()
 	rawFixture := selectedPatternFixtureText()
 	payload := buildAdmissionPolicyStaticScriptArchive(t, map[string][]byte{
 		staticScriptEntrypointName: []byte(rawFixture),
 	})
+	fixture = fixture.withPayload(t, payload)
+	request := fixture.prepareRequest()
 
 	arsCalls := map[string]int{}
 	service.arsClient = newArtifactRegistryTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -68,12 +69,13 @@ func TestAdmissionPolicyPrepareRejectsSelectedStaticScriptPayloadSafely(t *testi
 func TestAdmissionPolicySubmitBackstopRejectsBeforeStagingAndNomad(t *testing.T) {
 	fixture := newPreparedArtifactFixture(t)
 	service, stagingRoot, resultsRoot := newWorkstreamCTestService(t, fixture)
-	request := fixture.prepareRequest()
-	request.Mode = ExecutionModeAsync
 	rawFixture := selectedPatternFixtureText()
 	payload := buildAdmissionPolicyStaticScriptArchive(t, map[string][]byte{
 		staticScriptEntrypointName: []byte(rawFixture),
 	})
+	fixture = fixture.withPayload(t, payload)
+	request := fixture.prepareRequest()
+	request.Mode = ExecutionModeAsync
 
 	arsCalls := map[string]int{}
 	service.arsClient = newArtifactRegistryTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -120,10 +122,11 @@ func TestConfiguredStaticScriptLiteralDenyPrepareRejectsConfiguredMarkerSafely(t
 	service, stagingRoot, resultsRoot := newWorkstreamCTestService(t, fixture)
 	marker := configuredPolicyFixtureMarker()
 	configureConfiguredStaticScriptLiteralDenyService(service, marker)
-	request := fixture.prepareRequest()
 	payload := buildAdmissionPolicyStaticScriptArchive(t, map[string][]byte{
 		staticScriptEntrypointName: []byte("echo before\n" + marker + "\necho after\n"),
 	})
+	fixture = fixture.withPayload(t, payload)
+	request := fixture.prepareRequest()
 
 	arsCalls := map[string]int{}
 	service.arsClient = newArtifactRegistryTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -174,11 +177,12 @@ func TestConfiguredStaticScriptLiteralDenySubmitBackstopRejectsBeforeStagingAndN
 	service, stagingRoot, resultsRoot := newWorkstreamCTestService(t, fixture)
 	marker := configuredPolicyFixtureMarker()
 	configureConfiguredStaticScriptLiteralDenyService(service, marker)
-	request := fixture.prepareRequest()
-	request.Mode = ExecutionModeAsync
 	payload := buildAdmissionPolicyStaticScriptArchive(t, map[string][]byte{
 		staticScriptEntrypointName: []byte("echo before\n" + marker + "\necho after\n"),
 	})
+	fixture = fixture.withPayload(t, payload)
+	request := fixture.prepareRequest()
+	request.Mode = ExecutionModeAsync
 
 	arsCalls := map[string]int{}
 	service.arsClient = newArtifactRegistryTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -225,10 +229,11 @@ func TestConfiguredStaticScriptLiteralDenyDisabledModeAllowsMatchingPayload(t *t
 	service, stagingRoot, resultsRoot := newWorkstreamCTestService(t, fixture)
 	marker := configuredPolicyFixtureMarker()
 	configureConfiguredStaticScriptLiteralDenyServiceMode(service, esconfig.ConfiguredStaticScriptLiteralDenyModeDisabled, marker)
-	request := fixture.prepareRequest()
 	payload := buildAdmissionPolicyStaticScriptArchive(t, map[string][]byte{
 		staticScriptEntrypointName: []byte("echo " + marker),
 	})
+	fixture = fixture.withPayload(t, payload)
+	request := fixture.prepareRequest()
 
 	arsCalls := map[string]int{}
 	service.arsClient = newArtifactRegistryTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -272,13 +277,14 @@ func TestAdmissionPolicyAllowsBenignControlPlaneNormalShellCompatibilityPath(t *
 	fixture := newPreparedArtifactFixture(t)
 	service, stagingRoot, resultsRoot := newWorkstreamCTestService(t, fixture)
 	service.cfg.Execution = controlPlaneNormalShellProfileExecutionConfig()
+	payload := buildAdmissionPolicyStaticScriptArchive(t, map[string][]byte{
+		staticScriptEntrypointName: []byte(benignPolicyFixtureText()),
+	})
+	fixture = fixture.withPayload(t, payload)
 	request := fixture.prepareRequest()
 	request.Invocation.Annotations = map[string]string{
 		runtimeProfileAnnotationKey: runtimeProfileControlPlaneNormalShell,
 	}
-	payload := buildAdmissionPolicyStaticScriptArchive(t, map[string][]byte{
-		staticScriptEntrypointName: []byte(benignPolicyFixtureText()),
-	})
 
 	arsCalls := map[string]int{}
 	service.arsClient = newArtifactRegistryTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -317,13 +323,14 @@ func TestAdmissionPolicyAllowsBenignControlPlaneNormalShellCompatibilityPath(t *
 func TestAdmissionPolicyPreservesUnsupportedRuntimeProfileResult(t *testing.T) {
 	fixture := newPreparedArtifactFixture(t)
 	service, stagingRoot, resultsRoot := newWorkstreamCTestService(t, fixture)
+	payload := buildAdmissionPolicyStaticScriptArchive(t, map[string][]byte{
+		staticScriptEntrypointName: []byte(benignPolicyFixtureText()),
+	})
+	fixture = fixture.withPayload(t, payload)
 	request := fixture.prepareRequest()
 	request.Invocation.Annotations = map[string]string{
 		runtimeProfileAnnotationKey: runtimeProfileControlPlaneNormalShell,
 	}
-	payload := buildAdmissionPolicyStaticScriptArchive(t, map[string][]byte{
-		staticScriptEntrypointName: []byte(benignPolicyFixtureText()),
-	})
 
 	service.arsClient = newArtifactRegistryTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
