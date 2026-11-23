@@ -299,6 +299,8 @@ check_nomad_ready_once() {
   elif ! nomad_api_get "/v1/agent/self" "${agent_path}"; then
     echo "nomad: agent self request failed for ${NOMAD_ADDR}/v1/agent/self" >&2
     status=1
+  elif ! nomad_runtime_posture_check "${agent_path}"; then
+    status=1
   elif ! nomad_api_get "/v1/nodes" "${nodes_path}"; then
     echo "nomad: node request failed for ${NOMAD_ADDR}/v1/nodes" >&2
     status=1
@@ -574,18 +576,21 @@ import sys
 payload = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
 images = [line.strip() for line in sys.argv[2].splitlines() if line.strip()]
 config = payload.get("config") or {}
-client = config.get("Client") or {}
-options = client.get("Options") or {}
-value = str(options.get("docker.cleanup.image", "")).strip().lower()
-if value != "false":
+# The supported Nomad sets image garbage collection in its explicit Docker
+# plugin block, so readiness reads it there (the older client option
+# docker.cleanup.image is no longer written).
+plugins = [plugin for plugin in (config.get("Plugins") or []) if isinstance(plugin, dict) and plugin.get("Name") == "docker"]
+plugin_config = (plugins[0].get("Config") or {}) if len(plugins) == 1 else {}
+gc = plugin_config.get("gc") if isinstance(plugin_config, dict) else None
+if not isinstance(gc, dict) or gc.get("image") is not False:
     image_list = ", ".join(images)
     print(
-        "runtime profile image durability: missing nomad client option "
-        f'docker.cleanup.image=false for enabled runtime profile image(s): {image_list}',
+        "runtime profile image durability: missing nomad docker plugin setting "
+        f'gc.image = false for enabled runtime profile image(s): {image_list}',
         file=sys.stderr,
     )
     raise SystemExit(1)
-print("runtime profile image durability: nomad docker.cleanup.image=false")
+print("runtime profile image durability: nomad docker plugin gc.image=false")
 PY
 )"; then
     status=1

@@ -150,7 +150,7 @@ case "$url" in
   "$ROOT_SERVER_URL"/v1/acl/policy/anonymous)
     printf '404' ;;
   "$ROOT_SERVER_URL"/v1/agent/self)
-    printf '{"config":{"DevMode":false,"Client":{"Options":{"docker.cleanup.image":"false"}}}}\n' ;;
+    printf '{"config":{"DevMode":false,"Client":{"Options":{"driver.allowlist":"docker"}},"Plugins":[{"Name":"docker","Config":{"allow_privileged":false,"allow_caps":["chown","dac_override","fowner","kill","setgid","setuid","setpcap"],"volumes":{"enabled":true},"gc":{"image":false}}}]}}\n' ;;
   "$ROOT_SERVER_URL"/v1/nodes)
     printf '[{"ID":"node-1","Name":"fixture","Status":"ready"}]\n' ;;
   *) printf 'unexpected curl URL\n' >> "$ROOT_EVENTS"; exit 97 ;;

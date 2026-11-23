@@ -1747,9 +1747,11 @@ func TestMountedSourceIdentityNomadTaskLabelProfileLaunchConfig(t *testing.T) {
 		t.Fatal("ordinary stack implicitly enabled the task-label profile")
 	}
 	defaultConfig := captureMountedNomadAgentConfig(t, defaultOptions)
-	if !strings.Contains(defaultConfig, `"docker.cleanup.image" = "false"`) ||
-		!strings.Contains(defaultConfig, `"docker.volumes.enabled" = "true"`) ||
-		strings.Contains(defaultConfig, `extra_labels`) || strings.Contains(defaultConfig, `plugin "docker"`) {
+	if strings.Count(defaultConfig, supportedNomadDockerPluginBlock) != 1 ||
+		strings.Count(defaultConfig, `plugin "docker"`) != 1 ||
+		!strings.Contains(defaultConfig, supportedNomadClientOptions) ||
+		strings.Contains(defaultConfig, `extra_labels`) ||
+		strings.Contains(defaultConfig, `"docker.cleanup.image"`) || strings.Contains(defaultConfig, `"docker.volumes.enabled"`) {
 		t.Fatal("default/capability-probe Nomad config changed")
 	}
 	witnessOptions := submitStackOptions{mountedSourceDockerTaskNameLabel: true, workloadVaultAddress: canary}.nomadHarnessOptions()
@@ -1760,8 +1762,8 @@ func TestMountedSourceIdentityNomadTaskLabelProfileLaunchConfig(t *testing.T) {
 	if strings.Count(witnessConfig, `plugin "docker"`) != 1 ||
 		strings.Count(witnessConfig, `extra_labels = ["task_name"]`) != 1 ||
 		strings.Count(witnessConfig, `extra_labels`) != 1 ||
-		!strings.Contains(witnessConfig, `volumes { enabled = true }`) ||
-		!strings.Contains(witnessConfig, `gc { image = false }`) ||
+		strings.Count(witnessConfig, supportedNomadDockerPluginBlockWithTaskNameLabel()) != 1 ||
+		!strings.Contains(witnessConfig, supportedNomadClientOptions) ||
 		strings.Contains(witnessConfig, `"docker.cleanup.image"`) ||
 		strings.Contains(witnessConfig, `"docker.volumes.enabled"`) ||
 		strings.Contains(witnessConfig, `job_id`) || strings.Contains(witnessConfig, `extra_labels = ["*"]`) ||

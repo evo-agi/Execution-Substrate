@@ -2755,21 +2755,12 @@ func startNomadHarnessForCapabilityProbeWithOptions(rootDir string, opts nomadHa
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
 		return nil, fmt.Sprintf("mkdir nomad data dir: %v", err)
 	}
-	clientDockerConfig := `  options = {
-    "docker.cleanup.image" = "false"
-    "docker.volumes.enabled" = "true"
-  }`
-	dockerPluginConfig := ""
+	// Every real Nomad these tests start enables only the Docker driver and
+	// carries the supported Docker plugin limits, so ES jobs run under them.
+	clientDockerConfig := supportedNomadClientOptions
+	dockerPluginConfig := supportedNomadDockerPluginBlock
 	if opts.dockerTaskNameLabel {
-		clientDockerConfig = ""
-		dockerPluginConfig = `plugin "docker" {
-  config {
-    extra_labels = ["task_name"]
-    volumes { enabled = true }
-    gc { image = false }
-  }
-}
-`
+		dockerPluginConfig = supportedNomadDockerPluginBlockWithTaskNameLabel()
 	}
 	aclConfig := "acl {\n  enabled = true\n}\n"
 	if opts.aclDisabled {

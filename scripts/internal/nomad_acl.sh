@@ -98,6 +98,61 @@ PY
   echo "nomad: acl=enforced anonymous_policy=absent"
 }
 
+# nomad_runtime_posture_check <agent-self-json>: refuse unless the agent
+# described by a /v1/agent/self answer enables only the Docker driver and
+# limits the Docker plugin the supported way: privileged containers refused,
+# and only capabilities ES's runtime helper uses (audit INF-02). Reading
+# /v1/agent/self needs the observer token.
+nomad_runtime_posture_check() {
+  python3 -I - "$1" <<'PY'
+import json
+import sys
+
+HELPER_CAPABILITIES = {"chown", "dac_override", "fowner", "kill", "setgid", "setuid", "setpcap"}
+
+try:
+    with open(sys.argv[1], encoding="utf-8") as handle:
+        document = json.load(handle)
+except (OSError, ValueError):
+    document = None
+config = document.get("config") if isinstance(document, dict) else None
+if not isinstance(config, dict):
+    print("nomad: the agent configuration could not be read", file=sys.stderr)
+    raise SystemExit(1)
+
+problems = []
+client = config.get("Client") if isinstance(config.get("Client"), dict) else {}
+options = client.get("Options") if isinstance(client.get("Options"), dict) else {}
+if options.get("driver.allowlist") != "docker":
+    problems.append('the client must enable only the Docker driver (options "driver.allowlist" = "docker")')
+plugins = [plugin for plugin in (config.get("Plugins") or []) if isinstance(plugin, dict) and plugin.get("Name") == "docker"]
+capabilities = []
+if len(plugins) != 1 or not isinstance(plugins[0].get("Config"), dict):
+    problems.append('the Docker driver needs an explicit plugin "docker" block')
+else:
+    plugin_config = plugins[0]["Config"]
+    if plugin_config.get("allow_privileged") is not False:
+        problems.append("the Docker plugin must refuse privileged containers (allow_privileged = false)")
+    capabilities = plugin_config.get("allow_caps")
+    if (
+        not isinstance(capabilities, list)
+        or not capabilities
+        or not all(isinstance(capability, str) for capability in capabilities)
+        or not {capability.lower() for capability in capabilities} <= HELPER_CAPABILITIES
+    ):
+        problems.append(
+            "the Docker plugin must allow only capabilities ES's runtime helper uses (allow_caps within "
+            + ", ".join(sorted(HELPER_CAPABILITIES))
+            + ")"
+        )
+        capabilities = []
+if problems:
+    print("nomad: " + "; ".join(problems), file=sys.stderr)
+    raise SystemExit(1)
+print("nomad: drivers=docker docker_privileged=refused docker_caps=" + ",".join(sorted(c.lower() for c in capabilities)))
+PY
+}
+
 # nomad_acl_validate_dir_placement <acl-dir> <scope>...: refuse unless
 # <acl-dir> is a clean absolute path below the root that overlaps none of the
 # given scopes (for example a proof directory a cleanup step may remove) and

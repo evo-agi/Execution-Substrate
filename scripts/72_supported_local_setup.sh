@@ -282,6 +282,22 @@ provision_supported_local_nomad_acl() {
   fi
 }
 
+# The observer token can read the agent. Refuse a Nomad whose drivers or
+# Docker plugin limits are not the supported ones before any proof effect.
+verify_supported_local_nomad_runtime_posture() {
+  local agent_path
+  local status=0
+
+  agent_path="$(mktemp)"
+  if ! NOMAD_ADDR="${SUPPORTED_LOCAL_NOMAD_ADDR}" NOMAD_TOKEN_FILE="${NOMAD_ACL_DIR}/observer-token" \
+      nomad_api_get "/v1/agent/self" "${agent_path}" || ! nomad_runtime_posture_check "${agent_path}"; then
+    echo "supported-local Nomad does not limit its drivers the supported way; run scripts/70_linux_setup.sh as root, then rerun this setup" >&2
+    status=1
+  fi
+  rm -f "${agent_path}"
+  return "${status}"
+}
+
 write_supported_local_execution_root_evidence() {
   local proof_dir=$1
   if ! python3 - "${proof_dir}" >/dev/null 2>&1 <<'PY'
@@ -1520,6 +1536,7 @@ setup() {
   provision_supported_local_execution_roots
   echo "==> keeping or issuing Nomad tokens for ES and readiness checks"
   provision_supported_local_nomad_acl
+  verify_supported_local_nomad_runtime_posture
 
   build_codex_runtime_profile_image
   prepare_runtime_support_binary

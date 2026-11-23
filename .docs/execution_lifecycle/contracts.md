@@ -684,7 +684,7 @@ bounded receipt, and Nomad submission through ES.
   - a configured profile image
   - an absolute configured Codex CLI path metadata value
   - configured workload-vault secret path and field metadata for Codex credential material
-- In the repo-owned supported-local runtime surface, submit-readiness for that enabled profile also requires the configured image to be present and Nomad Docker image cleanup to be disabled through `docker.cleanup.image=false`, so repeated client runs from the same prepared environment are not invalidated merely by Nomad's stopped-task image cleanup.
+- In the repo-owned supported-local runtime surface, submit-readiness for that enabled profile also requires the configured image to be present and Nomad Docker image garbage collection to be disabled through the Docker plugin's `gc { image = false }`, so repeated client runs from the same prepared environment are not invalidated merely by Nomad's stopped-task image cleanup.
 - Runtime mounts, when present, must satisfy both the prepare-time mount request rules and submit-time reserved-path checks.
 - Submit resolves payload bytes through the explicit payload digest carried in aggregate evidence.
 - Submit reuses the same ES Admission Policy Layer v0 path as `:prepare` and

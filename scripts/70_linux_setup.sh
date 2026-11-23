@@ -260,8 +260,11 @@ install_nomad_service_config() {
   local backup_suffix
 
   echo "==> Installing supported single-node Nomad service config"
-  sudo install -d -o nomad -g nomad -m 0755 "${NOMAD_CONFIG_DIR}"
-  sudo install -d -o nomad -g nomad -m 0755 "${NOMAD_DATA_DIR}"
+  # Nomad runs as root, so only root may change what it reads or keeps
+  # (audit INF-16): its config directory and data directory (Raft state and
+  # the keyring) are root-owned.
+  sudo install -d -o root -g root -m 0755 "${NOMAD_CONFIG_DIR}"
+  sudo install -d -o root -g root -m 0700 "${NOMAD_DATA_DIR}"
 
   if sudo test -f "${NOMAD_CONFIG_PATH}" && ! sudo grep -Fq "${NOMAD_MANAGED_MARKER}" "${NOMAD_CONFIG_PATH}"; then
     backup_suffix="$(date +%Y%m%d%H%M%S)"
@@ -290,8 +293,27 @@ client {
   enabled = true
   servers = ["127.0.0.1"]
   options = {
-    "docker.cleanup.image" = "false"
-    "docker.volumes.enabled" = "true"
+    "driver.allowlist" = "docker"
+  }
+}
+
+# ES runs every task through its runtime helper on the Docker driver, so only
+# that driver is enabled and the Docker plugin is limited (audit INF-02): no
+# privileged containers, and only the capabilities the helper uses to prepare
+# a run and drop to the workload user. ES's bind mounts need volumes enabled.
+# Runtime profile images must survive image garbage collection.
+plugin "docker" {
+  config {
+    allow_privileged = false
+    allow_caps       = ["chown", "dac_override", "fowner", "kill", "setgid", "setuid", "setpcap"]
+
+    volumes {
+      enabled = true
+    }
+
+    gc {
+      image = false
+    }
   }
 }
 
@@ -307,8 +329,8 @@ advertise {
   serf = "127.0.0.1:4648"
 }
 EOF
-  sudo chown nomad:nomad "${NOMAD_CONFIG_PATH}"
-  sudo chmod 0644 "${NOMAD_CONFIG_PATH}"
+  sudo chown root:root "${NOMAD_CONFIG_PATH}"
+  sudo chmod 0640 "${NOMAD_CONFIG_PATH}"
   if [[ "$(sudo cat "${NOMAD_CONFIG_PATH}")" != "${previous_config}" ]]; then
     NOMAD_CONFIG_CHANGED=1
   fi
@@ -758,6 +780,7 @@ echo "- The supported Linux profile is Docker healthy plus a root-managed non-de
 echo "- This script writes /etc/nomad.d/nomad.hcl for the single-node loopback Nomad service used by the current one-host workload-zone profile."
 echo "- That Nomad config enables ACLs; the bootstrap management token is in ${NOMAD_ACL_MANAGEMENT_TOKEN_FILE} (root only). Keep it out of ES and operator scripts."
 echo "- That Nomad config disables Docker image cleanup so local runtime-profile images survive completed allocations for repeated supported-local client runs."
+echo "- That Nomad config enables only the Docker driver, refuses privileged containers and allows only the capabilities ES's runtime helper uses; it and Nomad's data directory are root-owned."
 echo "- If supported-substrate qualification failed above, do not treat this VM as supported yet."
 echo "- If nomad.service could not start or remain healthy, fix that with root-managed host investigation instead of falling back to a user-started Nomad proof."
 echo "- Some proof VMs may still need manual root investigation or bounded fallback when Nomad fingerprinting leaves cpu.totalcompute at 0."

@@ -644,6 +644,10 @@ sudo() {
   printf 'sudo %s\n' "$*" >> "$ROOT_EVENTS"
   return "${ROOT_PROVISION_STATUS:-0}"
 }
+nomad_api_get() {
+  [[ "$1" == /v1/agent/self && "${NOMAD_TOKEN_FILE}" == "${SUPPORTED_LOCAL_NOMAD_ACL_DIR}/observer-token" ]] || return 97
+  printf '%s\n' "${ROOT_AGENT_SELF}" > "$2"
+}
 build_codex_runtime_profile_image() { printf 'first proof effect\n' >> "$ROOT_EVENTS"; exit 97; }
 setup`
 	type result struct {
@@ -672,6 +676,10 @@ setup`
 			"ROOT_EVENTS=" + events,
 			"ROOT_ACCESSOR=anonymous",
 			"ROOT_ANONYMOUS_STATUS=404",
+			"ROOT_AGENT_SELF=" + string(mustMarshalJSON(t, map[string]any{"config": map[string]any{
+				"Client":  map[string]any{"Options": map[string]any{"driver.allowlist": "docker"}},
+				"Plugins": supportedNomadDockerPluginAgentConfig(),
+			}})),
 		}, overrides...)...)
 		recorded, err := os.ReadFile(events)
 		if err != nil {
@@ -711,6 +719,19 @@ setup`
 		if !strings.Contains(r.output, "supported-local Nomad access control provisioning failed") ||
 			strings.Contains(r.events, "first proof effect") {
 			t.Fatalf("setup continued after failed provisioning: output=%q events=%q", r.output, r.events)
+		}
+	})
+	t.Run("Docker driver not limited", func(t *testing.T) {
+		plugins := supportedNomadDockerPluginAgentConfig()
+		plugins[0]["Config"].(map[string]any)["allow_privileged"] = true
+		r := run(t, "ROOT_AGENT_SELF="+string(mustMarshalJSON(t, map[string]any{"config": map[string]any{
+			"Client":  map[string]any{"Options": map[string]any{"driver.allowlist": "docker"}},
+			"Plugins": plugins,
+		}})))
+		if !strings.Contains(r.output, "the Docker plugin must refuse privileged containers") ||
+			!strings.Contains(r.output, "supported-local Nomad does not limit its drivers the supported way") ||
+			strings.Contains(r.events, "first proof effect") {
+			t.Fatalf("setup continued on a Nomad without the Docker limits: output=%q events=%q", r.output, r.events)
 		}
 	})
 	t.Run("locked Nomad", func(t *testing.T) {

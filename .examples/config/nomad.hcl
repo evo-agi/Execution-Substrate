@@ -17,8 +17,27 @@ server {
 client {
   enabled = true
   options = {
-    "docker.cleanup.image" = "false"
-    "docker.volumes.enabled" = "true"
+    "driver.allowlist" = "docker"
+  }
+}
+
+# ES runs every task through its runtime helper on the Docker driver, so only
+# that driver is enabled and the Docker plugin is limited (audit INF-02): no
+# privileged containers, and only the capabilities the helper uses to prepare
+# a run and drop to the workload user. ES's bind mounts need volumes enabled.
+# Runtime profile images must survive image garbage collection.
+plugin "docker" {
+  config {
+    allow_privileged = false
+    allow_caps       = ["chown", "dac_override", "fowner", "kill", "setgid", "setuid", "setpcap"]
+
+    volumes {
+      enabled = true
+    }
+
+    gc {
+      image = false
+    }
   }
 }
 

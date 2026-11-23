@@ -581,9 +581,12 @@ The current host-qualification boundary for the supported Linux environment is d
 
 - reachable at the `es.nomad.base_url`
 - configured for the target datacenter in `es.nomad.datacenter`
-- Docker driver available
-- client bind mounts enabled through `client.options["docker.volumes.enabled"] = "true"`
-- when enabled local runtime-profile images are part of the supported-local proof/runtime surface, Nomad Docker image cleanup disabled through `client.options["docker.cleanup.image"] = "false"` so Nomad does not remove the configured local profile image after a stopped allocation
+- Docker driver available, and the only driver the client enables: `client.options["driver.allowlist"] = "docker"` (every ES task runs through its runtime helper on the Docker driver)
+- an explicit `plugin "docker"` block that refuses privileged containers (`allow_privileged = false`) and allows only the capabilities ES's runtime helper uses to prepare a run and drop to the workload user: `allow_caps = ["chown", "dac_override", "fowner", "kill", "setgid", "setuid", "setpcap"]` (each one is needed: removing any one fails the real Nomad and Docker submit tests)
+- bind mounts enabled in that block through `volumes { enabled = true }`
+- when enabled local runtime-profile images are part of the supported-local proof/runtime surface, Nomad Docker image garbage collection disabled in that block through `gc { image = false }` so Nomad does not remove the configured local profile image after a stopped allocation (the supported config no longer writes the older `client.options` keys `docker.cleanup.image` and `docker.volumes.enabled`, and readiness reads the plugin block instead)
+- Nomad's configuration directory and its data directory (Raft state and keyring) owned by root (`/etc/nomad.d` 0755 with `nomad.hcl` root:root 0640, data directory 0700), because Nomad runs as root
+- readiness (`scripts/10_health_check.sh`, bring-up and supported-local setup) refuses a Nomad whose agent does not report the Docker-only allowlist, `allow_privileged = false` and capabilities within the list above (`nomad: drivers=docker docker_privileged=refused docker_caps=...`)
 - explicit local data directory for repeatable manual bring-up
 - when the current slice-0 single-node topology binds Nomad to `127.0.0.1`, the Nomad config must also set explicit loopback `advertise` addresses for `http`, `rpc`, and `serf`
 - for the supported Linux environment story in this slice, Nomad should already be running as a pre-managed non-dev service on the host/VM before `scripts/01_bringup.sh up`; the local script-managed Nomad startup path remains bounded fallback/troubleshooting scaffolding
@@ -681,11 +684,12 @@ Known limits of this lock:
   closes this.
 - The lock governs Nomad's API, not Docker. Root and members of the `docker`
   group can start containers directly and are outside it.
-- ES's submit token still controls job shape: with Docker volumes enabled, a
-  stolen ES token can mount host paths into a container. ES's own admission
-  decides job shape; limiting what the token can express (driver allowlist,
-  Docker plugin limits, a stricter design for mounts and task user) is
-  tracked separately.
+- ES's submit token still controls job shape within the Docker limits: the
+  supported Nomad enables only the Docker driver, refuses privileged
+  containers and extra capabilities, but with Docker volumes enabled and the
+  task user `0:0` a stolen ES token can still mount host paths into a
+  container as root (audit INF-02). ES's own admission decides job shape; a
+  stricter design for mounts and the task user is tracked separately.
 
 ### Docker requirements
 
@@ -738,7 +742,8 @@ The current unified health check verifies:
 - Nomad has a leader and at least one ready node with positive `cpu.totalcompute` and a healthy Docker driver when `BRINGUP_PROFILE=full`
 - `docker info` succeeds when `BRINGUP_PROFILE=full`
 - any enabled `control-plane-normal-shell/v1` runtime-profile image is present according to `docker image inspect` in the Docker daemon used by Nomad when `BRINGUP_PROFILE=full`
-- when an enabled runtime-profile image is present, the Nomad Docker driver client options report `docker.cleanup.image=false`, so Nomad will not remove that local image after stopped tasks as part of the supported-local runtime surface
+- when an enabled runtime-profile image is present, the Nomad Docker plugin reports `gc.image = false`, so Nomad will not remove that local image after stopped tasks as part of the supported-local runtime surface
+- Nomad enables only the Docker driver and its Docker plugin refuses privileged containers and allows only ES's runtime-helper capabilities
 - ES submit config still includes `execution.runtime_support_binary` and `execution.spire_workload_api_socket_path`, and the configured SPIRE socket path is present as a local Unix socket, when `BRINGUP_PROFILE=full`
 - the workload-zone Vault blob referenced by `ES.runtime_config.workload_zone_vault_config_ref.digest` is readable through ARS and structurally valid before first execution
 - if that blob supplies `vault_config.ca_bundle_pem`, the readiness check validates that it contains PEM certificate material; submit then stages it for workloads as `VAULT_CACERT` and as part of the runtime `SSL_CERT_FILE` bundle

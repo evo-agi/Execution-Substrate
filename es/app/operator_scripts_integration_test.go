@@ -287,12 +287,9 @@ server {
 }
 client {
   enabled = true
-  options = {
-    "docker.cleanup.image" = "false"
-    "docker.volumes.enabled" = "true"
-  }
+`+supportedNomadClientOptions+`
 }
-ports {
+`+supportedNomadDockerPluginBlock+`ports {
   http = `+itoa(t, nomadHTTPPort)+`
   rpc  = `+itoa(t, nomadRPCPort)+`
   serf = `+itoa(t, nomadSerfPort)+`
@@ -395,6 +392,9 @@ advertise {
 	}
 	if !strings.Contains(string(checkOutput), "nomad: leader=") {
 		t.Fatalf("expected nomad readiness in bringup check output, got %s", string(checkOutput))
+	}
+	if !strings.Contains(string(checkOutput), supportedNomadPostureLine) {
+		t.Fatalf("expected the Docker-only, limited Nomad posture in bringup check output, got %s", string(checkOutput))
 	}
 	if !strings.Contains(string(checkOutput), "prepare-ready: true") || !strings.Contains(string(checkOutput), "submit-ready: true") {
 		t.Fatalf("expected explicit prepare-ready and submit-ready output, got %s", string(checkOutput))
@@ -719,7 +719,7 @@ func TestRuntimeProfileImageReadinessRequiresNomadDockerImageCleanupDisabled(t *
 		t.Fatalf("mkdir fake bin dir: %v", err)
 	}
 	fakeCurlPath := writeBytesFile(t, fakeBinDir, "curl", []byte(`#!/bin/sh
-printf '%s\n' '{"config":{"Client":{"Options":{"docker.volumes.enabled":"true"}}}}'
+printf '%s\n' '{"config":{"Client":{"Options":{"docker.cleanup.image":"false"}},"Plugins":[{"Name":"docker","Config":{"volumes":{"enabled":true},"gc":{"image":true}}}]}}'
 `))
 	if err := os.Chmod(fakeCurlPath, 0o755); err != nil {
 		t.Fatalf("chmod fake curl: %v", err)
@@ -739,7 +739,7 @@ printf '%s\n' '{"config":{"Client":{"Options":{"docker.volumes.enabled":"true"}}
 		t.Fatalf("expected missing nomad docker image cleanup guardrail to fail, got output=%s", string(output))
 	}
 	text := string(output)
-	if !strings.Contains(text, "runtime profile image durability: missing nomad client option docker.cleanup.image=false") {
+	if !strings.Contains(text, "runtime profile image durability: missing nomad docker plugin setting gc.image = false") {
 		t.Fatalf("expected missing docker cleanup guardrail output, got %s", text)
 	}
 	if !strings.Contains(text, "execution-substrate/control-plane-normal-shell:supported-local") {
@@ -767,7 +767,7 @@ func TestRuntimeProfileImageReadinessAcceptsNomadDockerImageCleanupDisabled(t *t
 		t.Fatalf("mkdir fake bin dir: %v", err)
 	}
 	fakeCurlPath := writeBytesFile(t, fakeBinDir, "curl", []byte(`#!/bin/sh
-printf '%s\n' '{"config":{"Client":{"Options":{"docker.cleanup.image":"false","docker.volumes.enabled":"true"}}}}'
+printf '%s\n' '{"config":{"Plugins":[{"Name":"docker","Config":{"volumes":{"enabled":true},"gc":{"image":false}}}]}}'
 `))
 	if err := os.Chmod(fakeCurlPath, 0o755); err != nil {
 		t.Fatalf("chmod fake curl: %v", err)
@@ -786,7 +786,7 @@ printf '%s\n' '{"config":{"Client":{"Options":{"docker.cleanup.image":"false","d
 	if err != nil {
 		t.Fatalf("expected disabled nomad docker image cleanup guardrail to pass: %v output=%s", err, string(output))
 	}
-	if !strings.Contains(string(output), "runtime profile image durability: nomad docker.cleanup.image=false") {
+	if !strings.Contains(string(output), "runtime profile image durability: nomad docker plugin gc.image=false") {
 		t.Fatalf("expected docker cleanup guardrail output, got %s", string(output))
 	}
 }
@@ -914,7 +914,8 @@ func TestHealthCheckScriptRejectsPreManagedDevNomad(t *testing.T) {
 					"DevMode":    true,
 					"Datacenter": "dc1",
 					"Server":     map[string]any{"Enabled": true},
-					"Client":     map[string]any{"Enabled": true},
+					"Client":     map[string]any{"Enabled": true, "Options": map[string]any{"driver.allowlist": "docker"}},
+					"Plugins":    supportedNomadDockerPluginAgentConfig(),
 				},
 			})
 		case "/v1/nodes":
@@ -1086,7 +1087,9 @@ func TestLinuxSetupScriptDocumentsSupportedProfileGuardrails(t *testing.T) {
 		"tries to qualify the repo's narrow supported Linux profile",
 		"systemd is required for the supported Linux profile",
 		"Installing supported single-node Nomad service config",
-		`"docker.cleanup.image" = "false"`,
+		`"driver.allowlist" = "docker"`,
+		"allow_privileged = false",
+		"gc {\n      image = false\n    }",
 		"root-managed nomad.service",
 		"ready node(s) still report cpu.totalcompute=0 under the root-managed non-dev service",
 		"SMBIOS processor Current Speed is not usable on this host",
@@ -1888,8 +1891,8 @@ func TestExampleNomadConfigDisablesDockerImageCleanup(t *testing.T) {
 
 	text := string(body)
 	for _, snippet := range []string{
-		`"docker.cleanup.image" = "false"`,
-		`"docker.volumes.enabled" = "true"`,
+		supportedNomadDockerPluginBlock,
+		supportedNomadClientOptions,
 		"acl {\n  enabled = true\n}",
 	} {
 		if !strings.Contains(text, snippet) {

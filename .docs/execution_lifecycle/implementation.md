@@ -919,7 +919,7 @@ Current job-spec assumptions:
   - default executions use `execution.base_image`
   - `control-plane-normal-shell/v1` executions use `execution.runtime_profiles.control_plane_normal_shell.image`
 - For repo-owned readiness checks, an enabled `control-plane-normal-shell/v1` profile also requires the configured image to be present in the Docker daemon used by Nomad before `submit-ready` is claimed. This is a substrate/tooling readiness check; it does not change ES result-retention semantics.
-- For that supported-local runtime-profile surface, readiness also requires Nomad's Docker client options to report `docker.cleanup.image=false`. The configured profile image is local proof/runtime material, so ES-supported readiness must not claim repeated-run durability while Nomad can remove that image after stopped allocations.
+- For that supported-local runtime-profile surface, readiness also requires Nomad's Docker plugin to report `gc.image = false`. The configured profile image is local proof/runtime material, so ES-supported readiness must not claim repeated-run durability while Nomad can remove that image after stopped allocations.
 
 After submission, ES asks Nomad for:
 
