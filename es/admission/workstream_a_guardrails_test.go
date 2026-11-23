@@ -181,7 +181,7 @@ func TestWorkstreamAAdmissionDTOsExcludePublicationARSSupportAndCPGrammar(t *tes
 		"resume",
 		"reject",
 	} {
-		if _, ok := fieldNames[forbidden]; ok {
+		if fieldNames.accepts(forbidden) {
 			t.Fatalf("ES admission public DTOs must not expose upstream or CP-owned grammar field %q", forbidden)
 		}
 	}
@@ -252,13 +252,14 @@ func TestWorkstreamAJSONFieldNamesFollowEncodingJSON(t *testing.T) {
 		}{true, "n"}, nil},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			names := collectJSONFieldNames(t, test.value)
-			got := slices.Sorted(maps.Keys(names))
+			recorded := collectJSONFieldNames(t, test.value)
+			got := slices.Sorted(maps.Keys(recorded.keys))
 			want := slices.Sorted(slices.Values(test.want))
 			if !slices.Equal(got, want) {
 				t.Fatalf("recorded keys %q, want %q", got, want)
 			}
-			// encoding/json itself: every key it writes is recorded.
+			// encoding/json itself: every key it writes is recorded, and
+			// accepted in any case.
 			encoded, err := json.Marshal(test.value)
 			if err != nil {
 				t.Fatal(err)
@@ -268,8 +269,11 @@ func TestWorkstreamAJSONFieldNamesFollowEncodingJSON(t *testing.T) {
 				t.Fatal(err)
 			}
 			for _, key := range zzJSONObjectKeys(object) {
-				if _, ok := names[key]; !ok {
+				if _, ok := recorded.keys[key]; !ok {
 					t.Fatalf("encoding/json writes key %q in %s, which was not recorded", key, encoded)
+				}
+				if !recorded.accepts(key) || !recorded.accepts(strings.ToUpper(key)) {
+					t.Fatalf("encoding/json writes key %q in %s, which is not accepted in every case", key, encoded)
 				}
 			}
 		})
@@ -285,6 +289,291 @@ func TestWorkstreamAJSONFieldNamesFollowEncodingJSON(t *testing.T) {
 	}
 	if err := json.Unmarshal([]byte(`{"policy_decisions":1}`), &folded); err != nil || folded.Decisions != 1 {
 		t.Fatalf("decoding no longer matches \"policy_decisions\" to the folded key: %v", err)
+	}
+
+	// A key that decoding does not match is not accepted: the dotless ı does
+	// not fold to i.
+	var dotless struct {
+		Publication int `json:"publıcation"`
+	}
+	if err := json.Unmarshal([]byte(`{"publication":1}`), &dotless); err != nil || dotless.Publication != 0 {
+		t.Fatalf("decoding now matches \"publication\" to a key with the dotless ı: %v", err)
+	}
+	if collectJSONFieldNames(t, dotless).accepts("publication") {
+		t.Fatal(`a key with the dotless ı is accepted as "publication"`)
+	}
+}
+
+type zzJSONOwnWriter struct {
+	Hidden string `json:"hidden"`
+}
+
+func (zzJSONOwnWriter) MarshalJSON() ([]byte, error) {
+	return []byte(`{"written":{"by":"code"}}`), nil
+}
+
+type zzJSONOwnReader struct {
+	Seen string `json:"seen"`
+}
+
+func (*zzJSONOwnReader) UnmarshalJSON([]byte) error {
+	return nil
+}
+
+type zzJSONEmbedsOwnWriter struct {
+	zzJSONOwnWriter
+}
+
+type zzJSONOwnText struct {
+	Inner string `json:"inner"`
+}
+
+func (zzJSONOwnText) MarshalText() ([]byte, error) {
+	return []byte("text"), nil
+}
+
+func (*zzJSONOwnText) UnmarshalText([]byte) error {
+	return nil
+}
+
+type zzJSONOwnPointerText struct {
+	Inner string `json:"inner"`
+}
+
+func (*zzJSONOwnPointerText) MarshalText() ([]byte, error) {
+	return []byte("text"), nil
+}
+
+type zzJSONOwnPointerWriter struct {
+	Hidden string `json:"hidden"`
+}
+
+func (*zzJSONOwnPointerWriter) MarshalJSON() ([]byte, error) {
+	return []byte(`{"written":{"by":"code"}}`), nil
+}
+
+// zzJSONGuardRecorder stands in for the testing.T of a guard helper, so that a
+// test can see what the helper reports.
+type zzJSONGuardRecorder struct {
+	testing.TB
+	errors []string
+	fatal  string
+}
+
+func (recorder *zzJSONGuardRecorder) Helper() {}
+
+func (recorder *zzJSONGuardRecorder) Errorf(format string, args ...any) {
+	recorder.errors = append(recorder.errors, fmt.Sprintf(format, args...))
+}
+
+func (recorder *zzJSONGuardRecorder) Fatalf(format string, args ...any) {
+	recorder.fatal = fmt.Sprintf(format, args...)
+	panic(recorder)
+}
+
+// zzJSONGuardReports runs check with a recorder and returns what check
+// reported. A Fatalf ends check, as it would end a test.
+func zzJSONGuardReports(t *testing.T, check func(testing.TB)) *zzJSONGuardRecorder {
+	recorder := &zzJSONGuardRecorder{TB: t}
+	func() {
+		defer func() {
+			if recovered := recover(); recovered != nil && recovered != any(recorder) {
+				panic(recovered)
+			}
+		}()
+		check(recorder)
+	}()
+	return recorder
+}
+
+// A type with its own MarshalJSON or UnmarshalJSON writes and reads whatever
+// keys its code chooses, so the DTO guards refuse it rather than read fields
+// that encoding/json does not use for it.
+func TestWorkstreamAJSONFieldNamesRefuseOwnCodecs(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		value any
+		want  []string
+	}{
+		{"a field with its own MarshalJSON", struct{ Own zzJSONOwnWriter }{}, []string{"admission.zzJSONOwnWriter"}},
+		{"a field whose pointer has its own UnmarshalJSON", struct{ Own *zzJSONOwnReader }{}, []string{"*admission.zzJSONOwnReader"}},
+		{"in a slice and in a map", struct {
+			List []zzJSONOwnWriter
+			Map  map[string]zzJSONOwnReader
+		}{}, []string{"admission.zzJSONOwnReader", "admission.zzJSONOwnWriter"}},
+		{"promoted from an embedded type", zzJSONEmbedsOwnWriter{}, []string{"admission.zzJSONEmbedsOwnWriter"}},
+		{"a json.RawMessage carries data and has no keys of its own", struct {
+			Raw json.RawMessage `json:"raw"`
+		}{}, nil},
+		// encoding/json writes a string for a type with its own MarshalText,
+		// and refuses to decode an object into one with its own
+		// UnmarshalText, so text methods can only take keys away.
+		{"text methods write and read a string, never keys", struct {
+			Text zzJSONOwnText `json:"text"`
+		}{}, nil},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, custom := workstreamAJSONDecodableKeysOf(test.value)
+			if !slices.Equal(custom, test.want) {
+				t.Fatalf("types with their own codec %q, want %q", custom, test.want)
+			}
+		})
+	}
+
+	// collectJSONFieldNames, which every DTO guard calls, fails on them, and
+	// only on them.
+	refused := zzJSONGuardReports(t, func(t testing.TB) {
+		collectJSONFieldNames(t, PrepareRequest{}, struct{ Own zzJSONOwnWriter }{})
+	})
+	if !strings.Contains(refused.fatal, `["admission.zzJSONOwnWriter"]`) || len(refused.errors) > 0 {
+		t.Fatalf("collectJSONFieldNames reported %q and %q for a DTO with its own MarshalJSON", refused.fatal, refused.errors)
+	}
+	accepted := zzJSONGuardReports(t, func(t testing.TB) {
+		collectJSONFieldNames(t, PrepareRequest{}, struct {
+			Text zzJSONOwnText `json:"text"`
+		}{})
+	})
+	if accepted.fatal != "" || len(accepted.errors) > 0 {
+		t.Fatalf("collectJSONFieldNames reported %q and %q for DTOs without their own JSON codec", accepted.fatal, accepted.errors)
+	}
+}
+
+type ZzJSONClashA struct {
+	Service string `json:"service"`
+}
+
+type ZzJSONClashB struct {
+	Service string `json:"service"`
+}
+
+type ZzJSONTaggedService struct {
+	Value zzJSONCheckpoint `json:"Service"`
+}
+
+type ZzJSONUntaggedService struct {
+	Service string
+}
+
+// zzJSONStruct builds a struct at run time from fields. The name-clash cases
+// use it because vet refuses a repeated json tag written in source, which is
+// the very thing they test.
+func zzJSONStruct(fields ...reflect.StructField) any {
+	return reflect.New(reflect.StructOf(fields)).Elem().Interface()
+}
+
+func zzJSONEmbedded[T any]() reflect.StructField {
+	typ := reflect.TypeFor[T]()
+	return reflect.StructField{Name: typ.Name(), Type: typ, Anonymous: true}
+}
+
+type zzJSONOptional struct {
+	Value string `json:"value,omitempty"`
+}
+
+type zzJSONMissing struct {
+	Service string           `json:"SERVICE"`
+	Outer   zzJSONCheckpoint `json:"outer"`
+}
+
+type zzJSONNode struct {
+	Name     string
+	Next     *zzJSONNode
+	Children []zzJSONNode `json:"children,omitempty"`
+}
+
+// The presence guards require keys that ES writes, where it writes them. The
+// paths they compare must be exactly what encoding/json writes for a value
+// whose fields all hold something.
+func TestWorkstreamAJSONKeyPathsAreWhatEncodingJSONWrites(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		value any
+		want  []string
+	}{
+		{"a tag name exactly as written", struct {
+			Service string `json:"SERVICE"`
+		}{}, []string{"SERVICE"}},
+		{"an untagged field by its Go name", struct{ Review bool }{}, []string{"Review"}},
+		{"empty fields are filled, so omitempty fields are written", struct {
+			Name   string            `json:"name,omitempty"`
+			Count  int               `json:"count,omitempty"`
+			Flag   bool              `json:"flag,omitempty"`
+			Ptr    *zzJSONCheckpoint `json:"ptr,omitempty"`
+			Labels map[string]string `json:"labels,omitempty"`
+		}{}, []string{"count", "flag", "labels", "labels.*", "name", "ptr", "ptr.checkpoint"}},
+		{"nested objects, array elements and map entries", struct {
+			Outer struct {
+				Inner string `json:"inner"`
+			} `json:"outer"`
+			Items []zzJSONCheckpoint          `json:"items"`
+			Extra map[string]zzJSONCheckpoint `json:"extra"`
+		}{}, []string{"extra", "extra.*", "extra.*.checkpoint", "items", "items[].checkpoint", "outer", "outer.inner"}},
+		{"a field tagged - is not written", struct {
+			Kept   string `json:"kept"`
+			Hidden string `json:"-"`
+		}{}, []string{"kept"}},
+		{"an embedded unexported struct's fields are promoted", struct{ zzJSONTrust }{}, []string{"key_id", "publication"}},
+		{"two fields with one name at one depth are both dropped", zzJSONStruct(
+			zzJSONEmbedded[ZzJSONClashA](),
+			zzJSONEmbedded[ZzJSONClashB](),
+			reflect.StructField{Name: "Kept", Type: reflect.TypeFor[string](), Tag: `json:"kept"`},
+		), []string{"kept"}},
+		{"a shallower field hides a deeper one", zzJSONStruct(
+			zzJSONEmbedded[ZzJSONClashA](),
+			reflect.StructField{Name: "Service", Type: reflect.TypeFor[zzJSONCheckpoint](), Tag: `json:"service"`},
+		), []string{"service", "service.checkpoint"}},
+		{"a tagged field wins over an untagged one of the same name", zzJSONStruct(
+			zzJSONEmbedded[ZzJSONTaggedService](),
+			zzJSONEmbedded[ZzJSONUntaggedService](),
+		), []string{"Service", "Service.checkpoint"}},
+		{"each of two fields of one type is filled", struct {
+			First  zzJSONOptional  `json:"first"`
+			Second *zzJSONOptional `json:"second,omitempty"`
+		}{}, []string{"first", "first.value", "second", "second.value"}},
+		{"a type that holds itself ends", zzJSONNode{}, []string{"Name", "Next", "children", "children[].Name", "children[].Next"}},
+		{"a type's own MarshalJSON decides", struct {
+			Own zzJSONOwnWriter `json:"own"`
+		}{}, []string{"own", "own.written", "own.written.by"}},
+		{"a json.RawMessage is written", struct {
+			Raw json.RawMessage `json:"raw"`
+		}{}, []string{"raw"}},
+		{"a type's own MarshalText writes a string", struct {
+			Text zzJSONOwnText `json:"text"`
+		}{}, []string{"text"}},
+		// A method with a pointer receiver is used only when the value is
+		// written through a pointer, so only the keys written both ways count.
+		{"a MarshalText with a pointer receiver", struct {
+			Text zzJSONOwnPointerText `json:"text"`
+		}{}, []string{"text"}},
+		{"a MarshalJSON with a pointer receiver", struct {
+			Own zzJSONOwnPointerWriter `json:"own"`
+		}{}, []string{"own"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got := slices.Sorted(maps.Keys(workstreamAJSONWrittenKeyPaths(t, test.value)))
+			want := slices.Sorted(slices.Values(test.want))
+			if !slices.Equal(got, want) {
+				t.Fatalf("written key paths %q, want %q", got, want)
+			}
+		})
+	}
+
+	// Only the exact key at the exact place counts, and
+	// assertJSONKeyPathsWritten, which the presence guards call, reports each
+	// missing path and nothing else.
+	missing := missingJSONKeyPaths(t, zzJSONMissing{}, "SERVICE", "service", "outer.checkpoint", "checkpoint", "outer")
+	if want := []string{"service", "checkpoint"}; !slices.Equal(missing, want) {
+		t.Fatalf("missing key paths %q, want %q", missing, want)
+	}
+	reported := zzJSONGuardReports(t, func(t testing.TB) {
+		assertJSONKeyPathsWritten(t, zzJSONMissing{}, "field", "SERVICE", "service", "outer.checkpoint", "checkpoint", "outer")
+	})
+	want := []string{
+		`expected field "service" to remain present in admission.zzJSONMissing's JSON`,
+		`expected field "checkpoint" to remain present in admission.zzJSONMissing's JSON`,
+	}
+	if !slices.Equal(reported.errors, want) || reported.fatal != "" {
+		t.Fatalf("assertJSONKeyPathsWritten reported %q and %q, want %q", reported.errors, reported.fatal, want)
 	}
 }
 
@@ -519,15 +808,50 @@ func discoveredArtifactWithEvidence(t *testing.T, discovery arsapi.ArtifactDisco
 	}
 }
 
-func collectJSONFieldNames(t *testing.T, values ...any) map[string]struct{} {
+// workstreamAJSONDecodableKeys holds the object keys that encoding/json writes
+// or reads for the public DTOs a guard names, as collectJSONFieldNames records
+// them. It answers one question, for the guards that keep a key out of the
+// DTOs: may decoding take this key? A guard that requires a key to stay
+// present asks assertJSONKeyPathsWritten instead, because decoding takes a key
+// in any case and from any depth, while encoding/json writes it in one case at
+// one place.
+type workstreamAJSONDecodableKeys struct {
+	keys map[string]struct{}
+}
+
+// accepts reports whether decoding into one of the DTOs may take key: some
+// field's key is key, or differs from it only in case.
+func (decodable workstreamAJSONDecodableKeys) accepts(key string) bool {
+	_, ok := decodable.keys[workstreamAJSONKeyFold(key)]
+	return ok
+}
+
+func collectJSONFieldNames(t testing.TB, values ...any) workstreamAJSONDecodableKeys {
 	t.Helper()
 
+	decodable, custom := workstreamAJSONDecodableKeysOf(values...)
+	if len(custom) > 0 {
+		t.Fatalf("public DTO types %q have their own MarshalJSON or UnmarshalJSON, so no guard can see which keys they write or read", custom)
+	}
+	return decodable
+}
+
+// workstreamAJSONDecodableKeysOf records the keys of values' types
+// (collectJSONFieldNamesFromType), and names every type it reached that has
+// its own MarshalJSON or UnmarshalJSON (workstreamAJSONCustomCodec).
+func workstreamAJSONDecodableKeysOf(values ...any) (workstreamAJSONDecodableKeys, []string) {
 	names := map[string]struct{}{}
 	seen := map[reflect.Type]bool{}
+	custom := map[reflect.Type]bool{}
 	for _, value := range values {
-		collectJSONFieldNamesFromType(reflect.TypeOf(value), names, seen)
+		collectJSONFieldNamesFromType(reflect.TypeOf(value), names, seen, custom)
 	}
-	return names
+	var customNames []string
+	for typ := range custom {
+		customNames = append(customNames, typ.String())
+	}
+	slices.Sort(customNames)
+	return workstreamAJSONDecodableKeys{keys: names}, customNames
 }
 
 // collectJSONFieldNamesFromType records every object key that encoding/json
@@ -535,8 +859,15 @@ func collectJSONFieldNames(t *testing.T, values ...any) map[string]struct{} {
 // map values hold. Each key is recorded as written and in the folded form in
 // which decoding matches it (workstreamAJSONKeyFold), so a guard's lower-case
 // name finds a key that differs from it only in case.
-func collectJSONFieldNamesFromType(typ reflect.Type, names map[string]struct{}, seen map[reflect.Type]bool) {
-	for typ.Kind() == reflect.Pointer || typ.Kind() == reflect.Slice || typ.Kind() == reflect.Array || typ.Kind() == reflect.Map {
+func collectJSONFieldNamesFromType(typ reflect.Type, names map[string]struct{}, seen, custom map[reflect.Type]bool) {
+	for {
+		if workstreamAJSONCustomCodec(typ) {
+			custom[typ] = true
+			return
+		}
+		if kind := typ.Kind(); kind != reflect.Pointer && kind != reflect.Slice && kind != reflect.Array && kind != reflect.Map {
+			break
+		}
 		typ = typ.Elem()
 	}
 	if typ.Kind() != reflect.Struct || seen[typ] {
@@ -554,7 +885,184 @@ func collectJSONFieldNamesFromType(typ reflect.Type, names map[string]struct{}, 
 			names[key] = struct{}{}
 			names[workstreamAJSONKeyFold(key)] = struct{}{}
 		}
-		collectJSONFieldNamesFromType(field.Type, names, seen)
+		collectJSONFieldNamesFromType(field.Type, names, seen, custom)
+	}
+}
+
+var (
+	workstreamAJSONMarshaler   = reflect.TypeFor[json.Marshaler]()
+	workstreamAJSONUnmarshaler = reflect.TypeFor[json.Unmarshaler]()
+	workstreamAJSONRawMessage  = reflect.TypeFor[json.RawMessage]()
+)
+
+// workstreamAJSONCustomCodec reports whether typ, or a pointer to it, has its
+// own MarshalJSON or UnmarshalJSON. encoding/json then writes and reads
+// whatever keys that code chooses, which no reading of typ's fields can see.
+// json.RawMessage is the one exception: it carries a JSON value through as
+// data and has no keys of its own.
+func workstreamAJSONCustomCodec(typ reflect.Type) bool {
+	if typ == workstreamAJSONRawMessage {
+		return false
+	}
+	pointer := reflect.PointerTo(typ)
+	return typ.Implements(workstreamAJSONMarshaler) || pointer.Implements(workstreamAJSONMarshaler) ||
+		typ.Implements(workstreamAJSONUnmarshaler) || pointer.Implements(workstreamAJSONUnmarshaler)
+}
+
+// assertJSONKeyPathsWritten fails, naming each missing path, unless
+// encoding/json writes every one of paths for root's type
+// (missingJSONKeyPaths).
+func assertJSONKeyPathsWritten(t testing.TB, root any, what string, paths ...string) {
+	t.Helper()
+
+	for _, path := range missingJSONKeyPaths(t, root, paths...) {
+		t.Errorf("expected %s %q to remain present in %T's JSON", what, path, root)
+	}
+}
+
+// missingJSONKeyPaths returns the paths, of those given, that encoding/json
+// does not write for root's type (workstreamAJSONWrittenKeyPaths). Only the
+// exact key at the exact place counts: a key in another case, without its
+// tag, moved into another object or dropped by a name clash is missing.
+func missingJSONKeyPaths(t testing.TB, root any, paths ...string) []string {
+	t.Helper()
+
+	written := workstreamAJSONWrittenKeyPaths(t, root)
+	var missing []string
+	for _, path := range paths {
+		if !written[path] {
+			missing = append(missing, path)
+		}
+	}
+	return missing
+}
+
+// workstreamAJSONWrittenKeyPaths returns every object-key path that
+// encoding/json writes for a value of root's type whose fields all hold
+// something (workstreamAFillJSONValue). json.Marshal itself decides the keys:
+// tag names exactly as written, Go names for untagged fields, the fields of
+// embedded structs promoted, a field tagged "-" left out, two fields that
+// claim one name at one depth both dropped, a shallower or tagged field
+// winning over the others, and a type's own MarshalJSON or MarshalText
+// obeyed. A method with a pointer receiver is used only when the value is
+// written through a pointer, so a path counts only if encoding/json writes it
+// both through a pointer and from the value itself. A path joins the keys from
+// the top with ".". "[]" after a key stands for the elements of the array it
+// holds, and a map holds its one entry under the key "*".
+func workstreamAJSONWrittenKeyPaths(t testing.TB, root any) map[string]bool {
+	t.Helper()
+
+	value := reflect.New(reflect.TypeOf(root))
+	workstreamAFillJSONValue(value.Elem(), map[reflect.Type]bool{})
+	var both map[string]bool
+	for _, written := range []any{value.Interface(), value.Elem().Interface()} {
+		encoded, err := json.Marshal(written)
+		if err != nil {
+			t.Fatalf("encoding/json cannot write a filled %T: %v", written, err)
+		}
+		var decoded any
+		if err := json.Unmarshal(encoded, &decoded); err != nil {
+			t.Fatalf("encoding/json wrote %s for %T, which does not decode: %v", encoded, written, err)
+		}
+		paths := map[string]bool{}
+		workstreamAJSONObjectKeyPaths("", decoded, paths)
+		if both == nil {
+			both = paths
+			continue
+		}
+		maps.DeleteFunc(both, func(path string, _ bool) bool { return !paths[path] })
+	}
+	return both
+}
+
+// workstreamAFillJSONValue puts something into value and into everything it
+// holds, so that json.Marshal writes every key it would ever write for
+// value's type: the string "x", the number 1, true, a pointer to a filled
+// value, one filled element in a slice, filled elements in an array, one
+// filled entry under the key "*" in a map with string keys, null in a
+// json.RawMessage, and every exported field of a struct and of the structs it
+// embeds. A struct type that is already being filled is left empty where it
+// recurs, and a pointer to it stays nil, so a type that holds itself ends. An
+// interface value, a map with other keys and an embedded pointer to an
+// unexported struct type (which reflection cannot set, and encoding/json
+// cannot decode into) stay empty: no key beneath them is written, so none can
+// be required.
+func workstreamAFillJSONValue(value reflect.Value, filling map[reflect.Type]bool) {
+	typ := value.Type()
+	if typ == workstreamAJSONRawMessage {
+		value.SetBytes([]byte("null"))
+		return
+	}
+	switch typ.Kind() {
+	case reflect.Pointer:
+		if filling[typ.Elem()] {
+			return
+		}
+		pointer := reflect.New(typ.Elem())
+		workstreamAFillJSONValue(pointer.Elem(), filling)
+		value.Set(pointer)
+	case reflect.Struct:
+		if filling[typ] {
+			return
+		}
+		filling[typ] = true
+		defer delete(filling, typ)
+		for i := range typ.NumField() {
+			field := value.Field(i)
+			// An embedded struct of an unexported type cannot be set as a
+			// whole, but its exported fields can, and encoding/json promotes
+			// them.
+			if field.CanSet() || (typ.Field(i).Anonymous && field.Kind() == reflect.Struct) {
+				workstreamAFillJSONValue(field, filling)
+			}
+		}
+	case reflect.Slice:
+		slice := reflect.MakeSlice(typ, 1, 1)
+		workstreamAFillJSONValue(slice.Index(0), filling)
+		value.Set(slice)
+	case reflect.Array:
+		for i := range value.Len() {
+			workstreamAFillJSONValue(value.Index(i), filling)
+		}
+	case reflect.Map:
+		if typ.Key().Kind() != reflect.String {
+			return
+		}
+		entry := reflect.New(typ.Elem()).Elem()
+		workstreamAFillJSONValue(entry, filling)
+		filled := reflect.MakeMapWithSize(typ, 1)
+		filled.SetMapIndex(reflect.ValueOf("*").Convert(typ.Key()), entry)
+		value.Set(filled)
+	case reflect.String:
+		value.SetString("x")
+	case reflect.Bool:
+		value.SetBool(true)
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		value.SetInt(1)
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		value.SetUint(1)
+	case reflect.Float32, reflect.Float64:
+		value.SetFloat(1)
+	}
+}
+
+// workstreamAJSONObjectKeyPaths records the path of every object key in a
+// decoded JSON value, below prefix.
+func workstreamAJSONObjectKeyPaths(prefix string, value any, paths map[string]bool) {
+	switch value := value.(type) {
+	case map[string]any:
+		for key, nested := range value {
+			path := key
+			if prefix != "" {
+				path = prefix + "." + key
+			}
+			paths[path] = true
+			workstreamAJSONObjectKeyPaths(path, nested, paths)
+		}
+	case []any:
+		for _, nested := range value {
+			workstreamAJSONObjectKeyPaths(prefix+"[]", nested, paths)
+		}
 	}
 }
 
