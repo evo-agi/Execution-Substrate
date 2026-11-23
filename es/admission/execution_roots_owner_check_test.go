@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	"golang.org/x/sys/unix"
@@ -62,6 +63,13 @@ func TestStagingRefusesModesTheStartupProbeDoesNotProve(t *testing.T) {
 // check would hand the directory to that owner; run as another user, the owner
 // change would fail with another error. The case inside a run staging root
 // runs as root only, through sudo when the test does not run as root.
+//
+// Each case also requires the directory's mode to be the one it was created
+// with. ES creates these directories with mode 0750 and later sets 0750 again,
+// so under the usual process mask a mode change would leave no trace. Each case
+// therefore runs in a process of its own under the mask 0077: the directory is
+// created as 0700, and a mode change before the refusal would leave 0750
+// (audit finding A16-1).
 func TestDirectoriesOpenedByNameNeverChangeOwningUser(t *testing.T) {
 	foreign := executionPlatformStateOwner{UID: 54321, GID: os.Getgid()}
 	if os.Getuid() == foreign.UID {
@@ -70,7 +78,7 @@ func TestDirectoriesOpenedByNameNeverChangeOwningUser(t *testing.T) {
 	if os.Geteuid() == 0 {
 		foreign.GID = 54321
 	}
-	requireCreatorOwned := func(t *testing.T, path string) {
+	requireUntouched := func(t *testing.T, path string) {
 		t.Helper()
 		var stat unix.Stat_t
 		if err := unix.Lstat(path, &stat); err != nil {
@@ -79,9 +87,15 @@ func TestDirectoriesOpenedByNameNeverChangeOwningUser(t *testing.T) {
 		if stat.Mode&unix.S_IFMT != unix.S_IFDIR || int(stat.Uid) != os.Getuid() {
 			t.Fatalf("%s = mode %o owner %d, want a directory still owned by this process (%d)", path, stat.Mode, stat.Uid, os.Getuid())
 		}
+		if stat.Mode&0o7777 != 0o700 {
+			t.Fatalf("%s has mode %04o after the refusal, want 0700, the mode it was created with under the mask 0077: ES changed its mode before the owner check", path, stat.Mode&0o7777)
+		}
 	}
 
 	t.Run("claimed run staging root", func(t *testing.T) {
+		if rerunTestUnderOwnerOnlyProcessMask(t) {
+			return
+		}
 		stagingRoot := physicalTestTempDir(t)
 		custody, err := claimStagingCustody(stagingRoot, "run-0123456789abcdef", foreign)
 		if err == nil {
@@ -91,7 +105,7 @@ func TestDirectoriesOpenedByNameNeverChangeOwningUser(t *testing.T) {
 		if !strings.Contains(err.Error(), "claimed staging root does not belong to the execution roots' owning user") {
 			t.Fatalf("claim refused for another reason: %v", err)
 		}
-		requireCreatorOwned(t, filepath.Join(stagingRoot, "run-0123456789abcdef"))
+		requireUntouched(t, filepath.Join(stagingRoot, "run-0123456789abcdef"))
 	})
 
 	t.Run("staging directory", func(t *testing.T) {
@@ -101,6 +115,9 @@ func TestDirectoriesOpenedByNameNeverChangeOwningUser(t *testing.T) {
 		// that belong to another user, after the claim, and that needs root.
 		if os.Geteuid() != 0 {
 			rerunTestAsRootThroughSudo(t)
+			return
+		}
+		if rerunTestUnderOwnerOnlyProcessMask(t) {
 			return
 		}
 		stagingRoot := physicalTestTempDir(t)
@@ -113,10 +130,13 @@ func TestDirectoriesOpenedByNameNeverChangeOwningUser(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "staging directory does not belong to the execution roots' owning user") {
 			t.Fatalf("staging directory: %v", err)
 		}
-		requireCreatorOwned(t, filepath.Join(layout.stageRootDir, "payload"))
+		requireUntouched(t, filepath.Join(layout.stageRootDir, "payload"))
 	})
 
 	t.Run("startup probe directory", func(t *testing.T) {
+		if rerunTestUnderOwnerOnlyProcessMask(t) {
+			return
+		}
 		parent := physicalTestTempDir(t)
 		staging := filepath.Join(parent, "staging")
 		results := filepath.Join(parent, "results")
@@ -138,8 +158,41 @@ func TestDirectoriesOpenedByNameNeverChangeOwningUser(t *testing.T) {
 		if fd != -1 || !strings.Contains(err.Error(), "staging probe directory does not belong to the execution roots' owning user") {
 			t.Fatalf("startup probe: fd=%d err=%v", fd, err)
 		}
-		requireCreatorOwned(t, filepath.Join(staging, "probe"))
+		requireUntouched(t, filepath.Join(staging, "probe"))
 	})
+}
+
+// ownerOnlyProcessMaskEnv marks a process of the test binary that
+// rerunTestUnderOwnerOnlyProcessMask started.
+const ownerOnlyProcessMaskEnv = "ES_TEST_OWNER_ONLY_PROCESS_MASK"
+
+// rerunTestUnderOwnerOnlyProcessMask runs the current test again in a new
+// process of the test binary whose process mask is 0077, and reports true; the
+// caller then returns. In that process it sets the mask and reports false, so
+// the caller runs the case there. The process mask belongs to the whole
+// process, so the test sets it only in a process that runs nothing else.
+func rerunTestUnderOwnerOnlyProcessMask(t *testing.T) bool {
+	t.Helper()
+	if os.Getenv(ownerOnlyProcessMaskEnv) == "1" {
+		syscall.Umask(0o077)
+		return false
+	}
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pattern := "^" + strings.ReplaceAll(t.Name(), "/", "$/^") + "$"
+	command := exec.Command(self, "-test.run", pattern, "-test.v", "-test.count=1")
+	command.Env = append(os.Environ(), ownerOnlyProcessMaskEnv+"=1")
+	output, err := command.CombinedOutput()
+	t.Logf("the same test under the process mask 0077:\n%s", output)
+	if err != nil {
+		t.Fatalf("the test failed under the process mask 0077: %v", err)
+	}
+	if !strings.Contains(string(output), "--- PASS: "+t.Name()) {
+		t.Fatal("the test did not run under the process mask 0077")
+	}
+	return true
 }
 
 // rerunTestAsRootThroughSudo runs the current test again, as root, in a new

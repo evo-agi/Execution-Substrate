@@ -1001,7 +1001,10 @@ How Docker appears in the implementation:
   `stagedDirectoryModes` beyond `0750` and one regular file for each mode in
   `stagedFileModes` (`probeStagedEntries`), with the checks
   `stagingCustody.writeFileWithHookAndParentMode` and `ensureDirectory` apply,
-  and those two refuse any mode outside the lists. Inside the natural result
+  and those two refuse any mode outside the lists. The lists include the
+  governed-mount modes (`0755` directories, `0644` and `0755` files), so
+  startup refuses a staging file system that cannot keep them even when no
+  submission would use governed mounts. Inside the natural result
   directory probe, startup creates the `0600` and `0640` files retention
   creates, with retention's checks, and renames the `0600` file with the
   no-replace rename onto an existing name, which must fail with `EEXIST`, and

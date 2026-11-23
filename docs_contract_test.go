@@ -13559,10 +13559,10 @@ func TestStartupProbeUseAgreementDocsContract(t *testing.T) {
 		path    string
 		phrases []string
 	}{
-		{"PLANS.md", []string{"`STARTUP-PROBE-USE-AGREEMENT-01` (bounded slice rule)", "staging refuses any mode outside it, so a new staging mode cannot skip the probe", "only the second rename proves the primitive", "ES also never changes the owning user of a directory it opened by name", "`staging probe directory does not belong to the execution roots' owning user`", "The probe retains 13 entries per start"}},
-		{".docs/system_overview/capability_probing.md", []string{"Staging refuses any mode the probe does not stage.", "a results file system whose rename accepts no flags refuses startup instead of losing every result", "it never changes an owning user", "prove the results no-replace rename both ways"}},
-		{".docs/execution_lifecycle/implementation.md", []string{"(`probeStagedEntries`)", "(`probeRetainedResultFiles`)", "(`requireOpenedDirectoryOwnedByRootsUser`)", "onto an existing name, which must fail with `EEXIST`"}},
-		{".runbooks/system/v1_bringup.md", []string{"the file system under the roots stores the modes ES gives files and directories, gives regular files the same device as directories, and supports the no-replace rename", "`no-replace rename to a free result name is unavailable`"}},
+		{"PLANS.md", []string{"`STARTUP-PROBE-USE-AGREEMENT-01` (bounded slice rule)", "staging refuses any mode outside it, so a new staging mode cannot skip the probe", "only the second rename proves the primitive", "ES also never changes the owning user of a directory it opened by name", "`staging probe directory does not belong to the execution roots' owning user`", "The probe retains 13 entries per start", "ES also refuses to start on a staging file system that cannot keep those modes although submissions without governed mounts would work there", "ES starts only where every submission it accepts can be staged", "a bindfs mount with `--create-for-user`, is refused although it started before this rule"}},
+		{".docs/system_overview/capability_probing.md", []string{"Staging refuses any mode the probe does not stage.", "a results file system whose rename accepts no flags refuses startup instead of losing every result", "it never changes an owning user", "prove the results no-replace rename both ways", "a staging file system that cannot keep them refuses startup even though submissions without governed mounts would work there"}},
+		{".docs/execution_lifecycle/implementation.md", []string{"(`probeStagedEntries`)", "(`probeRetainedResultFiles`)", "(`requireOpenedDirectoryOwnedByRootsUser`)", "onto an existing name, which must fail with `EEXIST`", "startup refuses a staging file system that cannot keep them even when no submission would use governed mounts"}},
+		{".runbooks/system/v1_bringup.md", []string{"the file system under the roots stores the modes ES gives files and directories, gives regular files the same device as directories, and supports the no-replace rename", "`no-replace rename to a free result name is unavailable`", "ES refuses such a file system even if your submissions never use governed mounts"}},
 		{"es/admission/staging_custody.go", []string{"so a mode cannot reach staging without reaching the startup probe", "is not proved by the startup probe", "gives somebody else's directory to the roots' owner."}},
 	}
 	for _, check := range checks {
@@ -13576,6 +13576,15 @@ func TestStartupProbeUseAgreementDocsContract(t *testing.T) {
 	// The probe description from before the free-name rename must not come back.
 	assertContainsNone(t, "capability_probing.md one-sided no-replace probe", compactText(mustRead(t, ".docs/system_overview/capability_probing.md")),
 		"refuse the results no-replace publication primitive when the destination already exists; and",
+	)
+	// The refused file systems do not all fail every submission: those that
+	// cannot keep only the governed-mount modes stage the others (audit 16 of
+	// pull request #20, finding A16-2).
+	assertContainsNone(t, "capability_probing.md every-submission claim", compactText(mustRead(t, ".docs/system_overview/capability_probing.md")),
+		"refuses startup instead of failing every submission",
+	)
+	assertContainsNone(t, "PLANS.md every-submission claim", compactText(mustRead(t, "PLANS.md")),
+		"instead of reporting ready while every submission, or every retention, fails",
 	)
 }
 

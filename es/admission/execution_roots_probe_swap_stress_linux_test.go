@@ -15,6 +15,11 @@ package admission
 // or its mode. The attacker watches the staging root and swaps the victim's
 // directory in between the probe's creation of a directory and its open. A
 // hit means root gave the victim's directory to the attacker.
+//
+// Since the repair, the probe refuses roots that belong to another user at
+// its first directory, before any owner or mode change. The "probe" target
+// still races that directory. The "nested" target is no longer reached, so it
+// passes without exercising the race (audit 16 of the pull request, A16-7).
 
 import (
 	"bufio"

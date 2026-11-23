@@ -799,9 +799,15 @@ which must be refused as existing, and onto a free name, which must succeed and
 keep the file. Linux refuses a no-replace rename onto an existing name before
 it asks the file system, so only the second rename proves the primitive.
 Startup therefore refuses an overlay whose layers are on different file
-systems, a file system that does not keep the modes staging or retention needs,
+systems, a file system that does not keep a mode staging or retention can need,
 and a results file system whose rename accepts no flags, instead of reporting
-ready while every submission, or every retention, fails. ES also never changes
+ready while submissions or retentions fail. The staged modes include the `0755`
+directories and the `0644` and `0755` files that only submissions with governed
+mounts use, so ES also refuses to start on a staging file system that cannot
+keep those modes although submissions without governed mounts would work
+there. That is deliberate: ES starts only where every submission it accepts can
+be staged, rather than reporting ready and failing the submissions that have
+governed mounts. ES also never changes
 the owning user of a directory it opened by name: the startup probe, the claim
 of a run staging root and `stagingCustody.ensureDirectory` refuse a directory
 whose owning user is not already the roots' owning user, before any owner or
@@ -809,7 +815,9 @@ mode change. Nothing ties such an open to the creation an instant before, so a
 user who may rename entries of the parent could otherwise have a root ES give
 them somebody else's directory. Entries ES creates must therefore already
 belong to the roots' owning user, as retained result directories always
-required; a root ES on roots owned by another user is refused at startup with
+required, so a root ES whose staging file system gives new entries to another
+user, for example a bindfs mount with `--create-for-user`, is refused although
+it started before this rule; a root ES on roots owned by another user is refused at startup with
 `staging probe directory does not belong to the execution roots' owning user`.
 The probe retains 13 entries per start, 9 under the staging root and 4 under
 the results root, under the same no-uncertain-unlink rule.

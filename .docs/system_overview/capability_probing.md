@@ -154,7 +154,10 @@ each directory mode staging uses beyond `0750` and one regular file for each
 file mode staging uses, and holds each to staging's checks, so an overlay whose
 layers are on different file systems, where regular files report another
 device than directories, or a file system that does not keep those modes,
-refuses startup instead of failing every submission. Staging refuses any mode
+refuses startup instead of failing submissions. Those modes include the ones
+only governed mounts use (`0755` directories, `0644` and `0755` files), so a
+staging file system that cannot keep them refuses startup even though
+submissions without governed mounts would work there. Staging refuses any mode
 the probe does not stage. Inside the natural result directory probe, startup
 creates retention's file modes with retention's checks and renames the
 bundle-mode file with the no-replace rename onto a name that exists, which must
