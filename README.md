@@ -1,45 +1,128 @@
 # Execution Substrate
 
-This repository contains the current Go implementation of the platform's governed publication, storage, policy, admission, and bounded execution system.
+Execution Substrate (ES) decides whether an exact, published piece of software
+may run on a Linux machine you operate. If it may, ES runs it there through
+Nomad and Docker and reports back what is actually known about the run.
 
-The current system includes these active service boundaries:
+The project's longer-term aim is to let any vendor's AI agent run on hardware
+its owner controls, admitted under the owner's rules before it starts. That is
+a goal, not a current capability. See [Current status](#current-status) for
+what works today.
 
-- ARS
-- AGS
-- EGS
-- CGS
-- ES
+## How it works
 
-Nomad and Docker remain part of the current execution slice, with ES submitting to Nomad and Docker running tasks under Nomad.
+```mermaid
+flowchart TD
+    Publisher(["Publisher"])
+    Caller(["Caller"])
 
-## Current Mode
+    subgraph Host["Linux host or VM that you operate"]
+        AGS["AGS<br/>records signed evidence<br/>about the package"]
+        ARS[("ARS<br/>stores packages<br/>and evidence")]
+        EGS["EGS<br/>says which signers<br/>to trust"]
+        ES["ES<br/>checks, admits<br/>and submits"]
+        Nomad["Nomad<br/>schedules the run"]
+        Task["Docker container<br/>the workload runs here"]
+        SPIRE["SPIRE<br/>workload identity"]
+        Vault["Vault<br/>workload secrets"]
+    end
 
-The repository is operating as a bounded platform with explicit reopened seams.
+    Publisher -->|"1 publish"| AGS
+    AGS --> ARS
+    ARS -->|"package and evidence"| ES
+    EGS -->|"signed trust"| ES
+    Caller -->|"2 prepare, submit<br/>4 status, logs, result, cancel"| ES
+    ES -->|"3 submit job"| Nomad
+    Nomad --> Task
+    SPIRE -.->|"identity"| Task
+    Task -.->|"logs in itself"| Vault
+```
 
-The current system is coherent and implemented. Some architecture-defining seams remain intentionally reopened in `PLANS.md`, but rewrite-by-default is no longer the operating stance. Authoritative design intent lives in `PLANS.md` and `.docs/`, not in the README.
+1. **Publish.** A publisher sends a workload package to AGS: an archive with
+   the code to run, plus what it declares it needs (environment variables,
+   network access, and so on). AGS records signed evidence of exactly what was
+   published and stores both in ARS.
+2. **Admit.** A caller asks ES to run that exact package. ES reads the package
+   and its evidence from ARS and checks them against the signed runtime trust
+   that EGS publishes. Missing or corrupt evidence means the request is
+   refused. `prepare` runs these checks without starting anything; `submit`
+   runs them and then hands the run off.
+3. **Run.** ES submits a job to Nomad, which starts the workload in a Docker
+   container. A workload that needs secrets gets an identity from SPIRE and
+   logs in to Vault itself, so ES does not handle the workload's tokens or
+   secrets.
+4. **Observe.** The caller reads status, logs and the retained result through
+   ES, and can ask ES to cancel. Status is derived from what Nomad reports. A
+   cancel is a request to stop, not proof that the workload has stopped.
 
-## Where To Start
+Each of the five services in this repository (ARS, AGS, EGS, CGS and ES)
+requires mutual TLS on every connection. Routes that check who is calling read
+a SPIFFE ID from the caller's certificate, and each service allows only the
+identities named for it.
 
-Read these in order:
+## Current status
 
-1. [AGENTS.md](AGENTS.md) for repository operating rules
-2. [PLANS.md](PLANS.md) for current work, redesign scope, and reopened seams
-3. [.docs/system_overview/architecture.md](.docs/system_overview/architecture.md) for the top-level system map
-4. [.docs/system_overview/contracts.md](.docs/system_overview/contracts.md) for cross-service contracts
-5. [.docs/system_overview/boundaries.md](.docs/system_overview/boundaries.md) for ownership and non-ownership
-6. [.docs/system_overview/evolution.md](.docs/system_overview/evolution.md) for change-governance rules
-7. [.docs/execution_lifecycle/design.md](.docs/execution_lifecycle/design.md) for lifecycle design
-8. [.docs/execution_lifecycle/contracts.md](.docs/execution_lifecycle/contracts.md) for lifecycle public contract
-9. [.docs/execution_lifecycle/implementation.md](.docs/execution_lifecycle/implementation.md) for lifecycle implementation paths
-10. [.docs/supported_local_cp_consumer_runbook.md](.docs/supported_local_cp_consumer_runbook.md) for the canonical ES-side supported-local Control Plane consumer runbook
+ES is a working, bounded platform. It is not a finished product.
 
-Supporting references:
+- **Works today:** the publish, admit, run and observe path above, on one
+  Linux host or VM with Nomad and Docker on the same machine. GitHub Actions
+  builds, vets and tests the Go module on every pull request.
+- **Not yet done:** no real AI coding agent has been run through ES end to
+  end. The agent path in this repository uses a deterministic, proof-only
+  stand-in for the Codex CLI (see the
+  [supported-local runbook](.docs/supported_local_cp_consumer_runbook.md)),
+  and live agent proof is an open gap (G-06 in the
+  [claim ledger](.docs/commercialization/claim-ledger.md)).
+- **Not claimed:** production readiness, high availability, multi-tenant use,
+  a general remote deployment architecture, or a complete installer for a
+  fresh host (see the [MVP claim](.docs/mvp.md)).
+- **In progress:** current work and open design questions are tracked in
+  [PLANS.md](PLANS.md).
 
-- [.docs/system_overview/configuration.md](.docs/system_overview/configuration.md) for current config requirements
-- [.docs/system_overview/observability.md](.docs/system_overview/observability.md) for observability rules
-- [.docs/system_overview/capability_probing.md](.docs/system_overview/capability_probing.md) for capability-sensitive validation rules
+The repository is operating as a bounded platform with explicit reopened
+seams. The current system is coherent and implemented. Some
+architecture-defining seams remain intentionally reopened in `PLANS.md`, but
+rewrite-by-default is no longer the operating stance. Authoritative design
+intent lives in `PLANS.md` and `.docs/`, not in the README.
+
+## Components
+
+| Part | What it does |
+| --- | --- |
+| ARS | Artifact storage. Keeps published packages and their evidence, checks their integrity, and lets ES find them. |
+| AGS | Publication. Accepts a package, records signed evidence of exactly what it is, and writes both to ARS. |
+| EGS | Runtime trust. Publishes the signed statement of which signers and artifacts ES may trust. |
+| CGS | A separate, authorize-only policy service. It is not on the path ES uses to run work today. |
+| ES | Admission and execution. Checks a request, submits the run to Nomad, and reports status, logs, results and cancellation. |
+| Nomad | Schedules runs. Once a run is submitted, Nomad is the source of truth for its lifecycle. |
+| Docker | Runs the workload's container under Nomad. |
+| SPIRE | Issues workload identities (SPIFFE IDs). |
+| Vault | Holds secrets. A workload gets them by logging in with its own identity. |
+
+ARS, AGS, EGS, CGS and ES are the Go services in this repository. Nomad,
+Docker, SPIRE and Vault are third-party software that ES uses. In the terms of
+the design docs, this repository contains the current Go implementation of the
+platform's governed publication, storage, policy, admission, and bounded
+execution system.
+
+Words used here:
+
+- **Workload:** the program a caller wants to run, packaged and published
+  through AGS.
+- **Admission:** ES's decision, before anything starts, that this exact
+  package may run with this request.
+- **Evidence:** the signed record AGS writes about a package, which ES checks
+  before admission.
+- **Retained result:** files the workload writes under
+  `/execution/run/result`, which ES may keep as one opaque bundle for the
+  caller to download.
 
 ## Operator Quick Start
+
+You need one Linux host or VM with Docker and Nomad, plus `curl`, `python3`,
+`tar` and `gzip`, and the TLS material and service config described in the
+bring-up runbook. On a Mac, the supported local setup runs inside an Ubuntu VM;
+the runbook covers it.
 
 For the current bounded execution slice, the preferred operator path is:
 
@@ -48,6 +131,8 @@ For the current bounded execution slice, the preferred operator path is:
 3. Use `scripts/01_bringup.sh check` to re-check service health, prepare-ready state, and submit-ready state
 4. Use `scripts/60_execute_loop.sh .examples/execution_loop/static_script_success.input.json` for the bounded end-to-end smoke path
 5. Use `scripts/01_bringup.sh down` to stop the managed stack
+
+### Operator notes
 
 The lower-level readiness helper remains `scripts/10_health_check.sh`. In the current slice, ES `/health` proves only admission-oriented service health; the operator path now layers workload-zone Vault runtime-config validation plus Nomad/Docker checks on top before claiming submit readiness.
 For those operator-facing helpers, the current caller credentials are `OPERATOR_CERT` and `OPERATOR_KEY`; `service/deployment` is no longer a co-equal hot-path caller identity for AGS or ES in this bounded slice.
@@ -97,4 +182,25 @@ High-level layout:
 - `.runbooks/` for operator-facing bring-up and verification steps
 - `scripts/` and `.examples/` for local verification helpers and inputs
 
-Use the README as a navigation entrypoint only. For architecture, contracts, boundaries, lifecycle semantics, and redesign intent, defer to the authoritative docs above.
+## Where To Start
+
+This section is an index for contributors and coding agents. Use the README as a navigation entrypoint only. For architecture, contracts, boundaries, lifecycle semantics, and redesign intent, defer to the authoritative docs below. Where this README and those docs disagree, the docs win.
+
+Read these in order:
+
+1. [AGENTS.md](AGENTS.md) for repository operating rules
+2. [PLANS.md](PLANS.md) for current work, redesign scope, and reopened seams
+3. [.docs/system_overview/architecture.md](.docs/system_overview/architecture.md) for the top-level system map
+4. [.docs/system_overview/contracts.md](.docs/system_overview/contracts.md) for cross-service contracts
+5. [.docs/system_overview/boundaries.md](.docs/system_overview/boundaries.md) for ownership and non-ownership
+6. [.docs/system_overview/evolution.md](.docs/system_overview/evolution.md) for change-governance rules
+7. [.docs/execution_lifecycle/design.md](.docs/execution_lifecycle/design.md) for lifecycle design
+8. [.docs/execution_lifecycle/contracts.md](.docs/execution_lifecycle/contracts.md) for lifecycle public contract
+9. [.docs/execution_lifecycle/implementation.md](.docs/execution_lifecycle/implementation.md) for lifecycle implementation paths
+10. [.docs/supported_local_cp_consumer_runbook.md](.docs/supported_local_cp_consumer_runbook.md) for the canonical ES-side supported-local Control Plane consumer runbook
+
+Supporting references:
+
+- [.docs/system_overview/configuration.md](.docs/system_overview/configuration.md) for current config requirements
+- [.docs/system_overview/observability.md](.docs/system_overview/observability.md) for observability rules
+- [.docs/system_overview/capability_probing.md](.docs/system_overview/capability_probing.md) for capability-sensitive validation rules
