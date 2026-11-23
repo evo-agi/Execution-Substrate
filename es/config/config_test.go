@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"unicode"
 
 	runtimeconfigv1 "execution-substrate/internal/contracts/runtimeconfig/v1"
 )
@@ -349,8 +350,24 @@ func TestWorkloadVaultAuthResolveUsesVaultRuntimeFields(t *testing.T) {
 }
 
 func TestWorkloadVaultAuthPlanCarriesOnlyNonSecretVaultMetadata(t *testing.T) {
-	fieldNames := collectConfigStructFieldNames(t, ResolvedWorkloadVaultAuthPlan{})
-	for _, forbidden := range []string{
+	checkWorkloadVaultAuthPlanFields(t, ResolvedWorkloadVaultAuthPlan{})
+}
+
+// checkWorkloadVaultAuthPlanFields fails t when a value of plan's type can carry
+// a token, secret, lease or raw SPIRE field anywhere in it, or when plan's own
+// type declares anything but exactly the non-secret Vault metadata fields, each
+// holding a string.
+func checkWorkloadVaultAuthPlanFields(t testing.TB, plan any) {
+	t.Helper()
+	metadata := []string{
+		"Mode",
+		"Address",
+		"AuthMount",
+		"AuthRole",
+		"JWTAudience",
+		"CABundlePEM",
+	}
+	for _, carried := range configFieldsCarried(t, plan,
 		"VaultToken",
 		"ClientToken",
 		"RootToken",
@@ -364,22 +381,17 @@ func TestWorkloadVaultAuthPlanCarriesOnlyNonSecretVaultMetadata(t *testing.T) {
 		"LeaseID",
 		"LeaseDuration",
 		"RawSPIRESocket",
-	} {
-		if _, ok := fieldNames[forbidden]; ok {
-			t.Fatalf("resolved workload Vault auth plan must not carry token, secret, lease, or raw SPIRE field %q", forbidden)
-		}
+	) {
+		t.Errorf("resolved workload Vault auth plan must not carry token, secret, lease, or raw SPIRE field %q (carried as %s)", carried.name, carried.where)
 	}
-	for _, required := range []string{
-		"Mode",
-		"Address",
-		"AuthMount",
-		"AuthRole",
-		"JWTAudience",
-		"CABundlePEM",
-	} {
-		if _, ok := fieldNames[required]; !ok {
-			t.Fatalf("expected non-secret workload Vault metadata field %q", required)
-		}
+	for _, beyond := range configOwnFieldsBeyond(t, plan, metadata...) {
+		t.Errorf("resolved workload Vault auth plan must declare only its non-secret Vault metadata fields, not field %q", beyond)
+	}
+	for _, missing := range configOwnFieldsMissing(t, plan, metadata...) {
+		t.Errorf("expected non-secret workload Vault metadata field %q", missing)
+	}
+	for _, field := range configOwnFieldsNotStrings(t, plan, metadata...) {
+		t.Errorf("resolved workload Vault auth plan field %q must hold a string, not %s", field.name, field.typ)
 	}
 }
 
@@ -787,26 +799,181 @@ func TestWorkloadVaultAuthValidateRejectsUnsupportedMode(t *testing.T) {
 	}
 }
 
-func collectConfigStructFieldNames(t *testing.T, values ...any) map[string]struct{} {
-	t.Helper()
+// configCarriedField is a forbidden name that a value of a type may carry, and
+// the first place where configFieldsCarried found it.
+type configCarriedField struct {
+	name  string
+	where string
+}
 
-	names := map[string]struct{}{}
-	for _, value := range values {
-		typ := reflect.TypeOf(value)
-		for typ.Kind() == reflect.Pointer {
-			typ = typ.Elem()
+// configFieldsCarried answers one question: may a value of value's type carry
+// one of names anywhere in it? It returns each such name with the first place
+// it is carried, in the order of names.
+//
+// It reads the whole type, and records too much on purpose:
+//   - every field at any depth, exported or not, embedded or not, so a field
+//     promoted from an embedded struct counts under its own name;
+//   - through pointers, slices, arrays, maps (key and value) and channels;
+//   - the name of each named type on the way, so a field of a type named
+//     PrivateKey counts, and so does an embedded field;
+//   - names compared with case folded and underscores dropped, so
+//     vault_token and VAULTTOKEN count as VaultToken.
+//
+// It cannot see inside an interface or a function. Use configOwnFieldsMissing,
+// never this, to ask whether a field is there.
+func configFieldsCarried(t testing.TB, value any, names ...string) []configCarriedField {
+	t.Helper()
+	root := configStructType(t, value)
+	where := map[string]string{}
+	record := func(name, place string) {
+		key := foldConfigFieldName(name)
+		if _, ok := where[key]; !ok {
+			where[key] = place
 		}
-		if typ.Kind() != reflect.Struct {
-			t.Fatalf("expected struct, got %s", typ.Kind())
+	}
+	seen := map[reflect.Type]bool{}
+	var walk func(typ reflect.Type, place string)
+	walk = func(typ reflect.Type, place string) {
+		if typ.Name() != "" {
+			record(typ.Name(), place+" of type "+typ.String())
 		}
-		for i := 0; i < typ.NumField(); i++ {
-			field := typ.Field(i)
-			if field.PkgPath == "" {
-				names[field.Name] = struct{}{}
+		if seen[typ] {
+			return
+		}
+		seen[typ] = true
+		switch typ.Kind() {
+		case reflect.Pointer, reflect.Slice, reflect.Array, reflect.Chan:
+			walk(typ.Elem(), place+"[elem]")
+		case reflect.Map:
+			walk(typ.Key(), place+"[key]")
+			walk(typ.Elem(), place+"[value]")
+		case reflect.Struct:
+			for i := 0; i < typ.NumField(); i++ {
+				field := typ.Field(i)
+				fieldPlace := place + "." + field.Name
+				record(field.Name, fieldPlace)
+				walk(field.Type, fieldPlace)
 			}
 		}
 	}
-	return names
+	walk(root, root.String())
+
+	var carried []configCarriedField
+	for _, name := range names {
+		if place, ok := where[foldConfigFieldName(name)]; ok {
+			carried = append(carried, configCarriedField{name: name, where: place})
+		}
+	}
+	return carried
+}
+
+// configOwnFieldsMissing answers one question: which of names is not a field
+// of value's own struct type? A field counts only when the type itself
+// declares it, not embedded, under exactly that name. A field promoted from an
+// embedded struct, one at depth, one in another case, or an embedded field of
+// a type with that name does not count.
+func configOwnFieldsMissing(t testing.TB, value any, names ...string) []string {
+	t.Helper()
+	root := configStructType(t, value)
+	own := map[string]bool{}
+	for i := 0; i < root.NumField(); i++ {
+		field := root.Field(i)
+		if !field.Anonymous {
+			own[field.Name] = true
+		}
+	}
+	var missing []string
+	for _, name := range names {
+		if !own[name] {
+			missing = append(missing, name)
+		}
+	}
+	return missing
+}
+
+// configOwnFieldsBeyond answers one question: which fields does value's own
+// struct type declare beyond names? Every field the type declares counts,
+// exported or not, blank or not, of any type, in the order declared. An
+// embedded field is always beyond names, even when its type has one of those
+// names, because configOwnFieldsMissing does not count it as that field. A
+// field at depth is not the type's own; configFieldsCarried reads those.
+func configOwnFieldsBeyond(t testing.TB, value any, names ...string) []string {
+	t.Helper()
+	root := configStructType(t, value)
+	allowed := map[string]bool{}
+	for _, name := range names {
+		allowed[name] = true
+	}
+	var beyond []string
+	for i := range root.NumField() {
+		field := root.Field(i)
+		if field.Anonymous || !allowed[field.Name] {
+			beyond = append(beyond, field.Name)
+		}
+	}
+	return beyond
+}
+
+// configOwnFieldType is a field of a struct type's own and the type it holds.
+type configOwnFieldType struct {
+	name string
+	typ  string
+}
+
+// configOwnFieldsNotStrings answers one question: which of names is a field of
+// value's own struct type that does not hold a string? A field counts as in
+// configOwnFieldsMissing: the type itself declares it, not embedded, under
+// exactly that name. A name the type lacks is not reported here, because
+// configOwnFieldsMissing reports it. A field holds a string when its type is
+// of kind string, so a named string type such as WorkloadVaultAuthMode does,
+// and a pointer, slice, interface, function or struct does not. It returns
+// each such field with its type, in the order of names.
+func configOwnFieldsNotStrings(t testing.TB, value any, names ...string) []configOwnFieldType {
+	t.Helper()
+	root := configStructType(t, value)
+	own := map[string]reflect.Type{}
+	for i := range root.NumField() {
+		if field := root.Field(i); !field.Anonymous {
+			own[field.Name] = field.Type
+		}
+	}
+	var notStrings []configOwnFieldType
+	for _, name := range names {
+		if typ, ok := own[name]; ok && typ.Kind() != reflect.String {
+			notStrings = append(notStrings, configOwnFieldType{name: name, typ: typ.String()})
+		}
+	}
+	return notStrings
+}
+
+func configStructType(t testing.TB, value any) reflect.Type {
+	t.Helper()
+	typ := reflect.TypeOf(value)
+	for typ != nil && typ.Kind() == reflect.Pointer {
+		typ = typ.Elem()
+	}
+	if typ == nil || typ.Kind() != reflect.Struct {
+		t.Fatalf("expected a struct, got %v", typ)
+	}
+	return typ
+}
+
+// foldConfigFieldName drops underscores and maps each letter to the smallest
+// letter of its case-folding orbit, so two names fold alike exactly when
+// strings.EqualFold holds for them without their underscores.
+func foldConfigFieldName(name string) string {
+	var folded strings.Builder
+	for _, r := range name {
+		if r == '_' {
+			continue
+		}
+		smallest := r
+		for other := unicode.SimpleFold(r); other != r; other = unicode.SimpleFold(other) {
+			smallest = min(smallest, other)
+		}
+		folded.WriteRune(smallest)
+	}
+	return folded.String()
 }
 
 func validTestConfig() Config {

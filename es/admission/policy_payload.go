@@ -6,7 +6,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"net/http"
 	"unicode/utf8"
 
 	"execution-substrate/es/internal/staticarchive"
@@ -74,19 +73,13 @@ func admissionPolicyRequiresStaticScriptText(classes []AdmissionPolicyInputClass
 	return false
 }
 
+// fetchAdmissionPolicyPayloadBytes returns payload bytes only after they hash
+// to the signed payload digest, so policy inspects the bytes that the signed
+// evidence names. Submit reuses this same slice as the primary payload. Every
+// failure, including a digest mismatch, keeps the fixed policy-input error.
 func (s *Service) fetchAdmissionPolicyPayloadBytes(ctx context.Context, payloadDigest string) ([]byte, *Error) {
-	response, err := s.arsClient.get(ctx, "/v1/blobs/"+payloadDigest+":bytes")
-	if err != nil {
-		return nil, admissionPolicyInputUnavailableError()
-	}
-	defer response.Body.Close()
-
-	if response.StatusCode != http.StatusOK {
-		return nil, admissionPolicyInputUnavailableError()
-	}
-
-	payload, readErr := readBoundedResponseBody(response, maxAdmissionPolicyPayloadBytes)
-	if readErr != nil {
+	payload, fetchErr := s.fetchVerifiedARSBlob(ctx, payloadDigest, arsBlobViewBytes, maxAdmissionPolicyPayloadBytes)
+	if fetchErr != nil {
 		return nil, admissionPolicyInputUnavailableError()
 	}
 	return payload, nil

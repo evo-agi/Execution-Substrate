@@ -10,10 +10,11 @@ import (
 func TestWorkstreamBAdmissionHotPathUsesDiscoveryAndEvidenceNotSupportTupleGrammar(t *testing.T) {
 	fixture := newPreparedArtifactFixture(t)
 	service, stagingRoot, resultsRoot := newWorkstreamCTestService(t, fixture)
-	request := fixture.prepareRequest()
 	payload := buildAdmissionPolicyStaticScriptArchive(t, map[string][]byte{
 		staticScriptEntrypointName: []byte(benignPolicyFixtureText()),
 	})
+	fixture = fixture.withPayload(t, payload)
+	request := fixture.prepareRequest()
 
 	arsCalls := map[string]int{}
 	service.arsClient = newArtifactRegistryTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
