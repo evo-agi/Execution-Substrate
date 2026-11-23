@@ -45,6 +45,8 @@ type fullReadinessFixture struct {
 	server  *httptest.Server
 	initial []byte
 	roots   map[string]os.FileInfo
+	// observerToken is the read-only Nomad token file readiness reads with.
+	observerToken string
 }
 
 func newFullReadinessFixture(t *testing.T) *fullReadinessFixture {
@@ -90,8 +92,10 @@ func newFullReadinessFixture(t *testing.T) *fullReadinessFixture {
 	}))
 	t.Cleanup(server.Close)
 	config := filepath.Join(proof, "es.json")
+	esTokenFile := writeFakeNomadTokenFile(t, workspace)
+	observerTokenFile := writeFakeNomadObserverTokenFile(t, workspace)
 	data, err := json.Marshal(map[string]any{
-		"nomad":          map[string]any{"base_url": server.URL, "datacenter": "dc1"},
+		"nomad":          map[string]any{"base_url": server.URL, "datacenter": "dc1", "token_file": esTokenFile},
 		"runtime_config": map[string]any{"workload_zone_vault_config_ref": map[string]any{"digest": "fixture-digest"}},
 		"execution": map[string]any{
 			"staging_root_dir": filepath.Join(proof, "es-staging"), "results_root_dir": filepath.Join(proof, "es-results"),
@@ -113,7 +117,8 @@ func newFullReadinessFixture(t *testing.T) *fullReadinessFixture {
 		t.Fatal(err)
 	}
 	f := &fullReadinessFixture{t: t, repo: repo, proof: proof, config: config, state: state, bin: bin,
-		events: filepath.Join(workspace, "events"), server: server, initial: data, roots: map[string]os.FileInfo{}}
+		events: filepath.Join(workspace, "events"), server: server, initial: data, roots: map[string]os.FileInfo{},
+		observerToken: observerTokenFile}
 	for _, name := range []string{"es-staging", "es-results"} {
 		info, err := os.Stat(filepath.Join(proof, name))
 		if err != nil {
@@ -140,6 +145,10 @@ case "$url" in
     printf '{"vault_config":{"address":"https://vault.example.invalid","auth_mount":"jwt","auth_role":"fixture","jwt_audience":"fixture"}}\n' ;;
   "$ROOT_SERVER_URL"/v1/status/leader)
     printf '"127.0.0.1:4647"\n' ;;
+  "$ROOT_SERVER_URL"/v1/acl/token/self)
+    printf '{"AccessorID":"anonymous","Type":"client","Policies":[]}\n' ;;
+  "$ROOT_SERVER_URL"/v1/acl/policy/anonymous)
+    printf '404' ;;
   "$ROOT_SERVER_URL"/v1/agent/self)
     printf '{"config":{"DevMode":false,"Client":{"Options":{"docker.cleanup.image":"false"}}}}\n' ;;
   "$ROOT_SERVER_URL"/v1/nodes)
@@ -183,7 +192,7 @@ func (f *fullReadinessFixture) env(overrides ...string) []string {
 		"SUPPORTED_LOCAL_PROOF_ID=fixture-proof", "CONTROL_PLANE_IMAGE=execution-substrate/control-plane:supported-local",
 		"CONTROL_PLANE_DOCKERFILE=" + filepath.Join(f.proof, "Dockerfile"),
 		"BRINGUP_PROFILE=full", "BRINGUP_DIR=" + f.state,
-		"ES_CONFIG=" + f.config, "NOMAD_ADDR=" + f.server.URL,
+		"ES_CONFIG=" + f.config, "NOMAD_ADDR=" + f.server.URL, "NOMAD_TOKEN_FILE=" + f.observerToken,
 		"ARS_URL=" + f.server.URL + "/ars", "EGS_URL=" + f.server.URL + "/egs",
 		"AGS_URL=" + f.server.URL + "/ags", "ES_URL=" + f.server.URL + "/es",
 		"CA_CERT=" + filepath.Join(f.proof, "ca.pem"),
@@ -410,6 +419,7 @@ nomad() { printf 'unexpected nomad\n' >> "$ROOT_EVENTS"; return 97; }
 vault() { printf 'unexpected vault\n' >> "$ROOT_EVENTS"; return 97; }
 limactl() { printf 'unexpected limactl\n' >> "$ROOT_EVENTS"; return 97; }
 curl() { printf 'unexpected curl\n' >> "$ROOT_EVENTS"; return 97; }
+nomad_acl_state_check() { :; }
 ss() { printf 'unexpected ss\n' >> "$ROOT_EVENTS"; return 97; }
 stop_background_process() { :; }
 stop_vault_dev_listener() { :; }

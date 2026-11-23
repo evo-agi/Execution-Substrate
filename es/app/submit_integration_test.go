@@ -997,7 +997,7 @@ func TestSubmitFlowRejectsWorkloadArchiveWithSymlinkEntry(t *testing.T) {
 func listNomadJobIDs(t *testing.T, harness *nomadHarness) []string {
 	t.Helper()
 
-	response, err := (&http.Client{Timeout: 5 * time.Second}).Get(harness.baseURL() + "/v1/jobs")
+	response, err := harness.httpClient(5 * time.Second).Get(harness.baseURL() + "/v1/jobs")
 	if err != nil {
 		t.Fatalf("list Nomad jobs: %v", err)
 	}
@@ -1425,10 +1425,12 @@ type submitStackOptions struct {
 	nomadHandler                     http.Handler
 	mountRegistrationCapture         *mountedSourceRegistrationCapture
 	mountedSourceDockerTaskNameLabel bool
+	// nomadACLDisabled starts the stack's real Nomad without ACLs.
+	nomadACLDisabled bool
 }
 
 func (opts submitStackOptions) nomadHarnessOptions() nomadHarnessOptions {
-	return nomadHarnessOptions{dockerTaskNameLabel: opts.mountedSourceDockerTaskNameLabel}
+	return nomadHarnessOptions{dockerTaskNameLabel: opts.mountedSourceDockerTaskNameLabel, aclDisabled: opts.nomadACLDisabled}
 }
 
 func startSubmitStack(t *testing.T) *submitStack {
@@ -1587,13 +1589,16 @@ func startSubmitStackWithOptions(t *testing.T, opts submitStackOptions) *submitS
 	var nomad *nomadHarness
 	var nomadServer *httptest.Server
 	nomadBaseURL := ""
+	nomadTokenFile := ""
 	if opts.nomadHandler != nil {
-		nomadServer = httptest.NewServer(opts.nomadHandler)
+		nomadServer = httptest.NewServer(lockedFakeNomadHandler(opts.nomadHandler))
 		nomadBaseURL = nomadServer.URL
+		nomadTokenFile = writeFakeNomadTokenFile(t, rootDir)
 	} else {
 		requireHealthyDockerBackedNomadClient(t)
 		nomad = startNomadHarnessWithOptions(t, rootDir, opts.nomadHarnessOptions())
 		nomadBaseURL = nomad.baseURL()
+		nomadTokenFile = nomad.esTokenFile
 		if opts.mountRegistrationCapture != nil {
 			proxy, proxyErr := newMountedSourceRegistrationProxy(nomadBaseURL, stagingRoot, opts.mountRegistrationCapture)
 			if proxyErr != nil {
@@ -1850,6 +1855,7 @@ func startSubmitStackWithOptions(t *testing.T, opts submitStackOptions) *submitS
 			BaseURL:        nomadBaseURL,
 			Datacenter:     "dc1",
 			TimeoutSeconds: 5,
+			TokenFile:      nomadTokenFile,
 		},
 		Execution: esconfig.ExecutionConfig{
 			StagingRootDir:             stagingRoot,
@@ -2169,7 +2175,7 @@ func probeNomadRuntimeIdentitySocketAllocation(rootDir string, socketDir string)
 	if err != nil {
 		return fmt.Sprintf("marshal Nomad allocation probe job failed: %v", err)
 	}
-	response, err := (&http.Client{Timeout: 5 * time.Second}).Post(harness.addr+"/v1/jobs", "application/json", bytes.NewReader(body))
+	response, err := harness.httpClient(5*time.Second).Post(harness.addr+"/v1/jobs", "application/json", bytes.NewReader(body))
 	if err != nil {
 		return fmt.Sprintf("submit Nomad allocation probe job failed: %v", err)
 	}
@@ -2629,6 +2635,14 @@ type nomadHarness struct {
 	configPath string
 	cmd        *exec.Cmd
 	outputPath string
+	// aclEnabled is false only for a harness started with
+	// nomadHarnessOptions.aclDisabled.
+	aclEnabled bool
+	// managementToken is the test operator's token: the harness's own reads
+	// and test-owned writes use it. ES uses only esTokenFile.
+	managementToken   string
+	esTokenFile       string
+	observerTokenFile string
 }
 
 type nomadAllocationSummary struct {
@@ -2685,6 +2699,12 @@ func (s nomadTaskState) exitCode() int {
 
 type nomadHarnessOptions struct {
 	dockerTaskNameLabel bool
+	// aclDisabled starts Nomad without ACLs, a Nomad ES must refuse; ES then
+	// gets a well-formed token file that Nomad never issued.
+	aclDisabled bool
+	// leaderOnly skips the wait for a schedulable Docker client node, for
+	// tests that only register, plan or read jobs.
+	leaderOnly bool
 }
 
 func startNomadHarness(t *testing.T, rootDir string) *nomadHarness {
@@ -2748,9 +2768,13 @@ func startNomadHarnessForCapabilityProbeWithOptions(rootDir string, opts nomadHa
 }
 `
 	}
+	aclConfig := "acl {\n  enabled = true\n}\n"
+	if opts.aclDisabled {
+		aclConfig = ""
+	}
 	config := fmt.Sprintf(`data_dir = %q
 bind_addr = "127.0.0.1"
-server {
+%sserver {
   enabled = true
   bootstrap_expect = 1
 }
@@ -2769,7 +2793,7 @@ advertise {
   rpc  = "127.0.0.1:%d"
   serf = "127.0.0.1:%d"
 }
-`, dataDir, clientCPUOverride, clientDockerConfig, dockerPluginConfig, httpPort, rpcPort, serfPort, httpPort, rpcPort, serfPort)
+`, dataDir, aclConfig, clientCPUOverride, clientDockerConfig, dockerPluginConfig, httpPort, rpcPort, serfPort, httpPort, rpcPort, serfPort)
 	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
 		return nil, fmt.Sprintf("write nomad config: %v", err)
 	}
@@ -2797,6 +2821,25 @@ advertise {
 		configPath: configPath,
 		cmd:        cmd,
 		outputPath: outputPath,
+		aclEnabled: !opts.aclDisabled,
+	}
+	if reason := harness.waitLeaderResult(15 * time.Second); reason != "" {
+		harness.stop()
+		return nil, reason
+	}
+	if opts.aclDisabled {
+		tokenFile, err := writeUnissuedNomadTokenFile(rootDir)
+		if err != nil {
+			harness.stop()
+			return nil, fmt.Sprintf("write unissued nomad token file: %v", err)
+		}
+		harness.esTokenFile = tokenFile
+	} else if reason := harness.provisionACL(rootDir); reason != "" {
+		harness.stop()
+		return nil, reason
+	}
+	if opts.leaderOnly {
+		return harness, ""
 	}
 	if reason := harness.waitReadyResult(15 * time.Second); reason != "" {
 		harness.stop()
@@ -2818,7 +2861,7 @@ func (n *nomadHarness) waitReady(t *testing.T) {
 }
 
 func (n *nomadHarness) waitReadyResult(timeout time.Duration) string {
-	client := &http.Client{Timeout: 2 * time.Second}
+	client := n.httpClient(2 * time.Second)
 	deadline := time.Now().Add(timeout)
 	lastReason := "nomad node did not become schedulable"
 	for time.Now().Before(deadline) {
@@ -2974,7 +3017,7 @@ func allReasonsHaveZeroCPU(reasons []string) bool {
 func (n *nomadHarness) waitForJob(t *testing.T, jobID string) {
 	t.Helper()
 
-	client := &http.Client{Timeout: 2 * time.Second}
+	client := n.httpClient(2 * time.Second)
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		response, err := client.Get(n.addr + "/v1/job/" + jobID)
@@ -3012,7 +3055,7 @@ func (n *nomadHarness) waitForExecutionJob(t *testing.T, runID string) string {
 func (n *nomadHarness) fetchJobDetail(t *testing.T, jobID string) nomadJobDetail {
 	t.Helper()
 
-	response, err := (&http.Client{Timeout: 2 * time.Second}).Get(n.addr + "/v1/job/" + jobID)
+	response, err := n.httpClient(2 * time.Second).Get(n.addr + "/v1/job/" + jobID)
 	if err != nil {
 		t.Fatalf("fetch job %s: %v", jobID, err)
 	}
@@ -3064,7 +3107,7 @@ func (j nomadJobDetail) runID() string {
 }
 
 func (n *nomadHarness) findExecutionJobID(runID string) (string, bool) {
-	response, err := (&http.Client{Timeout: 2 * time.Second}).Get(n.addr + "/v1/jobs")
+	response, err := n.httpClient(2 * time.Second).Get(n.addr + "/v1/jobs")
 	if err != nil {
 		return "", false
 	}
@@ -3089,7 +3132,7 @@ func (n *nomadHarness) findExecutionJobID(runID string) (string, bool) {
 }
 
 func (n *nomadHarness) tryFetchJobDetail(jobID string) (nomadJobDetail, bool) {
-	response, err := (&http.Client{Timeout: 2 * time.Second}).Get(n.addr + "/v1/job/" + jobID)
+	response, err := n.httpClient(2 * time.Second).Get(n.addr + "/v1/job/" + jobID)
 	if err != nil {
 		return nomadJobDetail{}, false
 	}
@@ -3117,7 +3160,7 @@ func (n *nomadHarness) waitForTerminalAllocation(t *testing.T, jobID string) nom
 }
 
 func (n *nomadHarness) waitForTerminalAllocationResult(jobID string, timeout time.Duration) (nomadAllocationSummary, string) {
-	client := &http.Client{Timeout: 2 * time.Second}
+	client := n.httpClient(2 * time.Second)
 	deadline := time.Now().Add(timeout)
 	var lastObserved *nomadAllocationSummary
 	for time.Now().Before(deadline) {
@@ -3155,7 +3198,7 @@ func (n *nomadHarness) waitForTerminalAllocationResult(jobID string, timeout tim
 func (n *nomadHarness) waitForLatestAllocation(t *testing.T, jobID string) nomadAllocationSummary {
 	t.Helper()
 
-	client := &http.Client{Timeout: 2 * time.Second}
+	client := n.httpClient(2 * time.Second)
 	deadline := time.Now().Add(20 * time.Second)
 	for time.Now().Before(deadline) {
 		response, err := client.Get(n.addr + "/v1/job/" + jobID + "/allocations")
@@ -3184,7 +3227,7 @@ func (n *nomadHarness) waitForTerminalExecutionAllocation(t *testing.T, runID st
 }
 
 func (n *nomadHarness) tryFetchAllocation(allocationID string) (nomadAllocationSummary, bool) {
-	response, err := (&http.Client{Timeout: 2 * time.Second}).Get(n.addr + "/v1/allocation/" + allocationID)
+	response, err := n.httpClient(2 * time.Second).Get(n.addr + "/v1/allocation/" + allocationID)
 	if err != nil {
 		return nomadAllocationSummary{}, false
 	}
@@ -3204,7 +3247,7 @@ func (n *nomadHarness) tryFetchAllocation(allocationID string) (nomadAllocationS
 func (n *nomadHarness) fetchAllocation(t *testing.T, allocationID string) nomadAllocationSummary {
 	t.Helper()
 
-	response, err := (&http.Client{Timeout: 2 * time.Second}).Get(n.addr + "/v1/allocation/" + allocationID)
+	response, err := n.httpClient(2 * time.Second).Get(n.addr + "/v1/allocation/" + allocationID)
 	if err != nil {
 		t.Fatalf("fetch allocation %s: %v", allocationID, err)
 	}
@@ -3239,14 +3282,14 @@ func (n *nomadHarness) allocStderrLogs(t *testing.T, allocationID string) string
 
 func (n *nomadHarness) tryAllocStderrLogs(allocationID string) (string, error) {
 	command := exec.Command("nomad", "alloc", "logs", "-stderr", allocationID)
-	command.Env = append(os.Environ(), "NOMAD_ADDR="+n.addr)
+	command.Env = append(os.Environ(), n.cliEnv()...)
 	output, err := command.CombinedOutput()
 	return string(output), err
 }
 
 func (n *nomadHarness) tryAllocLogs(allocationID string) (string, error) {
 	command := exec.Command("nomad", "alloc", "logs", "-stdout", allocationID)
-	command.Env = append(os.Environ(), "NOMAD_ADDR="+n.addr)
+	command.Env = append(os.Environ(), n.cliEnv()...)
 	output, err := command.CombinedOutput()
 	return string(output), err
 }

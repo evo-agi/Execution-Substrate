@@ -481,7 +481,26 @@ def collect_nomad_inventory():
     try:
         import urllib.request
 
-        with urllib.request.urlopen("http://127.0.0.1:4646/v1/agent/self", timeout=3) as response:
+        # Nomad enforces ACLs: read with the read-only observer token named by
+        # NOMAD_TOKEN_FILE, sent only in the request header.
+        nomad_headers = {}
+        token_file = os.environ.get("NOMAD_TOKEN_FILE", "")
+        if token_file:
+            descriptor = os.open(token_file, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+            try:
+                if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                    raise ValueError("nomad observer token file is not a regular file")
+                token_text = os.read(descriptor, 64).decode("ascii")
+            finally:
+                os.close(descriptor)
+            if not re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\n?", token_text, re.ASCII):
+                raise ValueError("nomad observer token file does not hold one token")
+            nomad_headers["X-Nomad-Token"] = token_text.rstrip("\n")
+
+        def nomad_get(path):
+            return urllib.request.Request("http://127.0.0.1:4646" + path, headers=nomad_headers)
+
+        with urllib.request.urlopen(nomad_get("/v1/agent/self"), timeout=3) as response:
             agent_payload = json.loads(response.read().decode("utf-8"))
         config = agent_payload.get("config") or agent_payload.get("Config") or {}
         member = agent_payload.get("member") or agent_payload.get("Member") or {}
@@ -493,11 +512,11 @@ def collect_nomad_inventory():
             "datacenter": config.get("Datacenter") or "",
         }
 
-        with urllib.request.urlopen("http://127.0.0.1:4646/v1/nodes", timeout=3) as response:
+        with urllib.request.urlopen(nomad_get("/v1/nodes"), timeout=3) as response:
             nodes_payload = json.loads(response.read().decode("utf-8"))
         if isinstance(nodes_payload, list) and nodes_payload:
             node_id = str(nodes_payload[0].get("ID") or "")
-            with urllib.request.urlopen(f"http://127.0.0.1:4646/v1/node/{node_id}", timeout=3) as response:
+            with urllib.request.urlopen(nomad_get(f"/v1/node/{node_id}"), timeout=3) as response:
                 node_payload = json.loads(response.read().decode("utf-8"))
             attributes = node_payload.get("Attributes") or {}
             drivers = node_payload.get("Drivers") or {}

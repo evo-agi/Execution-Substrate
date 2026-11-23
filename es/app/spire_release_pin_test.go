@@ -570,6 +570,7 @@ uname() { printf 'Linux\n'; }
 sudo() { [[ "$1" == -n && "$2" == true ]]; }
 go() { printf 'unexpected go %s\n' "$*" >> "$ROOT_EVENTS"; return 97; }
 curl() { printf 'unexpected curl\n' >> "$ROOT_EVENTS"; return 97; }
+nomad_acl_state_check() { :; }
 docker() { printf 'unexpected docker\n' >> "$ROOT_EVENTS"; return 97; }
 nomad() { printf 'unexpected nomad\n' >> "$ROOT_EVENTS"; return 97; }
 vault() { printf 'unexpected vault\n' >> "$ROOT_EVENTS"; return 97; }

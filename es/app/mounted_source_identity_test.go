@@ -401,8 +401,10 @@ func (n *nomadHarness) mountedNomadEndpoint() (string, error) {
 	return n.addr, nil
 }
 
-func mountedLocalNomadClient() *http.Client {
-	return &http.Client{Timeout: 2 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+func (n *nomadHarness) mountedLocalNomadClient() *http.Client {
+	client := n.httpClient(2 * time.Second)
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	return client
 }
 
 func (n *nomadHarness) mountedNomadRead(ctx context.Context, path string, limit int64) ([]byte, int, error) {
@@ -414,7 +416,7 @@ func (n *nomadHarness) mountedNomadRead(ctx context.Context, path string, limit 
 	if err != nil {
 		return nil, 0, errors.New("mount witness: Nomad observation request unavailable")
 	}
-	response, err := mountedLocalNomadClient().Do(request)
+	response, err := n.mountedLocalNomadClient().Do(request)
 	if err != nil {
 		return nil, 0, errors.New("mount witness: Nomad observation unavailable")
 	}
@@ -468,7 +470,7 @@ func (n *nomadHarness) waitForUniqueRunningMountedAllocation(jobID, taskName str
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	client := mountedLocalNomadClient()
+	client := n.mountedLocalNomadClient()
 	for ctx.Err() == nil {
 		request, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/v1/job/"+jobID+"/allocations", nil)
 		if err != nil {
@@ -536,7 +538,7 @@ func (n *nomadHarness) verifyUniqueMountedAllocation(jobID, allocationID string)
 	if err != nil {
 		return errors.New("mount witness: terminal allocation request unavailable")
 	}
-	response, err := (&http.Client{Timeout: 2 * time.Second}).Do(request)
+	response, err := n.httpClient(2 * time.Second).Do(request)
 	if err != nil {
 		return errors.New("mount witness: terminal allocation list unavailable")
 	}
@@ -640,7 +642,7 @@ func (n *nomadHarness) cancelMountedJob(jobID string) error {
 	if err != nil {
 		return errors.New("mount witness: test-owned job cancellation request unavailable")
 	}
-	response, err := mountedLocalNomadClient().Do(request)
+	response, err := n.mountedLocalNomadClient().Do(request)
 	if err != nil {
 		return errors.New("mount witness: test-owned job cancellation failed")
 	}

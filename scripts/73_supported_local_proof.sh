@@ -75,6 +75,11 @@ Optional environment variables:
   SUPPORTED_LOCAL_RETAINED_RESULT_AUTH_STORE_ID=<stable non-secret identifier>
   SUPPORTED_LOCAL_RETAINED_RESULT_AUTH_KEY_ID=<stable non-secret identifier>
   SUPPORTED_LOCAL_RETAINED_RESULT_AUTH_KEY_FILE=/guest/external/private/keys/key
+  SUPPORTED_LOCAL_NOMAD_ACL_DIR=/etc/execution-substrate/nomad-acl   (in the guest)
+
+The guest's Nomad must enforce access control (ACLs). Run
+scripts/70_linux_setup.sh in the guest first; guest setup then keeps or
+issues ES's Nomad token and a read-only observer token for evidence capture.
 EOF
 }
 
@@ -600,6 +605,9 @@ build_supported_local_guest_setup_command() {
     "SUPPORTED_LOCAL_RETAINED_RESULT_AUTH_KEY_FILE=${SUPPORTED_LOCAL_RETAINED_RESULT_AUTH_KEY_FILE:-}"
   )
 
+  if [[ -n "${SUPPORTED_LOCAL_NOMAD_ACL_DIR:-}" ]]; then
+    cmd+=("SUPPORTED_LOCAL_NOMAD_ACL_DIR=${SUPPORTED_LOCAL_NOMAD_ACL_DIR}")
+  fi
   if [[ -n "${SUPPORTED_LOCAL_VAULT_ADDRESS:-}" ]]; then
     cmd+=("SUPPORTED_LOCAL_VAULT_ADDRESS=${SUPPORTED_LOCAL_VAULT_ADDRESS}")
   fi
@@ -684,14 +692,18 @@ capture_supported_host_evidence() {
   run_guest_stdin <<'EOF'
 cd "$GUEST_REPO_ROOT"
 source "$GUEST_PROOF_DIR/env.sh"
+# Nomad enforces ACLs: reads use the read-only observer token named by
+# NOMAD_TOKEN_FILE (env.sh), sent in a header, never on a command line.
+source "$GUEST_REPO_ROOT/scripts/internal/nomad_acl.sh"
 projector="$GUEST_REPO_ROOT/scripts/internal/supported_local_proof_projection.py"
 systemctl show nomad --no-pager --property=Id,LoadState,ActiveState,SubState,UnitFileState,MainPID,ExecMainStatus |
   python3 "$projector" host-systemd - "$GUEST_PROOF_DIR/nomad-service-safe.json"
-curl --fail-with-body --silent --show-error "$NOMAD_ADDR/v1/agent/self" |
+nomad_acl_state_check >/dev/null
+nomad_api_get /v1/agent/self /dev/stdout |
   python3 "$projector" host-agent - "$GUEST_PROOF_DIR/nomad-agent-safe.json"
-curl --fail-with-body --silent --show-error "$NOMAD_ADDR/v1/status/leader" |
+nomad_api_get /v1/status/leader /dev/stdout |
   python3 "$projector" host-leader - "$GUEST_PROOF_DIR/nomad-leader-safe.json"
-curl --fail-with-body --silent --show-error "$NOMAD_ADDR/v1/nodes" |
+nomad_api_get /v1/nodes /dev/stdout |
   python3 "$projector" host-nodes - "$GUEST_PROOF_DIR/nomad-nodes-safe.json"
 python3 "$projector" fetch-node-details "$NOMAD_ADDR" "$GUEST_PROOF_DIR/node-details-safe.json"
 docker info --format '{{json .}}' |
@@ -782,8 +794,15 @@ if [[ -z "${run_id}" ]]; then
   exit 1
 fi
 job_id="exec-${run_id}"
-nomad job status "${job_id}" >/dev/null
-alloc_id="$(nomad job allocs -json "${job_id}" | python3 -c '
+# ES's jobs live in its own namespace; the read-only observer token reads
+# them. The token reaches the nomad CLI through its environment only.
+source "$GUEST_REPO_ROOT/scripts/internal/nomad_acl.sh"
+observer_token="$(nomad_token_from_file "${NOMAD_TOKEN_FILE:-}")"
+nomad_observer() {
+  NOMAD_TOKEN="${observer_token}" NOMAD_NAMESPACE="${NOMAD_ACL_NAMESPACE}" nomad "$@"
+}
+nomad_observer job status "${job_id}" >/dev/null
+alloc_id="$(nomad_observer job allocs -json "${job_id}" | python3 -c '
 import json
 import re
 import sys
@@ -805,7 +824,7 @@ if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[
 print(value)
 '
 )"
-nomad alloc status "${alloc_id}" >/dev/null
+nomad_observer alloc status "${alloc_id}" >/dev/null
 python3 - <<'PY' "$GUEST_PROOF_DIR" "${EVIDENCE_LABEL:-}" "${run_id}" "${job_id}" "${alloc_id}"
 import json
 import pathlib
