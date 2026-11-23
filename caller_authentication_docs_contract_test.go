@@ -41,6 +41,14 @@ func TestCallerAuthenticationContractIsDocumentedOnce(t *testing.T) {
 		"is `401` before allowlist matching.",
 	)
 
+	// The operator healthcheck TLS status tool predicts whether ES accepts the
+	// operator certificate, so it applies the same one-URI-SAN rule.
+	status := compactText(mustRead(t, ".docs/remote_alpha_operator_healthcheck_noninteractive_status.md"))
+	assertContainsAll(t, "operator healthcheck TLS status identity rule", status,
+		"The identity passes only when the certificate carries exactly one URI SAN and that URI is `spiffe://execution.internal/operator/local`, because the caller authentication contract (`.docs/system_overview/contracts.md` section 3A) refuses a certificate with more than one URI SAN.",
+		"Expected operator/local identity mismatch, legacy-only identity, or more than one URI SAN: `identity_mismatch`.",
+	)
+
 	boundaries := compactDocSection(t, mustRead(t, ".docs/system_overview/boundaries.md"), "## 11. Cross-cutting packages that are not service boundaries", "## 12. Boundary leaks and pressure points")
 	assertContainsAll(t, "cross-cutting package table", boundaries,
 		"| `internal/callerauth` |",
