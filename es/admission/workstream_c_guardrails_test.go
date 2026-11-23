@@ -5034,6 +5034,21 @@ func operationalGuardMovedPosition(fset *token.FileSet, root ast.Node) string {
 	return moved
 }
 
+// operationalGuardLineDirectivesOfTree refuses a line directive in every
+// non-test Go file below root, as repositoryProductionListings lists them:
+// every directory but .git, so testdata directories and directories whose
+// names begin with a dot or an underscore as well, which the go command
+// compiles as soon as another package imports them. It returns the number of
+// files it read.
+func operationalGuardLineDirectivesOfTree(t *testing.T, root string) (int, error) {
+	t.Helper()
+	_, sources := repositoryProductionListings(t, root)
+	if len(sources) == 0 {
+		return 0, nil
+	}
+	return len(sources), validateOperationalNoLineDirective(sources)
+}
+
 // A //line or /*line directive makes tools, the guard's type checker among
 // them, read the code below it as code of another file and line. The guard
 // reads positions unadjusted, so a directive cannot move a site to another
@@ -5042,13 +5057,67 @@ func operationalGuardMovedPosition(fset *token.FileSet, root ast.Node) string {
 // whatever build target compiles it.
 func TestOperationalGuardProductionFilesHoldNoLineDirective(t *testing.T) {
 	root := repositoryRootForAdmissionGuard(t)
-	_, sources := repositoryProductionListings(t, root)
-	if len(sources) == 0 {
+	read, err := operationalGuardLineDirectivesOfTree(t, root)
+	if read == 0 {
 		t.Fatal("no production source was read")
 	}
-	if err := validateOperationalNoLineDirective(sources); err != nil {
+	if err != nil {
 		t.Fatal(err)
 	}
+	// The check reads every directory that the go command can compile from,
+	// so a directive is refused in a testdata directory, in a directory whose
+	// name begins with a dot or an underscore, in a vendor directory and in a
+	// nested module, in a cgo file and in a file that no guarded target
+	// builds; a test file and a file below .git are not production files.
+	t.Run("every directory the go command can compile from is read", func(t *testing.T) {
+		const directive = "//line zz_elsewhere.go:1\n"
+		planted := map[string]string{
+			"top.go":                          "package p\n\n" + directive + "var zz = 1\n",
+			"pkg/kept.go":                     "package p\n\n" + directive + "var zz = 1\n",
+			"pkg/testdata/fixture/td.go":      "package fixture\n\n" + directive + "var zz = 1\n",
+			"pkg/_under/under.go":             "package under\n\n" + directive + "var zz = 1\n",
+			"pkg/.dot/dot.go":                 "package dot\n\n" + directive + "var zz = 1\n",
+			"pkg/testdata/_deep/.deeper/d.go": "package deeper\n\n" + directive + "var zz = 1\n",
+			"pkg/vendor/dep/dep.go":           "package dep\n\n" + directive + "var zz = 1\n",
+			"pkg/nested/inner.go":             "package inner\n\n" + directive + "var zz = 1\n",
+			"pkg/zz_cgo.go":                   "package p\n\n// #include <stdlib.h>\nimport \"C\"\n\n" + directive + "var zy = 1\n",
+			"pkg/zz_tagged.go":                "//go:build zzcustom\n\npackage p\n\n" + directive + "var zx = 1\n",
+		}
+		notRead := map[string]string{
+			"pkg/kept_test.go":        "package p\n\n" + directive + "var zw = 1\n",
+			".git/planted/planted.go": "package planted\n\n" + directive + "var zz = 1\n",
+			"pkg/nested/go.mod":       "module zznested\n",
+		}
+		scratch := t.TempDir()
+		for _, files := range []map[string]string{planted, notRead} {
+			for name, source := range files {
+				if err := os.MkdirAll(filepath.Join(scratch, filepath.Dir(name)), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(scratch, name), []byte(source), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		read, err := operationalGuardLineDirectivesOfTree(t, scratch)
+		if read != len(planted) {
+			t.Fatalf("read %d files, want the %d planted production files", read, len(planted))
+		}
+		if err == nil {
+			t.Fatal("no directive was refused")
+		}
+		for name, source := range planted {
+			line := strings.Count(source[:strings.Index(source, directive)], "\n") + 1
+			if want := fmt.Sprintf("%s:%d:1 holds a line directive", name, line); !strings.Contains(err.Error(), want) {
+				t.Errorf("the directive in %s was not refused: %v", name, err)
+			}
+		}
+		for name := range notRead {
+			if strings.Contains(err.Error(), name) {
+				t.Errorf("%s is not a production file and was read: %v", name, err)
+			}
+		}
+	})
 	const file = "es/admission/zz_added.go"
 	for name, source := range map[string]string{
 		"//line at the start of a line":          "package admission\n\n//line other.go:1\nvar zz = 1\n",
@@ -5200,18 +5269,18 @@ func validateGuardPositionReads(sources map[string]string) error {
 			}
 			switch selector.Sel.Name {
 			case "Position":
-				refused = append(refused, fmt.Errorf("%s:%d reads an adjusted position with Position; use guardPosition", name, line))
+				refused = append(refused, fmt.Errorf("%s:%d reads an adjusted position with Position; use guardPosition, or PositionFor(pos, false) outside package admission", name, line))
 			case "Line":
 				if call != nil {
-					refused = append(refused, fmt.Errorf("%s:%d reads an adjusted line with Line; use guardPosition", name, line))
+					refused = append(refused, fmt.Errorf("%s:%d reads an adjusted line with Line; use guardPosition, or PositionFor(pos, false) outside package admission", name, line))
 				}
 			case "PositionFor":
 				if call == nil || len(call.Args) != 2 {
-					refused = append(refused, fmt.Errorf("%s:%d uses PositionFor other than with a position and false; use guardPosition", name, line))
+					refused = append(refused, fmt.Errorf("%s:%d uses PositionFor other than with a position and false; use guardPosition, or PositionFor(pos, false) outside package admission", name, line))
 					return true
 				}
 				if adjusted, ok := call.Args[1].(*ast.Ident); !ok || adjusted.Name != "false" {
-					refused = append(refused, fmt.Errorf("%s:%d calls PositionFor without false; use guardPosition", name, line))
+					refused = append(refused, fmt.Errorf("%s:%d calls PositionFor without false; use guardPosition, or PositionFor(pos, false) outside package admission", name, line))
 				}
 			}
 			return true
