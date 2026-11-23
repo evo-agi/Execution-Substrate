@@ -388,10 +388,11 @@ that are not the last field of its TBSCertificate, because Go reads them only
 there. It refuses a URI SAN that is empty, longer than 256 bytes, or holds a
 byte outside printable ASCII without spaces, and, as Go's certificate parser
 does, an rfc822Name or dNSName with a byte above `0x7F` and an iPAddress that
-is not 4 or 16 bytes long. Such a certificate is `identity_malformed` and fails
-with `identity_mismatch`. A certificate whose only URI SAN is the expected one
-still fails with `identity_mismatch` when ES would refuse it as a client
-certificate: `identity_not_end_entity` when its basic constraints mark it as a
+is not 4 or 16 bytes long. It also refuses an extension identifier,
+basicConstraints, keyUsage or extKeyUsage that Go's parser would refuse. Such a
+certificate is `identity_malformed` and fails with `identity_mismatch`. A
+certificate whose only URI SAN is the expected one still fails with
+`identity_mismatch` when ES would refuse it as a client certificate: `identity_not_end_entity` when its basic constraints mark it as a
 CA or its key usage includes keyCertSign or cRLSign (section 3A), and
 `identity_not_for_client_auth` when it has an extended key usage that allows
 neither clientAuth nor anyExtendedKeyUsage, which Go's TLS server refuses. The
