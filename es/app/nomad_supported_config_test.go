@@ -235,6 +235,11 @@ func TestRealNomadOffersOnlyTheLimitedDockerDriver(t *testing.T) {
 	for field, want := range fixture {
 		got := realDocker[field]
 		if nested, ok := want.(map[string]any); ok {
+			// Nomad 2.1 reports a nested block as an object, Nomad 2.0
+			// (the version on the box) as a list holding one object.
+			if list, isList := got.([]any); isList && len(list) == 1 {
+				got = list[0]
+			}
 			gotNested, isMap := got.(map[string]any)
 			if !isMap {
 				t.Fatalf("real agent Docker plugin %s = %s, want an object", field, mustMarshalJSON(t, got))

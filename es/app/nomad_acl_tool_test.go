@@ -21,9 +21,12 @@ import (
 )
 
 // The exclusive-writer check asks Nomad itself: a policy or role counts as a
-// grant when a short-lived token holding only it can plan a job in the ES
-// namespace, however its rules are written. Auth methods are refused
-// outright, because their binding rules can issue tokens with any policy.
+// grant when a short-lived token holding only it can read the ES namespace
+// (Nomad allows that for any capability there) or plan a job in it, however
+// its rules are written and whatever capability they give. Auth methods are
+// refused outright, because their binding rules can issue tokens with any
+// policy. check also refuses a second token with ES's or the observer's
+// policy, and either policy with rules other than the tool's.
 func TestNomadACLToolAsksNomadWhichGrantsCanSubmit(t *testing.T) {
 	harness := startACLTestNomad(t, nomadHarnessOptions{})
 	aclDir := filepath.Dir(harness.esTokenFile)
@@ -61,7 +64,7 @@ func TestNomadACLToolAsksNomadWhichGrantsCanSubmit(t *testing.T) {
 		}
 	}
 
-	if output, err := check(); err != nil || !strings.Contains(output, "no other grant can submit there") {
+	if output, err := check(); err != nil || !strings.Contains(output, "no other grant holds capabilities there") {
 		t.Fatalf("check with the management token failed on the provisioned Nomad: %v output=%s", err, output)
 	}
 
@@ -72,9 +75,16 @@ func TestNomadACLToolAsksNomadWhichGrantsCanSubmit(t *testing.T) {
 		{"json-escaped", `{"namespace": {"es\u002dsubmit\u002dv1": {"policy": "write"}}}`},
 		{"partial-glob", `namespace "es-*" { capabilities = ["submit-job"] }`},
 		{"json-glob", `{"namespace": {"*": {"policy": "write"}}}`},
+		// Grants that cannot submit but can change, rerun, stop, enter or
+		// read ES's jobs.
+		{"scale-only", `namespace "es-submit-v1" { capabilities = ["scale-job"] }`},
+		{"lifecycle-json", `{"namespace": {"es-submit-v1": {"capabilities": ["read-job", "alloc-lifecycle"]}}}`},
+		{"exec-glob", `namespace "*" { capabilities = ["read-job", "alloc-exec"] }`},
+		{"dispatch-only", `namespace "es-submit-v1" { capabilities = ["dispatch-job"] }`},
+		{"another-reader", `namespace "es-submit-v1" { capabilities = ["read-job"] }`},
 	} {
 		write(http.MethodPost, "/v1/acl/policy/"+form.name, map[string]string{"Name": form.name, "Rules": form.rules})
-		refusedBoth("the "+form.name+" policy", "other ACL grants can submit jobs in es-submit-v1 (policy "+form.name+")")
+		refusedBoth("the "+form.name+" policy", "other ACL grants hold capabilities in es-submit-v1 (policy "+form.name+")")
 		write(http.MethodDelete, "/v1/acl/policy/"+form.name, nil)
 	}
 
@@ -84,7 +94,7 @@ func TestNomadACLToolAsksNomadWhichGrantsCanSubmit(t *testing.T) {
 	if err := json.Unmarshal([]byte(write(http.MethodPost, "/v1/acl/role", map[string]any{"Name": "es-copy", "Policies": []map[string]string{{"Name": "es-submit-v1"}}})), &role); err != nil || role.ID == "" {
 		t.Fatalf("create role: %v", err)
 	}
-	refusedBoth("a role holding the ES policy", "other ACL grants can submit jobs in es-submit-v1 (role es-copy)")
+	refusedBoth("a role holding the ES policy", "other ACL grants hold capabilities in es-submit-v1 (role es-copy)")
 	write(http.MethodDelete, "/v1/acl/role/"+role.ID, nil)
 
 	// Every management token can submit anywhere, so a second live one
@@ -113,12 +123,64 @@ func TestNomadACLToolAsksNomadWhichGrantsCanSubmit(t *testing.T) {
 	refusedBoth("an auth method", "nomad has ACL auth methods (es-probe-jwt)")
 	write(http.MethodDelete, "/v1/acl/auth-method/es-probe-jwt", nil)
 
+	// Grants that hold nothing in es-submit-v1 pass: one limited to the
+	// default namespace, and a glob write that a deny on es-submit-v1
+	// shadows.
 	write(http.MethodPost, "/v1/acl/policy/readers", map[string]string{"Name": "readers", "Rules": `namespace "default" { policy = "read" }`})
+	write(http.MethodPost, "/v1/acl/policy/shadowed", map[string]string{"Name": "shadowed",
+		"Rules": "namespace \"*\" { policy = \"write\" }\nnamespace \"es-submit-v1\" { policy = \"deny\" }\n"})
 	if output, err := provision(); err != nil {
-		t.Fatalf("provision refused a policy that cannot submit in es-submit-v1: %v output=%s", err, output)
+		t.Fatalf("provision refused policies that hold nothing in es-submit-v1: %v output=%s", err, output)
 	}
 	if output, err := check(); err != nil {
-		t.Fatalf("check refused a policy that cannot submit in es-submit-v1: %v output=%s", err, output)
+		t.Fatalf("check refused policies that hold nothing in es-submit-v1: %v output=%s", err, output)
+	}
+	write(http.MethodDelete, "/v1/acl/policy/shadowed", nil)
+
+	// A second token with ES's policy, and widened ES or observer policies:
+	// check refuses each, and provision deletes the token or restores the
+	// rules.
+	var second struct {
+		AccessorID string `json:"AccessorID"`
+	}
+	if err := json.Unmarshal([]byte(write(http.MethodPost, "/v1/acl/token", map[string]any{
+		"Name": "not-es", "Type": "client", "Policies": []string{"es-submit-v1"},
+	})), &second); err != nil || second.AccessorID == "" {
+		t.Fatalf("create a second ES-policy token: %v", err)
+	}
+	if output, err := check(); err == nil || !strings.Contains(output, "live tokens holding the es-submit-v1 policy are") ||
+		!strings.Contains(output, second.AccessorID) {
+		t.Fatalf("check accepted a second token with the ES policy: %v output=%s", err, output)
+	}
+	if output, err := provision(); err != nil || !strings.Contains(output, "deleted the stale es-submit-v1 token (accessor "+second.AccessorID+")") {
+		t.Fatalf("provision did not delete a second token with the ES policy: %v output=%s", err, output)
+	}
+	// The observer policy is exempt from the probes only while its rules are
+	// the tool's: a provision that does not write it (no observer token
+	// file) judges a widened copy like any other grant.
+	write(http.MethodPost, "/v1/acl/policy/es-observer-v1", map[string]string{"Name": "es-observer-v1",
+		"Rules": "namespace \"es-submit-v1\" {\n  capabilities = [\"read-job\", \"alloc-lifecycle\"]\n}\n"})
+	if output, err := runNomadACLTool(t, "provision", "--addr", harness.addr, "--management-token-file", management,
+		"--es-token-file", harness.esTokenFile, "--es-token-owner", owner); err == nil ||
+		!strings.Contains(output, "other ACL grants hold capabilities in es-submit-v1 (policy es-observer-v1)") {
+		t.Fatalf("provision without the observer accepted a widened observer policy: %v output=%s", err, output)
+	}
+	for _, widened := range []struct{ policy, rules string }{
+		{"es-observer-v1", "agent {\n  policy = \"read\"\n}\nnode {\n  policy = \"read\"\n}\n" +
+			"namespace \"es-submit-v1\" {\n  capabilities = [\"read-job\", \"read-logs\", \"scale-job\", \"alloc-exec\", \"alloc-lifecycle\"]\n}\n"},
+		{"es-submit-v1", "namespace \"es-submit-v1\" {\n  capabilities = [\"submit-job\", \"read-job\", \"read-logs\", \"alloc-exec\", \"alloc-node-exec\"]\n}\n" +
+			"host_volume \"*\" {\n  policy = \"write\"\n}\n"},
+	} {
+		write(http.MethodPost, "/v1/acl/policy/"+widened.policy, map[string]string{"Name": widened.policy, "Rules": widened.rules})
+		if output, err := check(); err == nil || !strings.Contains(output, "the "+widened.policy+" policy's rules differ") {
+			t.Fatalf("check accepted a widened %s policy: %v output=%s", widened.policy, err, output)
+		}
+		if output, err := provision(); err != nil {
+			t.Fatalf("provision did not restore the %s policy: %v output=%s", widened.policy, err, output)
+		}
+		if output, err := check(); err != nil {
+			t.Fatalf("check failed after provision restored the %s policy: %v output=%s", widened.policy, err, output)
+		}
 	}
 
 	// Provision keeps an existing ES token only when Nomad reports it as the
@@ -185,6 +247,10 @@ type fakeNomadForACLCheck struct {
 const (
 	fakeACLManagementToken = "7b712e3f-4d5c-4e6f-a0b1-c2d3e4f5a6b7"
 	fakeACLProbeSecret     = "8c823f40-5e6d-4f70-b1c2-d3e4f5a6b7c8"
+	// The rules nomad_acl.py writes for ES's and the observer's policies.
+	toolESPolicyRules       = "namespace \"es-submit-v1\" {\n  capabilities = [\"submit-job\", \"read-job\", \"read-logs\"]\n}\n"
+	toolObserverPolicyRules = "agent {\n  policy = \"read\"\n}\nnode {\n  policy = \"read\"\n}\n" +
+		"namespace \"es-submit-v1\" {\n  capabilities = [\"read-job\", \"read-logs\"]\n}\n"
 )
 
 func (f *fakeNomadForACLCheck) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -212,6 +278,13 @@ func (f *fakeNomadForACLCheck) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		}
 	case r.URL.Path == "/v1/acl/policy/anonymous":
 		w.WriteHeader(http.StatusNotFound)
+	case r.URL.Path == "/v1/acl/policy/es-submit-v1" && (token == testESNomadToken || token == fakeACLManagementToken):
+		writeJSON(map[string]any{"Name": "es-submit-v1", "Rules": toolESPolicyRules})
+	case r.URL.Path == "/v1/acl/policy/es-observer-v1" && (token == testObserverNomadToken || token == fakeACLManagementToken):
+		writeJSON(map[string]any{"Name": "es-observer-v1", "Rules": toolObserverPolicyRules})
+	case r.URL.Path == "/v1/namespace/es-submit-v1":
+		// Only the probe token for the default-readers policy asks.
+		w.WriteHeader(http.StatusForbidden)
 	case r.URL.Path == planPath:
 		_, _ = io.Copy(io.Discard, r.Body)
 		if token == testESNomadToken && namespace == "es-submit-v1" {
@@ -226,7 +299,7 @@ func (f *fakeNomadForACLCheck) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		}
 		w.WriteHeader(http.StatusForbidden)
 	case r.URL.Path == "/v1/acl/policies" && token == fakeACLManagementToken:
-		writeJSON([]map[string]string{{"Name": "es-submit-v1"}, {"Name": "es-observer-v1"}})
+		writeJSON([]map[string]string{{"Name": "es-submit-v1"}, {"Name": "es-observer-v1"}, {"Name": "default-readers"}})
 	case r.URL.Path == "/v1/acl/roles" && token == fakeACLManagementToken:
 		writeJSON([]any{})
 	case r.URL.Path == "/v1/acl/auth-methods" && token == fakeACLManagementToken:
@@ -234,9 +307,10 @@ func (f *fakeNomadForACLCheck) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	case r.URL.Path == "/v1/acl/tokens" && token == fakeACLManagementToken:
 		writeJSON([]map[string]any{
 			{"AccessorID": "management", "Type": "management"},
-			{"AccessorID": "es", "Type": "client"},
-			{"AccessorID": "observer", "Type": "client"},
+			{"AccessorID": "es", "Type": "client", "Policies": []string{"es-submit-v1"}},
+			{"AccessorID": "observer", "Type": "client", "Policies": []string{"es-observer-v1"}},
 			{"AccessorID": "expired-management", "Type": "management", "ExpirationTime": "2020-01-01T00:00:00.123456789Z"},
+			{"AccessorID": "expired-es", "Type": "client", "Policies": []string{"es-submit-v1"}, "ExpirationTime": "2020-01-01T00:00:00Z"},
 		})
 	case r.URL.Path == "/v1/acl/token" && r.Method == http.MethodPost && token == fakeACLManagementToken:
 		writeJSON(map[string]any{"AccessorID": "probe", "SecretID": fakeACLProbeSecret})
@@ -269,7 +343,7 @@ func TestNomadACLToolCheckRefusesEachDeviation(t *testing.T) {
 		return runNomadACLTool(t, "check", "--addr", server.URL, "--es-token-file", esTokenFile,
 			"--observer-token-file", observerTokenFile, "--management-token-file", managementFile)
 	}
-	if output, err := run(nil); err != nil || !strings.Contains(output, "no other grant can submit there") {
+	if output, err := run(nil); err != nil || !strings.Contains(output, "no other grant holds capabilities there") {
 		t.Fatalf("check refused the locked fake: %v output=%s", err, output)
 	}
 	answer := func(path string, token string, status int, body any) func(http.ResponseWriter, *http.Request, string) bool {
@@ -360,10 +434,38 @@ func TestNomadACLToolCheckRefusesEachDeviation(t *testing.T) {
 		{"auth method present", answer("/v1/acl/auth-methods", fakeACLManagementToken, http.StatusOK, []map[string]string{{"Name": "sso"}}), "nomad has ACL auth methods (sso)"},
 		{"another live management token", answer("/v1/acl/tokens", fakeACLManagementToken, http.StatusOK, []map[string]any{
 			{"AccessorID": "management", "Type": "management"},
+			{"AccessorID": "es", "Type": "client", "Policies": []string{"es-submit-v1"}},
+			{"AccessorID": "observer", "Type": "client", "Policies": []string{"es-observer-v1"}},
 			{"AccessorID": "second", "Type": "management", "ExpirationTime": "0001-01-01T00:00:00Z"},
 			{"AccessorID": "third", "Type": "management", "ExpirationTime": "2999-01-01T00:00:00Z"},
 		}), "nomad has other management tokens (accessors second, third)"},
-		{"another policy can submit", plan(fakeACLProbeSecret, "es-submit-v1", http.StatusOK), "other ACL grants can submit jobs in es-submit-v1 (policy es-observer-v1)"},
+		{"another policy can submit", plan(fakeACLProbeSecret, "es-submit-v1", http.StatusOK), "other ACL grants hold capabilities in es-submit-v1 (policy default-readers)"},
+		{"another policy holds some capability", answer("/v1/namespace/es-submit-v1", fakeACLProbeSecret, http.StatusOK, map[string]any{"Name": "es-submit-v1"}),
+			"other ACL grants hold capabilities in es-submit-v1 (policy default-readers)"},
+		{"probe answer is not a refusal", answer("/v1/namespace/es-submit-v1", fakeACLProbeSecret, http.StatusInternalServerError, nil),
+			"other ACL grants hold capabilities in es-submit-v1 (policy default-readers)"},
+		{"ES policy widened", answer("/v1/acl/policy/es-submit-v1", testESNomadToken, http.StatusOK,
+			map[string]any{"Name": "es-submit-v1", "Rules": strings.Replace(toolESPolicyRules, `"read-logs"`, `"read-logs", "alloc-exec"`, 1)}),
+			"the es-submit-v1 policy's rules differ"},
+		{"observer policy widened", answer("/v1/acl/policy/es-observer-v1", testObserverNomadToken, http.StatusOK,
+			map[string]any{"Name": "es-observer-v1", "Rules": strings.Replace(toolObserverPolicyRules, `"read-logs"`, `"read-logs", "scale-job"`, 1)}),
+			"the es-observer-v1 policy's rules differ"},
+		{"observer policy widened, as the management token reads it", answer("/v1/acl/policy/es-observer-v1", fakeACLManagementToken, http.StatusOK,
+			map[string]any{"Name": "es-observer-v1", "Rules": toolObserverPolicyRules + "operator {\n  policy = \"write\"\n}\n"}),
+			"the es-observer-v1 policy's rules differ"},
+		{"ES policy missing", answer("/v1/acl/policy/es-submit-v1", testESNomadToken, http.StatusNotFound, nil), "the es-submit-v1 policy's rules differ"},
+		{"second token with the ES policy", answer("/v1/acl/tokens", fakeACLManagementToken, http.StatusOK, []map[string]any{
+			{"AccessorID": "management", "Type": "management"},
+			{"AccessorID": "es", "Type": "client", "Policies": []string{"es-submit-v1"}},
+			{"AccessorID": "not-es", "Type": "client", "Policies": []string{"es-submit-v1"}},
+			{"AccessorID": "observer", "Type": "client", "Policies": []string{"es-observer-v1"}},
+		}), "live tokens holding the es-submit-v1 policy are (accessors es, not-es)"},
+		{"second token with the observer policy", answer("/v1/acl/tokens", fakeACLManagementToken, http.StatusOK, []map[string]any{
+			{"AccessorID": "management", "Type": "management"},
+			{"AccessorID": "es", "Type": "client", "Policies": []string{"es-submit-v1"}},
+			{"AccessorID": "observer", "Type": "client", "Policies": []string{"es-observer-v1"}},
+			{"AccessorID": "observer-copy", "Type": "client", "Policies": []string{"es-observer-v1", "default-readers"}},
+		}), "live tokens holding the es-observer-v1 policy are (accessors observer, observer-copy)"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			output, err := run(test.deviate)

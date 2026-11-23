@@ -584,7 +584,7 @@ The current host-qualification boundary for the supported Linux environment is d
 - Docker driver available, and the only driver the client enables: `client.options["driver.allowlist"] = "docker"` (every ES task runs through its runtime helper on the Docker driver)
 - an explicit `plugin "docker"` block that refuses privileged containers (`allow_privileged = false`) and allows only the capabilities ES's runtime helper uses to prepare a run and drop to the workload user: `allow_caps = ["chown", "dac_override", "fowner", "kill", "setgid", "setuid", "setpcap"]` (each one is needed: removing any one fails the real Nomad and Docker submit tests)
 - bind mounts enabled in that block through `volumes { enabled = true }`
-- when enabled local runtime-profile images are part of the supported-local proof/runtime surface, Nomad Docker image garbage collection disabled in that block through `gc { image = false }` so Nomad does not remove the configured local profile image after a stopped allocation (the supported config no longer writes the older `client.options` keys `docker.cleanup.image` and `docker.volumes.enabled`, and readiness reads the plugin block instead)
+- when enabled local runtime-profile images are part of the supported-local proof/runtime surface, Nomad Docker image garbage collection disabled in that block through `gc { image = false }` so Nomad does not remove the configured local profile image after a stopped allocation (the supported config no longer writes the older `client.options` keys `docker.cleanup.image` and `docker.volumes.enabled`, and readiness reads the plugin block instead, which Nomad 2.1 reports as an object and Nomad 2.0 as a list holding one object; both are accepted)
 - Nomad's configuration directory and its data directory (Raft state and keyring) owned by root (`/etc/nomad.d` 0755 with `nomad.hcl` root:root 0640, data directory 0700), because Nomad runs as root
 - readiness (`scripts/10_health_check.sh`, bring-up and supported-local setup) refuses a Nomad whose agent does not report the Docker-only allowlist, `allow_privileged = false` and capabilities within the list above (`nomad: drivers=docker docker_privileged=refused docker_caps=...`)
 - explicit local data directory for repeatable manual bring-up
@@ -646,22 +646,34 @@ bypass ES admission. ES therefore submits only to a Nomad that enforces them.
   sudo caller), then runs the lock check. It is idempotent: a working token
   is kept. `check` verifies the lock (an anonymous plan in `es-submit-v1`,
   ES's token in `default` or on `/v1/nodes`, and the observer token planning
-  are all refused; ES's token can plan in `es-submit-v1`), and `rotate`
-  issues new ES and observer tokens and deletes the old ones. ES must be the
-  only client writer in `es-submit-v1`: the tool asks Nomad itself, by
-  issuing a short-lived (5 minute) probe token for each other policy and for
-  each role and planning a job in `es-submit-v1` with it; any answer other
-  than 403 counts as a grant. So every policy syntax (HCL, JSON, escaped
-  names, namespace globs) and every role is covered. It also refuses when
-  any ACL auth method exists (its binding rules could issue tokens), when a
-  live management token other than the one in the management token file
-  exists (every management token can submit anywhere), when an anonymous
-  policy exists, or when ACLs are off. `scripts/nomad_acl_setup.sh
-  check` runs the exclusive-writer probes too, with the management token;
-  `nomad_acl.py check` without `--management-token-file` checks only what
-  ES's and the observer's tokens can do. The tool behind it is
-  `scripts/internal/nomad_acl.py`; it talks only to a loopback Nomad
-  address, with no proxy and no redirects.
+  are all refused; ES's token can plan in `es-submit-v1`; the ES and
+  observer policies have exactly the tool's rules), and `rotate` issues new
+  ES and observer tokens and deletes the old ones. Only ES may submit or
+  change jobs in `es-submit-v1`, and only the read-only observer may read
+  them: the tool asks Nomad itself, by issuing a short-lived (5 minute) probe
+  token for each other policy and for each role, and with it reading the
+  `es-submit-v1` namespace (Nomad allows that for any capability there, so
+  `scale-job`, `dispatch-job`, `alloc-lifecycle`, `alloc-exec` and
+  `read-job` grants all count) and planning a job there; any answer other
+  than 403 to either counts as a grant and is refused. So every policy
+  syntax (HCL, JSON, escaped names, namespace globs) and every role is
+  covered, and a glob grant shadowed by a `deny` on `es-submit-v1` passes.
+  The observer policy is exempt only while its rules are exactly the tool's.
+  It also refuses when any ACL auth method exists (its binding rules could
+  issue tokens), when a live management token other than the one in the
+  management token file exists (every management token can submit
+  anywhere), when a live token other than the ES or observer token holds
+  their policy, when an anonymous policy exists, or when ACLs are off.
+  Provision writes the two policies before these probes, so a widened copy
+  is restored, and deletes other tokens with ES's or the observer's policy.
+  `scripts/nomad_acl_setup.sh check` runs all of this with the management
+  token; that part writes to Nomad (it creates and deletes the probe
+  tokens). `nomad_acl.py check` without `--management-token-file` checks
+  only what ES's and the observer's tokens can do and their policies' rules.
+  Grants outside namespaces stay operator power the check does not judge:
+  for example `node` write can drain the node and so stop ES's allocations.
+  The tool behind it is `scripts/internal/nomad_acl.py`; it talks only to a
+  loopback Nomad address, with no proxy and no redirects.
 - **Rotation needs an ES restart**: ES reads its token only at startup, and a
   container bind mount keeps the old file, so restart ES after `rotate`.
 - **Bring-up and proof paths**: `BRINGUP_PROFILE=full scripts/01_bringup.sh

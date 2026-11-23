@@ -497,7 +497,7 @@ func TestNomadACLToolKeepsRotatesAndRefusesUnsafeStates(t *testing.T) {
 		want  string
 	}{
 		{"anonymous", `namespace "default" { policy = "read" }`, "has an `anonymous` ACL policy"},
-		{"operations", `namespace "*" { policy = "write" }`, "other ACL grants can submit jobs in es-submit-v1 (policy operations)"},
+		{"operations", `namespace "*" { policy = "write" }`, "other ACL grants hold capabilities in es-submit-v1 (policy operations)"},
 	} {
 		status, body := nomadRawRequest(t, http.MethodPost, harness.addr+"/v1/acl/policy/"+policy.name, harness.managementToken, mustMarshalJSON(t, map[string]string{"Name": policy.name, "Rules": policy.rules}))
 		if status != http.StatusOK {
@@ -712,6 +712,18 @@ setup`
 			"SUPPORTED_LOCAL_RETAINED_RESULT_AUTH_KEY_FILE="+filepath.Join(workspace, "external", "key"))
 		if !strings.Contains(r.output, "outside the proof, staging, results and SPIRE socket directories") || r.events != "" {
 			t.Fatalf("token directory inside the proof was accepted: output=%q events=%q", r.output, r.events)
+		}
+	})
+	// The SPIRE socket directory lies inside the proof directory, so this
+	// case is also refused by the proof scope;
+	// TestNomadACLDirPlacementRefusesEveryScope checks each scope alone.
+	t.Run("token directory inside the SPIRE socket directory", func(t *testing.T) {
+		workspace := t.TempDir()
+		r := run(t, "SUPPORTED_LOCAL_PROOF_DIR="+filepath.Join(workspace, "proof"),
+			"SUPPORTED_LOCAL_NOMAD_ACL_DIR="+filepath.Join(workspace, "proof", "spire-agent", "public", "nomad-acl"),
+			"SUPPORTED_LOCAL_RETAINED_RESULT_AUTH_KEY_FILE="+filepath.Join(workspace, "external", "key"))
+		if !strings.Contains(r.output, "outside the proof, staging, results and SPIRE socket directories") || r.events != "" {
+			t.Fatalf("token directory inside the SPIRE socket directory was accepted: output=%q events=%q", r.output, r.events)
 		}
 	})
 	t.Run("provisioning failure stops setup", func(t *testing.T) {

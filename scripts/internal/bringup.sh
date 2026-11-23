@@ -582,6 +582,10 @@ config = payload.get("config") or {}
 plugins = [plugin for plugin in (config.get("Plugins") or []) if isinstance(plugin, dict) and plugin.get("Name") == "docker"]
 plugin_config = (plugins[0].get("Config") or {}) if len(plugins) == 1 else {}
 gc = plugin_config.get("gc") if isinstance(plugin_config, dict) else None
+# Nomad 2.1 reports a plugin's nested block as an object, Nomad 2.0 as a
+# list that holds one object.
+if isinstance(gc, list) and len(gc) == 1:
+    gc = gc[0]
 if not isinstance(gc, dict) or gc.get("image") is not False:
     image_list = ", ".join(images)
     print(

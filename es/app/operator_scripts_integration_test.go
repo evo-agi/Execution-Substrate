@@ -766,28 +766,36 @@ func TestRuntimeProfileImageReadinessAcceptsNomadDockerImageCleanupDisabled(t *t
 	if err := os.MkdirAll(fakeBinDir, 0o755); err != nil {
 		t.Fatalf("mkdir fake bin dir: %v", err)
 	}
-	fakeCurlPath := writeBytesFile(t, fakeBinDir, "curl", []byte(`#!/bin/sh
-printf '%s\n' '{"config":{"Plugins":[{"Name":"docker","Config":{"volumes":{"enabled":true},"gc":{"image":false}}}]}}'
-`))
-	if err := os.Chmod(fakeCurlPath, 0o755); err != nil {
-		t.Fatalf("chmod fake curl: %v", err)
-	}
+	tokenFile := writeFakeNomadObserverTokenFile(t, rootDir)
+	// Nomad 2.1 reports the plugin's gc block as an object, Nomad 2.0 as a
+	// list holding one object; both shapes pass.
+	for name, agentSelf := range map[string]string{
+		"object (Nomad 2.1)":           `{"config":{"Plugins":[{"Name":"docker","Config":{"volumes":{"enabled":true},"gc":{"image":false}}}]}}`,
+		"one-element list (Nomad 2.0)": `{"config":{"Plugins":[{"Name":"docker","Config":{"volumes":[{"enabled":true}],"gc":[{"image":false}]}}]}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			fakeCurlPath := writeBytesFile(t, fakeBinDir, "curl", []byte("#!/bin/sh\nprintf '%s\\n' '"+agentSelf+"'\n"))
+			if err := os.Chmod(fakeCurlPath, 0o755); err != nil {
+				t.Fatalf("chmod fake curl: %v", err)
+			}
 
-	cmd := exec.Command("bash", "-c", `source scripts/internal/bringup.sh; check_runtime_profile_image_gc_policy_once "$ES_CONFIG"`)
-	cmd.Dir = repoRoot
-	cmd.Env = append(os.Environ(),
-		"PATH="+fakeBinDir+string(os.PathListSeparator)+os.Getenv("PATH"),
-		"ES_CONFIG="+esConfigPath,
-		"NOMAD_ADDR=http://127.0.0.1:4646",
-		"NOMAD_TOKEN_FILE="+writeFakeNomadObserverTokenFile(t, rootDir),
-	)
+			cmd := exec.Command("bash", "-c", `source scripts/internal/bringup.sh; check_runtime_profile_image_gc_policy_once "$ES_CONFIG"`)
+			cmd.Dir = repoRoot
+			cmd.Env = append(os.Environ(),
+				"PATH="+fakeBinDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+				"ES_CONFIG="+esConfigPath,
+				"NOMAD_ADDR=http://127.0.0.1:4646",
+				"NOMAD_TOKEN_FILE="+tokenFile,
+			)
 
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("expected disabled nomad docker image cleanup guardrail to pass: %v output=%s", err, string(output))
-	}
-	if !strings.Contains(string(output), "runtime profile image durability: nomad docker plugin gc.image=false") {
-		t.Fatalf("expected docker cleanup guardrail output, got %s", string(output))
+			output, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("expected disabled nomad docker image cleanup guardrail to pass: %v output=%s", err, string(output))
+			}
+			if !strings.Contains(string(output), "runtime profile image durability: nomad docker plugin gc.image=false") {
+				t.Fatalf("expected docker cleanup guardrail output, got %s", string(output))
+			}
+		})
 	}
 }
 

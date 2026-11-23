@@ -330,6 +330,16 @@ func TestNomadClientNeverFollowsARedirectOrUsesAProxy(t *testing.T) {
 	if client.client.CheckRedirect == nil || client.client.CheckRedirect(nil, nil) != http.ErrUseLastResponse {
 		t.Fatal("the Nomad client follows redirects")
 	}
+	// The client ES builds carries its requests on that transport, under
+	// the logging wrapper, not on Go's default transport (which proxies).
+	wrapper, ok := client.client.Transport.(interface{ Unwrap() http.RoundTripper })
+	if !ok {
+		t.Fatalf("the Nomad client's transport is %T, not the logging wrapper", client.client.Transport)
+	}
+	transport, ok := wrapper.Unwrap().(*http.Transport)
+	if !ok || transport == http.DefaultTransport || transport.Proxy != nil {
+		t.Fatalf("the Nomad client's requests go through %T (default transport: %v), which may use a proxy", wrapper.Unwrap(), wrapper.Unwrap() == http.DefaultTransport)
+	}
 }
 
 // recordingNomad records every request the client makes and answers job
