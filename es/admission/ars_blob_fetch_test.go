@@ -139,6 +139,38 @@ func TestFetchVerifiedARSBlobReturnsOnlyBytesThatHashToTheRequestedDigest(t *tes
 	}
 }
 
+func TestFetchVerifiedARSBlobComparesTheWholeDigest(t *testing.T) {
+	blob := []byte(`{"verified":"exact bytes"}`)
+	actual := digestBytes(blob)
+	last := byte('0')
+	if actual[len(actual)-1] == last {
+		last = '1'
+	}
+	// The served bytes hash to a digest that differs from the requested one
+	// only in its last hex digit.
+	requested := actual[:len(actual)-1] + string(last)
+	for _, view := range []arsBlobView{arsBlobViewBytes, arsBlobViewJSON} {
+		t.Run(string(view), func(t *testing.T) {
+			log := newARSRequestLog()
+			service := newARSBlobTestService(t, log, func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet || r.URL.Path != "/v1/blobs/"+requested+string(view) {
+					t.Errorf("unexpected ARS request %s %q", r.Method, r.URL.Path)
+					w.WriteHeader(http.StatusTeapot)
+					return
+				}
+				_, _ = w.Write(blob)
+			})
+			got, fetchErr := service.fetchVerifiedARSBlob(context.Background(), requested, view, maxDependencyJSONResponseBytes)
+			if log.requests() != 1 {
+				t.Fatalf("expected exactly one ARS request, got %d", log.requests())
+			}
+			if fetchErr == nil || fetchErr.failure != arsBlobDigestMismatch || got != nil {
+				t.Fatalf("bytes whose digest differs from the requested one in its last hex digit were not refused: bytes=%q err=%+v", got, fetchErr)
+			}
+		})
+	}
+}
+
 func TestFetchVerifiedARSBlobAcceptsTheEmptyBlobOnlyUnderTheEmptyDigest(t *testing.T) {
 	log := newARSRequestLog()
 	service := newARSBlobTestService(t, log, func(w http.ResponseWriter, r *http.Request) {})
