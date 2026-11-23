@@ -1565,12 +1565,13 @@ def _run_fixed_in_namespace(namespace: ChildNamespace, argv: tuple[str, ...],
                         target.extend(chunk)
                         if len(target) > (MAX_OUTPUT if label == "out" else MAX_ERROR):
                             raise Incomplete("child_output_overflow")
-            # The fixed child has ended and its output is complete. Its
-            # namespace ends before the cleanup owner runs: the kernel then
-            # kills every other process of the namespace, so that a zombie
-            # which a living descendant left unreaped in the fixed child's
-            # group, and which no group signal can end, cannot hold the
-            # cleanup. A failed release is reported by close().
+            # The fixed child has ended and its output is complete. On this
+            # path as on every other path after the spawn, the namespace ends
+            # before the cleanup owner runs: the kernel then kills every other
+            # process of the namespace, so that a zombie which a living
+            # descendant left unreaped in the fixed child's group, and which
+            # no group signal can end, cannot hold the cleanup. A failed
+            # release is reported by close().
             namespace.release()
             cleanup_uncertain = own_child_until_proved(proc)
             code = proc.returncode
@@ -1578,6 +1579,11 @@ def _run_fixed_in_namespace(namespace: ChildNamespace, argv: tuple[str, ...],
             result = code, bytes(out), bytes(err)
         except BaseException as exc:
             failure = exc
+            # The command is incomplete. A fixed child that still runs is
+            # killed by the kernel with the rest of its namespace, without the
+            # grace period of TERM before KILL; nothing it could still write
+            # counts.
+            namespace.release()
             cleanup_uncertain = own_child_until_proved(proc) or cleanup_uncertain
         finally:
             if selector is not None:
@@ -1598,6 +1604,7 @@ def _run_fixed_in_namespace(namespace: ChildNamespace, argv: tuple[str, ...],
         else:
             failure = Incomplete("child_run_unproved")
             failure.__cause__ = exc
+            namespace.release()
             cleanup_uncertain = own_child_until_proved(proc) or cleanup_uncertain
     finally:
         pending_read, pending_write = anchor_read, anchor_write

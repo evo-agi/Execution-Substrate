@@ -2348,23 +2348,23 @@ direct child of the collector. Directly after the spawn attempt, successful
 or not, the collector sets its child namespace back with `setns` and proves
 the reset by the same `pid_for_children` check. The cleanup owner,
 process-group disposition, unresolved-cleanup hold, direct-child reap, and
-post-reap absence scan then run unchanged; only the point at which the
-collector closes the control pipe depends on the path. When the fixed child
-has ended and its output is complete, the collector closes the control pipe
-before the cleanup owner runs. A descendant that left the group can keep a
-child of its own in the fixed child's group and leave it unreaped. Once that
-child has ended, it is a zombie that is not an orphan, so the anchor cannot
-reap it, and no group signal can end it; the unchanged cleanup would wait
-until the descendant ends by itself, which may be never. With the pipe closed
-first, the kernel kills that descendant, the zombie goes to the anchor, which
-reaps it, and the cleanup finds the fixed child alone. On that path any
-process that outlived the fixed child is killed without a TERM first; the
-result is already complete, so nothing it could still write counts. On every
-other path the fixed child may still run, so the cleanup runs first, with
-TERM before KILL, and the collector closes the control pipe only after it
-returns. Either way the kernel then kills every process that is still in the
-namespace, admits no new one, and lets the anchor become terminal only when
-no other process of the namespace is left. The collector
+post-reap absence scan then run unchanged, and on every path after the spawn
+the collector closes the control pipe before the cleanup owner runs. A
+descendant that left the group can keep a child of its own in the fixed
+child's group and leave it unreaped. Once that child has ended, it is a zombie
+that is not an orphan, so the anchor cannot reap it, and no group signal can
+end it; the unchanged cleanup would wait until the descendant ends by itself,
+which may be never. With the pipe closed first, the kernel kills that
+descendant, the zombie goes to the anchor, which reaps it, and the cleanup
+finds the fixed child alone. A fixed child that still runs at a timeout, an
+interruption, an output overflow, or a failed step after the spawn, and any
+process that outlived the fixed child, is therefore killed by the kernel
+without the grace period of TERM before KILL; on those paths the command is
+incomplete, and after a normal end the result is already complete, so nothing
+such a process could still write counts. When the pipe closes, the kernel
+kills every process that is still in the namespace, admits no new one, and
+lets the anchor become terminal only when no other process of the namespace is
+left. The collector
 waits for that with a nonblocking `waitpid` on the anchor alone, sends the
 anchor one KILL when it is not terminal after the grace period or when the
 pipe close failed, and reaps it exactly once. No fixed command returns, with a result or incomplete,
@@ -2396,12 +2396,7 @@ a kernel version, or the caller's user ID.
 Limits that this refinement states and does not remove: the fixed child still
 runs as root, so a hostile child could ask a host service to start a process
 outside its namespace, or write any root-writable file; a process that cannot
-die keeps the anchor from becoming terminal, and the invocation holds; on a
-path where the fixed child may still run (a timeout, an interruption, an
-output overflow, or a failed step after the spawn) the cleanup runs before the
-namespace ends, so there a descendant that left the group and keeps an ended
-child of its own unreaped in the fixed child's group holds the invocation
-until the descendant ends by itself; inside
+die keeps the anchor from becoming terminal, and the invocation holds; inside
 the namespace the fixed child has process ID 2 and parent ID 0 while `/proc`
 stays the host's; and the namespace setting belongs to the calling thread,
 which a kernel may refuse to a process with several threads, so the collector
