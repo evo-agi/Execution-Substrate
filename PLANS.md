@@ -15,12 +15,45 @@ token stays in a root-only file and never reaches ES. Provisioning is
 tokens, `check`, `rotate`); the supported Linux host setup, full-profile
 bring-up, supported-local setup and proof capture, readiness checks and CI's
 real Nomad all run with ACLs on. CI proves a real ACL Nomad refuses a job
-without ES's token and ES refuses a Nomad without the lock. Known limits:
+without ES's token and ES refuses a Nomad without the lock. Nomad's client
+now offers only the Docker task driver, through an explicit `plugin "docker"`
+block that refuses privileged containers and allows only the seven
+capabilities the submit path needs; its configuration and data are
+root-owned, and setup, bring-up and readiness refuse a Nomad whose live
+driver set, privileged setting or capability list differ. Known limits:
 Nomad's API is plain HTTP on loopback (Nomad HTTPS with a pinned server key
 is the next part), the lock does not cover the Docker socket, and ES's token
 still expresses job shape (mounts, task user). PR 12's reliable-submit
 operational provider is not yet covered: its change list is in the Nomad ACL
 report.
+
+### One caller authentication rule for the five services (2026-11-23)
+
+This **Current invariant refinement** makes the existing invariant "caller
+authentication and narrow SPIFFE allowlist authorization remain required"
+mean one thing at every service. ARS, AGS, EGS, CGS, and ES each carried
+their own copy of the code that reads the caller's SPIFFE ID from the
+verified client certificate, and the copies had drifted: CGS accepted an
+identity from any trust domain, ARS indexed the verified chain without
+checking it was non-empty, and every service took the first matching URI SAN
+of a certificate with several, passed non-canonical paths (for example a
+trailing slash or a `..` segment) to prefix matching, and accepted a CA
+certificate presented as the caller's leaf. None of them noticed that a
+client certificate expired while its connection stayed busy. The rule is now
+one cross-cutting support package, `internal/callerauth`, whose contract is
+`.docs/system_overview/contracts.md` section 3A: a verified chain that is
+still within its validity period at each request, an end-entity leaf (not a
+CA, no `keyCertSign` or `cRLSign`, as X.509-SVID requires) with exactly one
+URI SAN, a conforming SPIFFE ID with a path, trust domain
+`execution.internal` only, then the bootstrap-issuer refusal. Authorization
+stays service-local. CGS `id.conf` loading refuses principals that no
+authenticated caller could present, and the operator healthcheck TLS status
+tools fail an operator certificate with more than one URI SAN, as ES does.
+The response codes and texts are unchanged; requests that the old copies let
+through or refused with `403` because of a malformed identity, and requests
+on a connection whose client certificate has expired, now get `401`. The CGS
+authorize request and response shape is unchanged. This is not a Workstream
+D policy-input redesign.
 
 ### Private replay-progress pre-COMMIT and owner inventory refinement (2026-11-19)
 
@@ -3546,6 +3579,7 @@ The following are useful current implementation facts and should remain visible 
   - ES does not fetch, mint, broker, store, rotate, parse, or validate Codex tokens
 - The current slice-0 operator path now targets one Linux host/VM, runs ARS/EGS/AGS/ES as containers, keeps Nomad server/client and Docker on that same host, and treats Docker host networking as temporary compatibility scaffolding rather than final control-plane network architecture.
 - The current slice-0 operator path now requires strict client-cert authentication at the hot-path TLS boundary, including `/health`, and ARS now rejects the configured bootstrap issuer on both read and write paths like the rest of the hot path.
+- ARS, AGS, EGS, CGS, and ES authenticate callers through the one shared package `internal/callerauth` (contract: `.docs/system_overview/contracts.md` section 3A). Only a verified client certificate whose chain is still within its validity period at each request, and whose leaf is an end-entity certificate with exactly one URI SAN that is a conforming SPIFFE ID in the trust domain `execution.internal`, identifies a caller; authorization stays in each service.
 - The current slice-0 operator path records the ES same-path staging proof at bring-up time, while slice `1A` and slice `1B` now separately prove the first bounded strong workload-identity handoff for runtime workloads.
 - The current slice-0 operator path has been functionally proved on a real Linux VM through the real ES -> Nomad -> Docker execution path, and the current supported local reference profile on this Mac is Lima `qemu` + Ubuntu 24.04 arm64 with pre-managed non-`-dev` Nomad and positive natural `cpu.totalcompute`; the previously investigated VMware/aarch64 and Lima `vz` local profiles remain unsupported on this Mac because natural `cpu.totalcompute` stays `0`.
 - The current AGS publish path now distinguishes artifact identity from payload identity: payload bytes remain content-addressed by `payload_digest`, while AGS derives `artifact_digest` from package-facing identity inputs only before registering the runtime-facing discovery record through ARS.
