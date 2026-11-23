@@ -68,7 +68,8 @@ func TestNomadACLToolAsksNomadWhichGrantsCanSubmit(t *testing.T) {
 	for _, form := range []struct{ name, rules string }{
 		{"hcl-glob", `namespace "*" { policy = "write" }`},
 		{"json", `{"namespace": {"es-submit-v1": {"capabilities": ["submit-job"]}}}`},
-		{"escaped", `namespace "es-submit-v1" { policy = "write" }`},
+		{"escaped", `namespace "es\u002dsubmit-v1" { policy = "write" }`},
+		{"json-escaped", `{"namespace": {"es\u002dsubmit\u002dv1": {"policy": "write"}}}`},
 		{"partial-glob", `namespace "es-*" { capabilities = ["submit-job"] }`},
 		{"json-glob", `{"namespace": {"*": {"policy": "write"}}}`},
 	} {
