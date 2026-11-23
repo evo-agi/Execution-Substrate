@@ -517,10 +517,16 @@ func TestReliableSubmitBindingRejectsMismatchedSignedMountArtifact(t *testing.T)
 		mountFixture preparedArtifactFixture
 		mountBytes   []byte
 		wantRefusal  bool
+		// wantFetchRefusal: the resolver itself refuses the mount read because
+		// the served bytes do not hash to the signed payload digest.
+		wantFetchRefusal bool
+		// wantDiscoveryRefusal: the resolver itself refuses the mount because
+		// its discovery record names another artifact than the request.
+		wantDiscoveryRefusal bool
 	}{
-		{"A B P substitution", fixtureB, payloadP, true},
-		{"A A P control", fixtureA, payloadP, false},
-		{"A A Q byte mismatch", fixtureA, mismatchedBytes, true},
+		{"A B P substitution", fixtureB, payloadP, true, false, true},
+		{"A A P control", fixtureA, payloadP, false, false, false},
+		{"A A Q byte mismatch", fixtureA, mismatchedBytes, true, true, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			service, stagingRoot, resultsRoot := newWorkstreamCTestService(t, fixtureA)
@@ -561,6 +567,24 @@ func TestReliableSubmitBindingRejectsMismatchedSignedMountArtifact(t *testing.T)
 				t.Fatal("unwired resolver/builder registered a job")
 			}))
 			resolved, resolveErr := service.resolveExecutionForSubmit(context.Background(), request)
+			if test.wantDiscoveryRefusal {
+				assertAdmissionError(t, resolveErr, http.StatusConflict, codeMountArtifactInvalid)
+				if resolveErr.Message != "artifact digest mismatch between mount source and artifact discovery" || discoveryReads != 2 || payloadReads != 1 {
+					t.Fatalf("a mount discovery record for another artifact was not refused before the mount payload read: %v", resolveErr)
+				}
+				assertDirectoryEmpty(t, stagingRoot)
+				assertDirectoryEmpty(t, resultsRoot)
+				return
+			}
+			if test.wantFetchRefusal {
+				assertAdmissionError(t, resolveErr, http.StatusServiceUnavailable, codePayloadUnavailable)
+				if resolveErr.Message != artifactPayloadDigestMismatchMessage || discoveryReads != 2 || payloadReads != 2 {
+					t.Fatalf("mount bytes that do not match the signed payload digest were not refused at the read: %v", resolveErr)
+				}
+				assertDirectoryEmpty(t, stagingRoot)
+				assertDirectoryEmpty(t, resultsRoot)
+				return
+			}
 			if resolveErr != nil {
 				t.Fatalf("current legacy resolver rejection changed: %v", resolveErr)
 			}
@@ -587,6 +611,43 @@ func TestReliableSubmitBindingRejectsMismatchedSignedMountArtifact(t *testing.T)
 			}
 		})
 	}
+}
+
+// TestReliableSubmitBindingRefusesAMountWhoseVerifiedArtifactIsNotTheRequestedOne
+// keeps the binding layer's own requested-versus-verified mount check under
+// test. The resolver now refuses such a mount at discovery, so the end-to-end
+// "A B P substitution" case above no longer reaches the binding layer.
+func TestReliableSubmitBindingRefusesAMountWhoseVerifiedArtifactIsNotTheRequestedOne(t *testing.T) {
+	const target = "/execution/mounts/config"
+	archive := mustRuntimeMountArchiveBytes(t, runtimeMountArchiveEntry{name: "config.txt", body: []byte("signed"), typeflag: '0', mode: 0o644})
+
+	control, family, key, _, _ := reliableBindingResolvedFixture(t)
+	reliableBindingAttachMount(t, &control, archive, target, control.plan.artifactDigest)
+	reliableBindingMustBuild(t, control, family, key)
+
+	mismatched, _, _, _, _ := reliableBindingResolvedFixture(t)
+	reliableBindingAttachMount(t, &mismatched, archive, target, mismatched.plan.artifactDigest)
+	mismatched.plan.mounts[0].verifiedArtifactDigest = labeledDigest("dd")
+	reliableBindingMustRefuse(t, mismatched, family, key)
+}
+
+// TestReliableSubmitBindingRefusesMountBytesThatDoNotHashToTheMountPayloadDigest
+// keeps the binding layer's own mount byte check under test. The resolver now
+// refuses such bytes at the ARS read, so the end-to-end case above no longer
+// reaches the binding layer.
+func TestReliableSubmitBindingRefusesMountBytesThatDoNotHashToTheMountPayloadDigest(t *testing.T) {
+	const target = "/execution/mounts/config"
+	signed := mustRuntimeMountArchiveBytes(t, runtimeMountArchiveEntry{name: "config.txt", body: []byte("signed"), typeflag: '0', mode: 0o644})
+	other := mustRuntimeMountArchiveBytes(t, runtimeMountArchiveEntry{name: "config.txt", body: []byte("other"), typeflag: '0', mode: 0o644})
+
+	control, family, key, _, _ := reliableBindingResolvedFixture(t)
+	reliableBindingAttachMount(t, &control, signed, target, control.plan.artifactDigest)
+	reliableBindingMustBuild(t, control, family, key)
+
+	mismatched, _, _, _, _ := reliableBindingResolvedFixture(t)
+	reliableBindingAttachMount(t, &mismatched, other, target, mismatched.plan.artifactDigest)
+	mismatched.plan.mounts[0].payloadDigest = digestBytes(signed)
+	reliableBindingMustRefuse(t, mismatched, family, key)
 }
 
 func TestReliableSubmitBindingRejectsParsedMountDrift(t *testing.T) {

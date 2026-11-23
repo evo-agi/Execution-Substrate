@@ -131,40 +131,29 @@ func (s *Service) fetchPayloadBytes(ctx context.Context, payloadDigest string) (
 	return payload, publicErr
 }
 
+// fetchPayloadBytesWithin returns payload bytes only after they hash to the
+// signed payload digest; see fetchVerifiedARSBlob.
 func (s *Service) fetchPayloadBytesWithin(ctx context.Context, payloadDigest string, limit int64) ([]byte, error, *Error) {
-	response, err := s.arsClient.get(ctx, "/v1/blobs/"+payloadDigest+":bytes")
-	if err != nil {
-		return nil, err, &Error{
+	payload, fetchErr := s.fetchVerifiedARSBlob(ctx, payloadDigest, arsBlobViewBytes, limit)
+	if fetchErr == nil {
+		return payload, nil, nil
+	}
+	unavailable := func(message string) *Error {
+		return &Error{
 			Status:  http.StatusServiceUnavailable,
 			Code:    codePayloadUnavailable,
-			Message: "artifact payload read failed",
+			Message: message,
 		}
 	}
-	defer response.Body.Close()
-
-	switch response.StatusCode {
-	case http.StatusOK:
-		payload, readErr := readBoundedResponseBody(response, limit)
-		if readErr != nil {
-			return nil, readErr, &Error{
-				Status:  http.StatusServiceUnavailable,
-				Code:    codePayloadUnavailable,
-				Message: "artifact payload read failed",
-			}
-		}
-		return payload, nil, nil
-	case http.StatusNotFound:
-		return nil, nil, &Error{
-			Status:  http.StatusServiceUnavailable,
-			Code:    codePayloadUnavailable,
-			Message: "artifact payload is unavailable",
-		}
+	switch fetchErr.failure {
+	case arsBlobRequestFailed, arsBlobReadFailed:
+		return nil, fetchErr.cause, unavailable("artifact payload read failed")
+	case arsBlobUnexpectedStatus:
+		return nil, nil, unavailable(fmt.Sprintf("artifact payload read returned status %d", fetchErr.status))
+	case arsBlobDigestMismatch:
+		return nil, fetchErr.cause, unavailable(artifactPayloadDigestMismatchMessage)
 	default:
-		return nil, nil, &Error{
-			Status:  http.StatusServiceUnavailable,
-			Code:    codePayloadUnavailable,
-			Message: fmt.Sprintf("artifact payload read returned status %d", response.StatusCode),
-		}
+		return nil, nil, unavailable("artifact payload is unavailable")
 	}
 }
 

@@ -909,11 +909,10 @@ func TestFetchWorkloadZoneVaultConfigDecodesValidBlobAndRejectsInvalidBlob(t *te
 			},
 		},
 	}
-	ref := runtimeconfigv1.WorkloadZoneVaultConfigRef{
-		Digest: "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-	}
-
+	// ES verifies the blob against the configured digest, so each case names
+	// the digest of the exact blob it serves.
 	payload = `{"vault_config":{"address":"https://vault.internal:8200","auth_mount":"jwt","auth_role":"execution","jwt_audience":"vault"}}`
+	ref := runtimeconfigv1.WorkloadZoneVaultConfigRef{Digest: digestBytes([]byte(payload))}
 	config, err := service.fetchWorkloadZoneVaultConfig(context.Background(), ref)
 	if err != nil {
 		t.Fatalf("expected workload-zone vault config fetch to succeed, got %+v", err)
@@ -923,8 +922,9 @@ func TestFetchWorkloadZoneVaultConfigDecodesValidBlobAndRejectsInvalidBlob(t *te
 	}
 
 	payload = `{"vault_config":{"address":"http://bad","auth_mount":"","auth_role":"","jwt_audience":""}}`
+	ref = runtimeconfigv1.WorkloadZoneVaultConfigRef{Digest: digestBytes([]byte(payload))}
 	_, err = service.fetchWorkloadZoneVaultConfig(context.Background(), ref)
-	if err == nil || err.Code != codeWorkloadZoneVaultUnavailable {
+	if err == nil || err.Code != codeWorkloadZoneVaultUnavailable || err.Message != "artifact registry workload-zone vault blob was invalid" {
 		t.Fatalf("expected invalid workload-zone vault blob to map to unavailable, got %+v", err)
 	}
 }
