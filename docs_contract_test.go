@@ -13921,14 +13921,16 @@ func TestReview17ProofResultHandoffContract(t *testing.T) {
 // the configuration page say about bring-up's ARS storage check after audit
 // 20 of pull request #19: storage paths must be in normal form (A20-1), the
 // check scales to ARS's full sha256/xx/yy fan-out and ARS's readiness wait
-// starts only after its launcher's check (A20-2), and the check no longer
-// lists directories with ls.
+// starts only after its launcher's check (A20-2), the check no longer lists
+// directories with ls, and the full fan-out test pins the check's cost by the
+// processes it starts, not by a time limit (audit 24, O24-1).
 func TestARSStorageCheckDocsContract(t *testing.T) {
 	stale := []string{
 		"few hundred",
 		"lists every storage directory",
 		"lists every such directory",
 		"`mktemp`, `ls`, `cat`",
+		"requires under 30 s",
 	}
 	checks := []struct {
 		path     string
@@ -13940,7 +13942,8 @@ func TestARSStorageCheckDocsContract(t *testing.T) {
 			"creates a file in every directory under the storage root and finds it again by listing that directory",
 			"The check needs `/bin/sh` with `mktemp`, `xargs`, `rm`, `cat`, `chmod` and `mv` in the image",
 			"starts no process per directory, because ARS's blob layout `sha256/xx/yy/<digest>` grows to 65,794 directories with the root",
-			"`TestARSStorageCheckScalesToARSFullFanOut` requires under 30 s",
+			"`TestARSStorageCheckScalesToARSFullFanOut` pins that cost by structure, not by time: it counts the processes the check starts at that size",
+			"and requires fewer than one per 32 directories",
 			"ARS's readiness wait (`READY_TIMEOUT_SECONDS`) starts only once the launcher reports that its check passed",
 			"the report cannot skip the check",
 			"the check passes the first such signal on to its probe and waits until the probe has removed its files and ended, however often it is signalled again",
