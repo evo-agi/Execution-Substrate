@@ -812,7 +812,17 @@ listed module, a new version and a replacement each fail until the list is
 updated. The raw pointer rule reads every expression and every declared or
 used name of every production package for the same three targets, and a
 value whose type has the underlying type `unsafe.Pointer` in a file that
-does not import `unsafe` fails it. With that rule the import names the
+does not import `unsafe` fails it. It judges the file that holds each such
+value by the value's real position, not by the file and line that a
+`//line` or `/*line` directive names. Every guard reads positions that
+way, and a test refuses the calls that read an adjusted position in the
+test files of the module; another test refuses such a directive in every
+non-test Go file of the repository, so no production position is adjusted
+at all. The rule reads the static types of the source: a type parameter
+that inference sets to `unsafe.Pointer` holds such a value with no raw
+pointer type in the file, and it cannot become a typed pointer there
+without a constraint that spells the type, which the rule sees. With that
+rule the import names the
 files that can write storage past the typed inventories by every road
 through the language known here, a data race aside; a source inventory
 cannot show that no other road exists. The hash shows that such a file is
@@ -1644,8 +1654,14 @@ files: A/reliable_submit_operational_admission_redteam2_test.go (new),
 A/reliable_submit_operational_admission_redteam2_crash_test.go (new),
 A/reliable_submit_operational_admission_redteam2_guard_test.go (new) and
 A/reliable_submit_operational_admission_limits_test.go (new). With them the
-aggregate HEAD ceiling for PR #12 plus its repairs is 52 files. Any further
-file again requires separate owner reconciliation.
+aggregate HEAD ceiling for PR #12 plus its repairs was 52 files.
+
+The correction after the sixth audit is a further owner reconciliation at
+this gate. It adds exactly one more path, a test file:
+A/workstream_a_guardrails_test.go, whose source-term guard now reads the
+real line of each occurrence, as every guard does. With it the aggregate
+HEAD ceiling for PR #12 plus its repairs is 53 files. Any further file again
+requires separate owner reconciliation.
 
 The seal-permit guard follows the shared reservation writer
 `reserveReplaySealUseWithScope`, the sole constructor after confirmed COMMIT.

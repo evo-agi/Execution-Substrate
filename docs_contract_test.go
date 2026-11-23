@@ -14179,9 +14179,16 @@ func operationalV2AssuranceOwnerRule(owner string) bool {
 		strings.Contains(owner, "and so does an import of a dependency package outside the reviewed list") &&
 		strings.Contains(owner, "a new dependency import, a further package of a\nlisted module, a new version and a replacement each fail until the list is\nupdated") &&
 		strings.Contains(owner, "value whose type has the underlying type `unsafe.Pointer` in a file that\ndoes not import `unsafe` fails it") &&
+		strings.Contains(owner, "It judges the file that holds each such\nvalue by the value's real position, not by the file and line that a\n`//line` or `/*line` directive names") &&
+		strings.Contains(owner, "a test refuses the calls that read an adjusted position in the\ntest files of the module") &&
+		strings.Contains(owner, "another test refuses such a directive in every\nnon-test Go file of the repository") &&
+		strings.Contains(owner, "The rule reads the static types of the source") &&
+		strings.Contains(owner, "it cannot become a typed pointer there\nwithout a constraint that spells the type") &&
 		strings.Contains(owner, "Raw system calls through `syscall` and `golang.org/x/sys/unix` are part of\nthat limit") &&
 		strings.Contains(owner, "a source inventory\ncannot show that no other road exists") &&
-		strings.Contains(owner, "aggregate HEAD ceiling for PR #12 plus its repairs is 52 files") &&
+		strings.Contains(owner, "aggregate HEAD ceiling for PR #12 plus its repairs was 52 files") &&
+		strings.Contains(owner, "It adds exactly one more path, a test file:\nA/workstream_a_guardrails_test.go") &&
+		strings.Contains(owner, "HEAD ceiling for PR #12 plus its repairs is 53 files") &&
 		strings.Contains(owner, "Every exported\nfunction and method of the package has an exact list of the functions that\nreference it") &&
 		strings.Contains(owner, "and the inspection method and the question whether a handle names a view,\nwhich exist for tests, nowhere") &&
 		strings.Contains(owner, "The exported\nsurface of the package is a closed list") &&
@@ -14320,7 +14327,9 @@ func TestOperationalSubmitHandoffCurrentAdmissionV2Contract(t *testing.T) {
 		"targets remain assignments", "targets remain read-writes", "not a general proof of aliases or",
 		"Range-clause `=` key and value whole-field targets", "Taking a field's address is an `address` access",
 		"is a `write-through` access", "ceiling for PR #12 plus its repairs was 48 files",
-		"ceiling for PR #12 plus its repairs is 52 files",
+		"ceiling for PR #12 plus its repairs was 52 files",
+		"HEAD ceiling for PR #12 plus its repairs is 53 files",
+		"It adds exactly one more path, a test file:\nA/workstream_a_guardrails_test.go",
 		"A/reliable_submit_operational_admission_redteam2_test.go (new),\nA/reliable_submit_operational_admission_redteam2_crash_test.go (new),\nA/reliable_submit_operational_admission_redteam2_guard_test.go (new) and\nA/reliable_submit_operational_admission_limits_test.go (new)",
 		"A/internal/admissionstate/state.go (new) and\nA/internal/admissionstate/state_test.go (new)",
 		"A retry after a changed configured literal policy, artifact revocation or", "a denial does not")
@@ -14334,6 +14343,11 @@ func TestOperationalSubmitHandoffCurrentAdmissionV2Contract(t *testing.T) {
 		"PR #12 durable admission: the admission state package",
 		"PR #12 durable admission: a limit named after the fifth audit",
 		"PR #12 durable admission: repairs after the red-team",
+		"PR #12 durable admission: line directives after the sixth audit",
+		"The rule\nand every other guard now read the real position of the code",
+		"Every non-test Go file of the repository is refused such a\ndirective as well",
+		"so the path ceiling of PR #12 plus its repairs is 53 files",
+		"This entry changes guard tests and documents only.",
 		"two more roads of the same class\nwere measured",
 		"A new raw pointer rule refuses\nsuch a value in a file that does not import `unsafe`",
 		"Raw system calls stay\noutside every inventory",
@@ -14571,8 +14585,15 @@ func TestOperationalSubmitHandoffCurrentAdmissionV2RejectsUnsafeMutants(t *testi
 		{"MissingUnreviewedDependencyFails", "and so does an import of a dependency package outside the reviewed list"},
 		{"MissingReviewedVersionPin", "a new dependency import, a further package of a\nlisted module, a new version and a replacement each fail until the list is\nupdated"},
 		{"MissingRawPointerRule", "value whose type has the underlying type `unsafe.Pointer` in a file that\ndoes not import `unsafe` fails it"},
+		{"MissingRawPointerRealPosition", "It judges the file that holds each such\nvalue by the value's real position, not by the file and line that a\n`//line` or `/*line` directive names"},
+		{"MissingAdjustedPositionReadsRefused", "a test refuses the calls that read an adjusted position in the\ntest files of the module"},
+		{"MissingLineDirectivesRefused", "another test refuses such a directive in every\nnon-test Go file of the repository"},
+		{"MissingStaticTypesOfTheSource", "The rule reads the static types of the source"},
+		{"MissingTypeParameterCannotConvert", "it cannot become a typed pointer there\nwithout a constraint that spells the type"},
 		{"MissingUnknownRoadsNotExcluded", "a source inventory\ncannot show that no other road exists"},
-		{"MissingAdoptedTestsCeiling", "aggregate HEAD ceiling for PR #12 plus its repairs is 52 files"},
+		{"MissingAdoptedTestsCeiling", "aggregate HEAD ceiling for PR #12 plus its repairs was 52 files"},
+		{"MissingSixthAuditCeiling", "HEAD ceiling for PR #12 plus its repairs is 53 files"},
+		{"MissingSixthAuditPath", "It adds exactly one more path, a test file:\nA/workstream_a_guardrails_test.go"},
 		{"MissingSyscallsInTheLimit", "Raw system calls through `syscall` and `golang.org/x/sys/unix` are part of\nthat limit"},
 		{"MissingCallSiteInventory", "has an exact list of the functions that\nreference it"},
 		{"MissingInspectionInventory", "which exist for tests, nowhere"},
@@ -14668,8 +14689,15 @@ func TestOperationalSubmitHandoffCurrentAdmissionV2RejectsUnsafeMutants(t *testi
 		{"PluginNotInventoried", "`unsafe`, `C` or `plugin` import in any production package fails a test", "`unsafe` or `C` import in any production package fails a test"},
 		{"NewVersionPasses", "a new version and a replacement each fail until the list is\nupdated", "a new version and a replacement pass without a change of the\nlist"},
 		{"RawPointerWithoutUnsafePasses", "does not import `unsafe` fails it", "does not import `unsafe` passes it"},
+		{"RawPointerPlacedByDirective", "by the value's real position, not by the file and line that a\n`//line` or `/*line` directive names", "by the file and line that a\n`//line` or `/*line` directive names"},
+		{"AdjustedPositionReadsAllowed", "a test refuses the calls that read an adjusted position", "a test allows the calls that read an adjusted position"},
+		{"LineDirectivesAllowed", "another test refuses such a directive in every\nnon-test Go file", "such a directive is allowed in every\nnon-test Go file"},
+		{"InstancesClaimedRead", "The rule reads the static types of the source", "The rule reads every instance of a type parameter"},
+		{"TypeParameterConverts", "it cannot become a typed pointer there\nwithout a constraint that spells the type", "it can become a typed pointer there\nwithout a constraint that spells the type"},
 		{"NoOtherRoadClaimed", "a source inventory\ncannot show that no other road exists", "no other road\nexists"},
-		{"CeilingNotRaisedForAdoptedTests", "aggregate HEAD ceiling for PR #12 plus its repairs is 52 files", "aggregate HEAD ceiling for PR #12 plus its repairs is 48 files"},
+		{"CeilingNotRaisedForAdoptedTests", "aggregate HEAD ceiling for PR #12 plus its repairs was 52 files", "aggregate HEAD ceiling for PR #12 plus its repairs was 48 files"},
+		{"CeilingNotRaisedForSixthAudit", "HEAD ceiling for PR #12 plus its repairs is 53 files", "HEAD ceiling for PR #12 plus its repairs is 52 files"},
+		{"SixthAuditPathUnnamed", "It adds exactly one more path, a test file:\nA/workstream_a_guardrails_test.go", "It adds no path"},
 		{"SyscallsHeldByTheInventory", "Raw system calls through `syscall` and `golang.org/x/sys/unix` are part of\nthat limit", "Raw system calls through `syscall` and `golang.org/x/sys/unix` are held by\nthe import inventory"},
 		{"InspectionUsedInProduction", "which exist for tests, nowhere", "in production diagnostics"},
 		{"SurfaceOpen", "surface of the package is a closed list", "surface of the package is open"},

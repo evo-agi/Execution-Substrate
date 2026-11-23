@@ -2,6 +2,26 @@
 
 ## Status
 
+### PR #12 durable admission: line directives after the sixth audit (2026-11-23)
+
+The sixth audit, of the repairs after the red-team, found that the raw
+pointer rule placed each value in the file that a `//line` or `/*line`
+directive names. A file without the `unsafe` import could name a sibling
+file that imports it, above a raw pointer road, and pass the rule. The rule
+and every other guard now read the real position of the code, and a test
+refuses the calls that read an adjusted position in the test files of the
+module. Every non-test Go file of the repository is refused such a
+directive as well; none held one. New subtests hold the rule in a package
+with a sibling file that imports `unsafe`, with and without a directive,
+and show that a directive moves no site of a guard inventory. The guard of
+Workstream A's source terms reads real lines as well; it is one more test
+file, so the path ceiling of PR #12 plus its repairs is 53 files.
+
+This entry changes guard tests and documents only. It changes no
+behaviour, no stored format and no public contract. The precise wording is
+owned by
+[the operational handoff contract](.docs/execution_lifecycle/reliable_submit_operational_handoff.md).
+
 ### PR #12 durable admission: repairs after the red-team (2026-11-23)
 
 The red-team of the combined PR #12 at
@@ -25,9 +45,9 @@ The red-team's tests are adopted as permanent tests: its eleven behaviour
 tests, its test of a second process killed at random instants, its guard
 test of RT2-1, and its three tests of documented limits, which now fail when
 a limit closes or moves without the documents. They are four new test
-files, so the path ceiling of PR #12 plus its repairs is 52 files. A comment
-in the admission state file says that only an untyped nil owner gets the
-closed handle, and the hash pin of that file follows it.
+files, so the path ceiling of PR #12 plus its repairs became 52 files. A
+comment in the admission state file says that only an untyped nil owner
+gets the closed handle, and the hash pin of that file follows it.
 
 This entry changes guard tests, adopted tests, one comment of production
 code and documents. It changes no behaviour, no stored format and no public
