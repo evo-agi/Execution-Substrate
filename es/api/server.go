@@ -2,12 +2,12 @@ package api
 
 import (
 	"context"
-	"crypto/x509"
 	"net/http"
 	"strconv"
 	"strings"
 
 	"execution-substrate/es/admission"
+	"execution-substrate/internal/callerauth"
 	"execution-substrate/internal/httpx"
 	"execution-substrate/internal/observability"
 )
@@ -36,7 +36,7 @@ const (
 
 type Server struct {
 	service             preparationService
-	bootstrapIssuerCN   string
+	callers             callerauth.Authenticator
 	allowedPathPrefixes []string
 	isStarted           func() bool
 }
@@ -44,7 +44,7 @@ type Server struct {
 func NewServer(service preparationService, bootstrapIssuerCN string, allowedPathPrefixes []string, isStarted func() bool) *Server {
 	return &Server{
 		service:             service,
-		bootstrapIssuerCN:   strings.TrimSpace(bootstrapIssuerCN),
+		callers:             callerauth.NewAuthenticator(bootstrapIssuerCN),
 		allowedPathPrefixes: append([]string(nil), allowedPathPrefixes...),
 		isStarted:           isStarted,
 	}
@@ -264,18 +264,13 @@ func (s *Server) decodeAuthorizedExecutionRequest(w http.ResponseWriter, r *http
 }
 
 func (s *Server) authorizeExecutionCaller(w http.ResponseWriter, r *http.Request) bool {
-	callerPath, issuerCommonName, ok := authenticatedCallerIdentity(r)
+	caller, ok := s.callers.Authenticate(w, r)
 	if !ok {
-		httpx.WriteText(w, http.StatusUnauthorized, "Authenticated caller identity required")
-		return false
-	}
-	if issuerCommonName == s.bootstrapIssuerCN {
-		httpx.WriteText(w, http.StatusForbidden, "Bootstrap PKI callers are not accepted; use a SPIRE-issued identity")
 		return false
 	}
 	authorized := false
 	for _, prefix := range s.allowedPathPrefixes {
-		if matchesAuthorizedPathPrefix(callerPath, prefix) {
+		if matchesAuthorizedPathPrefix(caller.ID().Path(), prefix) {
 			authorized = true
 			break
 		}
@@ -315,36 +310,6 @@ func parseLifecycleRequest(requestPath string) (runID string, action string, ok 
 		return "", "", false
 	}
 	return runID, action, true
-}
-
-func authenticatedCallerIdentity(r *http.Request) (callerPath string, issuerCommonName string, ok bool) {
-	if r.TLS == nil || len(r.TLS.VerifiedChains) == 0 || len(r.TLS.VerifiedChains[0]) == 0 {
-		return "", "", false
-	}
-
-	cert := r.TLS.VerifiedChains[0][0]
-	if cert == nil {
-		return "", "", false
-	}
-
-	callerPath, ok = spiffePathFromCertificate(cert)
-	if !ok {
-		return "", "", false
-	}
-	return callerPath, cert.Issuer.CommonName, true
-}
-
-func spiffePathFromCertificate(cert *x509.Certificate) (string, bool) {
-	const prefix = "spiffe://execution.internal/"
-
-	for _, uri := range cert.URIs {
-		value := uri.String()
-		if strings.HasPrefix(value, prefix) {
-			return strings.TrimPrefix(value, prefix), true
-		}
-	}
-
-	return "", false
 }
 
 func matchesAuthorizedPathPrefix(path string, prefix string) bool {
