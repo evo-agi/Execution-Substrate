@@ -650,8 +650,10 @@ bypass ES admission. ES therefore submits only to a Nomad that enforces them.
   each role and planning a job in `es-submit-v1` with it; any answer other
   than 403 counts as a grant. So every policy syntax (HCL, JSON, escaped
   names, namespace globs) and every role is covered. It also refuses when
-  any ACL auth method exists (its binding rules could issue tokens), when an
-  anonymous policy exists, or when ACLs are off. `scripts/nomad_acl_setup.sh
+  any ACL auth method exists (its binding rules could issue tokens), when a
+  live management token other than the one in the management token file
+  exists (every management token can submit anywhere), when an anonymous
+  policy exists, or when ACLs are off. `scripts/nomad_acl_setup.sh
   check` runs the exclusive-writer probes too, with the management token;
   `nomad_acl.py check` without `--management-token-file` checks only what
   ES's and the observer's tokens can do. The tool behind it is

@@ -22,6 +22,7 @@ Exit status: 0 on success, 1 on a refusal (one line on stderr), 2 on usage.
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
 import os
 import re
@@ -493,8 +494,54 @@ def require_no_auth_methods(nomad: Nomad, management: str) -> None:
         )
 
 
+_EXPIRATION_PATTERN = re.compile(
+    r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d+))?(Z|[+-]\d{2}:\d{2})\Z", re.ASCII
+)
+
+
+def _token_has_expired(expiration) -> bool:
+    """True only for an RFC 3339 expiration time that has passed. A token
+    without one, with Go's zero time (year 1), or with one this tool cannot
+    read, counts as live."""
+    if not isinstance(expiration, str) or expiration.startswith("0001-"):
+        return False
+    match = _EXPIRATION_PATTERN.fullmatch(expiration)
+    if match is None:
+        return False
+    fraction = (match.group(2) or "")[:6].ljust(6, "0")
+    zone = "+00:00" if match.group(3) == "Z" else match.group(3)
+    try:
+        moment = datetime.datetime.fromisoformat(match.group(1) + "." + fraction + zone)
+    except ValueError:
+        return False
+    return moment <= datetime.datetime.now(datetime.timezone.utc)
+
+
+def other_management_tokens(nomad: Nomad, management: str) -> list[str]:
+    """Accessor IDs of live management tokens other than the one in the
+    management token file. Each of them can submit in any namespace."""
+    status, own = token_self(nomad, management)
+    own_accessor = own.get("AccessorID") if status == 200 and isinstance(own, dict) else None
+    if not own_accessor:
+        raise Refusal("the management token file does not hold a working Nomad management token")
+    return sorted(
+        str(token.get("AccessorID"))
+        for token in list_tokens(nomad, management)
+        if token.get("Type") == "management"
+        and token.get("AccessorID") != own_accessor
+        and not _token_has_expired(token.get("ExpirationTime"))
+    )
+
+
 def require_exclusive_writer(nomad: Nomad, management: str) -> None:
     require_no_auth_methods(nomad, management)
+    extra_management = other_management_tokens(nomad, management)
+    if extra_management:
+        raise Refusal(
+            "nomad has other management tokens (accessors " + ", ".join(extra_management) + "), each of which "
+            "can submit in " + NAMESPACE + ": ES must be the only client writer there and the management token "
+            "file must hold the only management token; delete the others and rerun"
+        )
     others = grants_that_can_submit(nomad, management)
     if others:
         raise Refusal(

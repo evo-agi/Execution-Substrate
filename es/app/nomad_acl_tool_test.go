@@ -11,10 +11,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -84,6 +86,17 @@ func TestNomadACLToolAsksNomadWhichGrantsCanSubmit(t *testing.T) {
 	refusedBoth("a role holding the ES policy", "other ACL grants can submit jobs in es-submit-v1 (role es-copy)")
 	write(http.MethodDelete, "/v1/acl/role/"+role.ID, nil)
 
+	// Every management token can submit anywhere, so a second live one
+	// breaks the lock. An expired one does not.
+	var extraManagement struct {
+		AccessorID string `json:"AccessorID"`
+	}
+	if err := json.Unmarshal([]byte(write(http.MethodPost, "/v1/acl/token", map[string]any{"Name": "extra-management", "Type": "management"})), &extraManagement); err != nil || extraManagement.AccessorID == "" {
+		t.Fatalf("create a second management token: %v", err)
+	}
+	refusedBoth("a second management token", "nomad has other management tokens (accessors "+extraManagement.AccessorID+")")
+	write(http.MethodDelete, "/v1/acl/token/"+extraManagement.AccessorID, nil)
+
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -107,6 +120,31 @@ func TestNomadACLToolAsksNomadWhichGrantsCanSubmit(t *testing.T) {
 		t.Fatalf("check refused a policy that cannot submit in es-submit-v1: %v output=%s", err, output)
 	}
 
+	// Provision keeps an existing ES token only when Nomad reports it as the
+	// ES client token with exactly ES's policy. A wider token in the ES token
+	// file is replaced, and deleted in Nomad.
+	var wider struct {
+		AccessorID string `json:"AccessorID"`
+		SecretID   string `json:"SecretID"`
+	}
+	if err := json.Unmarshal([]byte(write(http.MethodPost, "/v1/acl/token", map[string]any{
+		"Name": "es-submit-v1", "Type": "client", "Policies": []string{"es-submit-v1", "readers"},
+	})), &wider); err != nil || wider.AccessorID == "" || wider.SecretID == "" {
+		t.Fatalf("create a wider ES token: %v", err)
+	}
+	replaceNomadTokenFileContent(t, harness.esTokenFile, wider.SecretID)
+	output, err := provision()
+	if err != nil || !strings.Contains(output, "wrote a new es-submit-v1 token") ||
+		!strings.Contains(output, "deleted the stale es-submit-v1 token (accessor "+wider.AccessorID+")") {
+		t.Fatalf("provision did not replace a wider ES token: %v output=%s", err, output)
+	}
+	if readNomadTokenFile(t, harness.esTokenFile) == wider.SecretID {
+		t.Fatal("provision kept an ES token with a wider policy set")
+	}
+	if status, _ := nomadRawRequest(t, http.MethodGet, harness.addr+"/v1/acl/token/self", wider.SecretID, nil); status == http.StatusOK {
+		t.Fatal("the replaced wider ES token still works")
+	}
+
 	var tokens []struct {
 		Name string `json:"Name"`
 	}
@@ -117,6 +155,21 @@ func TestNomadACLToolAsksNomadWhichGrantsCanSubmit(t *testing.T) {
 		if token.Name == "es-acl-probe" {
 			t.Fatal("a probe token outlived its probe")
 		}
+	}
+}
+
+// replaceNomadTokenFileContent puts token into an existing 0400 token file,
+// keeping its owner and mode.
+func replaceNomadTokenFileContent(t *testing.T, path string, token string) {
+	t.Helper()
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(token+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o400); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -177,6 +230,13 @@ func (f *fakeNomadForACLCheck) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		writeJSON([]any{})
 	case r.URL.Path == "/v1/acl/auth-methods" && token == fakeACLManagementToken:
 		writeJSON([]any{})
+	case r.URL.Path == "/v1/acl/tokens" && token == fakeACLManagementToken:
+		writeJSON([]map[string]any{
+			{"AccessorID": "management", "Type": "management"},
+			{"AccessorID": "es", "Type": "client"},
+			{"AccessorID": "observer", "Type": "client"},
+			{"AccessorID": "expired-management", "Type": "management", "ExpirationTime": "2020-01-01T00:00:00.123456789Z"},
+		})
 	case r.URL.Path == "/v1/acl/token" && r.Method == http.MethodPost && token == fakeACLManagementToken:
 		writeJSON(map[string]any{"AccessorID": "probe", "SecretID": fakeACLProbeSecret})
 	case r.URL.Path == "/v1/acl/token/probe" && r.Method == http.MethodDelete && token == fakeACLManagementToken:
@@ -233,6 +293,47 @@ func TestNomadACLToolCheckRefusesEachDeviation(t *testing.T) {
 			return true
 		}
 	}
+	// The tool sends tokens straight to the Nomad address: it follows no
+	// redirect and ignores proxy settings in its environment.
+	startElsewhere := func(t *testing.T) (*httptest.Server, *atomic.Int32) {
+		var requests atomic.Int32
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			requests.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"AccessorID":"anonymous","Type":"client"}`))
+		}))
+		t.Cleanup(server.Close)
+		return server, &requests
+	}
+	t.Run("redirect is not followed", func(t *testing.T) {
+		elsewhere, requests := startElsewhere(t)
+		output, err := run(func(w http.ResponseWriter, r *http.Request, _ string) bool {
+			http.Redirect(w, r, elsewhere.URL+r.URL.RequestURI(), http.StatusTemporaryRedirect)
+			return true
+		})
+		if err == nil {
+			t.Fatalf("check passed through a redirecting Nomad address: output=%s", output)
+		}
+		if got := requests.Load(); got != 0 {
+			t.Fatalf("the redirect target received %d request(s)", got)
+		}
+	})
+	t.Run("proxy settings are ignored", func(t *testing.T) {
+		proxy, requests := startElsewhere(t)
+		server := httptest.NewServer(&fakeNomadForACLCheck{})
+		defer server.Close()
+		command := exec.Command("python3", "-I", nomadACLToolPath(), "check", "--addr", server.URL,
+			"--es-token-file", esTokenFile, "--observer-token-file", observerTokenFile, "--management-token-file", managementFile)
+		command.Env = append(os.Environ(), "http_proxy="+proxy.URL, "HTTP_PROXY="+proxy.URL, "all_proxy="+proxy.URL, "no_proxy=", "NO_PROXY=")
+		output, err := command.CombinedOutput()
+		if err != nil {
+			t.Fatalf("check with proxy settings failed: %v output=%s", err, output)
+		}
+		if got := requests.Load(); got != 0 {
+			t.Fatalf("the proxy received %d request(s)", got)
+		}
+	})
+
 	for _, test := range []struct {
 		name    string
 		deviate func(http.ResponseWriter, *http.Request, string) bool
@@ -256,6 +357,11 @@ func TestNomadACLToolCheckRefusesEachDeviation(t *testing.T) {
 		{"management token is not one", answer("/v1/acl/token/self", fakeACLManagementToken, http.StatusOK,
 			map[string]any{"SecretID": fakeACLManagementToken, "Type": "client"}), "does not hold a working Nomad management token"},
 		{"auth method present", answer("/v1/acl/auth-methods", fakeACLManagementToken, http.StatusOK, []map[string]string{{"Name": "sso"}}), "nomad has ACL auth methods (sso)"},
+		{"another live management token", answer("/v1/acl/tokens", fakeACLManagementToken, http.StatusOK, []map[string]any{
+			{"AccessorID": "management", "Type": "management"},
+			{"AccessorID": "second", "Type": "management", "ExpirationTime": "0001-01-01T00:00:00Z"},
+			{"AccessorID": "third", "Type": "management", "ExpirationTime": "2999-01-01T00:00:00Z"},
+		}), "nomad has other management tokens (accessors second, third)"},
 		{"another policy can submit", plan(fakeACLProbeSecret, "es-submit-v1", http.StatusOK), "other ACL grants can submit jobs in es-submit-v1 (policy es-observer-v1)"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
