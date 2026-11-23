@@ -641,6 +641,14 @@ stop_background_process() { printf 'first effect\n' >> "$ROOT_EVENTS"; exit 97; 
 			t.Fatalf("version pinned for one supported architecture did not pass the preflight: err=%v output=%q events=%q", r.err, r.output, r.events)
 		}
 	})
+	t.Run("version pinned only for amd64 reaches the first effect", func(t *testing.T) {
+		dir := t.TempDir()
+		pins := spireTestWritePins(t, filepath.Join(dir, "pins"), sum+"  spire-2.0.0-linux-amd64-musl.tar.gz\n")
+		r := setup(t, `SPIRE_RELEASE_PIN_FILE="$TEST_PINS"`, "TEST_PINS="+pins, "SUPPORTED_LOCAL_SPIRE_VERSION=2.0.0")
+		if r.err == nil || r.events != "first effect\n" || r.output != "" {
+			t.Fatalf("version pinned for one supported architecture did not pass the preflight: err=%v output=%q events=%q", r.err, r.output, r.events)
+		}
+	})
 }
 
 // The proof wrapper refuses a SPIRE release file with no pin before it
