@@ -429,3 +429,40 @@ The probe must create or mark a temporary fixture with the restrictive mode need
 This is also test hygiene only. It does not change ES public contracts,
 retained-staging semantics, retained-result semantics, readiness boundaries, or
 production capability probing placement.
+
+Root-package tests of the Remote Alpha TLS status collector use two kinds of
+fixture, and never a mixture. A live fixture uses the collector's real
+process-table reads and pidfd operations on real processes. It first attempts
+to read its own entry of the process table and skips with an explicit reason
+when that read is refused. It never decides by an operating-system label, and
+it sets the capability flag only after the collector's real process-capability
+probe has passed. A local fixture runs on every host. It replaces the probe
+and the whole boundary through which the cleanup reaches the target's process
+table: `scan_group_members`, `signal_same_group_members`, and
+`read_proc_identity`, each either by a stand-in for the function or by
+stand-ins for the operating-system primitives that the function uses.
+
+A fixture must not replace only part of that boundary. The part left real
+would read the host on its own: beside identities that the stand-ins
+invented on a host that has `/proc`, and without an end on a host that has
+neither `/proc` nor `pidfd_open`, where a listed process can never be
+confirmed absent and the group-absence hold never returns. The standard local
+boundary is therefore one shared test constant. It imports what it uses
+itself, so a fixture needs nothing but the loaded collector for it. It also
+ends a fixture that reaches a target-only reader, and a fixture that is still
+running after a fixed bound, with a nonzero status and a stack trace, so that
+a stuck cleanup hold fails one test and does not stop the test binary. A
+guard test applies the rule to every fixture script of the package, and one
+test runs the shared boundary with `/proc` and the pidfd operations denied.
+
+A stand-in for the probe alone is the same partial replacement. The
+collector's entry points run the probe and then declare the capability
+themselves, so a fixture that replaces the probe and runs an entry point is a
+local fixture: it replaces the whole boundary, or it replaces a function on
+every path from that entry point to the fixed command, so that no fixed child
+is started. The guard test knows those paths, and one more test holds those
+paths against the collector's source, so that a change of the collector's
+call graph fails there first.
+
+This is test hygiene only. It changes no collector behavior, capability
+criterion, hold, signal, reap, lock, or publication rule.
