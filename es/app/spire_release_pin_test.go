@@ -60,6 +60,19 @@ func spireTestDistribution(t *testing.T, dir string) (string, string) {
 	return path, hex.EncodeToString(sum[:])
 }
 
+// spireTestSwappingCopy replaces cp with one that writes other bytes than
+// the source's to the destination, as a source that changes between a check
+// and a copy would.
+const (
+	spireTestSwappedCopy  = "not the file that was checked\n"
+	spireTestSwappingCopy = `cp() {
+  local destination
+  for destination in "$@"; do :; done
+  printf 'not the file that was checked\n' > "$destination"
+}
+`
+)
+
 func spireTestWritePins(t *testing.T, path, body string) string {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
@@ -303,6 +316,22 @@ prepare_spire_distribution "$SUPPORTED_LOCAL_PROOF_DIR/downloads/spire.tar.gz" "
 		assertNothingUnpacked(t, r)
 	})
 
+	// cp is replaced so that the copy differs from the prebuilt file, which
+	// matches its pin: the copy is the file that is checked and unpacked.
+	t.Run("the copy is checked, not the prebuilt file", func(t *testing.T) {
+		dir := t.TempDir()
+		tarball, sum := spireTestDistribution(t, dir)
+		pins := spireTestWritePins(t, filepath.Join(dir, "pins"), sum+"  "+spireTestAMD64Asset+"\n")
+		swapped := sha256.Sum256([]byte(spireTestSwappedCopy))
+		r := setup(t, `SPIRE_RELEASE_PIN_FILE="$TEST_PINS"
+`+spireTestSwappingCopy, "SUPPORTED_LOCAL_PREBUILT_SPIRE_TARBALL="+tarball, "TEST_PINS="+pins)
+		if r.err == nil || !strings.Contains(r.output, " has SHA-256 "+hex.EncodeToString(swapped[:])+", not "+sum+", which ") ||
+			!strings.HasSuffix(r.output, "refused the SPIRE distribution; nothing was unpacked\n") || r.events != "" {
+			t.Fatalf("a copy that differs from the checked prebuilt file was not refused: err=%v output=%q events=%q", r.err, r.output, r.events)
+		}
+		assertNothingUnpacked(t, r)
+	})
+
 	t.Run("pinned file is unpacked and installed", func(t *testing.T) {
 		dir := t.TempDir()
 		tarball, sum := spireTestDistribution(t, dir)
@@ -404,6 +433,19 @@ stage_spire_distribution`
 		r := stage(t, direct, "TEST_DOWNLOAD="+tarball, "SUPPORTED_LOCAL_SPIRE_VERSION=9.9.9")
 		if r.err == nil || !strings.Contains(r.output, "no SHA-256 is pinned for the SPIRE release file spire-9.9.9-linux-arm64-musl.tar.gz: ") || r.events != "" {
 			t.Fatalf("release file with no pin was not refused before the download: err=%v output=%q events=%q", r.err, r.output, r.events)
+		}
+		assertNotStaged(t, r)
+	})
+
+	t.Run("the staged copy is checked, not the prebuilt file", func(t *testing.T) {
+		dir := t.TempDir()
+		tarball, sum := spireTestDistribution(t, dir)
+		pins := spireTestWritePins(t, filepath.Join(dir, "pins"), sum+"  "+spireTestARM64Asset+"\n")
+		swapped := sha256.Sum256([]byte(spireTestSwappedCopy))
+		r := stage(t, `SPIRE_RELEASE_PIN_FILE="$TEST_PINS"
+`+spireTestSwappingCopy+direct, "SUPPORTED_LOCAL_PREBUILT_SPIRE_TARBALL="+tarball, "TEST_PINS="+pins)
+		if r.err == nil || !strings.Contains(r.output, " has SHA-256 "+hex.EncodeToString(swapped[:])+", not "+sum+", which ") {
+			t.Fatalf("a staged copy that differs from the checked prebuilt file was not refused: err=%v output=%q", r.err, r.output)
 		}
 		assertNotStaged(t, r)
 	})
