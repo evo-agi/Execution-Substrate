@@ -3598,7 +3598,7 @@ accounts for its processes. The sequence for one command is fixed:
    nonzero status when one is. It then reaps every orphan of the namespace
    and ends with status zero when the control pipe reports end of input. The
    reaping is required: an orphan that ends as a zombie in the fixed child's
-   process group would otherwise stay visible to the absence scan of step 5
+   process group would otherwise stay visible to the absence scan of step 6
    and hold it. The anchor runs no other code and reads no status input.
 3. The collector spawns the fixed child exactly as before. The child is the
    second process of the namespace and a direct child of the collector, so
@@ -3606,14 +3606,28 @@ accounts for its processes. The sequence for one command is fixed:
    cleanup step applies to it unchanged.
 4. Directly after the spawn attempt, successful or not, the collector calls
    `setns` with its own namespace and proves the reset by the check of step 1.
-5. Collection, the cleanup owner, process-group disposition, the
-   unresolved-cleanup hold, the direct-child reap, and the post-reap absence
-   scan run unchanged.
-6. Only after they return does the collector close the control pipe. When the
-   anchor ends, the kernel kills every process that is still in the
-   namespace, admits no new process into it, and lets the anchor become
-   terminal only when no other process of the namespace is left, which
-   includes an unreaped direct child of the collector.
+5. Collection runs unchanged.
+6. The cleanup owner, process-group disposition, the unresolved-cleanup hold,
+   the direct-child reap, and the post-reap absence scan run unchanged. Only
+   the point at which the collector closes the control pipe depends on the
+   path. When the fixed child has ended and its output is complete, the
+   collector closes the control pipe before the cleanup owner runs. A
+   descendant that left the group can keep a child of its own in the fixed
+   child's process group and leave it unreaped. Once that child has ended, it
+   is a zombie that is not an orphan, so the anchor cannot reap it, and no
+   group signal can end it; the unchanged cleanup would wait until the
+   descendant ends by itself, which may be never. With the pipe closed first,
+   the kernel kills that descendant, the zombie goes to the anchor, which
+   reaps it, and the cleanup finds the fixed child alone. On that path any
+   process that outlived the fixed child is killed without a TERM first; the
+   result is already complete, so nothing it could still write counts. On
+   every other path the fixed child may still run, so the cleanup runs first,
+   with TERM before KILL, and the collector closes the control pipe only after
+   it returns. Either way, when the anchor ends, the kernel kills every
+   process that is still in the namespace, admits no new process into it, and
+   lets the anchor become terminal only when no other process of the
+   namespace is left, which includes an unreaped direct child of the
+   collector.
 7. The collector waits for the anchor alone with a nonblocking `waitpid`,
    sends it one KILL when it is not terminal after the grace period or when
    the pipe close failed, and reaps it exactly once. No fixed command returns, with a result
@@ -3659,6 +3673,11 @@ Limits that this rule states and does not remove:
   of the fixed command, not the authority of root.
 - A process that cannot die, for example one that is stuck in the kernel,
   keeps the anchor from becoming terminal. The invocation then holds.
+- On a path where the fixed child may still run (a timeout, an interruption,
+  an output overflow, or a failed step after the spawn), the cleanup runs
+  before the namespace ends. There a descendant that left the group and keeps
+  an ended child of its own unreaped in the fixed child's group holds the
+  invocation until the descendant ends by itself.
 - Inside its namespace the fixed child has process ID 2 and parent ID 0,
   while `/proc` stays the host's and shows the host's process IDs.
 - The namespace setting belongs to the calling thread, and a kernel may

@@ -146,7 +146,9 @@ def kinds(backend,*wanted):
 // make the pipe, open the namespace, fork the anchor, and close the anchor's
 // pipe end; then the reset with its proof; then the end, which closes the
 // control pipe, reaps the anchor, and closes the collector's own namespace
-// descriptor last. Every refusal happens before the step it protects.
+// descriptor last. When an earlier release closed the control pipe, the end
+// only waits for the anchor. Every refusal happens before the step it
+// protects.
 func TestRemoteAlphaESServiceTLSStatusChildNamespaceSequence(t *testing.T) {
 	const probe = remoteAlphaESProcessIdentityLoader + remoteAlphaESChildNamespaceModel + `
 backend=Backend();namespace,raised=opened(backend);at_open=list(backend.events)
@@ -163,6 +165,22 @@ try:namespace.open();second=None
 except BaseException as exc:second=exc
 record("one object opens one namespace only",
        literal(second)=="child_namespace_unproved" and len(backend.events)==count,(second,backend.events[count:]))
+
+# The normal-completion path releases the namespace before the cleanup and
+# ends it afterwards.
+backend=Backend();namespace,raised=opened(backend);namespace.restore()
+released=namespace.release();at_release=list(backend.events);unproved=namespace.close()
+record("a release before close closes the control pipe once, and close then only waits for the anchor",
+       raised is None and released is True and at_release==OPEN+RESET+END[:1]
+       and backend.events==OPEN+RESET+END and unproved is False and namespace.reaped
+       and not namespace.killed and not backend.violations,(at_release,backend.events,backend.violations))
+backend=Backend(close_control_write=OSError(errno.EIO,"close failed"));namespace,raised=opened(backend)
+namespace.restore();released=namespace.release();flag=namespace.unproved;unproved=namespace.close()
+record("a failed release before close is unproved, and close kills the anchor at once",
+       raised is None and released is False and flag and unproved is True and namespace.reaped
+       and namespace.killed and backend.events==OPEN+RESET+END[:1]+[("waitpid","anchor"),
+       ("kill","anchor",signal.SIGKILL),("waitpid","anchor"),("close","own")] and not backend.violations,
+       (backend.events,backend.violations))
 
 backend=Backend();namespace,raised=opened(backend);unproved=namespace.close()
 record("close resets the namespace itself before it ends the anchor",
@@ -222,6 +240,8 @@ print(json.dumps({"cases":cases,"detail":detail}))
 		"a proved namespace reports nothing unproved and leaves nothing behind",
 		"a second close does nothing",
 		"one object opens one namespace only",
+		"a release before close closes the control pipe once, and close then only waits for the anchor",
+		"a failed release before close is unproved, and close kills the anchor at once",
 		"close resets the namespace itself before it ends the anchor",
 		"a reset without an opened namespace does nothing",
 		"a missing unshare refuses before anything is touched",
@@ -443,29 +463,39 @@ print(json.dumps({"cases":cases,"detail":detail}))
 }
 
 // One fixed command composes the namespace with the unchanged cleanup: open,
-// spawn, reset directly after the spawn attempt, the cleanup owner, and the
-// end of the namespace last. A refusal before the spawn opens nothing. What
-// the end of the namespace leaves unproved makes an otherwise good command
-// incomplete. The namespace here is a recorder, so this runs on every host;
-// the process boundary is the shared local stand-in.
+// spawn, and reset directly after the spawn attempt. When the fixed child has
+// ended and its output is complete, the namespace is released before the
+// cleanup owner runs, so that a zombie which a descendant outside the group
+// left unreaped in it cannot hold the cleanup. On every other path the
+// cleanup runs first, while the fixed child may still run. The end of the
+// namespace comes last on every path. A refusal before the spawn opens
+// nothing. What the end of the namespace leaves unproved makes an otherwise
+// good command incomplete. The namespace here is a recorder, so this runs on
+// every host; the process boundary is the shared local stand-in.
 func TestRemoteAlphaESServiceTLSStatusChildNamespaceFixedCommand(t *testing.T) {
 	const probe = remoteAlphaESProcessIdentityLoader + remoteAlphaESStatusLocalProcessBoundary + `
 root=pathlib.Path(sys.argv[2]);child=root/"fixed-openssl"
 child.write_text("#!/bin/sh\nprintf fixed\n");child.chmod(0o700);module.OPENSSL=str(child)
-order=[];made=[];plan={}
+slow=root/"slow-openssl"
+slow.write_text("#!/bin/sh\nexec sleep 30\n");slow.chmod(0o700)
+order=[];made=[];plan={};spawned=[];at_release=[]
 class Recorder:
     def __init__(self):made.append(self)
     def open(self):
         order.append("open")
         if "open" in plan:raise plan["open"]
     def restore(self):order.append("restore")
+    def release(self):
+        # Whether the fixed child had ended when its namespace was released.
+        order.append("release");at_release.append(module.waitid_terminal(spawned[-1].pid))
+        return not plan.get("release_failed")
     def close(self):order.append("close");return bool(plan.get("close_unproved"))
 module.ChildNamespace=Recorder
 real_popen=module.subprocess.Popen
 def popen(*args,**kwargs):
     order.append("spawn")
     if "spawn" in plan:raise plan["spawn"]
-    return real_popen(*args,**kwargs)
+    proc=real_popen(*args,**kwargs);spawned.append(proc);return proc
 module.subprocess.Popen=popen
 real_owner=module.own_child_until_proved
 def owner(proc):
@@ -474,17 +504,22 @@ module.own_child_until_proved=owner
 def literal(exc):
     return exc.args[0] if isinstance(exc,module.Incomplete) and exc.args else type(exc).__name__
 def command(argv=None,**changes):
-    del order[:];plan.clear();plan.update(changes);module.WITNESS_DISPOSITION_UNPROVED=False
+    del order[:];del at_release[:];plan.clear();plan.update(changes);module.WITNESS_DISPOSITION_UNPROVED=False
     try:return module.run_fixed(argv or (module.OPENSSL,"version")),None,list(order)
     except BaseException as exc:return None,exc,list(order)
-WHOLE=["open","spawn","restore","cleanup","close"]
+WHOLE=["open","spawn","restore","release","cleanup","close"]
+FAILED=["open","spawn","restore","cleanup","close"]
 
 before=len(made);result,raised,seen=command()
-record("a good command opens, spawns, resets, cleans up and ends its namespace in this order",
+record("a good command opens, spawns, resets, releases, cleans up and ends its namespace in this order",
        result==(0,b"fixed",b"") and raised is None and seen==WHOLE
        and not module.WITNESS_DISPOSITION_UNPROVED,(result,raised,seen))
+record("a good command releases its namespace only after the fixed child has ended",at_release==[True],at_release)
 command()
 record("each command has a namespace of its own",len(made)==before+2 and made[-1] is not made[-2],len(made)-before)
+result,raised,seen=command(release_failed=True)
+record("a failed release leaves the result to the end of the namespace",
+       result==(0,b"fixed",b"") and raised is None and seen==WHOLE,(result,raised,seen))
 
 result,raised,seen=command(close_unproved=True)
 record("a good command whose namespace end is unproved is incomplete",
@@ -514,8 +549,13 @@ record("a failed command keeps its own reason when the namespace end is unproved
 limit=module.MAX_OUTPUT;module.MAX_OUTPUT=2
 result,raised,seen=command()
 module.MAX_OUTPUT=limit
-record("a command that fails after the spawn still ends its namespace after the cleanup",
-       result is None and literal(raised)=="child_output_overflow" and seen==WHOLE,(result,raised,seen))
+record("a command that fails after the spawn cleans up before its namespace ends, and releases nothing first",
+       result is None and literal(raised)=="child_output_overflow" and seen==FAILED,(result,raised,seen))
+fixed,limit=module.OPENSSL,module.CHILD_TIMEOUT;module.OPENSSL,module.CHILD_TIMEOUT=str(slow),0.2
+result,raised,seen=command()
+module.OPENSSL,module.CHILD_TIMEOUT=fixed,limit
+record("a fixed child that is still running at its timeout is cleaned up before its namespace ends",
+       result is None and literal(raised)=="child_timeout" and seen==FAILED and at_release==[],(result,raised,seen))
 
 module.PROCESS_CAPABILITY_READY=False
 result,raised,seen=command()
@@ -529,8 +569,10 @@ print(json.dumps({"cases":cases,"detail":detail}))
 `
 	result := runRemoteAlphaESProcessIdentityProbe(t, probe, t.TempDir())
 	assertRemoteAlphaESProcessIdentityCases(t, result,
-		"a good command opens, spawns, resets, cleans up and ends its namespace in this order",
+		"a good command opens, spawns, resets, releases, cleans up and ends its namespace in this order",
+		"a good command releases its namespace only after the fixed child has ended",
 		"each command has a namespace of its own",
+		"a failed release leaves the result to the end of the namespace",
 		"a good command whose namespace end is unproved is incomplete",
 		"an unproved namespace end is reported as an unproved OpenSSL child",
 		"a refused namespace means no spawn",
@@ -538,7 +580,8 @@ print(json.dumps({"cases":cases,"detail":detail}))
 		"children that are not created at home means no spawn",
 		"a failed spawn is followed by the reset and the end of the namespace",
 		"a failed command keeps its own reason when the namespace end is unproved too",
-		"a command that fails after the spawn still ends its namespace after the cleanup",
+		"a command that fails after the spawn cleans up before its namespace ends, and releases nothing first",
+		"a fixed child that is still running at its timeout is cleaned up before its namespace ends",
 		"a command without a proved capability opens no namespace",
 		"a command that is not the fixed command opens no namespace")
 }
@@ -549,7 +592,8 @@ print(json.dumps({"cases":cases,"detail":detail}))
 // stays with the probe as a zombie and shows. The anchor closes every
 // inherited descriptor but its standard streams and the control pipe, reaps
 // each process that ends while it waits, goes on doing so until the control
-// pipe closes, and then ends with status zero. Inside a namespace the
+// pipe closes, however many poll periods that takes, and then ends with
+// status zero. Inside a namespace the
 // processes it reaps are the orphans of the namespace; here they are two
 // children that end when the probe says so.
 //
@@ -626,6 +670,11 @@ record("the anchor reaps a process that ends while it waits",
 os.close(second_go_w)
 record("the anchor goes on reaping until its control pipe closes",
        until(lambda:reaped(pidfds[second])) and not terminal(anchor),terminal(anchor))
+# A fixed command can run for many poll periods; the anchor ends only on the
+# end of its input, never by a time of its own.
+pause=50*module.CHILD_NAMESPACE_POLL;time.sleep(pause)
+record("the anchor is still waiting after fifty poll periods without the end of its input",
+       not terminal(anchor),pause)
 os.close(control_w)
 waited,status=os.waitpid(anchor,0)
 record("the anchor ends with status zero when its control pipe closes",
@@ -659,6 +708,7 @@ print(json.dumps({"capability":True,"cases":cases,"detail":detail}))
 		"the anchor closes every inherited descriptor but its standard streams and the control pipe",
 		"the anchor reaps a process that ends while it waits",
 		"the anchor goes on reaping until its control pipe closes",
+		"the anchor is still waiting after fifty poll periods without the end of its input",
 		"the anchor ends with status zero when its control pipe closes",
 		"no process is left to the probe")
 }
@@ -682,7 +732,9 @@ func TestRemoteAlphaESServiceTLSStatusChildNamespaceDocumentsContract(t *testing
 			"second process of the namespace and a direct child of the collector",
 			"admits no new", "`openssl_child_unproved`",
 			"ommand falls back to process-group disposition alone",
-			"time limit", "still runs as root")
+			"time limit", "still runs as root",
+			"When the fixed child has ended and its output is complete",
+			"no group signal can end", "the fixed child may still run")
 		assertContainsNone(t, label+" fixed-child containment", section,
 			"best effort", "falls back to the process group when")
 	}
@@ -699,7 +751,11 @@ func TestRemoteAlphaESServiceTLSStatusChildNamespaceDocumentsContract(t *testing
 			"never by an OS label, a kernel version, or the caller's user ID",
 			"process ID 2 and parent ID 0", "keeps exactly one thread",
 			"prove nothing about the kernel path; only a run as root on Linux does",
-			"changes no process-group signal, hold, direct-child reap, lock, publication, public code, schema, reader, or retry authority")
+			"changes no process-group signal, hold, direct-child reap, lock, publication, public code, schema, reader, or retry authority",
+			"before the cleanup owner runs", "a zombie that is not an orphan, so the anchor cannot reap it",
+			"the zombie goes to the anchor, which reaps it", "with TERM before KILL",
+			"and the collector closes the control pipe only after it returns",
+			"holds the invocation until the descendant ends by itself")
 	}
 
 	fixtures := compactDocSection(t, mustRead(t, ".docs/system_overview/capability_probing.md"),
@@ -743,7 +799,13 @@ func TestRemoteAlphaESServiceTLSStatusChildNamespaceDocumentsContract(t *testing
 	body := docSection(t, source, "\ndef _run_fixed_in_namespace(", "\ndef nested(")
 	assertContainsAll(t, "collector fixed command body", body,
 		"        namespace.open()\n        try:\n            proc = subprocess.Popen(",
-		"        finally:\n            namespace.restore()\n")
+		"        finally:\n            namespace.restore()\n",
+		"            namespace.release()\n            cleanup_uncertain = own_child_until_proved(proc)\n            code = proc.returncode\n")
+	// The namespace ends before the cleanup only on the normal-completion
+	// path; on every other path close() ends it after the cleanup.
+	if got := strings.Count(body, "namespace.release()"); got != 1 {
+		t.Fatalf("the fixed command body releases its namespace %d times, want once", got)
+	}
 }
 
 // The real tests need a kernel that lets this process create a PID namespace.
@@ -832,11 +894,25 @@ def reap_all(seconds):
 // stays in the group and keeps the default signals. In the mode "linger" the
 // fixed child itself stays as well. Every process ends by itself when the
 // release file appears, or after 60 seconds.
+//
+// In the modes "zombie" and "qalive" the descendant first starts a child of
+// its own, which stays in the fixed child's group and reports "held", and then
+// leaves the group with setsid and ignores TERM and HUP. It does not reap that
+// child: in "zombie" the child has ended before the fixed child does, in
+// "qalive" it lives until a signal or the release ends it. The descendant
+// itself ends after the number of seconds in the optional fourth argument
+// (60 by default) or when the release file appears; only when the time ran
+// out does it report "lapsed". Before it ends it closes the FIFO and then
+// reaps its child.
+//
+// In the mode "slow" the fixed child starts nothing and writes its output
+// after one second, which is fifty poll periods of the anchor.
 const remoteAlphaESChildNamespaceFixedChild = `
 child=root/"fixed-openssl"
 child.write_text('''#!/usr/bin/python3 -I
 import os,signal,sys,time
 mode,fifo,release=sys.argv[1:4]
+lapse=float(sys.argv[4]) if len(sys.argv)>4 else 60.0
 out=os.open(fifo,os.O_WRONLY)
 ready_r,ready_w=os.pipe()
 def say(label):
@@ -853,8 +929,24 @@ def stay():
     while time.monotonic()<end and not os.path.exists(release):time.sleep(0.02)
     os._exit(0)
 say("fixed")
+if mode=="slow":
+    time.sleep(1.0);sys.stdout.write("fixed");sys.stdout.flush();sys.exit(0)
 if os.fork()==0:
     try:
+        if mode in ("zombie","qalive"):
+            held_r,held_w=os.pipe();held=os.fork()
+            if held==0:
+                for fd in (0,1,2,ready_r,ready_w,held_r):os.close(fd)
+                say("held");os.write(held_w,b"h");os.close(held_w)
+                if mode=="qalive":stay()
+                os._exit(0)
+            os.close(held_w);os.read(held_r,1);os.close(held_r)
+            # A zombie of this process, which it does not reap.
+            if mode=="zombie":os.waitid(os.P_PID,held,os.WEXITED|os.WNOWAIT)
+            os.setsid();detach("escaped");end=time.monotonic()+lapse
+            while time.monotonic()<end and not os.path.exists(release):time.sleep(0.02)
+            if not os.path.exists(release):say("lapsed")
+            os.close(out);os.waitpid(held,0);os._exit(0)
         if mode in ("setsid","linger"):os.setsid();detach("escaped");stay()
         if mode=="setpgid":os.setpgid(0,0);detach("escaped");stay()
         if mode=="daemon":
@@ -994,20 +1086,32 @@ print(json.dumps({"capability":True,"cases":cases,"detail":detail}))
 // group ends as a zombie whose parent is the anchor; the anchor reaps it, or
 // the absence scan of the unchanged cleanup would see it forever.
 //
-// The last case is the control. The same fixture without the namespace leaves
-// the same descendant alive after the command returned, so the cases above
-// can fail.
+// A descendant that left the group can keep a child of its own in the group
+// and leave it unreaped. That child is no orphan, and once it has ended no
+// group signal can end its zombie. The namespace therefore ends before the
+// cleanup when the fixed child has ended: the descendant is killed long
+// before it would end by itself, and the cleanup does not wait for it. A
+// fixed command that runs for many poll periods of the anchor returns its own
+// output, so the anchor holds the namespace for as long as the command runs.
+//
+// The last cases are the controls. The same fixture without the namespace
+// leaves the same descendant alive after the command returned, and a
+// descendant that keeps an ended child in the group holds the cleanup until it
+// ends by itself, so the cases above can fail.
 func TestRemoteAlphaESServiceTLSStatusChildNamespaceRealDescendants(t *testing.T) {
 	const probe = remoteAlphaESChildNamespaceRealPrelude + `
 root=pathlib.Path(sys.argv[2])
 ` + remoteAlphaESChildNamespaceFixedChild + `
 before=descriptors()
 module.validate_process_capability();module.PROCESS_CAPABILITY_READY=True
-def command(mode,tag):
+took={}
+def command(mode,tag,*extra):
     fifo=root/("events-"+tag);release=root/("release-"+tag)
     os.mkfifo(fifo);reader=os.open(fifo,os.O_RDONLY|os.O_NONBLOCK)
-    try:result=module.run_fixed((module.OPENSSL,mode,str(fifo),str(release)));raised=None
+    started=time.monotonic()
+    try:result=module.run_fixed((module.OPENSSL,mode,str(fifo),str(release))+extra);raised=None
     except BaseException as exc:result=None;raised=exc
+    took[tag]=time.monotonic()-started
     data,alive=drain(reader)
     released=let_go(reader,release) if alive else None
     os.close(reader)
@@ -1029,14 +1133,32 @@ result,raised,alive,released,seen,orphans=command("group","group")
 record("an orphan that stays in the group is reaped by the anchor and does not hold the cleanup",
        result==(0,b"fixed",b"") and raised is None and alive is False and orphans==[]
        and "stayed" in seen and seen["stayed"][2]==2,(result,raised,alive,orphans,seen))
+# The descendant would end by itself only after LAPSE seconds.
+LAPSE=15.0
+for mode,label in (("zombie","a descendant outside the group that keeps an ended child unreaped in it"),
+                   ("qalive","a descendant outside the group that keeps a living child in it, unreaped once killed")):
+    result,raised,alive,released,seen,orphans=command(mode,mode,str(LAPSE))
+    record(label+" does not hold the cleanup and is gone when the command returns",
+           result==(0,b"fixed",b"") and raised is None and alive is False and orphans==[]
+           and "lapsed" not in seen and took[mode]<LAPSE
+           and "held" in seen and seen["held"][2]==2 and "escaped" in seen and seen["escaped"][2]!=2,
+           (result,raised,alive,orphans,took[mode],seen))
+result,raised,alive,released,seen,orphans=command("slow","slow")
+record("a fixed command that runs for fifty poll periods of the anchor returns its own output",
+       result==(0,b"fixed",b"") and raised is None and alive is False and orphans==[]
+       and took["slow"]>=1.0,(result,raised,alive,orphans,took["slow"]))
 record("the commands leave no child, descriptor or namespace setting, and nothing unproved",
        no_child() and descriptors()==before and at_home()
        and not module.WITNESS_DISPOSITION_UNPROVED,(descriptors(),before))
-# The control: the same fixture, and no namespace.
+# The controls: the same fixture, and no namespace.
 ` + remoteAlphaESStatusLocalChildNamespace + `result,raised,alive,released,seen,orphans=command("setsid","control")
 record("without the namespace the same descendant outlives the command",
        result==(0,b"fixed",b"") and raised is None and alive is True and released is True
        and orphans==[0] and "escaped" in seen,(result,raised,alive,released,orphans,seen))
+result,raised,alive,released,seen,orphans=command("zombie","control-zombie","2")
+record("without the namespace a descendant that keeps an ended child in the group holds the cleanup until it ends by itself",
+       result==(0,b"fixed",b"") and raised is None and alive is False and orphans==[0]
+       and "lapsed" in seen and took["control-zombie"]>=2.0,(result,raised,alive,orphans,took["control-zombie"],seen))
 print(json.dumps({"capability":True,"cases":cases,"detail":detail}))
 `
 	result := runRemoteAlphaESProcessIdentityProbe(t, probe, t.TempDir())
@@ -1048,8 +1170,12 @@ print(json.dumps({"capability":True,"cases":cases,"detail":detail}))
 		"a fork relay is gone when the command returns",
 		"the fixed child is the second process of its namespace and leads its own group and session",
 		"an orphan that stays in the group is reaped by the anchor and does not hold the cleanup",
+		"a descendant outside the group that keeps an ended child unreaped in it does not hold the cleanup and is gone when the command returns",
+		"a descendant outside the group that keeps a living child in it, unreaped once killed does not hold the cleanup and is gone when the command returns",
+		"a fixed command that runs for fifty poll periods of the anchor returns its own output",
 		"the commands leave no child, descriptor or namespace setting, and nothing unproved",
-		"without the namespace the same descendant outlives the command")
+		"without the namespace the same descendant outlives the command",
+		"without the namespace a descendant that keeps an ended child in the group holds the cleanup until it ends by itself")
 }
 
 // A collector that is killed in the middle of a fixed command takes the fixed

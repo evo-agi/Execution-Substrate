@@ -105,7 +105,9 @@ def record(label,passed,seen):
 // does; a relay leaves one new child each time it is killed, until its
 // generations are used up. The probe's fork makes the probe child, which
 // starts the grandchild and ends at once; the grandchild comes to this
-// process only after this process has become a child subreaper. The clock moves only by sleep.
+// process only after this process has become a child subreaper, and it ends
+// by itself when this process closes the hold pipe's write end, as the real
+// grandchild does at the end of its input. The clock moves only by sleep.
 // The backend records every call, and it records as a violation a signal to
 // anything but an unreaped child, a signal other than SIGKILL, a reap of a
 // child that has not ended, a blocking wait on a child that has not ended, a
@@ -215,9 +217,11 @@ class Kernel:
         self.events.append(("write",self.role(fd),data));self._raise("write")
         return len(data)
     def close(self,fd):
-        self.events.append(("close",self.role(fd)))
+        role=self.role(fd);self.events.append(("close",role))
         if fd not in self.descriptors:self.violations.append(("close of a descriptor that is not open",fd))
         self.descriptors.discard(fd);self._raise("close")
+        if role=="hold_write" and not self.child_side and self.children.get(4101)=="alive":
+            self.children[4101]="ended"
     def exit(self,code):
         self.events.append(("exit",code));raise Exited(code)
 def names(kernel):
@@ -332,6 +336,10 @@ record("a probe adopts, kills, and reaps the grandchild and sets the flag",
        and k.kills==[4101] and sorted(k.reaped)==[4100,4101] and k.children=={}
        and ("waitpid",4100,0) in k.events and k.descriptors==set() and k.violations==[],
        (failure,k.events,k.violations,k.descriptors))
+# The probe proves that the collector can kill an adopted descendant, so the
+# grandchild must still be held when the drain kills it.
+record("the probe kills the grandchild while the hold pipe is still open",
+       k.events.index(("kill",4101,signal.SIGKILL))<k.events.index(("close","hold_write")),k.events)
 
 k=Kernel(children=[70])
 failure=probe(k)
@@ -361,6 +369,8 @@ k=Kernel(report=b"x")
 failure=probe(k)
 record("a malformed report of the grandchild is unproved",
        failure=="not_adopted" and m.DESCENDANT_CAPABILITY_READY is False and k.descriptors==set(),(failure,k.events))
+record("after a failed probe the hold pipe closes first, and the grandchild is reaped without a signal",
+       k.kills==[] and k.children=={} and 4101 in k.reaped and k.violations==[],(k.kills,k.children,k.events))
 
 assert probe(Kernel()) is None and m.DESCENDANT_CAPABILITY_READY is True
 k=Kernel(refusing=[4101])
@@ -408,11 +418,13 @@ print(json.dumps({"cases":cases,"detail":detail}))
 	result := runRemoteCollectorDescendantProbe(t, probe)
 	assertRemoteCollectorDescendantCases(t, result,
 		"a probe adopts, kills, and reaps the grandchild and sets the flag",
+		"the probe kills the grandchild while the hold pipe is still open",
 		"a probe refuses a child that it did not start and leaves it alone",
 		"a refused child subreaper is unproved before any fork",
 		"a probe child that fails is unproved and everything is closed and reaped",
 		"a grandchild that does not come to the probe is unproved",
 		"a malformed report of the grandchild is unproved",
+		"after a failed probe the hold pipe closes first, and the grandchild is reaped without a signal",
 		"a grandchild that cannot be killed is unproved and clears an earlier flag",
 		"a failed close of a probe descriptor is unproved",
 		"a Python without the kernel operations is unproved",
@@ -596,6 +608,42 @@ func TestRemoteAlphaOperatorHealthcheckTLSStatusNoninteractiveDescendantRealKern
 m.validate_descendant_capability()
 record("the probe makes the collector a child subreaper and proves the drain",
        m.DESCENDANT_CAPABILITY_READY is True and no_child(),m.DESCENDANT_CAPABILITY_READY)
+# The same probe once more, through the real kernel operations with a record
+# of the collector's own calls: the drain must kill the grandchild while the
+# hold pipe still holds it, so the grandchild ends by that KILL and not by
+# itself.
+backend=m.DescendantBackend();seen=[];ends=[];reported=[]
+real={name:getattr(backend,name) for name in ("pipe","close","kill","read","waitpid")}
+def role(fd):
+    for name,(read_end,write_end) in zip(("report","hold"),ends):
+        if fd==read_end:return name+"_read"
+        if fd==write_end:return name+"_write"
+    return "other"
+def recording_pipe():
+    pair=real["pipe"]();ends.append(pair);return pair
+def recording_close(fd):
+    seen.append(("close",role(fd)));real["close"](fd)
+def recording_kill(pid,signum):
+    seen.append(("kill",pid,signum));real["kill"](pid,signum)
+def recording_read(fd,size):
+    data=real["read"](fd,size)
+    if role(fd)=="report_read" and data.isdigit():reported.append(int(data))
+    return data
+def recording_waitpid(pid,options):
+    waited,status=real["waitpid"](pid,options)
+    if waited==pid:seen.append(("reaped",pid,status))
+    return waited,status
+backend.pipe,backend.close,backend.kill=recording_pipe,recording_close,recording_kill
+backend.read,backend.waitpid=recording_read,recording_waitpid
+m.validate_descendant_capability(backend)
+grandchild=reported[0] if len(reported)==1 else -1
+statuses=[event[2] for event in seen if event[0]=="reaped" and event[1]==grandchild]
+killed=("kill",grandchild,signal.SIGKILL) in seen and ("close","hold_write") in seen
+record("the real probe kills the grandchild while the hold pipe is still open, and the grandchild ends by that KILL",
+       m.DESCENDANT_CAPABILITY_READY is True and no_child() and grandchild>0 and killed
+       and seen.index(("kill",grandchild,signal.SIGKILL))<seen.index(("close","hold_write"))
+       and len(statuses)==1 and os.WIFSIGNALED(statuses[0]) and os.WTERMSIG(statuses[0])==signal.SIGKILL,
+       (grandchild,seen))
 stay="""
 signal.signal(signal.SIGTERM,signal.SIG_IGN)
 if os.fork()==0:
@@ -676,6 +724,7 @@ print(json.dumps({"capability":True,"cases":cases,"detail":detail}))
 	requireRemoteCollectorDescendantKernel(t, result)
 	assertRemoteCollectorDescendantCases(t, result,
 		"the probe makes the collector a child subreaper and proves the drain",
+		"the real probe kills the grandchild while the hold pipe is still open, and the grandchild ends by that KILL",
 		"a descendant in the group that outlives a normal completion is ended",
 		"a descendant leaving the group that outlives a normal completion is ended",
 		"a fork relay in the group is ended",

@@ -1565,6 +1565,13 @@ def _run_fixed_in_namespace(namespace: ChildNamespace, argv: tuple[str, ...],
                         target.extend(chunk)
                         if len(target) > (MAX_OUTPUT if label == "out" else MAX_ERROR):
                             raise Incomplete("child_output_overflow")
+            # The fixed child has ended and its output is complete. Its
+            # namespace ends before the cleanup owner runs: the kernel then
+            # kills every other process of the namespace, so that a zombie
+            # which a living descendant left unreaped in the fixed child's
+            # group, and which no group signal can end, cannot hold the
+            # cleanup. A failed release is reported by close().
+            namespace.release()
             cleanup_uncertain = own_child_until_proved(proc)
             code = proc.returncode
             check_signal()
