@@ -731,6 +731,11 @@ Current invocation shape:
 - `mounts`
 - `annotations`
 
+The invocation strings that ES places in the Nomad job (`output_id`, each
+`argv` element, each `env` key and value, and each mount `target_path`) must
+not contain `${`, `%{` or a NUL byte, which Nomad would not pass to the
+workload as written (`.docs/execution_lifecycle/contracts.md`).
+
 Current runtime-profile annotation:
 
 - `execution_substrate.runtime_profile`

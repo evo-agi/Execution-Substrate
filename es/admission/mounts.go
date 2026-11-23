@@ -108,6 +108,9 @@ func normalizeRuntimeMountTargetPath(targetPath string) (string, error) {
 	if cleaned == runtimeMountRoot || !strings.HasPrefix(cleaned, runtimeMountRoot+"/") {
 		return "", fmt.Errorf("mount target_path must remain under %s", runtimeMountRoot)
 	}
+	if !nomadPassesAsWritten(cleaned) {
+		return "", fmt.Errorf("mount target_path %s", nomadEvaluatedText)
+	}
 	return cleaned, nil
 }
 

@@ -827,6 +827,22 @@ func validatePrepareRequest(req *PrepareRequest) *Error {
 	return nil
 }
 
+// nomadPassesAsWritten reports whether Nomad hands s to the workload exactly
+// as written. Nomad's client evaluates "${...}" and "%{...}" in every string of
+// a task's driver configuration (the arguments and the mounts) as an HCL
+// template, with the node's attributes and metadata, the task's environment
+// and a set of functions, and rewrites the escapes "$${" and "%%{". It replaces
+// "${name}" in every environment and meta value with a node attribute or an
+// environment value. A NUL byte cannot reach a process at all. So a request
+// string that ES places in a Nomad job holds none of these, or the workload
+// would run with values that ES never admitted, or never start once ES has
+// accepted it.
+func nomadPassesAsWritten(s string) bool {
+	return !strings.Contains(s, "${") && !strings.Contains(s, "%{") && strings.IndexByte(s, 0) < 0
+}
+
+const nomadEvaluatedText = `must not contain "${", "%{" or a NUL byte, which Nomad would not pass on as written`
+
 func validateInvocationAgainstManifest(invocation ArtifactInvocation, manifest Manifest) *Error {
 	if manifest.ArtifactDigest != invocation.ArtifactDigest {
 		return &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "artifact digest mismatch between request and manifest"}
@@ -834,11 +850,22 @@ func validateInvocationAgainstManifest(invocation ArtifactInvocation, manifest M
 	if len(invocation.Argv) > 100 {
 		return &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "invocation.argv exceeds the maximum supported count"}
 	}
+	if !nomadPassesAsWritten(invocation.OutputID) {
+		return &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "invocation.output_id " + nomadEvaluatedText}
+	}
+	for _, arg := range invocation.Argv {
+		if !nomadPassesAsWritten(arg) {
+			return &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "invocation.argv " + nomadEvaluatedText}
+		}
+	}
 	allowedEnv := make(map[string]struct{}, len(manifest.RuntimeInterface.EnvironmentVariables))
 	for _, key := range manifest.RuntimeInterface.EnvironmentVariables {
 		allowedEnv[strings.TrimSpace(key)] = struct{}{}
 	}
-	for key := range invocation.Env {
+	for key, value := range invocation.Env {
+		if !nomadPassesAsWritten(key) || !nomadPassesAsWritten(value) {
+			return &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "invocation.env " + nomadEvaluatedText}
+		}
 		if isReservedRuntimeEnvKey(key) {
 			return &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: fmt.Sprintf("environment key is reserved for runtime identity or control-plane use: %s", key)}
 		}

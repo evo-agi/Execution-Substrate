@@ -490,6 +490,7 @@ object or scheduler handoff.
 - `timeout_seconds` must be non-negative.
 - If `resources` is present, both CPU and memory must be greater than zero.
 - If `mode` is present, it must be `sync` or `async`.
+- `invocation.output_id`, every `argv` element, every environment key and value, and every mount target path must not contain `${`, `%{` or a NUL byte. Nomad's client evaluates `${...}` and `%{...}` in each string of a task's driver configuration as an HCL template (with node attributes, node metadata, the task environment and a set of functions), rewrites the escapes `$${` and `%%{`, and replaces `${name}` in environment and meta values; no process can receive a NUL byte. ES refuses such a request with `400 invalid_request` before anything is staged or sent, so the workload receives exactly the strings ES admitted. Other control bytes are passed on as written.
 - Environment keys must not use reserved runtime/control-plane keys.
 - If the manifest runtime interface declares allowed environment keys, provided keys must stay within that set.
 - If mounts are provided, they must satisfy the current mount contract:
