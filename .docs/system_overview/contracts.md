@@ -161,6 +161,12 @@ route, stays with each service and is described in that service's section.
 - The caller identity is read from the leaf certificate of the first verified
   client certificate chain. A request without a verified chain, or whose
   first chain has no leaf, has no caller identity.
+- The leaf must be an end-entity certificate. A leaf whose basic constraints
+  mark it as a CA, or whose key usage includes `keyCertSign` or `cRLSign`,
+  has no caller identity: the SPIFFE X.509-SVID standard requires every
+  validator to refuse such a leaf, and a CA certificate that carries an ES
+  identity would otherwise authenticate as that caller. The
+  `digitalSignature` key usage is an issuer rule and is not checked.
 - The leaf must carry exactly one URI SAN. A certificate with no URI SAN has
   no caller identity. A certificate with more than one URI SAN is refused
   even when one of them would be acceptable: the SPIFFE X.509-SVID standard
@@ -214,6 +220,12 @@ route, stays with each service and is described in that service's section.
 - One trust domain is accepted. Federation with other trust domains is not
   designed; adding it requires an explicit contract change, not a list in
   configuration.
+- The inert outside-observer protocol
+  (`.docs/execution_lifecycle/outside_observer_protocol.md`) names fixed
+  SPIFFE ID values in the trust domain `governed-execution.local`. They are
+  message field values, not callers of any service today. If that observer
+  ever authenticates to an ES service over mutual TLS, this contract refuses
+  it until the trust-domain rule is changed explicitly.
 
 ## 4. Workload-Zone Vault Runtime-Config Contract
 

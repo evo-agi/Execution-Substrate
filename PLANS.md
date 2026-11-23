@@ -11,17 +11,20 @@ their own copy of the code that reads the caller's SPIFFE ID from the
 verified client certificate, and the copies had drifted: CGS accepted an
 identity from any trust domain, ARS indexed the verified chain without
 checking it was non-empty, and every service took the first matching URI SAN
-of a certificate with several and passed non-canonical paths (for example a
-trailing slash or a `..` segment) to prefix matching. The rule is now one
+of a certificate with several, passed non-canonical paths (for example a
+trailing slash or a `..` segment) to prefix matching, and accepted a CA
+certificate presented as the caller's leaf. The rule is now one
 cross-cutting support package, `internal/callerauth`, whose contract is
-`.docs/system_overview/contracts.md` section 3A: exactly one URI SAN, a
-conforming SPIFFE ID with a path, trust domain `execution.internal` only,
-then the bootstrap-issuer refusal. Authorization stays service-local. CGS
-`id.conf` loading refuses principals that no authenticated caller could
-present. The response codes and texts are unchanged; requests that the old
-copies let through or refused with `403` because of a malformed identity now
-get `401`. The CGS authorize request and response shape is unchanged. This
-is not a Workstream D policy-input redesign.
+`.docs/system_overview/contracts.md` section 3A: an end-entity leaf (not a
+CA, no `keyCertSign` or `cRLSign`, as X.509-SVID requires) with exactly one
+URI SAN, a conforming SPIFFE ID with a path, trust domain
+`execution.internal` only, then the bootstrap-issuer refusal. Authorization
+stays service-local. CGS `id.conf` loading refuses principals that no
+authenticated caller could present. The response codes and texts are
+unchanged; requests that the old copies let through or refused with `403`
+because of a malformed identity now get `401`. The CGS authorize request and
+response shape is unchanged. This is not a Workstream D policy-input
+redesign.
 
 ### Private replay-progress pre-COMMIT and owner inventory refinement (2026-11-19)
 
@@ -3546,7 +3549,7 @@ The following are useful current implementation facts and should remain visible 
   - ES does not fetch, mint, broker, store, rotate, parse, or validate Codex tokens
 - The current slice-0 operator path now targets one Linux host/VM, runs ARS/EGS/AGS/ES as containers, keeps Nomad server/client and Docker on that same host, and treats Docker host networking as temporary compatibility scaffolding rather than final control-plane network architecture.
 - The current slice-0 operator path now requires strict client-cert authentication at the hot-path TLS boundary, including `/health`, and ARS now rejects the configured bootstrap issuer on both read and write paths like the rest of the hot path.
-- ARS, AGS, EGS, CGS, and ES authenticate callers through the one shared package `internal/callerauth` (contract: `.docs/system_overview/contracts.md` section 3A). Only a verified client certificate with exactly one URI SAN that is a conforming SPIFFE ID in the trust domain `execution.internal` identifies a caller; authorization stays in each service.
+- ARS, AGS, EGS, CGS, and ES authenticate callers through the one shared package `internal/callerauth` (contract: `.docs/system_overview/contracts.md` section 3A). Only a verified client certificate whose leaf is an end-entity certificate with exactly one URI SAN that is a conforming SPIFFE ID in the trust domain `execution.internal` identifies a caller; authorization stays in each service.
 - The current slice-0 operator path records the ES same-path staging proof at bring-up time, while slice `1A` and slice `1B` now separately prove the first bounded strong workload-identity handoff for runtime workloads.
 - The current slice-0 operator path has been functionally proved on a real Linux VM through the real ES -> Nomad -> Docker execution path, and the current supported local reference profile on this Mac is Lima `qemu` + Ubuntu 24.04 arm64 with pre-managed non-`-dev` Nomad and positive natural `cpu.totalcompute`; the previously investigated VMware/aarch64 and Lima `vz` local profiles remain unsupported on this Mac because natural `cpu.totalcompute` stays `0`.
 - The current AGS publish path now distinguishes artifact identity from payload identity: payload bytes remain content-addressed by `payload_digest`, while AGS derives `artifact_digest` from package-facing identity inputs only before registering the runtime-facing discovery record through ARS.

@@ -59,6 +59,36 @@ func CertificateOrError(issuerCommonName string, uris ...string) (*x509.Certific
 // CertificateDER returns the DER bytes of the certificate that Certificate
 // parses.
 func CertificateDER(issuerCommonName string, uris ...string) ([]byte, error) {
+	return certificateDER(issuerCommonName, LeafProfile{}, uris)
+}
+
+// LeafProfile sets the basic constraints and key usage of the leaf that
+// CertificateWithProfile builds. The zero value is the end-entity profile
+// that Certificate uses: no basic constraints and the digitalSignature key
+// usage.
+type LeafProfile struct {
+	// IsCA writes basic constraints that mark the leaf as a CA.
+	IsCA bool
+	// KeyUsage replaces the digitalSignature key usage when it is not zero.
+	KeyUsage x509.KeyUsage
+}
+
+// CertificateWithProfile is Certificate with the leaf's basic constraints
+// and key usage set by profile.
+func CertificateWithProfile(t testing.TB, issuerCommonName string, profile LeafProfile, uris ...string) *x509.Certificate {
+	t.Helper()
+	der, err := certificateDER(issuerCommonName, profile, uris)
+	if err == nil {
+		var cert *x509.Certificate
+		if cert, err = x509.ParseCertificate(der); err == nil {
+			return cert
+		}
+	}
+	t.Fatalf("callerauthtest: certificate with profile %+v and URI SANs %q: %v", profile, uris, err)
+	return nil
+}
+
+func certificateDER(issuerCommonName string, profile LeafProfile, uris []string) ([]byte, error) {
 	caPublic, caPrivate, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		return nil, err
@@ -96,6 +126,13 @@ func CertificateDER(issuerCommonName string, uris ...string) ([]byte, error) {
 		KeyUsage:        x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:     []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 		ExtraExtensions: []pkix.Extension{{Id: oidSubjectAltName, Value: san}},
+	}
+	if profile.KeyUsage != 0 {
+		leafTemplate.KeyUsage = profile.KeyUsage
+	}
+	if profile.IsCA {
+		leafTemplate.BasicConstraintsValid = true
+		leafTemplate.IsCA = true
 	}
 	return x509.CreateCertificate(rand.Reader, leafTemplate, ca, leafPublic, caPrivate)
 }
@@ -155,6 +192,12 @@ func RefusedCallers(allowedPath string) []RefusedCaller {
 	fixed := func(state *tls.ConnectionState) func(testing.TB) *tls.ConnectionState {
 		return func(testing.TB) *tls.ConnectionState { return state }
 	}
+	withProfile := func(profile LeafProfile) func(testing.TB) *tls.ConnectionState {
+		return func(t testing.TB) *tls.ConnectionState {
+			t.Helper()
+			return State(CertificateWithProfile(t, RuntimeIssuer, profile, id))
+		}
+	}
 
 	cases := []RefusedCaller{
 		// No verified certificate.
@@ -163,6 +206,12 @@ func RefusedCallers(allowedPath string) []RefusedCaller {
 		{Name: "empty_verified_chain", State: fixed(&tls.ConnectionState{HandshakeComplete: true, VerifiedChains: [][]*x509.Certificate{{}}})},
 		{Name: "nil_leaf", State: fixed(&tls.ConnectionState{HandshakeComplete: true, VerifiedChains: [][]*x509.Certificate{{nil}}})},
 		{Name: "nil_URI_entry", State: fixed(State(&x509.Certificate{Issuer: pkix.Name{CommonName: RuntimeIssuer}, URIs: []*url.URL{nil}}))},
+
+		// Not an end-entity certificate (X.509-SVID section 5.2), even with
+		// exactly the allowed identity.
+		{Name: "CA_leaf", State: withProfile(LeafProfile{IsCA: true})},
+		{Name: "keyCertSign_leaf", State: withProfile(LeafProfile{KeyUsage: x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign})},
+		{Name: "cRLSign_leaf", State: withProfile(LeafProfile{KeyUsage: x509.KeyUsageDigitalSignature | x509.KeyUsageCRLSign})},
 
 		// No identity, or more than one.
 		{Name: "no_URI_SAN", State: withURIs()},

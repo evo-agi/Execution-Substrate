@@ -1,8 +1,9 @@
 // Package callerauth authenticates the caller of a request to an ES service
 // (ARS, AGS, EGS, CGS and ES). It reads the caller's SPIFFE ID from the
 // verified TLS client certificate and refuses the request when that identity
-// is missing, ambiguous, malformed or outside the ES trust domain, or when
-// the certificate was issued by the configured bootstrap issuer.
+// is missing, ambiguous, malformed or outside the ES trust domain, when the
+// certificate is not an end-entity certificate, or when the certificate was
+// issued by the configured bootstrap issuer.
 //
 // The package owns authentication only: who is calling. Which authenticated
 // callers may use which route (authorization) stays with each service.
@@ -14,6 +15,7 @@ package callerauth
 
 import (
 	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"net/http"
 	"strings"
@@ -37,6 +39,7 @@ const (
 // which one applied: every one of them is answered with the same 401.
 var (
 	ErrNoVerifiedCertificate = errors.New("callerauth: no verified client certificate")
+	ErrNotEndEntity          = errors.New("callerauth: client certificate is a CA certificate or may sign certificates or CRLs")
 	ErrNoURISAN              = errors.New("callerauth: client certificate carries no URI SAN")
 	ErrMultipleURISANs       = errors.New("callerauth: client certificate carries more than one URI SAN")
 	ErrMalformedSPIFFEID     = errors.New("callerauth: URI SAN is not a conforming SPIFFE ID with a path")
@@ -109,9 +112,10 @@ func (c Caller) ID() SPIFFEID {
 // CallerFromConnectionState returns the caller identified by the verified
 // client certificate of a TLS connection. It reads the leaf of the first
 // verified chain; Go's TLS server puts the peer's leaf first in every
-// verified chain. The leaf must carry exactly one URI SAN, and that URI must
-// pass ParseSPIFFEID. Other SAN types (DNS names, IP addresses, e-mail
-// addresses) are not read.
+// verified chain. The leaf must be an end-entity certificate: not a CA, and
+// with neither the keyCertSign nor the cRLSign key usage. It must carry
+// exactly one URI SAN, and that URI must pass ParseSPIFFEID. Other SAN types
+// (DNS names, IP addresses, e-mail addresses) are not read.
 //
 // It does not apply the bootstrap-issuer rule; Authenticator does.
 func CallerFromConnectionState(state *tls.ConnectionState) (Caller, error) {
@@ -121,6 +125,14 @@ func CallerFromConnectionState(state *tls.ConnectionState) (Caller, error) {
 	leaf := state.VerifiedChains[0][0]
 	if leaf == nil {
 		return Caller{}, ErrNoVerifiedCertificate
+	}
+	// X.509-SVID section 5.2: a validator refuses a leaf whose basic
+	// constraints mark it as a CA, or whose key usage includes keyCertSign
+	// or cRLSign. Go's verifier lets such a certificate stand as the client
+	// certificate when it has no extended key usage, which CA certificates
+	// usually lack.
+	if leaf.IsCA || leaf.KeyUsage&(x509.KeyUsageCertSign|x509.KeyUsageCRLSign) != 0 {
+		return Caller{}, ErrNotEndEntity
 	}
 	switch len(leaf.URIs) {
 	case 0:

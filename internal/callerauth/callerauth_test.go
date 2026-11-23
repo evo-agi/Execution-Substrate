@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/spiffe/go-spiffe/v2/bundle/x509bundle"
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
 	"github.com/spiffe/go-spiffe/v2/svid/x509svid"
 
@@ -189,6 +190,9 @@ func TestCallerFromConnectionStateRefusesEveryListedCredential(t *testing.T) {
 		"no_verified_chain":              callerauth.ErrNoVerifiedCertificate,
 		"empty_verified_chain":           callerauth.ErrNoVerifiedCertificate,
 		"nil_leaf":                       callerauth.ErrNoVerifiedCertificate,
+		"CA_leaf":                        callerauth.ErrNotEndEntity,
+		"keyCertSign_leaf":               callerauth.ErrNotEndEntity,
+		"cRLSign_leaf":                   callerauth.ErrNotEndEntity,
 		"nil_URI_entry":                  callerauth.ErrMalformedSPIFFEID,
 		"no_URI_SAN":                     callerauth.ErrNoURISAN,
 		"two_URI_SANs_allowed_first":     callerauth.ErrMultipleURISANs,
@@ -264,7 +268,21 @@ func TestCallerFromConnectionStateReadsTheURIAsTheCertificateParserHandsItOver(t
 // Over every certificate of the shared refusal list and every accepted ID,
 // CallerFromConnectionState accepts exactly what go-spiffe's
 // x509svid.IDFromCert accepts in the trust domain with a path.
-func TestCallerFromConnectionStateAgreesWithTheSPIFFEReferenceReader(t *testing.T) {
+// noBundles is an X.509 bundle source without bundles. x509svid.Verify reads
+// the leaf's ID and applies the X.509-SVID leaf rules before it asks the
+// source for a bundle, so errNoBundle from Verify means the leaf passed both.
+type noBundles struct{}
+
+var errNoBundle = errors.New("reference: no bundle")
+
+func (noBundles) GetX509BundleForTrustDomain(spiffeid.TrustDomain) (*x509bundle.Bundle, error) {
+	return nil, errNoBundle
+}
+
+// The reference is go-spiffe's x509svid.Verify up to the bundle lookup: the
+// ID reader (IDFromCert) and the leaf rules (not a CA, no keyCertSign, no
+// cRLSign). Chain verification is the TLS stack's job and is not compared.
+func TestCallerFromConnectionStateAgreesWithTheSPIFFEReferenceValidator(t *testing.T) {
 	var certs []*x509.Certificate
 	for _, tc := range callerauthtest.RefusedCallers("operator/local") {
 		if tc.State == nil {
@@ -284,10 +302,10 @@ func TestCallerFromConnectionStateAgreesWithTheSPIFFEReferenceReader(t *testing.
 	}
 	for _, cert := range certs {
 		_, err := callerauth.CallerFromConnectionState(callerauthtest.State(cert))
-		ref, refErr := x509svid.IDFromCert(cert)
-		want := refErr == nil && ref.TrustDomain().Name() == callerauth.TrustDomain && ref.Path() != ""
+		ref, _, refErr := x509svid.Verify([]*x509.Certificate{cert}, noBundles{})
+		want := errors.Is(refErr, errNoBundle) && ref.TrustDomain().Name() == callerauth.TrustDomain && ref.Path() != ""
 		if got := err == nil; got != want {
-			t.Errorf("URIs %q: accepted=%v, reference accepted=%v (%v)", cert.URIs, got, want, refErr)
+			t.Errorf("URIs %q, CA %v, key usage %b: accepted=%v, reference accepted=%v (%v)", cert.URIs, cert.IsCA, cert.KeyUsage, got, want, refErr)
 		}
 	}
 }
