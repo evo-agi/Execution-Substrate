@@ -963,6 +963,9 @@ func TestGo1265ToolchainBaselineDocsAndBuildContract(t *testing.T) {
 		"`go mod download`, `go mod verify`, `go build ./...`, `go vet ./...`, and the tests of every package of the module",
 		"One more step runs `GOOS=darwin GOARCH=arm64 go vet ./...`",
 		"It type-checks the files that build only on macOS and runs no test",
+		"Before the tests, the workflow installs Nomad 2.1.1, Vault 2.2.2 and SPIRE 1.14.4 from release downloads that it checks against reviewed SHA-256 values, and pulls the container images that the tests run by reviewed digest",
+		"So the `es/app` integration tests that start a Nomad agent with the Docker driver, and the supported-local setup test that runs Vault and SPIRE, run on that runner",
+		"The job sets `AWS_EC2_METADATA_DISABLED=true`: the runner's EC2 metadata endpoint does not answer, and Nomad's AWS fingerprinter would otherwise fail the client of a test agent",
 		"`.github/ci/environment-only-tests.txt` is the single statement of what the test step excludes and of which tests exclude themselves on that runner",
 		"An entry names a test or subtest that cannot pass on that runner for host reasons",
 		"`.github/ci/go_test_gate.py` skips those entries, each only in the package it names",
@@ -994,6 +997,7 @@ func TestGo1265ToolchainBaselineDocsAndBuildContract(t *testing.T) {
 		"It is not design authority",
 		"It is not a macOS run, a race-detector run, a Linux runtime proof, a Remote Alpha proof, or a supported-local proof",
 		"does not replace the exact-Go preflights of the supported scripts",
+		"The Nomad, Vault and SPIRE that a test starts there are throwaway test instances, not a deployment",
 		"It does not show that a test named in the list passes: on that runner those tests fail or skip themselves",
 	)
 	assertContainsNone(t, "Go baseline stale CI denial", baselineDoc,
@@ -1010,6 +1014,12 @@ func TestGo1265ToolchainBaselineDocsAndBuildContract(t *testing.T) {
 		"go-version-file: go.mod",
 		"cache: false",
 		"ENVIRONMENT_ONLY_TESTS: .github/ci/environment-only-tests.txt",
+		"AWS_EC2_METADATA_DISABLED: \"true\"",
+		"fetch https://releases.hashicorp.com/nomad/2.1.1/nomad_2.1.1_linux_amd64.zip nomad.zip 073084f7690fdaea756ff1eff8b669b25c3a6c17778f19ae0c47606973ed3f39",
+		"fetch https://releases.hashicorp.com/vault/2.2.2/vault_2.2.2_linux_amd64.zip vault.zip 5700edf139113609962fe371af7d2a53de8ecb720d545dc39b43de204515d3c4",
+		"fetch https://github.com/spiffe/spire/releases/download/v1.14.4/spire-1.14.4-linux-amd64-musl.tar.gz spire.tar.gz 4482db434af8a3d2f4c5aeaef8912b21311411a175ce7daeb49ea17b776bcbf5",
+		"echo \"$3  $tools/download/$2\" | sha256sum --check --strict",
+		"run: nomad version && vault version",
 		"run: go mod download",
 		"run: go mod verify",
 		"run: go build ./...",
@@ -13915,5 +13925,59 @@ func TestReview17ProofResultHandoffContract(t *testing.T) {
 				t.Fatalf("%s missing Review-17 result handoff contract %q", check.path, phrase)
 			}
 		}
+	}
+}
+
+// TestARSStorageCheckDocsContract pins what the plan, the bring-up runbook and
+// the configuration page say about bring-up's ARS storage check after audit
+// 20 of pull request #19: storage paths must be in normal form (A20-1), the
+// check scales to ARS's full sha256/xx/yy fan-out and ARS's readiness wait
+// starts only after its launcher's check (A20-2), the check no longer lists
+// directories with ls, and the full fan-out test pins the check's cost by the
+// processes it starts, not by a time limit (audit 24, O24-1).
+func TestARSStorageCheckDocsContract(t *testing.T) {
+	stale := []string{
+		"few hundred",
+		"lists every storage directory",
+		"lists every such directory",
+		"`mktemp`, `ls`, `cat`",
+		"requires under 30 s",
+	}
+	checks := []struct {
+		path     string
+		required []string
+	}{
+		{"PLANS.md", []string{
+			"`storage.root_dir` and `storage.index_file` must be absolute and written in normal form, as Python's `os.path.normpath` writes it",
+			"because ARS opens both exactly as written while the mounts it gets use the normal form",
+			"creates a file in every directory under the storage root and finds it again by listing that directory",
+			"The check needs `/bin/sh` with `mktemp`, `xargs`, `rm`, `cat`, `chmod` and `mv` in the image",
+			"starts no process per directory, because ARS's blob layout `sha256/xx/yy/<digest>` grows to 65,794 directories with the root",
+			"`TestARSStorageCheckScalesToARSFullFanOut` pins that cost by structure, not by time: it counts the processes the check starts at that size",
+			"and requires fewer than one per 32 directories",
+			"ARS's readiness wait (`READY_TIMEOUT_SECONDS`) starts only once the launcher reports that its check passed",
+			"the report cannot skip the check",
+			"the check passes the first such signal on to its probe and waits until the probe has removed its files and ended, however often it is signalled again",
+			"can leave at most one batch of its empty `.ars-storage-check.*` files, those of 256 directories",
+		}},
+		{".runbooks/system/v1_bringup.md", []string{
+			"`storage.root_dir` and `storage.index_file` are absolute paths written in normal form",
+			"so the refusal prints the form to write instead",
+			"finds its file again by listing each storage directory",
+			"The check takes seconds even when ARS's storage holds all 65,794 directories its `sha256/xx/yy` layout can create",
+			"ARS's readiness wait (`READY_TIMEOUT_SECONDS`, 30 s by default) starts only once ARS's launcher has passed its own run of the check",
+			"Ctrl-C during the check, or during `up` while ARS's launcher runs it, leaves the storage as it was",
+		}},
+		{".docs/system_overview/configuration.md", []string{
+			"refuses unless `storage.root_dir` and `storage.index_file` are absolute and in normal form (ARS opens them exactly as written, while its mounts use the normal form)",
+			"finds its file again by listing each storage directory",
+			"The check starts no process per directory and takes seconds even at ARS's full `sha256/xx/yy` fan-out of 65,794 directories",
+			"`scripts/01_bringup.sh up` starts ARS's readiness wait only once ARS's launcher has passed its own run of the check",
+		}},
+	}
+	for _, check := range checks {
+		text := compactText(mustRead(t, check.path))
+		assertContainsAll(t, check.path+" ARS storage check", text, check.required...)
+		assertContainsNone(t, check.path+" stale ARS storage check", text, stale...)
 	}
 }

@@ -50,7 +50,7 @@ GATE = os.path.join(HERE, "go_test_gate.py")
 WORKFLOW = os.path.join(HERE, os.pardir, "workflows", "go.yml")
 # SHA-256 of that file as it was last reviewed. See
 # test_the_workflow_file_is_the_text_that_was_reviewed.
-WORKFLOW_SHA256 = "48e875974487b20a67f47964beb8a6de3d1f36745089c85dc8b616cb6b548474"
+WORKFLOW_SHA256 = "739ffc0ce9dbbda732252a916f7666c26d0da7bb4e4839d4b8f82cd91c9facfc"
 
 PASS = "pass"
 FAIL = "fail"
