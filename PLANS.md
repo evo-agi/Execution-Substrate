@@ -2,6 +2,45 @@
 
 ## Status
 
+### PR #12 durable admission: repairs after the third red-team and the guard coverage review (2026-11-23)
+
+The third red-team found two medium defects. Nomad's client evaluates
+`${...}` and `%{...}` in every string of a task's driver configuration as a
+template, rewrites the escapes `$${` and `%%{`, and replaces `${name}` in
+environment and meta values. So the argv, environment, output id and mount
+targets that ran were not the ones ES admitted, bound and recorded. ES now
+refuses `${`, `%{` and a NUL byte in each of those strings before anything
+is staged or sent: with `400 invalid_request` on the ordinary path, and with
+no claim, no reservation and no POST on the private path, which shares the
+validation. Other control bytes are passed on as written.
+And a private request whose job was too large was admitted, took one of the
+claim slots and one of the reservations, and then answered Integrity
+forever; four of them closed the domain. ES now projects the job and the
+POST body before the claim, with a stage, a job name and a correlation
+value of the lengths every run has, and refuses a request that does not fit
+as malformed, with no claim. The job bound stays measured on the form
+`encoding/json` writes, which is never shorter than the job Nomad's API
+returns.
+
+The guard coverage review found that a production file could hold
+`//go:cgo_import_dynamic`, which makes a build without cgo load a named
+shared library before `main`, with no import that the guard reads. Every
+non-test Go file of the repository may now hold only the `//go:` directives
+of a reviewed list, today `//go:build` alone. The tests of the red-team and
+the review's proposal are adopted unchanged.
+
+Taking up `trunk_dev` after its PRs #27 and #29 adds no path. The mount
+target rule is one more production file, the two contracts documents state
+the refusal, and seven test files are new, so the path ceiling of PR #12
+plus its repairs is 66 files.
+
+This entry changes behaviour: a request that holds one of those strings,
+which ES accepted before, is now refused. It changes no stored format. The
+public request contract gains the refusal, which
+[the execution lifecycle contracts](.docs/execution_lifecycle/contracts.md)
+state. The precise wording of the private path is owned by
+[the operational handoff contract](.docs/execution_lifecycle/reliable_submit_operational_handoff.md).
+
 ### PR #12 durable admission: taking up trunk_dev after its PRs #23 and #22 (2026-11-23)
 
 Since PR #23, every test package of `trunk_dev` runs its tests under a
@@ -14,7 +53,7 @@ position. The CI's list of environment-only tests gains two lines for tests
 of the handoff: one fails on the runner without its probe binary, and one
 skips itself there. The list's check refuses both lines on `trunk_dev`
 alone, so they come with PR #12. These are two more test files and the
-CI's list, so the path ceiling of PR #12 plus its repairs is 56 files.
+CI's list, so the path ceiling of PR #12 plus its repairs became 56 files.
 
 This entry adds one test file, changes another, changes the CI's list of
 environment-only tests and changes documents. It changes no behaviour, no

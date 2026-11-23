@@ -14388,7 +14388,22 @@ func operationalV2AssuranceOwnerRule(owner string) bool {
 		strings.Contains(owner, "aggregate HEAD ceiling for PR #12 plus its repairs was 52 files") &&
 		strings.Contains(owner, "It adds exactly one more path, a test file:\nA/workstream_a_guardrails_test.go") &&
 		strings.Contains(owner, "HEAD ceiling for PR #12 plus its repairs was 53 files") &&
-		strings.Contains(owner, "HEAD ceiling for PR #12 plus its repairs is 56 files") &&
+		strings.Contains(owner, "HEAD ceiling for PR #12 plus its repairs was 56 files") &&
+		strings.Contains(owner, "HEAD ceiling for PR #12 plus its repairs is 66 files") &&
+		strings.Contains(owner, "test of those lengths are in A/workstream_c_guardrails_test.go and\nI/operational_handoff_test.go, which are already counted.") &&
+		strings.Contains(owner, "owner reconciliation at this gate. Taking up `trunk_dev` adds no path.") &&
+		strings.Contains(owner, "It adds exactly ten more paths, one production file, two\ndocuments and seven test files:\nA/mounts.go, whose mount target rule refuses those strings") &&
+		strings.Contains(owner, ".docs/execution_lifecycle/contracts.md and\n.docs/system_overview/contracts.md, which state the refusal") &&
+		strings.Contains(owner, "A/nomad_request_strings_test.go (new),\nA/reliable_submit_operational_job_bound_test.go (new) and the red-team's\nfive test files") &&
+		strings.Contains(owner, "A/reliable_submit_operational_admission_redteam3_test.go (new),\nA/reliable_submit_operational_admission_redteam3_codec_test.go (new),\nA/reliable_submit_operational_admission_redteam3_finding_test.go (new),\nA/reliable_submit_operational_admission_redteam3_fuzz_test.go (new) and\nA/reliable_submit_operational_admission_redteam3_process_test.go (new)") &&
+		strings.Contains(owner, "Job0 ≤65536\nbytes as Go's `encoding/json` writes it") &&
+		strings.Contains(owner, "That form is at least as long as the one Nomad's\nAPI writes when GET Job returns the job") &&
+		strings.Contains(owner, "Before the claim is stored, ES\nprojects Job0 and the POST body") &&
+		strings.Contains(owner, "either bound as `OperationalMalformed`, with no claim, no reservation and no\npublication") &&
+		strings.Contains(owner, "`//go:cgo_import_dynamic _ _\n\"name\"` makes a `CGO_ENABLED=0` build a dynamic executable") &&
+		strings.Contains(owner, "may hold only\nthe `//go:` directives of an exact reviewed list, today `//go:build`\nalone") &&
+		strings.Contains(owner, "and a test fails on any other verb and on a listed verb that no\nfile holds") &&
+		!strings.Contains(owner, "Canonical Job0") &&
 		strings.Contains(owner, "It adds exactly three more paths, two test files and the CI's list:\nA/internal/admissionstate/testtmpdir_main_test.go (new)") &&
 		strings.Contains(owner, "remote_alpha_es_service_tls_status_local_boundary_test.go, whose two\nposition reads now ignore line directives") &&
 		strings.Contains(owner, ".github/ci/environment-only-tests.txt, which gains two lines") &&
@@ -14499,6 +14514,21 @@ func operationalCommissioningGateIDs(source string) []string {
 	return ids
 }
 
+// Nomad's client evaluates "${...}" and "%{...}" in the strings of a task as
+// a template, so the request contract refuses them, and NUL, in every string
+// ES places in a job.
+func TestNomadEvaluatedRequestStringsContract(t *testing.T) {
+	lifecycle := compactText(mustRead(t, ".docs/execution_lifecycle/contracts.md"))
+	overview := compactText(mustRead(t, ".docs/system_overview/contracts.md"))
+	assertContainsAll(t, "execution lifecycle request contract", lifecycle,
+		"`invocation.output_id`, every `argv` element, every environment key and value, and every mount target path must not contain `${`, `%{` or a NUL byte.",
+		"rewrites the escapes `$${` and `%%{`, and replaces `${name}` in environment and meta values",
+		"ES refuses such a request with `400 invalid_request` before anything is staged or sent",
+		"Other control bytes are passed on as written.")
+	assertContainsAll(t, "system overview invocation shape", overview,
+		"(`output_id`, each `argv` element, each `env` key and value, and each mount `target_path`) must not contain `${`, `%{` or a NUL byte")
+}
+
 func TestOperationalSubmitHandoffCurrentAdmissionV2Contract(t *testing.T) {
 	owner := mustRead(t, operationalHandoffOwnerDoc)
 	plans := mustRead(t, "PLANS.md")
@@ -14532,7 +14562,13 @@ func TestOperationalSubmitHandoffCurrentAdmissionV2Contract(t *testing.T) {
 		"is a `write-through` access", "ceiling for PR #12 plus its repairs was 48 files",
 		"ceiling for PR #12 plus its repairs was 52 files",
 		"HEAD ceiling for PR #12 plus its repairs was 53 files",
-		"HEAD ceiling for PR #12 plus its repairs is 56 files",
+		"HEAD ceiling for PR #12 plus its repairs was 56 files",
+		"HEAD ceiling for PR #12 plus its repairs is 66 files",
+		"owner reconciliation at this gate. Taking up `trunk_dev` adds no path.",
+		"It adds exactly ten more paths, one production file, two\ndocuments and seven test files:\nA/mounts.go, whose mount target rule refuses those strings",
+		".docs/execution_lifecycle/contracts.md and\n.docs/system_overview/contracts.md, which state the refusal",
+		"A/nomad_request_strings_test.go (new),\nA/reliable_submit_operational_job_bound_test.go (new) and the red-team's\nfive test files",
+		"A/reliable_submit_operational_admission_redteam3_test.go (new),\nA/reliable_submit_operational_admission_redteam3_codec_test.go (new),\nA/reliable_submit_operational_admission_redteam3_finding_test.go (new),\nA/reliable_submit_operational_admission_redteam3_fuzz_test.go (new) and\nA/reliable_submit_operational_admission_redteam3_process_test.go (new)",
 		"It adds exactly one more path, a test file:\nA/workstream_a_guardrails_test.go",
 		"It adds exactly three more paths, two test files and the CI's list:\nA/internal/admissionstate/testtmpdir_main_test.go (new)",
 		"remote_alpha_es_service_tls_status_local_boundary_test.go, whose two\nposition reads now ignore line directives",
@@ -14553,7 +14589,13 @@ func TestOperationalSubmitHandoffCurrentAdmissionV2Contract(t *testing.T) {
 		"PR #12 durable admission: line directives after the sixth audit",
 		"PR #12 durable admission: taking up trunk_dev after its PRs #23 and #22",
 		"The admission state package of PR #12 is a new test package, so it\ngets that file",
-		"CI's list, so the path ceiling of PR #12 plus its repairs is 56 files",
+		"CI's list, so the path ceiling of PR #12 plus its repairs became 56 files",
+		"PR #12 durable admission: repairs after the third red-team and the guard coverage review",
+		"the refusal, and seven test files are new, so the path ceiling of PR #12\nplus its repairs is 66 files",
+		"Taking up `trunk_dev` after its PRs #27 and #29 adds no path.",
+		"no claim, no reservation and no POST on the private path, which shares the\nvalidation",
+		"This entry changes behaviour: a request that holds one of those strings,\nwhich ES accepted before, is now refused.",
+		"of a reviewed list, today `//go:build` alone",
 		"This entry adds one test file, changes another, changes the CI's list of\nenvironment-only tests and changes documents.",
 		"The CI's list of environment-only tests gains two lines for tests\nof the handoff",
 		"The list's check refuses both lines on `trunk_dev`\nalone, so they come with PR #12.",
@@ -14809,7 +14851,21 @@ func TestOperationalSubmitHandoffCurrentAdmissionV2RejectsUnsafeMutants(t *testi
 		{"MissingUnknownRoadsNotExcluded", "a source inventory\ncannot show that no other road exists"},
 		{"MissingAdoptedTestsCeiling", "aggregate HEAD ceiling for PR #12 plus its repairs was 52 files"},
 		{"MissingSixthAuditCeiling", "HEAD ceiling for PR #12 plus its repairs was 53 files"},
-		{"MissingTrunkDevCeiling", "HEAD ceiling for PR #12 plus its repairs is 56 files"},
+		{"MissingTrunkDevCeiling", "HEAD ceiling for PR #12 plus its repairs was 56 files"},
+		{"MissingThirdRedTeamCeiling", "HEAD ceiling for PR #12 plus its repairs is 66 files"},
+		{"MissingThirdRedTeamCountedTests", "test of those lengths are in A/workstream_c_guardrails_test.go and\nI/operational_handoff_test.go, which are already counted."},
+		{"MissingThirdRedTeamNoTrunkDevPath", "owner reconciliation at this gate. Taking up `trunk_dev` adds no path."},
+		{"MissingThirdRedTeamMountsPath", "It adds exactly ten more paths, one production file, two\ndocuments and seven test files:\nA/mounts.go, whose mount target rule refuses those strings"},
+		{"MissingThirdRedTeamContractsPaths", ".docs/execution_lifecycle/contracts.md and\n.docs/system_overview/contracts.md, which state the refusal"},
+		{"MissingThirdRedTeamTestPaths", "A/nomad_request_strings_test.go (new),\nA/reliable_submit_operational_job_bound_test.go (new) and the red-team's\nfive test files"},
+		{"MissingThirdRedTeamAdoptedTestPaths", "A/reliable_submit_operational_admission_redteam3_test.go (new),\nA/reliable_submit_operational_admission_redteam3_codec_test.go (new),\nA/reliable_submit_operational_admission_redteam3_finding_test.go (new),\nA/reliable_submit_operational_admission_redteam3_fuzz_test.go (new) and\nA/reliable_submit_operational_admission_redteam3_process_test.go (new)"},
+		{"MissingJobBoundForm", "Job0 ≤65536\nbytes as Go's `encoding/json` writes it"},
+		{"MissingJobBoundEchoReason", "That form is at least as long as the one Nomad's\nAPI writes when GET Job returns the job"},
+		{"MissingJobFitBeforeClaim", "Before the claim is stored, ES\nprojects Job0 and the POST body"},
+		{"MissingJobFitTakesNoClaim", "either bound as `OperationalMalformed`, with no claim, no reservation and no\npublication"},
+		{"MissingDynamicImportDirective", "`//go:cgo_import_dynamic _ _\n\"name\"` makes a `CGO_ENABLED=0` build a dynamic executable"},
+		{"MissingDirectiveAllowlist", "may hold only\nthe `//go:` directives of an exact reviewed list, today `//go:build`\nalone"},
+		{"MissingDirectiveAllowlistExact", "and a test fails on any other verb and on a listed verb that no\nfile holds"},
 		{"MissingTrunkDevStartupPath", "It adds exactly three more paths, two test files and the CI's list:\nA/internal/admissionstate/testtmpdir_main_test.go (new)"},
 		{"MissingTrunkDevPositionReadsPath", "remote_alpha_es_service_tls_status_local_boundary_test.go, whose two\nposition reads now ignore line directives"},
 		{"MissingTrunkDevCIListPath", ".github/ci/environment-only-tests.txt, which gains two lines"},
@@ -14917,7 +14973,14 @@ func TestOperationalSubmitHandoffCurrentAdmissionV2RejectsUnsafeMutants(t *testi
 		{"NoOtherRoadClaimed", "a source inventory\ncannot show that no other road exists", "no other road\nexists"},
 		{"CeilingNotRaisedForAdoptedTests", "aggregate HEAD ceiling for PR #12 plus its repairs was 52 files", "aggregate HEAD ceiling for PR #12 plus its repairs was 48 files"},
 		{"CeilingNotRaisedForSixthAudit", "HEAD ceiling for PR #12 plus its repairs was 53 files", "HEAD ceiling for PR #12 plus its repairs was 52 files"},
-		{"CeilingNotRaisedForTrunkDev", "HEAD ceiling for PR #12 plus its repairs is 56 files", "HEAD ceiling for PR #12 plus its repairs is 55 files"},
+		{"CeilingNotRaisedForTrunkDev", "HEAD ceiling for PR #12 plus its repairs was 56 files", "HEAD ceiling for PR #12 plus its repairs was 55 files"},
+		{"CeilingNotRaisedForThirdRedTeam", "HEAD ceiling for PR #12 plus its repairs is 66 files", "HEAD ceiling for PR #12 plus its repairs is 56 files"},
+		{"ThirdRedTeamMountsPathUnnamed", "It adds exactly ten more paths, one production file, two\ndocuments and seven test files:\nA/mounts.go, whose mount target rule refuses those strings", "It adds no path"},
+		{"ThirdRedTeamAdoptedTestsUnnamed", "A/reliable_submit_operational_admission_redteam3_test.go (new),\nA/reliable_submit_operational_admission_redteam3_codec_test.go (new),\nA/reliable_submit_operational_admission_redteam3_finding_test.go (new),\nA/reliable_submit_operational_admission_redteam3_fuzz_test.go (new) and\nA/reliable_submit_operational_admission_redteam3_process_test.go (new)", "and the red-team's tests"},
+		{"JobBoundCanonicalAgain", "Job0 ≤65536\nbytes as Go's `encoding/json` writes it", "Canonical Job0 ≤65536\nbytes"},
+		{"JobFitAfterClaim", "Before the claim is stored, ES\nprojects Job0 and the POST body", "After the claim is stored, ES\nprojects Job0 and the POST body"},
+		{"JobFitTakesAClaim", "either bound as `OperationalMalformed`, with no claim, no reservation and no\npublication", "either bound as `OperationalMalformed` after its claim"},
+		{"DirectivesUnlisted", "may hold only\nthe `//go:` directives of an exact reviewed list, today `//go:build`\nalone", "may hold any\n`//go:` directive"},
 		{"TrunkDevStartupPathUnnamed", "It adds exactly three more paths, two test files and the CI's list:\nA/internal/admissionstate/testtmpdir_main_test.go (new)", "It adds no path"},
 		{"TrunkDevPositionReadsPathUnnamed", "remote_alpha_es_service_tls_status_local_boundary_test.go, whose two\nposition reads now ignore line directives", "and no other file"},
 		{"TrunkDevCIListPathUnnamed", ".github/ci/environment-only-tests.txt, which gains two lines", "the CI's list is unchanged"},

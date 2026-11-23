@@ -1695,8 +1695,33 @@ position reads now ignore line directives, and
 .github/ci/environment-only-tests.txt, which gains two lines: one for a test
 that fails on the runner without its probe binary, and one for a test that
 skips itself there. With them the aggregate
-HEAD ceiling for PR #12 plus its repairs is 56 files. Any further file again
-requires separate owner reconciliation.
+HEAD ceiling for PR #12 plus its repairs was 56 files.
+
+The repairs after the third red-team of PR #12 and after its guard coverage
+review, with taking up `trunk_dev` after its PRs #27 and #29, are a further
+owner reconciliation at this gate. Taking up `trunk_dev` adds no path.
+Nomad's client evaluates `${...}` and `%{...}` in the strings of a task as a
+template, so the shared invocation validation and the mount target rule
+refuse them in every string ES places in a job. The sizes of Job0 and the
+POST body are checked before the claim, by one more reviewed caller of the
+run projection with names of the lengths every run has, and every non-test
+Go file may hold only reviewed `//go:` directives. The inventories and the
+test of those lengths are in A/workstream_c_guardrails_test.go and
+I/operational_handoff_test.go, which are already counted.
+It adds exactly ten more paths, one production file, two
+documents and seven test files:
+A/mounts.go, whose mount target rule refuses those strings,
+.docs/execution_lifecycle/contracts.md and
+.docs/system_overview/contracts.md, which state the refusal,
+A/nomad_request_strings_test.go (new),
+A/reliable_submit_operational_job_bound_test.go (new) and the red-team's
+five test files A/reliable_submit_operational_admission_redteam3_test.go (new),
+A/reliable_submit_operational_admission_redteam3_codec_test.go (new),
+A/reliable_submit_operational_admission_redteam3_finding_test.go (new),
+A/reliable_submit_operational_admission_redteam3_fuzz_test.go (new) and
+A/reliable_submit_operational_admission_redteam3_process_test.go (new). With
+them the aggregate HEAD ceiling for PR #12 plus its repairs is 66 files.
+Any further file again requires separate owner reconciliation.
 
 The seal-permit guard follows the shared reservation writer
 `reserveReplaySealUseWithScope`, the sole constructor after confirmed COMMIT.
