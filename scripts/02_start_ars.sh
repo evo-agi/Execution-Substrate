@@ -32,6 +32,13 @@ ensure_control_plane_image "${BRINGUP_DIR:-${REPO_ROOT}/.tmp/bringup}/logs/contr
 # the way ARS does, so the ARS container this launcher replaces goes first.
 docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
 verify_ars_storage_for_operator "${ARS_CONFIG}" "${CONTAINER_USER}"
+# scripts/01_bringup.sh up starts ARS's readiness wait only once this check
+# has passed, because on large storage the check takes a while. It names a file
+# for this launcher to create then. The file only reports a passed check; there
+# is no way to skip the check.
+if [[ -n "${ARS_STORAGE_CHECK_PASSED_FILE:-}" ]]; then
+  : >"${ARS_STORAGE_CHECK_PASSED_FILE}"
+fi
 
 while IFS= read -r spec; do
   [[ -n "${spec}" ]] || continue

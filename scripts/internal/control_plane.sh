@@ -182,31 +182,39 @@ control_plane_operator_user() {
 # rule is emulated.
 #
 # On the host, as the caller, the check only reads the config:
-# storage.root_dir and storage.index_file must be absolute, the root is
-# created as the caller when it is missing (otherwise Docker would create the
-# bind source as root), and the index file must already exist as a regular
-# file, not a symbolic link (ARS refuses to start without it, and replaces it
-# with a regular file at its first write).
+# storage.root_dir and storage.index_file must be absolute paths written in
+# normal form (no surrounding whitespace, no "." or ".." component, no
+# repeated or trailing slash). ARS opens both strings exactly as written,
+# while its mounts are built from their normal form, so only a path already in
+# normal form names the same file for ARS as for its mounts and for this check.
+# The root is created as the caller when it is missing (otherwise Docker would
+# create the bind source as root), and the index file must already exist as a
+# regular file, not a symbolic link (ARS refuses to start without it, and
+# replaces it with a regular file at its first write).
 #
 # In the container, as ARS's identity, it then:
 #   1. changes into every directory on the way to the storage root and to the
 #      index directory;
 #   2. creates and removes a file in the index directory, and reads the index;
-#   3. walks the storage root: creates and removes a file in every directory,
-#      lists every directory, and opens every regular file for reading. Any
-#      other entry (a symbolic link, FIFO, socket or device) is refused: ARS
-#      never creates one, and ARS would pass through a link at a blob or shard
-#      path, so the check can neither skip a link nor safely follow one;
+#   3. walks the storage root: creates a file in every directory, finds it
+#      again by listing that directory, and opens every regular file for
+#      reading. Any other entry (a symbolic link, FIFO, socket or device) is
+#      refused: ARS never creates one, and ARS would pass through a link at a
+#      blob or shard path, so the check can neither skip a link nor safely
+#      follow one. When the walk is done, it removes the files it created, in
+#      batches, and refuses the first directory where one could not be removed;
 #   4. last, only when everything above passed, writes the index the way ARS
 #      does: a new 0600 file with the index's current content, renamed over
 #      it. The index then belongs to ARS's identity, as after ARS's first write.
 # Each step is one ARS takes, so a refusal names a step ARS would fail.
-# A refusal before step 4 leaves storage as it was, except for a root created
-# in the host step. Storage that an earlier bring-up wrote as root, or that is
-# shared through another group, fails with the exact sudo chown that hands it
-# back; the check does not repair ownership itself. The image must provide
-# /bin/sh with mktemp, ls, cat, chmod and mv, as the generated control-plane
-# image does through Alpine's BusyBox.
+# The walk starts no process per directory (the shell's own cd, redirections
+# and pattern matching do the work), because ARS's sha256/xx/yy layout grows to
+# 65,794 directories. A refusal before step 4 leaves storage as it was, except
+# for a root created in the host step and a file the check could not remove. Storage that an earlier bring-up wrote
+# as root, or that is shared through another group, fails with the exact sudo
+# chown that hands it back; the check does not repair ownership itself. The
+# image must provide /bin/sh with mktemp, xargs, rm, cat, chmod and mv, as the
+# generated control-plane image does through Alpine's BusyBox.
 verify_ars_storage_for_operator() {
   local config_path=$1
   local container_user=$2
@@ -241,8 +249,6 @@ cfg = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
 storage = cfg.get("storage") if isinstance(cfg.get("storage"), dict) else {}
 root_dir = storage.get("root_dir") if isinstance(storage.get("root_dir"), str) else ""
 index_file = storage.get("index_file") if isinstance(storage.get("index_file"), str) else ""
-root_dir = root_dir.strip()
-index_file = index_file.strip()
 
 
 def refuse(message, path=None, fix=None, recursive=False):
@@ -260,12 +266,23 @@ def refuse(message, path=None, fix=None, recursive=False):
     raise SystemExit(1)
 
 
-if not os.path.isabs(root_dir):
-    refuse("storage.root_dir must be an absolute path")
-if not os.path.isabs(index_file):
-    refuse("storage.index_file must be an absolute path")
-root = pathlib.Path(os.path.normpath(root_dir))
-index = pathlib.Path(os.path.normpath(index_file))
+def configured_path(key, value):
+    # ARS stats and opens the configured string exactly as written, while its
+    # mounts are built from the string's normal form. Only a path already in
+    # normal form names the same file both ways, so any other is refused, with
+    # the form to write instead.
+    if value.strip() and (value != value.strip() or os.path.normpath(value) != value):
+        refuse(
+            f"storage.{key} must be written in normal form, because ARS opens it exactly as written and its"
+            f" mounts use the normal form: {value!r}; write {os.path.normpath(value.strip())!r}"
+        )
+    if not os.path.isabs(value):
+        refuse(f"storage.{key} must be an absolute path")
+    return pathlib.Path(value)
+
+
+root = configured_path("root_dir", root_dir)
+index = configured_path("index_file", index_file)
 
 # The caller must be able to reach both paths to create the root and to see
 # the index; a permission error is a refusal with the path, not a traceback.
@@ -304,12 +321,29 @@ index=$2
 dir=${index%/*}
 [ -n "$dir" ] || dir=/
 current_tmp=
-trap '[ -z "$current_tmp" ] || rm -f -- "$current_tmp"' EXIT
+list=
+# The walk's own files are named with one random name, which no earlier,
+# interrupted check used.
+marker=$(mktemp -u -p / .ars-storage-check.XXXXXX) || exit 1
+marker=${marker##*/}
+cleanup() {
+  exec 3>&-
+  [ -z "$list" ] || { xargs -0 rm -f -- < "$list"; rm -f -- "$list"; } 2>/dev/null
+  [ -z "$current_tmp" ] || rm -f -- "$current_tmp" 2>/dev/null
+}
+trap cleanup EXIT
+# Stopped by a signal, for example by Ctrl-C, the probe still removes its
+# files.
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 refuse() {
   printf 'REFUSE\t%s\t%s\t%s' "$1" "$3" "$2"
   exit 42
 }
-# chdir needs search permission, so each step is the kernel's decision.
+# chdir needs search permission, so each step is the kernel's decision. A
+# component is entered as ./component, so that one named "-" is not taken for
+# the previous directory.
 reach() {
   target=$1
   kind=$2
@@ -323,7 +357,7 @@ reach() {
     esac
     [ -n "$component" ] || continue
     path=$path/$component
-    if ! cd -- "$component" 2>/dev/null; then
+    if ! cd -P -- "./$component" 2>/dev/null; then
       [ -z "$rest" ] || refuse above "$path" "$3"
       refuse "$kind" "$path" "ARS cannot search this directory"
     fi
@@ -334,16 +368,26 @@ writable() {
     current_tmp=
     refuse "$2" "$1" "ARS cannot create files in this directory"
   }
-  rm -f -- "$current_tmp" 2>/dev/null || refuse "$2" "$1" "ARS cannot remove its own file from this directory"
+  rm -f -- "$current_tmp" 2>/dev/null || refuse remove "$1" "ARS cannot remove its own file from this directory"
   current_tmp=
 }
+# walk starts no process: cd, the redirections, test and the patterns are the
+# shell's own. A directory the kernel does not let ARS list expands no pattern,
+# so the file just created there is not found. The file's path goes to the
+# list on descriptor 3 before the file is created, so that a check stopped in
+# between still removes it; all are removed from that list when the walk is
+# done.
 walk() {
-  local d=$1 e
-  cd -- "$d" 2>/dev/null || refuse storage "$d" "ARS cannot search this directory"
-  writable "$d" storage
-  ls -A -- "$d" >/dev/null 2>&1 || refuse storage "$d" "the check cannot see the files below this directory, because ARS cannot list it"
-  for e in "$d"/* "$d"/.[!.]* "$d"/..?*; do
-    if [ -L "$e" ]; then
+  local d=$1 e seen=
+  cd -P -- "$d" 2>/dev/null || refuse storage "$d" "ARS cannot search this directory"
+  printf '%s\0' "$d/$marker" >&3
+  true 2>/dev/null > "$d/$marker" || refuse storage "$d" "ARS cannot create files in this directory"
+  for e in "$d"/* "$d"/.*; do
+    if [ "$e" = "$d/$marker" ]; then
+      seen=1
+    elif [ "$e" = "$d/." ] || [ "$e" = "$d/.." ]; then
+      continue
+    elif [ -L "$e" ]; then
       refuse entry "$e" "storage.root_dir holds a symbolic link, which ARS never creates"
     elif [ -d "$e" ]; then
       walk "$e"
@@ -353,12 +397,44 @@ walk() {
       refuse entry "$e" "storage.root_dir holds a special file, which ARS never creates"
     fi
   done
+  [ -n "$seen" ] || refuse storage "$d" "the check cannot see the files below this directory, because ARS cannot list it"
+}
+# left_behind finds, in the walk's order, the first directory that still holds
+# the walk's file.
+left_behind() {
+  local d=$1 e
+  if [ -e "$d/$marker" ] || [ -L "$d/$marker" ]; then
+    left=$d
+    return 0
+  fi
+  for e in "$d"/* "$d"/.*; do
+    if [ "$e" != "$d/." ] && [ "$e" != "$d/.." ] && [ ! -L "$e" ] && [ -d "$e" ] && left_behind "$e"; then
+      return 0
+    fi
+  done
+  return 1
 }
 reach "$root" storage "ARS cannot search this directory on its way to storage.root_dir"
 reach "$dir" "index directory" "ARS cannot search this directory on its way to storage.index_file"
 writable "$dir" "index directory"
 true 2>/dev/null < "$index" || refuse index "$index" "ARS cannot read the index file"
+list=$(mktemp 2>/dev/null) || {
+  list=
+  echo "cannot create a temporary file in the check container" >&2
+  exit 1
+}
+exec 3> "$list"
+set -C
 walk "$root"
+set +C
+exec 3>&-
+if ! xargs -0 rm -f -- < "$list" 2>/dev/null; then
+  left=$root
+  left_behind "$root" || true
+  refuse remove "$left" "ARS cannot remove its own file from this directory"
+fi
+rm -f -- "$list"
+list=
 current_tmp=$(mktemp -p "$dir" .artifact-index-check.XXXXXX 2>/dev/null) || {
   current_tmp=
   refuse "index directory" "$dir" "ARS cannot create files in this directory"
@@ -373,7 +449,12 @@ command = ["docker", "run", "--rm", "--name", CONTAINER_NAME, "--network", "none
 for spec in MOUNT_SPECS:
     command += ["-v", spec]
 command += ["--entrypoint", "/bin/sh", IMAGE, "-c", PROBE, "ars-storage-probe", str(root), str(index)]
-result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+try:
+    result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+except KeyboardInterrupt:
+    # Docker passes the interrupt on to the probe, which removes its own files.
+    print("ARS storage check interrupted", file=sys.stderr)
+    raise SystemExit(130)
 if result.returncode == 0:
     raise SystemExit(0)
 record = result.stdout.decode("utf-8", "surrogateescape")
@@ -393,10 +474,18 @@ if result.returncode == 42 and record.startswith("REFUSE\t"):
             refuse(message, path, fix=index.parent)
         if kind == "index":
             refuse(message, path, fix=index)
+        if kind == "remove":
+            # It created the file a moment ago, so ownership and modes are not
+            # the cause.
+            refuse(
+                message, path + ". ARS removes its own files there, and an append-only or immutable attribute on"
+                " this directory prevents that for everyone"
+            )
         if kind == "index replace":
             refuse(
-                message, path + ". ARS writes the index that way; in a directory with the sticky bit, only the owner"
-                " of the file or of the directory may", fix=index
+                message, path + ". ARS writes the index that way. In a directory with the sticky bit, only the owner"
+                " of the file or of the directory may, and an immutable or append-only attribute on the index or"
+                " its directory prevents it for everyone", fix=index
             )
         if kind == "above":
             refuse(

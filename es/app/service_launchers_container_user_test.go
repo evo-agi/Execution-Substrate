@@ -1,9 +1,12 @@
 package app_test
 
 import (
+	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -13,6 +16,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 )
 
 // TestServiceLaunchersContainerUser pins the container user that
@@ -24,7 +28,8 @@ import (
 // equals their GID. A launcher refuses before any image, storage or container
 // effect when id fails or prints a non-numeric ID, because docker run --user
 // with an empty UID runs as root. ARS also checks its storage before starting:
-// it creates a missing storage root as the caller and refuses a missing index
+// it refuses storage paths that are not absolute or not in normal form,
+// creates a missing storage root as the caller and refuses a missing index
 // file, and then does what ARS does with its storage in a container that runs
 // exactly as ARS will: the same image, the UID:GID passed to docker run --user,
 // the same mounts and ARS's container name. The cases that reach that container
@@ -110,6 +115,13 @@ func TestServiceLaunchersContainerUser(t *testing.T) {
 		// deeper, under this directory of the proof directory, so that
 		// arrange can change that parent's mode.
 		storageParent string
+		// rootSetting and indexSetting, when set, give the configured
+		// storage.root_dir and storage.index_file from the paths the fixture
+		// uses, so that the config can name them in another form.
+		rootSetting, indexSetting func(storage, index string) string
+		// refusalTailFor, when set, gives more text the refusal must
+		// contain, from the paths the fixture uses.
+		refusalTailFor func(storage, index string) string
 	}
 	identityCases := []testCase{
 		{name: "caller's IDs", idMode: "real", wantUser: callerUser, wantEvents: launchEvents},
@@ -285,6 +297,74 @@ func TestServiceLaunchersContainerUser(t *testing.T) {
 		{
 			name: "relative index file refused", idMode: "real", wantEvents: hostRefusalEvents,
 			refusal: "ARS storage check failed: storage.index_file must be an absolute path",
+		},
+		// Audit finding A20-1: ARS stats and opens the configured strings
+		// exactly as written, while its mounts use their normal form, so a
+		// path in any other form can name another file for ARS than for its
+		// mounts and the check. Each is refused before any container, with
+		// the form to write.
+		{
+			// <proof>/data exists only on the host, so ARS, which sees only
+			// its mounts, cannot resolve data/.. there.
+			name: "storage root with a .. component refused", idMode: "real", wantEvents: hostRefusalEvents,
+			refusal: "ARS storage check failed: storage.root_dir must be written in normal form, because ARS opens it exactly as written and its mounts use the normal form: ",
+			arrange: func(t *testing.T, storage, index string) {
+				if err := os.Mkdir(filepath.Join(filepath.Dir(storage), "data"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			},
+			rootSetting: func(storage, index string) string {
+				return filepath.Join(filepath.Dir(storage), "data") + "/../" + filepath.Base(storage)
+			},
+			refusalTailFor: func(storage, index string) string { return "; write '" + storage + "'" },
+			after:          requireTestIndexUntouched,
+		},
+		{
+			name: "storage root with a trailing space refused", idMode: "real", wantEvents: hostRefusalEvents,
+			refusal:        "ARS storage check failed: storage.root_dir must be written in normal form, because ARS opens it exactly as written and its mounts use the normal form: '",
+			rootSetting:    func(storage, index string) string { return storage + " " },
+			refusalTailFor: func(storage, index string) string { return storage + " '; write '" + storage + "'" },
+		},
+		{
+			// ARS would accept this one, but its mounts and the check use
+			// the form without the slash, so it is refused too.
+			name: "storage root with a trailing slash refused", idMode: "real", wantEvents: hostRefusalEvents,
+			refusal:        "ARS storage check failed: storage.root_dir must be written in normal form, because ARS opens it exactly as written and its mounts use the normal form: ",
+			rootSetting:    func(storage, index string) string { return storage + "/" },
+			refusalTailFor: func(storage, index string) string { return "; write '" + storage + "'" },
+		},
+		{
+			name: "storage root with a repeated slash refused", idMode: "real", wantEvents: hostRefusalEvents,
+			refusal:        "ARS storage check failed: storage.root_dir must be written in normal form, because ARS opens it exactly as written and its mounts use the normal form: ",
+			rootSetting:    func(storage, index string) string { return filepath.Dir(storage) + "//" + filepath.Base(storage) },
+			refusalTailFor: func(storage, index string) string { return "; write '" + storage + "'" },
+		},
+		{
+			name: "index file with a .. component refused", idMode: "real", wantEvents: hostRefusalEvents,
+			refusal: "ARS storage check failed: storage.index_file must be written in normal form, because ARS opens it exactly as written and its mounts use the normal form: ",
+			arrange: func(t *testing.T, storage, index string) {
+				if err := os.Mkdir(filepath.Join(filepath.Dir(filepath.Dir(index)), "foo"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			},
+			indexSetting: func(storage, index string) string {
+				return filepath.Join(filepath.Dir(filepath.Dir(index)), "foo") + "/../" + filepath.Base(filepath.Dir(index)) + "/" + filepath.Base(index)
+			},
+			refusalTailFor: func(storage, index string) string { return "; write '" + index + "'" },
+			after:          requireTestIndexUntouched,
+		},
+		{
+			// With the space, the path is relative for ARS.
+			name: "index file with a leading space refused", idMode: "real", wantEvents: hostRefusalEvents,
+			refusal:        "ARS storage check failed: storage.index_file must be written in normal form, because ARS opens it exactly as written and its mounts use the normal form: ' ",
+			indexSetting:   func(storage, index string) string { return " " + index },
+			refusalTailFor: func(storage, index string) string { return "; write '" + index + "'" },
+		},
+		{
+			name: "index file with a trailing slash refused", idMode: "real", wantEvents: hostRefusalEvents,
+			refusal:        "ARS storage check failed: storage.index_file must be written in normal form, because ARS opens it exactly as written and its mounts use the normal form: ",
+			indexSetting:   func(storage, index string) string { return index + "/" },
+			refusalTailFor: func(storage, index string) string { return "; write '" + index + "'" },
 		},
 		{
 			name: "storage root that is a file refused", idMode: "real", wantEvents: hostRefusalEvents,
@@ -490,6 +570,36 @@ func TestServiceLaunchersContainerUser(t *testing.T) {
 			},
 		},
 		{
+			// Audit finding A20-3: a directory named "-" on the way to the
+			// storage root, inside ARS's mount, is entered as that directory,
+			// not taken for the previous one.
+			name: "storage root behind a directory named - accepted", idMode: "fake", fakeUID: "4242", fakeGID: "4343", wantUser: "4242:4343", wantEvents: launchEvents,
+			storageUnderIndexDir: "-",
+			arrange: func(t *testing.T, storage, index string) {
+				for path, mode := range map[string]os.FileMode{filepath.Dir(index): 0o777, index: 0o644, filepath.Dir(storage): 0o755, storage: 0o777} {
+					if err := os.Chmod(path, mode); err != nil {
+						t.Fatal(err)
+					}
+				}
+			},
+		},
+		{
+			// The same directory named "-", which the identity cannot search,
+			// is the directory the refusal names.
+			name: "storage root behind a directory named - the identity cannot search refused", idMode: "fake", fakeUID: "4242", fakeGID: "4343", wantEvents: checkRefusalEvents,
+			refusal: "ARS storage check failed: ARS cannot search this directory on its way to storage.root_dir as 4242:4343: ", storageUnderIndexDir: "-",
+			refusalTailFor: func(storage, index string) string {
+				return ": " + filepath.Dir(storage) + ". ARS runs as 4242:4343, your UID and primary group, with no supplementary groups; give that identity search permission on this directory, or choose a path it can reach"
+			},
+			arrange: func(t *testing.T, storage, index string) {
+				for path, mode := range map[string]os.FileMode{filepath.Dir(index): 0o777, index: 0o644, filepath.Dir(storage): 0o700, storage: 0o777} {
+					if err := os.Chmod(path, mode); err != nil {
+						t.Fatal(err)
+					}
+				}
+			},
+		},
+		{
 			// Audit finding A12-2 (a): the index directory has the sticky
 			// bit, and the identity owns neither it nor the index. It may
 			// create files there and read the index, but the kernel refuses
@@ -497,7 +607,7 @@ func TestServiceLaunchersContainerUser(t *testing.T) {
 			// it. The refusal leaves the index as it was.
 			name: "index in a sticky directory the identity owns neither of refused", idMode: "fake", fakeUID: "4242", fakeGID: "4343", wantEvents: checkRefusalEvents,
 			refusal: "ARS storage check failed: ARS cannot rename a new file over the index file as 4242:4343: ", fix: "index", hintUser: "4242:4343",
-			refusalTail: ". ARS writes the index that way; in a directory with the sticky bit, only the owner of the file or of the directory may. ARS runs as 4242:4343,",
+			refusalTail: ". ARS writes the index that way. In a directory with the sticky bit, only the owner of the file or of the directory may, and an immutable or append-only attribute on the index or its directory prevents it for everyone. ARS runs as 4242:4343,",
 			arrange: func(t *testing.T, storage, index string) {
 				for path, mode := range map[string]os.FileMode{filepath.Dir(index): 0o777 | os.ModeSticky, index: 0o644, storage: 0o777} {
 					if err := os.Chmod(path, mode); err != nil {
@@ -574,6 +684,45 @@ func TestServiceLaunchersContainerUser(t *testing.T) {
 				}
 			},
 			after: requireTestIndexUntouched,
+		},
+		{
+			// An append-only directory lets ARS create a file and not remove
+			// it, for every user. The check refuses the first such directory
+			// and says why; its file there stays, because nothing can remove
+			// it until the attribute goes.
+			name: "storage directory where ARS cannot remove its own file refused", idMode: "real", wantEvents: checkRefusalEvents,
+			refusal: "ARS storage check failed: ARS cannot remove its own file from this directory as ",
+			refusalTailFor: func(storage, index string) string {
+				return ": " + filepath.Join(storage, "sha256", "ab") + ". ARS removes its own files there, and an append-only or immutable attribute on this directory prevents that for everyone"
+			},
+			needsSudo: true,
+			arrange: func(t *testing.T, storage, index string) {
+				dir := filepath.Join(storage, "sha256", "ab")
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(dir, "sha256:ab"), []byte("blob"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				makeTestDirectoryAppendOnly(t, dir)
+			},
+			after: func(t *testing.T, storage, index string, before testIndexSnapshot) {
+				requireTestIndexUntouchedLeavingOneFileIn(t, storage, index, before, filepath.Join(storage, "sha256", "ab"))
+			},
+		},
+		{
+			name: "index directory where ARS cannot remove its own file refused", idMode: "real", wantEvents: checkRefusalEvents,
+			refusal: "ARS storage check failed: ARS cannot remove its own file from this directory as ",
+			refusalTailFor: func(storage, index string) string {
+				return ": " + filepath.Dir(index) + ". ARS removes its own files there, and an append-only or immutable attribute on this directory prevents that for everyone"
+			},
+			needsSudo: true,
+			arrange: func(t *testing.T, storage, index string) {
+				makeTestDirectoryAppendOnly(t, filepath.Dir(index))
+			},
+			after: func(t *testing.T, storage, index string, before testIndexSnapshot) {
+				requireTestIndexUntouchedLeavingOneFileIn(t, storage, index, before, filepath.Dir(index))
+			},
 		},
 		{
 			// A passing check writes the index the way ARS does: same content,
@@ -679,6 +828,12 @@ func TestServiceLaunchersContainerUser(t *testing.T) {
 					}
 					if strings.HasPrefix(test.name, "relative index file") {
 						indexSetting = filepath.Join("ars-index", "index.json")
+					}
+					if test.rootSetting != nil {
+						root = test.rootSetting(storage, index)
+					}
+					if test.indexSetting != nil {
+						indexSetting = test.indexSetting(storage, index)
 					}
 					settings["storage"] = map[string]any{"root_dir": root, "index_file": indexSetting}
 					if test.arrange != nil {
@@ -807,6 +962,9 @@ exit 97
 					if test.refusalTail != "" && !strings.Contains(string(output), test.refusalTail) {
 						t.Fatalf("launcher output = %q, want %q in the refusal", output, test.refusalTail)
 					}
+					if test.refusalTailFor != nil && !strings.Contains(string(output), test.refusalTailFor(storage, index)) {
+						t.Fatalf("launcher output = %q, want %q in the refusal", output, test.refusalTailFor(storage, index))
+					}
 					hintUser := test.hintUser
 					if hintUser == "" {
 						hintUser = callerUser
@@ -921,17 +1079,22 @@ func TestBringupUpChecksARSStorageBeforeStartingServices(t *testing.T) {
 	}
 }
 
-// testBringupUpARSStorageRefusal runs 01_bringup.sh up with fake Docker and
-// requires it to stop with refusal before any service container. fakeID,
-// when set as "U:G", replaces id so that id -u prints U and id -g prints G.
-// With runsCheck, the fake Docker hands the storage check container to the
-// real daemon.
-func testBringupUpARSStorageRefusal(t *testing.T, fakeID string, withIndex bool, refusal string, beforeAnyEffect, runsCheck bool) {
-	repo := executionPlatformRepoRoot(t)
-	var docker testStorageCheckDocker
-	if runsCheck {
-		docker = requireTestStorageCheckDocker(t)
-	}
+// testBringupUp is a workspace for running 01_bringup.sh up with the
+// prepare-only profile: the configs and files up reads, a bin directory for
+// fakes that comes first on PATH, an events file the fakes append to, and the
+// environment to run up in.
+type testBringupUp struct {
+	repo, proof, bin, events, bringupDir string
+	env                                  []string
+}
+
+// newTestBringupUp prepares that workspace, with ARS's storage root and index
+// under the proof directory. withIndex creates the index file; without it the
+// index is missing, which ARS refuses at startup. The environment passes the
+// real python3 and docker to the fakes as ROOT_REAL_PYTHON and ROOT_REAL_DOCKER,
+// and the events file as ROOT_EVENTS.
+func newTestBringupUp(t *testing.T, withIndex bool, docker testStorageCheckDocker) testBringupUp {
+	t.Helper()
 	realPython, err := exec.LookPath("python3")
 	if err != nil {
 		t.Fatal(err)
@@ -940,12 +1103,23 @@ func testBringupUpARSStorageRefusal(t *testing.T, fakeID string, withIndex bool,
 	if err != nil {
 		t.Fatal(err)
 	}
-	proof := filepath.Join(workspace, "proof")
-	if err := os.Mkdir(proof, 0o755); err != nil {
+	up := testBringupUp{
+		repo:       executionPlatformRepoRoot(t),
+		proof:      filepath.Join(workspace, "proof"),
+		bin:        filepath.Join(workspace, "bin"),
+		events:     filepath.Join(workspace, "events"),
+		bringupDir: filepath.Join(workspace, "bringup"),
+	}
+	for _, dir := range []string{up.proof, up.bin} {
+		if err := os.Mkdir(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Chmod(up.proof, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	writeJSON := func(name string, value any) string {
-		path := filepath.Join(proof, name)
+		path := filepath.Join(up.proof, name)
 		data, err := json.Marshal(value)
 		if err != nil {
 			t.Fatal(err)
@@ -956,33 +1130,82 @@ func testBringupUpARSStorageRefusal(t *testing.T, fakeID string, withIndex bool,
 		return path
 	}
 	esConfig := writeJSON("es.json", map[string]any{"execution": map[string]any{
-		"staging_root_dir": filepath.Join(proof, "es-staging"),
-		"results_root_dir": filepath.Join(proof, "es-results"),
+		"staging_root_dir": filepath.Join(up.proof, "es-staging"),
+		"results_root_dir": filepath.Join(up.proof, "es-results"),
 	}})
-	// Without withIndex the index file is missing, which ARS refuses at
-	// startup.
 	arsConfig := writeJSON("ars.json", map[string]any{"storage": map[string]any{
-		"root_dir":   filepath.Join(proof, "ars-storage"),
-		"index_file": filepath.Join(proof, "ars-index", "index.json"),
+		"root_dir":   filepath.Join(up.proof, "ars-storage"),
+		"index_file": filepath.Join(up.proof, "ars-index", "index.json"),
 	}})
 	if withIndex {
-		if err := os.Mkdir(filepath.Join(proof, "ars-index"), 0o755); err != nil {
+		if err := os.Mkdir(filepath.Join(up.proof, "ars-index"), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(filepath.Join(proof, "ars-index", "index.json"), []byte("{}\n"), 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(up.proof, "ars-index", "index.json"), []byte("{}\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
 	otherConfig := writeJSON("other.json", map[string]any{})
 	for _, name := range []string{"Dockerfile", "ca.pem", "operator.pem", "operator-key.pem"} {
-		if err := os.WriteFile(filepath.Join(proof, name), []byte("synthetic fixture\n"), 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(up.proof, name), []byte("synthetic fixture\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
-	bin := filepath.Join(workspace, "bin")
-	if err := os.Mkdir(bin, 0o700); err != nil {
-		t.Fatal(err)
+	up.env = append([]string{
+		"PATH=" + up.bin + string(os.PathListSeparator) + auditSafeScriptPath(t),
+		"ROOT_REAL_PYTHON=" + realPython, "ROOT_EVENTS=" + up.events, "ROOT_REAL_DOCKER=" + docker.path,
+		"BRINGUP_PROFILE=prepare-only", "BRINGUP_DIR=" + up.bringupDir,
+		"CONTROL_PLANE_IMAGE=" + testStorageCheckImage,
+		"CONTROL_PLANE_IMAGE_BUILD=never", "CONTROL_PLANE_TARGETARCH=amd64",
+		"CONTROL_PLANE_DOCKERFILE=" + filepath.Join(up.proof, "Dockerfile"),
+		"ARS_CONFIG=" + arsConfig, "EGS_CONFIG=" + otherConfig, "AGS_CONFIG=" + otherConfig, "ES_CONFIG=" + esConfig,
+		"ARS_URL=https://127.0.0.1:1", "EGS_URL=https://127.0.0.1:2",
+		"AGS_URL=https://127.0.0.1:3", "ES_URL=https://127.0.0.1:4",
+		"CA_CERT=" + filepath.Join(up.proof, "ca.pem"),
+		"OPERATOR_CERT=" + filepath.Join(up.proof, "operator.pem"),
+		"OPERATOR_KEY=" + filepath.Join(up.proof, "operator-key.pem"),
+	}, docker.env...)
+	return up
+}
+
+// writeFakes puts each fake, by name, into the workspace's bin directory.
+func (up testBringupUp) writeFakes(t *testing.T, fakes map[string]string) {
+	t.Helper()
+	for name, body := range fakes {
+		if err := os.WriteFile(filepath.Join(up.bin, name), []byte(body), 0o700); err != nil {
+			t.Fatal(err)
+		}
 	}
+}
+
+// run runs 01_bringup.sh up in the workspace's environment, with extra
+// variables after it, and fails the test when up has not ended after five
+// minutes.
+func (up testBringupUp) run(t *testing.T, extra ...string) ([]byte, error) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	command := exec.CommandContext(ctx, "/bin/bash", filepath.Join(up.repo, "scripts", "01_bringup.sh"), "up")
+	command.Env = auditControlledScriptEnv(t, append(append([]string{}, up.env...), extra...)...)
+	output, err := command.CombinedOutput()
+	if ctx.Err() != nil {
+		t.Fatalf("bring-up up did not end within five minutes: %s", output)
+	}
+	return output, err
+}
+
+// testBringupUpARSStorageRefusal runs 01_bringup.sh up with fake Docker and
+// requires it to stop with refusal before any service container. fakeID,
+// when set as "U:G", replaces id so that id -u prints U and id -g prints G.
+// With runsCheck, the fake Docker hands the storage check container to the
+// real daemon.
+func testBringupUpARSStorageRefusal(t *testing.T, fakeID string, withIndex bool, refusal string, beforeAnyEffect, runsCheck bool) {
+	var docker testStorageCheckDocker
+	if runsCheck {
+		docker = requireTestStorageCheckDocker(t)
+	}
+	up := newTestBringupUp(t, withIndex, docker)
+	proof, events, bringupDir := up.proof, up.events, up.bringupDir
 	// The storage check container is recorded as "docker storage-check"
 	// and run by the real daemon; every other call is recorded with its
 	// arguments and faked.
@@ -1015,29 +1238,8 @@ exec "$ROOT_REAL_PYTHON" "$@"
 	if fakeID != "" {
 		fakes["id"] = "#!/bin/sh\ncase \"$*\" in\n  -u) echo " + fakeUID + " ;;\n  -g) echo " + fakeGID + " ;;\n  *) exit 96 ;;\nesac\n"
 	}
-	for name, body := range fakes {
-		if err := os.WriteFile(filepath.Join(bin, name), []byte(body), 0o700); err != nil {
-			t.Fatal(err)
-		}
-	}
-	events := filepath.Join(workspace, "events")
-	bringupDir := filepath.Join(workspace, "bringup")
-	command := exec.Command("/bin/bash", filepath.Join(repo, "scripts", "01_bringup.sh"), "up")
-	command.Env = auditControlledScriptEnv(t, append([]string{
-		"PATH=" + bin + string(os.PathListSeparator) + auditSafeScriptPath(t),
-		"ROOT_REAL_PYTHON=" + realPython, "ROOT_EVENTS=" + events, "ROOT_REAL_DOCKER=" + docker.path,
-		"BRINGUP_PROFILE=prepare-only", "BRINGUP_DIR=" + bringupDir,
-		"CONTROL_PLANE_IMAGE=" + testStorageCheckImage,
-		"CONTROL_PLANE_IMAGE_BUILD=never", "CONTROL_PLANE_TARGETARCH=amd64",
-		"CONTROL_PLANE_DOCKERFILE=" + filepath.Join(proof, "Dockerfile"),
-		"ARS_CONFIG=" + arsConfig, "EGS_CONFIG=" + otherConfig, "AGS_CONFIG=" + otherConfig, "ES_CONFIG=" + esConfig,
-		"ARS_URL=https://127.0.0.1:1", "EGS_URL=https://127.0.0.1:2",
-		"AGS_URL=https://127.0.0.1:3", "ES_URL=https://127.0.0.1:4",
-		"CA_CERT=" + filepath.Join(proof, "ca.pem"),
-		"OPERATOR_CERT=" + filepath.Join(proof, "operator.pem"),
-		"OPERATOR_KEY=" + filepath.Join(proof, "operator-key.pem"),
-	}, docker.env...)...)
-	output, err := command.CombinedOutput()
+	up.writeFakes(t, fakes)
+	output, err := up.run(t)
 	if err == nil || !strings.Contains(string(output), refusal) {
 		t.Fatalf("bring-up up did not refuse at the ARS storage check with %q: err=%v output=%q", refusal, err, output)
 	}
@@ -1087,6 +1289,346 @@ exec "$ROOT_REAL_PYTHON" "$@"
 	if _, err := os.Stat(filepath.Join(proof, "ars-index")); !withIndex && !os.IsNotExist(err) {
 		t.Fatalf("bring-up up created the ARS index directory: %v", err)
 	}
+}
+
+// TestBringupUpStartsARSReadinessWaitWhenItsLauncherCheckedStorage pins that
+// the time ARS's launcher spends on its own storage check does not count
+// against ARS's readiness wait (audit finding A20-2). The check walks all of
+// ARS's storage, so on a large store it takes longer than READY_TIMEOUT_SECONDS;
+// up starts that wait only when the launcher reports that its check passed.
+// Here the launcher's check, which runs in real Docker, is held for 6 s while
+// READY_TIMEOUT_SECONDS is 3, and ARS reports ready as soon as its container
+// starts; a report that an earlier bring-up left behind must not count. up must get past ARS's readiness and stop at the next step, the
+// workload-zone Vault blob, which this fixture does not configure.
+func TestBringupUpStartsARSReadinessWaitWhenItsLauncherCheckedStorage(t *testing.T) {
+	docker := requireTestStorageCheckDocker(t)
+	up := newTestBringupUp(t, true, docker)
+	started := filepath.Join(filepath.Dir(up.bin), "ars-started")
+	// Only the launcher's storage check sees ARS_STORAGE_CHECK_PASSED_FILE,
+	// so only that check is held. ARS's own container marks itself started
+	// and then runs until bring-up stops it.
+	up.writeFakes(t, map[string]string{
+		"docker": `#!/bin/sh
+for arg in "$@"; do
+  if [ "$arg" = ars-storage-probe ]; then
+    if [ -n "${ARS_STORAGE_CHECK_PASSED_FILE:-}" ]; then
+      printf 'docker launcher-storage-check\n' >> "$ROOT_EVENTS"
+      sleep 6
+    else
+      printf 'docker storage-check\n' >> "$ROOT_EVENTS"
+    fi
+    exec "$ROOT_REAL_DOCKER" "$@"
+  fi
+done
+case "$1 $2 $3" in
+  "run --rm --name")
+    printf 'docker ars\n' >> "$ROOT_EVENTS"
+    : > "$ROOT_ARS_STARTED"
+    exec sleep 600 ;;
+esac
+printf 'docker %s\n' "$1" >> "$ROOT_EVENTS"
+case "$1 $2" in
+  "info "|"image inspect"|"rm -f") exit 0 ;;
+  "run --rm") printf 'slice0-host-loopback-ok\n'; exit 0 ;;
+esac
+exit 97
+`,
+		"python3": `#!/bin/sh
+if [ "$1 $2" = "-m http.server" ]; then
+  exit 0
+fi
+exec "$ROOT_REAL_PYTHON" "$@"
+`,
+		// ARS answers its health request once its container has started.
+		"curl": `#!/bin/sh
+[ -e "$ROOT_ARS_STARTED" ] || exit 7
+printf '{"service":"artifact-registry","status":"ok","ready":true}\n'
+`,
+	})
+	// A report left behind by an earlier bring-up must not count.
+	stale := filepath.Join(up.bringupDir, "pids", "ars.storage-check-passed")
+	if err := os.MkdirAll(filepath.Dir(stale), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(stale, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	begin := time.Now()
+	output, err := up.run(t, "READY_TIMEOUT_SECONDS=3", "ROOT_ARS_STARTED="+started)
+	elapsed := time.Since(begin)
+	if err == nil {
+		t.Fatalf("bring-up up succeeded without a workload-zone Vault blob: output=%q", output)
+	}
+	for _, want := range []string{
+		"ARS launcher storage check passed\n",
+		"artifact-registry: status=ok ready=true\n",
+		"runtime_config.workload_zone_vault_config_ref.digest is required",
+	} {
+		if !strings.Contains(string(output), want) {
+			t.Fatalf("bring-up up output = %q, want %q: ARS's readiness wait must start after its launcher's storage check", output, want)
+		}
+	}
+	eventBytes, err := os.ReadFile(up.events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(eventBytes), "docker storage-check\ndocker image\ndocker rm\ndocker launcher-storage-check\ndocker ars\n") {
+		t.Fatalf("bring-up up events = %q, want its own storage check, then the launcher's, then ARS", eventBytes)
+	}
+	if elapsed < 6*time.Second {
+		t.Fatalf("bring-up up took %v, less than the held launcher check", elapsed)
+	}
+	if _, err := os.Stat(filepath.Join(up.bringupDir, "pids", "ars.storage-check-passed")); !os.IsNotExist(err) {
+		t.Fatalf("bring-up up left the launcher's report behind: %v", err)
+	}
+}
+
+// TestBringupUpFailsWhenARSLauncherStopsBeforeItsCheckPassed pins what up does
+// when its own storage check passed and the launcher's refuses, for example
+// because the storage changed in between: up must not wait for a report that
+// never comes, start no ARS, and fail with the end of the launcher's log.
+func TestBringupUpFailsWhenARSLauncherStopsBeforeItsCheckPassed(t *testing.T) {
+	docker := requireTestStorageCheckDocker(t)
+	up := newTestBringupUp(t, true, docker)
+	up.writeFakes(t, map[string]string{
+		"docker": `#!/bin/sh
+for arg in "$@"; do
+  if [ "$arg" = ars-storage-probe ]; then
+    if [ -n "${ARS_STORAGE_CHECK_PASSED_FILE:-}" ]; then
+      printf 'docker launcher-storage-check\n' >> "$ROOT_EVENTS"
+      printf 'synthetic launcher check failure\n' >&2
+      exit 1
+    fi
+    printf 'docker storage-check\n' >> "$ROOT_EVENTS"
+    exec "$ROOT_REAL_DOCKER" "$@"
+  fi
+done
+case "$1 $2 $3" in
+  "run --rm --name")
+    printf 'docker ars\n' >> "$ROOT_EVENTS"
+    exec sleep 600 ;;
+esac
+printf 'docker %s\n' "$1" >> "$ROOT_EVENTS"
+case "$1 $2" in
+  "info "|"image inspect"|"rm -f") exit 0 ;;
+  "run --rm") printf 'slice0-host-loopback-ok\n'; exit 0 ;;
+esac
+exit 97
+`,
+		"python3": `#!/bin/sh
+if [ "$1 $2" = "-m http.server" ]; then
+  exit 0
+fi
+exec "$ROOT_REAL_PYTHON" "$@"
+`,
+		"curl": "#!/bin/sh\nprintf 'unexpected curl\\n' >> \"$ROOT_EVENTS\"\nexit 7\n",
+	})
+	output, err := up.run(t)
+	if err == nil {
+		t.Fatalf("bring-up up succeeded although the launcher's storage check failed: output=%q", output)
+	}
+	for _, want := range []string{
+		"artifact-registry: the launcher stopped before its storage check passed; the end of " + filepath.Join(up.bringupDir, "logs", "ars.log") + ":\n",
+		"synthetic launcher check failure",
+	} {
+		if !strings.Contains(string(output), want) {
+			t.Fatalf("bring-up up output = %q, want %q", output, want)
+		}
+	}
+	eventBytes, err := os.ReadFile(up.events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(eventBytes), "docker launcher-storage-check\n") ||
+		strings.Contains(string(eventBytes), "docker ars\n") || strings.Contains(string(eventBytes), "unexpected curl") {
+		t.Fatalf("bring-up up events = %q, want the launcher's check and then neither ARS nor its readiness wait", eventBytes)
+	}
+}
+
+// TestARSStorageCheckScalesToARSFullFanOut runs the ARS storage check on a
+// store with every shard directory ARS can create (audit finding A20-2): ARS
+// stores a blob at sha256/xx/yy/<digest>, so its storage root holds up to
+// 1 + 256 + 65,536 directories below the root. With one blob in each, the
+// check must pass, leave nothing behind and write the index the way ARS does,
+// within 30 s. ARS's readiness wait no longer includes the check
+// (TestBringupUpStartsARSReadinessWaitWhenItsLauncherCheckedStorage), so the
+// bound pins the walk's own cost, which bring-up pays twice before ARS starts.
+// The walk starts no process per directory, which keeps it at about 9 s in the
+// cloud test container; a walk that started one process per directory took
+// about 50 s there, and the earlier one with three took 112 s in audit 20.
+func TestARSStorageCheckScalesToARSFullFanOut(t *testing.T) {
+	docker := requireTestStorageCheckDocker(t)
+	repo := executionPlatformRepoRoot(t)
+	workspace, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	storage := filepath.Join(workspace, "ars-storage")
+	index := filepath.Join(workspace, "ars-index", "index.json")
+	if err := os.MkdirAll(filepath.Dir(index), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(index, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	directories := writeTestARSShards(t, storage, 256)
+	if directories != 65794 {
+		t.Fatalf("the fixture has %d directories, want ARS's full fan-out of 65,794", directories)
+	}
+	before := snapshotTestIndex(t, index)
+	command := testARSStorageCheckCommand(t, docker, repo, workspace, storage, index)
+	begin := time.Now()
+	output, err := command.CombinedOutput()
+	elapsed := time.Since(begin)
+	if err != nil {
+		t.Fatalf("the storage check refused ARS's full fan-out after %v: %v: %s", elapsed, err, output)
+	}
+	t.Logf("the storage check walked %d directories and 65,536 blobs in %v", directories, elapsed)
+	if elapsed > 30*time.Second {
+		t.Fatalf("the storage check took %v on ARS's full fan-out, more than its bound of 30 s", elapsed)
+	}
+	requireTestIndexRewrittenLikeARS(t, storage, index, before)
+}
+
+// TestARSStorageCheckInterruptedLeavesNothingBehind interrupts the ARS storage
+// check the way Ctrl-C does, with SIGINT to its whole process group, while the
+// probe walks the storage. Docker passes the signal on to the probe, which must
+// still remove every file it created, leave the index as it was and exit, and
+// the host part must say that it was interrupted.
+func TestARSStorageCheckInterruptedLeavesNothingBehind(t *testing.T) {
+	docker := requireTestStorageCheckDocker(t)
+	repo := executionPlatformRepoRoot(t)
+	workspace, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	storage := filepath.Join(workspace, "ars-storage")
+	index := filepath.Join(workspace, "ars-index", "index.json")
+	if err := os.MkdirAll(filepath.Dir(index), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(index, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// 256 x 64 shards take the walk a few seconds, much longer than it takes
+	// to see its first file in the storage root.
+	writeTestARSShards(t, storage, 64)
+	before := snapshotTestIndex(t, index)
+	command := testARSStorageCheckCommand(t, docker, repo, workspace, storage, index)
+	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	var output bytes.Buffer
+	command.Stdout, command.Stderr = &output, &output
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- command.Wait() }()
+	started := false
+	for deadline := time.Now().Add(60 * time.Second); !started && time.Now().Before(deadline); {
+		select {
+		case err := <-done:
+			t.Fatalf("the storage check ended before it was interrupted: %v: %s", err, output.String())
+		case <-time.After(5 * time.Millisecond):
+		}
+		entries, _ := os.ReadDir(storage)
+		for _, entry := range entries {
+			if strings.HasPrefix(entry.Name(), ".ars-storage-check.") {
+				started = true
+			}
+		}
+	}
+	// The output is read only once the check has ended.
+	kill := func() string {
+		_ = syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
+		<-done
+		return output.String()
+	}
+	if !started {
+		t.Fatalf("the storage check created no file in the storage root within 60 s: %s", kill())
+	}
+	if err := syscall.Kill(-command.Process.Pid, syscall.SIGINT); err != nil {
+		t.Fatalf("interrupt the storage check: %v: %s", err, kill())
+	}
+	select {
+	case err = <-done:
+	case <-time.After(60 * time.Second):
+		t.Fatalf("the interrupted storage check did not end within 60 s: %s", kill())
+	}
+	if err == nil {
+		t.Fatalf("the storage check passed although it was interrupted: %s", output.String())
+	}
+	if !strings.Contains(output.String(), "ARS storage check interrupted") {
+		t.Fatalf("the interrupted storage check did not say so: %v: %s", err, output.String())
+	}
+	// The probe goes on removing its files after the docker client has gone,
+	// so wait for its container to go away first.
+	name := testControlPlaneContainerName(filepath.Join(workspace, "bringup"), "ars")
+	for deadline := time.Now().Add(60 * time.Second); ; {
+		running, err := docker.command("ps", "-aq", "--filter", "name=^/"+name+"$").Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.TrimSpace(string(running)) == "" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the interrupted storage check container %s still exists after 60 s", name)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	requireTestIndexUntouched(t, storage, index, before)
+}
+
+// writeTestARSShards fills storage with ARS's blob layout sha256/xx/yy for all
+// 256 first-level shards and the first second shards below each, with one blob
+// in each leaf, and returns how many directories storage holds, itself
+// included.
+func writeTestARSShards(t *testing.T, storage string, second int) int {
+	t.Helper()
+	for a := 0; a < 256; a++ {
+		for b := 0; b < second; b++ {
+			shard := filepath.Join(storage, "sha256", fmt.Sprintf("%02x", a), fmt.Sprintf("%02x", b))
+			if err := os.MkdirAll(shard, 0o750); err != nil {
+				t.Fatal(err)
+			}
+			digest := fmt.Sprintf("sha256:%02x%02x%060d", a, b, 0)
+			if err := os.WriteFile(filepath.Join(shard, digest), []byte("blob\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	directories := 0
+	if err := filepath.WalkDir(storage, func(path string, entry fs.DirEntry, err error) error {
+		if err == nil && entry.IsDir() {
+			directories++
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return directories
+}
+
+// testARSStorageCheckCommand is verify_ars_storage_for_operator, as the
+// caller's UID and GID, for an ARS config in workspace with storage and index.
+func testARSStorageCheckCommand(t *testing.T, docker testStorageCheckDocker, repo, workspace, storage, index string) *exec.Cmd {
+	t.Helper()
+	config := filepath.Join(workspace, "ars.json")
+	data, err := json.Marshal(map[string]any{"storage": map[string]any{"root_dir": storage, "index_file": index}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(config, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command("/bin/bash", "-c", `source "$1/scripts/internal/control_plane.sh" && verify_ars_storage_for_operator "$2" "$3"`,
+		"verify", repo, config, strconv.Itoa(os.Getuid())+":"+strconv.Itoa(os.Getgid()))
+	command.Env = auditControlledScriptEnv(t, append([]string{
+		"PATH=" + auditSafeScriptPath(t),
+		"BRINGUP_DIR=" + filepath.Join(workspace, "bringup"),
+		"CONTROL_PLANE_IMAGE=" + testStorageCheckImage,
+	}, docker.env...)...)
+	return command
 }
 
 // writeTestPythonHook puts a python3 into bin that runs the host's python3
@@ -1262,6 +1804,54 @@ func requireTestIndexUntouched(t *testing.T, storage, index string, before testI
 		t.Fatalf("the refused storage check changed the index %s: before %+v, after %+v", index, before, after)
 	}
 	requireNoTestStorageCheckLeftovers(t, storage, index)
+}
+
+// makeTestDirectoryAppendOnly gives dir the append-only attribute through
+// passwordless sudo, so that nobody can remove a file from it, and takes it
+// away again when the test ends. It skips where the file system has no such
+// attribute.
+func makeTestDirectoryAppendOnly(t *testing.T, dir string) {
+	t.Helper()
+	if _, err := exec.LookPath("chattr"); err != nil {
+		t.Skip("needs chattr to make a directory append-only")
+	}
+	output, err := exec.Command("sudo", "-n", "chattr", "+a", dir).CombinedOutput()
+	if err != nil {
+		if strings.Contains(string(output), "Operation not supported") || strings.Contains(string(output), "Inappropriate ioctl") {
+			t.Skipf("the test file system has no append-only attribute: %s", strings.TrimSpace(string(output)))
+		}
+		t.Fatalf("sudo chattr +a %s: %v: %s", dir, err, output)
+	}
+	t.Cleanup(func() {
+		if output, err := exec.Command("sudo", "-n", "chattr", "-a", dir).CombinedOutput(); err != nil {
+			t.Errorf("sudo chattr -a %s: %v: %s", dir, err, output)
+		}
+	})
+}
+
+// requireTestIndexUntouchedLeavingOneFileIn requires a check refused because
+// it could not remove its own file from dir to leave the index as it found it,
+// that one file in dir, and nothing else of its own.
+func requireTestIndexUntouchedLeavingOneFileIn(t *testing.T, storage, index string, before testIndexSnapshot, dir string) {
+	t.Helper()
+	if !before.regular || !before.readable {
+		t.Fatalf("the index fixture %s was not a readable regular file", index)
+	}
+	if after := snapshotTestIndex(t, index); after != before {
+		t.Fatalf("the refused storage check changed the index %s: before %+v, after %+v", index, before, after)
+	}
+	var left []string
+	for _, root := range []string{storage, filepath.Dir(index)} {
+		_ = filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+			if err == nil && (strings.HasPrefix(entry.Name(), ".ars-storage-check.") || strings.HasPrefix(entry.Name(), ".artifact-index-check.")) {
+				left = append(left, path)
+			}
+			return nil
+		})
+	}
+	if len(left) != 1 || filepath.Dir(left[0]) != dir || !strings.HasPrefix(filepath.Base(left[0]), ".ars-storage-check.") {
+		t.Fatalf("the refused storage check left %q behind, want one file of its own in %s", left, dir)
+	}
 }
 
 // requireTestIndexRewrittenLikeARS requires a passing check, run as the

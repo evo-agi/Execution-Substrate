@@ -13827,3 +13827,51 @@ func TestReview17ProofResultHandoffContract(t *testing.T) {
 		}
 	}
 }
+
+// TestARSStorageCheckDocsContract pins what the plan, the bring-up runbook and
+// the configuration page say about bring-up's ARS storage check after audit
+// 20 of pull request #19: storage paths must be in normal form (A20-1), the
+// check scales to ARS's full sha256/xx/yy fan-out and ARS's readiness wait
+// starts only after its launcher's check (A20-2), and the check no longer
+// lists directories with ls.
+func TestARSStorageCheckDocsContract(t *testing.T) {
+	stale := []string{
+		"few hundred",
+		"lists every storage directory",
+		"lists every such directory",
+		"`mktemp`, `ls`, `cat`",
+	}
+	checks := []struct {
+		path     string
+		required []string
+	}{
+		{"PLANS.md", []string{
+			"`storage.root_dir` and `storage.index_file` must be absolute and written in normal form, as Python's `os.path.normpath` writes it",
+			"because ARS opens both exactly as written while the mounts it gets use the normal form",
+			"creates a file in every directory under the storage root and finds it again by listing that directory",
+			"The check needs `/bin/sh` with `mktemp`, `xargs`, `rm`, `cat`, `chmod` and `mv` in the image",
+			"starts no process per directory, because ARS's blob layout `sha256/xx/yy/<digest>` grows to 65,794 directories with the root",
+			"`TestARSStorageCheckScalesToARSFullFanOut` requires under 30 s",
+			"ARS's readiness wait (`READY_TIMEOUT_SECONDS`) starts only once the launcher reports that its check passed",
+			"the report cannot skip the check",
+		}},
+		{".runbooks/system/v1_bringup.md", []string{
+			"`storage.root_dir` and `storage.index_file` are absolute paths written in normal form",
+			"so the refusal prints the form to write instead",
+			"finds its file again by listing each storage directory",
+			"The check takes seconds even when ARS's storage holds all 65,794 directories its `sha256/xx/yy` layout can create",
+			"ARS's readiness wait (`READY_TIMEOUT_SECONDS`, 30 s by default) starts only once ARS's launcher has passed its own run of the check",
+		}},
+		{".docs/system_overview/configuration.md", []string{
+			"refuses unless `storage.root_dir` and `storage.index_file` are absolute and in normal form (ARS opens them exactly as written, while its mounts use the normal form)",
+			"finds its file again by listing each storage directory",
+			"The check starts no process per directory and takes seconds even at ARS's full `sha256/xx/yy` fan-out of 65,794 directories",
+			"`scripts/01_bringup.sh up` starts ARS's readiness wait only once ARS's launcher has passed its own run of the check",
+		}},
+	}
+	for _, check := range checks {
+		text := compactText(mustRead(t, check.path))
+		assertContainsAll(t, check.path+" ARS storage check", text, check.required...)
+		assertContainsNone(t, check.path+" stale ARS storage check", text, stale...)
+	}
+}
