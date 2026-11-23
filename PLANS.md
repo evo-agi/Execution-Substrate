@@ -2262,12 +2262,18 @@ process outside the fixed group decide its result. The reader parses that line
 as bytes. The process name between the first `(` and the last `)` is chosen by
 its own process and may hold any byte; it is never decoded, compared, or
 otherwise interpreted. Only the kernel-written fields after the last `)`
-supply the group ID and the start time. A process that ended before its stat
-file could be opened or read, reported as `ENOENT` or `ESRCH`, is absent,
-not unproved. Every other open or read error is unproved, never absent, and
-a missing `<pid> (` prefix, an oversized line, and a missing or non-numeric
-field remain `process_identity_unproved`. The name or the exit of an
-unrelated process therefore neither fails the capability probe nor prolongs
+supply the group ID and the start time. The stat file never proves that a
+process is absent: while a thread other than the first thread of a live
+process calls exec, the kernel can answer `ENOENT` or `ESRCH` at open,
+`ESRCH` at read, or a line with a negative group ID. After such an answer a
+listed process is absent only when `pidfd_open` confirms that no process has
+its ID, by `ESRCH`, or by `EINVAL` from a kernel that answers so for a number
+that no process leads. When a process still has the ID, the reader reads the
+stat file again, four times at most, and an answer that stays unclear is
+unproved, never absent. Every other open or read error is unproved, never
+absent, and a missing `<pid> (` prefix, an oversized line, and a missing or
+non-numeric field remain `process_identity_unproved`. The name or the exit of
+an unrelated process therefore neither fails the capability probe nor prolongs
 the unresolved-cleanup hold. This refinement adds no time limit to that hold,
 never counts a visible zombie as absent, and changes no signal, reap, lock,
 publication, or retry authority.

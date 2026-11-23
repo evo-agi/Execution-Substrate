@@ -197,11 +197,14 @@ iterations; no outer retry may return unproved. Only a non-signaling
 identity-based proc absence scan follows reap.
 The process-identity read parses the proc stat line as bytes and never decodes
 the process name, which its own process chooses; only the kernel-written
-fields after the last `)` supply group ID and start time. A process that ended
-before its stat file could be opened or read (`ENOENT` or `ESRCH`) is absent,
-not unproved. The name or the exit of an unrelated process therefore neither
-fails the capability probe nor prolongs the unresolved-cleanup hold; the hold
-gains no time limit.
+fields after the last `)` supply group ID and start time. The stat file never
+proves that a process is absent: during an exec from a thread other than the
+first, the kernel can answer `ENOENT`, `ESRCH`, or a negative group ID for a
+live process. A listed process is absent only when `pidfd_open` confirms that
+no process has its ID; otherwise the reader reads again, and an answer that
+stays unclear is unproved, never absent. The name or the exit of an unrelated
+process therefore neither fails the capability probe nor prolongs the
+unresolved-cleanup hold; the hold gains no time limit.
 After bootstrap stage removal and status-lock acquisition, before status
 config, certificate, key, trust-anchor, or prior-summary reads and before any
 OpenSSL spawn, exactly one process-capability probe uses one fixed internal fork
