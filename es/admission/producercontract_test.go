@@ -208,36 +208,41 @@ func TestProducerContractPublicDTOStaysNarrowProducerDeclarationOnly(t *testing.
 		ProducerOutcomeEvidenceSurfaceDeclaration{},
 	)
 
-	for _, expected := range []string{
+	// Each compatibility field where the declaration writes it today: another
+	// case, a lost tag, another object or a name clash would break a reader.
+	compatibilityPaths := []string{
 		"schema_version",
 		"service",
-		"governed_execution",
-		"contract",
-		"enabled",
-		"disabled_reason",
-		"runtime_profiles",
-		"outcome_evidence",
 		"non_authority",
-		"name",
-		"status",
-		"required",
-		"status_json",
-		"cancel_json",
-		"logs_headers",
-		"result_headers",
-		"carrier",
-		"field",
-		"media_type",
-		"required_fields",
-		"required_headers",
-		"source",
-		"observations",
-		"access_class",
-	} {
-		if _, ok := fieldNames[expected]; !ok {
-			t.Fatalf("expected producer declaration compatibility field %q to remain present", expected)
+		"governed_execution",
+		"governed_execution.contract",
+		"governed_execution.enabled",
+		"governed_execution.disabled_reason",
+		"governed_execution.runtime_profiles",
+		"governed_execution.runtime_profiles[].name",
+		"governed_execution.runtime_profiles[].status",
+		"governed_execution.runtime_profiles[].disabled_reason",
+		"governed_execution.outcome_evidence",
+		"governed_execution.outcome_evidence.required",
+	}
+	for _, surface := range []string{"status_json", "cancel_json", "logs_headers", "result_headers"} {
+		surfacePath := "governed_execution.outcome_evidence." + surface
+		compatibilityPaths = append(compatibilityPaths, surfacePath)
+		for _, key := range []string{
+			"carrier",
+			"field",
+			"media_type",
+			"required",
+			"required_fields",
+			"required_headers",
+			"source",
+			"observations",
+			"access_class",
+		} {
+			compatibilityPaths = append(compatibilityPaths, surfacePath+"."+key)
 		}
 	}
+	assertJSONKeyPathsWritten(t, ProducerContractDeclaration{}, "producer declaration compatibility field", compatibilityPaths...)
 
 	for _, forbidden := range []string{
 		"health",
@@ -273,7 +278,7 @@ func TestProducerContractPublicDTOStaysNarrowProducerDeclarationOnly(t *testing.
 		"checkpoint",
 		"finalization",
 	} {
-		if _, ok := fieldNames[forbidden]; ok {
+		if fieldNames.accepts(forbidden) {
 			t.Fatalf("producer declaration DTO must not expose authority/readiness/security field %q", forbidden)
 		}
 	}
