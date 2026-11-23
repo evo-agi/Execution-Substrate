@@ -4039,6 +4039,60 @@ func repositoryProductionListings(t *testing.T, root string) (map[string][]strin
 	return listings, sources
 }
 
+// operationalGuardReviewedDependencyPackages names every package from outside
+// the standard library and the module that a production file imports, each
+// with the module and version that provides it. The exported API of each was
+// reviewed at that version for raw access to memory: no function writes at an
+// address given as an integer except through a system call, which is the
+// limit of the operating system that no inventory holds, and every value of a
+// type whose underlying type is unsafe.Pointer that the API hands out is held
+// by the raw pointer rule. Some dependencies export raw memory access as
+// ordinary Go functions: modernc.org/libc, which the SQLite driver uses,
+// exports the C library's memset and memcpy, which write at any address given
+// as an integer. An import of any package not listed here, a further package
+// of a listed module included, puts its file into the import inventory. The
+// version is held against what the go command selects, so a new version of a
+// listed package is a reviewed change as well.
+var operationalGuardReviewedDependencyPackages = map[string]string{
+	"github.com/go-jose/go-jose/v4":                        "github.com/go-jose/go-jose/v4@v4.0.4",
+	"github.com/go-jose/go-jose/v4/jwt":                    "github.com/go-jose/go-jose/v4@v4.0.4",
+	"github.com/spiffe/go-spiffe/v2/proto/spiffe/workload": "github.com/spiffe/go-spiffe/v2@v2.4.0",
+	"github.com/spiffe/go-spiffe/v2/spiffeid":              "github.com/spiffe/go-spiffe/v2@v2.4.0",
+	"github.com/spiffe/go-spiffe/v2/svid/jwtsvid":          "github.com/spiffe/go-spiffe/v2@v2.4.0",
+	"github.com/spiffe/go-spiffe/v2/workloadapi":           "github.com/spiffe/go-spiffe/v2@v2.4.0",
+	"golang.org/x/sys/unix":                                "golang.org/x/sys@v0.46.0",
+	"google.golang.org/grpc":                               "google.golang.org/grpc@v1.67.1",
+	"google.golang.org/grpc/codes":                         "google.golang.org/grpc@v1.67.1",
+	"google.golang.org/grpc/status":                        "google.golang.org/grpc@v1.67.1",
+	"modernc.org/sqlite":                                   "modernc.org/sqlite@v1.54.0",
+}
+
+// operationalGuardDotlessImportPath applies the go command's own test for a
+// path of the standard library: no dot in its first element. The module's
+// path has none either, so the module's own packages pass it too, and the
+// typed inventories read those. The reviewed-dependency test holds the test
+// against what the go command reports for every import of the module.
+func operationalGuardDotlessImportPath(path string) bool {
+	first, _, _ := strings.Cut(path, "/")
+	return !strings.Contains(first, ".")
+}
+
+// operationalGuardInventoriedImport says whether an import lets a file write
+// storage past the typed inventories by a facility that the import itself
+// names: reflect, unsafe, cgo, code loaded at run time, and every dependency
+// package outside the reviewed list.
+func operationalGuardInventoriedImport(path string) bool {
+	switch path {
+	case "reflect", "unsafe", "C", "plugin":
+		return true
+	}
+	if operationalGuardDotlessImportPath(path) {
+		return false
+	}
+	_, reviewed := operationalGuardReviewedDependencyPackages[path]
+	return !reviewed
+}
+
 // operationalGuardImportInventory lists, for every production source file of
 // the module, the imports through which storage can be written without any
 // syntax the typed inventories classify.
@@ -4054,7 +4108,7 @@ func operationalGuardImportInventory(sources map[string]string) (map[string][]st
 			if err != nil {
 				return nil, err
 			}
-			if path == "reflect" || path == "unsafe" || path == "C" {
+			if operationalGuardInventoriedImport(path) {
 				inventory[name] = append(inventory[name], path)
 			}
 		}
@@ -4063,11 +4117,11 @@ func operationalGuardImportInventory(sources map[string]string) (map[string][]st
 	return inventory, nil
 }
 
-// operationalGuardImportPins names, for every production source file that
-// imports reflect, unsafe or C, those imports and the SHA-256 of the file. The
-// imports alone say which files can write storage past the typed inventories,
-// not what those files do with it. The hash makes every change to such a file
-// a change of this inventory.
+// operationalGuardImportPins names, for every production source file with an
+// inventoried import, those imports and the SHA-256 of the file. The imports
+// alone say which files can write storage past the typed inventories, not
+// what those files do with it. The hash makes every change to such a file a
+// change of this inventory.
 func operationalGuardImportPins(sources map[string]string) (map[string]string, error) {
 	inventory, err := operationalGuardImportInventory(sources)
 	if err != nil {
@@ -4080,13 +4134,16 @@ func operationalGuardImportPins(sources map[string]string) (map[string]string, e
 	return pins, nil
 }
 
-// The typed inventories cannot follow reflection, unsafe or cgo. This exact
-// inventory makes a new import of any of them a visible, reviewed change in
-// every production package of the module: a package that holds a pointer to an
-// owning type can write its storage through any of the three. It reads every
-// non-test source file of every directory of the repository, whatever its
-// build constraints, and holds each listed file by the hash of its content.
-func TestOperationalGuardReflectUnsafeImportInventoryIsExact(t *testing.T) {
+// The typed inventories cannot follow reflection, unsafe, cgo, code loaded at
+// run time or a dependency that exports raw memory access as ordinary Go
+// functions. This exact inventory makes a new import of any of them a visible,
+// reviewed change in every production package of the module: a package that
+// holds a pointer to an owning type can write its storage through any of
+// them. A dependency package counts unless it is on the reviewed list. It
+// reads every non-test source file of every directory of the repository,
+// whatever its build constraints, and holds each listed file by the hash of
+// its content.
+func TestOperationalGuardImportInventoryIsExact(t *testing.T) {
 	_, sources := repositoryProductionListings(t, repositoryRootForAdmissionGuard(t))
 	if len(sources) < 100 {
 		t.Fatalf("read only %d production sources", len(sources))
@@ -4114,6 +4171,17 @@ func TestOperationalGuardReflectUnsafeImportInventoryIsExact(t *testing.T) {
 		"blank unsafe":    "package admission\nimport _ \"unsafe\"\n",
 		"grouped reflect": "package admission\nimport (\n\t\"fmt\"\n\t\"reflect\"\n)\nvar _ = fmt.Sprint\nvar _ = reflect.TypeOf\n",
 		"cgo":             "package admission\nimport \"C\"\n",
+		"plugin":          "package admission\nimport \"plugin\"\nvar _ = plugin.Open\n",
+		// RT2-1: memset and memcpy as ordinary Go functions.
+		"modernc.org/libc":         "package admission\nimport \"modernc.org/libc\"\nvar _ = libc.Xmemset\n",
+		"renamed modernc.org/libc": "package admission\nimport hidden \"modernc.org/libc\"\nvar _ = hidden.Xmemcpy\n",
+		"blank modernc.org/libc":   "package admission\nimport _ \"modernc.org/libc\"\n",
+		// A type whose underlying type is unsafe.Pointer, from a module that
+		// is already in the build list.
+		"protoimpl": "package admission\nimport \"google.golang.org/protobuf/runtime/protoimpl\"\nvar _ protoimpl.Pointer\n",
+		// A further package of a reviewed module is not reviewed.
+		"a further package of a reviewed module": "package admission\nimport _ \"modernc.org/sqlite/lib\"\n",
+		"a dependency nobody reviewed":           "package admission\nimport _ \"example.com/zzunreviewed\"\n",
 	}
 	for name, mutation := range mutations {
 		// In a guarded package, in two packages that hold a pointer to an
@@ -4132,10 +4200,32 @@ func TestOperationalGuardReflectUnsafeImportInventoryIsExact(t *testing.T) {
 					t.Fatal(err)
 				}
 				if reflect.DeepEqual(got, want) {
-					t.Fatal("a new reflect, unsafe or cgo import passed the inventory")
+					t.Fatal("a new inventoried import passed the inventory")
 				}
 			})
 		}
+	}
+	// A reviewed dependency package, the module's own packages and the
+	// standard library outside the four named facilities are not inventoried.
+	for name, added := range map[string]string{
+		"a reviewed dependency package": "package admission\nimport zz \"golang.org/x/sys/unix\"\nvar _ = zz.Getpid\n",
+		"a package of the module":       "package admission\nimport _ \"execution-substrate/es/config\"\n",
+		"the standard library":          "package admission\nimport (\n\t_ \"syscall\"\n\t_ \"os\"\n\t_ \"encoding/json\"\n)\n",
+	} {
+		t.Run("not inventoried: "+name, func(t *testing.T) {
+			mutated := make(map[string]string, len(sources)+1)
+			for file, source := range sources {
+				mutated[file] = source
+			}
+			mutated["es/app/added.go"] = added
+			got, err := operationalGuardImportPins(mutated)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("an import outside the inventoried kinds changed the inventory: %v", got)
+			}
+		})
 	}
 	for known := range want {
 		t.Run("removed known import "+known, func(t *testing.T) {
@@ -4195,6 +4285,536 @@ func TestOperationalGuardReflectUnsafeImportInventoryIsExact(t *testing.T) {
 			t.Fatalf("a file without such an import is held by a hash: %v", got)
 		}
 	})
+}
+
+// operationalGuardDependencyImports lists, for every production source file,
+// its imports from outside the standard library and the module.
+func operationalGuardDependencyImports(sources map[string]string) (map[string][]string, error) {
+	imports := make(map[string][]string)
+	for name, source := range sources {
+		file, err := parser.ParseFile(token.NewFileSet(), name, source, parser.ImportsOnly)
+		if err != nil {
+			return nil, err
+		}
+		for _, spec := range file.Imports {
+			path, err := strconv.Unquote(spec.Path.Value)
+			if err != nil {
+				return nil, err
+			}
+			if !operationalGuardDotlessImportPath(path) {
+				imports[path] = append(imports[path], name)
+			}
+		}
+	}
+	return imports, nil
+}
+
+// validateOperationalReviewedDependencies compares, for one go list -deps
+// closure, every import of every package compiled from the repository with
+// what the go command reports for the imported package. A dotless path has
+// to be a package of the standard library or of the main module, so the
+// syntactic test of the import inventory agrees with the go command. Any
+// other path has to be a reviewed dependency package, provided by the module
+// and version the review names, with no replacement. It returns the reviewed
+// packages the closure imports.
+func validateOperationalReviewedDependencies(selected []goListProductionPackage, closure map[string]goListProductionPackage, reviewed map[string]string) (map[string]bool, error) {
+	seen := make(map[string]bool)
+	for _, item := range selected {
+		for _, imported := range item.Imports {
+			dependency, ok := closure[imported]
+			if !ok {
+				return nil, fmt.Errorf("%s imports %s, which the go command does not report", item.ImportPath, imported)
+			}
+			if operationalGuardDotlessImportPath(imported) {
+				if !dependency.Standard && (dependency.Module == nil || !dependency.Module.Main) {
+					return nil, fmt.Errorf("%s imports %s, which has no dot in its first element but is neither in the standard library nor in the main module", item.ImportPath, imported)
+				}
+				continue
+			}
+			if dependency.Standard {
+				return nil, fmt.Errorf("%s imports %s, which the go command reports as standard although its first element has a dot", item.ImportPath, imported)
+			}
+			want, ok := reviewed[imported]
+			if !ok {
+				return nil, fmt.Errorf("%s imports %s, which is not a reviewed dependency package", item.ImportPath, imported)
+			}
+			if dependency.Module == nil {
+				return nil, fmt.Errorf("the go command reports no module for %s", imported)
+			}
+			if dependency.Module.Replace != nil {
+				return nil, fmt.Errorf("%s is provided by %s, which is replaced by %s %s", imported, dependency.Module.Path, dependency.Module.Replace.Path, dependency.Module.Replace.Version)
+			}
+			if got := dependency.Module.Path + "@" + dependency.Module.Version; got != want {
+				return nil, fmt.Errorf("%s is provided by %s and the reviewed module is %s: review its exported API for raw access to memory, then update the list", imported, got, want)
+			}
+			seen[imported] = true
+		}
+	}
+	return seen, nil
+}
+
+// The reviewed list of dependency packages is exact in both directions, and
+// the go command agrees with it for all three build targets: every listed
+// package is imported by a production file, every dependency package a
+// production file imports is listed, and each is provided by the module and
+// version that was reviewed. A new dependency import, a further package of a
+// listed module, a new version and a replacement each fail until the list is
+// updated, which is the review.
+func TestOperationalGuardReviewedDependencyPackagesAreExact(t *testing.T) {
+	root := repositoryRootForAdmissionGuard(t)
+	_, sources := repositoryProductionListings(t, root)
+	imports, err := operationalGuardDependencyImports(sources)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make([]string, 0, len(imports))
+	for path := range imports {
+		got = append(got, path)
+	}
+	sort.Strings(got)
+	want := make([]string, 0, len(operationalGuardReviewedDependencyPackages))
+	for path := range operationalGuardReviewedDependencyPackages {
+		want = append(want, path)
+	}
+	sort.Strings(want)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("dependency packages imported by production files: got %v want %v", got, want)
+	}
+	seen := make(map[string]bool)
+	targets := []productionBuildTarget{
+		{goos: "darwin", goarch: "arm64"},
+		{goos: "linux", goarch: "amd64"},
+		{goos: "linux", goarch: "arm64"},
+	}
+	var linux *typedProductionMetadata
+	for _, target := range targets {
+		metadata := loadTypedProductionMetadataAt(t, root, target, "./...")
+		if target.goos == "linux" && target.goarch == "amd64" {
+			linux = metadata
+		}
+		found, err := validateOperationalReviewedDependencies(metadata.selected, metadata.packages, operationalGuardReviewedDependencyPackages)
+		if err != nil {
+			t.Fatalf("%s: %v", target, err)
+		}
+		for path := range found {
+			seen[path] = true
+		}
+	}
+	for _, path := range want {
+		if !seen[path] {
+			t.Fatalf("%s is listed but no build target compiles an import of it", path)
+		}
+	}
+	if !seen["golang.org/x/sys/unix"] || !seen["modernc.org/sqlite"] {
+		t.Fatal("the comparison read no dependency import")
+	}
+	// Each change below must be refused by the comparison.
+	changed := func(change func(map[string]goListProductionPackage, map[string]string)) error {
+		closure := make(map[string]goListProductionPackage, len(linux.packages))
+		for path, item := range linux.packages {
+			if item.Module != nil {
+				module := *item.Module
+				item.Module = &module
+			}
+			closure[path] = item
+		}
+		reviewed := make(map[string]string, len(operationalGuardReviewedDependencyPackages))
+		for path, module := range operationalGuardReviewedDependencyPackages {
+			reviewed[path] = module
+		}
+		change(closure, reviewed)
+		_, err := validateOperationalReviewedDependencies(linux.selected, closure, reviewed)
+		return err
+	}
+	if err := changed(func(map[string]goListProductionPackage, map[string]string) {}); err != nil {
+		t.Fatalf("the unchanged closure was refused: %v", err)
+	}
+	for _, test := range []struct {
+		name   string
+		change func(map[string]goListProductionPackage, map[string]string)
+		reason string
+	}{
+		{"a new version of a reviewed module", func(closure map[string]goListProductionPackage, _ map[string]string) {
+			closure["golang.org/x/sys/unix"].Module.Version = "v0.99.0"
+		}, "is provided by golang.org/x/sys@v0.99.0 and the reviewed module is golang.org/x/sys@v0.46.0"},
+		{"a replaced reviewed module", func(closure map[string]goListProductionPackage, _ map[string]string) {
+			closure["modernc.org/sqlite"].Module.Replace = &goListModule{Path: "example.com/zzfork", Version: "v1.0.0"}
+		}, "which is replaced by example.com/zzfork v1.0.0"},
+		{"a reviewed package from another module", func(closure map[string]goListProductionPackage, _ map[string]string) {
+			closure["google.golang.org/grpc"].Module.Path = "example.com/zzgrpc"
+		}, "is provided by example.com/zzgrpc@v1.67.1"},
+		{"a dependency package taken off the list", func(_ map[string]goListProductionPackage, reviewed map[string]string) {
+			delete(reviewed, "golang.org/x/sys/unix")
+		}, "imports golang.org/x/sys/unix, which is not a reviewed dependency package"},
+		{"a dotless path from a module", func(closure map[string]goListProductionPackage, _ map[string]string) {
+			item := closure["strings"]
+			item.Standard = false
+			item.Module = &goListModule{Path: "strings", Version: "v1.0.0"}
+			closure["strings"] = item
+		}, "imports strings, which has no dot in its first element but is neither in the standard library nor in the main module"},
+		{"a dotted path reported as standard", func(closure map[string]goListProductionPackage, _ map[string]string) {
+			item := closure["golang.org/x/sys/unix"]
+			item.Standard = true
+			closure["golang.org/x/sys/unix"] = item
+		}, "imports golang.org/x/sys/unix, which the go command reports as standard"},
+		{"an import the go command does not report", func(closure map[string]goListProductionPackage, _ map[string]string) {
+			delete(closure, "modernc.org/sqlite")
+		}, "imports modernc.org/sqlite, which the go command does not report"},
+		{"a reviewed package without a module", func(closure map[string]goListProductionPackage, _ map[string]string) {
+			item := closure["modernc.org/sqlite"]
+			item.Module = nil
+			closure["modernc.org/sqlite"] = item
+		}, "the go command reports no module for modernc.org/sqlite"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if err := changed(test.change); err == nil || !strings.Contains(err.Error(), test.reason) {
+				t.Fatalf("the comparison did not refuse the change for its reason %q: %v", test.reason, err)
+			}
+		})
+	}
+	t.Run("a new dependency import in a source file", func(t *testing.T) {
+		mutated := make(map[string]string, len(sources)+1)
+		for file, source := range sources {
+			mutated[file] = source
+		}
+		mutated["es/app/added.go"] = "package app\nimport _ \"github.com/google/uuid\"\n"
+		imports, err := operationalGuardDependencyImports(mutated)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := imports["github.com/google/uuid"]; !ok || len(imports) != len(want)+1 {
+			t.Fatalf("the new import was not read: %v", imports)
+		}
+	})
+}
+
+// operationalGuardRawPointerType says whether a value of a type converts to
+// a pointer of any type, and back from an integer address: its underlying
+// type is unsafe.Pointer. A tuple and a function type count when one of
+// their elements, parameters or results does.
+func operationalGuardRawPointerType(typ types.Type) bool {
+	switch typed := typ.(type) {
+	case nil:
+		return false
+	case *types.Tuple:
+		for i := 0; i < typed.Len(); i++ {
+			if operationalGuardRawPointerType(typed.At(i).Type()) {
+				return true
+			}
+		}
+		return false
+	case *types.Signature:
+		return operationalGuardRawPointerType(typed.Params()) || operationalGuardRawPointerType(typed.Results())
+	}
+	basic, ok := typ.Underlying().(*types.Basic)
+	return ok && basic.Kind() == types.UnsafePointer
+}
+
+// operationalGuardRawPointerSites lists, for one type-checked package, every
+// expression, declared name and used name whose type is a raw pointer type,
+// as "line:column type" by repository-relative file.
+func operationalGuardRawPointerSites(pkg *typedProductionPackage) map[string][]string {
+	files := make(map[string]string, len(pkg.files))
+	for name, file := range pkg.files {
+		files[pkg.fset.File(file.Pos()).Name()] = name
+	}
+	found := make(map[string]map[string]bool)
+	record := func(pos token.Pos, typ types.Type) {
+		if !pos.IsValid() || !operationalGuardRawPointerType(typ) {
+			return
+		}
+		position := pkg.fset.Position(pos)
+		name, ok := files[position.Filename]
+		if !ok {
+			name = position.Filename
+		}
+		if found[name] == nil {
+			found[name] = make(map[string]bool)
+		}
+		found[name][fmt.Sprintf("%d:%d %s", position.Line, position.Column, types.TypeString(typ, nil))] = true
+	}
+	for expression, value := range pkg.info.Types {
+		record(expression.Pos(), value.Type)
+	}
+	for identifier, object := range pkg.info.Defs {
+		if object != nil {
+			record(identifier.Pos(), object.Type())
+		}
+	}
+	for identifier, object := range pkg.info.Uses {
+		record(identifier.Pos(), object.Type())
+	}
+	sites := make(map[string][]string, len(found))
+	for name, positions := range found {
+		for position := range positions {
+			sites[name] = append(sites[name], position)
+		}
+		sort.Strings(sites[name])
+	}
+	return sites
+}
+
+// validateOperationalRawPointerFiles refuses a raw pointer value in a file that
+// does not import unsafe. A file that imports unsafe is in the import
+// inventory and held by its hash.
+func validateOperationalRawPointerFiles(pkg *typedProductionPackage) error {
+	sites := operationalGuardRawPointerSites(pkg)
+	names := make([]string, 0, len(sites))
+	for name := range sites {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	var refused []error
+	for _, name := range names {
+		positions := sites[name]
+		file, ok := pkg.files[name]
+		if !ok {
+			refused = append(refused, fmt.Errorf("a raw pointer value at %s %v is in no file of %s", name, positions, pkg.importPath))
+			continue
+		}
+		importsUnsafe := false
+		for _, spec := range file.Imports {
+			if path, err := strconv.Unquote(spec.Path.Value); err == nil && path == "unsafe" {
+				importsUnsafe = true
+			}
+		}
+		if !importsUnsafe {
+			refused = append(refused, fmt.Errorf("%s holds a value whose type converts to any pointer (%s) but does not import unsafe: the import inventory does not see it", name, strings.Join(positions, ", ")))
+		}
+	}
+	return errors.Join(refused...)
+}
+
+// A Go value whose underlying type is unsafe.Pointer converts to a pointer of
+// any type in every file, whether or not the file imports unsafe; the import
+// is needed only to spell the type. Such values come out of the standard
+// library and out of reviewed dependencies: golang.org/x/sys/unix.MmapPtr
+// returns one, and reflect.Value.UnsafePointer is reachable through an
+// exported reflect.Type, for example in encoding/json's UnmarshalTypeError.
+// From one such value an index into a large array type reaches any address
+// above it. So a raw pointer value may appear only in a file that imports
+// unsafe, which the import inventory holds by its hash. The rule reads every
+// expression and every declared or used name of every production package for
+// all three build targets.
+func TestOperationalGuardRawPointerValuesNeedTheUnsafeImport(t *testing.T) {
+	views := loadTypedProductionPackages(t, "./...")
+	total := 0
+	for _, view := range views {
+		for _, pkg := range view.packages {
+			if err := validateOperationalRawPointerFiles(pkg); err != nil {
+				t.Errorf("%s: %v", view.target, err)
+			}
+			for _, positions := range operationalGuardRawPointerSites(pkg) {
+				total += len(positions)
+			}
+		}
+	}
+	// Both production files that import unsafe hold raw pointer values, so
+	// the rule reads them.
+	held := make(map[string]bool)
+	for _, view := range views {
+		for _, pkg := range view.packages {
+			for name := range operationalGuardRawPointerSites(pkg) {
+				held[name] = true
+			}
+		}
+	}
+	if !held["es/admission/execution_roots_darwin.go"] || !held["es/runtimehelper/privilege_linux.go"] || total == 0 {
+		t.Fatalf("the rule read no raw pointer value in the files that import unsafe: %v", held)
+	}
+	var linux typedProductionView
+	for _, view := range views {
+		if view.target.goos == "linux" && view.target.goarch == "amd64" {
+			linux = view
+		}
+	}
+	const importPath = "execution-substrate/es/admission"
+	const file = "es/admission/service.go"
+	var original string
+	for _, pkg := range linux.packages {
+		if pkg.importPath == importPath {
+			original = pkg.sources[file]
+		}
+	}
+	if original == "" {
+		t.Fatalf("%s was not read", file)
+	}
+	// with adds imports under names of their own, so that they cannot clash
+	// with the file's, and appends declarations.
+	with := func(imports string, declarations string) map[string]string {
+		packageClause := "package admission\n"
+		if !strings.HasPrefix(original, packageClause) && !strings.Contains(original, "\n"+packageClause) {
+			t.Fatalf("%s has no package clause", file)
+		}
+		return map[string]string{file: strings.Replace(original, packageClause, packageClause+"\n"+imports+"\n", 1) + "\n" + declarations + "\n"}
+	}
+	const window = "type zzWindow [1 << 47]byte\n"
+	const road1 = `import zzunix "golang.org/x/sys/unix"`
+	const road2 = "import (\n\tzzjson \"encoding/json\"\n\tzzerrors \"errors\"\n\tzztime \"time\"\n)"
+	for name, overlay := range map[string]map[string]string{
+		// Road 1: a reviewed dependency returns unsafe.Pointer.
+		"golang.org/x/sys/unix.MmapPtr": with(road1, window+`func zzReopen(offset uintptr) {
+	p, _ := zzunix.MmapPtr(-1, 0, nil, 4096, zzunix.PROT_READ|zzunix.PROT_WRITE, zzunix.MAP_PRIVATE|zzunix.MAP_ANONYMOUS)
+	(*zzWindow)(p)[offset] = 0
+}`),
+		"golang.org/x/sys/unix.MmapPtr with the pointer discarded": with(road1, `func zzReopen() error {
+	_, err := zzunix.MmapPtr(-1, 0, nil, 4096, 0, 0)
+	return err
+}`),
+		"golang.org/x/sys/unix.MmapPtr as a function value": with(road1, `func zzReopen() {
+	mmap := zzunix.MmapPtr
+	_ = mmap
+}`),
+		// Road 2: the standard library alone, through a reflect.Type in an
+		// exported field.
+		"reflect.Value.UnsafePointer through encoding/json": with(road2, window+`func zzReopen(offset uintptr) {
+	typeError := &zzjson.UnmarshalTypeError{}
+	var d zztime.Duration
+	if err := zzjson.Unmarshal([]byte("\"x\""), &d); !zzerrors.As(err, &typeError) {
+		return
+	}
+	code := typeError.Type.Method(0).Func.UnsafePointer()
+	(*zzWindow)(code)[offset] = 0
+}`),
+		"reflect.Value.UnsafePointer passed on at once": with(road2, window+`func zzReopen(offset uintptr) {
+	var typeError *zzjson.UnmarshalTypeError
+	var d zztime.Duration
+	_ = zzerrors.As(zzjson.Unmarshal([]byte("\"x\""), &d), &typeError)
+	(*zzWindow)(typeError.Type.Method(0).Func.UnsafePointer())[offset] = 0
+}`),
+		// The same values through a generic function and through an
+		// interface value.
+		"a raw pointer through a generic function": with(road1, window+`func zzFirst[A, B any](a A, _ B) A { return a }
+
+func zzReopen(offset uintptr) {
+	(*zzWindow)(zzFirst(zzunix.MmapPtr(-1, 0, nil, 4096, 0, 0)))[offset] = 0
+}`),
+		"a raw pointer through an interface value": with(road2, `func zzAs[T any](value any, _ T) T { return value.(T) }
+
+func zzReopen() any {
+	var typeError *zzjson.UnmarshalTypeError
+	var d zztime.Duration
+	_ = zzerrors.As(zzjson.Unmarshal([]byte("\"x\""), &d), &typeError)
+	var held any = typeError.Type.Method(0).Func.UnsafePointer()
+	return held
+}`),
+		// An interface method that returns unsafe.Pointer: the page cache
+		// interface of the SQLite driver.
+		"a raw pointer from an interface method": with(`import zzsqlite "modernc.org/sqlite"`, window+`func zzReopen(page zzsqlite.Page, offset uintptr) {
+	(*zzWindow)(page.Buf())[offset] = 0
+}`),
+		// A raw pointer held in a field of a generic type.
+		"a raw pointer in a field of a generic type": with(road2, window+`type zzBox[T any] struct{ held T }
+
+func zzWrap[T any](value T) zzBox[T] { return zzBox[T]{held: value} }
+
+func zzReopen(offset uintptr) {
+	var typeError *zzjson.UnmarshalTypeError
+	var d zztime.Duration
+	_ = zzerrors.As(zzjson.Unmarshal([]byte("\"x\""), &d), &typeError)
+	box := zzWrap(typeError.Type.Method(0).Func.UnsafePointer())
+	(*zzWindow)(box.held)[offset] = 0
+}`),
+		// RT2-1's second road: a dependency type whose underlying type is
+		// unsafe.Pointer converts from an integer address. The import
+		// inventory holds the import as well.
+		"google.golang.org/protobuf/runtime/protoimpl.Pointer": with(`import zzprotoimpl "google.golang.org/protobuf/runtime/protoimpl"`, `func zzReopen(address uintptr) {
+	*(*bool)(zzprotoimpl.Pointer(address)) = false
+}`),
+	} {
+		t.Run("refused: "+name, func(t *testing.T) {
+			pkg := linux.metadata.typeCheckWithOverlay(t, importPath, overlay)
+			err := validateOperationalRawPointerFiles(pkg)
+			if err == nil || !strings.Contains(err.Error(), file+" holds a value whose type converts to any pointer") {
+				t.Fatalf("the road passed the raw pointer rule: %v", err)
+			}
+		})
+		t.Run("held by the import inventory with an unsafe import: "+name, func(t *testing.T) {
+			changed := map[string]string{file: strings.Replace(overlay[file], "package admission\n", "package admission\n\nimport _ \"unsafe\"\n", 1)}
+			pkg := linux.metadata.typeCheckWithOverlay(t, importPath, changed)
+			if err := validateOperationalRawPointerFiles(pkg); err != nil {
+				t.Fatalf("a file that imports unsafe was refused: %v", err)
+			}
+			inventory, err := operationalGuardImportInventory(changed)
+			if err != nil || !slicesContain(inventory[file], "unsafe") {
+				t.Fatalf("the import inventory does not hold the file: %v %v", inventory, err)
+			}
+		})
+	}
+	// The rule reads expressions as well as declared and used names: in the
+	// road through encoding/json, the call of UnsafePointer is an expression
+	// only, the declaration of code is a declared name only, and the selected
+	// method UnsafePointer is a used name only.
+	t.Run("expressions and names are both read", func(t *testing.T) {
+		overlay := with(road2, window+`func zzReopen(offset uintptr) {
+	var typeError *zzjson.UnmarshalTypeError
+	var d zztime.Duration
+	_ = zzerrors.As(zzjson.Unmarshal([]byte("\"x\""), &d), &typeError)
+	code := typeError.Type.Method(0).Func.UnsafePointer()
+	(*zzWindow)(code)[offset] = 0
+}`)
+		source := overlay[file]
+		at := func(fragment string, within string) string {
+			start := strings.Index(source, fragment)
+			if start < 0 || strings.Count(source, fragment) != 1 {
+				t.Fatalf("fragment %q is not unique in the overlay", fragment)
+			}
+			offset := start + strings.Index(fragment, within)
+			line := strings.Count(source[:offset], "\n") + 1
+			column := offset - strings.LastIndex(source[:offset], "\n")
+			return fmt.Sprintf("%d:%d", line, column)
+		}
+		pkg := linux.metadata.typeCheckWithOverlay(t, importPath, overlay)
+		sites := operationalGuardRawPointerSites(pkg)[file]
+		declaration := "code := typeError.Type.Method(0).Func.UnsafePointer()"
+		for kind, want := range map[string]string{
+			"expression (the call)":    at(declaration, "typeError") + " unsafe.Pointer",
+			"declared name (code)":     at(declaration, "code") + " unsafe.Pointer",
+			"used name (the selected)": at(declaration, "UnsafePointer") + " func() unsafe.Pointer",
+		} {
+			if !slicesContain(sites, want) {
+				t.Fatalf("the %s at %s was not read: %v", kind, want, sites)
+			}
+		}
+	})
+	// The integer addresses that reflect.Value.Pointer and UnsafeAddr return
+	// write nothing by themselves: an integer converts to a pointer only
+	// through a raw pointer type, which the rule refuses, and the functions
+	// that write at an integer address are in packages the import inventory
+	// holds.
+	t.Run("an integer address does not convert to a pointer", func(t *testing.T) {
+		errorsFound := linux.metadata.typeErrorsWithOverlay(t, importPath, with(road2, `func zzReopen() {
+	var typeError *zzjson.UnmarshalTypeError
+	var d zztime.Duration
+	_ = zzerrors.As(zzjson.Unmarshal([]byte("\"x\""), &d), &typeError)
+	address := typeError.Type.Method(0).Func.Pointer()
+	*(*bool)(address) = false
+}`))
+		if len(errorsFound) == 0 || !strings.Contains(strings.Join(errorsFound, "\n"), "cannot convert") {
+			t.Fatalf("an integer address converted to a pointer: %v", errorsFound)
+		}
+	})
+	t.Run("integer addresses from reflect.Value.Pointer and UnsafeAddr", func(t *testing.T) {
+		pkg := linux.metadata.typeCheckWithOverlay(t, importPath, with(road2, `func zzAddresses() (uintptr, uintptr) {
+	var typeError *zzjson.UnmarshalTypeError
+	var d zztime.Duration
+	_ = zzerrors.As(zzjson.Unmarshal([]byte("\"x\""), &d), &typeError)
+	method := typeError.Type.Method(0).Func
+	return method.Pointer(), method.UnsafeAddr()
+}`))
+		if err := validateOperationalRawPointerFiles(pkg); err != nil {
+			t.Fatalf("integer addresses alone were refused: %v", err)
+		}
+	})
+}
+
+func slicesContain(values []string, value string) bool {
+	for _, candidate := range values {
+		if candidate == value {
+			return true
+		}
+	}
+	return false
 }
 
 // The admission state package is one production file, and the guard holds it
@@ -5072,11 +5692,21 @@ type goListProductionPackage struct {
 	Export      string
 	GoFiles     []string
 	TestGoFiles []string
+	Imports     []string
 	DepOnly     bool
 	Standard    bool
+	Module      *goListModule
 	Error       *struct {
 		Err string
 	}
+}
+
+// goListModule is the module the go command reports for a package.
+type goListModule struct {
+	Path    string
+	Version string
+	Main    bool
+	Replace *goListModule
 }
 
 type productionBuildTarget struct {
