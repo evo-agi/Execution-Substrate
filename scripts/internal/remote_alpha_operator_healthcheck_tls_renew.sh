@@ -335,8 +335,9 @@ def der_value(data: bytes, value: tuple[int, int, int]) -> tuple[int, int, int] 
 def der_object_identifier_valid(content: bytes) -> bool:
     """Report whether content is an object identifier that Go's parser reads.
 
-    That is at least one subidentifier, each in minimal base 128, at most five
-    bytes long and below 2**31.
+    That is at least one subidentifier, each in minimal base 128 and below
+    2**31. Go also refuses a subidentifier longer than five bytes, which the
+    value check already refuses once its leading byte is not 0x80.
     """
     if not content:
         return False
@@ -345,13 +346,11 @@ def der_object_identifier_valid(content: bytes) -> bool:
         if content[position] == 0x80:
             return False
         value = 0
-        count = 0
         while True:
-            if position >= len(content) or count == 5 or value >= 1 << 24:
+            if position >= len(content) or value >= 1 << 24:
                 return False
             byte = content[position]
             position += 1
-            count += 1
             value = (value << 7) | (byte & 0x7F)
             if byte < 0x80:
                 break
@@ -378,10 +377,12 @@ def san_uris(der: bytes, value: tuple[int, int, int]) -> list[str] | None:
     uris: list[str] = []
     for tag, start, end in general_names:
         raw = der[start:end]
-        # Go's certificate parser refuses an rfc822Name, dNSName or URI that is
-        # not IA5 text, and an iPAddress that is not 4 or 16 bytes long. It
-        # ignores every other entry, a constructed [6] among them.
-        if tag in (0x81, 0x82, 0x86) and any(byte >= 0x80 for byte in raw):
+        # Go's certificate parser refuses an rfc822Name or dNSName that is not
+        # IA5 text and an iPAddress that is not 4 or 16 bytes long, and ignores
+        # every entry but those and the URIs, a constructed [6] among them. A
+        # URI must be printable ASCII without spaces, which is stricter than
+        # Go's IA5 rule for URIs.
+        if tag in (0x81, 0x82) and any(byte >= 0x80 for byte in raw):
             return None
         if tag == 0x87 and len(raw) not in (4, 16):
             return None
@@ -478,9 +479,9 @@ def decode_client_certificate(der: bytes) -> dict[str, object] | None:
     # Go reads extensions only from a version 3 TBSCertificate, as its last
     # field after the optional issuer and subject unique identifiers.
     layout = [item[0] for item in tbs]
-    if layout[:7] != [0xA0, 0x02, 0x30, 0x30, 0x30, 0x30, 0x30] or layout[-1] != 0xA3:
+    if layout[:7] != [0xA0, 0x02, 0x30, 0x30, 0x30, 0x30, 0x30]:
         return None
-    if layout[7:-1] not in ([], [0x81], [0x82], [0x81, 0x82]):
+    if layout[7:] not in ([0xA3], [0x81, 0xA3], [0x82, 0xA3], [0x81, 0x82, 0xA3]):
         return None
     version = der_children(der, tbs[0][1], tbs[0][2])
     if version is None or len(version) != 1 or version[0][0] != 0x02 or der[version[0][1] : version[0][2]] != b"\x02":
