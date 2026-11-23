@@ -3327,6 +3327,69 @@ config/TLS model consumed by the current `User=es` long-lived ES service.
   changes, or broader proof reruns; rerun only the small verification needed to
   validate the ES host-side apply and refresh the non-secret summary.
 
+## Current Remote Alpha Host Network Boundary Slice
+
+`Bounded slice rule`: Remote Supported-Host Alpha may carry one operator-run
+host firewall for the box on the home network, defined in the section
+"Remote Alpha Host Firewall" of
+`.docs/system_overview/remote_supported_host_alpha.md`. It closes findings
+INF-01 (containers reach the home LAN), INF-13 (ES and AGS listeners open to
+the whole LAN) and INF-23 (SSH password login from everywhere, SSH on public
+IPv6) of the 2026-11-23 infrastructure audit, as a short-term bridge until
+the named workload identities, network grants and egress lanes of the
+workload-identity design land.
+
+- Scripts: `scripts/remote_alpha_host_firewall.sh`,
+  `scripts/internal/remote_alpha_host_firewall.sh` and
+  `scripts/internal/remote_alpha_host_firewall.py`. Modes `--plan`
+  (default, read-only), `--apply`, `--confirm`, `--status`, `--probe`,
+  `--rollback`, `--render`.
+- It owns only the nftables tables `inet es_host_firewall` and
+  `bridge es_host_firewall`, its files under
+  `/etc/execution-substrate/host-firewall`, the unit
+  `es-host-firewall.service`, the sshd drop-in
+  `/etc/ssh/sshd_config.d/00-execution-substrate-host-access.conf` and a
+  transient rollback timer. It never touches Docker's, ufw's or other rules,
+  other sshd files, Vault, Nomad or ES, and reads no secrets.
+- One chain in its own table keeps the box's own connections to Vault on the
+  bridge address as their source (an identity snat ahead of Docker's
+  masquerade rule), so the Vault role's bridge-subnet limit sees the box as
+  the bridge address and not as its LAN address. It is the ruleset's only
+  address rewrite.
+- The operator's choices live in the root-owned settings file
+  `/etc/execution-substrate/host-firewall/settings.env`; adding a device that
+  may call ES and AGS is a one-line change there.
+- `--apply` arms an automatic rollback that only `--confirm` from an SSH
+  connection opened after `--apply` cancels.
+- Validation: rendering against a golden ruleset, real-kernel tests in
+  network namespaces, a real-sshd test of the drop-in, fakes for the
+  apply/confirm/rollback order, and a container probe on the box.
+
+`Bounded slice rule`: the same tranche refines the P0q workload-auth
+bootstrap helper (INF-04, INF-05, and the root-token half of INF-06):
+
+- role `service_execution` gets `token_ttl` (default `15m`),
+  `token_max_ttl` (default `30m`) and `token_bound_cidrs` (default
+  `172.17.0.0/16`), validated before any prompt;
+- every earlier version and the metadata of both proof paths are deleted
+  before the new value is written;
+- `REMOTE_ALPHA_BOOTSTRAP_AUTHORITY=unseal-key` replaces a standing root
+  token: the helper makes a root token from the single unseal key share,
+  uses it once for a 15-minute orphan token, revokes it at once, and revokes
+  the 15-minute token before it exits;
+- `REMOTE_ALPHA_BOOTSTRAP_GENERATE_ROOT_ACCESS=temporary-config` adds
+  `enable_unauthenticated_access = ["generate-root"]` to Vault's
+  configuration only for the generate-root step and puts the file back byte
+  for byte through a reload (Vault 2.x refuses unauthenticated generate-root
+  by default);
+- `REMOTE_ALPHA_BOOTSTRAP_PROOF_VALUE=generate` writes a random value nobody
+  sees, which discards the Codex key.
+
+Its validation adds one test against a real local Vault server (raft, TLS,
+one key share; CI installs Vault 2.2.2). It still runs no live box, SSH or
+sudo. These refinements do not make ES a Vault token broker and do not
+change ES public contracts.
+
 ## Future ES Privilege-Boundary Design Track
 
 `Reopened redesign seam`: full ES/runtime de-root beyond the now-landed

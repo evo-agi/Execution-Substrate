@@ -38,6 +38,9 @@ table inet es_host_firewall {
 	counter invalid_in {
 	}
 
+	counter host_to_vault_source_kept {
+	}
+
 	# Inbound to the box. Default deny: only loopback, replies, the listed
 	# LAN services and Vault for containers are accepted. A drop here is
 	# final even when another table accepts the packet.
@@ -90,6 +93,19 @@ table inet es_host_firewall {
 		ip daddr { 192.168.1.1 } tcp dport 53 accept
 		ip daddr { 0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.0.0.0/24, 192.168.0.0/16, 198.18.0.0/15, 224.0.0.0/4, 240.0.0.0/4 } counter name "container_to_private" drop
 		ip6 daddr { ::1/128, ::ffff:0:0/96, fc00::/7, fe80::/10, ff00::/8 } counter name "container_to_private" drop
+	}
+
+	# The box's own connections to Vault keep the bridge address as their
+	# source. Docker masquerades every packet from a bridge subnet that
+	# leaves through another interface (for the default bridge:
+	# -s 172.17.0.0/16 ! -o docker0), and a connection from the box to the
+	# bridge address leaves through lo. Without this chain Vault sees the
+	# box's LAN address, and a Vault role limited to the bridge subnet
+	# refuses the box. The identity snat binds the connection before
+	# Docker's rule is consulted; no other traffic is touched.
+	chain host_to_vault_source {
+		type nat hook postrouting priority srcnat - 10; policy accept;
+		oifname "lo" ip saddr 172.17.0.1 ip daddr 172.17.0.1 tcp dport 8200 counter name "host_to_vault_source_kept" snat ip to 172.17.0.1
 	}
 }
 

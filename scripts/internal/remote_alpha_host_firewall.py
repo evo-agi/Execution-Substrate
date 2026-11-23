@@ -61,6 +61,7 @@ COUNTERS_INET = (
     "into_container",
     "lan_to_host",
     "invalid_in",
+    "host_to_vault_source_kept",
 )
 COUNTERS_BRIDGE = ("container_to_container",)
 
@@ -285,6 +286,11 @@ def split_versions(networks):
     )
 
 
+def nat_address(address):
+    """An address as nft's snat statement takes it (IPv6 in brackets)."""
+    return str(address) if address.version == 4 else f"[{address}]"
+
+
 def render(settings):
     lines = []
     add = lines.append
@@ -414,6 +420,23 @@ def render(settings):
             add(f"\t\t{family} daddr {nft_set(servers)} tcp dport 53 accept")
     add(f'\t\tip daddr {nft_set(BLOCKED_V4)} counter name "container_to_private" drop')
     add(f'\t\tip6 daddr {nft_set(BLOCKED_V6)} counter name "container_to_private" drop')
+    add("\t}")
+    add("")
+    add("\t# The box's own connections to Vault keep the bridge address as their")
+    add("\t# source. Docker masquerades every packet from a bridge subnet that")
+    add("\t# leaves through another interface (for the default bridge:")
+    add("\t# -s 172.17.0.0/16 ! -o docker0), and a connection from the box to the")
+    add("\t# bridge address leaves through lo. Without this chain Vault sees the")
+    add("\t# box's LAN address, and a Vault role limited to the bridge subnet")
+    add("\t# refuses the box. The identity snat binds the connection before")
+    add("\t# Docker's rule is consulted; no other traffic is touched.")
+    add("\tchain host_to_vault_source {")
+    add("\t\ttype nat hook postrouting priority srcnat - 10; policy accept;")
+    add(
+        f'\t\toifname "lo" {vault_family} saddr {settings["vault_address"]} '
+        f'{vault_family} daddr {settings["vault_address"]} tcp dport {settings["vault_port"]} '
+        f'counter name "host_to_vault_source_kept" snat {vault_family} to {nat_address(settings["vault_address"])}'
+    )
     add("\t}")
     add("}")
     add("")
@@ -559,6 +582,7 @@ def cmd_describe(_args):
         + " ".join(map(str, settings["service_callers"]))
     )
     print(f"vault for containers: {settings['vault_address']} tcp/{settings['vault_port']}")
+    print(f"vault for the box itself: source kept as {settings['vault_address']} (not masqueraded)")
     print(
         "container dns servers: "
         + (" ".join(map(str, settings["dns_servers"])) or "(none)")
@@ -860,6 +884,89 @@ def cmd_probe(args):
     return 0 if failures == 0 else 6
 
 
+def proc_net_tcp_sockets(path, family):
+    """Yield (local address, local port, remote address, remote port, state)
+    for each socket in /proc/net/tcp or /proc/net/tcp6. Addresses there are
+    32-bit words in the kernel's byte order; ports are hexadecimal."""
+
+    def address(text):
+        words = [int(text[i:i + 8], 16) for i in range(0, len(text), 8)]
+        return ipaddress.ip_address(b"".join(struct.pack("=I", word) for word in words))
+
+    try:
+        with open(path, encoding="ascii") as handle:
+            lines = handle.read().splitlines()[1:]
+    except OSError:
+        return
+    for line in lines:
+        fields = line.split()
+        if len(fields) < 4:
+            continue
+        local, remote, state = fields[1], fields[2], fields[3]
+        local_host, _, local_port = local.partition(":")
+        remote_host, _, remote_port = remote.partition(":")
+        expected = 8 if family == socket.AF_INET else 32
+        if len(local_host) != expected or len(remote_host) != expected:
+            continue
+        yield address(local_host), int(local_port, 16), address(remote_host), int(remote_port, 16), state
+
+
+def cmd_host_vault_source(_args):
+    """Connect from the box to Vault's address and port, then read the
+    accepted side of that connection from the kernel's socket table: its
+    remote address is the source Vault sees. Nothing is sent, and nothing is
+    tried when the Vault address is not an address of this host. Prints one
+    line. Exit 0 when Vault sees the bridge address itself, 8 when it sees
+    another address, 9 when it could not be observed."""
+    settings = load_settings()
+    vault = settings["vault_address"]
+    port = settings["vault_port"]
+    family = socket.AF_INET if vault.version == 4 else socket.AF_INET6
+    table = "/proc/net/tcp" if family == socket.AF_INET else "/proc/net/tcp6"
+    probe = socket.socket(family, socket.SOCK_STREAM)
+    try:
+        probe.bind((str(vault), 0))
+    except OSError:
+        print(f"host to Vault source: unknown ({vault} is not an address of this host)")
+        return 9
+    finally:
+        probe.close()
+    sock = socket.socket(family, socket.SOCK_STREAM)
+    sock.settimeout(3)
+    try:
+        try:
+            sock.connect((str(vault), port))
+        except OSError as exc:
+            print(f"host to Vault source: unknown (no connection to {vault}:{port}: {exc.__class__.__name__})")
+            return 9
+        client_port = sock.getsockname()[1]
+        seen = None
+        for _ in range(40):
+            for local, local_port, remote, remote_port, state in proc_net_tcp_sockets(table, family):
+                if local == vault and local_port == port and remote_port == client_port and state != "0A":
+                    seen = remote
+                    break
+            if seen is not None:
+                break
+            time.sleep(0.05)
+    finally:
+        sock.close()
+    if seen is None:
+        print(
+            f"host to Vault source: unknown (the accepted side of the connection from port {client_port} "
+            f"was not found in {table}; a source port rewrite also hides it)"
+        )
+        return 9
+    if seen == vault:
+        print(f"host to Vault source: kept (Vault sees {seen})")
+        return 0
+    print(
+        f"host to Vault source: REWRITTEN (Vault sees {seen}, not {vault}; a Vault role limited "
+        "to the bridge subnet refuses the box's own logins)"
+    )
+    return 8
+
+
 def ifname_matches(name, patterns):
     for pattern in patterns:
         if pattern.endswith("*"):
@@ -970,6 +1077,7 @@ COMMANDS = {
     "ssh-peer-list": cmd_ssh_peer_list,
     "new-ssh-peer": cmd_new_ssh_peer,
     "probe": cmd_probe,
+    "host-vault-source": cmd_host_vault_source,
 }
 
 

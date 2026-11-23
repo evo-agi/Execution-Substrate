@@ -726,8 +726,10 @@ func TestRemoteAlphaVaultWorkloadAuthBootstrapConfigUnreadablePreflightFailsBefo
 	if got := summary["failure_message_class"]; got != "permission_denied" && got != "permission_error" {
 		t.Fatalf("expected permission failure message class, got %#v", got)
 	}
-	if got := summary["last_completed_operation"]; got != "summary_preflight" {
-		t.Fatalf("expected last_completed_operation=summary_preflight before config failure, got %#v", got)
+	// P0q-R1: the role token limits are validated (no Vault request) after
+	// the summary preflight and before the config is loaded.
+	if got := summary["last_completed_operation"]; got != "role_token_limits" {
+		t.Fatalf("expected last_completed_operation=role_token_limits before config failure, got %#v", got)
 	}
 	if got := summary["next_operation"]; got != "config_load" {
 		t.Fatalf("expected next_operation=config_load for config failure, got %#v", got)
@@ -2142,4 +2144,36 @@ func TestRemoteAlphaVaultWorkloadAuthBootstrapTemporaryGenerateRootAccess(t *tes
 			assertBootstrapFailureSummary(t, run.summaryPath, tc.phase, tc.failureClass, tc.prompts, tc.vaultOps, secrets...)
 		})
 	}
+}
+
+// TestRemoteAlphaVaultWorkloadAuthBootstrapP0qR1Docs pins the documented
+// P0q-R1 refinement (PLANS.md slice and the system-overview subsection) to
+// the behaviour the tests above check.
+func TestRemoteAlphaVaultWorkloadAuthBootstrapP0qR1Docs(t *testing.T) {
+	plans := compactDocSection(t, mustRead(t, "PLANS.md"), "## Current Remote Alpha Host Network Boundary Slice", "## Future ES Privilege-Boundary Design Track")
+	assertContainsAll(t, "PLANS.md P0q-R1 slice", plans,
+		"the same tranche refines the P0q workload-auth bootstrap helper (INF-04, INF-05, and the root-token half of INF-06)",
+		"`enable_unauthenticated_access = [\"generate-root\"]`",
+		"one key share; CI installs Vault 2.2.2",
+	)
+	section := compactDocSection(t, mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md"), "#### P0q-R1 Bootstrap Token Limits, Proof History And Unseal-Key Authority", "### Historical P0r Mac-Side Runtime Identity Summary — Superseded and Non-Authoritative")
+	assertContainsAll(t, "P0q-R1 docs subsection", section,
+		"`REMOTE_ALPHA_BOOTSTRAP_TOKEN_TTL` (default `15m`)",
+		"`REMOTE_ALPHA_BOOTSTRAP_TOKEN_MAX_TTL` (default `30m`)",
+		"`REMOTE_ALPHA_BOOTSTRAP_TOKEN_BOUND_CIDRS` (default `172.17.0.0/16`",
+		"otherwise it fails at phase `role_token_limits` with `config_invalid`",
+		"The box's own workload-auth check connects from the bridge address only while the host firewall's `host_to_vault_source` chain is loaded",
+		"`proof_path_history=all_earlier_versions_and_metadata_deleted_before_write`",
+		"`REMOTE_ALPHA_BOOTSTRAP_PROOF_VALUE=generate` writes a random value made in helper memory to both proof paths and never shows it",
+		"`REMOTE_ALPHA_BOOTSTRAP_AUTHORITY=unseal-key` prompts for the single unseal key share instead.",
+		"requires a threshold of exactly one share",
+		"`ttl` and `explicit_max_ttl` `15m` and `renewable=false`, then revokes the root token with `auth/token/revoke-self` before any configuration request.",
+		"a generate-root attempt that someone else started is refused, not cancelled",
+		"`root_token_revoke_failed`",
+		"phase `generate_root_access_preflight`",
+		"`generate_root_unauthenticated_access_disabled`",
+		"it writes the original bytes back with the same owner and mode, reloads again, and waits until Vault refuses again.",
+		"`vault_config_restore_failed`",
+		"one test runs the helper against a real local Vault server (not dev mode; raft, TLS, one key share).",
+	)
 }

@@ -227,7 +227,8 @@ Modes:
   --plan      Default. Read-only: show the settings, host facts, inbound SSH
               connections, listening sockets and what the firewall does to
               each, the rendered ruleset and sshd drop-in, what sshd -T says
-              the drop-in does, and every check --apply makes.
+              the drop-in does, which source address Vault sees for the
+              box's own connections, and every check --apply makes.
   --apply     Run the checks, arm a rollback timer, then load the ruleset,
               install the sshd drop-in, check it with sshd -T and reload
               sshd (existing sessions stay). The previous rules and drop-in
@@ -238,12 +239,15 @@ Modes:
               keep the sshd drop-in, then cancel the rollback timer.
   --status    Read-only: report whether the installed rules are loaded and
               unchanged, whether the sshd drop-in matches the settings and
-              sshd -T agrees, the unit state, a pending rollback and the
-              drop counters. Exit 0 only when installed and unchanged.
+              sshd -T agrees, the unit state, a pending rollback, the source
+              Vault sees for the box and the counters. Exit 0 only when
+              installed and unchanged.
   --probe     Start two short-lived containers from PROBE_IMAGE and check
               from inside one of them that Vault, DNS and the internet work
               and that the box's LAN services, the LAN gateway and the other
-              container are unreachable. Checks the drop counters moved.
+              container are unreachable; check that Vault sees the box's own
+              connections from the bridge address. Checks the drop counters
+              moved.
   --rollback  Remove both tables, the unit, the sshd drop-in and the
               installed files (the settings file stays).
   --render    Print the ruleset for the current settings and exit.
@@ -267,7 +271,11 @@ Scope:
   login only from SSH_PASSWORD_SOURCES, no keyboard-interactive login, no X11
   forwarding) and a transient es-host-firewall-rollback timer. It reloads
   sshd and does not touch Docker's, ufw's or any other rules, other sshd
-  files, Vault, Nomad or ES. It reads no secrets.
+  files, Vault, Nomad or ES. One chain in table inet es_host_firewall keeps
+  the source address of the box's own connections to Vault (Docker's
+  masquerade rule would otherwise rewrite it to the LAN address). It reads
+  no secrets; the source check opens a TCP connection to Vault and sends
+  nothing.
 
 Non-claims:
   Not egress lanes (a container still reaches the whole internet), not a
@@ -401,6 +409,7 @@ remote_alpha_host_firewall_print_host_facts() {
   else
     printf 'rollback timer: none\n'
   fi
+  remote_alpha_host_firewall_py host-vault-source || true
 }
 
 # Runs every check that --apply needs. Prints a line per check. Writes the
@@ -888,8 +897,9 @@ remote_alpha_host_firewall_status() {
     && grep -Eq '^[[:space:]]*flush[[:space:]]+ruleset' "${REMOTE_ALPHA_HOST_FIREWALL_NFTABLES_CONF}" 2>/dev/null; then
     printf 'warning: nftables.service is enabled and flushes the whole ruleset when restarted\n'
   fi
+  remote_alpha_host_firewall_py host-vault-source || true
   if nft list table inet "${remote_alpha_host_firewall_table}" >/dev/null 2>&1; then
-    printf 'drop counters:\n'
+    printf 'counters:\n'
     nft list counters table inet "${remote_alpha_host_firewall_table}" 2>/dev/null | awk '/counter /{name=$2} /packets/{print "  " name " " $0}' | sed 's/[[:space:]]\+/ /g'
     nft list counters table bridge "${remote_alpha_host_firewall_table}" 2>/dev/null | awk '/counter /{name=$2} /packets/{print "  " name " " $0}' | sed 's/[[:space:]]\+/ /g'
   fi
@@ -950,7 +960,7 @@ remote_alpha_host_firewall_counter_value() {
 }
 
 remote_alpha_host_firewall_probe() {
-  local image gateway work label a b pid_a ip_b status=0 before after name family
+  local image gateway work label a b pid_a ip_b status=0 before after name family host_source
   remote_alpha_host_firewall_require_root || return 1
   remote_alpha_host_firewall_require_commands nft ip docker nsenter python3 || return 1
   image="${REMOTE_ALPHA_HOST_FIREWALL_PROBE_IMAGE}"
@@ -1007,6 +1017,14 @@ remote_alpha_host_firewall_probe() {
 
   printf 'Remote Alpha host firewall: probe from container %s (image %s)\n' "${a}" "${image}"
   if ! nsenter -t "${pid_a}" -n python3 -I -B "$(remote_alpha_host_firewall_internal_dir)/remote_alpha_host_firewall.py" probe "${work}/plan.json"; then
+    status=1
+  fi
+
+  printf 'from the box itself:\n'
+  if host_source=$(remote_alpha_host_firewall_py host-vault-source); then
+    printf '  PASS %s\n' "${host_source}"
+  else
+    printf '  FAIL %s\n' "${host_source}"
     status=1
   fi
 

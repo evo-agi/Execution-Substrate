@@ -151,3 +151,15 @@ skips-itself execution-substrate/es/admission TestExecutionRootProbeDirectorySwa
 # do. They skip themselves on every host.
 skips-itself execution-substrate/es/admission/internal/reliablesubmit TestPrivateReplayObjectAllocatorHelperProcess
 skips-itself execution-substrate/es/admission/internal/reliablesubmit TestSQLiteClaimStoreLockHelperProcess
+
+# Root package: the Remote Alpha host firewall's real-kernel and real-sshd
+# tests (scripts/remote_alpha_host_firewall.sh). The first two build network
+# namespaces, load the rendered nftables ruleset and check real traffic, so
+# they need root, ip and nft; the third runs sshd -t and sshd -T, which need
+# root for sshd's privilege separation checks. The runner runs the tests
+# without root, so they skip themselves there. The rendering, settings,
+# listener, sshd-expectation and apply/confirm/rollback-order tests of the
+# same file run in the gate without root.
+skips-itself execution-substrate TestRemoteAlphaHostFirewallRealKernelTraffic
+skips-itself execution-substrate TestRemoteAlphaHostFirewallRealKernelApplyConfirmRollback
+skips-itself execution-substrate TestRemoteAlphaHostFirewallSSHDDropInWithRealSSHD

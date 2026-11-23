@@ -4,9 +4,11 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -225,17 +227,106 @@ func TestRemoteAlphaHostFirewallRulesetInvariants(t *testing.T) {
 		"fc00::/7", "fe80::/10",
 		// Layer-2 isolation of the Vault bridge.
 		"ether type ip ip saddr 172.17.0.0/16 ip daddr 172.17.0.0/16 counter name \"container_to_container\" drop",
+		// The box's own connections to Vault keep the bridge address as their
+		// source: an identity snat, before Docker's masquerade (srcnat), as
+		// the last chain of the inet table.
+		"\tchain host_to_vault_source {\n\t\ttype nat hook postrouting priority srcnat - 10; policy accept;\n"+
+			"\t\toifname \"lo\" ip saddr 172.17.0.1 ip daddr 172.17.0.1 tcp dport 8200 counter name \"host_to_vault_source_kept\" snat ip to 172.17.0.1\n\t}\n}\n",
 	)
 	assertContainsNone(t, "ruleset", stdout,
 		"flush ruleset",
 		"ip6 saddr { fe80::/10 } tcp dport 22",
 		"policy drop;\n\t\tiifname \"docker0\"",
 	)
+	// The only address rewrite is the identity snat for the box's own
+	// connections to Vault.
+	var rules []string
+	for _, line := range strings.Split(stdout, "\n") {
+		if trimmed := strings.TrimSpace(line); trimmed != "" && !strings.HasPrefix(trimmed, "#") {
+			rules = append(rules, trimmed)
+		}
+	}
+	nat := 0
+	for _, rule := range rules {
+		for _, statement := range []string{"masquerade", "dnat to", "redirect", "snat to", "dnat ip", "dnat ip6"} {
+			if strings.Contains(rule, statement) {
+				t.Errorf("unexpected address rewrite %q in rule %q", statement, rule)
+			}
+		}
+		if strings.Contains(rule, " snat ") {
+			nat++
+		}
+	}
+	if nat != 1 {
+		t.Fatalf("exactly one snat rule (the identity snat for the box's Vault connections), got %d", nat)
+	}
+
+	// An IPv6 Vault address renders the same rules for ip6.
+	v6, stderr, code := runHostFirewall(t, hostFirewallBaseEnv(t, "", "REMOTE_ALPHA_HOST_FIREWALL_VAULT_ADDRESS=fd00:17::1"), "--render")
+	if code != 0 {
+		t.Fatalf("render with an IPv6 Vault address: exit %d\nstderr=%s", code, stderr)
+	}
+	assertContainsAll(t, "ruleset with an IPv6 Vault address", v6,
+		"ip6 daddr fd00:17::1 tcp dport 8200 accept",
+		"oifname \"lo\" ip6 saddr fd00:17::1 ip6 daddr fd00:17::1 tcp dport 8200 counter name \"host_to_vault_source_kept\" snat ip6 to [fd00:17::1]",
+	)
 	// The DNS exception comes before the private-range drop.
 	dnsIndex := strings.Index(stdout, "ip daddr { 192.168.1.1 } udp dport 53 accept")
 	dropIndex := strings.Index(stdout, "counter name \"container_to_private\" drop")
 	if dnsIndex < 0 || dropIndex < 0 || dnsIndex > dropIndex {
 		t.Fatalf("DNS exception must precede the private-range drop: dns=%d drop=%d", dnsIndex, dropIndex)
+	}
+}
+
+// TestRemoteAlphaHostFirewallHostVaultSource checks the source check against
+// a local listener standing in for Vault: kept when Vault sees its own
+// address, unknown when nothing listens or the address is not local. The
+// rewritten case needs a NAT rule and runs in the real-kernel lab.
+func TestRemoteAlphaHostFirewallHostVaultSource(t *testing.T) {
+	for _, c := range []struct{ name, network, address string }{
+		{"ipv4", "tcp4", "127.0.0.1"},
+		{"ipv6", "tcp6", "::1"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if runtime.GOOS != "linux" {
+				t.Skip("reads /proc/net/tcp; the box is Linux")
+			}
+			listener, err := net.Listen(c.network, net.JoinHostPort(c.address, "0"))
+			if err != nil {
+				if c.name == "ipv6" {
+					t.Skipf("no IPv6 loopback here (%v): the /proc/net/tcp6 path is not exercised", err)
+				}
+				t.Fatal(err)
+			}
+			port := listener.Addr().(*net.TCPAddr).Port
+			go func() {
+				for {
+					conn, err := listener.Accept()
+					if err != nil {
+						return
+					}
+					_ = conn.Close()
+				}
+			}()
+			env := hostFirewallBaseEnv(t, "",
+				"REMOTE_ALPHA_HOST_FIREWALL_VAULT_ADDRESS="+c.address,
+				fmt.Sprintf("REMOTE_ALPHA_HOST_FIREWALL_VAULT_PORT=%d", port),
+			)
+			output, code := runHostFirewallPython(t, env, "", "host-vault-source")
+			if code != 0 || strings.TrimSpace(output) != "host to Vault source: kept (Vault sees "+c.address+")" {
+				t.Fatalf("with a listener: exit %d\n%s", code, output)
+			}
+			_ = listener.Close()
+			output, code = runHostFirewallPython(t, env, "", "host-vault-source")
+			if code != 9 || !strings.Contains(output, fmt.Sprintf("host to Vault source: unknown (no connection to %s:%d: ConnectionRefusedError)", c.address, port)) {
+				t.Fatalf("without a listener: exit %d\n%s", code, output)
+			}
+		})
+	}
+	// 192.0.2.1 (TEST-NET-1) is not an address of this host: nothing is tried.
+	output, code := runHostFirewallPython(t, hostFirewallBaseEnv(t, "", "REMOTE_ALPHA_HOST_FIREWALL_VAULT_ADDRESS=192.0.2.1"), "", "host-vault-source")
+	if code != 9 || strings.TrimSpace(output) != "host to Vault source: unknown (192.0.2.1 is not an address of this host)" {
+		t.Fatalf("with a non-local Vault address: exit %d\n%s", code, output)
 	}
 }
 
@@ -809,6 +900,7 @@ func TestRemoteAlphaHostFirewallApplyConfirmRollbackOrderWithFakes(t *testing.T)
 		"pass  from 192.0.2.1",
 		"== sshd drop-in "+dropIn+" ==",
 		"Match Address 192.168.1.23/32",
+		"host to Vault source: ",
 	)
 	if _, err := os.Stat(dropIn); !os.IsNotExist(err) {
 		t.Fatalf("plan must not write the sshd drop-in, stat err=%v", err)
@@ -926,7 +1018,7 @@ func TestRemoteAlphaHostFirewallApplyConfirmRollbackOrderWithFakes(t *testing.T)
 
 	// Status: installed and unchanged.
 	stdout, _, code = runHostFirewall(t, env, "--status")
-	if code != 0 || !strings.Contains(stdout, "RESULT: installed and unchanged") {
+	if code != 0 || !strings.Contains(stdout, "RESULT: installed and unchanged") || !strings.Contains(stdout, "host to Vault source: ") {
 		t.Fatalf("status: exit %d\n%s", code, stdout)
 	}
 	// Drift: the sshd drop-in edited by hand.
@@ -1047,6 +1139,14 @@ func newHostFirewallLab(t *testing.T) *hostFirewallLab {
 		l.run("ip", "-n", l.ns(name), "link", "set", "lo", "up")
 	}
 	box := l.ns("box")
+	lan := l.ns("lan")
+	// The LAN interface comes first, as on the box (Docker creates docker0
+	// after the network cards): when Docker's masquerade rule rewrites a
+	// connection that leaves through lo, the kernel picks the first
+	// interface's global address, the LAN address.
+	l.run("ip", "link", "add", "wlp2s0", "netns", box, "type", "veth", "peer", "name", "lan0", "netns", lan)
+	l.run("ip", "-n", box, "addr", "add", "192.168.1.156/24", "dev", "wlp2s0")
+	l.run("ip", "-n", box, "link", "set", "wlp2s0", "up")
 	l.run("ip", "-n", box, "link", "add", "docker0", "type", "bridge")
 	l.run("ip", "-n", box, "addr", "add", "172.17.0.1/16", "dev", "docker0")
 	l.run("ip", "-n", box, "link", "set", "docker0", "up")
@@ -1059,10 +1159,6 @@ func newHostFirewallLab(t *testing.T) *hostFirewallLab {
 		l.run("ip", "-n", ns, "link", "set", "eth0", "up")
 		l.run("ip", "-n", ns, "route", "add", "default", "via", "172.17.0.1")
 	}
-	lan := l.ns("lan")
-	l.run("ip", "link", "add", "wlp2s0", "netns", box, "type", "veth", "peer", "name", "lan0", "netns", lan)
-	l.run("ip", "-n", box, "addr", "add", "192.168.1.156/24", "dev", "wlp2s0")
-	l.run("ip", "-n", box, "link", "set", "wlp2s0", "up")
 	for _, addr := range []string{"192.168.1.1/24", "192.168.1.23/24", "192.168.1.50/24"} {
 		l.run("ip", "-n", lan, "addr", "add", addr, "dev", "lan0")
 	}
@@ -1204,6 +1300,25 @@ func (l *hostFirewallLab) probe(name, kind, host string, port int, src string) s
 	return strings.TrimSpace(string(output))
 }
 
+// hostVaultSource runs the script's source check inside the box namespace,
+// with the test settings (Vault at 172.17.0.1 tcp/8200, as in the lab).
+func (l *hostFirewallLab) hostVaultSource() (string, int) {
+	l.t.Helper()
+	internal := filepath.Join(executionSubstrateRepoRoot, "scripts", "internal", "remote_alpha_host_firewall.sh")
+	script := fmt.Sprintf("set -euo pipefail\nsource %q\nremote_alpha_host_firewall_defaults\nremote_alpha_host_firewall_py host-vault-source\n", internal)
+	cmd := exec.Command("ip", "netns", "exec", l.ns("box"), "/bin/bash", "-c", script)
+	cmd.Dir = executionSubstrateRepoRoot
+	cmd.Env = hostFirewallBaseEnv(l.t, "")
+	output, err := cmd.CombinedOutput()
+	code := 0
+	if exitErr, ok := err.(*exec.ExitError); ok {
+		code = exitErr.ExitCode()
+	} else if err != nil {
+		l.t.Fatal(err)
+	}
+	return string(output), code
+}
+
 func (l *hostFirewallLab) counter(family, name string) string {
 	l.t.Helper()
 	output := l.run("ip", "netns", "exec", l.ns("box"), "nft", "list", "counter", family, "es_host_firewall", name)
@@ -1277,6 +1392,24 @@ func TestRemoteAlphaHostFirewallRealKernelTraffic(t *testing.T) {
 		{"lan", "tcp", "2001:db8:1::156", 8445, "2001:db8:1::50", "connected"},
 	})
 
+	// Docker's masquerade rule, as on the box: everything from the bridge
+	// subnet that leaves through another interface. The box's own
+	// connection to the bridge address leaves through lo, so Vault sees the
+	// box's LAN address: a Vault role limited to the bridge subnet refuses
+	// the box. Everything above still works with it.
+	dockerNAT := filepath.Join(t.TempDir(), "docker-nat.nft")
+	writeFile(t, dockerNAT, []byte("table ip docker_like_nat {\n\tchain postrouting {\n\t\ttype nat hook postrouting priority srcnat; policy accept;\n"+
+		"\t\tip saddr 172.17.0.0/16 oifname != \"docker0\" masquerade\n\t}\n}\n"), 0o600)
+	l.run("ip", "netns", "exec", l.ns("box"), "nft", "-f", dockerNAT)
+	if output, code := l.hostVaultSource(); code != 8 || !strings.Contains(output, "host to Vault source: REWRITTEN (Vault sees 192.168.1.156, not 172.17.0.1;") {
+		t.Fatalf("with Docker's masquerade and no firewall the source must be rewritten: exit %d\n%s", code, output)
+	}
+	l.expectAll("with Docker's masquerade, without firewall", []hostFirewallExpectation{
+		{"c1", "tcp", "192.168.1.1", 80, "", "connected"},
+		{"c1", "tcp", "203.0.113.10", 443, "", "connected"},
+		{"box", "tcp", "172.17.0.1", 8200, "", "connected"},
+	})
+
 	ruleset, stderr, code := runHostFirewall(t, hostFirewallBaseEnv(t, ""), "--render")
 	if code != 0 {
 		t.Fatalf("render: %d %s", code, stderr)
@@ -1287,6 +1420,20 @@ func TestRemoteAlphaHostFirewallRealKernelTraffic(t *testing.T) {
 	l.run("ip", "netns", "exec", l.ns("box"), "nft", "-f", path)
 	// Loading twice is an atomic replace, not an error.
 	l.run("ip", "netns", "exec", l.ns("box"), "nft", "-f", path)
+	// The kernel also accepts the IPv6 form of the source chain.
+	v6, stderr, code := runHostFirewall(t, hostFirewallBaseEnv(t, "", "REMOTE_ALPHA_HOST_FIREWALL_VAULT_ADDRESS=fd00:17::1"), "--render")
+	if code != 0 {
+		t.Fatalf("render with an IPv6 Vault address: %d %s", code, stderr)
+	}
+	v6Path := filepath.Join(t.TempDir(), "ruleset-v6.nft")
+	writeFile(t, v6Path, []byte(v6), 0o600)
+	l.run("ip", "netns", "exec", l.ns("box"), "nft", "-c", "-f", v6Path)
+
+	// With the firewall, Vault sees the box's own connections from the
+	// bridge address, Docker's rule notwithstanding.
+	if output, code := l.hostVaultSource(); code != 0 || strings.TrimSpace(output) != "host to Vault source: kept (Vault sees 172.17.0.1)" {
+		t.Fatalf("with the firewall the source must be kept: exit %d\n%s", code, output)
+	}
 
 	l.expectAll("with firewall", []hostFirewallExpectation{
 		// From a container: Vault, the resolver and the internet work.
@@ -1340,6 +1487,7 @@ func TestRemoteAlphaHostFirewallRealKernelTraffic(t *testing.T) {
 		{"inet", "container_to_host"},
 		{"inet", "into_container"},
 		{"inet", "lan_to_host"},
+		{"inet", "host_to_vault_source_kept"},
 		{"bridge", "container_to_container"},
 	} {
 		if got := l.counter(c.family, c.name); got == "0" {
@@ -1474,7 +1622,8 @@ esac
 		t.Fatalf("confirm: %d\n%s\n%s", code, stdout, stderr)
 	}
 	stdout, _, code = inBox(env, "--status")
-	if code != 0 || !strings.Contains(stdout, "RESULT: installed and unchanged") || !strings.Contains(stdout, "lan_to_host") {
+	if code != 0 || !strings.Contains(stdout, "RESULT: installed and unchanged") || !strings.Contains(stdout, "lan_to_host") ||
+		!strings.Contains(stdout, "host to Vault source: kept (Vault sees 172.17.0.1)") || !strings.Contains(stdout, "host_to_vault_source_kept") {
 		t.Fatalf("status: %d\n%s", code, stdout)
 	}
 
@@ -1499,4 +1648,46 @@ esac
 	if _, err := os.Stat(unitPath); !os.IsNotExist(err) {
 		t.Fatalf("rollback must remove the unit, stat err=%v", err)
 	}
+}
+
+// TestRemoteAlphaHostFirewallDocsContract pins the documented contract of
+// the host firewall (PLANS.md slice and the system-overview section) to the
+// behaviour the tests above check.
+func TestRemoteAlphaHostFirewallDocsContract(t *testing.T) {
+	plans := compactDocSection(t, mustRead(t, "PLANS.md"), "## Current Remote Alpha Host Network Boundary Slice", "## Future ES Privilege-Boundary Design Track")
+	assertContainsAll(t, "PLANS.md host network boundary slice", plans,
+		"INF-01 (containers reach the home LAN), INF-13 (ES and AGS listeners open to the whole LAN) and INF-23",
+		"`scripts/remote_alpha_host_firewall.sh`",
+		"It owns only the nftables tables `inet es_host_firewall` and `bridge es_host_firewall`",
+		"It never touches Docker's, ufw's or other rules, other sshd files, Vault, Nomad or ES, and reads no secrets.",
+		"an identity snat ahead of Docker's masquerade rule",
+		"It is the ruleset's only address rewrite.",
+		"`/etc/execution-substrate/host-firewall/settings.env`",
+		"`--apply` arms an automatic rollback that only `--confirm` from an SSH connection opened after `--apply` cancels.",
+	)
+
+	section := compactDocSection(t, mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md"), "## Remote Alpha Host Firewall", "## Non-Goals")
+	assertContainsAll(t, "host firewall docs section", section,
+		"`execution-substrate.remote-alpha.host-firewall.v1`",
+		"`testdata/remote_alpha_host_firewall/ruleset.golden.nft`",
+		"input, default drop, at priority `filter - 10`",
+		"from container interfaces (`CONTAINER_INTERFACES`, default `docker0 br-* nomad`): only `VAULT_ADDRESS:VAULT_PORT` (default `172.17.0.1:8200`)",
+		"new connections into containers pass only through Docker's published-port DNAT (`ct status dnat`)",
+		"cannot reach each other at layer 2, whatever the `br_netfilter` state",
+		"chain `host_to_vault_source` (nat, postrouting, priority `srcnat - 10`) applies an identity snat",
+		"the workload role's `token_bound_cidrs` (`172.17.0.0/16`, P0q-R1) refuses the box's own workload-auth check with a plain 403",
+		"an `accept` would not do this. It is the only address rewrite in the ruleset",
+		"(`host_to_vault_source_kept`)",
+		"`SERVICE_CALLERS` has no default.",
+		"`SSH_PASSWORD_SOURCES` (default empty: keys only) must lie inside `SSH_SOURCES`",
+		"`PasswordAuthentication no`, `KbdInteractiveAuthentication no`, `X11Forwarding no`, then `Match Address <SSH_PASSWORD_SOURCES>`",
+		"a `Match` block in an included file ends at the end of that file",
+		"`ROLLBACK_SECONDS`, default 180",
+		"`REMOTE_ALPHA_HOST_FIREWALL_CONFIRM_WITHOUT_NEW_SSH=1`",
+		"Vault must see the box's own connections from `VAULT_ADDRESS`",
+		"it opens a TCP connection to `VAULT_ADDRESS:VAULT_PORT`, sends nothing, and reads the accepted side of that connection from `/proc/net/tcp`",
+		"`sudo bash scripts/remote_alpha_host_firewall.sh --rollback`",
+		"the source check reports `REWRITTEN` to the LAN address without the firewall and `kept` with it",
+		"Non-claims: not egress lanes",
+	)
 }
