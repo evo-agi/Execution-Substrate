@@ -4092,6 +4092,74 @@ func TestOperationalAdmissionPolicyContent(t *testing.T) {
 			}
 		}
 	})
+	// No Service installs a view whose content builds no set:
+	// operationalAdmissionContent maps the selected set, and the guard lists
+	// the one call of Install. The admission state itself takes any content
+	// that has a digest and a store token naming it, so the qualification
+	// must refuse such a view, and must not evaluate an empty set in its
+	// place. The views here are installed by hand with tokens of the store.
+	t.Run("a view whose content builds no set answers Unavailable", func(t *testing.T) {
+		ctx := context.Background()
+		f := makeOperationalFixture(t, "")
+		f.confirm()
+		original := operationalV2Original(t, f)
+		realm := f.domain.realm
+		held := operationalInstalledView(f.service)
+		byHand := func(t *testing.T, token reliablesubmit.OperationalAdmissionToken, content admissionstate.Content) *Service {
+			t.Helper()
+			owner := &Service{}
+			owner.operational = admissionstate.New(owner)
+			if !owner.operational.Install(owner, realm.installation, realm.epoch, token, content, nil, nil) {
+				t.Fatal("the store's token and the content it names were refused")
+			}
+			view, ok := owner.operational.Confirmable(owner)
+			if !ok {
+				t.Fatal("the installed view cannot be confirmed")
+			}
+			owner.operational.Confirm(owner, view, view.Trust(), time.Now())
+			if current, ok := owner.currentOperationalAdmission(realm); !ok || current != view {
+				t.Fatal("the confirmed view is not current")
+			}
+			return owner
+		}
+		// Control: the same construction with the commissioned content
+		// qualifies the original, so a refusal below is about the policies.
+		control := byHand(t, held.Token(), operationalViewContent(held))
+		if reason := control.qualifyOperationalRetained(ctx, original, realm); reason != reliablesubmit.OperationalReasonNone {
+			t.Fatalf("control: a view installed by hand with the commissioned content: reason=%d", reason)
+		}
+		selectedID, configuredID := string(selectedDestructiveShellCommandPolicyID), string(configuredStaticScriptLiteralDenyPolicyID)
+		entry := []admissionstate.PolicyEntry{{ID: "rule", Literal: "a literal the request does not contain"}}
+		for _, tc := range []struct {
+			name     string
+			policies []admissionstate.Policy
+		}{
+			{"a policy this release does not know", []admissionstate.Policy{{ID: "execution-substrate.admission.unknown/v1"}}},
+			{"the configured policy without the selected one", []admissionstate.Policy{{ID: configuredID, Entries: entry}}},
+			{"a third policy", []admissionstate.Policy{{ID: selectedID}, {ID: configuredID, Entries: entry}, {ID: configuredID, Entries: entry}}},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				content := operationalViewContent(held)
+				content.Policies = tc.policies
+				digest, ok := admissionstate.Digest(content)
+				if !ok {
+					t.Fatal("control: the content has no digest, so no view could hold it")
+				}
+				token, err := f.domain.custody.AdvanceOperationalAdmission(ctx, realm.installation, realm.epoch, digest,
+					operationalAdmissionRowAt(t, f).Generation)
+				if err != nil {
+					t.Fatalf("the store did not advance to the content: %v", err)
+				}
+				owner := byHand(t, token, content)
+				if _, built := operationalPolicySet(operationalInstalledView(owner).Policies()); built {
+					t.Fatal("control: the installed content builds a set")
+				}
+				if reason := owner.qualifyOperationalRetained(ctx, original, realm); reason != reliablesubmit.OperationalUnavailable {
+					t.Fatalf("reason=%d, want Unavailable", reason)
+				}
+			})
+		}
+	})
 	// The admission state copies the content it installs. The steps before
 	// it copy too, so the set that is compared and the content that is named
 	// by the digest cannot change under a writer to the Service's own values.

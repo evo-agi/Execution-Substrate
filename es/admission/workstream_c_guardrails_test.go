@@ -2353,6 +2353,13 @@ func TestExecutionSubstrateProductionHasNoA3LeaseRegistryOrPoisonDesign(t *testi
 		// of the ES source, so it reads the packages compiled from the two ES
 		// directories, whatever a directory below them is called.
 		scoped := packagesCompiledBelow(t, view.packages, "es", "cmd/es")
+		// The scope is held by what it read. cmd/es declares no state of the
+		// kinds listed here, so a scope that lost that directory would
+		// otherwise pass until it does. The main package of the ES binary
+		// stands for cmd/es and the admission package for es.
+		if err := requirePackagesRead(scoped, "execution-substrate/cmd/es", "execution-substrate/es/admission"); err != nil {
+			t.Fatalf("the ES source inventory of %s: %v", view.target, err)
+		}
 		packageState, synchronizationFields, mapsBesideSynchronization := structuralProductionStateInventory(scoped)
 		for _, item := range packageState {
 			packageStateSet[item] = true
@@ -3188,6 +3195,7 @@ func TestExecutionSubstrateSynchronizedMutableStateReferenceInventoryIsExact(t *
 			"an error in the last host line":      {file + ":10: unexported field s"},
 			"an error in another file":            {"es/admission/other.go:11: unexported field s"},
 			"an error without a line":             {file + ": unexported field s"},
+			"an error without a file name":        {"11: unexported field s"},
 			"a second error in the host text":     {file + ":11: unexported field s", file + ":3: unexported field s"},
 			"an error of a file with this ending": {"x" + file + ":11: unexported field s"},
 		} {
@@ -5243,6 +5251,21 @@ func selectPackagesCompiledBelow(repositoryRoot string, packages []*typedProduct
 	return scoped
 }
 
+// requirePackagesRead fails when one of the named packages is not among those
+// an inventory read.
+func requirePackagesRead(packages []*typedProductionPackage, importPaths ...string) error {
+	read := make(map[string]bool, len(packages))
+	for _, pkg := range packages {
+		read[pkg.importPath] = true
+	}
+	for _, importPath := range importPaths {
+		if !read[importPath] {
+			return fmt.Errorf("%s was not read", importPath)
+		}
+	}
+	return nil
+}
+
 func TestPackagesCompiledBelowReadsADirectoryScope(t *testing.T) {
 	root := filepath.FromSlash("/repository")
 	at := func(directory string) *typedProductionPackage {
@@ -5263,6 +5286,23 @@ func TestPackagesCompiledBelowReadsADirectoryScope(t *testing.T) {
 	}
 	if scoped := selectPackagesCompiledBelow(root, packages, "missing"); len(scoped) != 0 {
 		t.Fatalf("a directory that holds no package selected %d", len(scoped))
+	}
+	// A scope is held by the packages it must have read.
+	if err := requirePackagesRead(selectPackagesCompiledBelow(root, packages, "es", "cmd/es"), "cmd/es", "es/admission"); err != nil {
+		t.Fatalf("the whole scope: %v", err)
+	}
+	for name, directories := range map[string][]string{
+		"without cmd/es": {"es"},
+		"without es":     {"cmd/es"},
+		"another part":   {"ars"},
+		"nothing":        nil,
+	} {
+		if err := requirePackagesRead(selectPackagesCompiledBelow(root, packages, directories...), "cmd/es", "es/admission"); err == nil {
+			t.Fatalf("a scope %s passed", name)
+		}
+	}
+	if err := requirePackagesRead(nil); err != nil {
+		t.Fatalf("nothing required: %v", err)
 	}
 }
 
