@@ -830,6 +830,13 @@ the one that was reviewed; neither reads what the file does. A
 `//go:linkname` directive, which reaches an unexported function of another
 package without naming it in Go syntax, is accepted by the compiler only in
 a file that imports `unsafe`, so it is held by the same inventory.
+Other `//go:` directives need no import: `//go:cgo_import_dynamic _ _
+"name"` makes a `CGO_ENABLED=0` build a dynamic executable that loads the
+named shared library, whose initialisers run native code in the process
+before `main`. So every non-test Go file of the repository may hold only
+the `//go:` directives of an exact reviewed list, today `//go:build`
+alone, and a test fails on any other verb and on a listed verb that no
+file holds.
 Reflection inside a called library function, on a pointer or container
 passed to it as an interface value, is such a called body: it cannot set an
 unexported field by itself, and it can move or overwrite a whole value. The
