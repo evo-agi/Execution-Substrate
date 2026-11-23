@@ -153,27 +153,51 @@ func TestExecutionRootProbeNamesTheCheckThatRefuses(t *testing.T) {
 // (audit 16 of pull request #20, mutants F2 and R9). In a whole probe, the
 // check of the probe directories refuses such a file system first, so the two
 // file probes are called directly here, in a directory on a file system that
-// accepts owner and group changes and ignores them.
+// accepts owner and group changes and ignores them. Each case asks for an
+// owner that differs from the creator in one half only, the owning user or the
+// group, so that each half of each check is held on its own (audit 18,
+// observation A18-2).
 func TestStartupProbeFileChecksRefuseAnOwnerTheFileSystemIgnores(t *testing.T) {
 	bindfs := requireTestBindfs(t)
 	requireTestMountPrivilege(t)
-	owner := executionPlatformStateOwner{UID: 54321, GID: 54321}
-	if os.Geteuid() != 0 {
-		// The kernel passes a group change on to the file system only when
-		// the file's owner names a group the owner is in.
-		owner = executionPlatformStateOwner{UID: os.Getuid(), GID: -1}
-		if groups, err := os.Getgroups(); err == nil {
-			for _, group := range groups {
-				if group != os.Getgid() {
-					owner.GID = group
-					break
+	t.Run("owning user", func(t *testing.T) {
+		// Only root may give a file to another user; for any other caller
+		// the kernel refuses the change before the file system sees it.
+		if os.Geteuid() != 0 {
+			rerunTestAsRootThroughSudo(t)
+			return
+		}
+		requireProbeFileChecksRefuseIgnoredOwner(t, bindfs, executionPlatformStateOwner{UID: 54321, GID: os.Getgid()})
+	})
+	t.Run("group", func(t *testing.T) {
+		owner := executionPlatformStateOwner{UID: os.Getuid(), GID: 54321}
+		if os.Geteuid() != 0 {
+			// The kernel passes a group change on to the file system only
+			// when the file's owner names a group the owner is in.
+			owner.GID = -1
+			if groups, err := os.Getgroups(); err == nil {
+				for _, group := range groups {
+					if group != os.Getgid() {
+						owner.GID = group
+						break
+					}
 				}
 			}
+			if owner.GID == -1 {
+				t.Skip("needs root or a supplementary group, so that the kernel passes the group change on to the file system")
+			}
 		}
-		if owner.GID == -1 {
-			t.Skip("needs root or a supplementary group, so that the kernel passes the group change on to the file system")
-		}
-	}
+		requireProbeFileChecksRefuseIgnoredOwner(t, bindfs, owner)
+	})
+}
+
+// requireProbeFileChecksRefuseIgnoredOwner calls both file probes of the
+// startup probe with owner, in a directory on a bindfs mount that ignores owner
+// and group changes, and requires each to refuse with its ownership message.
+// It first shows that the mount leaves a file with the creator's identity in
+// exactly the half of owner that differs from the creator.
+func requireProbeFileChecksRefuseIgnoredOwner(t *testing.T, bindfs string, owner executionPlatformStateOwner) {
+	t.Helper()
 	mount := mountTestBindfs(t, bindfs, "--chown-ignore", "--chgrp-ignore")
 	backing := filepath.Join(filepath.Dir(mount), "backing")
 	runTestPrivileged(t, "mkdir", filepath.Join(backing, "dir"))
@@ -189,6 +213,23 @@ func TestStartupProbeFileChecksRefuseAnOwnerTheFileSystemIgnores(t *testing.T) {
 		t.Fatal(err)
 	}
 	device := uint64(directory.Dev)
+
+	witnessFD, err := unix.Openat(directoryFD, "witness", unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_CLOEXEC, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Close(witnessFD)
+	if err := unix.Fchown(witnessFD, owner.UID, owner.GID); err != nil {
+		t.Fatalf("the mount refused the owner change it should ignore: %v", err)
+	}
+	var witness unix.Stat_t
+	if err := unix.Fstat(witnessFD, &witness); err != nil {
+		t.Fatal(err)
+	}
+	if userDiffers, groupDiffers := int(witness.Uid) != owner.UID, int(witness.Gid) != owner.GID; userDiffers == groupDiffers {
+		t.Fatalf("a file given %d:%d is %d:%d; want exactly one half of the owner ignored", owner.UID, owner.GID, witness.Uid, witness.Gid)
+	}
+
 	if err := probeStagedFile(directoryFD, stableStageFileMode, owner, device); err == nil || err.Error() != "staged file ownership is unavailable" {
 		t.Fatalf("staged file probe = %v, want the owner check after the ignored owner change to refuse", err)
 	}

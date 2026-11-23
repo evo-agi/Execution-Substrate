@@ -570,7 +570,13 @@ func (roots *qualifiedExecutionRoots) probeNestedStagingDirectory(stagingFD int,
 // these: an overlay whose layers are on different file systems reports
 // another device for regular files than for directories, and a file system
 // that does not keep the modes it is asked for fails on the first mode it
-// cannot keep. Staging would refuse every submission there.
+// cannot keep. Staging would refuse submissions there: on such an overlay all
+// of them, and on a file system that cannot keep a mode, those that need it.
+// The governed-mount modes are needed only by submissions with governed
+// mounts, so startup also refuses a staging file system that cannot keep
+// them, although submissions without governed mounts would work there. That
+// is the chosen rule (STARTUP-PROBE-USE-AGREEMENT-01): no submission ES
+// accepts fails for want of a mode.
 func (roots *qualifiedExecutionRoots) probeStagedEntries(nestedFD int, owner executionPlatformStateOwner) error {
 	for _, mode := range stagedDirectoryModes() {
 		if mode == stableStageDirMode {

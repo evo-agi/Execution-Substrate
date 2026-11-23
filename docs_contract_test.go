@@ -13586,6 +13586,31 @@ func TestStartupProbeUseAgreementDocsContract(t *testing.T) {
 	assertContainsNone(t, "PLANS.md every-submission claim", compactText(mustRead(t, "PLANS.md")),
 		"instead of reporting ready while every submission, or every retention, fails",
 	)
+	// Nor may the comments of the admission code (audit 18 of pull request
+	// #20, finding A18-1): the comment of probeStagedEntries states the chosen
+	// rule. Comment markers are dropped so that a phrase may span lines.
+	commentText := func(path string) string {
+		lines := strings.Split(mustRead(t, path), "\n")
+		for i, line := range lines {
+			lines[i] = strings.TrimPrefix(strings.TrimSpace(line), "//")
+		}
+		return compactText(strings.Join(lines, "\n"))
+	}
+	if !strings.Contains(commentText("es/admission/execution_roots.go"), "so startup also refuses a staging file system that cannot keep them, although submissions without governed mounts would work there") {
+		t.Fatal("es/admission/execution_roots.go missing the governed-mount mode rule in the comment of probeStagedEntries")
+	}
+	sources, err := filepath.Glob("es/admission/*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range sources {
+		if strings.HasSuffix(path, "_test.go") {
+			continue
+		}
+		assertContainsNone(t, path+" every-submission claim", commentText(path),
+			"refuse every submission", "refuses every submission", "fail every submission", "fails every submission",
+		)
+	}
 }
 
 func TestNestedStagingOwnerProbeDocsContract(t *testing.T) {
