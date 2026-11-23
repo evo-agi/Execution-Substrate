@@ -14596,7 +14596,9 @@ func TestOperationalSubmitHandoffCurrentAdmissionV2Contract(t *testing.T) {
 		"one durable admission row", "does not change the epoch", "no compatibility edge is retained on this",
 		"The view is held by the admission\nstate package behind its own lock",
 		"naming, copying or restoring that state does not compile\noutside the package",
-		"the lock of the admission\nstate protects the latches and the confirmation time")
+		"the lock of the admission\nstate protects the latches and the confirmation time",
+		"Before the claim, `operationalProvider.fits` directly projects the run once\nmore",
+		"only to measure Job0 and the POST body; it sends nothing")
 	assertContainsAll(t, "durable admission scope", persistence,
 		"historical migrations 1–4 with their literal hashes", "bounded opaque full signed",
 		"`reliable_submit_operational_admission`", "It is not a durable policy decision about",

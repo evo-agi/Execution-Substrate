@@ -361,6 +361,17 @@ type operationalJob struct {
 	expected         []byte
 }
 
+// operationalJobLimit bounds Job0 as Go's encoding/json writes it, with each
+// '<', '>', '&' and control byte as a six-byte escape. That form is at least as
+// long as the one Nomad's API writes when it returns the job (Nomad writes
+// HTML characters as they are), so the expanded job that GET Job returns stays
+// well within its own bound. operationalBodyLimit bounds the canonical
+// complete POST body, which is what ES sends.
+const (
+	operationalJobLimit  = 65536
+	operationalBodyLimit = 131072
+)
+
 func (p *operationalProvider) project(run resolvedRunProjection, name string) (operationalJob, error) {
 	nomad := run.nomadJobProjection(nil)
 	nomad.jobID = name
@@ -370,7 +381,7 @@ func (p *operationalProvider) project(run resolvedRunProjection, name string) (o
 	if err != nil {
 		return operationalJob{}, errOperationalEvidence
 	}
-	parsed, err := parseOperationalJSON(raw, 65536)
+	parsed, err := parseOperationalJSON(raw, operationalJobLimit)
 	if err != nil {
 		return operationalJob{}, err
 	}
@@ -417,10 +428,27 @@ func (j operationalJob) request(carrier string) ([]byte, error) {
 	meta[operationalCorrelation] = carrier
 	closed["Meta"] = meta
 	body := appendOperationalJSON(nil, map[string]any{"Job": closed, "EnforceIndex": true, "JobModifyIndex": privateJSONNumber("0")})
-	if len(body) > 131072 {
+	if len(body) > operationalBodyLimit {
 		return nil, errOperationalEvidence
 	}
 	return body, nil
+}
+
+// fits reports whether the job of this resolution can be projected and sent
+// once a run is assigned: Job0 and the canonical complete POST body stay
+// within their bounds. It projects the job with a stage, a job name
+// and a correlation value of the real lengths, so it is asked before the claim
+// is stored, and a request that does not fit takes no claim and no
+// reservation.
+func (p *operationalProvider) fits(resolved resolvedExecution) bool {
+	stage, name := reliablesubmit.OperationalLocatorShape()
+	job, err := p.project(newResolvedRunProjection(resolved.plan, resolved.host, executionLocator{RunID: stage, jobID: name}), name)
+	if err != nil {
+		return false
+	}
+	// The correlation value is the hex HMAC-SHA256 that carrierForMarker writes.
+	_, err = job.request(strings.Repeat("0", 2*sha256.Size))
+	return err == nil
 }
 
 type operationalResponse struct {

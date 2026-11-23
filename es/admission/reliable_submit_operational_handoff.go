@@ -234,6 +234,12 @@ func (s *Service) operatePrivateHandoff(ctx context.Context, d *operationalDomai
 	if err != nil {
 		return operationalFailureAt(ctx, reliablesubmit.OperationalUnavailable)
 	}
+	// The job is first projected for real after the run is assigned. A request
+	// whose job could not be sent then would hold its claim slot and its
+	// reservation for good, so it is refused here, before anything is stored.
+	if !d.provider.fits(original.resolved) {
+		return operationalFailure(reliablesubmit.OperationalMalformed)
+	}
 	view, ok := s.currentOperationalAdmission(d.realm)
 	if !ok {
 		return operationalFailureAt(ctx, reliablesubmit.OperationalUnavailable)

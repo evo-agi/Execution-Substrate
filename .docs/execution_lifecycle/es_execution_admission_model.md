@@ -1100,7 +1100,10 @@ and typed provider boundary. `Service.composeOperationalOriginal` is one direct
 resolver caller. `verifyOperationalOriginal` directly reconstructs the plan,
 material and host context from the retained original. `Service.advanceOperational`
 directly projects the run and materializes its inputs on a held stage, and
-`operationalDomain.createOperationalStage` directly claims that stage. The stage measurement
+`operationalDomain.createOperationalStage` directly claims that stage.
+Before the claim, `operationalProvider.fits` directly projects the run once
+more, with a stage, a job name and a correlation value of the lengths every
+run has, only to measure Job0 and the POST body; it sends nothing. The stage measurement
 directly calls the existing held-tree revalidation twice before recording or using the stamp.
 The private `operationalProvider.project` uses the existing job renderer once and verifies the complete result against its separately commissioned template. Ordinary Submit retains its existing resolver and Nomad registration path. Current §7.4 describes current source. Public routing, startup and the rejected A3 topology remain outside the selection.
 

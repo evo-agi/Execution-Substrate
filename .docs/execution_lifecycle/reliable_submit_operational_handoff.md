@@ -1342,9 +1342,18 @@ mathematical value. Numeric domain is signed 64 to unsigned 64 inclusive
 (`-2^63..2^64-1`), no negative zero, fractions or exponents. Refuse invalid
 UTF-8/unpaired surrogates, duplicate decoded keys, trailing tokens, any
 unsupported number, >16 levels, >8192 nodes or >65536 bytes decoded string.
-No coercion, absent/empty equivalence or array reordering. Canonical Job0
-≤65536 bytes. Canonical complete POST body ≤131072 bytes. HTTP JSON objects
-are strictly parsed even for removed or immaterial fields.
+No coercion, absent/empty equivalence or array reordering. Job0 ≤65536
+bytes as Go's `encoding/json` writes it, with each `<`, `>`, `&` and control
+byte as a six-byte escape. That form is at least as long as the one Nomad's
+API writes when GET Job returns the job (Nomad v2.1.1 writes HTML characters
+as they are), so the expanded Job stays within the GET bound below.
+Canonical complete POST body ≤131072 bytes. Before the claim is stored, ES
+projects Job0 and the POST body with a stage, a job name and a correlation
+value of the lengths every run has, and refuses a request that does not fit
+either bound as `OperationalMalformed`, with no claim, no reservation and no
+publication. The projection after the run assignment therefore cannot fail
+for size. HTTP JSON objects are strictly parsed even for removed or
+immaterial fields.
 
 GET Job returns Nomad's expanded Job object. Verify and then remove exactly
 top-level CreateIndex, JobModifyIndex, ModifyIndex, Version, Status,

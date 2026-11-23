@@ -1377,3 +1377,32 @@ func testOperationalPrestageCleanupResults(t *testing.T) {
 		})
 	}
 }
+
+// The private handoff sizes a job before the claim is stored with the names
+// of OperationalLocatorShape (report 28-redteam.md, RT28-2). That is right
+// only while every assigned run gives a stage and a job name of exactly those
+// lengths, made of bytes that JSON writes as themselves.
+func TestOperationalLocatorShapeHasTheLengthsOfEveryAssignedRun(t *testing.T) {
+	stage, job := OperationalLocatorShape()
+	if stage != "esoh-"+fmtHex(make([]byte, 32)) || job != "esoh-job-"+fmtHex(make([]byte, 32)) {
+		t.Fatalf("OperationalLocatorShape() = %q, %q", stage, job)
+	}
+	for i := 0; i < 64; i++ {
+		command, err := NewAssignOperationalRun()
+		if err != nil {
+			t.Fatal(err)
+		}
+		assigned := OperationalProjection{run: string(command.run.ref.value)}
+		gotStage, gotJob, ok := assigned.Locator()
+		if !ok || len(gotStage) != len(stage) || len(gotJob) != len(job) {
+			t.Fatalf("assigned run %q gives %q, %q; the shape is %q, %q", assigned.run, gotStage, gotJob, stage, job)
+		}
+		for _, name := range []string{gotStage, gotJob} {
+			for _, c := range []byte(name) {
+				if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-') {
+					t.Fatalf("assigned name %q holds byte %q, which a JSON encoding may escape", name, c)
+				}
+			}
+		}
+	}
+}

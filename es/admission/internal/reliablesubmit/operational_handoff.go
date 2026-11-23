@@ -1121,8 +1121,23 @@ func NewAssignOperationalRun() (AssignOperationalRun, error) {
 	if _, err := rand.Read(random[:]); err != nil || random == [32]byte{} {
 		return AssignOperationalRun{}, errClaimStoreUnavailable
 	}
-	run, err := NewRunRef([]byte("esoh-" + fmtHex(random[:])))
+	run, err := NewRunRef([]byte(operationalRunName(random)))
 	return AssignOperationalRun{run: run}, err
+}
+
+// operationalRunName is the stage name of the run assigned from random.
+func operationalRunName(random [32]byte) string {
+	return "esoh-" + fmtHex(random[:])
+}
+
+// OperationalLocatorShape returns a stage and a job name of the length that
+// every run NewAssignOperationalRun assigns has, so that a job projected with
+// them before a claim is stored has the size of the job projected after the
+// run is assigned. Both names are built as Locator builds them, from the
+// all-zero run; hex digits take one byte in every JSON encoding.
+func OperationalLocatorShape() (stage, job string) {
+	stage, job, _ = OperationalProjection{run: operationalRunName([32]byte{})}.Locator()
+	return stage, job
 }
 
 func (AssignOperationalRun) operationalCommand() {}
