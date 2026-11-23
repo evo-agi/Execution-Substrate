@@ -94,7 +94,7 @@ High-level layout:
 - `internal/contracts/` for shared cross-service packages
 - `internal/observability/` for cross-cutting support code
 - `.docs/` for authoritative design, contract, boundary, lifecycle, and governance docs
-- `.runbooks/` for the operator-facing bring-up and verification runbook; the runbooks for submitting a workload by hand (static script and runtime identity) are kept in the private [`evo-agi/Archived-Runbooks`](https://github.com/evo-agi/Archived-Runbooks) repository, which you need access to
+- `.runbooks/` for operator-facing bring-up and verification steps
 - `scripts/` and `.examples/` for local verification helpers and inputs
 
 Use the README as a navigation entrypoint only. For architecture, contracts, boundaries, lifecycle semantics, and redesign intent, defer to the authoritative docs above.

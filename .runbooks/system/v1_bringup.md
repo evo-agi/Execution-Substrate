@@ -431,7 +431,7 @@ scripts/73_supported_local_proof.sh run
 
 This path still proves the one-host Linux substrate and same-path staging contract directly, and it now makes the bounded useful credential flow the canonical higher-value governed proof on that already-qualified host. The first platform-owned runtime identity boundary remains active through the real ES -> Nomad -> Docker path: same-container supervisor/helper, helper-private SPIRE channel, fixed non-root workload launch, and helper-death/task-fatal behavior are all active in the current slice.
 
-For the underlying credential-flow details, use the [ES Submit Runtime Identity Vault Login Workload](https://github.com/evo-agi/Archived-Runbooks/blob/main/Governed%20Execution%20ES%20Submit%20Runtime%20Identity%20Vault%20Login%20Workload.md) runbook, which is kept in the private `evo-agi/Archived-Runbooks` repository (you need access to that repository to open it).
+For the underlying credential-flow details, use [.runbooks/execution/Governed Execution ES Submit Runtime Identity Vault Login Workload.md](../execution/Governed%20Execution%20ES%20Submit%20Runtime%20Identity%20Vault%20Login%20Workload.md).
 
 That bounded proof has now also been exercised on a supported local host on the current Apple Silicon Mac through Lima `qemu` + Ubuntu 24.04 arm64 under a pre-managed non-`-dev` Nomad service with natural `cpu.totalcompute`. The previously investigated Ubuntu 24.04 VMware/aarch64 and Lima `vz` Ubuntu 24.04 arm64 local profiles remain unsupported on this Mac because the real service path still leaves natural `cpu.totalcompute=0`.
 
@@ -469,10 +469,10 @@ Keep host qualification and smoke proof distinct:
 - only relabel the host itself if the supported-host checks regress
 - the current supported local proof path is repo-owned; no out-of-repo `/tmp` harness is required for the qualification or the canonical useful credential-flow proof sequence
 
-If you want the manual publish/prepare/submit breakdown instead, use these runbooks, which are kept in the private `evo-agi/Archived-Runbooks` repository (you need access to that repository to open them):
+If you want the manual publish/prepare/submit breakdown instead, use:
 
-- [ES Submit Static Script Workload](https://github.com/evo-agi/Archived-Runbooks/blob/main/Governed%20Execution%20ES%20Submit%20Static%20Script%20Workload.md)
-- [ES Submit Runtime Identity Reference Workload](https://github.com/evo-agi/Archived-Runbooks/blob/main/Governed%20Execution%20ES%20Submit%20Runtime%20Identity%20Reference%20Workload.md)
+- [.runbooks/execution/Governed Execution ES Submit Static Script Workload.md](../execution/Governed%20Execution%20ES%20Submit%20Static%20Script%20Workload.md)
+- [.runbooks/execution/Governed Execution ES Submit Runtime Identity Reference Workload.md](../execution/Governed%20Execution%20ES%20Submit%20Runtime%20Identity%20Reference%20Workload.md)
 
 ## 7. Shutdown
 
