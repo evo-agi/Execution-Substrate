@@ -1,10 +1,13 @@
 package admission
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"golang.org/x/sys/unix"
 )
 
 func TestQualifiedExecutionRootsAcceptSamePresentationSiblings(t *testing.T) {
@@ -206,26 +209,89 @@ func TestExecutionRootCapabilityProbeCoversBothConfiguredRoots(t *testing.T) {
 	if ledger.Count < 10 {
 		t.Fatalf("capability probe skipped checked root boundaries: got %d acquisitions", ledger.Count)
 	}
-	for _, test := range []struct {
-		root   string
-		prefix string
-	}{
-		{staging, ".execution-substrate-staging-probe-"},
-		{results, ".execution-substrate-results-probe-"},
-	} {
-		entries, err := os.ReadDir(test.root)
-		want := 2
-		if test.root == results {
-			want = 3
+	// The staging root holds the probe directory and its symbolic link. The
+	// probe directory holds the nested directory, and that holds one entry
+	// for each mode staging uses, with the roots' owner and the exact mode.
+	stagingEntries, err := os.ReadDir(staging)
+	if err != nil || len(stagingEntries) != 2 {
+		t.Fatalf("capability probe retained fixtures in %s: entries=%v err=%v", staging, stagingEntries, err)
+	}
+	probeName := ""
+	for _, entry := range stagingEntries {
+		switch {
+		case strings.HasPrefix(entry.Name(), ".execution-substrate-staging-probe-") && strings.HasSuffix(entry.Name(), "-symlink"):
+		case strings.HasPrefix(entry.Name(), ".execution-substrate-staging-probe-") && entry.IsDir():
+			probeName = entry.Name()
+		default:
+			t.Fatalf("unexpected retained probe entry %q", entry.Name())
 		}
-		if err != nil || len(entries) != want {
-			t.Fatalf("capability probe retained fixtures in %s: entries=%v err=%v", test.root, entries, err)
+	}
+	if probeName == "" {
+		t.Fatalf("capability probe retained no probe directory in %s", staging)
+	}
+	requireTestProbeEntries(t, filepath.Join(staging, probeName), owner, map[string]uint32{
+		nestedStagingProbeName: unix.S_IFDIR | stableStageDirMode,
+	})
+	wantStaged := map[string]uint32{}
+	for _, mode := range stagedDirectoryModes() {
+		if mode != stableStageDirMode {
+			wantStaged[fmt.Sprintf("directory-%04o", uint32(mode))] = unix.S_IFDIR | uint32(mode)
 		}
-		for _, entry := range entries {
-			if !strings.HasPrefix(entry.Name(), test.prefix) &&
-				!(test.root == results && strings.HasPrefix(entry.Name(), ".execution-substrate-result-dir-probe-")) {
-				t.Fatalf("unexpected retained probe entry %q", entry.Name())
+	}
+	for _, mode := range stagedFileModes() {
+		wantStaged[fmt.Sprintf("file-%04o", uint32(mode))] = unix.S_IFREG | uint32(mode)
+	}
+	if len(wantStaged) != 6 {
+		t.Fatalf("staged modes = %v, want five file modes and one directory mode beyond the stable stage mode", wantStaged)
+	}
+	requireTestProbeEntries(t, filepath.Join(staging, probeName, nestedStagingProbeName), owner, wantStaged)
+
+	// The results root holds the natural result directory, and that holds
+	// what retention would leave: the evidence-mode file, the collision
+	// target, and the bundle-mode file under the free name it was renamed to.
+	resultEntries, err := os.ReadDir(results)
+	if err != nil || len(resultEntries) != 1 || !resultEntries[0].IsDir() || !strings.HasPrefix(resultEntries[0].Name(), ".execution-substrate-result-dir-probe-") {
+		t.Fatalf("capability probe retained fixtures in %s: entries=%v err=%v", results, resultEntries, err)
+	}
+	resultDir := filepath.Join(results, resultEntries[0].Name())
+	requireTestProbeEntries(t, resultDir, owner, map[string]uint32{
+		"evidence":  unix.S_IFREG | retainedNormalizationEvidenceFileMode,
+		"collision": unix.S_IFREG,
+		"renamed":   unix.S_IFREG | retainedResultBundleFileMode,
+	})
+}
+
+// requireTestProbeEntries checks that directory holds exactly the named
+// entries. A want value with permission bits must match the entry's type and
+// exact mode, and the entry must have the roots' owner; a want value of a type
+// alone checks the type only.
+func requireTestProbeEntries(t *testing.T, directory string, owner executionPlatformStateOwner, want map[string]uint32) {
+	t.Helper()
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != len(want) {
+		t.Fatalf("probe entries in %s = %v, want %v", directory, entries, want)
+	}
+	for _, entry := range entries {
+		wantMode, ok := want[entry.Name()]
+		if !ok {
+			t.Fatalf("unexpected probe entry %s in %s", entry.Name(), directory)
+		}
+		var stat unix.Stat_t
+		if err := unix.Lstat(filepath.Join(directory, entry.Name()), &stat); err != nil {
+			t.Fatal(err)
+		}
+		mode := uint32(stat.Mode)
+		if wantMode&0o7777 == 0 {
+			if mode&unix.S_IFMT != wantMode {
+				t.Fatalf("probe entry %s has mode %o, want type %o", entry.Name(), mode, wantMode)
 			}
+			continue
+		}
+		if !sameCustodyRecordedMode(mode, wantMode) || int(stat.Uid) != owner.UID || int(stat.Gid) != owner.GID {
+			t.Fatalf("probe entry %s = mode %o owner %d:%d, want mode %o owner %d:%d", entry.Name(), mode, stat.Uid, stat.Gid, wantMode, owner.UID, owner.GID)
 		}
 	}
 }
