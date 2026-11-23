@@ -94,3 +94,27 @@ func TestAGSAllowlistPrefixThatFailsTheSharedRuleMatchesNothing(t *testing.T) {
 		t.Fatalf("the caller reached the publish service %d times", publisher.count())
 	}
 }
+
+// AGS checks every configured prefix, so a caller that matches only a later
+// one is allowed, by the shared rule's match (audit 11, mutant E16).
+func TestAGSPublishAllowsACallerThatMatchesALaterPrefix(t *testing.T) {
+	publisher := &recordingPublisher{}
+	server := api.NewServer(publisher, testBootstrapIssuer, []string{"operator/local", "service/control-plane"}, func() bool { return true })
+	for _, tc := range []struct {
+		path string
+		code int
+	}{
+		{path: "service/control-plane", code: http.StatusOK},
+		{path: "service/control-plane/provider", code: http.StatusOK},
+		{path: "service/control-plane-evil", code: http.StatusForbidden},
+	} {
+		state := callerauthtest.State(callerauthtest.Certificate(t, callerauthtest.RuntimeIssuer, callerauthtest.SPIFFEID(tc.path)))
+		response := callerauthtest.Serve(t, server.Handler(), http.MethodPost, "/v1/artifacts:publish", "{}", state)
+		if response.Code != tc.code {
+			t.Errorf("%s: %d %q, want %d", tc.path, response.Code, response.Body.String(), tc.code)
+		}
+	}
+	if publisher.count() != 2 {
+		t.Fatalf("the publish service saw %d callers, want 2", publisher.count())
+	}
+}
