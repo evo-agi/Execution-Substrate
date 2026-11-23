@@ -202,6 +202,7 @@ func TestRepoPathCheckFindsEachKindOfProblem(t *testing.T) {
 		"scripts/own.sh",
 		"scripts/testdata/own.txt",
 		"scripts/internal/own.sh",
+		"scripts/own_test.go",
 	} {
 		path := filepath.Join(root, name)
 		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -303,6 +304,23 @@ func statUnder(dir string) {
 }
 
 var remove = os.RemoveAll
+
+var plans, _ = os.ReadFile("PLANS.md")
+
+var gone = func() bool {
+	_, err := os.Stat(".codex/hooks.json")
+	return err != nil
+}()
+
+func more(t *testing.T, unknown string) {
+	filepath.Glob(filepath.Join(testutil.Root, "*_test.go"))
+	testutil.Path("internal/" + unknown)
+	ioutil.ReadFile("PLANS.md")
+	parser.ParseFile(nil, "PLANS.md", nil, 0)
+	syscall.Access("PLANS.md", 0)
+	os.StartProcess("/bin/true", nil, nil)
+	syscall.Chdir("/")
+}
 `
 	const renamed = `package p
 
@@ -352,9 +370,13 @@ func g(dir string, name string) {
 	later.Dir = dir
 	later.Run()
 	filepath.Join(testutil.Root, "scripts", "x.sh")
-	filepath.Join(rootDir(), "*_test.go")
+	filepath.Join(rootDir(), "*.md")
 	testutil.Path("PLANS.md")
+	testutil.Path("internal/callerauth/callerauth.go")
 	readOwn("own.sh")
+	parser.ParseFile(nil, "positions/only.go", source, 0)
+	parser.ParseFile(nil, "own_test.go", nil, 0)
+	syscall.Mkfifo(filepath.Join(dir, "fifo"), 0o600)
 	for _, own := range []string{"own.sh", "testdata/own.txt"} {
 		os.Stat(own)
 	}
@@ -365,6 +387,11 @@ func rootDir() string { return testutil.Root }
 func readOwn(name string) {
 	os.ReadFile(name)
 }
+
+var own = func() bool {
+	_, err := os.Stat("own.sh")
+	return err == nil
+}()
 `
 	fset := token.NewFileSet()
 	parse := func(name, source string) *ast.File {
@@ -417,6 +444,15 @@ func readOwn(name string) {
 		`bad.go:65: read is used as a value, so the check cannot see the arguments it gets`,
 		`bad.go:67: Chdir is used as a value, so the check cannot see the arguments it gets`,
 		`bad.go:91: os.RemoveAll is used as a value, so the check cannot see the arguments it gets`,
+		`bad.go:93: os.ReadFile gets the repository-relative path "PLANS.md"`,
+		`bad.go:96: os.Stat gets the repository-relative path ".codex/hooks.json"`,
+		`bad.go:101: filepath.Join resolves "*_test.go" against the repository root, though the package directory holds it too`,
+		`bad.go:102: testutil.Path resolves a path starting "internal/" against the repository root, though the package directory holds that name too`,
+		`bad.go:103: ioutil.ReadFile gets the repository-relative path "PLANS.md"`,
+		`bad.go:104: parser.ParseFile gets the repository-relative path "PLANS.md"`,
+		`bad.go:105: syscall.Access gets the repository-relative path "PLANS.md"`,
+		`bad.go:106: os.StartProcess starts a process without os/exec, so the check cannot see its working directory`,
+		`bad.go:107: syscall.Chdir changes or reads the working directory`,
 		`renamed.go:4: imports path/filepath as fp, which the check does not follow`,
 		`renamed.go:5: imports os as ., which the check does not follow`,
 	}
@@ -619,23 +655,32 @@ func (l *layout) commandProblem(v pathValue) string {
 }
 
 // anchoredProblem checks a path that is resolved against the repository
-// root: one whose first element, or the start of it, matches nothing at
-// the root usually names a file of the test's own directory, or one that
-// moved.
+// root. One whose first element, or the start of it, matches nothing at the
+// root usually names a file of the test's own directory, or one that
+// moved. One that the package directory holds too is ambiguous: a test that
+// reads its own sources, for example, may have resolved them against the
+// root by mistake, and a glob would then match the root's files instead.
 func (l *layout) anchoredProblem(v pathValue) string {
 	if v.text == "" || filepath.IsAbs(v.text) {
 		return ""
 	}
-	missing := func() bool {
-		known, ok := knownElements(v)
-		if !ok {
-			return !l.atRoot(v.text + "*")
+	known, ok := knownElements(v)
+	if !ok {
+		if !l.atRoot(v.text + "*") {
+			return fmt.Sprintf("resolves %q against the repository root, which holds no such name", v.text)
 		}
-		first := firstElement(known)
-		return first != "." && first != ".." && !l.atRoot(first)
+		return ""
 	}
-	if missing() {
+	first := firstElement(known)
+	switch {
+	case first == "." || first == "..":
+		return ""
+	case !l.atRoot(first):
 		return fmt.Sprintf("resolves %q against the repository root, which holds no such name", v.text)
+	case !v.partial && l.inPackage(filepath.Clean(v.text)):
+		return fmt.Sprintf("resolves %q against the repository root, though the package directory holds it too", v.text)
+	case v.partial && l.inPackage(first):
+		return fmt.Sprintf("resolves a path starting %q against the repository root, though the package directory holds that name too", v.text)
 	}
 	return ""
 }
@@ -692,10 +737,64 @@ var pathCalls = map[string][]int{
 	"filepath.WalkDir":      {0},
 	"filepath.EvalSymlinks": {0},
 	"filepath.Abs":          {0},
+	"ioutil.ReadFile":       {0},
+	"ioutil.WriteFile":      {0},
+	"ioutil.ReadDir":        {0},
+	"ioutil.TempDir":        {0},
+	"ioutil.TempFile":       {0},
+	// parser.ParseFile reads the file only when it gets no source; see
+	// readsPath.
+	"parser.ParseFile":   {1},
+	"parser.ParseDir":    {1},
+	"syscall.Access":     {0},
+	"syscall.Stat":       {0},
+	"syscall.Lstat":      {0},
+	"syscall.Statfs":     {0},
+	"syscall.Open":       {0},
+	"syscall.Creat":      {0},
+	"syscall.Mkdir":      {0},
+	"syscall.Mkfifo":     {0},
+	"syscall.Mknod":      {0},
+	"syscall.Unlink":     {0},
+	"syscall.Rmdir":      {0},
+	"syscall.Rename":     {0, 1},
+	"syscall.Link":       {0, 1},
+	"syscall.Symlink":    {1},
+	"syscall.Readlink":   {0},
+	"syscall.Chmod":      {0},
+	"syscall.Chown":      {0},
+	"syscall.Lchown":     {0},
+	"syscall.Truncate":   {0},
+	"syscall.Utimes":     {0},
+	"syscall.UtimesNano": {0},
+	"syscall.Chroot":     {0},
+}
+
+// readsPath reports whether a call of one of pathCalls uses the path its
+// arguments hold: parser.ParseFile only reads its file name when its
+// source argument is nil.
+func readsPath(call *ast.CallExpr, name string) bool {
+	if name != "parser.ParseFile" {
+		return true
+	}
+	if len(call.Args) < 3 {
+		return false
+	}
+	source, ok := call.Args[2].(*ast.Ident)
+	return ok && source.Name == "nil"
 }
 
 // workingDirectoryCalls are refused outright.
-var workingDirectoryCalls = map[string]bool{"os.Chdir": true, "os.Getwd": true}
+var workingDirectoryCalls = map[string]bool{
+	"os.Chdir": true, "os.Getwd": true,
+	"syscall.Chdir": true, "syscall.Fchdir": true, "syscall.Getwd": true,
+}
+
+// processCalls start a process without os/exec, so the check cannot see
+// the working directory they give it. They are refused.
+var processCalls = map[string]bool{
+	"os.StartProcess": true, "syscall.ForkExec": true, "syscall.StartProcess": true, "syscall.Exec": true,
+}
 
 // anchoredCalls are the calls whose argument at the given index is
 // resolved against the repository root.
@@ -706,17 +805,20 @@ var anchoredCalls = map[string]int{"testutil.Path": 0, "testutil.Read": 1}
 func isCoveredCall(name string) bool {
 	_, path := pathCalls[name]
 	_, anchored := anchoredCalls[name]
-	return path || anchored || workingDirectoryCalls[name] ||
+	return path || anchored || workingDirectoryCalls[name] || processCalls[name] ||
 		name == "exec.Command" || name == "exec.CommandContext" || name == "filepath.Join" || name == "path.Join"
 }
 
 // followedImports are the packages whose functions the check knows by the
 // name the package is imported under, which is its own.
 var followedImports = map[string]string{
+	"go/parser":                             "parser",
+	"io/ioutil":                             "ioutil",
 	"os":                                    "os",
 	"os/exec":                               "exec",
 	"path":                                  "path",
 	"path/filepath":                         "filepath",
+	"syscall":                               "syscall",
 	"execution-substrate/internal/testutil": "testutil",
 }
 
@@ -729,6 +831,14 @@ func repoPathProblems(fset *token.FileSet, files []*ast.File, paths *layout) []s
 	// Values of package-level constants and variables, by name.
 	packageBindings := map[string][]ast.Expr{}
 	var funcs []*ast.FuncDecl
+	// The initializers of package-level variables, function literals
+	// included, are checked like the body of a function without parameters.
+	initializers := &ast.FuncDecl{
+		Name: ast.NewIdent(""),
+		Type: &ast.FuncType{Params: &ast.FieldList{}},
+		Body: &ast.BlockStmt{},
+	}
+	funcs = append(funcs, initializers)
 	for _, file := range files {
 		for _, spec := range file.Imports {
 			path, err := strconv.Unquote(spec.Path.Value)
@@ -740,6 +850,9 @@ func repoPathProblems(fset *token.FileSet, files []*ast.File, paths *layout) []s
 			switch decl := decl.(type) {
 			case *ast.GenDecl:
 				bindSpecs(decl, packageBindings)
+				if decl.Tok == token.VAR {
+					initializers.Body.List = append(initializers.Body.List, &ast.DeclStmt{Decl: decl})
+				}
 			case *ast.FuncDecl:
 				if decl.Body != nil {
 					funcs = append(funcs, decl)
@@ -941,8 +1054,11 @@ func functionProblems(fset *token.FileSet, fn *ast.FuncDecl, packageBindings map
 				report(call.Pos(), "%s changes or reads the working directory", displayName(call, name))
 				return true
 			}
+			if processCalls[name] {
+				report(call.Pos(), "%s starts a process without os/exec, so the check cannot see its working directory", name)
+			}
 			for _, index := range pathCalls[name] {
-				if index < len(call.Args) {
+				if index < len(call.Args) && readsPath(call, name) {
 					check(call, name, call.Args[index], pathArgument, "")
 				}
 			}
@@ -1001,8 +1117,8 @@ func valueProblems(fset *token.FileSet, file *ast.File, pathParams map[string]ma
 			stack = stack[:len(stack)-1]
 			return false
 		}
-		if fn, ok := n.(*ast.FuncDecl); ok {
-			locals = localNames(fn)
+		if len(stack) == 2 {
+			locals = localNames(n)
 		}
 		if len(stack) < 2 {
 			return true
@@ -1045,15 +1161,21 @@ func valueProblems(fset *token.FileSet, file *ast.File, pathParams map[string]ma
 	return problems
 }
 
-// localNames returns the names a function declares for itself: its
-// parameters and results, those of the function literals in it, and the
-// names its body binds.
-func localNames(fn *ast.FuncDecl) map[string]bool {
+// localNames returns the names a top-level declaration declares inside
+// itself: the parameters and results of a function and of the function
+// literals in it, and the names its body binds.
+func localNames(decl ast.Node) map[string]bool {
 	names := map[string]bool{}
-	ast.Inspect(fn, func(n ast.Node) bool {
+	// The specs of a top-level var, const or type declaration name
+	// package-level things, not local ones.
+	topSpecs := map[ast.Spec]bool{}
+	if gen, ok := decl.(*ast.GenDecl); ok {
+		for _, spec := range gen.Specs {
+			topSpecs[spec] = true
+		}
+	}
+	ast.Inspect(decl, func(n ast.Node) bool {
 		switch n := n.(type) {
-		case *ast.FuncDecl:
-			return n == fn
 		case *ast.Field:
 			for _, name := range n.Names {
 				names[name.Name] = true
@@ -1067,6 +1189,9 @@ func localNames(fn *ast.FuncDecl) map[string]bool {
 				}
 			}
 		case *ast.ValueSpec:
+			if topSpecs[n] {
+				return true
+			}
 			for _, name := range n.Names {
 				names[name.Name] = true
 			}
@@ -1182,7 +1307,7 @@ func isMethodCall(call *ast.CallExpr, method string) bool {
 }
 
 func displayName(call *ast.CallExpr, name string) string {
-	if name == "os.Chdir" || name == "os.Getwd" {
+	if workingDirectoryCalls[name] {
 		return name
 	}
 	return "Chdir"
