@@ -11,6 +11,27 @@ remote_alpha_vault_workload_auth_bootstrap_defaults() {
   REMOTE_ALPHA_BOOTSTRAP_TOKEN_TTL="${REMOTE_ALPHA_BOOTSTRAP_TOKEN_TTL:-15m}"
   REMOTE_ALPHA_BOOTSTRAP_TOKEN_MAX_TTL="${REMOTE_ALPHA_BOOTSTRAP_TOKEN_MAX_TTL:-30m}"
   REMOTE_ALPHA_BOOTSTRAP_TOKEN_BOUND_CIDRS="${REMOTE_ALPHA_BOOTSTRAP_TOKEN_BOUND_CIDRS:-172.17.0.0/16}"
+  # Where the Vault authority comes from (non-secret choice):
+  #   root-token  the operator types an existing root token at the prompt;
+  #   unseal-key  the operator types the unseal key; the helper makes a
+  #               short-lived root token with it (sys/generate-root), uses it
+  #               in memory and revokes it before it exits.
+  REMOTE_ALPHA_BOOTSTRAP_AUTHORITY="${REMOTE_ALPHA_BOOTSTRAP_AUTHORITY:-root-token}"
+  # Where the proof value written to both proof paths comes from:
+  #   prompt    the operator types it at a hidden prompt;
+  #   generate  the helper generates a random value and never shows it.
+  REMOTE_ALPHA_BOOTSTRAP_PROOF_VALUE="${REMOTE_ALPHA_BOOTSTRAP_PROOF_VALUE:-prompt}"
+  # Vault 2.x refuses sys/generate-root without a token unless its server
+  # configuration names it in enable_unauthenticated_access. With unseal-key:
+  #   as-configured     never touch Vault's configuration; fail before the
+  #                     key is used if Vault refuses;
+  #   temporary-config  if Vault refuses, add that one setting to
+  #                     REMOTE_ALPHA_BOOTSTRAP_VAULT_CONFIG_PATH, reload Vault
+  #                     (no restart, no reseal), make the root token, then put
+  #                     the file back byte for byte and reload again.
+  REMOTE_ALPHA_BOOTSTRAP_GENERATE_ROOT_ACCESS="${REMOTE_ALPHA_BOOTSTRAP_GENERATE_ROOT_ACCESS:-as-configured}"
+  REMOTE_ALPHA_BOOTSTRAP_VAULT_CONFIG_PATH="${REMOTE_ALPHA_BOOTSTRAP_VAULT_CONFIG_PATH:-/etc/vault.d/vault.hcl}"
+  REMOTE_ALPHA_BOOTSTRAP_VAULT_RELOAD_COMMAND="${REMOTE_ALPHA_BOOTSTRAP_VAULT_RELOAD_COMMAND:-systemctl reload vault.service}"
 }
 
 remote_alpha_vault_workload_auth_bootstrap_usage() {
@@ -26,6 +47,29 @@ Purpose:
 Secret posture:
   The human operator enters Vault bootstrap authority and the proof secret
   value only through visible/silent prompts on the remote TTY.
+  Non-secret choices (environment):
+    REMOTE_ALPHA_BOOTSTRAP_AUTHORITY=root-token (default): prompt for an
+      existing root token.
+    REMOTE_ALPHA_BOOTSTRAP_AUTHORITY=unseal-key: prompt for the unseal key
+      instead; the helper makes a short-lived root token through
+      sys/generate-root (one key share), keeps it in memory only, and revokes
+      it before it exits. A failed revoke fails the run and says so.
+    REMOTE_ALPHA_BOOTSTRAP_PROOF_VALUE=prompt (default) or generate: with
+      generate, the proof value is random, generated in memory, written to
+      the proof paths and never shown.
+    REMOTE_ALPHA_BOOTSTRAP_GENERATE_ROOT_ACCESS=as-configured (default) or
+      temporary-config, for unseal-key only. Vault 2.x refuses
+      sys/generate-root without a token unless its server configuration
+      holds enable_unauthenticated_access = ["generate-root"]. The helper asks
+      Vault (read-only) before it asks for the key. as-configured never
+      touches Vault's configuration and fails there when Vault refuses. temporary-config then adds that one line to
+      REMOTE_ALPHA_BOOTSTRAP_VAULT_CONFIG_PATH (default /etc/vault.d/vault.hcl),
+      runs REMOTE_ALPHA_BOOTSTRAP_VAULT_RELOAD_COMMAND (default
+      "systemctl reload vault.service": a reload, not a restart, so Vault
+      stays unsealed), makes the root token, and then writes the file back
+      byte for byte, reloads again and checks that Vault refuses again. It
+      refuses a configuration file that already mentions
+      enable_unauthenticated_access.
   Root tokens, Vault tokens, proof secret values, JWT-SVID payloads, API keys,
   private keys, passwords, and secret payloads are never accepted through CLI
   args, environment variables, files, logs, summaries, reports, .out, support
@@ -162,7 +206,12 @@ remote_alpha_vault_workload_auth_bootstrap_execute() {
     "${remote_alpha_vault_workload_auth_bootstrap_schema_version}" \
     "${REMOTE_ALPHA_BOOTSTRAP_TOKEN_TTL}" \
     "${REMOTE_ALPHA_BOOTSTRAP_TOKEN_MAX_TTL}" \
-    "${REMOTE_ALPHA_BOOTSTRAP_TOKEN_BOUND_CIDRS}" <<'PY'
+    "${REMOTE_ALPHA_BOOTSTRAP_TOKEN_BOUND_CIDRS}" \
+    "${REMOTE_ALPHA_BOOTSTRAP_AUTHORITY}" \
+    "${REMOTE_ALPHA_BOOTSTRAP_PROOF_VALUE}" \
+    "${REMOTE_ALPHA_BOOTSTRAP_GENERATE_ROOT_ACCESS}" \
+    "${REMOTE_ALPHA_BOOTSTRAP_VAULT_CONFIG_PATH}" \
+    "${REMOTE_ALPHA_BOOTSTRAP_VAULT_RELOAD_COMMAND}" <<'PY'
 import base64
 import datetime as dt
 import getpass
@@ -172,10 +221,15 @@ import json
 import os
 import pathlib
 import re
+import shlex
+import shutil
 import ssl
+import stat
 import subprocess
+import secrets
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -189,6 +243,15 @@ SCHEMA_VERSION = sys.argv[6]
 TOKEN_TTL_TEXT = sys.argv[7]
 TOKEN_MAX_TTL_TEXT = sys.argv[8]
 TOKEN_BOUND_CIDRS_TEXT = sys.argv[9]
+AUTHORITY_SOURCE = sys.argv[10]
+PROOF_VALUE_SOURCE = sys.argv[11]
+GENERATE_ROOT_ACCESS = sys.argv[12]
+VAULT_CONFIG_PATH = pathlib.Path(sys.argv[13])
+VAULT_RELOAD_COMMAND_TEXT = sys.argv[14]
+# The one setting temporary-config adds, and how long to wait for a reload.
+UNAUTHENTICATED_GENERATE_ROOT_SETTING = 'enable_unauthenticated_access = ["generate-root"]'
+UNAUTHENTICATED_ACCESS_KEYWORD = "enable_unauthenticated_access"
+VAULT_RELOAD_WAIT_SECONDS = 20
 # Upper bound for both token lifetimes: a workload login is short-lived by
 # design and logs in again with a fresh JWT-SVID from the runtime helper.
 TOKEN_TTL_CEILING_SECONDS = 24 * 3600
@@ -245,6 +308,9 @@ summary = {
             "token_bound_cidrs": TOKEN_BOUND_CIDRS_TEXT.split(),
         },
         "proof_path_history": "all_earlier_versions_and_metadata_deleted_before_write",
+        "authority_source": AUTHORITY_SOURCE,
+        "proof_value_source": PROOF_VALUE_SOURCE,
+        "generate_root_access": GENERATE_ROOT_ACCESS,
     },
     "operations": {},
     "secret_prompts_started": False,
@@ -467,6 +533,376 @@ def validate_role_token_limits():
     return TOKEN_TTL_TEXT, TOKEN_MAX_TTL_TEXT, cidrs
 
 
+def validate_choices():
+    phase = "bootstrap_choices"
+    set_next_operation(phase)
+    if AUTHORITY_SOURCE not in ("root-token", "unseal-key"):
+        raise_failure(phase, "config_invalid", message_class="authority_not_root_token_or_unseal_key")
+    if PROOF_VALUE_SOURCE not in ("prompt", "generate"):
+        raise_failure(phase, "config_invalid", message_class="proof_value_not_prompt_or_generate")
+    if GENERATE_ROOT_ACCESS not in ("as-configured", "temporary-config"):
+        raise_failure(phase, "config_invalid", message_class="generate_root_access_not_as_configured_or_temporary_config")
+    if GENERATE_ROOT_ACCESS == "temporary-config" and AUTHORITY_SOURCE != "unseal-key":
+        raise_failure(phase, "config_invalid", message_class="generate_root_access_needs_unseal_key")
+    set_status(
+        phase,
+        "pass",
+        authority_source=AUTHORITY_SOURCE,
+        proof_value_source=PROOF_VALUE_SOURCE,
+        generate_root_access=GENERATE_ROOT_ACCESS,
+    )
+
+
+def vault_reload_argv():
+    try:
+        return shlex.split(VAULT_RELOAD_COMMAND_TEXT)
+    except ValueError:
+        return []
+
+
+def preflight_temporary_generate_root_access():
+    """With temporary-config, check before any prompt that the Vault
+    configuration file can be changed and put back, and that the reload
+    command exists. Nothing is changed here."""
+    if GENERATE_ROOT_ACCESS != "temporary-config":
+        return
+    phase = "vault_config_preflight"
+    set_next_operation(phase)
+    path = VAULT_CONFIG_PATH
+    if not path.is_absolute():
+        raise_failure(phase, "config_invalid", message_class="vault_config_path_not_absolute")
+    if path.is_symlink() or not path.is_file():
+        raise_failure(phase, "config_invalid", message_class="vault_config_not_a_regular_file")
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        raise_failure(phase, "config_unreadable", message_class="vault_config_unreadable")
+    if UNAUTHENTICATED_ACCESS_KEYWORD.encode("ascii") in raw:
+        raise_failure(phase, "config_invalid", message_class="vault_config_already_mentions_enable_unauthenticated_access")
+    if not os.access(path, os.W_OK) or not os.access(path.parent, os.W_OK):
+        raise_failure(phase, "config_unreadable", message_class="vault_config_not_writable")
+    argv = vault_reload_argv()
+    if not argv or shutil.which(argv[0]) is None:
+        raise_failure(phase, "config_invalid", message_class="vault_reload_command_not_found")
+    set_status(
+        phase,
+        "pass",
+        path=str(path),
+        digest="sha256:" + hashlib.sha256(raw).hexdigest(),
+        reload_command=argv,
+    )
+
+
+def generate_root_status(opener, address):
+    """Unauthenticated read of the generate-root attempt. Returns (status,
+    True) when Vault answers, and (None, False) when Vault refuses the
+    request without a token (HTTP 403, the Vault 2.x default)."""
+    try:
+        return vault_request(opener, None, "GET", address, "sys/generate-root/attempt", allowed_statuses=(200,)), True
+    except VaultAPIError as exc:
+        if exc.message_class == "http_403":
+            return None, False
+        raise
+
+
+def preflight_generate_root_access(opener, address):
+    """With unseal-key, ask Vault before the key is asked for whether it
+    answers generate-root without a token. Read-only."""
+    phase = "generate_root_access_preflight"
+    set_next_operation(phase)
+    try:
+        current, allowed = generate_root_status(opener, address)
+    except Exception as exc:
+        fail_from_exception(phase, exc)
+    if not allowed and GENERATE_ROOT_ACCESS != "temporary-config":
+        raise_failure(phase, "generate_root_unauthenticated_access_disabled", message_class="vault_refuses_generate_root_without_token")
+    if allowed and current.get("started"):
+        raise_failure(phase, "generate_root_attempt_in_progress", message_class="another_attempt_is_running")
+    set_status(phase, "pass", vault_allows_generate_root_without_token=allowed, generate_root_access=GENERATE_ROOT_ACCESS)
+
+
+class TemporaryGenerateRootAccess:
+    """Adds UNAUTHENTICATED_GENERATE_ROOT_SETTING to Vault's configuration
+    file for the generate-root step only, and puts the file back byte for
+    byte (same owner and mode) afterwards. Both changes take effect through a
+    reload, which leaves Vault unsealed."""
+
+    MARKER = (
+        "# Added for one run by Execution-Substrate "
+        "scripts/remote_alpha_vault_workload_auth_bootstrap.sh, which removes it "
+        "before it exits. If it is still here, remove it and reload Vault."
+    )
+
+    def __init__(self):
+        self.original = None
+        self.file_stat = None
+        self.changed = False
+
+    def _write(self, data):
+        path = VAULT_CONFIG_PATH
+        fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
+        temp_path = pathlib.Path(temp_name)
+        try:
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(data)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.chown(temp_path, self.file_stat.st_uid, self.file_stat.st_gid)
+            os.chmod(temp_path, stat.S_IMODE(self.file_stat.st_mode))
+            os.replace(temp_path, path)
+        except BaseException:
+            cleanup_path(temp_path)
+            raise
+
+    def _reload(self):
+        result = subprocess.run(
+            vault_reload_argv(),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=60,
+            check=False,
+        )
+        return result.returncode == 0
+
+    def _wait_until(self, opener, address, allowed_wanted):
+        deadline = time.monotonic() + VAULT_RELOAD_WAIT_SECONDS
+        while True:
+            _, allowed = generate_root_status(opener, address)
+            if allowed == allowed_wanted:
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.5)
+
+    def enable(self, opener, address):
+        phase = "generate_root_access_enable"
+        set_next_operation(phase)
+        path = VAULT_CONFIG_PATH
+        try:
+            self.file_stat = os.lstat(path)
+            if not stat.S_ISREG(self.file_stat.st_mode):
+                raise_failure(phase, "config_invalid", message_class="vault_config_not_a_regular_file")
+            self.original = path.read_bytes()
+            if UNAUTHENTICATED_ACCESS_KEYWORD.encode("ascii") in self.original:
+                raise_failure(phase, "config_invalid", message_class="vault_config_already_mentions_enable_unauthenticated_access")
+            separator = b"" if not self.original or self.original.endswith(b"\n") else b"\n"
+            addition = (self.MARKER + "\n" + UNAUTHENTICATED_GENERATE_ROOT_SETTING + "\n").encode("ascii")
+            self._write(self.original + separator + addition)
+            self.changed = True
+            if not self._reload():
+                raise_failure(phase, "vault_reload_failed", message_class="vault_reload_command_failed")
+            if not self._wait_until(opener, address, True):
+                raise_failure(phase, "generate_root_access_not_enabled", message_class="vault_still_refuses_after_reload")
+            set_status(phase, "pass", path=str(path), setting_added=UNAUTHENTICATED_GENERATE_ROOT_SETTING)
+        except BootstrapFailure:
+            raise
+        except Exception as exc:
+            fail_from_exception(phase, exc)
+
+    def restore(self, opener, address):
+        """Put the file back and reload. Returns True when the file is back
+        byte for byte and Vault refuses generate-root without a token again,
+        or when nothing was changed."""
+        if not self.changed:
+            return True
+        phase = "generate_root_access_restore"
+        file_restored = reloaded = refuses_again = False
+        try:
+            self._write(self.original)
+            file_restored = VAULT_CONFIG_PATH.read_bytes() == self.original
+        except Exception:
+            file_restored = False
+        if file_restored:
+            try:
+                reloaded = self._reload()
+            except Exception:
+                reloaded = False
+        if reloaded:
+            try:
+                refuses_again = self._wait_until(opener, address, False)
+            except Exception:
+                refuses_again = False
+        restored = file_restored and reloaded and refuses_again
+        summary["operations"][phase] = {
+            "status": "pass" if restored else "fail",
+            "path": str(VAULT_CONFIG_PATH),
+            "file_restored_byte_for_byte": file_restored,
+            "vault_reloaded": reloaded,
+            "vault_refuses_generate_root_without_token_again": refuses_again,
+        }
+        if restored:
+            self.changed = False
+        return restored
+
+
+def decode_generated_root_token(encoded, otp):
+    """Vault returns the generated root token XORed with the one-time
+    password and base64 encoded (without padding)."""
+    raw = base64.b64decode(encoded + "=" * (-len(encoded) % 4), validate=True)
+    otp_bytes = otp.encode("ascii")
+    if len(raw) != len(otp_bytes):
+        raise ValueError("generated_root_token_length_mismatch")
+    return bytes(a ^ b for a, b in zip(raw, otp_bytes)).decode("ascii")
+
+
+def cancel_generate_root(opener, address):
+    try:
+        vault_request(opener, None, "DELETE", address, "sys/generate-root/attempt", allowed_statuses=(200, 204))
+        return True
+    except Exception:
+        return False
+
+
+def generate_root_token(opener, address, unseal_key):
+    """Make a root token from one unseal key share. The token, the nonce and
+    the one-time password stay in memory and are never recorded. With
+    temporary-config, Vault's configuration is put back before this returns;
+    if that fails, the token is revoked and the run fails."""
+    access = TemporaryGenerateRootAccess()
+    try:
+        token = generate_root_token_with_access(opener, address, unseal_key, access)
+    except BaseException:
+        access.restore(opener, address)
+        raise
+    if not access.restore(opener, address):
+        if not revoke_token(opener, address, token, "generated_root_token_revoke"):
+            fail_root_token_revoke()
+        raise_failure("generate_root_access_restore", "vault_config_restore_failed", message_class="vault_config_or_reload_not_restored")
+    return token
+
+
+def generate_root_token_with_access(opener, address, unseal_key, access):
+    phase = "generate_root_token"
+    set_next_operation(phase)
+    started = False
+    try:
+        current, allowed = generate_root_status(opener, address)
+        summary["operations"]["generate_root_access_probe"] = {
+            "status": "pass",
+            "vault_allows_generate_root_without_token": allowed,
+        }
+        if not allowed:
+            if GENERATE_ROOT_ACCESS != "temporary-config":
+                raise_failure(phase, "generate_root_unauthenticated_access_disabled", message_class="vault_refuses_generate_root_without_token")
+            access.enable(opener, address)
+            set_next_operation(phase)
+            current, allowed = generate_root_status(opener, address)
+            if not allowed:
+                raise_failure(phase, "generate_root_access_not_enabled", message_class="vault_still_refuses_after_reload")
+        if current.get("started"):
+            raise_failure(phase, "generate_root_attempt_in_progress", message_class="another_attempt_is_running")
+        attempt = vault_request(opener, None, "PUT", address, "sys/generate-root/attempt", payload={}, allowed_statuses=(200,))
+        started = True
+        nonce = attempt.get("nonce")
+        otp = attempt.get("otp")
+        if not isinstance(nonce, str) or not nonce or not isinstance(otp, str) or not otp:
+            raise_failure(phase, "vault_api_error", message_class="generate_root_attempt_incomplete")
+        if attempt.get("required") != 1:
+            raise_failure(phase, "unsupported_key_threshold", message_class="more_than_one_key_share_required")
+        update = vault_request(
+            opener,
+            None,
+            "PUT",
+            address,
+            "sys/generate-root/update",
+            payload={"key": unseal_key, "nonce": nonce},
+            allowed_statuses=(200,),
+        )
+        encoded = update.get("encoded_token") or update.get("encoded_root_token")
+        if not update.get("complete") or not isinstance(encoded, str) or not encoded:
+            raise_failure(phase, "generate_root_incomplete", message_class="key_share_not_accepted")
+        started = False
+        token = decode_generated_root_token(encoded, otp)
+        set_status(phase, "pass", key_shares_used=1, value_recorded=False)
+        return token
+    except BootstrapFailure:
+        if started:
+            cancel_generate_root(opener, address)
+        raise
+    except Exception as exc:
+        if started:
+            cancel_generate_root(opener, address)
+        fail_from_exception(phase, exc)
+
+
+def revoke_token(opener, address, token, phase):
+    try:
+        vault_request(opener, token, "POST", address, "auth/token/revoke-self", payload={}, allowed_statuses=(200, 204))
+        summary["operations"][phase] = {"status": "pass", "value_recorded": False}
+        return True
+    except Exception as exc:
+        failure_class, message_class = classify_exception(exc)
+        summary["operations"][phase] = {
+            "status": "fail",
+            "error_classification": failure_class,
+            "failure_message_class": message_class,
+        }
+        return False
+
+
+def fail_root_token_revoke():
+    """Record and raise that the generated root token may still be valid,
+    keeping the Vault error class of the failed revoke beside it."""
+    phase = "generated_root_token_revoke"
+    cause = (summary["operations"].get(phase) or {}).get("error_classification")
+    message_class = "generated_root_token_may_still_be_valid"
+    record_failure(phase, "root_token_revoke_failed", message_class=message_class)
+    summary["operations"][phase]["vault_error_classification"] = cause
+    raise BootstrapFailure(phase, "root_token_revoke_failed", message_class=message_class)
+
+
+SHORT_LIVED_AUTHORITY_TTL = "15m"
+
+
+def make_short_lived_authority(opener, address, unseal_key):
+    """From the unseal key: generate a root token, use it once to create an
+    orphan, non-renewable root-policy token that expires after
+    SHORT_LIVED_AUTHORITY_TTL, and revoke the generated root token at once.
+    Returns (short-lived token, every token value made, for the redaction
+    scan). Even if the final revoke fails, nothing outlives the TTL."""
+    root = generate_root_token(opener, address, unseal_key)
+    made = [root]
+    phase = "short_lived_authority_token"
+    set_next_operation(phase)
+    child = None
+    try:
+        created = vault_request(
+            opener,
+            root,
+            "POST",
+            address,
+            "auth/token/create-orphan",
+            payload={
+                "policies": ["root"],
+                "ttl": SHORT_LIVED_AUTHORITY_TTL,
+                "explicit_max_ttl": SHORT_LIVED_AUTHORITY_TTL,
+                "renewable": False,
+                "display_name": "es-workload-auth-bootstrap",
+            },
+            allowed_statuses=(200,),
+        )
+        child = (created.get("auth") or {}).get("client_token")
+        if not isinstance(child, str) or not child:
+            raise VaultAPIError("invalid_response", "token_create_without_client_token")
+    except Exception as exc:
+        failure_class, message_class = classify_exception(exc)
+        if not isinstance(exc, BootstrapFailure):
+            record_failure(phase, failure_class, message_class=message_class)
+        if not revoke_token(opener, address, root, "generated_root_token_revoke"):
+            # The worse outcome wins: a root token that may still be valid.
+            fail_root_token_revoke()
+        if isinstance(exc, BootstrapFailure):
+            raise
+        raise BootstrapFailure(phase, failure_class, message_class=message_class) from None
+    made.append(child)
+    set_status(phase, "pass", ttl=SHORT_LIVED_AUTHORITY_TTL, orphan=True, renewable=False, value_recorded=False)
+    if not revoke_token(opener, address, root, "generated_root_token_revoke"):
+        revoke_token(opener, address, child, "short_lived_authority_token_revoke")
+        fail_root_token_revoke()
+    return child, made
+
+
 def preflight_config_readable():
     set_next_operation("config_load")
     try:
@@ -665,10 +1101,9 @@ def make_opener(ca_bundle_pem):
 def vault_request(opener, token, method, address, path, payload=None, allowed_statuses=(200, 204)):
     summary["vault_operations_started"] = True
     body = None
-    headers = {
-        "Accept": "application/json",
-        "X-Vault-Token": token,
-    }
+    headers = {"Accept": "application/json"}
+    if token:
+        headers["X-Vault-Token"] = token
     if payload is not None:
         body = json.dumps(payload, sort_keys=True).encode("utf-8")
         headers["Content-Type"] = "application/json"
@@ -926,7 +1361,10 @@ def main():
     ca_bundle_pem = ""
     validation_pubkey = ""
     root_token = ""
+    authority_secret = ""
     proof_secret = ""
+    opener = None
+    short_lived = False
     exit_code = 0
     secret_values_for_scan = []
     try:
@@ -936,14 +1374,26 @@ def main():
         return 1
 
     try:
+        validate_choices()
+        preflight_temporary_generate_root_access()
         token_limits = validate_role_token_limits()
         preflight_config_readable()
         address, ca_bundle_pem = load_config()
         validation_pubkeys = preflight_spire_bundle_read()
+        if AUTHORITY_SOURCE == "unseal-key":
+            opener = make_opener(ca_bundle_pem)
+            preflight_generate_root_access(opener, address)
         set_next_operation("prompt_bootstrap_authority")
         summary["secret_prompts_started"] = True
+        if AUTHORITY_SOURCE == "unseal-key":
+            authority_prompt = (
+                "Vault unseal key (input hidden; not logged; used once to make a "
+                f"root token that is revoked at once, and a {SHORT_LIVED_AUTHORITY_TTL} token for this run): "
+            )
+        else:
+            authority_prompt = "Vault bootstrap authority token (input hidden; not logged): "
         try:
-            root_token = prompt_secret("Vault bootstrap authority token (input hidden; not logged): ").strip()
+            authority_secret = prompt_secret(authority_prompt).strip()
         except KeyboardInterrupt:
             raise_failure("prompt_bootstrap_authority", "prompt_interrupted", message_class="keyboard_interrupt")
         except (EOFError, OSError):
@@ -953,12 +1403,21 @@ def main():
             if failure_class == "unexpected_exception":
                 failure_class = "prompt_unavailable"
             raise_failure("prompt_bootstrap_authority", failure_class, message_class=message_class)
-        if not root_token:
+        if not authority_secret:
             raise_failure("prompt_bootstrap_authority", "prompt_unavailable", message_class="empty_prompt")
-        set_status("prompt_bootstrap_authority", "pass", prompt_source="remote_tty", value_recorded=False)
+        set_status(
+            "prompt_bootstrap_authority",
+            "pass",
+            prompt_source="remote_tty",
+            authority_source=AUTHORITY_SOURCE,
+            value_recorded=False,
+        )
         set_next_operation("prompt_proof_secret")
         try:
-            proof_secret = prompt_secret("Proof secret value for runtime proof paths (input hidden; not logged): ")
+            if PROOF_VALUE_SOURCE == "generate":
+                proof_secret = secrets.token_urlsafe(32)
+            else:
+                proof_secret = prompt_secret("Proof secret value for runtime proof paths (input hidden; not logged): ")
         except KeyboardInterrupt:
             raise_failure("prompt_proof_secret", "prompt_interrupted", message_class="keyboard_interrupt")
         except (EOFError, OSError):
@@ -970,10 +1429,22 @@ def main():
             raise_failure("prompt_proof_secret", failure_class, message_class=message_class)
         if not proof_secret:
             raise_failure("prompt_proof_secret", "prompt_unavailable", message_class="empty_prompt")
-        set_status("prompt_proof_secret", "pass", prompt_source="remote_tty", value_recorded=False)
-        secret_values_for_scan = [root_token, proof_secret]
+        set_status(
+            "prompt_proof_secret",
+            "pass",
+            prompt_source="generated" if PROOF_VALUE_SOURCE == "generate" else "remote_tty",
+            value_recorded=False,
+        )
+        secret_values_for_scan = [authority_secret, proof_secret]
 
-        opener = make_opener(ca_bundle_pem)
+        if opener is None:
+            opener = make_opener(ca_bundle_pem)
+        if AUTHORITY_SOURCE == "unseal-key":
+            root_token, made = make_short_lived_authority(opener, address, authority_secret)
+            short_lived = True
+            secret_values_for_scan.extend(made)
+        else:
+            root_token = authority_secret
         ensure_auth_mount(opener, root_token, address)
         ensure_kv_mount(opener, root_token, address)
         configure_policy(opener, root_token, address)
@@ -999,15 +1470,39 @@ def main():
         summary["overall_status"] = "fail"
         exit_code = 1
     finally:
+        short_lived_revoked = None
+        if short_lived and root_token and opener is not None:
+            short_lived_revoked = revoke_token(opener, address, root_token, "short_lived_authority_token_revoke")
         try:
             write_summary(secret_values_for_scan)
         except Exception:
             exit_code = 1
         root_token = None
+        authority_secret = None
         proof_secret = None
         validation_pubkey = None
+        secret_values_for_scan = None
 
+    if short_lived_revoked is True:
+        print("The root token made from the unseal key was revoked at once; the short-lived token for this run is revoked too.")
+    elif short_lived_revoked is False:
+        print(f"WARNING: the short-lived token for this run could not be revoked; it expires by itself {SHORT_LIVED_AUTHORITY_TTL} after it was made. The root token made from the unseal key was already revoked.")
+    elif summary.get("failure_class") == "root_token_revoke_failed":
+        print("WARNING: the root token made from the unseal key could NOT be revoked and may still be valid. Do not ignore this: tell the person who runs this box.")
+    restore_operation = summary["operations"].get("generate_root_access_restore")
+    if restore_operation and restore_operation.get("status") != "pass":
+        print(
+            f"WARNING: Vault's configuration file {VAULT_CONFIG_PATH} may still hold the line "
+            f"'{UNAUTHENTICATED_GENERATE_ROOT_SETTING}' that this run added, or Vault was not reloaded "
+            f"after it was removed. Remove the line if it is there, then run: {VAULT_RELOAD_COMMAND_TEXT}"
+        )
+    elif restore_operation:
+        print("Vault's configuration file is back byte for byte, and Vault again refuses generate-root without a token.")
     print("Remote Alpha Vault workload-auth bootstrap helper finished.")
+    # Non-secret labels only, so an operator sees the outcome without the summary.
+    print(f"overall_status={summary.get('overall_status')}")
+    if summary.get("overall_status") != "pass":
+        print(f"failure_phase={summary.get('failure_phase')} failure_class={summary.get('failure_class')}")
     print(f"Remote summary path: {SUMMARY_PATH}")
     print("Summary is non-secret evidence/projection only and was not copied to Mac .out.")
     print("Workload-auth check, reset/unseal, IM refresh, support-bundle collection, CP proof, and runtime identity generation were not run.")
