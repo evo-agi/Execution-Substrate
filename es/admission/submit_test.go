@@ -96,6 +96,7 @@ func TestTrancheB2SubmitPublicNomadFailureIsFixedAndProviderBodyFree(t *testing.
 	policyPayload := buildAdmissionPolicyStaticScriptArchive(t, map[string][]byte{
 		staticScriptEntrypointName: []byte(benignPolicyFixtureText()),
 	})
+	fixture = fixture.withPayload(t, policyPayload)
 	service.arsClient = newResolvedPlanDependencyClient(t, resolvedPlanArtifactHandler(t, fixture, policyPayload, nil))
 	service.nomadClient = newResolvedPlanNomadClient(t, http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		if request.Method != http.MethodPost || request.URL.Path != "/v1/jobs" {
@@ -147,6 +148,7 @@ func TestSubmitRejectsUnexpectedStagingChildBeforeNomadAndRetainsTree(t *testing
 	policyPayload := buildAdmissionPolicyStaticScriptArchive(t, map[string][]byte{
 		staticScriptEntrypointName: []byte(benignPolicyFixtureText()),
 	})
+	fixture = fixture.withPayload(t, policyPayload)
 	service.arsClient = newResolvedPlanDependencyClient(t, resolvedPlanArtifactHandler(t, fixture, policyPayload, nil))
 
 	nomadCalls := 0
@@ -199,6 +201,7 @@ func TestSubmitRejectsSpecialBitMutationBeforeNomadAndRetainsTree(t *testing.T) 
 	policyPayload := buildAdmissionPolicyStaticScriptArchive(t, map[string][]byte{
 		staticScriptEntrypointName: []byte(benignPolicyFixtureText()),
 	})
+	fixture = fixture.withPayload(t, policyPayload)
 	service.arsClient = newResolvedPlanDependencyClient(t, resolvedPlanArtifactHandler(t, fixture, policyPayload, nil))
 
 	nomadCalls := 0
@@ -250,6 +253,7 @@ func TestSubmitRejectsRegistrationWindowSpecialBitBeforeNomadAndRetainsTree(t *t
 	policyPayload := buildAdmissionPolicyStaticScriptArchive(t, map[string][]byte{
 		staticScriptEntrypointName: []byte(benignPolicyFixtureText()),
 	})
+	fixture = fixture.withPayload(t, policyPayload)
 	service.arsClient = newResolvedPlanDependencyClient(t, resolvedPlanArtifactHandler(t, fixture, policyPayload, nil))
 
 	nomadCalls := 0
@@ -309,6 +313,7 @@ func TestResolvedPlanCustodyRepairWideTreeSubmitHandoff(t *testing.T) {
 	policyPayload := buildAdmissionPolicyStaticScriptArchive(t, map[string][]byte{
 		staticScriptEntrypointName: []byte(benignPolicyFixtureText()),
 	})
+	fixture = fixture.withPayload(t, policyPayload)
 	service.arsClient = newResolvedPlanDependencyClient(t, resolvedPlanArtifactHandler(t, fixture, policyPayload, nil))
 	registrations := 0
 	service.nomadClient = newResolvedPlanNomadClient(t, http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
@@ -337,6 +342,12 @@ func TestResolvedPlanCustodyRepairWideTreeSubmitHandoff(t *testing.T) {
 
 func TestResolvedPlanCustodyRepairMountNamesSubmitHandoff(t *testing.T) {
 	fixture := newPreparedArtifactFixture(t)
+	archive := buildAdmissionPolicyStaticScriptArchive(t, map[string][]byte{
+		staticScriptEntrypointName: []byte(benignPolicyFixtureText()),
+		"dir /a":                   []byte("space"),
+		"dir/a":                    []byte("plain"),
+	})
+	fixture = fixture.withPayload(t, archive)
 	service, stagingRoot, _ := newWorkstreamCTestService(t, fixture)
 	request := fixture.prepareRequest()
 	request.Invocation.Mounts = []RuntimeMount{{
@@ -344,11 +355,6 @@ func TestResolvedPlanCustodyRepairMountNamesSubmitHandoff(t *testing.T) {
 		TargetPath: "/execution/mounts/config",
 		ReadOnly:   true,
 	}}
-	archive := buildAdmissionPolicyStaticScriptArchive(t, map[string][]byte{
-		staticScriptEntrypointName: []byte(benignPolicyFixtureText()),
-		"dir /a":                   []byte("space"),
-		"dir/a":                    []byte("plain"),
-	})
 	service.arsClient = newResolvedPlanDependencyClient(t, resolvedPlanArtifactHandler(t, fixture, archive, nil))
 	registrations := 0
 	service.nomadClient = newResolvedPlanNomadClient(t, http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
@@ -373,6 +379,7 @@ func TestSubmitRejectsRootTopologyDriftBeforeStagingClaimAndNomad(t *testing.T) 
 	policyPayload := buildAdmissionPolicyStaticScriptArchive(t, map[string][]byte{
 		staticScriptEntrypointName: []byte(benignPolicyFixtureText()),
 	})
+	fixture = fixture.withPayload(t, policyPayload)
 	service.arsClient = newResolvedPlanDependencyClient(t, resolvedPlanArtifactHandler(t, fixture, policyPayload, nil))
 	nestedResults := filepath.Join(stagingRoot, "results-overlap")
 	if err := os.Mkdir(nestedResults, 0o755); err != nil {
