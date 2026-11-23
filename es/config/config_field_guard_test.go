@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"reflect"
 	"slices"
 	"testing"
 )
@@ -227,6 +228,39 @@ func TestConfigOwnFieldsNotStringsCountsOnlyOwnFieldsOfOtherKinds(t *testing.T) 
 		want := []configOwnFieldType{{name: "Role", typ: "interface {}"}, {name: "Mode", typ: "[]uint8"}}
 		if !slices.Equal(got, want) {
 			t.Fatalf("configOwnFieldsNotStrings = %+v, want %+v", got, want)
+		}
+	})
+
+	// Every kind from reflect.Bool to reflect.Struct, so that a check written
+	// as a list of refused kinds cannot pass. reflect.UnsafePointer is left
+	// out: naming its type would need the unsafe package.
+	t.Run("a field of every kind but string is refused", func(t *testing.T) {
+		samples := map[reflect.Kind]reflect.Type{}
+		for _, typ := range []reflect.Type{
+			reflect.TypeFor[bool](), reflect.TypeFor[int](), reflect.TypeFor[int8](), reflect.TypeFor[int16](),
+			reflect.TypeFor[int32](), reflect.TypeFor[int64](), reflect.TypeFor[uint](), reflect.TypeFor[uint8](),
+			reflect.TypeFor[uint16](), reflect.TypeFor[uint32](), reflect.TypeFor[uint64](), reflect.TypeFor[uintptr](),
+			reflect.TypeFor[float32](), reflect.TypeFor[float64](), reflect.TypeFor[complex64](), reflect.TypeFor[complex128](),
+			reflect.TypeFor[[1]string](), reflect.TypeFor[chan string](), reflect.TypeFor[func() string](), reflect.TypeFor[any](),
+			reflect.TypeFor[map[string]string](), reflect.TypeFor[*string](), reflect.TypeFor[[]string](), reflect.TypeFor[string](),
+			reflect.TypeFor[struct{ Name string }](),
+		} {
+			samples[typ.Kind()] = typ
+		}
+		for kind := reflect.Bool; kind <= reflect.Struct; kind++ {
+			typ, ok := samples[kind]
+			if !ok {
+				t.Fatalf("no sample type of kind %s", kind)
+			}
+			value := reflect.New(reflect.StructOf([]reflect.StructField{{Name: "ZzVaultAddress", Type: typ}})).Elem().Interface()
+			got := configOwnFieldsNotStrings(t, value, "ZzVaultAddress")
+			var want []configOwnFieldType
+			if kind != reflect.String {
+				want = []configOwnFieldType{{name: "ZzVaultAddress", typ: typ.String()}}
+			}
+			if !slices.Equal(got, want) {
+				t.Errorf("kind %s: configOwnFieldsNotStrings = %+v, want %+v", kind, got, want)
+			}
 		}
 	})
 }
