@@ -28,8 +28,10 @@ MOUNT_SPECS=()
 CONTAINER_USER="$(control_plane_operator_user ARS)"
 
 ensure_control_plane_image "${BRINGUP_DIR:-${REPO_ROOT}/.tmp/bringup}/logs/control-plane-image-build.log"
-verify_ars_storage_for_operator "${ARS_CONFIG}" "${CONTAINER_USER}"
+# The storage check runs in a container with ARS's name and writes the index
+# the way ARS does, so the ARS container this launcher replaces goes first.
 docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+verify_ars_storage_for_operator "${ARS_CONFIG}" "${CONTAINER_USER}"
 
 while IFS= read -r spec; do
   [[ -n "${spec}" ]] || continue
