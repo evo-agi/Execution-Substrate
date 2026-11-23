@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -834,6 +835,14 @@ func TestFetchVerifiedARSBlobIsTheOnlyARSBlobReadInES(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// go list reports package directories with symbolic links resolved. Resolve
+	// the ES root the same way, so that a checkout reached through a symbolic
+	// link (a temporary directory on macOS, say) labels every file relative to
+	// the same physical tree and the expected sites still match.
+	esRoot, err = filepath.EvalSymlinks(esRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if filepath.Base(esRoot) != "es" {
 		t.Fatalf("unexpected ES source root %q", esRoot)
 	}
@@ -848,7 +857,18 @@ func TestFetchVerifiedARSBlobIsTheOnlyARSBlobReadInES(t *testing.T) {
 	var registryConfigUses []site
 	var discoveryReads []site
 	files := 0
+	// Each file is inspected once, whichever walk reaches it first: the
+	// package directories the dependency walk lists include those under es/.
+	inspected := map[string]bool{}
 	inspectFile := func(path string) error {
+		key, err := filepath.EvalSymlinks(path)
+		if err != nil {
+			return err
+		}
+		if inspected[key] {
+			return nil
+		}
+		inspected[key] = true
 		source, err := os.ReadFile(path)
 		if err != nil {
 			return err
@@ -938,16 +958,30 @@ func TestFetchVerifiedARSBlobIsTheOnlyARSBlobReadInES(t *testing.T) {
 	if files < 50 {
 		t.Fatalf("ES source walk found only %d production files", files)
 	}
-	// ES code is not only under es/: the ES binary links module packages from
-	// internal/, ars/, egs/ and cmd/es. A read placed there (a shared client
-	// package handed s.cfg.Dependencies, say) would otherwise escape every rule
-	// above. Inspect every non-test file of every module package that cmd/es
-	// links, on each supported platform, with the same rules.
-	outsideDirs := esBinaryModulePackageDirsOutside(t, filepath.Dir(esRoot), esRoot)
-	if len(outsideDirs) < 5 {
-		t.Fatalf("ES binary dependency walk found only %d module packages outside es/: %v", len(outsideDirs), outsideDirs)
+	// ES code is not only what the walk above reaches. The ES binary links
+	// packages from internal/, ars/, egs/ and cmd/es, and Go also builds
+	// packages from directories that walk skips (es/_x, es/.x, testdata) and
+	// from nested modules that go.mod replaces with a directory. Inspect every
+	// non-test file of every package that cmd/es links from this repository,
+	// on each production platform, with the same rules.
+	linkedDirs, err := esBinaryRepositoryPackageDirs(filepath.Dir(esRoot))
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, dir := range outsideDirs {
+	outside := 0
+	for _, dir := range linkedDirs {
+		within, err := repositoryPathIsWithin(esRoot, dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !within {
+			outside++
+		}
+	}
+	if outside < 5 {
+		t.Fatalf("ES binary dependency walk found only %d repository packages outside es/: %v", outside, linkedDirs)
+	}
+	for _, dir := range linkedDirs {
 		entries, err := os.ReadDir(dir)
 		if err != nil {
 			t.Fatal(err)
@@ -1020,16 +1054,26 @@ func TestFetchVerifiedARSBlobIsTheOnlyARSBlobReadInES(t *testing.T) {
 	}
 }
 
-// esBinaryModulePackageDirsOutside lists the directories of the module
-// packages that cmd/es links on linux/amd64 and darwin/arm64, other than those
-// under esRoot (which the guard walks in full).
-func esBinaryModulePackageDirsOutside(t *testing.T, repositoryRoot string, esRoot string) []string {
-	t.Helper()
+// esBinaryRepositoryPackageDirs lists the directories of the packages that
+// cmd/es links, on every production platform, from inside repositoryRoot:
+// main-module packages wherever they sit (under es/ too, so directories the
+// source walk skips are covered) and packages of a module that go.mod
+// replaces with a directory in the repository. A module replaced with a
+// directory outside the repository is an error, because the guard cannot
+// inspect it.
+func esBinaryRepositoryPackageDirs(repositoryRoot string) ([]string, error) {
 	goBinary := filepath.Join(runtime.GOROOT(), "bin", "go")
 	seen := map[string]bool{}
 	var dirs []string
-	for _, target := range []productionBuildTarget{{goos: "linux", goarch: "amd64"}, {goos: "darwin", goarch: "arm64"}} {
-		command := exec.Command(goBinary, "list", "-deps", "-f", "{{if .Module}}{{if .Module.Main}}{{.Dir}}{{end}}{{end}}", "./cmd/es")
+	targets := []productionBuildTarget{
+		{goos: "darwin", goarch: "arm64"},
+		{goos: "linux", goarch: "amd64"},
+		{goos: "linux", goarch: "arm64"},
+	}
+	for _, target := range targets {
+		command := exec.Command(goBinary, "list", "-deps", "-f",
+			"{{if not .Standard}}{{.Dir}}\t{{if .Module}}{{.Module.Main}}\t{{if .Module.Replace}}{{if not .Module.Replace.Version}}directory{{end}}{{end}}{{else}}\t{{end}}\tend\n{{end}}",
+			"./cmd/es")
 		command.Dir = repositoryRoot
 		// The same hermetic environment as the other production go list
 		// guards: local toolchain, no proxy, no GOENV, no inherited GIT_*.
@@ -1038,14 +1082,25 @@ func esBinaryModulePackageDirsOutside(t *testing.T, repositoryRoot string, esRoo
 		command.Stdout = &stdout
 		command.Stderr = &stderr
 		if err := command.Run(); err != nil {
-			t.Fatalf("list ES binary dependencies for %s: %v: %s", target, err, stderr.String())
+			return nil, fmt.Errorf("list ES binary dependencies for %s: %v: %s", target, err, stderr.String())
 		}
-		for _, dir := range strings.Fields(stdout.String()) {
-			relative, err := filepath.Rel(esRoot, dir)
-			if err != nil {
-				t.Fatal(err)
+		for _, line := range strings.Split(strings.TrimSpace(stdout.String()), "\n") {
+			if line == "" {
+				continue
 			}
-			if relative == "." || (!strings.HasPrefix(relative, "..") && !filepath.IsAbs(relative)) {
+			fields := strings.Split(line, "\t")
+			if len(fields) != 4 || fields[0] == "" || fields[3] != "end" {
+				return nil, fmt.Errorf("unexpected go list line for %s: %q", target, line)
+			}
+			dir, mainModule, replacedWithDirectory := fields[0], fields[1] == "true", fields[2] == "directory"
+			within, err := repositoryPathIsWithin(repositoryRoot, dir)
+			if err != nil {
+				return nil, err
+			}
+			if !within {
+				if mainModule || replacedWithDirectory {
+					return nil, fmt.Errorf("ES links %s on %s from a directory outside the repository, which this guard cannot inspect", dir, target)
+				}
 				continue
 			}
 			if !seen[dir] {
@@ -1055,7 +1110,100 @@ func esBinaryModulePackageDirsOutside(t *testing.T, repositoryRoot string, esRoo
 		}
 	}
 	slices.Sort(dirs)
-	return dirs
+	return dirs, nil
+}
+
+// repositoryPathIsWithin reports whether path is root or below it, after
+// resolving symbolic links on both sides.
+func repositoryPathIsWithin(root string, path string) (bool, error) {
+	resolvedRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return false, err
+	}
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return false, err
+	}
+	relative, err := filepath.Rel(resolvedRoot, resolved)
+	if err != nil {
+		return false, nil
+	}
+	return relative == "." || (relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) && !filepath.IsAbs(relative)), nil
+}
+
+// TestESBinaryRepositoryPackageDirsSeesEveryLinkedRepositoryPackage builds a
+// small module shaped like this repository and checks that the blob-read
+// guard's dependency walk returns the packages a source walk of es/ would
+// miss: directories starting with "_" or ".", a testdata directory, a nested
+// module that go.mod replaces with a directory, and packages linked only on
+// linux/arm64 or only on darwin/arm64. A module replaced with a directory
+// outside the repository must be refused.
+func TestESBinaryRepositoryPackageDirsSeesEveryLinkedRepositoryPackage(t *testing.T) {
+	write := func(t *testing.T, root string, relative string, content string) {
+		t.Helper()
+		path := filepath.Join(root, filepath.FromSlash(relative))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	layout := func(t *testing.T, nestedTarget string) string {
+		t.Helper()
+		root := t.TempDir()
+		write(t, root, "go.mod", "module synthetic\n\ngo 1.22\n\nrequire example.local/nested v0.0.0\n\nreplace example.local/nested => "+nestedTarget+"\n")
+		write(t, root, "cmd/es/main.go", "package main\n\nimport _ \"synthetic/es/admission\"\n\nfunc main() {}\n")
+		write(t, root, "es/admission/admission.go", "package admission\n\nimport (\n\t_ \"example.local/nested\"\n\t_ \"synthetic/es/.dot\"\n\t_ \"synthetic/es/_underscore\"\n\t_ \"synthetic/es/admission/testdata/fixture\"\n)\n")
+		write(t, root, "es/admission/linux_arm64.go", "//go:build linux && arm64\n\npackage admission\n\nimport _ \"synthetic/internal/linuxarm64only\"\n")
+		write(t, root, "es/admission/darwin.go", "//go:build darwin\n\npackage admission\n\nimport _ \"synthetic/internal/darwinonly\"\n")
+		for _, relative := range []string{"es/.dot", "es/_underscore", "es/admission/testdata/fixture", "internal/linuxarm64only", "internal/darwinonly"} {
+			write(t, root, relative+"/package.go", "package "+strings.TrimLeft(filepath.Base(relative), "._")+"\n")
+		}
+		return root
+	}
+
+	t.Run("repository packages the source walk skips", func(t *testing.T) {
+		root := layout(t, "./nested")
+		write(t, root, "nested/go.mod", "module example.local/nested\n\ngo 1.22\n")
+		write(t, root, "nested/nested.go", "package nested\n")
+		dirs, err := esBinaryRepositoryPackageDirs(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resolvedRoot, err := filepath.EvalSymlinks(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got []string
+		for _, dir := range dirs {
+			resolved, err := filepath.EvalSymlinks(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			relative, err := filepath.Rel(resolvedRoot, resolved)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got = append(got, filepath.ToSlash(relative))
+		}
+		slices.Sort(got)
+		want := []string{"cmd/es", "es/.dot", "es/_underscore", "es/admission", "es/admission/testdata/fixture", "internal/darwinonly", "internal/linuxarm64only", "nested"}
+		if !slices.Equal(got, want) {
+			t.Fatalf("dependency walk returned %v, want %v", got, want)
+		}
+	})
+
+	t.Run("module replaced with a directory outside the repository", func(t *testing.T) {
+		elsewhere := t.TempDir()
+		write(t, elsewhere, "go.mod", "module example.local/nested\n\ngo 1.22\n")
+		write(t, elsewhere, "nested.go", "package nested\n")
+		root := layout(t, elsewhere)
+		dirs, err := esBinaryRepositoryPackageDirs(root)
+		if err == nil || !strings.Contains(err.Error(), "outside the repository") {
+			t.Fatalf("dependency walk accepted a module outside the repository: dirs %v, error %v", dirs, err)
+		}
+	})
 }
 
 // TestARSBlobReadsKeepTheirOwnReadLimits serves one byte more than each read's
