@@ -5607,10 +5607,11 @@ func assertSingleTypedParameter(t *testing.T, rel string, name string, want stri
 func TestWorkstreamCPrepareStaysBoundedAndAvoidsDescriptorGrammar(t *testing.T) {
 	fixture := newPreparedArtifactFixture(t)
 	service, stagingRoot, resultsRoot := newWorkstreamCTestService(t, fixture)
-	request := fixture.prepareRequest()
 	policyPayload := buildAdmissionPolicyStaticScriptArchive(t, map[string][]byte{
 		staticScriptEntrypointName: []byte(benignPolicyFixtureText()),
 	})
+	fixture = fixture.withPayload(t, policyPayload)
+	request := fixture.prepareRequest()
 
 	arsCalls := map[string]int{}
 	service.arsClient = newArtifactRegistryTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -5758,13 +5759,14 @@ func TestWorkstreamCAdmissionKeepsPayloadDigestAndPackageIdentityMismatchDistinc
 func TestWorkstreamCPrepareRejectsUnsupportedRuntimeProfileWithoutRunState(t *testing.T) {
 	fixture := newPreparedArtifactFixture(t)
 	service, stagingRoot, resultsRoot := newWorkstreamCTestService(t, fixture)
+	policyPayload := buildAdmissionPolicyStaticScriptArchive(t, map[string][]byte{
+		staticScriptEntrypointName: []byte(benignPolicyFixtureText()),
+	})
+	fixture = fixture.withPayload(t, policyPayload)
 	request := fixture.prepareRequest()
 	request.Invocation.Annotations = map[string]string{
 		runtimeProfileAnnotationKey: runtimeProfileControlPlaneNormalShell,
 	}
-	policyPayload := buildAdmissionPolicyStaticScriptArchive(t, map[string][]byte{
-		staticScriptEntrypointName: []byte(benignPolicyFixtureText()),
-	})
 
 	arsCalls := map[string]int{}
 	service.arsClient = newArtifactRegistryTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -5856,11 +5858,12 @@ func TestWorkstreamCSubmitDoesNotBypassAdmissionBeforePayloadOrNomad(t *testing.
 func TestWorkstreamCSubmitReceiptRemainsBoundedAndHidesSchedulerIdentifiers(t *testing.T) {
 	fixture := newPreparedArtifactFixture(t)
 	service, _, _ := newWorkstreamCTestService(t, fixture)
-	request := fixture.prepareRequest()
-	request.Mode = ExecutionModeAsync
 	policyPayload := buildAdmissionPolicyStaticScriptArchive(t, map[string][]byte{
 		staticScriptEntrypointName: []byte(benignPolicyFixtureText()),
 	})
+	fixture = fixture.withPayload(t, policyPayload)
+	request := fixture.prepareRequest()
+	request.Mode = ExecutionModeAsync
 
 	arsCalls := map[string]int{}
 	service.arsClient = newArtifactRegistryTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

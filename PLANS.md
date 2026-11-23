@@ -937,7 +937,9 @@ identities, ordered governed mounts, network permission, current authority
 inputs, runtime-support digest, runtime-identity tmpfs size, and the fixed
 semantic job envelope. The payload digest comes only from the discovery/evidence
 relationship already cross-checked by admission; raw payload bytes remain
-owned material and ARS remains their integrity authority. Current authority
+owned material. ES does not rely on ARS for their integrity: every ARS blob
+read by digest is hashed by ES and used only when it equals the requested
+digest (`.docs/execution_lifecycle/contracts.md` section 5A). Current authority
 handoff is unconditionally applicable for every admitted Submit; no plan-level
 applicability degree of freedom remains, while the Codex credential-location
 subcomponent remains genuinely optional.

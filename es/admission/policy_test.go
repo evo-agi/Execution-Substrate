@@ -226,6 +226,7 @@ func TestAdmissionPolicyFetchesPayloadThroughExplicitPayloadDigest(t *testing.T)
 	payload := buildAdmissionPolicyStaticScriptArchive(t, map[string][]byte{
 		staticScriptEntrypointName: []byte(benignPolicyFixtureText()),
 	})
+	fixture = fixture.withPayload(t, payload)
 
 	arsCalls := map[string]int{}
 	service.arsClient = newArtifactRegistryTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

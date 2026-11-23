@@ -511,40 +511,31 @@ func (s *Service) fetchArtifactDiscoveryRecord(ctx context.Context, artifactDige
 }
 
 func (s *Service) fetchArtifactEvidenceBlob(ctx context.Context, artifactDigest string, evidenceDigest string) (evidencev1.ArtifactEvidence, *Error) {
-	response, err := s.arsClient.get(ctx, "/v1/blobs/"+evidenceDigest+":json")
-	if err != nil {
-		return evidencev1.ArtifactEvidence{}, &Error{
+	unavailable := func(message string) *Error {
+		return &Error{
 			Status:  http.StatusServiceUnavailable,
 			Code:    codeArtifactEvidenceUnavailable,
-			Message: "artifact evidence read failed",
+			Message: message,
 		}
 	}
-	defer response.Body.Close()
-
-	switch response.StatusCode {
-	case http.StatusOK:
-		var payload evidencev1.ArtifactEvidence
-		if err := decodeBoundedJSONResponse(response, &payload); err != nil {
-			return evidencev1.ArtifactEvidence{}, &Error{
-				Status:  http.StatusServiceUnavailable,
-				Code:    codeArtifactEvidenceUnavailable,
-				Message: "artifact evidence payload was invalid",
-			}
-		}
-		return payload, nil
-	case http.StatusNotFound:
-		return evidencev1.ArtifactEvidence{}, &Error{
-			Status:  http.StatusServiceUnavailable,
-			Code:    codeArtifactEvidenceUnavailable,
-			Message: "artifact evidence is unavailable",
-		}
-	default:
-		return evidencev1.ArtifactEvidence{}, &Error{
-			Status:  http.StatusServiceUnavailable,
-			Code:    codeArtifactEvidenceUnavailable,
-			Message: "artifact evidence is unavailable",
+	evidenceBytes, fetchErr := s.fetchVerifiedARSBlob(ctx, evidenceDigest, arsBlobViewJSON, maxDependencyJSONResponseBytes)
+	if fetchErr != nil {
+		switch fetchErr.failure {
+		case arsBlobRequestFailed:
+			return evidencev1.ArtifactEvidence{}, unavailable("artifact evidence read failed")
+		case arsBlobReadFailed:
+			return evidencev1.ArtifactEvidence{}, unavailable("artifact evidence payload was invalid")
+		case arsBlobDigestMismatch:
+			return evidencev1.ArtifactEvidence{}, unavailable(artifactEvidenceDigestMismatchMessage)
+		default:
+			return evidencev1.ArtifactEvidence{}, unavailable("artifact evidence is unavailable")
 		}
 	}
+	var payload evidencev1.ArtifactEvidence
+	if err := decodeJSON(bytes.NewReader(evidenceBytes), &payload); err != nil {
+		return evidencev1.ArtifactEvidence{}, unavailable("artifact evidence payload was invalid")
+	}
+	return payload, nil
 }
 
 func (s *Service) prepareArtifactFromDiscovery(req PrepareRequest, trustModel egsmodel.RuntimeTrustPolicy, discovery discoveredArtifact) (preparedArtifact, *Error) {
@@ -660,31 +651,30 @@ func manifestFromEvidence(evidence evidencev1.ArtifactEvidence) Manifest {
 }
 
 func (s *Service) fetchWorkloadZoneVaultConfig(ctx context.Context, ref runtimeconfigv1.WorkloadZoneVaultConfigRef) (runtimeconfigv1.WorkloadZoneVaultConfig, *Error) {
-	response, err := s.arsClient.get(ctx, "/v1/blobs/"+ref.Digest+":json")
-	if err != nil {
-		return runtimeconfigv1.WorkloadZoneVaultConfig{}, &Error{
+	unavailable := func(message string) *Error {
+		return &Error{
 			Status:  http.StatusServiceUnavailable,
 			Code:    codeWorkloadZoneVaultUnavailable,
-			Message: "artifact registry workload-zone vault blob read failed",
+			Message: message,
 		}
 	}
-	defer response.Body.Close()
-
-	if response.StatusCode != http.StatusOK {
-		return runtimeconfigv1.WorkloadZoneVaultConfig{}, &Error{
-			Status:  http.StatusServiceUnavailable,
-			Code:    codeWorkloadZoneVaultUnavailable,
-			Message: "artifact registry workload-zone vault blob is unavailable",
+	blobBytes, fetchErr := s.fetchVerifiedARSBlob(ctx, ref.Digest, arsBlobViewJSON, maxDependencyJSONResponseBytes)
+	if fetchErr != nil {
+		switch fetchErr.failure {
+		case arsBlobRequestFailed:
+			return runtimeconfigv1.WorkloadZoneVaultConfig{}, unavailable("artifact registry workload-zone vault blob read failed")
+		case arsBlobReadFailed:
+			return runtimeconfigv1.WorkloadZoneVaultConfig{}, unavailable("artifact registry workload-zone vault blob was invalid")
+		case arsBlobDigestMismatch:
+			return runtimeconfigv1.WorkloadZoneVaultConfig{}, unavailable(workloadZoneVaultBlobDigestMismatchMessage)
+		default:
+			return runtimeconfigv1.WorkloadZoneVaultConfig{}, unavailable("artifact registry workload-zone vault blob is unavailable")
 		}
 	}
 
 	var payload runtimeconfigv1.WorkloadZoneVaultConfigBlob
-	if err := decodeBoundedJSONResponse(response, &payload); err != nil {
-		return runtimeconfigv1.WorkloadZoneVaultConfig{}, &Error{
-			Status:  http.StatusServiceUnavailable,
-			Code:    codeWorkloadZoneVaultUnavailable,
-			Message: "artifact registry workload-zone vault blob was invalid",
-		}
+	if err := decodeJSON(bytes.NewReader(blobBytes), &payload); err != nil {
+		return runtimeconfigv1.WorkloadZoneVaultConfig{}, unavailable("artifact registry workload-zone vault blob was invalid")
 	}
 	if err := payload.Validate(); err != nil {
 		return runtimeconfigv1.WorkloadZoneVaultConfig{}, &Error{

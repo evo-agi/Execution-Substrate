@@ -517,10 +517,13 @@ func TestReliableSubmitBindingRejectsMismatchedSignedMountArtifact(t *testing.T)
 		mountFixture preparedArtifactFixture
 		mountBytes   []byte
 		wantRefusal  bool
+		// wantFetchRefusal: the resolver itself refuses the mount read because
+		// the served bytes do not hash to the signed payload digest.
+		wantFetchRefusal bool
 	}{
-		{"A B P substitution", fixtureB, payloadP, true},
-		{"A A P control", fixtureA, payloadP, false},
-		{"A A Q byte mismatch", fixtureA, mismatchedBytes, true},
+		{"A B P substitution", fixtureB, payloadP, true, false},
+		{"A A P control", fixtureA, payloadP, false, false},
+		{"A A Q byte mismatch", fixtureA, mismatchedBytes, true, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			service, stagingRoot, resultsRoot := newWorkstreamCTestService(t, fixtureA)
@@ -561,6 +564,15 @@ func TestReliableSubmitBindingRejectsMismatchedSignedMountArtifact(t *testing.T)
 				t.Fatal("unwired resolver/builder registered a job")
 			}))
 			resolved, resolveErr := service.resolveExecutionForSubmit(context.Background(), request)
+			if test.wantFetchRefusal {
+				assertAdmissionError(t, resolveErr, http.StatusServiceUnavailable, codePayloadUnavailable)
+				if resolveErr.Message != artifactPayloadDigestMismatchMessage || discoveryReads != 2 || payloadReads != 2 {
+					t.Fatalf("mount bytes that do not match the signed payload digest were not refused at the read: %v", resolveErr)
+				}
+				assertDirectoryEmpty(t, stagingRoot)
+				assertDirectoryEmpty(t, resultsRoot)
+				return
+			}
 			if resolveErr != nil {
 				t.Fatalf("current legacy resolver rejection changed: %v", resolveErr)
 			}

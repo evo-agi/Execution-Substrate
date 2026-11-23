@@ -74,6 +74,10 @@ the code and tests win and this document must be realigned.
   discoverability/index model remains reopened.
 - Descriptor/manifest/index/support tuples are compatibility/support surfaces
   unless explicitly migrated.
+- ES does not trust ARS for byte integrity. Every ES read of an ARS blob by
+  digest hashes the exact bytes received and uses them only when they equal
+  the requested digest; ARS's own read-path check is not relied on. The
+  contract is `.docs/execution_lifecycle/contracts.md` section 5A.
 - ES later consumes designed ARS discovery outputs, explicit
   evidence/payload relationships, and explicit cross-checks. ES must not
   inherit AGS publish DTOs, ARS descriptor/index tuples, or Control Plane
@@ -132,7 +136,7 @@ Role labels used in the classification tables below:
 | --- | --- | --- | --- |
 | Aggregate artifact evidence blob (`internal/contracts/evidence/v1.ArtifactEvidence`) | canonical signed publication fact record; runtime-discoverable through ARS discovery | `Current invariant` | AGS assembles and signs this record, ARS stores it by digest, and ES later verifies it after following the ARS discovery record. Descriptor/manifest support data do not replace it as the authoritative publish-time fact record. |
 | `claims.package.identity` | shared-kernel identity surface ES consumes | `Current invariant` | `artifact_digest`, `payload_digest`, `artifact_type`, and `intent_digest` are the package-identity facts ES cross-checks after following ARS discovery. AGS-owned publication claims and ARS support tuples do not replace this identity surface. |
-| Payload blob referenced by `payload_digest` | canonical runtime-consumable payload bytes or content identity | `Current invariant` | `payload_digest` identifies payload bytes or payload content identity. ARS stores and re-verifies those bytes by digest, and ES later consumes payload bytes only through an explicit payload reference and cross-check. |
+| Payload blob referenced by `payload_digest` | canonical runtime-consumable payload bytes or content identity | `Current invariant` | `payload_digest` identifies payload bytes or payload content identity. ARS stores and re-verifies those bytes by digest, and ES later consumes payload bytes only through an explicit payload reference and cross-check. ES does not rely on the ARS check: it hashes the exact payload bytes it receives and inspects, stages, or runs them only when they equal the signed `payload_digest`. |
 | ARS discovery record (`GET /v1/artifacts/{artifact_digest}/discovery`, `ars/api.ArtifactDiscovery`) | canonical runtime-discoverable surface | `Bounded slice rule` | The current record repeats package-facing artifact identity and points to aggregate evidence and payload digests. ES consumes this runtime-facing role today, but the exact JSON/route shape is not frozen beyond the current slice. |
 | AGS -> ARS registration write contract (`POST /v1/artifacts:register` with required `discovery_digest` and optional `descriptor_digest`) | storage registration contract | `Bounded slice rule` | Discovery-centered registration is the intentional current write contract. ARS validates the discovery record, optionally validates secondary descriptor support data, and validates referenced blobs before the artifact becomes discoverable. The long-term write grammar remains open. |
 | Current artifact identity derivation rule | artifact/package identity rule | `Bounded slice rule` | `artifact_digest` identifies artifact/package identity as currently derived and documented from `payload_digest`, `artifact_type`, and `intent_digest`. It is not hidden payload equality and is not derived from admission/runtime claim material. Any future change requires explicit migration/versioning and coordinated evidence/discovery updates. |
@@ -174,6 +178,8 @@ compatibility surfaces.
 7. ES reads the ARS discovery record, follows the evidence reference, verifies
    the signed evidence, cross-checks payload/artifact identity facts, and later
    resolves payload bytes through the designed ARS discoverability surface.
+   ES uses payload bytes only after it has itself verified that they hash to
+   the signed `payload_digest`.
    With ES Admission Policy Layer v0, `:prepare` may also resolve bounded
    static-script payload text through that explicit payload reference when an
    enabled ES admission policy requires inspection. ES must not use

@@ -228,6 +228,102 @@ func TestPrivateReplayWinnerOriginalAfterDefaultKeyDrift(t *testing.T) {
 	}
 }
 
+// privateReplayClaimRendezvousBound limits how long a concurrent replay test
+// waits for its workers, so a worker that never reaches the claim fails the
+// test instead of blocking it until the package timeout.
+const privateReplayClaimRendezvousBound = 8 * time.Second
+
+// privateReplayClaimRendezvous holds concurrent private replay admissions at
+// the pre-claim test hook until every one has arrived, then releases them
+// together, so the claim race is real.
+type privateReplayClaimRendezvous struct {
+	want     int
+	arrived  chan struct{}
+	release  chan struct{}
+	returned chan struct{}
+	workers  sync.WaitGroup
+}
+
+func newPrivateReplayClaimRendezvous(want int) *privateReplayClaimRendezvous {
+	r := &privateReplayClaimRendezvous{
+		want:     want,
+		arrived:  make(chan struct{}, want),
+		release:  make(chan struct{}),
+		returned: make(chan struct{}, want),
+	}
+	beforePrivateReplayClaimForTest = func() { r.arrived <- struct{}{}; <-r.release }
+	return r
+}
+
+func (r *privateReplayClaimRendezvous) uninstall() {
+	beforePrivateReplayClaimForTest = nil
+}
+
+// start runs one admission worker and records when it returns.
+func (r *privateReplayClaimRendezvous) start(work func()) {
+	r.workers.Add(1)
+	go func() {
+		defer r.workers.Done()
+		defer func() { r.returned <- struct{}{} }()
+		work()
+	}()
+}
+
+// releaseAndWait waits until every worker has reached the claim hook, releases
+// them, and waits for all of them to return. A worker that returns before
+// reaching the hook, for example because admission failed earlier, or a
+// rendezvous that does not complete within the bound, does not block: the hook
+// is released anyway and the returned text says what was incomplete, so the
+// caller can first report each worker's own error. Workers that still have not
+// returned within the bound after the release fail the test at once.
+func (r *privateReplayClaimRendezvous) releaseAndWait(t *testing.T) string {
+	t.Helper()
+	arrivalDeadline := time.NewTimer(privateReplayClaimRendezvousBound)
+	defer arrivalDeadline.Stop()
+	reached := 0
+	incomplete := ""
+	for reached < r.want && incomplete == "" {
+		select {
+		case <-r.arrived:
+			reached++
+		case <-r.returned:
+			incomplete = fmt.Sprintf("a concurrent admission returned before reaching the claim (%d of %d reached)", reached, r.want)
+		case <-arrivalDeadline.C:
+			incomplete = fmt.Sprintf("concurrent admissions did not reach the claim within %s (%d of %d reached)", privateReplayClaimRendezvousBound, reached, r.want)
+		}
+	}
+	close(r.release)
+	done := make(chan struct{})
+	go func() {
+		r.workers.Wait()
+		close(done)
+	}()
+	returnDeadline := time.NewTimer(privateReplayClaimRendezvousBound)
+	defer returnDeadline.Stop()
+	select {
+	case <-done:
+	case <-returnDeadline.C:
+		t.Fatalf("concurrent admissions did not return within %s after release (%s)", privateReplayClaimRendezvousBound, incomplete)
+	}
+	return incomplete
+}
+
+func TestPrivateReplayClaimRendezvousReportsAWorkerThatReturnsEarly(t *testing.T) {
+	rendezvous := newPrivateReplayClaimRendezvous(2)
+	defer rendezvous.uninstall()
+	hook := beforePrivateReplayClaimForTest
+	rendezvous.start(func() {})
+	rendezvous.start(func() { hook() })
+	started := time.Now()
+	incomplete := rendezvous.releaseAndWait(t)
+	if !strings.Contains(incomplete, "returned before reaching the claim") {
+		t.Fatalf("early worker return was not reported: %q", incomplete)
+	}
+	if elapsed := time.Since(started); elapsed >= privateReplayClaimRendezvousBound {
+		t.Fatalf("early worker return was reported only after the bound: %s", elapsed)
+	}
+}
+
 func TestPrivateReplayConcurrentWinnerClassification(t *testing.T) {
 	t.Run("same_facts_positive_control", func(t *testing.T) {
 		ctx := context.Background()
@@ -238,28 +334,20 @@ func TestPrivateReplayConcurrentWinnerClassification(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		arrived := make(chan struct{}, 2)
-		release := make(chan struct{})
-		beforePrivateReplayClaimForTest = func() { arrived <- struct{}{}; <-release }
-		defer func() { beforePrivateReplayClaimForTest = nil }()
+		rendezvous := newPrivateReplayClaimRendezvous(2)
+		defer rendezvous.uninstall()
 		type classified struct {
 			kind privateReplayResultKind
 			err  error
 		}
 		results := make(chan classified, 2)
-		var workers sync.WaitGroup
 		for i := 0; i < 2; i++ {
-			workers.Add(1)
-			go func() {
-				defer workers.Done()
+			rendezvous.start(func() {
 				result, err := service.admitPrivateSyntheticReplay(ctx, custody, raw, caller, catalog, image)
 				results <- classified{kind: result.kind, err: err}
-			}()
+			})
 		}
-		<-arrived
-		<-arrived
-		close(release)
-		workers.Wait()
+		incomplete := rendezvous.releaseAndWait(t)
 		close(results)
 		counts := map[privateReplayResultKind]int{}
 		for result := range results {
@@ -267,6 +355,9 @@ func TestPrivateReplayConcurrentWinnerClassification(t *testing.T) {
 				t.Fatalf("concurrent admission: %v", result.err)
 			}
 			counts[result.kind]++
+		}
+		if incomplete != "" {
+			t.Fatal(incomplete)
 		}
 		if counts[privateReplayEstablished] != 1 || counts[privateReplayWinner] != 1 || len(counts) != 2 {
 			t.Fatalf("unexpected synthetic winner classification: %v", counts)
@@ -346,17 +437,14 @@ func TestPrivateReplayConcurrentWinnerClassification(t *testing.T) {
 		}
 		assertDirectoryEmpty(t, firstService.cfg.Execution.StagingRootDir)
 		assertDirectoryEmpty(t, firstService.cfg.Execution.ResultsRootDir)
-		arrived := make(chan struct{}, 2)
-		release := make(chan struct{})
-		beforePrivateReplayClaimForTest = func() { arrived <- struct{}{}; <-release }
-		defer func() { beforePrivateReplayClaimForTest = nil }()
+		rendezvous := newPrivateReplayClaimRendezvous(2)
+		defer rendezvous.uninstall()
 		type classified struct {
 			index  int
 			result privateReplayResult
 			err    error
 		}
 		results := make(chan classified, 2)
-		var workers sync.WaitGroup
 		for index, candidate := range []struct {
 			service *Service
 			catalog privateSyntheticKeyCatalog
@@ -365,17 +453,12 @@ func TestPrivateReplayConcurrentWinnerClassification(t *testing.T) {
 			{firstService, firstCatalog, firstImage},
 			{secondService, secondCatalog, secondImage},
 		} {
-			workers.Add(1)
-			go func() {
-				defer workers.Done()
+			rendezvous.start(func() {
 				result, err := candidate.service.admitPrivateSyntheticReplay(ctx, custody, raw, caller, candidate.catalog, candidate.image)
 				results <- classified{index: index, result: result, err: err}
-			}()
+			})
 		}
-		<-arrived
-		<-arrived
-		close(release)
-		workers.Wait()
+		incomplete := rendezvous.releaseAndWait(t)
 		close(results)
 		var outcomes [2]classified
 		for outcome := range results {
@@ -383,6 +466,9 @@ func TestPrivateReplayConcurrentWinnerClassification(t *testing.T) {
 				t.Fatalf("drifted concurrent admission: %v", outcome.err)
 			}
 			outcomes[outcome.index] = outcome
+		}
+		if incomplete != "" {
+			t.Fatal(incomplete)
 		}
 		winner := -1
 		if outcomes[0].result.kind == privateReplayEstablished && outcomes[1].result.kind == privateReplayWinner {

@@ -99,6 +99,10 @@ continues.
 - `internal/contracts/runtimeconfig/v1` owns the current typed shared schema for
   workload-zone Vault runtime-config semantics.
 - ARS owns blob storage, integrity, and read by digest after a digest is known.
+  ES does not rely on ARS integrity for the bytes it reads: it decodes the
+  workload-zone Vault runtime-config blob only after the received bytes hash to
+  the configured reference digest (`.docs/execution_lifecycle/contracts.md`
+  section 5A).
 - ES owns the current consumer-side lookup orchestration during `:prepare` and
   `:submit`.
 - ES startup validation currently guarantees the typed
