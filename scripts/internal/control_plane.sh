@@ -193,9 +193,10 @@ control_plane_operator_user() {
 #      index directory;
 #   2. creates and removes a file in the index directory, and reads the index;
 #   3. walks the storage root: creates and removes a file in every directory,
-#      lists every directory, and opens every regular file for reading
-#      (symbolic links and special files are skipped, as ARS never creates
-#      them);
+#      lists every directory, and opens every regular file for reading. Any
+#      other entry (a symbolic link, FIFO, socket or device) is refused: ARS
+#      never creates one, and ARS would pass through a link at a blob or shard
+#      path, so the check can neither skip a link nor safely follow one;
 #   4. last, only when everything above passed, writes the index the way ARS
 #      does: a new 0600 file with the index's current content, renamed over
 #      it. The index then belongs to ARS's identity, as after ARS's first write.
@@ -343,11 +344,13 @@ walk() {
   ls -A -- "$d" >/dev/null 2>&1 || refuse storage "$d" "the check cannot see the files below this directory, because ARS cannot list it"
   for e in "$d"/* "$d"/.[!.]* "$d"/..?*; do
     if [ -L "$e" ]; then
-      continue
+      refuse entry "$e" "storage.root_dir holds a symbolic link, which ARS never creates"
     elif [ -d "$e" ]; then
       walk "$e"
     elif [ -f "$e" ]; then
       true 2>/dev/null < "$e" || refuse storage "$e" "ARS cannot read this file"
+    elif [ -e "$e" ]; then
+      refuse entry "$e" "storage.root_dir holds a special file, which ARS never creates"
     fi
   done
 }
@@ -378,6 +381,11 @@ if result.returncode == 42 and record.startswith("REFUSE\t"):
     fields = record.split("\t", 3)
     if len(fields) == 4:
         _, kind, message, path = fields
+        if kind == "entry":
+            refuse(
+                message, path + ". ARS creates only directories and regular files there; replace a link with"
+                " what it points to, or move the entry out of storage.root_dir"
+            )
         message += f" as {IDENTITY}"
         if kind == "storage":
             refuse(message, path, fix=root, recursive=True)
