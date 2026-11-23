@@ -538,6 +538,44 @@ func TestServiceLaunchersContainerUser(t *testing.T) {
 			name: "symlinked storage root accepted", idMode: "real", wantUser: callerUser, wantEvents: launchEvents, symlinkedStorage: true,
 		},
 		{
+			// ARS never creates a symbolic link in its storage, but it would
+			// pass through one at a shard or blob path. Skipping it could pass
+			// storage ARS cannot use, and following links could loop, so the
+			// walk refuses one, even when it points to storage ARS could use.
+			name: "storage holding a symbolic link refused", idMode: "real", wantEvents: checkRefusalEvents,
+			refusal:     "ARS storage check failed: storage.root_dir holds a symbolic link, which ARS never creates: /",
+			refusalTail: "/sha256/ab. ARS creates only directories and regular files there; replace a link with what it points to, or move the entry out of storage.root_dir",
+			arrange: func(t *testing.T, storage, index string) {
+				if err := os.MkdirAll(filepath.Join(storage, "shards", "ab"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.MkdirAll(filepath.Join(storage, "sha256"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(filepath.Join("..", "shards", "ab"), filepath.Join(storage, "sha256", "ab")); err != nil {
+					t.Fatal(err)
+				}
+			},
+			after: requireTestIndexUntouched,
+		},
+		{
+			// A FIFO, socket or device is never ARS's either, and opening a
+			// FIFO for reading would block, so the walk refuses it unopened.
+			name: "storage holding a special file refused", idMode: "real", wantEvents: checkRefusalEvents,
+			refusal:     "ARS storage check failed: storage.root_dir holds a special file, which ARS never creates: /",
+			refusalTail: "/sha256/ab/fifo. ARS creates only directories and regular files there; replace a link with what it points to, or move the entry out of storage.root_dir",
+			arrange: func(t *testing.T, storage, index string) {
+				dir := filepath.Join(storage, "sha256", "ab")
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := syscall.Mkfifo(filepath.Join(dir, "fifo"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			},
+			after: requireTestIndexUntouched,
+		},
+		{
 			// A passing check writes the index the way ARS does: same content,
 			// a new 0600 file, and nothing left behind.
 			name: "passing check rewrites the index like ARS and leaves nothing behind", idMode: "real", wantUser: callerUser, wantEvents: launchEvents,
@@ -784,6 +822,9 @@ exit 97
 					}
 					if wantFix != "" && !strings.Contains(string(output), wantFix) {
 						t.Fatalf("launcher output = %q, want the ownership hint %q", output, wantFix)
+					}
+					if wantFix == "" && strings.Contains(string(output), "chown") {
+						t.Fatalf("launcher output = %q, want no ownership hint for this refusal", output)
 					}
 					if strings.Contains(string(output), "docker run") {
 						t.Fatalf("refusing launcher printed a docker run command: %q", output)
