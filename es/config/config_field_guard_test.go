@@ -231,9 +231,10 @@ func TestConfigOwnFieldsNotStringsCountsOnlyOwnFieldsOfOtherKinds(t *testing.T) 
 		}
 	})
 
-	// Every kind from reflect.Bool to reflect.Struct, so that a check written
-	// as a list of refused kinds cannot pass. reflect.UnsafePointer is left
-	// out: naming its type would need the unsafe package.
+	// Every kind from reflect.Bool to reflect.UnsafePointer, so that a check
+	// written as a list of refused kinds cannot pass. The unsafe.Pointer type
+	// is taken from the result of reflect.Value.UnsafePointer, so the test
+	// needs no unsafe import.
 	t.Run("a field of every kind but string is refused", func(t *testing.T) {
 		samples := map[reflect.Kind]reflect.Type{}
 		for _, typ := range []reflect.Type{
@@ -243,11 +244,11 @@ func TestConfigOwnFieldsNotStringsCountsOnlyOwnFieldsOfOtherKinds(t *testing.T) 
 			reflect.TypeFor[float32](), reflect.TypeFor[float64](), reflect.TypeFor[complex64](), reflect.TypeFor[complex128](),
 			reflect.TypeFor[[1]string](), reflect.TypeFor[chan string](), reflect.TypeFor[func() string](), reflect.TypeFor[any](),
 			reflect.TypeFor[map[string]string](), reflect.TypeFor[*string](), reflect.TypeFor[[]string](), reflect.TypeFor[string](),
-			reflect.TypeFor[struct{ Name string }](),
+			reflect.TypeFor[struct{ Name string }](), reflect.TypeOf(reflect.Value.UnsafePointer).Out(0),
 		} {
 			samples[typ.Kind()] = typ
 		}
-		for kind := reflect.Bool; kind <= reflect.Struct; kind++ {
+		for kind := reflect.Bool; kind <= reflect.UnsafePointer; kind++ {
 			typ, ok := samples[kind]
 			if !ok {
 				t.Fatalf("no sample type of kind %s", kind)
