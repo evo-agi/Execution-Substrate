@@ -1,12 +1,11 @@
 package api
 
 import (
-	"crypto/x509"
 	"net/http"
-	"strings"
 
 	"execution-substrate/egs/model"
 	"execution-substrate/egs/sign"
+	"execution-substrate/internal/callerauth"
 	"execution-substrate/internal/httpx"
 	"execution-substrate/internal/observability"
 )
@@ -14,11 +13,11 @@ import (
 const serviceName = "execution-governance"
 
 type Server struct {
-	runtimeTrust      model.RuntimeTrustPolicy
-	publication       model.PublicationMetadata
-	signer            sign.Signer
-	bootstrapIssuerCN string
-	isStarted         func() bool
+	runtimeTrust model.RuntimeTrustPolicy
+	publication  model.PublicationMetadata
+	signer       sign.Signer
+	callers      callerauth.Authenticator
+	isStarted    func() bool
 }
 
 func NewServer(
@@ -29,11 +28,11 @@ func NewServer(
 	isStarted func() bool,
 ) *Server {
 	return &Server{
-		runtimeTrust:      runtimeTrust.Normalized(),
-		publication:       publication.Normalized(),
-		signer:            signer,
-		bootstrapIssuerCN: strings.TrimSpace(bootstrapIssuerCN),
-		isStarted:         isStarted,
+		runtimeTrust: runtimeTrust.Normalized(),
+		publication:  publication.Normalized(),
+		signer:       signer,
+		callers:      callerauth.NewAuthenticator(bootstrapIssuerCN),
+		isStarted:    isStarted,
 	}
 }
 
@@ -74,16 +73,11 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleTrustModel(w http.ResponseWriter, r *http.Request) {
-	callerPath, issuerCommonName, ok := authenticatedCallerIdentity(r)
+	caller, ok := s.callers.Authenticate(w, r)
 	if !ok {
-		httpx.WriteText(w, http.StatusUnauthorized, "Authenticated caller identity required")
 		return
 	}
-	if issuerCommonName == s.bootstrapIssuerCN {
-		httpx.WriteText(w, http.StatusForbidden, "Bootstrap PKI callers are not accepted; use a SPIRE-issued identity")
-		return
-	}
-	if !authorizedTrustModelCaller(callerPath) {
+	if !authorizedTrustModelCaller(caller.ID().Path()) {
 		httpx.WriteText(w, http.StatusForbidden, "Caller not authorized for this operation")
 		return
 	}
@@ -113,36 +107,6 @@ func authorizedTrustModelCaller(callerPath string) bool {
 	default:
 		return false
 	}
-}
-
-func authenticatedCallerIdentity(r *http.Request) (callerPath string, issuerCommonName string, ok bool) {
-	if r.TLS == nil || len(r.TLS.VerifiedChains) == 0 || len(r.TLS.VerifiedChains[0]) == 0 {
-		return "", "", false
-	}
-
-	cert := r.TLS.VerifiedChains[0][0]
-	if cert == nil {
-		return "", "", false
-	}
-
-	callerPath, ok = spiffePathFromCertificate(cert)
-	if !ok {
-		return "", "", false
-	}
-	return callerPath, cert.Issuer.CommonName, true
-}
-
-func spiffePathFromCertificate(cert *x509.Certificate) (string, bool) {
-	const prefix = "spiffe://execution.internal/"
-
-	for _, uri := range cert.URIs {
-		value := uri.String()
-		if strings.HasPrefix(value, prefix) {
-			return strings.TrimPrefix(value, prefix), true
-		}
-	}
-
-	return "", false
 }
 
 func readinessLabel(ok bool, readyValue string, notReadyValue string) string {

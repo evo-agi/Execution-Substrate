@@ -7,6 +7,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"execution-substrate/internal/callerauth"
 )
 
 const policyVersion = "go-cgs-v2"
@@ -311,9 +313,15 @@ func validateSubject(subject Subject) error {
 	default:
 		return fmt.Errorf("subject %s has invalid type %q", subject.ID, subject.Type)
 	}
-	subject.Principal = strings.TrimSpace(subject.Principal)
-	if subject.Principal == "" {
+	if strings.TrimSpace(subject.Principal) == "" {
 		return fmt.Errorf("subject %s principal is required", subject.ID)
+	}
+	// Only an authenticated caller can match a principal, and caller
+	// authentication accepts exactly the SPIFFE IDs that ParseSPIFFEID
+	// accepts, in their only form. Any other principal could never match,
+	// so it is refused here instead of loading as dead policy.
+	if _, err := callerauth.ParseSPIFFEID(subject.Principal); err != nil {
+		return fmt.Errorf("subject %s principal must be a conforming SPIFFE ID with a path in trust domain %s", subject.ID, callerauth.TrustDomain)
 	}
 	principalType, principalID, ok := SubjectFromSPIFFEID(subject.Principal)
 	if !ok {

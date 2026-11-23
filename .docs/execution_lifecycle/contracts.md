@@ -244,6 +244,13 @@ These labels are intentionally different. A contract may be live today, relied o
 **Observed current contract**
 
 - All lifecycle/execution endpoints require an authenticated caller identity.
+- The authenticated caller identity is defined once for all services by the
+  caller authentication contract in
+  `.docs/system_overview/contracts.md` section 3A: the verified client
+  certificate carries exactly one URI SAN, and that URI is a conforming SPIFFE
+  ID with a path in the trust domain `execution.internal`. Anything else,
+  including a certificate with several URI SANs or a non-canonical path such
+  as one with a trailing slash, is `401` before allowlist matching.
 - Bootstrap PKI callers are rejected for execution operations.
 - Accepted caller identities are the SPIFFE paths whose prefixes match `authorization.allowed_spiffe_path_prefixes` in ES config.
 - Prefix matching is exact-or-subpath: a caller path is accepted only when it

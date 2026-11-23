@@ -368,8 +368,14 @@ name output and exact parsed `CN=client.operator` component membership only.
 SAN identity classification extracts exact URI SAN entries and compares the
 complete URI against `spiffe://execution.internal/operator/local` and the
 legacy `spiffe://execution.internal/operator` value; prefixes, suffixes, and
-substrings are not matches. Malformed identity output maps only to fixed
-classification labels and fixed failure classes.
+substrings are not matches. The identity passes only when the certificate
+carries exactly one URI SAN and that URI is
+`spiffe://execution.internal/operator/local`, because the caller
+authentication contract (`.docs/system_overview/contracts.md` section 3A)
+refuses a certificate with more than one URI SAN. A certificate with several
+URI SANs, including the same URI twice, fails with `identity_mismatch` even
+when one of them is the expected URI. Malformed identity output maps only to
+fixed classification labels and fixed failure classes.
 
 Every fixed child command runs with an explicit minimal environment including
 `LC_ALL=C`, `LANG=C`, `TZ=UTC`, fixed minimal `PATH`, fixed non-sensitive
@@ -519,8 +525,8 @@ Mappings:
 - Expired certificate: `cert_metadata_expired`.
 - Not-yet-valid certificate: `cert_metadata_not_yet_valid`.
 - Certificate/key public-key mismatch: `key_pair_mismatch`.
-- Expected operator/local identity mismatch or legacy-only identity:
-  `identity_mismatch`.
+- Expected operator/local identity mismatch, legacy-only identity, or more
+  than one URI SAN: `identity_mismatch`.
 - Trust unavailable or failed: `trust_chain_unavailable` or
   `trust_chain_failed`.
 - Unexpected local selector, pipe, spawn, or process-management failure:
