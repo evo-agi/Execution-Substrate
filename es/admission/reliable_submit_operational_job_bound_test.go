@@ -54,6 +54,28 @@ func operationalFits(t *testing.T, f *operationalFixture, raw []byte) bool {
 	return f.domain.provider.fits(original.resolved)
 }
 
+// operationalLargestArgvThatFits bisects the largest number of copies of c,
+// below high, that fit as one argument in f's job. The job holds paths under
+// the fixture's temporary directories, whose names carry the test's name and a
+// random number of digits, so a bound holds only for the fixture it was
+// measured on.
+func operationalLargestArgvThatFits(t *testing.T, f *operationalFixture, c string, high int) int {
+	t.Helper()
+	low := 1
+	if !operationalFits(t, f, operationalArgvVariant(t, f, c, low, 0x41)) || operationalFits(t, f, operationalArgvVariant(t, f, c, high, 0x41)) {
+		t.Fatalf("the bound is not between %d and %d copies of %q", low, high, c)
+	}
+	for high-low > 1 {
+		mid := (low + high) / 2
+		if operationalFits(t, f, operationalArgvVariant(t, f, c, mid, 0x41)) {
+			low = mid
+		} else {
+			high = mid
+		}
+	}
+	return low
+}
+
 // The largest single argument that fits, for a character that Go's
 // encoding/json writes in one byte, one that it writes as a six-byte escape
 // while the canonical encoding writes one byte, and one that both write in six.
@@ -64,43 +86,38 @@ func operationalFits(t *testing.T, f *operationalFixture, raw []byte) bool {
 // form.
 func TestOperationalJobBoundIsCheckedBeforeTheClaimAndAgreesWithTheProjection(t *testing.T) {
 	ctx := context.Background()
-	largest := map[string]int{}
 	// high is above the bound and within the request's own bounds: a control
 	// byte takes six bytes of the request too.
-	for _, c := range []struct {
+	chars := []struct {
 		name, char string
 		high       int
-	}{{"plain", "a", 65536}, {"html", "<", 65536}, {"control", "\x01", 40000}} {
+	}{{"plain", "a", 65536}, {"html", "<", 65536}, {"control", "\x01", 40000}}
+	// encoding/json writes '<' and a control byte in six bytes each, so the
+	// same number of each fits, and fewer than a fifth of the plain number.
+	// The three bounds are measured on one fixture, so that its paths are the
+	// same for each (audit 30, A30-1).
+	shared := makeOperationalFixture(t, "", "alpha")
+	largest := map[string]int{}
+	for _, c := range chars {
+		largest[c.name] = operationalLargestArgvThatFits(t, shared, c.char, c.high)
+	}
+	if largest["html"] != largest["control"] || largest["html"]*5 > largest["plain"] {
+		t.Fatalf("largest arguments that fit: %v", largest)
+	}
+	for _, c := range chars {
 		t.Run(c.name, func(t *testing.T) {
 			f := makeOperationalFixture(t, "", "alpha")
-			low, high := 1, c.high
-			if !operationalFits(t, f, operationalArgvVariant(t, f, c.char, low, 0x41)) || operationalFits(t, f, operationalArgvVariant(t, f, c.char, high, 0x41)) {
-				t.Fatalf("the bound is not between %d and %d copies of %q", low, high, c.char)
-			}
-			for high-low > 1 {
-				mid := (low + high) / 2
-				if operationalFits(t, f, operationalArgvVariant(t, f, c.char, mid, 0x41)) {
-					low = mid
-				} else {
-					high = mid
-				}
-			}
-			largest[c.name] = low
+			low := operationalLargestArgvThatFits(t, f, c.char, c.high)
 			f.raw = operationalArgvVariant(t, f, c.char, low, 0x41)
 			assertOperationalCompleted(t, f, f.submit(), "the largest argument that fits")
 			before := operationalPrestageStateAt(t, f)
-			out := f.service.handoffOperational(ctx, f.reopen(), f.domain.caller, operationalArgvVariant(t, f, c.char, high, 0x42))
+			out := f.service.handoffOperational(ctx, f.reopen(), f.domain.caller, operationalArgvVariant(t, f, c.char, low+1, 0x42))
 			after := operationalPrestageStateAt(t, f)
 			if out.kind != operationalUnavailable || out.reason != reliablesubmit.OperationalMalformed || out.operation != 0 ||
 				after.Claims != before.Claims || after.Grants != before.Grants || after.Posts != before.Posts || after.Revision != before.Revision {
 				t.Fatalf("one byte more than fits: %s before=%+v after=%+v", operationalResultText(out), before, after)
 			}
 		})
-	}
-	// encoding/json writes '<' and a control byte in six bytes each, so the
-	// same number of each fits, and fewer than a fifth of the plain number.
-	if largest["html"] != largest["control"] || largest["html"]*5 > largest["plain"] {
-		t.Fatalf("largest arguments that fit: %v", largest)
 	}
 }
 
