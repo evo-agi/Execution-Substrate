@@ -798,6 +798,36 @@ the `control-plane-normal-shell/v1` temporary compatibility edge continue.
 - The long-term runtime-identity owner, helper/root/task-user model, SPIRE
   selector posture, Vault posture, and reserved-path architecture
 
+### 8.1 PR #12 private admission ownership
+
+This subsection uses the labels of §2. The private operational handoff has no
+production caller and no public route.
+
+- Current ownership: ES alone owns current admission before a private
+  retained first effect. ES owns the durable admission row in its SQLite
+  store (installation, epoch, admission generation, admission digest, enabled
+  or withdrawn), the token comparison under the writer lock, the Service view
+  of that row, and the confirmation deadline.
+- Explicit non-ownership: ARS supplies artifact discovery, payload and signed
+  evidence to the one ordinary fresh resolution. EGS supplies the signed
+  TrustModel, at startup and again when the private path confirms it before a
+  first effect; EGS does not decide a claim and is not told about one. A
+  separate owned full-evidence carrier inside ES transports the successful
+  record to a new authenticated v2 operational original. It does not move admission authority into the shared evidence contract, ARS, EGS, Nomad, Control Plane or
+  the durable store: the store records which admission content is current and
+  refuses a writer whose token differs, but stores no per-claim decision. The
+  SQLite writer invokes finite local qualification, never a fresh resolver,
+  remote dependency or arbitrary policy plugin. Receipt replay and marked
+  positive reconciliation use retained facts and their original caller/key
+  authority, without granting a new effect.
+- Temporary compatibility edge: none. `operational_local_v1` is removed.
+- Reopened redesign seam: the whole path sits on the reliable-submit seam
+  kept open in `PLANS.md`. Installed commissioning, the custody of the right
+  to commission, advance and withdraw, an epoch change, rollback protection
+  for the trust publication, identity selection, public routing and policy
+  distribution remain separate seams, named as prerequisites in the
+  [operational handoff contract](../execution_lifecycle/reliable_submit_operational_handoff.md).
+
 ## 9. EGS boundary
 
 **Purpose**

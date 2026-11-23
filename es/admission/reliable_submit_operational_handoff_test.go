@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"crypto/sha256"
 	"crypto/x509"
 	"database/sql"
@@ -28,22 +29,29 @@ import (
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
 	"golang.org/x/sys/unix"
 
+	egsmodel "execution-substrate/egs/model"
+	"execution-substrate/es/admission/internal/admissionstate"
 	"execution-substrate/es/admission/internal/reliablesubmit"
 )
 
 type operationalFixture struct {
-	t           *testing.T
-	service     *Service
-	domain      *operationalDomain
-	receiver    *operationalReceiver
-	raw         []byte
-	db          *sql.DB
-	root        string
-	certificate []byte
-	template    []byte
+	t                *testing.T
+	service          *Service
+	egs              *operationalTrustAuthority
+	domain           *operationalDomain
+	receiver         *operationalReceiver
+	raw              []byte
+	db               *sql.DB
+	root             string
+	certificate      []byte
+	template         []byte
+	expectedEvidence string
+	signerPrivateKey []byte
+	required         atomic.Int32
+	evaluated        atomic.Int32
 }
 
-func makeOperationalFixture(t *testing.T, mode string) *operationalFixture {
+func makeOperationalFixture(t *testing.T, mode string, argv ...string) *operationalFixture {
 	t.Helper()
 	ctx := context.Background()
 	artifact := newPreparedArtifactFixture(t)
@@ -52,17 +60,31 @@ func makeOperationalFixture(t *testing.T, mode string) *operationalFixture {
 		staticScriptEntrypointName: []byte(benignPolicyFixtureText()),
 	})
 	a2BindSignedPayload(t, &artifact, payload)
+	evidenceBytes, err := json.Marshal(artifact.evidence)
+	if err != nil {
+		t.Fatal(err)
+	}
 	service, _, _ := newWorkstreamCTestService(t, artifact)
+	fixture := &operationalFixture{t: t, service: service}
+	// NewService makes this handle. The fixture builds its Service from a
+	// literal, so the fixture makes the handle itself.
+	service.operational = admissionstate.New(service)
+	service.operationalProof = &operationalAdmissionProofHooks{
+		required:  func([]AdmissionPolicyInputClass) { fixture.required.Add(1) },
+		evaluated: func(bool) { fixture.evaluated.Add(1) },
+	}
 	service.arsClient = newResolvedPlanDependencyClient(t, resolvedPlanArtifactHandler(t, artifact, payload, nil))
 	service.nomadClient = newResolvedPlanNomadClient(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		t.Error("operational handoff used the ordinary Submit transport")
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	key := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{0x31}, 32))
+	invocation := artifact.prepareRequest().Invocation
+	invocation.Argv = append([]string(nil), argv...)
 	raw, err := json.Marshal(map[string]any{
 		"schema_version":  reliableSubmitRequestSchemaV1,
 		"reliable_submit": map[string]any{"contract": reliableSubmitContractV1, "submit_key": key},
-		"invocation":      artifact.prepareRequest().Invocation,
+		"invocation":      invocation,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -106,6 +128,11 @@ func makeOperationalFixture(t *testing.T, mode string) *operationalFixture {
 		spireSocket: service.cfg.Execution.SPIREWorkloadAPISocketPath, imageIssuer: "proof-image-issuer", image: image,
 		owner: executionPlatformStateOwner{UID: os.Getuid(), GID: os.Getgid()},
 	}
+	// Proof setup: the synthetic fixture supplied and verified this trust model,
+	// and a synthetic EGS serves the same model for the confirmation.
+	service.trustModelVerified = true
+	service.trustModelOwner = service
+	fixture.egs = attachOperationalTrustAuthority(t, service, *service.trustModel)
 	roots := x509.NewCertPool()
 	roots.AddCert(server.Certificate())
 	provider, err := newOperationalLoopbackProvider(realm, target, roots, template)
@@ -126,7 +153,128 @@ func makeOperationalFixture(t *testing.T, mode string) *operationalFixture {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = domain.close() })
-	return &operationalFixture{t: t, service: service, domain: domain, receiver: receiver, raw: raw, db: db, root: root, certificate: server.Certificate().Raw, template: template}
+	if err := service.commissionOperationalAdmission(ctx, domain); err != nil {
+		t.Fatalf("commission synthetic operational fixture: %v", err)
+	}
+	fixture.domain, fixture.receiver, fixture.raw, fixture.db = domain, receiver, raw, db
+	fixture.root, fixture.certificate, fixture.template = root, server.Certificate().Raw, template
+	fixture.expectedEvidence = string(evidenceBytes)
+	fixture.signerPrivateKey = bytes.Clone(artifact.privateKey)
+	return fixture
+}
+
+// operationalTrustAuthority is the synthetic EGS of one proof Service. It signs
+// and serves one runtime trust model, which a test may replace, fail or
+// observe. It grants nothing: the Service verifies the envelope and compares
+// the served content with the content it was commissioned with.
+type operationalTrustAuthority struct {
+	t       *testing.T
+	private ed25519.PrivateKey
+	mu      sync.Mutex
+	trust   egsmodel.RuntimeTrustPolicy
+	fail    bool
+	forge   bool
+	fetches int
+	onFetch func()
+}
+
+func attachOperationalTrustAuthority(t *testing.T, s *Service, trust egsmodel.RuntimeTrustPolicy) *operationalTrustAuthority {
+	t.Helper()
+	public, private, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := &operationalTrustAuthority{t: t, private: private, trust: snapshotRuntimeTrustModel(trust)}
+	s.trustModelVerifier = &ed25519Verifier{algorithm: "ed25519", keyID: "synthetic-egs", publicKey: public}
+	s.egsClient = newResolvedPlanDependencyClient(t, http.HandlerFunc(a.handle))
+	s.egsClient.client.Timeout = 5 * time.Second
+	return a
+}
+
+func (a *operationalTrustAuthority) handle(w http.ResponseWriter, r *http.Request) {
+	a.mu.Lock()
+	a.fetches++
+	trust, fail, forge, hook := snapshotRuntimeTrustModel(a.trust), a.fail, a.forge, a.onFetch
+	a.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
+	if r.Method != http.MethodGet || r.URL.Path != "/v1/trust-model" {
+		a.t.Errorf("synthetic EGS: unexpected request %s %s", r.Method, r.URL.Path)
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	if fail {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		return
+	}
+	canonical, err := trust.CanonicalBytes()
+	if err != nil {
+		a.t.Errorf("synthetic EGS: canonical trust: %v", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	signer := a.private
+	if forge {
+		// A well-formed envelope under the right key id, signed by another key.
+		if _, signer, err = ed25519.GenerateKey(nil); err != nil {
+			a.t.Errorf("synthetic EGS: forging key: %v", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+	}
+	body, err := json.Marshal(signedRuntimeTrustResponse{RuntimeTrust: trust, Algorithm: "ed25519", KeyID: "synthetic-egs",
+		PayloadDigest: digestBytes(canonical), Signature: base64.StdEncoding.EncodeToString(ed25519.Sign(signer, canonical))})
+	if err != nil {
+		a.t.Errorf("synthetic EGS: encode: %v", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(body)
+}
+
+// serve replaces the trust model the synthetic EGS signs from now on.
+func (a *operationalTrustAuthority) serve(trust egsmodel.RuntimeTrustPolicy) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.trust = snapshotRuntimeTrustModel(trust)
+}
+
+func (a *operationalTrustAuthority) failing(fail bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.fail = fail
+}
+
+// forging makes the synthetic EGS sign with a key the Service does not hold.
+func (a *operationalTrustAuthority) forging(forge bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.forge = forge
+}
+
+func (a *operationalTrustAuthority) observe(hook func()) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.onFetch = hook
+}
+
+func (a *operationalTrustAuthority) count() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.fetches
+}
+
+// confirm records one confirmation with the synthetic EGS, as an
+// effect-capable invocation does before its first authority sample.
+func (f *operationalFixture) confirm() {
+	f.t.Helper()
+	f.service.confirmOperationalAdmission(context.Background())
+	if _, ok := f.service.currentOperationalAdmission(f.domain.realm); !ok {
+		f.t.Fatal("synthetic fixture confirmation did not yield a current view")
+	}
 }
 
 func (f *operationalFixture) submit() operationalHandoffResult {
@@ -173,7 +321,7 @@ func TestOperationalHandoffPrestageRecovery(t *testing.T) {
 				t.Fatalf("uncertain pre-stage continued: kind=%d outcome=%d stage=%d posts=%d get=%d error=%v", first.kind, first.write, len(entries), posts, queries, err)
 			}
 			d := f.reopen()
-			second := (&Service{}).handoffOperational(context.Background(), d, d.caller, f.raw)
+			second := f.service.handoffOperational(context.Background(), d, d.caller, f.raw)
 			if posts, _, _ = f.receiver.counts(); second.kind != operationalAccepted || posts != 1 || first.run != "" && first.run != second.run {
 				t.Fatalf("later owner: result=%d original write=%d new write=%d posts=%d", second.kind, first.write, second.write, posts)
 			}
@@ -213,7 +361,7 @@ func TestOperationalHandoffMarkerDispositionAndStageResidue(t *testing.T) {
 				t.Fatalf("physical residue missing: %v", err)
 			}
 			reopened := f.reopen()
-			result := (&Service{}).handoffOperational(context.Background(), reopened, reopened.caller, f.raw)
+			result := f.service.handoffOperational(context.Background(), reopened, reopened.caller, f.raw)
 			newBytes, err := os.ReadFile(probe)
 			var rev, grants int
 			if err := f.db.QueryRow("SELECT revision FROM reliable_submit_claims WHERE codec_version=5").Scan(&rev); err != nil {
@@ -807,6 +955,13 @@ type operationalChildFixture struct {
 	Port                                                                                uint16
 	UID, GID                                                                            int
 	Certificate, Template, Request                                                      []byte
+	Trust                                                                               egsmodel.RuntimeTrustPolicy
+	VerifierKeyID, VerifierAlgorithm                                                    string
+	VerifierKey                                                                         []byte
+	// HoldBeforePrestage makes the child report that it is held between two
+	// writer turns and wait for a second "go"; it then reports its result
+	// without asserting one.
+	HoldBeforePrestage bool
 }
 
 func (f *operationalFixture) childFixture() operationalChildFixture {
@@ -816,6 +971,8 @@ func (f *operationalFixture) childFixture() operationalChildFixture {
 		Region: realm.region, Datacenter: realm.datacenter, Stage: realm.staging, Results: realm.results, Socket: realm.spireSocket, ImageIssuer: realm.imageIssuer,
 		Installation: realm.installation, Provider: realm.provider, SPKI: realm.spki, Build: realm.build, TemplateDigest: realm.template, Image: realm.image,
 		Epoch: realm.epoch, Port: realm.port, UID: realm.owner.UID, GID: realm.owner.GID, Certificate: f.certificate, Template: f.template, Request: f.raw,
+		Trust: *f.service.trustModel, VerifierKeyID: f.service.provenanceVerifier.keyID,
+		VerifierAlgorithm: f.service.provenanceVerifier.algorithm, VerifierKey: f.service.provenanceVerifier.publicKey,
 	}
 }
 
@@ -868,7 +1025,27 @@ func TestOperationalHandoffChildProcess(t *testing.T) {
 	if _, err := fmt.Fscanln(os.Stdin, &gate); err != nil || gate != "go" {
 		t.Fatalf("missing process barrier: %v", err)
 	}
-	result := (&Service{}).handoffOperational(context.Background(), d, peer, f.Request)
+	service := &Service{trustModel: &f.Trust, provenanceVerifier: &ed25519Verifier{
+		algorithm: f.VerifierAlgorithm, keyID: f.VerifierKeyID, publicKey: f.VerifierKey}, trustModelVerified: true}
+	service.trustModelOwner = service
+	service.operational = admissionstate.New(service)
+	attachOperationalTrustAuthority(t, service, f.Trust)
+	if err := service.commissionOperationalAdmission(context.Background(), d); err != nil {
+		t.Fatalf("commission child proof service: %v", err)
+	}
+	if f.HoldBeforePrestage {
+		d.proof = &operationalHandoffProofHooks{beforePrestage: func() {
+			fmt.Println("ES_OPERATIONAL_CHILD_HELD")
+			if _, err := fmt.Fscanln(os.Stdin, &gate); err != nil || gate != "go" {
+				t.Errorf("missing second process barrier: %v", err)
+			}
+		}}
+		result := service.handoffOperational(context.Background(), d, peer, f.Request)
+		fmt.Printf("ES_OPERATIONAL_CHILD_HELD_RESULT %d %d %d %d %t %t\n", result.kind, result.reason, result.operation, result.write,
+			result.run != "", result.receipt.Valid())
+		return
+	}
+	result := service.handoffOperational(context.Background(), d, peer, f.Request)
 	if result.run == "" || result.kind != operationalAccepted && result.kind != operationalAmbiguous {
 		t.Fatalf("child did not verify the same assigned original: class=%d write=%d", result.kind, result.write)
 	}
@@ -879,6 +1056,7 @@ type operationalChild struct {
 	input  io.WriteCloser
 	result <-chan string
 	ready  <-chan struct{}
+	held   <-chan struct{}
 }
 
 func startOperationalChild(t *testing.T, ctx context.Context, path string) operationalChild {
@@ -897,7 +1075,7 @@ func startOperationalChild(t *testing.T, ctx context.Context, path string) opera
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	ready := make(chan struct{})
+	ready, held := make(chan struct{}), make(chan struct{})
 	result := make(chan string, 1)
 	go func() {
 		var lines []string
@@ -907,6 +1085,9 @@ func startOperationalChild(t *testing.T, ctx context.Context, path string) opera
 			lines = append(lines, line)
 			if line == "ES_OPERATIONAL_CHILD_READY" {
 				close(ready)
+			}
+			if line == "ES_OPERATIONAL_CHILD_HELD" {
+				close(held)
 			}
 		}
 		if err := cmd.Wait(); err != nil {
@@ -919,7 +1100,7 @@ func startOperationalChild(t *testing.T, ctx context.Context, path string) opera
 		close(result)
 	}()
 	t.Cleanup(func() { _ = in.Close(); <-result })
-	return operationalChild{input: in, result: result, ready: ready}
+	return operationalChild{input: in, result: result, ready: ready, held: held}
 }
 
 func awaitOperationalChild(t *testing.T, ctx context.Context, child operationalChild) (operationalResultKind, string) {
@@ -1076,7 +1257,7 @@ func testOperationalStageTamper(t *testing.T) {
 			t.Fatal("marker cut failed to exercise changed stage contents")
 		}
 		reopened := f.reopen()
-		again := (&Service{}).handoffOperational(context.Background(), reopened, reopened.caller, f.raw)
+		again := f.service.handoffOperational(context.Background(), reopened, reopened.caller, f.raw)
 		posts, gets, _ := f.receiver.counts()
 		var rev int
 		if err := f.db.QueryRow("SELECT revision FROM reliable_submit_claims WHERE codec_version=5").Scan(&rev); err != nil || rev != 4 || posts != 0 || gets != 0 || again.kind == operationalAccepted {
@@ -1098,7 +1279,7 @@ func testOperationalStageTamper(t *testing.T) {
 			t.Fatal(err)
 		}
 		reopened := f.reopen()
-		again := (&Service{}).handoffOperational(context.Background(), reopened, reopened.caller, f.raw)
+		again := f.service.handoffOperational(context.Background(), reopened, reopened.caller, f.raw)
 		posts, gets, _ := f.receiver.counts()
 		if _, err := os.Lstat(original); !os.IsNotExist(err) || posts != 0 || gets != 0 || again.run != first.run || again.kind != operationalPending {
 			t.Fatalf("missing stage was replaced or admitted: phase=%d posts=%d gets=%d error=%v", again.kind, posts, gets, err)

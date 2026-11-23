@@ -962,6 +962,28 @@ Submit stay in force.
 
 ### 6C. Selected operational handoff and receipt-only recovery
 
+PR #12's current-admission repair makes operational originals
+`operational_local_v2` with exact retained signed evidence from one ordinary
+resolution; `operational_local_v1` is removed and refused. Only an unmarked
+claim presented by a process whose admission token equals the enabled durable
+admission row, and whose trust was confirmed with EGS inside the deadline,
+can progress toward its first effect. Replacing trust, verifier or policy
+advances the admission generation in the same epoch: a retained claim is
+judged again by the new content, and one it denies is refused as denied until
+a later generation allows it. For every original, a committed accepted receipt is verified from the authenticated historical original and
+exact current caller/eligible ACTIVE or RETIRED original key pair, independently
+of current trust, verifier, policy, admission generation, withdrawal, resolver,
+staging and provider. A marked
+claim without a receipt may reconcile only verified positive registration and
+record its immutable receipt; it cannot create another sender or POST. Wrong,
+missing, revoked or mixed keys and unauthorized callers remain nondisclosing
+refusals. A refused unmarked first-effect cut withholds run/receipt and
+reports denied or unavailable while its
+earlier acknowledged or uncertain write disposition remains accurate. A retry
+that attempts no cut, such as recovery or a stamped-but-unmarked retry,
+returns the stored run to its authenticated original caller and sends no
+trust request.
+
 The [Operational Handoff](reliable_submit_operational_handoff.md) defines the private candidate codec-5 original, exact
 caller scoping, private result projections and two distinct authorization
 paths. Current exact caller authorization precedes lookup. First effects

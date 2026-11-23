@@ -1,7 +1,9 @@
 package reliablesubmit
 
 // Migration 5 carries every existing row forward and admits only the
-// selected operational phases and irreversible progress transitions.
+// selected operational phases and irreversible progress transitions. It also
+// creates the one-row operational admission table. The claim rows are copied
+// before any trigger exists, and both admission clauses apply to codec 5 only.
 const sqliteMigration5SQL = `
 CREATE TEMP TABLE replay_m5_key_before AS SELECT rowid, key_id, purpose, material_fingerprint, state FROM reliable_submit_key_registry;
 CREATE TEMP TABLE replay_m5_grant_before AS SELECT rowid, envelope_key_id, granted_count FROM reliable_submit_seal_use;
@@ -272,6 +274,45 @@ CREATE UNIQUE INDEX reliable_submit_claims_envelope_ref_unique
 ON reliable_submit_claims(envelope_ref);
 CREATE UNIQUE INDEX reliable_submit_operational_run_ref_unique
 ON reliable_submit_claims(run_ref COLLATE BINARY) WHERE codec_version = 5 AND run_ref IS NOT NULL;
+CREATE TABLE reliable_submit_operational_admission (
+  singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+  installation BLOB NOT NULL CHECK (length(installation) = 32 AND installation != zeroblob(32)),
+  epoch INTEGER NOT NULL CHECK (epoch > 0),
+  generation INTEGER NOT NULL CHECK (generation > 0),
+  admission_digest BLOB NOT NULL CHECK (length(admission_digest) = 32),
+  state INTEGER NOT NULL CHECK (state IN (1, 2)),
+  updated_at_unix_ns INTEGER NOT NULL CHECK (updated_at_unix_ns > 0)
+) STRICT;
+CREATE TRIGGER reliable_submit_operational_admission_no_delete
+BEFORE DELETE ON reliable_submit_operational_admission
+BEGIN SELECT RAISE(ABORT, 'operational admission deletion is forbidden'); END;
+CREATE TRIGGER reliable_submit_operational_admission_guard_insert
+BEFORE INSERT ON reliable_submit_operational_admission
+BEGIN
+  SELECT CASE WHEN EXISTS (SELECT 1 FROM reliable_submit_operational_admission)
+    OR NEW.singleton IS NOT 1
+    OR NEW.generation IS NOT 1
+    OR NEW.state IS NOT 1
+    THEN RAISE(ABORT, 'invalid operational admission commission') END;
+END;
+CREATE TRIGGER reliable_submit_operational_admission_guard_update
+BEFORE UPDATE ON reliable_submit_operational_admission
+BEGIN
+  SELECT CASE WHEN NEW.singleton IS NOT OLD.singleton
+    OR NEW.installation IS NOT OLD.installation
+    OR NEW.epoch IS NOT OLD.epoch
+    THEN RAISE(ABORT, 'immutable operational admission identity') END;
+  SELECT CASE WHEN NEW.updated_at_unix_ns < OLD.updated_at_unix_ns
+    THEN RAISE(ABORT, 'operational admission time regression') END;
+  SELECT CASE WHEN NOT (
+      (NEW.generation IS OLD.generation
+        AND NEW.admission_digest IS OLD.admission_digest
+        AND OLD.state = 1 AND NEW.state = 2)
+      OR (NEW.generation IS OLD.generation + 1
+        AND NEW.admission_digest IS NOT OLD.admission_digest
+        AND NEW.state = 1))
+    THEN RAISE(ABORT, 'invalid operational admission transition') END;
+END;
 CREATE TRIGGER reliable_submit_claims_no_delete
 BEFORE DELETE ON reliable_submit_claims
 BEGIN SELECT RAISE(ABORT, 'reliable submit claim deletion is forbidden'); END;
@@ -282,6 +323,9 @@ BEGIN
   SELECT CASE WHEN NEW.revision IS NOT 1 OR (NEW.codec_version = 3 AND NEW.phase_tag IS NOT 1)
     OR (NEW.codec_version = 4 AND NEW.phase_tag NOT IN (1,2))
     OR NEW.latest_operation_kind IS NOT 1 THEN RAISE(ABORT, 'invalid custody initial shape') END;
+  SELECT CASE WHEN NEW.codec_version = 5 AND NOT EXISTS (
+    SELECT 1 FROM reliable_submit_operational_admission AS a WHERE a.state = 1)
+    THEN RAISE(ABORT, 'operational admission unavailable') END;
   SELECT CASE WHEN NOT EXISTS (
     SELECT 1 FROM reliable_submit_key_registry AS r
     WHERE (r.key_id COLLATE BINARY)=NEW.binding_key_id
@@ -414,6 +458,9 @@ BEGIN
     OR (OLD.dispatch_ref IS NOT NULL AND
       (NEW.dispatch_ref IS NOT OLD.dispatch_ref OR NEW.dispatch_at_unix_ns IS NOT OLD.dispatch_at_unix_ns))
     THEN RAISE(ABORT, 'immutable operational progress') END;
+  SELECT CASE WHEN NEW.latest_operation_kind IS NOT 8 AND NOT EXISTS (
+      SELECT 1 FROM reliable_submit_operational_admission AS a WHERE a.state = 1)
+    THEN RAISE(ABORT, 'operational admission unavailable') END;
   SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM reliable_submit_key_registry
       WHERE key_id = NEW.binding_key_id COLLATE BINARY AND purpose = 1
         AND (state = 1 OR state = 2 AND NEW.latest_operation_kind = 8)

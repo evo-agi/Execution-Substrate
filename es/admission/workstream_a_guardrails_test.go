@@ -416,10 +416,10 @@ func forbiddenWorkstreamASourceOccurrences(t *testing.T, file string, terms []wo
 					if strings.Contains(n.Name, spelling) {
 						occurrences = append(occurrences, workstreamASourceOccurrence{
 							file:     file,
-							line:     fileSet.Position(n.Pos()).Line,
+							line:     guardPosition(fileSet, n.Pos()).Line,
 							term:     term,
 							spelling: spelling,
-							source:   workstreamASourceLine(lines, fileSet.Position(n.Pos()).Line),
+							source:   workstreamASourceLine(lines, guardPosition(fileSet, n.Pos()).Line),
 						})
 					}
 				}
@@ -437,10 +437,10 @@ func forbiddenWorkstreamASourceOccurrences(t *testing.T, file string, terms []wo
 					if strings.Contains(value, spelling) {
 						occurrences = append(occurrences, workstreamASourceOccurrence{
 							file:     file,
-							line:     fileSet.Position(n.Pos()).Line,
+							line:     guardPosition(fileSet, n.Pos()).Line,
 							term:     term,
 							spelling: spelling,
-							source:   workstreamASourceLine(lines, fileSet.Position(n.Pos()).Line),
+							source:   workstreamASourceLine(lines, guardPosition(fileSet, n.Pos()).Line),
 						})
 					}
 				}

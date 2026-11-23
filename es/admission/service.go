@@ -24,6 +24,7 @@ import (
 
 	arsapi "execution-substrate/ars/api"
 	egsmodel "execution-substrate/egs/model"
+	"execution-substrate/es/admission/internal/admissionstate"
 	esconfig "execution-substrate/es/config"
 	evidencev1 "execution-substrate/internal/contracts/evidence/v1"
 	runtimeconfigv1 "execution-substrate/internal/contracts/runtimeconfig/v1"
@@ -113,6 +114,18 @@ type Service struct {
 
 	mu         sync.RWMutex
 	trustModel *egsmodel.RuntimeTrustPolicy
+	// Private operational authority is commissioned only by the unwired handoff.
+	// trustModelVerified and trustModelOwner say that this Service loaded and
+	// verified its trust model itself; Service.mu protects them.
+	trustModelVerified bool
+	trustModelOwner    *Service
+	// operational is the handle of the admission state: the installed view,
+	// the withdrawal and supersession latches and the confirmation time. The
+	// state lives in the package admissionstate behind its own lock, and
+	// NewService sets the handle once. A Service made without NewService holds
+	// the zero handle, which is closed.
+	operational      admissionstate.State
+	operationalProof *operationalAdmissionProofHooks
 }
 
 type dependencyClient struct {
@@ -157,10 +170,13 @@ type discoveredArtifact struct {
 }
 
 type preparedArtifact struct {
+	privateExecutionValue
 	manifest       Manifest
 	payloadDigest  string
 	targetPlatform string
 	networkAccess  bool
+	// Owned full signed record from the same successful artifact admission.
+	provenanceRecord string
 }
 
 type preparedAdmission struct {
@@ -248,7 +264,7 @@ func NewService(cfg esconfig.Config) (*Service, error) {
 		}
 	}
 
-	return &Service{
+	service := &Service{
 		cfg:                        cfg,
 		resultAuth:                 resultAuth,
 		workloadZoneVaultConfigRef: workloadZoneVaultConfigRef,
@@ -258,7 +274,9 @@ func NewService(cfg esconfig.Config) (*Service, error) {
 		provenanceVerifier:         provenanceVerifier,
 		nomadClient:                nomadClient,
 		admissionPolicyEvaluator:   admissionPolicyEvaluatorFromConfig(cfg.AdmissionPolicy),
-	}, nil
+	}
+	service.operational = admissionstate.New(service)
+	return service, nil
 }
 
 func validateExecutionRuntimeInputs(cfg esconfig.ExecutionConfig) error {
@@ -283,42 +301,64 @@ func validateSPIREWorkloadAPISocketPathConfigShape(path string) error {
 }
 
 func (s *Service) Initialize(ctx context.Context) error {
+	if s.operational.Commissioned() {
+		return fmt.Errorf("private operational authority is already commissioned or withdrawn")
+	}
+	normalized, err := s.fetchVerifiedTrustModel(ctx)
+	if err != nil {
+		return err
+	}
+
+	// Service.mu is held across this question and the write below. An install
+	// holds it too, so no view is installed between the two.
+	s.mu.Lock()
+	if s.operational.Commissioned() {
+		s.mu.Unlock()
+		return fmt.Errorf("private operational authority was commissioned during trust load")
+	}
+	s.trustModel = &normalized
+	s.trustModelVerified = true
+	s.trustModelOwner = s
+	s.mu.Unlock()
+
+	return nil
+}
+
+// fetchVerifiedTrustModel requests the signed runtime trust model from EGS,
+// verifies its envelope and returns the normalized policy. It reads and
+// changes no Service state; Initialize and the private operational
+// confirmation are its only callers.
+func (s *Service) fetchVerifiedTrustModel(ctx context.Context) (egsmodel.RuntimeTrustPolicy, error) {
 	requestCtx, cancel := context.WithTimeout(ctx, s.egsClient.client.Timeout)
 	defer cancel()
 
 	response, err := s.egsClient.get(requestCtx, "/v1/trust-model")
 	if err != nil {
-		return fmt.Errorf("fetch trust model: %w", err)
+		return egsmodel.RuntimeTrustPolicy{}, fmt.Errorf("fetch trust model: %w", err)
 	}
 	defer response.Body.Close()
 
 	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("fetch trust model: unexpected status %d", response.StatusCode)
+		return egsmodel.RuntimeTrustPolicy{}, fmt.Errorf("fetch trust model: unexpected status %d", response.StatusCode)
 	}
 
 	var payload signedRuntimeTrustResponse
 	if err := decodeBoundedJSONResponse(response, &payload); err != nil {
-		return fmt.Errorf("decode trust model response: %w", err)
+		return egsmodel.RuntimeTrustPolicy{}, fmt.Errorf("decode trust model response: %w", err)
 	}
 	if err := payload.RuntimeTrust.Validate(); err != nil {
-		return fmt.Errorf("validate trust model: %w", err)
+		return egsmodel.RuntimeTrustPolicy{}, fmt.Errorf("validate trust model: %w", err)
 	}
 
 	canonical, err := payload.RuntimeTrust.CanonicalBytes()
 	if err != nil {
-		return fmt.Errorf("canonicalize trust model: %w", err)
+		return egsmodel.RuntimeTrustPolicy{}, fmt.Errorf("canonicalize trust model: %w", err)
 	}
 	if err := s.verifyTrustModelEnvelope(payload, canonical); err != nil {
-		return fmt.Errorf("verify trust model: %w", err)
+		return egsmodel.RuntimeTrustPolicy{}, fmt.Errorf("verify trust model: %w", err)
 	}
 
-	normalized := payload.RuntimeTrust.Normalized()
-
-	s.mu.Lock()
-	s.trustModel = &normalized
-	s.mu.Unlock()
-
-	return nil
+	return payload.RuntimeTrust.Normalized(), nil
 }
 
 func (s *Service) Health(ctx context.Context) HealthSnapshot {
@@ -434,7 +474,18 @@ func (s *Service) prepareArtifact(ctx context.Context, req PrepareRequest, trust
 	if err != nil {
 		return preparedArtifact{}, err
 	}
-	return s.prepareArtifactFromDiscovery(req, trustModel, discovery)
+	artifact, err := s.prepareArtifactFromDiscovery(req, trustModel, discovery)
+	if err != nil {
+		return preparedArtifact{}, err
+	}
+	// The successful ordinary resolution owns the exact typed record it used.
+	// This carrier is inert for ordinary Submit and never enters its plan. A
+	// record that cannot be represented leaves the carrier empty: ordinary
+	// Prepare and Submit proceed, and the private builder refuses an empty one.
+	if fullRecord, marshalErr := json.Marshal(discovery.evidence); marshalErr == nil {
+		artifact.provenanceRecord = string(fullRecord)
+	}
+	return artifact, nil
 }
 
 func (s *Service) currentTrustModel() *egsmodel.RuntimeTrustPolicy {
@@ -637,7 +688,6 @@ func (s *Service) prepareArtifactFromEvidenceRecord(trustModel egsmodel.RuntimeT
 	if err := enforceTrustModel(trustModel, evidence.Seal.KeyID, artifactDigest); err != nil {
 		return preparedArtifact{}, err
 	}
-
 	return preparedArtifact{
 		manifest:       manifestFromEvidence(evidence),
 		payloadDigest:  strings.TrimSpace(discovery.Payload.Digest),

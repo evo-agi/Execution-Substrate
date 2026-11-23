@@ -12,6 +12,7 @@ import (
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
 	"golang.org/x/sys/unix"
 
+	"execution-substrate/es/admission/internal/admissionstate"
 	"execution-substrate/es/admission/internal/reliablesubmit"
 )
 
@@ -25,6 +26,7 @@ func (s *Service) composeOperationalOriginal(ctx context.Context, delivery priva
 	if err != nil {
 		return verifiedOperationalOriginal{}, errPrivateReplayUnavailable
 	}
+	// The encoder refuses a resolution that carries no evidence record.
 	wire, err := encodeOperationalOriginal(delivery, resolved, assessment, keys, realm)
 	if err != nil {
 		return verifiedOperationalOriginal{}, err
@@ -74,6 +76,16 @@ func (r operationalHandoffResult) withhold(reason reliablesubmit.OperationalReas
 	return r
 }
 
+// withholdAt is withhold for a step that an ended context makes fail. The
+// store refuses every read and binding of a borrow whose context has ended,
+// so such a failure reports the cancellation and not the step's own reason.
+func (r operationalHandoffResult) withholdAt(ctx context.Context, reason reliablesubmit.OperationalReason) operationalHandoffResult {
+	if ctx.Err() != nil {
+		reason = reliablesubmit.OperationalCanceled
+	}
+	return r.withhold(reason)
+}
+
 // Tests can order real collaborators and model the observed cleanup result.
 // A nil hook is the ordinary path; none can grant authority.
 type operationalHandoffProofHooks struct {
@@ -87,6 +99,8 @@ type operationalHandoffProofHooks struct {
 	afterStageClose   func(error) error
 	beforeConsume     func(*liveSender, *handoffOwner)
 	beforeEntrySample func()
+	beforeReceipt     func()
+	beforeObservation func()
 }
 
 type operationalDomain struct {
@@ -160,6 +174,15 @@ func (s *Service) operatePrivateHandoff(ctx context.Context, d *operationalDomai
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	outcome := operationalFailure(reliablesubmit.OperationalUnavailable)
+	// At most one confirmation with EGS per invocation, and only on a path
+	// that is about to attempt a retained first effect.
+	confirmed := false
+	confirm := func() {
+		if !confirmed {
+			confirmed = true
+			s.confirmOperationalAdmission(ctx)
+		}
+	}
 	withOriginal := func(read reliablesubmit.OperationalOriginalRead, advance, observe bool) reliablesubmit.OperationalCheck {
 		var original verifiedOperationalOriginal
 		return d.custody.WithOperationalOriginal(ctx, delivery.refs.claimID, d.keys.storage, canonical, read,
@@ -181,7 +204,7 @@ func (s *Service) operatePrivateHandoff(ctx context.Context, d *operationalDomai
 				}
 				return reliablesubmit.MatchOperationalOriginal(original.delivery.refs.claimID, original.assessment.boundPlan, original.wire)
 			}, func(access *reliablesubmit.OperationalAccess, p reliablesubmit.OperationalProjection) {
-				outcome = d.advanceOperational(ctx, access, p, original, advance, observe)
+				outcome = s.advanceOperational(ctx, d, access, p, original, advance, observe, confirm)
 			})
 	}
 	existing := withOriginal(reliablesubmit.OperationalRetainedRead, !recovery, true)
@@ -200,6 +223,10 @@ func (s *Service) operatePrivateHandoff(ctx context.Context, d *operationalDomai
 	if !d.eligible() {
 		return operationalFailureAt(ctx, reliablesubmit.OperationalIntegrity)
 	}
+	confirm()
+	if _, ok := s.currentOperationalAdmission(d.realm); !ok {
+		return operationalFailureAt(ctx, reliablesubmit.OperationalUnavailable)
+	}
 	if d.proof != nil && d.proof.beforeEstablish != nil {
 		d.proof.beforeEstablish()
 	}
@@ -207,7 +234,13 @@ func (s *Service) operatePrivateHandoff(ctx context.Context, d *operationalDomai
 	if err != nil {
 		return operationalFailureAt(ctx, reliablesubmit.OperationalUnavailable)
 	}
-	first := d.custody.EstablishOperational(ctx, delivery.refs.claimID, original.assessment.boundPlan, d.keys.storage, original.wire)
+	view, ok := s.currentOperationalAdmission(d.realm)
+	if !ok {
+		return operationalFailureAt(ctx, reliablesubmit.OperationalUnavailable)
+	}
+	// The store compares this token with the admission row inside the
+	// establishment turn; a fenced process stores no claim.
+	first := d.custody.EstablishOperational(ctx, delivery.refs.claimID, original.assessment.boundPlan, d.keys.storage, original.wire, view.Token())
 	if d.proof != nil && d.proof.afterEstablish != nil {
 		d.proof.afterEstablish()
 	}
@@ -252,21 +285,65 @@ func operationalReadProjection(p reliablesubmit.OperationalProjection) operation
 	return operationalHandoffResult{kind: operationalPending, run: run}
 }
 
-func (d *operationalDomain) advanceOperational(ctx context.Context, a *reliablesubmit.OperationalAccess, p reliablesubmit.OperationalProjection,
-	original verifiedOperationalOriginal, advance, observe bool) (out operationalHandoffResult) {
+func (s *Service) advanceOperational(ctx context.Context, d *operationalDomain, a *reliablesubmit.OperationalAccess, p reliablesubmit.OperationalProjection,
+	original verifiedOperationalOriginal, advance, observe bool, confirm func()) (out operationalHandoffResult) {
 	out = operationalReadProjection(p)
-	qualify := func() (reliablesubmit.OperationalOriginalMatch, error) {
-		if !d.eligible() || !validateOperationalPlan(original.delivery, original.resolved, d.realm) {
+	qualificationReason := reliablesubmit.OperationalReasonNone
+	// qualify is what every first-effect cut asks. stored is the admission
+	// token the store read for that cut. The fence comes first: a process
+	// whose view does not carry the stored token judges nothing. The match it
+	// returns carries the token of the same view that judged the claim.
+	qualify := func(stored reliablesubmit.OperationalAdmissionToken) (reliablesubmit.OperationalOriginalMatch, error) {
+		view, ok := s.currentOperationalAdmission(d.realm)
+		if !ok || view.Token() != stored {
+			qualificationReason = reliablesubmit.OperationalUnavailable
 			return reliablesubmit.OperationalOriginalMatch{}, errPrivateReplayUnavailable
 		}
-		return reliablesubmit.MatchOperationalOriginal(original.delivery.refs.claimID, original.assessment.boundPlan, original.wire)
+		qualificationReason = s.qualifyOperationalRetained(ctx, original, d.realm)
+		if qualificationReason != reliablesubmit.OperationalReasonNone {
+			return reliablesubmit.OperationalOriginalMatch{}, errPrivateReplayUnavailable
+		}
+		if !d.eligible() || !validateOperationalPlan(original.delivery, original.resolved, d.realm) {
+			qualificationReason = reliablesubmit.OperationalIntegrity
+			return reliablesubmit.OperationalOriginalMatch{}, errPrivateReplayUnavailable
+		}
+		if current, still := s.currentOperationalAdmission(d.realm); !still || current != view {
+			qualificationReason = reliablesubmit.OperationalUnavailable
+			return reliablesubmit.OperationalOriginalMatch{}, errPrivateReplayUnavailable
+		}
+		return reliablesubmit.MatchAdmittedOperationalOriginal(original.delivery.refs.claimID, original.assessment.boundPlan,
+			original.wire, view.Token())
+	}
+	// precheck refuses before a writer turn is requested. It confirms with
+	// EGS first, then asks the same question as the cut with the admission
+	// row read outside a turn. It grants nothing: the cut asks again.
+	precheck := func() bool {
+		confirm()
+		stored, ok := a.AdmissionHint(ctx)
+		if !ok {
+			// The hint refuses an ended context: the row was not read, so
+			// nothing was judged and the cancellation is the answer.
+			qualificationReason = reliablesubmit.OperationalUnavailable
+			if ctx.Err() != nil {
+				qualificationReason = reliablesubmit.OperationalCanceled
+			}
+			return false
+		}
+		_, err := qualify(stored)
+		return err == nil
+	}
+	refused := func(result operationalHandoffResult) operationalHandoffResult {
+		if qualificationReason != reliablesubmit.OperationalReasonNone {
+			return result.withhold(qualificationReason)
+		}
+		return result
 	}
 	if p.Revision() == 1 {
 		if !advance {
 			return out
 		}
-		if _, err := qualify(); err != nil {
-			return out.withhold(reliablesubmit.OperationalIntegrity)
+		if !precheck() {
+			return refused(out.withhold(reliablesubmit.OperationalIntegrity))
 		}
 		m, err := reliablesubmit.NewOperationalMutation()
 		if err != nil {
@@ -278,7 +355,7 @@ func (d *operationalDomain) advanceOperational(ctx context.Context, a *reliables
 		}
 		status, current := a.Apply(ctx, p, m, command, qualify)
 		if status != reliablesubmit.OperationalApplied {
-			return stoppedOperational(ctx, reliablesubmit.OperationalAssign, status, current)
+			return refused(stoppedOperational(ctx, reliablesubmit.OperationalAssign, status, current))
 		}
 		p = current
 		out = operationalReadProjection(p).withWrite(reliablesubmit.OperationalAssign, status)
@@ -293,10 +370,13 @@ func (d *operationalDomain) advanceOperational(ctx context.Context, a *reliables
 		return out.withhold(reliablesubmit.OperationalIntegrity)
 	}
 	if p.Receipt().Valid() {
+		if d.proof != nil && d.proof.beforeReceipt != nil {
+			d.proof.beforeReceipt()
+		}
 		if a.VerifyOperationalReceipt(p, job.project, job.locator) {
 			return operationalHandoffResult{kind: operationalAccepted, run: runID, receipt: p.Receipt()}
 		}
-		return operationalFailure(reliablesubmit.OperationalIntegrity)
+		return operationalFailureAt(ctx, reliablesubmit.OperationalIntegrity)
 	}
 	originalRef, intent, stamp, marker, _ := p.Bindings()
 	wantIntent := append([]byte("ESOHINT1"), originalRef[:]...)
@@ -314,8 +394,8 @@ func (d *operationalDomain) advanceOperational(ctx context.Context, a *reliables
 	if !advance || stamp != [32]byte{} {
 		return out
 	}
-	if _, err := qualify(); err != nil {
-		return out.withhold(reliablesubmit.OperationalIntegrity)
+	if !precheck() {
+		return refused(out.withhold(reliablesubmit.OperationalIntegrity))
 	}
 	if p.Revision() == 2 {
 		m, err := reliablesubmit.NewOperationalMutation()
@@ -324,11 +404,11 @@ func (d *operationalDomain) advanceOperational(ctx context.Context, a *reliables
 		}
 		command, err := a.BindOperationalIntent(p, job.locator)
 		if err != nil {
-			return out.withhold(reliablesubmit.OperationalIntegrity)
+			return out.withholdAt(ctx, reliablesubmit.OperationalIntegrity)
 		}
 		status, current := a.Apply(ctx, p, m, command, qualify)
 		if status != reliablesubmit.OperationalApplied {
-			return stoppedOperational(ctx, reliablesubmit.OperationalIntent, status, current)
+			return refused(stoppedOperational(ctx, reliablesubmit.OperationalIntent, status, current))
 		}
 		p = current
 		out = operationalReadProjection(p).withWrite(reliablesubmit.OperationalIntent, status)
@@ -343,7 +423,7 @@ func (d *operationalDomain) advanceOperational(ctx context.Context, a *reliables
 		if reason == reliablesubmit.OperationalReasonNone {
 			reason = reliablesubmit.OperationalIntegrity
 		}
-		return out.withhold(reason)
+		return refused(out.withhold(reason))
 	}
 	if d.proof != nil && d.proof.beforeStageCreate != nil {
 		d.proof.beforeStageCreate()
@@ -383,7 +463,7 @@ func (d *operationalDomain) advanceOperational(ctx context.Context, a *reliables
 		return measureOperationalStage(held, original.resolved.material, originalRef, runID, intentRef, job.project, &parentLinks, false)
 	})
 	if err != nil {
-		return out.withhold(reliablesubmit.OperationalIntegrity)
+		return out.withholdAt(ctx, reliablesubmit.OperationalIntegrity)
 	}
 	move, err := reliablesubmit.NewOperationalMutation()
 	if err != nil {
@@ -391,7 +471,7 @@ func (d *operationalDomain) advanceOperational(ctx context.Context, a *reliables
 	}
 	status, current := a.Apply(ctx, p, move, stage, qualify)
 	if status != reliablesubmit.OperationalApplied {
-		return stoppedOperational(ctx, reliablesubmit.OperationalStamp, status, current)
+		return refused(stoppedOperational(ctx, reliablesubmit.OperationalStamp, status, current))
 	}
 	p = current
 	out = operationalReadProjection(p).withWrite(reliablesubmit.OperationalStamp, status)
@@ -404,7 +484,7 @@ func (d *operationalDomain) advanceOperational(ctx context.Context, a *reliables
 	}
 	candidate, err := a.BindOperationalMarker(p, move, stage)
 	if err != nil {
-		return out.withhold(reliablesubmit.OperationalIntegrity)
+		return out.withholdAt(ctx, reliablesubmit.OperationalIntegrity)
 	}
 	_, _, stamp, _, _ = p.Bindings()
 	marker = candidate.Ref()
@@ -414,7 +494,11 @@ func (d *operationalDomain) advanceOperational(ctx context.Context, a *reliables
 	}
 	binding := operationalDispatchBinding{original: originalRef, run: runID, stamp: stamp, marker: marker,
 		project: job.project, locator: job.locator, request: sha256.Sum256(body)}
-	owner := &handoffOwner{domain: d, stage: held, proof: stage, context: ctx, binding: binding, open: true}
+	admission, ok := s.currentOperationalAdmission(d.realm)
+	if !ok {
+		return out.withhold(reliablesubmit.OperationalUnavailable)
+	}
+	owner := &handoffOwner{domain: d, service: s, admission: admission, stage: held, proof: stage, context: ctx, binding: binding, open: true}
 	var ack operationalAck
 	status, current = a.ApplyFirstMarker(ctx, p, move, candidate, qualify, func(applied reliablesubmit.OperationalProjection) {
 		actualOriginal, _, stageRef, actual, _ := applied.Bindings()
@@ -432,7 +516,7 @@ func (d *operationalDomain) advanceOperational(ctx context.Context, a *reliables
 	})
 	owner.close()
 	if status != reliablesubmit.OperationalMarkerDirect {
-		return stoppedOperational(ctx, reliablesubmit.OperationalMark, status, current)
+		return refused(stoppedOperational(ctx, reliablesubmit.OperationalMark, status, current))
 	}
 	result := d.reconcileOperational(ctx, a, current, job, ack)
 	if result.operation == 0 {
@@ -468,6 +552,9 @@ func (d *operationalDomain) reconcileOperational(ctx context.Context, a *reliabl
 	job operationalJob, ack operationalAck) operationalHandoffResult {
 	out := operationalReadProjection(p)
 	if ack.collision || ack.refused || ctx.Err() != nil {
+		if ack.refused && ack.reason == reliablesubmit.OperationalUnavailable {
+			return out.withhold(reliablesubmit.OperationalUnavailable)
+		}
 		out.reason = ack.reason
 		if ctx.Err() != nil {
 			out.reason = reliablesubmit.OperationalCanceled
@@ -482,8 +569,17 @@ func (d *operationalDomain) reconcileOperational(ctx context.Context, a *reliabl
 		}
 		return out
 	}
+	if d.proof != nil && d.proof.beforeObservation != nil {
+		d.proof.beforeObservation()
+	}
 	proof, err := result.bindOperationalObservation(d.provider, a, p, job, d.keys.key.bytes)
 	if err != nil {
+		// The marker is durable. As at the entry of this function, a
+		// cancellation alone keeps the stored run.
+		if ctx.Err() != nil {
+			out.reason = reliablesubmit.OperationalCanceled
+			return out
+		}
 		return out.withhold(reliablesubmit.OperationalIntegrity)
 	}
 	m, err := reliablesubmit.NewOperationalMutation()
@@ -537,13 +633,15 @@ type operationalDispatchBinding struct {
 
 type handoffOwner struct {
 	privateExecutionValue
-	mu      sync.Mutex
-	domain  *operationalDomain
-	stage   *stagingCustody
-	proof   *reliablesubmit.OperationalStageProof
-	context context.Context
-	binding operationalDispatchBinding
-	open    bool
+	mu        sync.Mutex
+	domain    *operationalDomain
+	service   *Service
+	admission admissionstate.View
+	stage     *stagingCustody
+	proof     *reliablesubmit.OperationalStageProof
+	context   context.Context
+	binding   operationalDispatchBinding
+	open      bool
 }
 
 func (o *handoffOwner) close() {
@@ -576,6 +674,7 @@ func (s *liveSender) consume(owner *handoffOwner) operationalAck {
 	}
 	owner.open = false
 	if err != nil || owner.stage == nil || !owner.domain.eligible() ||
+		!owner.domain.keys.key.validated ||
 		s.binding != owner.binding || owner.stage.runID != s.binding.run ||
 		s.binding.original == [32]byte{} || s.binding.stamp == [32]byte{} || s.binding.marker == [32]byte{} ||
 		s.binding.project == [32]byte{} || s.binding.locator == [32]byte{} || len(s.prepared) == 0 ||
@@ -584,6 +683,10 @@ func (s *liveSender) consume(owner *handoffOwner) operationalAck {
 	}
 	if proof := owner.domain.proof; proof != nil && proof.beforeEntrySample != nil {
 		proof.beforeEntrySample()
+	}
+	current, admitted := owner.service.currentOperationalAdmission(owner.domain.realm)
+	if !admitted || current != owner.admission {
+		return operationalAck{refused: true, reason: reliablesubmit.OperationalUnavailable}
 	}
 	if err := prepared.request.Context().Err(); err != nil {
 		return operationalAck{refused: true, reason: operationalExchangeFailure(err)}

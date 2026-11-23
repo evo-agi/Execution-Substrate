@@ -14,6 +14,10 @@ import (
 const operationalScope = 3
 const operationalNamespace = "es-operational-v1"
 
+// operationalProvenanceVariant is the one provenance variant of a scope-3
+// original: retained typed evidence that current admission re-judges.
+const operationalProvenanceVariant = "operational_local_v2"
+
 type operationalRealm struct {
 	privateExecutionValue
 	installation, provider, spki, build, template [32]byte
@@ -102,9 +106,16 @@ func encodeOperationalOriginal(delivery privateReplayDelivery, resolved resolved
 		e.field(3, e.string(realm.spireSocket, 512)), e.field(4, e.string(realm.datacenter, 63)),
 		e.field(5, replayUint32(uint32(realm.owner.UID))), e.field(6, replayUint32(uint32(realm.owner.GID))))
 	trust := e.object(e.field(1, replayBool(p.authority.trustMaterial.vaultCACert)), e.field(2, replayBool(p.authority.trustMaterial.workloadTLSBundle)))
-	provenance := e.object(e.field(1, []byte("operational_local_v1")), e.field(2, e.string(p.artifactDigest, 256)),
-		e.field(3, e.string(p.payloadDigest, 256)), e.field(4, e.string(p.runtimeSupportDigest, 256)), e.field(5, e.sequence(nil, 8)),
-		e.field(6, trust))
+	// The retained evidence record is required. The encoder writes only the
+	// one selected provenance variant and refuses a plan that carries no record.
+	evidence, err := decodeOperationalEvidence(resolved.provenanceRecord)
+	if err != nil || !operationalEvidenceMatchesOriginal(evidence,
+		verifiedOperationalOriginal{delivery: delivery, resolved: resolved}, realm) {
+		return nil, errPrivateReplayUnavailable
+	}
+	provenance := e.object(e.field(1, []byte(operationalProvenanceVariant)), e.field(2, e.string(p.artifactDigest, 256)),
+		e.field(3, e.string(p.payloadDigest, 256)), e.field(4, e.string(p.runtimeSupportDigest, 256)),
+		e.field(5, []byte(resolved.provenanceRecord)), e.field(6, trust))
 	body := e.object(e.field(1, identity), e.field(2, e.original(delivery.originalIntent)),
 		e.field(3, e.plan(p)), e.field(4, e.material(resolved.material)), e.field(5, assessmentBytes),
 		e.field(6, image), e.field(7, placement), e.field(8, provenance), e.field(9, e.keys(keys.bindingID, keys.envelopeID, operationalScope)),
@@ -148,6 +159,20 @@ func verifyOperationalOriginal(wire []byte, keys operationalOriginalKeys, realm 
 	if err != nil {
 		return verifiedOperationalOriginal{}, err
 	}
+	provenance, err := r.object(f[7].value, 6, 2, 2)
+	if err != nil || !provenance[0].present || !provenance[4].present {
+		return verifiedOperationalOriginal{}, errPrivateReplayUnavailable
+	}
+	// Exactly one provenance variant exists. Any other literal, the removed
+	// first variant included, is refused before anything is derived from it.
+	if string(provenance[0].value) != operationalProvenanceVariant {
+		return verifiedOperationalOriginal{}, errPrivateReplayUnavailable
+	}
+	evidenceRecord := string(provenance[4].value)
+	evidence, err := decodeOperationalEvidence(evidenceRecord)
+	if err != nil {
+		return verifiedOperationalOriginal{}, errPrivateReplayUnavailable
+	}
 	captured, err := newResolvedExecutionMaterial(&material)
 	if err != nil {
 		return verifiedOperationalOriginal{}, errPrivateReplayUnavailable
@@ -158,8 +183,13 @@ func verifyOperationalOriginal(wire []byte, keys operationalOriginalKeys, realm 
 	}
 	resolved := resolvedExecution{plan: newResolvedExecutionPlan(plan), material: captured,
 		host:             newHostMaterializationContext(realm.staging, realm.results, realm.owner, filepath.Dir(realm.spireSocket), realm.datacenter),
-		custodyPlacement: resolvedCustodyPlacement{stagingRootDir: realm.staging, resultsRootDir: realm.results}}
-	delivery := privateReplayDelivery{originalIntent: intent, refs: refs, family: family}
+		custodyPlacement: resolvedCustodyPlacement{stagingRootDir: realm.staging, resultsRootDir: realm.results},
+		provenanceRecord: evidenceRecord}
+	delivery := privateReplayDelivery{request: operationalRequestFromIntent(intent), originalIntent: intent, refs: refs, family: family}
+	if !operationalEvidenceMatchesOriginal(evidence,
+		verifiedOperationalOriginal{delivery: delivery, resolved: resolved}, realm) {
+		return verifiedOperationalOriginal{}, errPrivateReplayUnavailable
+	}
 	assessment, err := buildReliableSubmitAdmissionBinding(resolved, family, keys.key)
 	if err != nil {
 		return verifiedOperationalOriginal{}, errPrivateReplayUnavailable

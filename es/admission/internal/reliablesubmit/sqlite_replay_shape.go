@@ -17,7 +17,7 @@ const (
 	sqliteSchema2SHA256 = "944094f4e5fae102ea2882a076f580c69494678f41acedf9eaa971fe836eb280"
 	sqliteSchema3SHA256 = "15ab48bde4d53bb252dc954a2aa3b1db12de7295111f23bb0264f74f153dba92"
 	sqliteSchema4SHA256 = "2ae4721c8526ed9b8de35fd3acdfa31448eae9b547ba8662a22ed130035f7c15"
-	sqliteSchema5SHA256 = "e1239b294f35da571fdd687f91a92fb2163a3dad8650309c08cec3a9ce0409ed"
+	sqliteSchema5SHA256 = "7d545c736a508293321e1f757c402144b05a7b194153226053717768960eae27"
 )
 
 // SQLite reserves the literal ASCII prefix sqlite_ for internal objects.

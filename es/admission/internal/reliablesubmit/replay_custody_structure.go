@@ -452,10 +452,17 @@ func (v *replayStructure) assessment(f replayField) error {
 	})
 }
 
+// OperationalEvidenceLimit bounds the retained signed evidence record of a
+// scope-3 original. Custody and admission share this one value.
+const OperationalEvidenceLimit = 256 * 1024
+
 func (v *replayStructure) provenance(f replayField, scope byte) error {
 	return v.object(f, 6, 2, false, func(a []replayField) error {
-		if scope == 2 && string(a[0].value) != "synthetic_progress_nonoperational_v1" ||
-			scope == 3 && string(a[0].value) != "operational_local_v1" {
+		variant := string(a[0].value)
+		// Scope 3 has exactly one provenance literal. Any other value,
+		// including the literal PR #12 first published, is refused here.
+		if scope == 2 && variant != "synthetic_progress_nonoperational_v1" ||
+			scope == 3 && variant != "operational_local_v2" {
 			return errReplayFormat
 		}
 		for i := 0; i < 4; i++ {
@@ -463,17 +470,24 @@ func (v *replayStructure) provenance(f replayField, scope byte) error {
 				return err
 			}
 		}
-		if err := v.sequence(a[4], 8, 3, false, func(raw []byte) error {
-			return v.object(replayField{state: 1, value: raw}, 3, 4, false, func(m []replayField) error {
-				for _, f := range m {
-					if err := v.scalar(f, 's', 256, false); err != nil {
-						return err
+		if scope == 3 {
+			if len(a[4].value) == 0 || !utf8.Valid(a[4].value) ||
+				v.scalar(a[4], 'x', OperationalEvidenceLimit, false) != nil {
+				return errReplayFormat
+			}
+		} else {
+			if err := v.sequence(a[4], 8, 3, false, func(raw []byte) error {
+				return v.object(replayField{state: 1, value: raw}, 3, 4, false, func(m []replayField) error {
+					for _, f := range m {
+						if err := v.scalar(f, 's', 256, false); err != nil {
+							return err
+						}
 					}
-				}
-				return nil
-			})
-		}); err != nil {
-			return err
+					return nil
+				})
+			}); err != nil {
+				return err
+			}
 		}
 		return v.object(a[5], 2, 3, false, func(flags []replayField) error {
 			for _, f := range flags {

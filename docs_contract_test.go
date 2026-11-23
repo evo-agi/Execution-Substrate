@@ -4083,7 +4083,7 @@ func TestReliableSubmitPersistenceAndConcurrencyADRDocsContract(t *testing.T) {
 	if err != nil {
 		t.Fatalf("glob reliable-submit package files: %v", err)
 	}
-	if got, want := len(reliableSubmitFiles), 36; got != want {
+	if got, want := len(reliableSubmitFiles), 38; got != want {
 		t.Fatalf("reliable-submit package inventory has %d files: %v", got, reliableSubmitFiles)
 	}
 	assertContainsAll(t, "reliable-submit package current file set", strings.Join(reliableSubmitFiles, " "),
@@ -4099,6 +4099,8 @@ func TestReliableSubmitPersistenceAndConcurrencyADRDocsContract(t *testing.T) {
 		"es/admission/internal/reliablesubmit/sqlite_migrations.go",
 		"es/admission/internal/reliablesubmit/operational_handoff.go",
 		"es/admission/internal/reliablesubmit/operational_handoff_test.go",
+		"es/admission/internal/reliablesubmit/operational_admission.go",
+		"es/admission/internal/reliablesubmit/operational_admission_test.go",
 		"es/admission/internal/reliablesubmit/sqlite_operational_handoff_schema.go",
 		"es/admission/internal/reliablesubmit/sqlite_store.go",
 		"es/admission/internal/reliablesubmit/durable_record_test.go",
@@ -12607,8 +12609,8 @@ func TestPrivateReplayProgressSynchronizationInventoryDocsContract(t *testing.T)
 			}
 		}
 	}
-	if len(want) != 51 {
-		t.Fatalf("expected 51 exact structural fields, got %d", len(want))
+	if len(want) != 55 {
+		t.Fatalf("expected 55 exact structural fields, got %d", len(want))
 	}
 	admission := mustRead(t, ".docs/execution_lifecycle/es_execution_admission_model.md")
 	section := docSection(t, admission, "### 7.4 Exact synchronized mutable-state inventory", "### 7.5 Rejected A3 topology inventory")
@@ -12696,7 +12698,7 @@ func checkPrivateReplayProgressSynchronizationInventory(section string, want map
 			return fmt.Errorf("missing exact field %q", field)
 		}
 	}
-	if counts["Lock"] != 7 || counts["Atomic"] != 4 || counts["Reference"] != 40 {
+	if counts["Lock"] != 8 || counts["Atomic"] != 4 || counts["Reference"] != 43 {
 		return fmt.Errorf("synchronization category counts differ: %v", counts)
 	}
 	for field, roles := range permitRoles {
@@ -12707,7 +12709,7 @@ func checkPrivateReplayProgressSynchronizationInventory(section string, want map
 	text := compactText(section)
 	for _, rule := range []string{
 		"non-test production source under `./es/...` and `./cmd/es/...`",
-		"51 structurally synchronization-bearing fields: seven direct lock fields, four `atomic.Bool` fields, and 40 transitive reference, request or wrapper fields",
+		"55 structurally synchronization-bearing fields: eight direct lock fields, four `atomic.Bool` fields, and 43 transitive reference, request or wrapper fields",
 		"private replay path remains runtime-unwired",
 		"SQLite owns committed claim, progress, key and grant/use state",
 		"no package-level synchronization authority",
@@ -13908,9 +13910,18 @@ func TestOperationalSubmitHandoffContractSelection(t *testing.T) {
 	}
 
 	state := compactDocSection(t, owner, "## 2. Installation, scope and physical state", "## 3. Original, key cuts and encodings")
-	assertContainsAll(t, "retained state", state, "`operational_local_v1` / 3",
+	assertContainsAll(t, "retained state", state, "`operational_local_v2` / 3",
+		"including the removed `operational_local_v1` literal",
 		"Global caller/key occupation spans the table", "cannot be promoted, relabeled or republished as operational originals",
-		"Copy every field including physical rowid", "Marker is permanent", "No operations 6, 7, 9 or 10 on codec 5")
+		"Copy every field including physical rowid", "Marker is permanent", "No operations 6, 7, 9 or 10 on codec 5",
+		"`reliable_submit_operational_admission`, a STRICT table", "that can hold exactly one row",
+		"A codec-5 insert aborts unless an enabled admission row exists",
+		"operation kind is not 8 aborts unless an enabled admission row exists",
+		"Migration 5 copies the earlier rows before it creates any trigger",
+		"schema-5 shape published at `8058561` is refused on open")
+	if strings.Contains(state, "| 5 | 5 | `operational_local_v1` / 3 |") {
+		t.Fatal("the removed v1 scope row is still selected")
+	}
 	custody := compactDocSection(t, owner, "## 5. Exclusive staging and exact bindings", "## 6. Provider exchange and receipt")
 	assertContainsAll(t, "staging qualification", custody, "one exclusive descriptor-relative mkdir", "stamp without its live owner",
 		"No cross-invocation stamp authority", "Preserve every residue and capacity charge",
@@ -13985,4 +13996,785 @@ func TestOperationalSubmitHandoffContractRejectsUnsafeMutants(t *testing.T) {
 			}
 		})
 	}
+}
+
+func operationalCurrentAdmissionV2OwnerRule(owner string) bool {
+	return strings.Contains(owner, "a first-effect cut proceeds only if the presented token equals") &&
+		strings.Contains(owner, "the enabled admission row read under the SQLite writer lock") &&
+		strings.Contains(owner, "The presented token equals the enabled row read through the turn's connection.") &&
+		strings.Contains(owner, "the returned match must carry a token equal to that row") &&
+		strings.Contains(owner, "only bounded local Service admission") &&
+		strings.Contains(owner, "less than 30 seconds elapsed since it on both the monotonic and") &&
+		strings.Contains(owner, "a permanent local superseded latch is set") &&
+		strings.Contains(owner, "A fetch or verification failure changes nothing.") &&
+		strings.Contains(owner, "Receipt-only") && strings.Contains(owner, "but no view, token, confirmation,")
+}
+
+func operationalV1RemovalRule(owner string) bool {
+	return strings.Contains(owner, "`operational_local_v1` is removed and is not a compatibility edge.") &&
+		strings.Contains(owner, "Scope-3 custody refuses the") &&
+		strings.Contains(owner, "the reader refuses it in its fail-closed default") &&
+		strings.Contains(owner, "refuses an empty evidence record instead of choosing a literal") &&
+		strings.Contains(owner, "no\nproduction source contains the v1 literal") &&
+		!strings.Contains(owner, "Temporary compatibility edge")
+}
+
+func operationalAdmissionOutcomeRule(owner string) bool {
+	return strings.Contains(owner, "| Retained original: signer not allowed or revoked, artifact revoked, built-in policy denies | `OperationalDenied` | No |") &&
+		strings.Contains(owner, "| Retained evidence does not verify under the current verifier | `OperationalDenied`.") &&
+		strings.Contains(owner, "| First delivery that ordinary resolution refuses, whatever the cause: the rules, an unsupported request or an unavailable dependency | `OperationalUnavailable`. Nothing is stored. | No |") &&
+		strings.Contains(owner, "| The context of the call has ended and the admission returned no refusal of its own in this call | `OperationalCanceled`. `OperationalTimeout` where the deadline of the call passes while the provider is asked about the job (below) | No, except while a durable marker is reconciled, where the stored run is returned (below) |") &&
+		strings.Contains(owner, "When the deadline of the call passes while the provider\nis asked about the job, the exchange reports `OperationalTimeout`") &&
+		strings.Contains(owner, "the result is the same\nambiguous one with the run") &&
+		strings.Contains(owner, "At the other three points, and before the marker,\na passed deadline answers `OperationalCanceled` like a cancellation.") &&
+		strings.Contains(owner, "The first five rows are value-free and withhold run and receipt at the\nrefused cut.") &&
+		strings.Contains(owner, "A cancelled call returns the stored run only while it reconciles a durable\nmarker: at the reconciliation entry, at the final sender entry, whose answer\narrives at that entry, during the observation of the job and at the binding\nof a completed observation.") &&
+		strings.Contains(owner, "a binding before the marker is value-free. So is the one from the\nverification of an accepted receipt, although run and receipt are durable") &&
+		strings.Contains(owner, "names it as the prerequisite `CP-PUBLIC-MAPPING`") &&
+		!strings.Contains(owner, "Every row is value-free") &&
+		!strings.Contains(owner, "a later gate, and the handoff has no production caller") &&
+		strings.Contains(owner, "`OperationalDenied` is the answer of the re-judgment only.") &&
+		strings.Contains(owner, "an ended context reports the cancellation and not `OperationalUnavailable` or") &&
+		strings.Contains(owner, "also when the\ncontext has ended meanwhile") &&
+		strings.Contains(owner, "That holds whatever stopped the call between staging and the stamp") &&
+		strings.Contains(owner, "| No view, token not equal to the row, withdrawn, superseded, deadline passed, unsupported required input or missing bounded payload | `OperationalUnavailable` | No |") &&
+		strings.Contains(owner, "an existing original whose realm is not the domain's | `OperationalIntegrity` | No |") &&
+		strings.Contains(owner, "the authority\nrefusal is reported, at reconciliation and at the final sender entry alike") &&
+		strings.Contains(owner, "reports the last writer\nattempted in that call") &&
+		strings.Contains(owner, "returns the stored run to the\nauthenticated original caller under any authority and sends no trust request") &&
+		strings.Contains(owner, "so before staging a denial does not poison the claim") &&
+		strings.Contains(owner, "it needs a new submit key") &&
+		strings.Contains(owner, "one\nsender already past its release re-read may still POST")
+}
+
+// operationalAdmissionLockRule holds the statements about which locks the
+// admission operations and the confirmation hold, and refuses the three
+// sentences the code never matched.
+func operationalAdmissionLockRule(owner string) bool {
+	return strings.Contains(owner, "handle's lock in read mode (`OperationalCustody.mu`), so `Close` waits for it.") &&
+		strings.Contains(owner, "must therefore be called outside every borrow of the same handle") &&
+		strings.Contains(owner, "Confirmation runs outside every writer turn and every transaction, and holds\nneither `Service.mu` nor the owner mutex while it fetches.") &&
+		strings.Contains(owner, "pre-checks it runs inside the borrow of the original, so the custody handle's\nread lock is held across the request") &&
+		strings.Contains(owner, "The confirmation of a\nfresh delivery holds no lock.") &&
+		!strings.Contains(owner, "outside every lock") &&
+		!strings.Contains(owner, "takes no lock") &&
+		!strings.Contains(owner, "never custody")
+}
+
+// operationalCustodyLockHolders lists the methods of OperationalCustody in
+// the store package's non-test sources that lock or read-lock its mutex.
+func operationalCustodyLockHolders(t *testing.T) []string {
+	t.Helper()
+	const directory = "es/admission/internal/reliablesubmit"
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var holders []string
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(token.NewFileSet(), filepath.Join(directory, name), nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, declaration := range file.Decls {
+			function, ok := declaration.(*ast.FuncDecl)
+			if !ok || function.Recv == nil || len(function.Recv.List) != 1 || function.Body == nil {
+				continue
+			}
+			pointer, ok := function.Recv.List[0].Type.(*ast.StarExpr)
+			if !ok || len(function.Recv.List[0].Names) != 1 {
+				continue
+			}
+			if owner, ok := pointer.X.(*ast.Ident); !ok || owner.Name != "OperationalCustody" {
+				continue
+			}
+			receiver := function.Recv.List[0].Names[0].Name
+			locks := false
+			ast.Inspect(function.Body, func(node ast.Node) bool {
+				call, ok := node.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				method, ok := call.Fun.(*ast.SelectorExpr)
+				if !ok || (method.Sel.Name != "Lock" && method.Sel.Name != "RLock") {
+					return true
+				}
+				field, ok := method.X.(*ast.SelectorExpr)
+				if !ok || field.Sel.Name != "mu" {
+					return true
+				}
+				if base, ok := field.X.(*ast.Ident); ok && base.Name == receiver {
+					locks = true
+				}
+				return true
+			})
+			if locks {
+				holders = append(holders, function.Name.Name)
+			}
+		}
+	}
+	slices.Sort(holders)
+	return holders
+}
+
+// operationalCustodyLockRowHolders reads the methods the admission model's
+// lock inventory row names for OperationalCustody.mu.
+func operationalCustodyLockRowHolders(admission string) []string {
+	const prefix = "| Lock | `es/admission/internal/reliablesubmit:OperationalCustody.mu:sync.RWMutex` |"
+	var holders []string
+	for _, line := range strings.Split(admission, "\n") {
+		if !strings.HasPrefix(line, prefix) {
+			continue
+		}
+		cells := strings.Split(line, "|")
+		if len(cells) < 7 {
+			return nil
+		}
+		for _, cell := range cells[4:6] {
+			for _, match := range regexp.MustCompile("`OperationalCustody\\.([A-Za-z0-9_]+)`").FindAllStringSubmatch(cell, -1) {
+				if !slices.Contains(holders, match[1]) {
+					holders = append(holders, match[1])
+				}
+			}
+		}
+	}
+	slices.Sort(holders)
+	return holders
+}
+
+func operationalV2AssuranceOwnerRule(owner string) bool {
+	return strings.Contains(owner, "zero non-test references") &&
+		strings.Contains(owner, "exactly one view construction, in the install method of the state") &&
+		strings.Contains(owner, "exactly one construction of the\nadmission state, in its constructor, which `NewService` alone calls") &&
+		strings.Contains(owner, "`es/admission/internal/admissionstate`, under that package's own read-write\nlock. `Service.mu` does not cover them.") &&
+		strings.Contains(owner, "It imports neither `reflect`, `unsafe` nor `C` and performs no I/O") &&
+		strings.Contains(owner, "Each is a struct whose only field is an unexported pointer\nto an unexported struct") &&
+		strings.Contains(owner, "A Service built any other way holds the zero handle, which is closed") &&
+		strings.Contains(owner, "It is copied on the way in and on every way out") &&
+		strings.Contains(owner, "Outside the package the following do not compile") &&
+		strings.Contains(owner, "type-checking each form against the real packages for all three build\ntargets") &&
+		strings.Contains(owner, "it does not run the compiler itself") &&
+		strings.Contains(owner, "Two things remain possible outside the package, and the guard below holds\nboth by exact inventories") &&
+		strings.Contains(owner, "A call cannot clear a latch, move the\nconfirmation time back or install a second view") &&
+		strings.Contains(owner, "A\nhandle saved earlier names the same state and restores nothing") &&
+		strings.Contains(owner, "The package boundary does not hold against reflection or `unsafe`") &&
+		strings.Contains(owner, "Neither the package boundary nor any inventory below holds against code that\nwrites the memory of its own process without going through the language") &&
+		strings.Contains(owner, "The function imports neither\n`reflect`, `unsafe` nor `C`, names no protected field") &&
+		strings.Contains(owner, "No source inventory can hold that\nroad in general") &&
+		strings.Contains(owner, "dependency is therefore inside the trust boundary of the admission\nstate") &&
+		strings.Contains(owner, "The boundary is one of the language, not of the process") &&
+		strings.Contains(owner, "nothing may\nrely on it against code of lower trust in the same process") &&
+		strings.Contains(owner, "One limit has no inventory at all") &&
+		strings.Contains(owner, "The other ways to that memory are system calls") &&
+		strings.Contains(owner, "The import inventory below does not list the files that import\n`syscall` or `golang.org/x/sys/unix`") &&
+		strings.Contains(owner, "Two kinds of road do go through the language without a `reflect`, `unsafe`\nor `C` import, and the guard holds both") &&
+		strings.Contains(owner, "converts to a pointer of any type in every\nfile; the import of `unsafe` is needed only to spell the type") &&
+		strings.Contains(owner, "So a raw pointer value may appear only in a file that imports\n`unsafe`") &&
+		strings.Contains(owner, "So an import of a dependency package outside a\nreviewed list puts its file into the import inventory as well") &&
+		strings.Contains(owner, "`unsafe`, `C` or `plugin` import in any production package fails a test") &&
+		strings.Contains(owner, "and so does an import of a dependency package outside the reviewed list") &&
+		strings.Contains(owner, "a new dependency import, a further package of a\nlisted module, a new version and a replacement each fail until the list is\nupdated") &&
+		strings.Contains(owner, "value whose type has the underlying type `unsafe.Pointer` in a file that\ndoes not import `unsafe` fails it") &&
+		strings.Contains(owner, "It judges the file that holds each such\nvalue by the value's real position, not by the file and line that a\n`//line` or `/*line` directive names") &&
+		strings.Contains(owner, "a test refuses the calls that read an adjusted position in the\ntest files of the module") &&
+		strings.Contains(owner, "another test refuses such a directive in every\nnon-test Go file of the repository") &&
+		strings.Contains(owner, "The rule reads the static types of the source") &&
+		strings.Contains(owner, "it cannot become a typed pointer there\nwithout a constraint that spells the type") &&
+		strings.Contains(owner, "Raw system calls through `syscall` and `golang.org/x/sys/unix` are part of\nthat limit") &&
+		strings.Contains(owner, "a source inventory\ncannot show that no other road exists") &&
+		strings.Contains(owner, "aggregate HEAD ceiling for PR #12 plus its repairs was 52 files") &&
+		strings.Contains(owner, "It adds exactly one more path, a test file:\nA/workstream_a_guardrails_test.go") &&
+		strings.Contains(owner, "HEAD ceiling for PR #12 plus its repairs is 53 files") &&
+		strings.Contains(owner, "Every exported\nfunction and method of the package has an exact list of the functions that\nreference it") &&
+		strings.Contains(owner, "and the inspection method and the question whether a handle names a view,\nwhich exist for tests, nowhere") &&
+		strings.Contains(owner, "The exported\nsurface of the package is a closed list") &&
+		strings.Contains(owner, "package is pinned by the SHA-256 hash of its bytes") &&
+		strings.Contains(owner, "Installing a view takes\n`Service.mu` and then the lock of the admission state") &&
+		strings.Contains(owner, "field of a production struct whose type holds one of its two handle types,\nfails the guard until it has an inventory, and a package variable that holds\na handle is refused") &&
+		!strings.Contains(owner, "operationalAdmissionSnapshot") &&
+		!strings.Contains(owner, "the latches and the\nconfirmation included") &&
+		strings.Contains(owner, "independently build the full scope-3 TLV and PB1") &&
+		strings.Contains(owner, "Transparent parentheses enclosing a resolved field") &&
+		strings.Contains(owner, "parenthesized reads") &&
+		strings.Contains(owner, "targets remain assignments") &&
+		strings.Contains(owner, "targets remain read-writes") &&
+		strings.Contains(owner, "Range-clause `=` key and value whole-field targets") &&
+		strings.Contains(owner, "Taking a field's address is an `address` access") &&
+		strings.Contains(owner, "is a `write-through` access") &&
+		strings.Contains(owner, "A conversion is a transparent step in that chain") &&
+		strings.Contains(owner, "A protected field can also be written without being spelled") &&
+		strings.Contains(owner, "occurrence of its owning struct type as its own access kind") &&
+		strings.Contains(owner, "a zero-value declaration and a same-shape") &&
+		strings.Contains(owner, "a conversion in either direction") &&
+		strings.Contains(owner, "is listed as well (`whole-instantiate`)") &&
+		strings.Contains(owner, "(`interface-selection`), are references to the method") &&
+		strings.Contains(owner, "Every type argument is read.") &&
+		strings.Contains(owner, "equal the owning type's\n(`whole-mirror`)") &&
+		strings.Contains(owner, "whatever its field types and\ntags") &&
+		strings.Contains(owner, "through a named or embedded constraint (`whole-constrain`)") &&
+		strings.Contains(owner, "The inventory therefore lists, at its declaration, every type parameter") &&
+		strings.Contains(owner, "an exact inventory holds\nevery type parameter declared in a package that declares an owning type") &&
+		strings.Contains(owner, "Each owning type is read in every production package of the module") &&
+		strings.Contains(owner, "Every protected field is unexported, which a test holds") &&
+		strings.Contains(owner, "non-test Go file of the module is compiled for none of them") &&
+		strings.Contains(owner, "a statement assembled at run time is not seen") &&
+		strings.Contains(owner, "exact import inventory\ncovers every non-test source file of the module") &&
+		strings.Contains(owner, "A production package is chosen by the\ndirectory the go command compiles it from, not by a pattern or by its import\npath") &&
+		strings.Contains(owner, "compiles such a package when another one imports it, so it is read like every\nother") &&
+		strings.Contains(owner, "in the Go root nor in the module cache fails the loader") &&
+		strings.Contains(owner, "It reads every non-test Go file in every directory of the repository\nexcept `.git`, whatever the directory is called.") &&
+		strings.Contains(owner, "holds each file that has such an import by the SHA-256 of its content") &&
+		strings.Contains(owner, "The check lists every\ndirectory of the repository except `.git`") &&
+		strings.Contains(owner, "a directive of\n`go.mod` outside the exact list `go`, `module` and `require`, which refuses a\n`replace` line") &&
+		strings.Contains(owner, "a `go.work` file anywhere in the repository or above it") &&
+		strings.Contains(owner, "a `go.mod` below the repository root") &&
+		strings.Contains(owner, "the flags `-modfile` and `-overlay`") &&
+		!strings.Contains(owner, "only at an instantiation that names an owning type") &&
+		!strings.Contains(owner, "Their scope is these two") &&
+		!strings.Contains(owner, "of the two packages is compiled") &&
+		strings.Contains(owner, "exactly one reference to `Service.confirmOperationalAdmission`") &&
+		strings.Contains(owner, "Exactly three store functions contain a statement that") &&
+		strings.Contains(owner, "not a general proof of aliases or")
+}
+
+// operationalCommissioningPrerequisiteIDs reads the identifiers of the owner
+// contract's §8 commissioning gate table in document order.
+func operationalCommissioningPrerequisiteIDs(owner string) []string {
+	var ids []string
+	inTable := false
+	for _, line := range strings.Split(owner, "\n") {
+		if line == "| Identifier | Prerequisite |" {
+			inTable = true
+			continue
+		}
+		if !inTable {
+			continue
+		}
+		if !strings.HasPrefix(line, "|") {
+			break
+		}
+		cells := strings.Split(line, "|")
+		if len(cells) < 3 {
+			break
+		}
+		id := strings.TrimSpace(cells[1])
+		if strings.HasPrefix(id, "`") && strings.HasSuffix(id, "`") && len(id) > 2 {
+			ids = append(ids, strings.Trim(id, "`"))
+		}
+	}
+	return ids
+}
+
+// operationalCommissioningGateIDs reads the same identifiers from the typed
+// gate beside the zero-reference inventory in the admission package.
+func operationalCommissioningGateIDs(source string) []string {
+	const open = "var operationalCommissioningPrerequisites = []string{"
+	start := strings.Index(source, open)
+	if start < 0 || strings.Count(source, open) != 1 {
+		return nil
+	}
+	body := source[start+len(open):]
+	end := strings.Index(body, "}")
+	if end < 0 {
+		return nil
+	}
+	var ids []string
+	for _, field := range strings.Split(body[:end], ",") {
+		field = strings.TrimSpace(field)
+		if field == "" {
+			continue
+		}
+		if len(field) < 3 || field[0] != '"' || field[len(field)-1] != '"' {
+			return nil
+		}
+		ids = append(ids, field[1:len(field)-1])
+	}
+	return ids
+}
+
+func TestOperationalSubmitHandoffCurrentAdmissionV2Contract(t *testing.T) {
+	owner := mustRead(t, operationalHandoffOwnerDoc)
+	plans := mustRead(t, "PLANS.md")
+	admission := mustRead(t, ".docs/execution_lifecycle/es_execution_admission_model.md")
+	persistence := mustRead(t, ".docs/execution_lifecycle/reliable_submit_persistence_and_concurrency.md")
+	recovery := mustRead(t, ".docs/execution_lifecycle/submit_idempotency_correlation_and_recovery.md")
+	boundary := mustRead(t, ".docs/system_overview/boundaries.md")
+	implementation := mustRead(t, ".docs/execution_lifecycle/implementation.md")
+	assertContainsAll(t, "selected v2 owner", owner,
+		"operational_local_v2", "Claims **and** Seal", "256 KiB", "same admission before it can release a sender",
+		"Commission, advance and withdrawal take the custody\nhandle's lock in read mode and then the SQLite writer, without `Service.mu`",
+		"Unknown variants fail closed", "Re-derivation of the reliable-submit Reopened redesign seam",
+		"schema 5 is unmerged, stays on the reopened seam and is not a Current invariant")
+	assertContainsAll(t, "durable admission row and operations", owner,
+		"SHA-256 over the label `ESOHADM1`", "Only the store mints a nonzero token",
+		"| Commission | Empty table: insert generation 1 with this digest.",
+		"| Advance (expected generation g) | Row at generation g with a different digest, enabled or withdrawn",
+		"| Withdraw | Enabled row with the token's installation and epoch: write withdrawn.",
+		"Withdrawal sets the local latch first and then writes the durable row",
+		"advances the generation in the same epoch and does\nnot invalidate any original",
+		"None of the three operations may run\ninside a writer turn",
+		"The digest covers trust, verifier and policy configuration",
+		"Confirmation is attempted at\nmost once per invocation and only at three points",
+		"can only add a non-negative skew")
+	assertContainsAll(t, "authority and independent evidence obligations", owner,
+		"zero non-test references", "exactly one view construction, in the install method of the state", "Exact protected-field reads",
+		"independently build the full scope-3 TLV and PB1", "valid signature but",
+		"Transparent parentheses enclosing a resolved field", "parenthesized reads",
+		"targets remain assignments", "targets remain read-writes", "not a general proof of aliases or",
+		"Range-clause `=` key and value whole-field targets", "Taking a field's address is an `address` access",
+		"is a `write-through` access", "ceiling for PR #12 plus its repairs was 48 files",
+		"ceiling for PR #12 plus its repairs was 52 files",
+		"HEAD ceiling for PR #12 plus its repairs is 53 files",
+		"It adds exactly one more path, a test file:\nA/workstream_a_guardrails_test.go",
+		"A/reliable_submit_operational_admission_redteam2_test.go (new),\nA/reliable_submit_operational_admission_redteam2_crash_test.go (new),\nA/reliable_submit_operational_admission_redteam2_guard_test.go (new) and\nA/reliable_submit_operational_admission_limits_test.go (new)",
+		"A/internal/admissionstate/state.go (new) and\nA/internal/admissionstate/state_test.go (new)",
+		"A retry after a changed configured literal policy, artifact revocation or", "a denial does not")
+	assertContainsAll(t, "selected plan", plans,
+		"PR #12 retained-current-admission v2 repair", "fresh independent audit",
+		"PR #12 v2 field-access guard completion", "red-team review of its",
+		"PR #12 durable admission generation, freshness and v1 removal",
+		"PR #12 durable admission: corrections after the second audit",
+		"PR #12 durable admission: corrections after the third audit",
+		"PR #12 durable admission: corrections after the fourth audit",
+		"PR #12 durable admission: the admission state package",
+		"PR #12 durable admission: a limit named after the fifth audit",
+		"PR #12 durable admission: repairs after the red-team",
+		"PR #12 durable admission: line directives after the sixth audit",
+		"The rule\nand every other guard now read the real position of the code",
+		"Every non-test Go file of the repository is refused such a\ndirective as well",
+		"so the path ceiling of PR #12 plus its repairs is 53 files",
+		"This entry changes guard tests and documents only.",
+		"two more roads of the same class\nwere measured",
+		"A new raw pointer rule refuses\nsuch a value in a file that does not import `unsafe`",
+		"Raw system calls stay\noutside every inventory",
+		"The red-team's tests are adopted as permanent tests",
+		"It changes no behaviour, no stored format and no public\ncontract. The precise wording is owned by",
+		"code that writes the memory of\nits own process through the operating system",
+		"so this entry adds no guard rule",
+		"is inside the trust boundary of the admission state, and nothing may rely on\nthe package boundary against code of lower trust",
+		"This entry changes documents and the docs contract test only",
+		"It is not added to\nthe commissioning gate as a seventh prerequisite",
+		"It changes no behaviour, no stored format and no public\ncontract",
+		"a\nnew package, `es/admission/internal/admissionstate`, under that package's\nown lock",
+		"Outside the package the compiler now refuses what the guard searched for",
+		"so the module-wide\n`reflect`, `unsafe` and cgo import inventory stays as it is",
+		"which can refuse a claim or\nrequire an input and cannot allow one",
+		"The guard now chooses what it reads by the directory a package is compiled\nfrom",
+		"Its file-set check and its import inventory read every directory of the\nrepository except `.git`",
+		"is held in\nthe import inventory by the SHA-256 of its content",
+		"the answer is\n`OperationalTimeout` with the stored run",
+		"It lists every struct type written in the module whose field names,\norder and embedding equal an owning type's (`whole-mirror`)",
+		"at its declaration\n(`whole-constrain`)",
+		"which the\ncommissioning gate names as the prerequisite `CP-PUBLIC-MAPPING`",
+		"The commissioning gate gains a sixth\nprerequisite, `CP-PUBLIC-MAPPING`",
+		"refusal of a retained original by the current rules reports the value-free",
+		"ordinary resolution refuses, which stores nothing",
+		"so those two have no re-read",
+		"amend the\nunmerged migration 5 (decision D-1)", "with a 30 second limit (D-2)",
+		"delete `operational_local_v1` (D-3)", "no **Temporary compatibility\nedge** remains on this path",
+		"`CP-ROLLBACK`, `CP-EPOCH`, `CP-POLICY-CUSTODY`, `CP-NATIVE`, `CP-RELEASE`,\n`CP-PUBLIC-MAPPING`")
+	assertContainsAll(t, "separate evidence and policy ownership", admission,
+		"separately on `resolvedExecution`", "private SQLite writer accepts only an exact inspected",
+		"one durable admission row", "does not change the epoch", "no compatibility edge is retained on this",
+		"The view is held by the admission\nstate package behind its own lock",
+		"naming, copying or restoring that state does not compile\noutside the package",
+		"the lock of the admission\nstate protects the latches and the confirmation time")
+	assertContainsAll(t, "durable admission scope", persistence,
+		"historical migrations 1–4 with their literal hashes", "bounded opaque full signed",
+		"`reliable_submit_operational_admission`", "It is not a durable policy decision about",
+		"`operational_local_v1` is removed at both layers", "codecs 1–4 are unaffected",
+		"never\ncalled inside a writer turn", "must be called outside every borrow of the\nsame custody handle",
+		"at the two\npre-checks it runs under the custody read lock of the borrow",
+		"brief read of the\nadmission state under its own lock")
+	assertContainsAll(t, "receipt exception", recovery,
+		"a committed accepted receipt is verified", "positive registration",
+		"`operational_local_v1` is removed and refused", "reports denied or unavailable",
+		"sends no\ntrust request")
+	assertContainsAll(t, "service boundary", boundary,
+		"ES alone owns current admission", "It does not move admission authority",
+		"Temporary compatibility edge: none. `operational_local_v1` is removed.",
+		"stores no per-claim decision")
+	assertContainsAll(t, "private confirmation note", implementation,
+		"confirms its commissioned trust with EGS before a retained first effect",
+		"refuses unless the last confirmation is less than 30 seconds old",
+		"ordinary Submit does not confirm")
+	if !operationalCurrentAdmissionV2OwnerRule(owner) {
+		t.Fatal("current-admission owner rule incomplete")
+	}
+	if !operationalV1RemovalRule(owner) {
+		t.Fatal("v1 removal owner rule is incomplete")
+	}
+	if !operationalAdmissionOutcomeRule(owner) {
+		t.Fatal("outcome mapping owner rule is incomplete")
+	}
+	if !operationalAdmissionLockRule(owner) {
+		t.Fatal("lock statements of the admission operations and the confirmation are incomplete")
+	}
+	// The lock inventory row names exactly the methods that take the lock.
+	if code, row := operationalCustodyLockHolders(t), operationalCustodyLockRowHolders(admission); len(code) == 0 || !slices.Equal(code, row) {
+		t.Fatalf("OperationalCustody.mu holders differ: code %q, admission model row %q", code, row)
+	}
+	if !operationalV2AssuranceOwnerRule(owner) {
+		t.Fatal("v2 authority and independent vector obligations are incomplete")
+	}
+	for _, production := range []string{
+		"es/admission/reliable_submit_operational_admission.go", "es/admission/reliable_submit_operational_handoff.go",
+		"es/admission/reliable_submit_operational_format.go", "es/admission/service.go",
+		"es/admission/internal/reliablesubmit/operational_handoff.go",
+		"es/admission/internal/reliablesubmit/operational_admission.go",
+		"es/admission/internal/reliablesubmit/replay_custody_structure.go",
+	} {
+		if strings.Contains(mustRead(t, production), "operational_local_v1") {
+			t.Fatalf("%s still contains the removed v1 literal", production)
+		}
+	}
+
+	wantIDs := []string{"CP-ROLLBACK", "CP-EPOCH", "CP-POLICY-CUSTODY", "CP-NATIVE", "CP-RELEASE", "CP-PUBLIC-MAPPING"}
+	docIDs := operationalCommissioningPrerequisiteIDs(owner)
+	gateIDs := operationalCommissioningGateIDs(mustRead(t, "es/admission/reliable_submit_guardrails_test.go"))
+	if !slices.Equal(docIDs, wantIDs) || !slices.Equal(gateIDs, wantIDs) {
+		t.Fatalf("commissioning prerequisites differ: owner %q, gate %q, want %q", docIDs, gateIDs, wantIDs)
+	}
+}
+
+func TestOperationalSubmitHandoffCurrentAdmissionV2RejectsUnsafeMutants(t *testing.T) {
+	owner := mustRead(t, operationalHandoffOwnerDoc)
+	if !operationalCurrentAdmissionV2OwnerRule(owner) {
+		t.Fatal("real owner rule incomplete")
+	}
+	for _, tc := range []struct{ name, from, to string }{
+		{"TokenComparedOutsideWriter", "the enabled admission row read under the SQLite writer lock", "a cached copy of the admission row"},
+		{"EstablishUnfenced", "The presented token equals the enabled row read through the turn's connection.", "The local view is sampled."},
+		{"MatchWithoutToken", "the returned match must carry a token equal to that row", "the returned match is accepted"},
+		{"WriterRemoteResolver", "only bounded local Service admission", "a current remote resolver"},
+		{"DeadlineLengthened", "less than 30 seconds elapsed since it on both the monotonic and", "less than 30 minutes elapsed since it on either the monotonic or"},
+		{"SupersessionForgiven", "a permanent local superseded latch is set", "the view adopts the fetched trust"},
+		{"FailedConfirmationExtends", "A fetch or verification failure changes nothing.", "A fetch or verification failure keeps the last confirmation current."},
+		{"ReceiptPolicyGate", "but no view, token, confirmation,", "and a current view, token and confirmation, but no"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if strings.Count(owner, tc.from) != 1 {
+				t.Fatalf("owner mutation anchor count %d", strings.Count(owner, tc.from))
+			}
+			mutated := strings.Replace(owner, tc.from, tc.to, 1)
+			if operationalCurrentAdmissionV2OwnerRule(mutated) {
+				t.Fatal("unsafe owner mutation survived")
+			}
+		})
+	}
+	if !operationalV1RemovalRule(owner) {
+		t.Fatal("real v1 removal rule incomplete")
+	}
+	for _, tc := range []struct{ name, from, to string }{
+		{"V1Retained", "`operational_local_v1` is removed and is not a compatibility edge.", "An `operational_local_v1` original remains a **Temporary compatibility edge**."},
+		{"CustodyAcceptsV1", "Scope-3 custody refuses the", "Scope-3 custody accepts the"},
+		{"ReaderAcceptsV1", "the reader refuses it in its fail-closed default", "the reader accepts it as a historical variant"},
+		{"EncoderFallsBack", "refuses an empty evidence record instead of choosing a literal", "falls back to the v1 literal for an empty evidence record"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if strings.Count(owner, tc.from) != 1 {
+				t.Fatalf("owner mutation anchor count %d", strings.Count(owner, tc.from))
+			}
+			if operationalV1RemovalRule(strings.Replace(owner, tc.from, tc.to, 1)) {
+				t.Fatal("unsafe v1 mutation survived")
+			}
+		})
+	}
+	if !operationalAdmissionOutcomeRule(owner) {
+		t.Fatal("real outcome rule incomplete")
+	}
+	for _, tc := range []struct{ name, from, to string }{
+		{"DenialReportedUnavailable", "built-in policy denies | `OperationalDenied` | No |", "built-in policy denies | `OperationalUnavailable` | No |"},
+		{"DenialNotLimitedToRetainedOriginals", "| Retained original: signer not allowed or revoked", "| Signer not allowed or revoked"},
+		{"FirstDeliveryReportedDenied", "an unavailable dependency | `OperationalUnavailable`. Nothing is stored. | No |", "an unavailable dependency | `OperationalDenied`. Nothing is stored. | No |"},
+		{"CancellationRowDropped", "returned no refusal of its own in this call | `OperationalCanceled`. `OperationalTimeout` where", "returned no refusal of its own in this call | `OperationalUnavailable`. `OperationalTimeout` where"},
+		{"CancelledAnswerNeverReturnsTheRun", "is asked about the job (below) | No, except while a durable marker is reconciled, where the stored run is returned (below) |", "is asked about the job (below) | No |"},
+		{"DeadlineAtTheObservationReportedCanceled", "`OperationalCanceled`. `OperationalTimeout` where the deadline of the call passes while the provider is asked about the job (below) |", "`OperationalCanceled` |"},
+		{"DeadlineAtTheObservationNotStated", "is asked about the job, the exchange reports `OperationalTimeout`", "is asked about the job, the exchange reports `OperationalCanceled`"},
+		{"DeadlineAtTheObservationWithholdsTheRun", "the result is the same\nambiguous one with the run", "the result is\nvalue-free"},
+		{"DeadlineReportedAsTimeoutEverywhere", "a passed deadline answers `OperationalCanceled` like a cancellation.", "a passed deadline answers `OperationalTimeout`."},
+		{"EveryRowValueFree", "The first five rows are value-free and withhold run and receipt at the\nrefused cut.", "Every row is value-free and withholds run and receipt at the refused cut."},
+		{"CancelledAnswerAlwaysReturnsTheRun", "returns the stored run only while it reconciles a durable\nmarker", "returns the stored run wherever a\nmarker"},
+		{"CancelledObservationBindingWithholdsTheRun", "during the observation of the job and at the binding\nof a completed observation.", "and during the observation of the job."},
+		{"CancelledReceiptReplayReturnsTheRun", "So is the one from the\nverification of an accepted receipt, although", "Not so the one from the\nverification of an accepted receipt, because"},
+		{"PublicMappingLeftToALaterGate", "names it as the prerequisite `CP-PUBLIC-MAPPING`", "leaves it to a later gate"},
+		{"CancelledStepReportsItsOwnReason", "an ended context reports the cancellation and not `OperationalUnavailable` or", "an ended context reports its own reason, `OperationalUnavailable` or"},
+		{"CancellationBeatsDenial", "also when the\ncontext has ended meanwhile", "unless the\ncontext has ended meanwhile"},
+		{"ResidueOnlyAfterDenial", "That holds whatever stopped the call between staging and the stamp", "That holds only for a denial between staging and the stamp"},
+		{"DenialDisclosesRun", "built-in policy denies | `OperationalDenied` | No |", "built-in policy denies | `OperationalDenied` | Yes |"},
+		{"FenceReportedDenied", "missing bounded payload | `OperationalUnavailable` | No |", "missing bounded payload | `OperationalDenied` | No |"},
+		{"CancellationWins", "at reconciliation and at the final sender entry alike", "except at reconciliation and at the final sender entry"},
+		{"DenialPoisonsEverywhere", "so before staging a denial does not poison the claim", "so a denial never poisons the claim"},
+		{"WithdrawalRetractsSender", "one\nsender already past its release re-read may still POST", "no sender can POST afterwards"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if strings.Count(owner, tc.from) != 1 {
+				t.Fatalf("owner mutation anchor count %d", strings.Count(owner, tc.from))
+			}
+			if operationalAdmissionOutcomeRule(strings.Replace(owner, tc.from, tc.to, 1)) {
+				t.Fatal("unsafe outcome mutation survived")
+			}
+		})
+	}
+	if !operationalAdmissionLockRule(owner) {
+		t.Fatal("real lock rule incomplete")
+	}
+	for _, tc := range []struct{ name, from, to string }{
+		{"ConfirmationOutsideEveryLock", "Confirmation runs outside every writer turn and every transaction, and holds\nneither `Service.mu` nor the owner mutex while it fetches.", "Confirmation runs outside every lock and every transaction."},
+		{"ConfirmationTakesNoLock", "pre-checks it runs inside the borrow of the original, so the custody handle's\nread lock is held across the request", "pre-checks it takes no lock while it fetches"},
+		{"OperationsNeverTakeCustodyLock", "handle's lock in read mode (`OperationalCustody.mu`), so `Close` waits for it.", "handle's SQLite writer and never custody locks."},
+		{"OperationsAllowedInsideBorrow", "must therefore be called outside every borrow of the same handle", "may be called inside a borrow of the same handle"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if strings.Count(owner, tc.from) != 1 {
+				t.Fatalf("owner mutation anchor count %d", strings.Count(owner, tc.from))
+			}
+			if operationalAdmissionLockRule(strings.Replace(owner, tc.from, tc.to, 1)) {
+				t.Fatal("unsafe lock statement survived")
+			}
+		})
+	}
+	t.Run("LockInventoryRowOmitsAHolder", func(t *testing.T) {
+		admission := mustRead(t, ".docs/execution_lifecycle/es_execution_admission_model.md")
+		const entry = "`OperationalCustody.operationalAdmissionWrite`, "
+		if strings.Count(admission, entry) != 1 {
+			t.Fatalf("lock row anchor count %d", strings.Count(admission, entry))
+		}
+		code := operationalCustodyLockHolders(t)
+		if row := operationalCustodyLockRowHolders(strings.Replace(admission, entry, "", 1)); slices.Equal(code, row) {
+			t.Fatalf("a row without operationalAdmissionWrite still equals the code: %q", row)
+		}
+		if row := operationalCustodyLockRowHolders(admission); !slices.Contains(code, "operationalAdmissionWrite") || !slices.Equal(code, row) {
+			t.Fatalf("real lock row differs from the code: code %q row %q", code, row)
+		}
+	})
+	for _, tc := range []struct{ name, phrase string }{
+		{"MissingZeroCommissionInventory", "zero non-test references"},
+		{"MissingViewConstructionOwner", "exactly one view construction, in the install method of the state"},
+		{"MissingStateConstructionOwner", "admission state, in its constructor, which `NewService` alone calls"},
+		{"MissingStatePackageOwnsItsLock", "under that package's own read-write\nlock"},
+		{"MissingStatePackageImportRule", "It imports neither `reflect`, `unsafe` nor `C` and performs no I/O"},
+		{"MissingOpaqueHandleRule", "Each is a struct whose only field is an unexported pointer\nto an unexported struct"},
+		{"MissingClosedZeroHandle", "holds the zero handle, which is closed"},
+		{"MissingContentCopyRule", "It is copied on the way in and on every way out"},
+		{"MissingCompileRefusalList", "Outside the package the following do not compile"},
+		{"MissingCompileRefusalTest", "type-checking each form against the real packages for all three build\ntargets"},
+		{"MissingTypeCheckerNotCompiler", "it does not run the compiler itself"},
+		{"MissingRemainingRoads", "Two things remain possible outside the package"},
+		{"MissingCallLimits", "A call cannot clear a latch, move the\nconfirmation time back or install a second view"},
+		{"MissingSavedHandleRule", "names the same state and restores nothing"},
+		{"MissingReflectionLimitOfThePackage", "The package boundary does not hold against reflection or `unsafe`"},
+		{"MissingOwnMemoryLimitOfThePackage", "holds against code that\nwrites the memory of its own process without going through the language"},
+		{"MissingOwnMemoryNeedsNoPinnedImport", "The function imports neither\n`reflect`, `unsafe` nor `C`, names no protected field"},
+		{"MissingOwnMemoryHasNoGeneralGuard", "No source inventory can hold that\nroad in general"},
+		{"MissingTrustBoundaryOfTheState", "dependency is therefore inside the trust boundary of the admission\nstate"},
+		{"MissingBoundaryOfTheLanguage", "The boundary is one of the language, not of the process"},
+		{"MissingLowerTrustRule", "nothing may\nrely on it against code of lower trust in the same process"},
+		{"MissingOwnMemoryInTheLimits", "One limit has no inventory at all"},
+		{"MissingOSRoadNamed", "The other ways to that memory are system calls"},
+		{"MissingSyscallImportersNotListed", "The import inventory below does not list the files that import\n`syscall` or `golang.org/x/sys/unix`"},
+		{"MissingLanguageRoadsHeld", "Two kinds of road do go through the language without a `reflect`, `unsafe`\nor `C` import, and the guard holds both"},
+		{"MissingRawPointerConverts", "converts to a pointer of any type in every\nfile; the import of `unsafe` is needed only to spell the type"},
+		{"MissingRawPointerNeedsUnsafe", "So a raw pointer value may appear only in a file that imports\n`unsafe`"},
+		{"MissingUnreviewedDependencyInventoried", "So an import of a dependency package outside a\nreviewed list puts its file into the import inventory as well"},
+		{"MissingPluginInventoried", "`unsafe`, `C` or `plugin` import in any production package fails a test"},
+		{"MissingUnreviewedDependencyFails", "and so does an import of a dependency package outside the reviewed list"},
+		{"MissingReviewedVersionPin", "a new dependency import, a further package of a\nlisted module, a new version and a replacement each fail until the list is\nupdated"},
+		{"MissingRawPointerRule", "value whose type has the underlying type `unsafe.Pointer` in a file that\ndoes not import `unsafe` fails it"},
+		{"MissingRawPointerRealPosition", "It judges the file that holds each such\nvalue by the value's real position, not by the file and line that a\n`//line` or `/*line` directive names"},
+		{"MissingAdjustedPositionReadsRefused", "a test refuses the calls that read an adjusted position in the\ntest files of the module"},
+		{"MissingLineDirectivesRefused", "another test refuses such a directive in every\nnon-test Go file of the repository"},
+		{"MissingStaticTypesOfTheSource", "The rule reads the static types of the source"},
+		{"MissingTypeParameterCannotConvert", "it cannot become a typed pointer there\nwithout a constraint that spells the type"},
+		{"MissingUnknownRoadsNotExcluded", "a source inventory\ncannot show that no other road exists"},
+		{"MissingAdoptedTestsCeiling", "aggregate HEAD ceiling for PR #12 plus its repairs was 52 files"},
+		{"MissingSixthAuditCeiling", "HEAD ceiling for PR #12 plus its repairs is 53 files"},
+		{"MissingSixthAuditPath", "It adds exactly one more path, a test file:\nA/workstream_a_guardrails_test.go"},
+		{"MissingSyscallsInTheLimit", "Raw system calls through `syscall` and `golang.org/x/sys/unix` are part of\nthat limit"},
+		{"MissingCallSiteInventory", "has an exact list of the functions that\nreference it"},
+		{"MissingInspectionInventory", "which exist for tests, nowhere"},
+		{"MissingClosedSurface", "surface of the package is a closed list"},
+		{"MissingStateFilePin", "package is pinned by the SHA-256 hash of its bytes"},
+		{"MissingInstallLockOrder", "`Service.mu` and then the lock of the admission state"},
+		{"MissingHolderInventoryRule", "fails the guard until it has an inventory"},
+		{"MissingHandleVariableRule", "a package variable that holds\na handle is refused"},
+		{"MissingIndependentBindingOracle", "independently build the full scope-3 TLV and PB1"},
+		{"MissingParenthesizedAssignmentRule", "targets remain assignments"},
+		{"MissingParenthesizedReadWriteRule", "targets remain read-writes"},
+		{"MissingRangeAssignmentRule", "Range-clause `=` key and value whole-field targets"},
+		{"MissingAddressAccessRule", "Taking a field's address is an `address` access"},
+		{"MissingWriteThroughRule", "is a `write-through` access"},
+		{"MissingConversionStepRule", "A conversion is a transparent step in that chain"},
+		{"MissingWholeValueRule", "occurrence of its owning struct type as its own access kind"},
+		{"MissingConstructionEscapeRule", "a zero-value declaration and a same-shape"},
+		{"MissingConversionAwayRule", "a conversion in either direction"},
+		{"MissingInstantiationRule", "is listed as well (`whole-instantiate`)"},
+		{"MissingDynamicDispatchRule", "(`interface-selection`), are references to the method"},
+		{"MissingEveryTypeArgumentRule", "Every type argument is read."},
+		{"MissingMirrorRule", "equal the owning type's\n(`whole-mirror`)"},
+		{"MissingMirrorFieldTypeRule", "whatever its field types and\ntags"},
+		{"MissingConstrainRule", "through a named or embedded constraint (`whole-constrain`)"},
+		{"MissingConstrainAtDeclarationRule", "The inventory therefore lists, at its declaration, every type parameter"},
+		{"MissingTypeParameterInventory", "an exact inventory holds\nevery type parameter declared in a package that declares an owning type"},
+		{"MissingModuleWideReading", "Each owning type is read in every production package of the module"},
+		{"MissingUnexportedFieldRule", "Every protected field is unexported, which a test holds"},
+		{"MissingFileSetRule", "non-test Go file of the module is compiled for none of them"},
+		{"MissingRunTimeStatementLimit", "a statement assembled at run time is not seen"},
+		{"MissingImportInventory", "exact import inventory\ncovers every non-test source file of the module"},
+		{"MissingSelectionByDirectory", "A production package is chosen by the\ndirectory the go command compiles it from"},
+		{"MissingUnmatchedDirectoryRule", "so it is read like every\nother"},
+		{"MissingOutsideDirectoryRefusal", "in the Go root nor in the module cache fails the loader"},
+		{"MissingEveryDirectoryImportReading", "It reads every non-test Go file in every directory of the repository\nexcept `.git`"},
+		{"MissingContentPin", "holds each file that has such an import by the SHA-256 of its content"},
+		{"MissingEveryDirectoryFileSet", "The check lists every\ndirectory of the repository except `.git`"},
+		{"MissingDirectiveKindList", "outside the exact list `go`, `module` and `require`"},
+		{"MissingWorkspaceRefusal", "a `go.work` file anywhere in the repository or above it"},
+		{"MissingNestedModuleRefusal", "a `go.mod` below the repository root"},
+		{"MissingBuildInputLimit", "the flags `-modfile` and `-overlay`"},
+		{"MissingConfirmationInventory", "exactly one reference to `Service.confirmOperationalAdmission`"},
+		{"MissingAdmissionTableWriterInventory", "Exactly three store functions contain a statement that"},
+		{"MissingFiniteGuardLimit", "not a general proof of aliases or"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if !strings.Contains(owner, tc.phrase) {
+				t.Fatal("owner contract anchor missing")
+			}
+			mutant := strings.Replace(owner, tc.phrase, "unmaintained", 1)
+			if operationalV2AssuranceOwnerRule(mutant) {
+				t.Fatal("unsafe owner deletion survived")
+			}
+		})
+	}
+	for _, tc := range []struct{ name, from, to string }{
+		{"GenericListedOnlyAtInstantiation", "which is a limit of dataflow\nand no longer one of generics", "where a generic one is listed\nonly at an instantiation that names an owning type"},
+		{"InventoriesScopedToTwoPackages", "Each owning type is read in every production package of the module", "Their scope is these two packages"},
+		{"FileSetScopedToTwoPackages", "non-test Go file of the module is compiled for none of them", "non-test Go file of the two packages is compiled for none of them"},
+		{"ImportInventoryScopedToTwoPackages", "covers every non-test source file of the module", "covers every non-test source file of `es/admission` and the store package"},
+		{"MirrorRuleLimitedToFieldTypes", "whatever its field types and\ntags", "where its field types and\ntags are the owner's"},
+		{"PackagesChosenByPattern", "directory the go command compiles it from, not by a pattern or by its import\npath", "pattern `./...`, not by the directory the go command compiles it from"},
+		{"UnmatchedDirectoriesNotRead", "so it is read like every\nother", "and it is not\nread"},
+		{"ImportInventorySkipsDirectories", "in every directory of the repository\nexcept `.git`, whatever the directory is called", "in every directory that `./...` matches"},
+		{"ImportedFilesHeldByNameOnly", "by the SHA-256 of its content", "by its name"},
+		{"FileSetSkipsDirectories", "The check lists every\ndirectory of the repository except `.git`", "The check lists every\ndirectory that `./...` matches"},
+		{"ReplaceLineAllowed", "which refuses a\n`replace` line", "which allows a\n`replace` line"},
+		{"WorkspaceOnlyInsideTheRepository", "anywhere in the repository or above it", "at the repository root"},
+		{"StateBackUnderTheServiceLock", "lock. `Service.mu` does not cover them.", "lock. `Service.mu` covers them as well."},
+		{"StatePackageMayReflect", "It imports neither `reflect`, `unsafe` nor `C` and performs no I/O", "It may import `reflect` and performs no I/O"},
+		{"HandleFieldExported", "whose only field is an unexported pointer\nto an unexported struct", "whose only field is an exported pointer\nto an unexported struct"},
+		{"ZeroHandleOpen", "holds the zero handle, which is closed", "holds the zero handle, which is commissioned on first use"},
+		{"ContentSharedWithTheCaller", "It is copied on the way in and on every way out", "It is shared with the caller on the way in"},
+		{"CompileRefusalsUntested", "type-checking each form against the real packages for all three build\ntargets", "reading the Go specification"},
+		{"FormsSaidToRunTheCompiler", "it does not run the compiler itself", "it runs the compiler itself"},
+		{"CallsNotInventoried", "the guard below holds\nboth by exact inventories", "review holds\nboth"},
+		{"CallClearsALatch", "A call cannot clear a latch, move the\nconfirmation time back or install a second view", "A call can clear a latch"},
+		{"SavedHandleRestores", "names the same state and restores nothing", "restores the latches it held"},
+		{"PackageBoundaryHoldsReflection", "The package boundary does not hold against reflection or `unsafe`", "The package boundary holds against reflection and `unsafe`"},
+		{"PackageBoundaryHoldsOwnMemoryWrites", "Neither the package boundary nor any inventory below holds against code that\nwrites the memory of its own process", "The package boundary and the inventories below hold against code that\nwrites the memory of its own process"},
+		{"OwnMemoryWriteNeedsAPinnedImport", "The function imports neither\n`reflect`, `unsafe` nor `C`, names no protected field", "The function imports\n`unsafe` and names a protected field"},
+		{"OwnMemoryHeldByAnInventory", "No source inventory can hold that\nroad in general", "The import inventory holds that\nroad"},
+		{"DependenciesOutsideTheTrustBoundary", "dependency is therefore inside the trust boundary of the admission\nstate", "dependency is nevertheless outside the trust boundary of the admission\nstate"},
+		{"BoundaryOfTheProcess", "The boundary is one of the language, not of the process", "The boundary is one of the process"},
+		{"LowerTrustCodeMayRelyOnIt", "nothing may\nrely on it against code of lower trust in the same process", "code of lower trust in the same process may\nbe held by it"},
+		{"EveryLimitInventoried", "One limit has no inventory at all", "Every limit has an inventory"},
+		{"OSRoadInventoried", "The other ways to that memory are system calls", "The other ways to that memory are held by the import inventory"},
+		{"SyscallImportersListed", "The import inventory below does not list the files that import\n`syscall` or `golang.org/x/sys/unix`", "The import inventory below lists every file that imports\n`syscall` or `golang.org/x/sys/unix`"},
+		{"LanguageRoadsUnheld", "or `C` import, and the guard holds both", "or `C` import, and no guard holds them"},
+		{"RawPointerNeedsTheImportToConvert", "converts to a pointer of any type in every\nfile; the import of `unsafe` is needed only to spell the type", "converts to a pointer only in a file that imports `unsafe`"},
+		{"RawPointerAnywhere", "So a raw pointer value may appear only in a file that imports\n`unsafe`", "So a raw pointer value may appear in any file"},
+		{"UnreviewedDependencyFree", "reviewed list puts its file into the import inventory as well", "reviewed list needs no inventory"},
+		{"PluginNotInventoried", "`unsafe`, `C` or `plugin` import in any production package fails a test", "`unsafe` or `C` import in any production package fails a test"},
+		{"NewVersionPasses", "a new version and a replacement each fail until the list is\nupdated", "a new version and a replacement pass without a change of the\nlist"},
+		{"RawPointerWithoutUnsafePasses", "does not import `unsafe` fails it", "does not import `unsafe` passes it"},
+		{"RawPointerPlacedByDirective", "by the value's real position, not by the file and line that a\n`//line` or `/*line` directive names", "by the file and line that a\n`//line` or `/*line` directive names"},
+		{"AdjustedPositionReadsAllowed", "a test refuses the calls that read an adjusted position", "a test allows the calls that read an adjusted position"},
+		{"LineDirectivesAllowed", "another test refuses such a directive in every\nnon-test Go file", "such a directive is allowed in every\nnon-test Go file"},
+		{"InstancesClaimedRead", "The rule reads the static types of the source", "The rule reads every instance of a type parameter"},
+		{"TypeParameterConverts", "it cannot become a typed pointer there\nwithout a constraint that spells the type", "it can become a typed pointer there\nwithout a constraint that spells the type"},
+		{"NoOtherRoadClaimed", "a source inventory\ncannot show that no other road exists", "no other road\nexists"},
+		{"CeilingNotRaisedForAdoptedTests", "aggregate HEAD ceiling for PR #12 plus its repairs was 52 files", "aggregate HEAD ceiling for PR #12 plus its repairs was 48 files"},
+		{"CeilingNotRaisedForSixthAudit", "HEAD ceiling for PR #12 plus its repairs is 53 files", "HEAD ceiling for PR #12 plus its repairs is 52 files"},
+		{"SixthAuditPathUnnamed", "It adds exactly one more path, a test file:\nA/workstream_a_guardrails_test.go", "It adds no path"},
+		{"SyscallsHeldByTheInventory", "Raw system calls through `syscall` and `golang.org/x/sys/unix` are part of\nthat limit", "Raw system calls through `syscall` and `golang.org/x/sys/unix` are held by\nthe import inventory"},
+		{"InspectionUsedInProduction", "which exist for tests, nowhere", "in production diagnostics"},
+		{"SurfaceOpen", "surface of the package is a closed list", "surface of the package is open"},
+		{"StateFileHeldByNameOnly", "package is pinned by the SHA-256 hash of its bytes", "package is held by its name"},
+		{"InstallLockOrderReversed", "Installing a view takes\n`Service.mu` and then the lock of the admission state", "Installing a view takes\nthe lock of the admission state and then `Service.mu`"},
+		{"HoldersNeedNoInventory", "fails the guard until it has an inventory", "needs no inventory"},
+		{"HandleVariableAllowed", "a package variable that holds\na handle is refused", "a package variable may hold\na handle"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if strings.Count(owner, tc.from) != 1 {
+				t.Fatalf("owner mutation anchor count %d", strings.Count(owner, tc.from))
+			}
+			if operationalV2AssuranceOwnerRule(strings.Replace(owner, tc.from, tc.to, 1)) {
+				t.Fatal("a corrected guard limit stated again survived")
+			}
+		})
+	}
+	t.Run("ParenthesizedWriteDowngrade", func(t *testing.T) {
+		const accurate = "targets remain assignments"
+		if strings.Count(owner, accurate) != 1 {
+			t.Fatalf("parenthesized assignment owner anchor count %d", strings.Count(owner, accurate))
+		}
+		mutant := strings.Replace(owner, accurate, "targets become reads", 1)
+		if operationalV2AssuranceOwnerRule(mutant) {
+			t.Fatal("parenthesized write downgrade survived owner wording guard")
+		}
+	})
+	t.Run("WriteThroughDowngrade", func(t *testing.T) {
+		const accurate = "is a `write-through` access"
+		if strings.Count(owner, accurate) != 1 {
+			t.Fatalf("write-through owner anchor count %d", strings.Count(owner, accurate))
+		}
+		mutant := strings.Replace(owner, accurate, "remains a read", 1)
+		if operationalV2AssuranceOwnerRule(mutant) {
+			t.Fatal("write-through downgrade survived owner wording guard")
+		}
+	})
+	t.Run("PrerequisiteRemovedFromOwner", func(t *testing.T) {
+		const row = "| `CP-EPOCH` |"
+		if strings.Count(owner, row) != 1 {
+			t.Fatalf("prerequisite row anchor count %d", strings.Count(owner, row))
+		}
+		ids := operationalCommissioningPrerequisiteIDs(strings.Replace(owner, row, "| CP-EPOCH (answered) |", 1))
+		if slices.Contains(ids, "CP-EPOCH") || len(ids) != 5 {
+			t.Fatalf("a removed prerequisite was still read: %q", ids)
+		}
+	})
+	t.Run("PublicMappingRemovedFromOwner", func(t *testing.T) {
+		const row = "| `CP-PUBLIC-MAPPING` |"
+		if strings.Count(owner, row) != 1 {
+			t.Fatalf("prerequisite row anchor count %d", strings.Count(owner, row))
+		}
+		ids := operationalCommissioningPrerequisiteIDs(strings.Replace(owner, row, "| CP-PUBLIC-MAPPING (later) |", 1))
+		if slices.Contains(ids, "CP-PUBLIC-MAPPING") || len(ids) != 5 {
+			t.Fatalf("a removed prerequisite was still read: %q", ids)
+		}
+	})
+	t.Run("PublicMappingRemovedFromGate", func(t *testing.T) {
+		gate := mustRead(t, "es/admission/reliable_submit_guardrails_test.go")
+		const entry = ", \"CP-PUBLIC-MAPPING\""
+		if strings.Count(gate, entry) != 1 {
+			t.Fatalf("gate anchor count %d", strings.Count(gate, entry))
+		}
+		ids := operationalCommissioningGateIDs(strings.Replace(gate, entry, "", 1))
+		if slices.Contains(ids, "CP-PUBLIC-MAPPING") || len(ids) != 5 {
+			t.Fatalf("a removed gate prerequisite was still read: %q", ids)
+		}
+	})
+	t.Run("PrerequisiteRemovedFromGate", func(t *testing.T) {
+		gate := mustRead(t, "es/admission/reliable_submit_guardrails_test.go")
+		const entry = "\"CP-ROLLBACK\", "
+		if strings.Count(gate, entry) != 1 {
+			t.Fatalf("gate anchor count %d", strings.Count(gate, entry))
+		}
+		ids := operationalCommissioningGateIDs(strings.Replace(gate, entry, "", 1))
+		if slices.Contains(ids, "CP-ROLLBACK") || len(ids) != 5 {
+			t.Fatalf("a removed gate prerequisite was still read: %q", ids)
+		}
+	})
 }
