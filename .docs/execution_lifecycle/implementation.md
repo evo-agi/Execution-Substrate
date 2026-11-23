@@ -51,8 +51,9 @@ builds the existing opaque binding and fourteen-category witness under an
 explicit synthetic-test key. At PB1 it had no production caller; its only
 selected new non-test caller is the private synthetic composer. It has no
 runtime key source, provider effect or public DTO. Its output is always
-not-effect-ready. The legacy resolver only carries provenance; it does not add
-requested-versus-returned mount artifact refusal to live `Submit`. The private
+not-effect-ready. The resolver carries that provenance, and live `Submit`
+refuses a mount whose discovery record names another artifact than the
+requested source (contracts section 5A). The private
 producer's extra sequential bounded mount-archive parse is an unwired memory
 and work cost, not part of the prior runtime peak bound. The exact format and
 limitations are in `submit_idempotency_correlation_and_recovery.md`.

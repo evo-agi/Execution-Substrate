@@ -233,9 +233,10 @@ Those absences are current facts, not design commitments.
 - The later ES-private admission binding v1 producer consumes the actual
   frozen resolver tuple, checks signed returned mount artifact and payload
   identities against requested identity and captured bytes, and builds an
-  opaque commitment and existing fourteen-category witness. The legacy
-  resolver only carries the two verified mount identities; it does not add a
-  live requested-versus-returned artifact refusal. The producer is always
+  opaque commitment and existing fourteen-category witness. The resolver
+  carries the two verified mount identities and itself refuses a mount whose
+  discovery record names another artifact than the request (contracts section
+  5A). The producer is always
   not-effect-ready. At PB1 it had no production caller; the later bounded
   codec-3 synthetic composer is its only selected private non-test caller.
   It adds no public grammar, shared kernel, provider call, genuine image pin,

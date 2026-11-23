@@ -333,6 +333,54 @@ func TestARSBlobCallSitesRequestTheDigestExactlyAsGiven(t *testing.T) {
 	}
 }
 
+// TestARSBlobCallSitesMapNotFound has ARS answer 404 for every covered read
+// and checks each call site's own "unavailable" mapping, which no other test
+// reaches through the not-found class.
+func TestARSBlobCallSitesMapNotFound(t *testing.T) {
+	digest := digestBytes([]byte("absent blob"))
+	log := newARSRequestLog()
+	service := newARSBlobTestService(t, log, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})
+	t.Run("primary payload", func(t *testing.T) {
+		got, publicErr := service.fetchPayloadBytes(context.Background(), digest)
+		assertAdmissionError(t, publicErr, http.StatusServiceUnavailable, codePayloadUnavailable)
+		if got != nil || publicErr.Message != "artifact payload is unavailable" {
+			t.Fatalf("unexpected primary payload not-found mapping: %+v", publicErr)
+		}
+	})
+	t.Run("mount payload", func(t *testing.T) {
+		got, acquisitionErr, publicErr := service.fetchPayloadBytesWithin(context.Background(), digest, maxRuntimeMountBytes)
+		assertAdmissionError(t, publicErr, http.StatusServiceUnavailable, codePayloadUnavailable)
+		if got != nil || acquisitionErr != nil || publicErr.Message != "artifact payload is unavailable" {
+			t.Fatalf("unexpected mount payload not-found mapping: cause=%v err=%+v", acquisitionErr, publicErr)
+		}
+	})
+	t.Run("admission policy payload", func(t *testing.T) {
+		got, publicErr := service.fetchAdmissionPolicyPayloadBytes(context.Background(), digest)
+		if got != nil || publicErr == nil || *publicErr != *admissionPolicyInputUnavailableError() {
+			t.Fatalf("unexpected admission policy not-found mapping: %+v", publicErr)
+		}
+	})
+	t.Run("artifact evidence", func(t *testing.T) {
+		_, publicErr := service.fetchArtifactEvidenceBlob(context.Background(), labeledDigest("aa"), digest)
+		assertAdmissionError(t, publicErr, http.StatusServiceUnavailable, codeArtifactEvidenceUnavailable)
+		if publicErr.Message != "artifact evidence is unavailable" {
+			t.Fatalf("unexpected evidence not-found message %q", publicErr.Message)
+		}
+	})
+	t.Run("workload-zone vault blob", func(t *testing.T) {
+		_, publicErr := service.fetchWorkloadZoneVaultConfig(context.Background(), runtimeconfigv1.WorkloadZoneVaultConfigRef{Digest: digest})
+		assertAdmissionError(t, publicErr, http.StatusServiceUnavailable, codeWorkloadZoneVaultUnavailable)
+		if publicErr.Message != "artifact registry workload-zone vault blob is unavailable" {
+			t.Fatalf("unexpected vault blob not-found message %q", publicErr.Message)
+		}
+	})
+	if log.requests() != 5 {
+		t.Fatalf("expected one ARS read per covered call site, got %d", log.requests())
+	}
+}
+
 // TestWorkloadZoneVaultBlobIsDecodedStrictlyFromVerifiedBytes names each body
 // by its own digest, so the read verifies and the strict decoder refuses it.
 func TestWorkloadZoneVaultBlobIsDecodedStrictlyFromVerifiedBytes(t *testing.T) {
@@ -606,6 +654,80 @@ func TestSubmitRefusesMountBytesAndEvidenceThatDoNotHashToTheirDigests(t *testin
 	}
 }
 
+// TestSubmitRefusesAMountDiscoveryRecordForAnotherArtifact has ARS answer
+// the discovery read for the requested mount with the record of a different,
+// validly sealed artifact. Every blob ES then reads hashes to its digest, so
+// only the artifact-digest binding tells them apart: Submit must refuse
+// instead of staging the other artifact's bytes as the mount. (:prepare does
+// not resolve mounts.)
+func TestSubmitRefusesAMountDiscoveryRecordForAnotherArtifact(t *testing.T) {
+	fixture, signed := signedStaticScriptFixture(t)
+	requestedArchive := mustRuntimeMountArchiveBytes(t, runtimeMountArchiveEntry{name: "config.txt", body: []byte("requested mount"), typeflag: '0', mode: 0o644})
+	requested := fixture.withPayload(t, requestedArchive)
+	otherArchive := mustRuntimeMountArchiveBytes(t, runtimeMountArchiveEntry{name: "config.txt", body: []byte("other sealed artifact"), typeflag: '0', mode: 0o644})
+	other := fixture.withPayload(t, otherArchive)
+	if other.discovery.Artifact.ArtifactDigest == requested.discovery.Artifact.ArtifactDigest {
+		t.Fatal("the two mount artifacts must differ")
+	}
+	requestedDiscovery := "/v1/artifacts/" + requested.discovery.Artifact.ArtifactDigest + "/discovery"
+	for _, mode := range []ExecutionMode{"", ExecutionModeAsync} {
+		for _, substitute := range []bool{false, true} {
+			t.Run(strconv.Quote(string(mode))+" substitute="+strconv.FormatBool(substitute), func(t *testing.T) {
+				served, servedArchive := requested, requestedArchive
+				if substitute {
+					served, servedArchive = other, otherArchive
+				}
+				service, stagingRoot, resultsRoot := newWorkstreamCTestService(t, fixture)
+				service.admissionPolicyEvaluator = payloadBlindAdmissionPolicy{}
+				inner := newSignedPayloadHandler(t, fixture, signed).withMount(served, servedArchive)
+				var mu sync.Mutex
+				asked := 0
+				service.arsClient = newResolvedPlanDependencyClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if r.URL.Path == requestedDiscovery {
+						mu.Lock()
+						asked++
+						mu.Unlock()
+						r.URL.Path = "/v1/artifacts/" + served.discovery.Artifact.ArtifactDigest + "/discovery"
+					}
+					inner.ServeHTTP(w, r)
+				}))
+				nomad := &nomadRegistrationLog{}
+				service.nomadClient = newCountingNomadClient(t, nomad)
+				request := fixture.prepareRequest()
+				request.Mode = mode
+				request.Invocation.Mounts = []RuntimeMount{{
+					Source:     MountSource{ArtifactDigest: requested.discovery.Artifact.ArtifactDigest},
+					TargetPath: "/execution/mounts/config",
+					ReadOnly:   true,
+				}}
+
+				result, publicErr := service.Submit(context.Background(), request)
+				mu.Lock()
+				gotAsked := asked
+				mu.Unlock()
+				if gotAsked != 1 {
+					t.Fatalf("expected one discovery read for the requested mount, got %d", gotAsked)
+				}
+				if !substitute {
+					if publicErr != nil || !result.Submitted || nomad.count() != 1 {
+						t.Fatalf("requested mount was not submitted: result=%+v err=%+v nomad=%d", result, publicErr, nomad.count())
+					}
+					assertFileContent(t, filepath.Join(stagingRoot, result.RunID, executionMountsStageDirName, "00", "contents", "config.txt"), "requested mount")
+					return
+				}
+				assertAdmissionError(t, publicErr, http.StatusConflict, codeMountArtifactInvalid)
+				if publicErr.Message != "artifact digest mismatch between mount source and artifact discovery" || result.Submitted || result.RunID != "" {
+					t.Fatalf("another artifact's discovery record was not refused for the mount: result=%+v err=%+v", result, publicErr)
+				}
+				if reads := inner.log.count("/v1/blobs/" + other.discovery.Payload.Digest + ":bytes"); reads != 0 {
+					t.Fatalf("the other artifact's payload was read %d times", reads)
+				}
+				assertNoRunEffects(t, nomad, stagingRoot, resultsRoot)
+			})
+		}
+	}
+}
+
 func TestPrepareRefusesEvidenceAndVaultBlobsThatDoNotHashToTheirDigests(t *testing.T) {
 	fixture, signed := signedStaticScriptFixture(t)
 	substitutedVault, err := json.Marshal(runtimeconfigv1.WorkloadZoneVaultConfigBlob{VaultConfig: runtimeconfigv1.WorkloadZoneVaultConfig{
@@ -688,7 +810,9 @@ func TestFetchVerifiedARSBlobIsTheOnlyARSBlobReadInES(t *testing.T) {
 	}
 	var sites []site
 	var clientUses []site
+	var clientIdentifiers []site
 	var registryConfigUses []site
+	var discoveryReads []site
 	files := 0
 	walkErr := filepath.WalkDir(esRoot, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
@@ -720,7 +844,15 @@ func TestFetchVerifiedARSBlobIsTheOnlyARSBlobReadInES(t *testing.T) {
 				name = fn.Name.Name
 			}
 			calledClients := map[*ast.SelectorExpr]string{}
+			clientFieldNames := map[*ast.Ident]bool{}
 			ast.Inspect(decl, func(node ast.Node) bool {
+				// A bare arsClient identifier (the field declaration, the
+				// NewService local, a composite-literal key or value) is
+				// recorded too, so the client cannot be copied into a second
+				// field where no arsClient selector would show it.
+				if ident, ok := node.(*ast.Ident); ok && ident.Name == "arsClient" && !clientFieldNames[ident] {
+					clientIdentifiers = append(clientIdentifiers, site{file: filepath.ToSlash(relative), fn: name})
+				}
 				if call, ok := node.(*ast.CallExpr); ok {
 					if method, ok := call.Fun.(*ast.SelectorExpr); ok {
 						if client, ok := method.X.(*ast.SelectorExpr); ok && client.Sel.Name == "arsClient" {
@@ -731,7 +863,11 @@ func TestFetchVerifiedARSBlobIsTheOnlyARSBlobReadInES(t *testing.T) {
 				if selector, ok := node.(*ast.SelectorExpr); ok && selector.Sel.Name == "ArtifactRegistry" {
 					registryConfigUses = append(registryConfigUses, site{file: filepath.ToSlash(relative), fn: name})
 				}
+				if selector, ok := node.(*ast.SelectorExpr); ok && (selector.Sel.Name == "fetchArtifactDiscovery" || selector.Sel.Name == "fetchArtifactDiscoveryRecord") {
+					discoveryReads = append(discoveryReads, site{file: filepath.ToSlash(relative), fn: name, text: selector.Sel.Name})
+				}
 				if selector, ok := node.(*ast.SelectorExpr); ok && selector.Sel.Name == "arsClient" {
+					clientFieldNames[selector.Sel] = true
 					// A use that is not the receiver of a direct method call
 					// (an alias, a method value, an argument) is recorded as
 					// such, so a second read cannot hide behind one selector.
@@ -778,6 +914,18 @@ func TestFetchVerifiedARSBlobIsTheOnlyARSBlobReadInES(t *testing.T) {
 	if !slices.Equal(clientUses, wantClientUses) {
 		t.Fatalf("the ARS client is used outside the verified blob read, the discovery read and the health check: %+v", clientUses)
 	}
+	// The ARS client is declared once, built once in NewService and stored
+	// once: the struct field, the local, and the literal's key and value.
+	wantClientIdentifiers := []site{
+		{file: "admission/service.go", fn: "<package scope>"},
+		{file: "admission/service.go", fn: "NewService"},
+		{file: "admission/service.go", fn: "NewService"},
+		{file: "admission/service.go", fn: "NewService"},
+	}
+	slices.SortFunc(clientIdentifiers, func(a, b site) int { return strings.Compare(a.file+" "+a.fn, b.file+" "+b.fn) })
+	if !slices.Equal(clientIdentifiers, wantClientIdentifiers) {
+		t.Fatalf("the ARS client is declared, built or stored outside its one field and NewService: %+v", clientIdentifiers)
+	}
 	// The ARS dependency config may build only the one ARS client; a second
 	// client would read ARS without going through arsClient.
 	wantRegistryConfigUses := []site{
@@ -787,6 +935,20 @@ func TestFetchVerifiedARSBlobIsTheOnlyARSBlobReadInES(t *testing.T) {
 	slices.SortFunc(registryConfigUses, func(a, b site) int { return strings.Compare(a.file+" "+a.fn, b.file+" "+b.fn) })
 	if !slices.Equal(registryConfigUses, wantRegistryConfigUses) {
 		t.Fatalf("the ARS dependency config is read outside NewService and its validation: %+v", registryConfigUses)
+	}
+	// The discovery record is not verified, so every caller of the discovery
+	// read must refuse a record that names another artifact than the one it
+	// asked for: prepareArtifactFromDiscovery does for the primary artifact,
+	// prepareMountArtifact for each mount, and both refusals are tested. A new
+	// caller belongs here only with the same check and a test for it.
+	wantDiscoveryReads := []site{
+		{file: "admission/mounts.go", fn: "prepareMountArtifact", text: "fetchArtifactDiscovery"},
+		{file: "admission/service.go", fn: "fetchArtifactDiscovery", text: "fetchArtifactDiscoveryRecord"},
+		{file: "admission/service.go", fn: "prepareArtifact", text: "fetchArtifactDiscovery"},
+	}
+	slices.SortFunc(discoveryReads, func(a, b site) int { return strings.Compare(a.file+" "+a.fn, b.file+" "+b.fn) })
+	if !slices.Equal(discoveryReads, wantDiscoveryReads) {
+		t.Fatalf("the unverified discovery read has a caller that is not known to bind the record to the requested artifact: %+v", discoveryReads)
 	}
 }
 

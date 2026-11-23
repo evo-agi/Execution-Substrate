@@ -80,7 +80,8 @@ the code and tests win and this document must be realigned.
   check is not relied on. The discovery record is read by artifact digest and
   is not verified: ES cross-checks it against the signed evidence, but ARS
   still chooses which sealed evidence document applies when more than one
-  exists for the same artifact and derivation inputs. The contract is
+  exists for the same artifact (and, for the primary artifact, the same
+  derivation inputs). The contract is
   `.docs/execution_lifecycle/contracts.md` section 5A.
 - ES later consumes designed ARS discovery outputs, explicit
   evidence/payload relationships, and explicit cross-checks. ES must not

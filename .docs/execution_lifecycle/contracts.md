@@ -713,18 +713,23 @@ runtime-profile container image is not ARS content.
 The ARS discovery record (`GET /v1/artifacts/{artifact_digest}/discovery`) is
 not read by digest. ES has no trusted digest for it and does not verify its
 bytes. ES binds what it uses from it: its artifact digest must equal the
-request's, and its payload digest, artifact type and intent digest must equal
-the signature-verified evidence claims. Its evidence digest is used only to
-choose which evidence blob to read. That evidence must carry a valid seal from
-an allowed signer and claim the requested `artifact_digest`,
-`derivation_spec_digest` and `output_id`. ES does not check that it is the only
-such document. `artifact_digest` is not derived from admission claims, so the
-provenance key can seal more than one evidence document for the same artifact
-digest, derivation spec digest and output ID, with different `network_access`,
-`target_platform` or runtime interface claims. When more than one exists, ARS
-chooses which of them ES admits. ARS's index accepts one discovery record per
-artifact digest, so an ARS that follows its own registration contract always
-names the first registered document.
+requested one (the invocation's `artifact_digest`, or a governed mount's source
+`artifact_digest`), and its payload digest, artifact type and intent digest
+must equal the signature-verified evidence claims. Its evidence digest is used
+only to choose which evidence blob to read. That evidence must carry a valid
+seal from an allowed signer and claim the requested `artifact_digest`; for the
+primary artifact it must also claim the requested `derivation_spec_digest` and
+`output_id`. ES does not check that it is the only such document.
+`artifact_digest` is not derived from admission claims, so the provenance key
+can seal more than one evidence document that passes these checks, with
+different `network_access`, `target_platform` or runtime interface claims: for
+the primary artifact, with the same artifact digest, derivation spec digest and
+output ID; for a governed mount, with the same artifact digest. When more than
+one exists, ARS chooses which of them ES admits. For a mount this changes no
+staged byte, because the artifact digest fixes the payload digest; for the
+primary artifact it decides which execution claims apply. ARS's index accepts
+one discovery record per artifact digest, so an ARS that follows its own
+registration contract always names the first registered document.
 
 ## 6. Submit contract
 
