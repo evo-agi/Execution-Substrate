@@ -383,9 +383,18 @@ from a URI SAN. The DER decoding accepts only one-byte tags and definite,
 minimal lengths, refuses trailing bytes, more than one extensions block, a
 repeated extension, and an extension whose fields are not an object
 identifier, an optional one-byte critical flag of `0x00` or `0xFF`, and an
-octet string, and refuses a URI SAN that is empty, longer than 256
-bytes, or holds a byte outside printable ASCII without spaces; such a
-certificate is `identity_malformed` and fails with `identity_mismatch`. The
+octet string. It refuses extensions in a certificate that is not version 3 or
+that are not the last field of its TBSCertificate, because Go reads them only
+there. It refuses a URI SAN that is empty, longer than 256 bytes, or holds a
+byte outside printable ASCII without spaces, and, as Go's certificate parser
+does, an rfc822Name or dNSName with a byte above `0x7F` and an iPAddress that
+is not 4 or 16 bytes long. Such a certificate is `identity_malformed` and fails
+with `identity_mismatch`. A certificate whose only URI SAN is the expected one
+still fails with `identity_mismatch` when ES would refuse it as a client
+certificate: `identity_not_end_entity` when its basic constraints mark it as a
+CA or its key usage includes keyCertSign or cRLSign (section 3A), and
+`identity_not_for_client_auth` when it has an extended key usage that allows
+neither clientAuth nor anyExtendedKeyUsage, which Go's TLS server refuses. The
 host-local renew helper's `--status` mode carries the same decoder, and a test
 keeps the two copies identical. Malformed identity output maps only to fixed
 classification labels and fixed failure classes.
@@ -540,8 +549,9 @@ Mappings:
 - Expired certificate: `cert_metadata_expired`.
 - Not-yet-valid certificate: `cert_metadata_not_yet_valid`.
 - Certificate/key public-key mismatch: `key_pair_mismatch`.
-- Expected operator/local identity mismatch, legacy-only identity, or more
-  than one URI SAN: `identity_mismatch`.
+- Expected operator/local identity mismatch, legacy-only identity, more than
+  one URI SAN, a leaf that is not an end-entity certificate, or a leaf whose
+  extended key usage does not allow client authentication: `identity_mismatch`.
 - Trust unavailable or failed: `trust_chain_unavailable` or
   `trust_chain_failed`.
 - Unexpected local selector, pipe, spawn, or process-management failure:

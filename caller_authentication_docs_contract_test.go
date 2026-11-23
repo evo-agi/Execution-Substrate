@@ -48,7 +48,9 @@ func TestCallerAuthenticationContractIsDocumentedOnce(t *testing.T) {
 	status := compactText(mustRead(t, ".docs/remote_alpha_operator_healthcheck_noninteractive_status.md"))
 	assertContainsAll(t, "operator healthcheck TLS status identity rule", status,
 		"The identity passes only when the certificate carries exactly one URI SAN and that URI is `spiffe://execution.internal/operator/local`, because the caller authentication contract (`.docs/system_overview/contracts.md` section 3A) refuses a certificate with more than one URI SAN.",
-		"Expected operator/local identity mismatch, legacy-only identity, or more than one URI SAN: `identity_mismatch`.",
+		"Expected operator/local identity mismatch, legacy-only identity, more than one URI SAN, a leaf that is not an end-entity certificate, or a leaf whose extended key usage does not allow client authentication: `identity_mismatch`.",
+		// Audit 11, A11-4: the tools refuse what ES refuses as a client certificate.
+		"`identity_not_end_entity` when its basic constraints mark it as a CA or its key usage includes keyCertSign or cRLSign (section 3A), and `identity_not_for_client_auth` when it has an extended key usage that allows neither clientAuth nor anyExtendedKeyUsage, which Go's TLS server refuses.",
 		// Red-team N1 and re-audit O7-1: OpenSSL's printed SAN text is ambiguous.
 		"The collector reads the URI SAN entries from the certificate's own DER encoding, through the fixed `openssl x509 -outform DER` read of the public certificate, and never from OpenSSL's printed SAN text,",
 		"The host-local renew helper's `--status` mode carries the same decoder, and a test keeps the two copies identical.",

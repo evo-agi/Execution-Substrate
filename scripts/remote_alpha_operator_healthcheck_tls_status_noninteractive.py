@@ -59,6 +59,8 @@ IDENTITY_CLASSIFICATIONS = {
     "legacy_operator_identity",
     "identity_mismatch",
     "identity_malformed",
+    "identity_not_end_entity",
+    "identity_not_for_client_auth",
     "identity_unavailable",
 }
 TRUST_CLASSIFICATIONS = {

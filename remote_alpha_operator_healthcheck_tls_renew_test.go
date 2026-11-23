@@ -312,6 +312,8 @@ func TestRemoteAlphaOperatorHealthcheckTLSStagedStatusPassesTheExpectedIdentity(
 	assertJSONPathEquals(t, summary, "result.status", "pass")
 	assertJSONPathEquals(t, summary, "identity.status", "pass")
 	assertJSONPathEquals(t, summary, "identity.uri_san_count", float64(1))
+	assertJSONPathEquals(t, summary, "identity.end_entity", true)
+	assertJSONPathEquals(t, summary, "identity.client_auth_usage", true)
 	assertJSONPathEquals(t, summary, "identity.classification", "current_operator_local_identity")
 	assertFileContainsNoSecrets(t, fixture.summary)
 }
@@ -339,7 +341,102 @@ func TestRemoteAlphaOperatorHealthcheckTLSStatusCallsAnUnreadableCertificateMalf
 	assertJSONPathEquals(t, summary, "identity.status", "fail")
 	assertJSONPathEquals(t, summary, "identity.matches_current_allowlist", false)
 	assertJSONPathEquals(t, summary, "identity.classification", "operator_identity_malformed")
+	for _, key := range []string{"end_entity", "client_auth_usage"} {
+		if value, ok := identity[key]; !ok || value != nil {
+			t.Fatalf("identity.%s = %#v (present %v), want null", key, value, ok)
+		}
+	}
 	assertFileContainsNoSecrets(t, fixture.summary)
+}
+
+// ES refuses a client certificate that is not an end-entity certificate
+// (contracts.md section 3A), and Go's TLS server refuses one whose extended
+// key usage does not allow client authentication. The staged status refuses
+// them too, although the URI SAN is the expected one (audit 11, A11-4).
+func TestRemoteAlphaOperatorHealthcheckTLSStatusRefusesWhatESRefusesAsAClientCertificate(t *testing.T) {
+	const expected = "spiffe://execution.internal/operator/local"
+	for _, tc := range []struct {
+		name           string
+		edit           func(*x509.Certificate)
+		endEntity      bool
+		clientAuth     bool
+		classification string
+		blocker        string
+	}{
+		{name: "CA", edit: func(c *x509.Certificate) { c.IsCA = true }, endEntity: false, clientAuth: true, classification: "operator_identity_not_end_entity", blocker: "operator certificate must be an end-entity certificate"},
+		{name: "keyCertSign", edit: func(c *x509.Certificate) { c.KeyUsage |= x509.KeyUsageCertSign }, endEntity: false, clientAuth: true, classification: "operator_identity_not_end_entity", blocker: "operator certificate must be an end-entity certificate"},
+		{name: "cRLSign", edit: func(c *x509.Certificate) { c.KeyUsage |= x509.KeyUsageCRLSign }, endEntity: false, clientAuth: true, classification: "operator_identity_not_end_entity", blocker: "operator certificate must be an end-entity certificate"},
+		{name: "serverAuth only", edit: func(c *x509.Certificate) { c.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth} }, endEntity: true, clientAuth: false, classification: "operator_identity_not_for_client_auth", blocker: "operator certificate extended key usage must allow client authentication"},
+		{name: "unknown usage only", edit: func(c *x509.Certificate) {
+			c.ExtKeyUsage = nil
+			c.UnknownExtKeyUsage = []asn1.ObjectIdentifier{{1, 3, 6, 1, 4, 1, 55555, 1}}
+		}, endEntity: true, clientAuth: false, classification: "operator_identity_not_for_client_auth", blocker: "operator certificate extended key usage must allow client authentication"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := setupRemoteAlphaOperatorHealthcheckTLSFixtureWithLeaf(t, false, func(caPEM []byte, caKey *rsa.PrivateKey, notBefore, notAfter time.Time) ([]byte, []byte) {
+				return remoteAlphaGenerateOperatorClientLeafWithSAN(t, caPEM, caKey, []string{expected}, nil, notBefore, notAfter, tc.edit)
+			})
+			output, err := runStagedRemoteAlphaOperatorHealthcheckTLSRenew(t, fixture.helperEnv("REMOTE_ALPHA_TEST_SKIP_OPERATOR_HEALTHCHECK_TLS_PROBES=1"), "--status", "--summary-path", fixture.summary)
+			if err == nil {
+				t.Fatalf("expected the status to fail, output=%s", output)
+			}
+			summary := readJSONMap(t, fixture.summary)
+			assertJSONPathEquals(t, summary, "result.status", "fail")
+			assertJSONPathEquals(t, summary, "identity.status", "fail")
+			assertJSONPathEquals(t, summary, "identity.matches_current_allowlist", true)
+			assertJSONPathEquals(t, summary, "identity.uri_san_count", float64(1))
+			assertJSONPathEquals(t, summary, "identity.end_entity", tc.endEntity)
+			assertJSONPathEquals(t, summary, "identity.client_auth_usage", tc.clientAuth)
+			assertJSONPathEquals(t, summary, "identity.classification", tc.classification)
+			text := readIfExists(fixture.summary)
+			assertContainsAll(t, "operator certificate client-certificate blocker", text, tc.blocker)
+			assertContainsNone(t, "operator certificate client-certificate blocker", text, "operator certificate must carry exactly one URI SAN")
+			assertFileContainsNoSecrets(t, fixture.summary)
+		})
+	}
+	// A client certificate without key usages, or with anyExtendedKeyUsage,
+	// is one that ES accepts, so its identity check passes. The helper's
+	// openssl verify -purpose sslclient check is stricter than Go and
+	// refuses anyExtendedKeyUsage without clientAuth, so that status fails
+	// on the verification alone.
+	for _, tc := range []struct {
+		name         string
+		edit         func(*x509.Certificate)
+		verification string
+	}{
+		{name: "no key usages", edit: func(c *x509.Certificate) { c.KeyUsage = 0; c.ExtKeyUsage = nil }, verification: "pass"},
+		{name: "clientAuth among others", edit: func(c *x509.Certificate) {
+			c.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth}
+		}, verification: "pass"},
+		{name: "anyExtendedKeyUsage", edit: func(c *x509.Certificate) { c.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageAny} }, verification: "fail"},
+	} {
+		t.Run("identity passes: "+tc.name, func(t *testing.T) {
+			fixture := setupRemoteAlphaOperatorHealthcheckTLSFixtureWithLeaf(t, false, func(caPEM []byte, caKey *rsa.PrivateKey, notBefore, notAfter time.Time) ([]byte, []byte) {
+				return remoteAlphaGenerateOperatorClientLeafWithSAN(t, caPEM, caKey, []string{expected}, nil, notBefore, notAfter, tc.edit)
+			})
+			output, err := runStagedRemoteAlphaOperatorHealthcheckTLSRenew(t, fixture.helperEnv("REMOTE_ALPHA_TEST_SKIP_OPERATOR_HEALTHCHECK_TLS_PROBES=1"), "--status", "--summary-path", fixture.summary)
+			if (err == nil) != (tc.verification == "pass") {
+				t.Fatalf("status error = %v, want the status to %s with the verification\n%s\nsummary=%s", err, tc.verification, output, readIfExists(fixture.summary))
+			}
+			summary := readJSONMap(t, fixture.summary)
+			assertJSONPathEquals(t, summary, "identity.status", "pass")
+			assertJSONPathEquals(t, summary, "identity.end_entity", true)
+			assertJSONPathEquals(t, summary, "identity.client_auth_usage", true)
+			assertJSONPathEquals(t, summary, "identity.classification", "current_operator_local_identity")
+			verifications, _ := summary["verification"].([]any)
+			found := false
+			for _, item := range verifications {
+				check, _ := item.(map[string]any)
+				if check["label"] == "operator_client_cert_against_es_server_client_ca" {
+					found = true
+					assertJSONPathEquals(t, check, "status", tc.verification)
+				}
+			}
+			if !found {
+				t.Fatalf("no operator client certificate verification in the summary: %s", readIfExists(fixture.summary))
+			}
+		})
+	}
 }
 
 func TestRemoteAlphaOperatorHealthcheckTLSRenewHelperRejectsSecretLikeArgs(t *testing.T) {
@@ -423,8 +520,9 @@ func remoteAlphaGenerateOperatorClientLeaf(t *testing.T, caPEM []byte, caKey *rs
 
 // remoteAlphaGenerateOperatorClientLeafWithSAN makes the operator client leaf.
 // When rawSAN is set, it is the leaf's subjectAltName extension value as is,
-// in place of the DNS name and spiffeURIs.
-func remoteAlphaGenerateOperatorClientLeafWithSAN(t *testing.T, caPEM []byte, caKey *rsa.PrivateKey, spiffeURIs []string, rawSAN []byte, notBefore, notAfter time.Time) ([]byte, []byte) {
+// in place of the DNS name and spiffeURIs. Each edit changes the template
+// before the leaf is signed.
+func remoteAlphaGenerateOperatorClientLeafWithSAN(t *testing.T, caPEM []byte, caKey *rsa.PrivateKey, spiffeURIs []string, rawSAN []byte, notBefore, notAfter time.Time, edits ...func(*x509.Certificate)) ([]byte, []byte) {
 	t.Helper()
 	block, _ := pem.Decode(caPEM)
 	if block == nil {
@@ -461,6 +559,9 @@ func remoteAlphaGenerateOperatorClientLeafWithSAN(t *testing.T, caPEM []byte, ca
 		template.DNSNames = nil
 		template.URIs = nil
 		template.ExtraExtensions = []pkix.Extension{{Id: asn1.ObjectIdentifier{2, 5, 29, 17}, Value: rawSAN}}
+	}
+	for _, edit := range edits {
+		edit(template)
 	}
 	der, err := x509.CreateCertificate(rand.Reader, template, caCert, &key.PublicKey, caKey)
 	if err != nil {
