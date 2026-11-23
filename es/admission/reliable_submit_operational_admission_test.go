@@ -3960,6 +3960,33 @@ func TestOperationalAdmissionState(t *testing.T) {
 	})
 }
 
+// operationalServiceWithViewByHand makes a Service that holds nothing but an
+// admission state with one installed and confirmed view. The token must be one
+// the store issued for the realm and the content; proof is the seam value the
+// view carries, nil for none.
+func operationalServiceWithViewByHand(t *testing.T, realm operationalRealm, token reliablesubmit.OperationalAdmissionToken,
+	content admissionstate.Content, proof *operationalAdmissionProofHooks) *Service {
+	t.Helper()
+	owner := &Service{}
+	owner.operational = admissionstate.New(owner)
+	var seam any
+	if proof != nil {
+		seam = proof
+	}
+	if !owner.operational.Install(owner, realm.installation, realm.epoch, token, content, seam, nil) {
+		t.Fatal("the store's token and the content it names were refused")
+	}
+	view, ok := owner.operational.Confirmable(owner)
+	if !ok {
+		t.Fatal("the installed view cannot be confirmed")
+	}
+	owner.operational.Confirm(owner, view, view.Trust(), time.Now())
+	if current, ok := owner.currentOperationalAdmission(realm); !ok || current != view {
+		t.Fatal("the confirmed view is not current")
+	}
+	return owner
+}
+
 // The view holds its policies as plain content, and the set it enforces is
 // built from that content for each judgment. The two directions are exact
 // inverses on every set a Service can commission, and each refuses what the
@@ -4107,20 +4134,7 @@ func TestOperationalAdmissionPolicyContent(t *testing.T) {
 		held := operationalInstalledView(f.service)
 		byHand := func(t *testing.T, token reliablesubmit.OperationalAdmissionToken, content admissionstate.Content) *Service {
 			t.Helper()
-			owner := &Service{}
-			owner.operational = admissionstate.New(owner)
-			if !owner.operational.Install(owner, realm.installation, realm.epoch, token, content, nil, nil) {
-				t.Fatal("the store's token and the content it names were refused")
-			}
-			view, ok := owner.operational.Confirmable(owner)
-			if !ok {
-				t.Fatal("the installed view cannot be confirmed")
-			}
-			owner.operational.Confirm(owner, view, view.Trust(), time.Now())
-			if current, ok := owner.currentOperationalAdmission(realm); !ok || current != view {
-				t.Fatal("the confirmed view is not current")
-			}
-			return owner
+			return operationalServiceWithViewByHand(t, realm, token, content, nil)
 		}
 		// Control: the same construction with the commissioned content
 		// qualifies the original, so a refusal below is about the policies.
@@ -4158,6 +4172,61 @@ func TestOperationalAdmissionPolicyContent(t *testing.T) {
 					t.Fatalf("reason=%d, want Unavailable", reason)
 				}
 			})
+		}
+	})
+	// The test seam stricter is evaluated behind the built-in set of the view.
+	// It can refuse what the set allows. It cannot allow what the set refuses:
+	// a view whose configured policy denies the request answers Denied whether
+	// or not a seam that allows everything is installed with it.
+	t.Run("the stricter seam cannot allow what the built-in set refuses", func(t *testing.T) {
+		ctx := context.Background()
+		f := makeOperationalFixture(t, "")
+		f.confirm()
+		original := operationalV2Original(t, f)
+		realm := f.domain.realm
+		held := operationalInstalledView(f.service)
+		// The literal is one the script of the fixture contains; the control
+		// without a seam below shows that the set refuses it.
+		content := operationalViewContent(held)
+		content.Policies = []admissionstate.Policy{{ID: string(selectedDestructiveShellCommandPolicyID)},
+			{ID: string(configuredStaticScriptLiteralDenyPolicyID), Entries: []admissionstate.PolicyEntry{{ID: "rule", Literal: "policy-fixture-ok"}}}}
+		if _, built := operationalPolicySet(content.Policies); !built {
+			t.Fatal("control: the content builds no set")
+		}
+		digest, ok := admissionstate.Digest(content)
+		if !ok {
+			t.Fatal("control: the content has no digest")
+		}
+		token, err := f.domain.custody.AdvanceOperationalAdmission(ctx, realm.installation, realm.epoch, digest,
+			operationalAdmissionRowAt(t, f).Generation)
+		if err != nil {
+			t.Fatalf("the store did not advance to the content: %v", err)
+		}
+		evaluations := 0
+		allowing := operationalRefusingFromPolicy{evaluations: &evaluations, from: 1 << 30}
+		// Controls: the commissioned content with the allowing seam qualifies
+		// the original and asks the seam, and with a refusing seam it does not
+		// qualify.
+		if reason := operationalServiceWithViewByHand(t, realm, held.Token(), operationalViewContent(held),
+			&operationalAdmissionProofHooks{stricter: allowing}).qualifyOperationalRetained(ctx, original, realm); reason != reliablesubmit.OperationalReasonNone || evaluations != 1 {
+			t.Fatalf("control: an allowing seam behind a set that allows: reason=%d evaluations=%d", reason, evaluations)
+		}
+		refusals := 0
+		if reason := operationalServiceWithViewByHand(t, realm, held.Token(), operationalViewContent(held),
+			&operationalAdmissionProofHooks{stricter: operationalRefusingFromPolicy{evaluations: &refusals, from: 1}}).qualifyOperationalRetained(ctx, original, realm); reason != reliablesubmit.OperationalDenied || refusals != 1 {
+			t.Fatalf("control: a refusing seam behind a set that allows: reason=%d evaluations=%d", reason, refusals)
+		}
+		if reason := operationalServiceWithViewByHand(t, realm, token, content, nil).qualifyOperationalRetained(ctx, original, realm); reason != reliablesubmit.OperationalDenied {
+			t.Fatalf("control: the built-in set alone: reason=%d, want Denied", reason)
+		}
+		evaluations = 0
+		if reason := operationalServiceWithViewByHand(t, realm, token, content,
+			&operationalAdmissionProofHooks{stricter: allowing}).qualifyOperationalRetained(ctx, original, realm); reason != reliablesubmit.OperationalDenied {
+			t.Fatalf("an allowing seam behind a set that refuses: reason=%d, want Denied", reason)
+		}
+		// The set stops at its first refusal, so the seam is not asked.
+		if evaluations != 0 {
+			t.Fatalf("the seam was asked %d times after the built-in set refused", evaluations)
 		}
 	})
 	// The admission state copies the content it installs. The steps before
