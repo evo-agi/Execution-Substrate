@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"path"
 	"strings"
 	"time"
 
@@ -26,7 +25,10 @@ const (
 type nomadClient struct {
 	baseURL    *url.URL
 	datacenter string
-	client     *http.Client
+	// token is ES's Nomad ACL client token secret, read once at startup from
+	// nomad.token_file. It is sent only in the X-Nomad-Token header.
+	token  string
+	client *http.Client
 }
 
 type nomadJobRegisterResponse struct {
@@ -37,6 +39,9 @@ func (s *Service) Submit(ctx context.Context, req PrepareRequest) (SubmitResult,
 	resolved, resolveErr := s.resolveExecutionForSubmit(ctx, req)
 	if resolveErr != nil {
 		return SubmitResult{}, resolveErr
+	}
+	if accessErr := s.nomadClient.verifyAccessControl(ctx); accessErr != nil {
+		return SubmitResult{}, accessErr
 	}
 	locator, locatorErr := newExecutionLocator()
 	if locatorErr != nil {
@@ -189,6 +194,7 @@ func buildNomadJobSpec(projection resolvedNomadJobProjection) map[string]any {
 		"Job": map[string]any{
 			"ID":          projection.jobID,
 			"Name":        projection.jobID,
+			"Namespace":   nomadSubmitNamespace,
 			"Meta":        jobMeta,
 			"Type":        projection.jobEnvelope.jobType,
 			"Datacenters": copyStringSlice(projection.datacenters),
@@ -239,10 +245,15 @@ func newNomadClient(cfg esconfig.NomadConfig) (*nomadClient, error) {
 	if err != nil {
 		return nil, err
 	}
+	token, err := loadNomadToken(cfg.TokenFile)
+	if err != nil {
+		return nil, err
+	}
 
 	return &nomadClient{
 		baseURL:    baseURL,
 		datacenter: strings.TrimSpace(cfg.Datacenter),
+		token:      token,
 		client: &http.Client{
 			Timeout: time.Duration(cfg.TimeoutSeconds) * time.Second,
 			// TODO: Nomad is treated as an external execution dependency in this
@@ -260,8 +271,7 @@ func (c *nomadClient) submitJob(ctx context.Context, jobSpec map[string]any) (st
 		return "", fmt.Errorf("marshal nomad job: %w", err)
 	}
 
-	requestURL := c.baseURL.ResolveReference(&url.URL{Path: path.Clean("/v1/jobs")})
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, requestURL.String(), strings.NewReader(string(body)))
+	request, err := c.newJobRequest(ctx, http.MethodPost, "/v1/jobs", nil, strings.NewReader(string(body)))
 	if err != nil {
 		return "", err
 	}

@@ -109,6 +109,10 @@ type NomadConfig struct {
 	BaseURL        string `json:"base_url"`
 	Datacenter     string `json:"datacenter"`
 	TimeoutSeconds int    `json:"timeout_seconds"`
+	// TokenFile names the file that holds ES's Nomad ACL client token (the
+	// token's SecretID). ES reads it once at startup and sends it on every
+	// Nomad request. The token itself never appears in this config.
+	TokenFile string `json:"token_file"`
 }
 
 type ExecutionConfig struct {
@@ -276,6 +280,9 @@ func (c Config) Validate() error {
 			return err
 		}
 		if err := c.Execution.Validate("execution"); err != nil {
+			return err
+		}
+		if err := validateNomadTokenFilePlacement(c.Nomad.TokenFile, c.Execution); err != nil {
 			return err
 		}
 	}
@@ -467,6 +474,27 @@ func (c NomadConfig) Validate(field string) error {
 	}
 	if c.TimeoutSeconds <= 0 {
 		return fmt.Errorf("%s.timeout_seconds must be greater than 0", field)
+	}
+	if c.TokenFile == "" || !filepath.IsAbs(c.TokenFile) || filepath.Clean(c.TokenFile) != c.TokenFile ||
+		strings.TrimSpace(c.TokenFile) != c.TokenFile || strings.ContainsRune(c.TokenFile, 0) {
+		return fmt.Errorf("%s.token_file must be a clean absolute path", field)
+	}
+	if filepath.Dir(c.TokenFile) == string(os.PathSeparator) {
+		return fmt.Errorf("%s.token_file must have a non-root parent directory", field)
+	}
+	return nil
+}
+
+// validateNomadTokenFilePlacement keeps the Nomad token file outside ES's
+// staging and results storage, where workload-visible or retained material
+// lives.
+func validateNomadTokenFilePlacement(tokenFile string, execution ExecutionConfig) error {
+	if pathsOverlap(tokenFile, filepath.Clean(strings.TrimSpace(execution.StagingRootDir))) ||
+		pathsOverlap(tokenFile, filepath.Clean(strings.TrimSpace(execution.ResultsRootDir))) {
+		return fmt.Errorf("nomad.token_file must be outside staging and results storage")
+	}
+	if tokenFile == execution.RetainedResultAuth.KeyFile {
+		return fmt.Errorf("nomad.token_file must differ from execution.retained_result_auth.key_file")
 	}
 	return nil
 }
@@ -676,6 +704,7 @@ func (c Config) SubmitConfigured() bool {
 	return strings.TrimSpace(c.Nomad.BaseURL) != "" ||
 		strings.TrimSpace(c.Nomad.Datacenter) != "" ||
 		c.Nomad.TimeoutSeconds != 0 ||
+		c.Nomad.TokenFile != "" ||
 		strings.TrimSpace(c.Execution.StagingRootDir) != "" ||
 		strings.TrimSpace(c.Execution.ResultsRootDir) != "" ||
 		strings.TrimSpace(c.Execution.BaseImage) != "" ||

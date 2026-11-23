@@ -552,6 +552,10 @@ func newExecutionRootStartupTestConfig(t *testing.T, stagingRoot string, results
 	if err := os.WriteFile(resultKeyPath, bytes.Repeat([]byte{0x53}, 32), 0o600); err != nil {
 		t.Fatalf("write synthetic result auth fixture: %v", err)
 	}
+	nomadTokenPath := filepath.Join(configDir, "nomad-token")
+	if err := os.WriteFile(nomadTokenPath, []byte(testNomadToken+"\n"), 0o400); err != nil {
+		t.Fatalf("write synthetic nomad token fixture: %v", err)
+	}
 	publicKey, _, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		t.Fatalf("generate verifier key: %v", err)
@@ -604,6 +608,7 @@ func newExecutionRootStartupTestConfig(t *testing.T, stagingRoot string, results
 			BaseURL:        "http://127.0.0.1:4646",
 			Datacenter:     "dc1",
 			TimeoutSeconds: 1,
+			TokenFile:      nomadTokenPath,
 		},
 		Execution: esconfig.ExecutionConfig{
 			StagingRootDir:             stagingRoot,

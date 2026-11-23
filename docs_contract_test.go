@@ -4044,7 +4044,7 @@ func TestReliableSubmitPersistenceAndConcurrencyADRDocsContract(t *testing.T) {
 	)
 
 	serviceSource := mustRead(t, "es/admission/service.go")
-	serviceStartup := docSection(t, serviceSource, "if cfg.SubmitConfigured() {", "nomadClient, err = newNomadClient(cfg.Nomad)")
+	serviceStartup := docSection(t, serviceSource, "if cfg.SubmitConfigured() {", "validateExecutionRuntimeInputs(cfg.Execution)")
 	assertContainsAll(t, "current startup provisions, qualifies, and probes the execution root pair", serviceStartup,
 		"provisionExecutionRoots(cfg.Execution.StagingRootDir, cfg.Execution.ResultsRootDir, nil)",
 		"owner, err := roots.owner()",

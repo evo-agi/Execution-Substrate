@@ -746,6 +746,7 @@ func TestConfigValidateRequiresExecutionWhenSubmitConfigured(t *testing.T) {
 		BaseURL:        "http://127.0.0.1:4646",
 		Datacenter:     "dc1",
 		TimeoutSeconds: 5,
+		TokenFile:      "/tmp/es-nomad/token",
 	}
 	cfg.Execution = ExecutionConfig{
 		StagingRootDir: "/tmp/es-stage",
@@ -957,5 +958,91 @@ func validConfiguredStaticScriptLiteralDenyPolicyConfig() ConfiguredStaticScript
 				Literal:    "ES_DEMO_LITERAL_MARKER",
 			},
 		},
+	}
+}
+
+func validSubmitTestConfig() Config {
+	cfg := validTestConfig()
+	cfg.Nomad = NomadConfig{
+		BaseURL:        "http://127.0.0.1:4646",
+		Datacenter:     "dc1",
+		TimeoutSeconds: 5,
+		TokenFile:      "/external/private/nomad-acl/es-token",
+	}
+	cfg.Execution = ExecutionConfig{
+		StagingRootDir:             "/tmp/es-stage",
+		ResultsRootDir:             "/tmp/es-results",
+		BaseImage:                  "alpine:3.20",
+		RuntimeSupportBinary:       "/usr/local/bin/es-runtime-support",
+		SPIREWorkloadAPISocketPath: "/run/spire/sockets/agent.sock",
+		RetainedResultAuth:         RetainedResultAuthConfig{StoreID: "test_store", KeyID: "test_key", KeyFile: "/external/private/retained-result-auth/key"},
+	}
+	return cfg
+}
+
+func TestNomadTokenFileIsRequiredWhenSubmitIsConfigured(t *testing.T) {
+	cfg := validSubmitTestConfig()
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("valid submit configuration rejected: %v", err)
+	}
+	cfg.Nomad.TokenFile = ""
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "nomad.token_file must be a clean absolute path") {
+		t.Fatalf("submit configuration without nomad.token_file was not refused: %v", err)
+	}
+}
+
+func TestNomadTokenFileAloneMakesSubmitConfigured(t *testing.T) {
+	cfg := validTestConfig()
+	if cfg.SubmitConfigured() {
+		t.Fatal("prepare-only base configuration unexpectedly submit-configured")
+	}
+	cfg.Nomad.TokenFile = "/external/private/nomad-acl/es-token"
+	if !cfg.SubmitConfigured() {
+		t.Fatal("nomad.token_file alone did not make the configuration submit-configured")
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("a lone nomad.token_file passed validation without the rest of the submit configuration")
+	}
+}
+
+func TestNomadTokenFileMustBeACleanAbsolutePathWithANonRootParent(t *testing.T) {
+	for _, path := range []string{
+		"relative/token",
+		"/external/private/nomad-acl/../es-token",
+		"/external/private/nomad-acl//es-token",
+		"/external/private/nomad-acl/es-token/",
+		" /external/private/nomad-acl/es-token",
+		"/external/private/nomad-acl/es-token ",
+		"/external/private/nomad-acl/es-\x00token",
+		"/es-token",
+		"/",
+	} {
+		t.Run(path, func(t *testing.T) {
+			cfg := validSubmitTestConfig()
+			cfg.Nomad.TokenFile = path
+			err := cfg.Validate()
+			if err == nil || !strings.Contains(err.Error(), "nomad.token_file") {
+				t.Fatalf("unsafe nomad.token_file %q accepted or misreported: %v", path, err)
+			}
+		})
+	}
+}
+
+func TestNomadTokenFileMustStayOutsideExecutionStorageAndDifferFromTheResultKey(t *testing.T) {
+	for _, path := range []string{
+		"/tmp/es-stage/nomad-token",
+		"/tmp/es-stage",
+		"/tmp/es-results/nomad/token",
+		"/external/private/retained-result-auth/key",
+	} {
+		t.Run(path, func(t *testing.T) {
+			cfg := validSubmitTestConfig()
+			cfg.Nomad.TokenFile = path
+			err := cfg.Validate()
+			if err == nil || !strings.Contains(err.Error(), "nomad.token_file") {
+				t.Fatalf("misplaced nomad.token_file %q accepted or misreported: %v", path, err)
+			}
+		})
 	}
 }
