@@ -26,7 +26,8 @@ Usage:
 Environment:
   BRINGUP_PROFILE=full|prepare-only   default: full
   BRINGUP_DIR=/abs/path               default: .tmp/bringup under repo root
-  READY_TIMEOUT_SECONDS=30            readiness wait timeout per dependency
+  READY_TIMEOUT_SECONDS=30            readiness wait timeout per dependency; ARS's starts
+                                      once its launcher's storage check has passed
 
 Required for up:
   ARS_CONFIG EGS_CONFIG AGS_CONFIG ES_CONFIG
@@ -156,6 +157,35 @@ start_managed_service() {
   STARTED_SERVICES+=("${service}")
 }
 
+# wait_for_ars_storage_check waits until ARS's launcher has created
+# passed_file, which it does once its own storage check has passed and just
+# before it starts ARS. That check walks all of ARS's storage, so it takes
+# longer the more ARS stores, and ARS's readiness wait starts only after it:
+# READY_TIMEOUT_SECONDS bounds ARS's own start, not the check. Like the check
+# that cmd_up runs itself, it has no timeout of its own. A launcher that stops
+# first, for example because its check refused, fails bring-up with the end of
+# its log.
+wait_for_ars_storage_check() {
+  local passed_file=$1
+  local pid
+  local log_file
+
+  pid="$(managed_pid ars)"
+  log_file="$(log_file_for ars)"
+  echo "==> waiting for the ARS launcher's storage check"
+  while [[ ! -e "${passed_file}" ]]; do
+    if ! pid_is_running "${pid}"; then
+      [[ -e "${passed_file}" ]] && break
+      echo "artifact-registry: the launcher stopped before its storage check passed; the end of ${log_file}:" >&2
+      tail -n 20 "${log_file}" >&2 || true
+      return 1
+    fi
+    sleep 1
+  done
+  rm -f "${passed_file}"
+  echo "ARS launcher storage check passed"
+}
+
 stop_managed_service() {
   local service=$1
   local pid_file
@@ -217,13 +247,25 @@ cmd_up() {
   require_bringup_common_env "${PROFILE}"
   trap handle_failure EXIT
 
+  # The ARS storage check runs as the identity ARS will run as, which
+  # 02_start_ars.sh derives the same way. Like the launchers, derive it before
+  # any image build or storage change.
+  local ars_container_user
+  ars_container_user="$(control_plane_operator_user ARS)"
+
   mkdir -p "${PIDS_DIR}" "${LOGS_DIR}"
   check_docker_ready
   ensure_control_plane_image "${LOGS_DIR}/control-plane-image-build.log"
   probe_control_plane_host_loopback
   verify_es_staging_invariant "${ES_CONFIG}"
+  verify_ars_storage_for_operator "${ARS_CONFIG}" "${ars_container_user}"
 
-  start_managed_service "ars" "${SCRIPT_DIR}/02_start_ars.sh"
+  # ARS's launcher repeats the storage check just before it starts ARS, so
+  # ARS's readiness wait starts when that check has passed.
+  local ars_check_passed="${PIDS_DIR}/ars.storage-check-passed"
+  rm -f "${ars_check_passed}"
+  ARS_STORAGE_CHECK_PASSED_FILE="${ars_check_passed}" start_managed_service "ars" "${SCRIPT_DIR}/02_start_ars.sh"
+  wait_for_ars_storage_check "${ars_check_passed}"
   wait_for_service_ready "artifact-registry" "${ARS_URL}" "$(resolve_value ARS_RESOLVE)" "${READY_TIMEOUT_SECONDS}"
   check_workload_zone_vault_blob "${ES_CONFIG}" "$(resolve_value ARS_RESOLVE)"
 
