@@ -128,6 +128,54 @@ func TestConfigOwnFieldsMissingCountsOnlyOwnExportedFields(t *testing.T) {
 	})
 }
 
+// The extra-field question counts every field the type declares beyond the
+// names, whatever its kind, and nothing at depth.
+func TestConfigOwnFieldsBeyondCountsEveryOwnField(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		value any
+		want  []string
+	}{
+		{"only the named fields", struct{ ZzVaultAddress, Mode string }{}, nil},
+		{"a pointer to the struct", &struct{ ZzVaultAddress string }{}, nil},
+		{"an exported field beyond", struct{ ZzVaultAddress, Token string }{}, []string{"Token"}},
+		{"an unexported field", struct {
+			ZzVaultAddress string
+			token          string
+		}{}, []string{"token"}},
+		{"a blank field", struct {
+			ZzVaultAddress string
+			_              [0]func()
+		}{}, []string{"_"}},
+		{"an interface field", struct {
+			ZzVaultAddress string
+			Extra          any
+		}{}, []string{"Extra"}},
+		{"a function field", struct {
+			ZzVaultAddress string
+			Login          func() string
+		}{}, []string{"Login"}},
+		{"a named field in another case", struct{ ZZVAULTADDRESS string }{}, []string{"ZZVAULTADDRESS"}},
+		{"an embedded field of a type with an allowed name", struct{ ZzVaultAddress }{}, []string{"ZzVaultAddress"}},
+		{"an embedded pointer to a type with an allowed name", struct{ *ZzVaultAddress }{}, []string{"ZzVaultAddress"}},
+		{"a nested struct, by its own name only", struct {
+			ZzVaultAddress string
+			Vault          struct{ Token string }
+		}{}, []string{"Vault"}},
+		{"in the order declared", struct {
+			Token          string
+			ZzVaultAddress string
+			Lease          string
+		}{}, []string{"Token", "Lease"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := configOwnFieldsBeyond(t, test.value, "ZzVaultAddress", "Mode"); !slices.Equal(got, test.want) {
+				t.Fatalf("configOwnFieldsBeyond(%T, ZzVaultAddress, Mode) = %q, want %q", test.value, got, test.want)
+			}
+		})
+	}
+}
+
 func TestConfigFieldGuardHelpersRefuseNonStructs(t *testing.T) {
 	for _, test := range []struct {
 		value any
@@ -139,8 +187,9 @@ func TestConfigFieldGuardHelpersRefuseNonStructs(t *testing.T) {
 	} {
 		carried := zzConfigGuardReports(t, func(tb testing.TB) { configFieldsCarried(tb, test.value, "VaultToken") })
 		missing := zzConfigGuardReports(t, func(tb testing.TB) { configOwnFieldsMissing(tb, test.value, "Mode") })
-		if carried.fatal != test.want || missing.fatal != test.want {
-			t.Fatalf("for %T: configFieldsCarried stopped with %q and configOwnFieldsMissing with %q, want %q", test.value, carried.fatal, missing.fatal, test.want)
+		beyond := zzConfigGuardReports(t, func(tb testing.TB) { configOwnFieldsBeyond(tb, test.value, "Mode") })
+		if carried.fatal != test.want || missing.fatal != test.want || beyond.fatal != test.want {
+			t.Fatalf("for %T: configFieldsCarried stopped with %q, configOwnFieldsMissing with %q and configOwnFieldsBeyond with %q, want %q", test.value, carried.fatal, missing.fatal, beyond.fatal, test.want)
 		}
 	}
 }
@@ -179,9 +228,11 @@ func zzConfigGuardReports(t *testing.T, check func(testing.TB)) *zzConfigGuardRe
 	return recorder
 }
 
-// Planted copies of ResolvedWorkloadVaultAuthPlan. The first three carry a
-// secret where the old guard, which read only the plan's own exported field
-// names, did not look; the others lose a metadata field of the plan's own.
+// Planted copies of ResolvedWorkloadVaultAuthPlan. Each declares a field beyond
+// the plan's metadata fields. The first three carry a secret where the old
+// guard, which read only the plan's own exported field names, did not look;
+// the next two lose a metadata field of the plan's own; the last two carry
+// what no forbidden name can match.
 
 type zzPlanWithNestedToken struct {
 	Mode        WorkloadVaultAuthMode
@@ -238,6 +289,26 @@ type zzPlanWithNestedAudience struct {
 	CABundlePEM string
 }
 
+type zzPlanWithAnyField struct {
+	Mode        WorkloadVaultAuthMode
+	Address     string
+	AuthMount   string
+	AuthRole    string
+	JWTAudience string
+	CABundlePEM string
+	Extra       any
+}
+
+type zzPlanWithTokenFile struct {
+	Mode           WorkloadVaultAuthMode
+	Address        string
+	AuthMount      string
+	AuthRole       string
+	JWTAudience    string
+	CABundlePEM    string
+	VaultTokenFile string
+}
+
 func TestWorkloadVaultAuthPlanGuardRefusesPlantedFields(t *testing.T) {
 	for _, test := range []struct {
 		name string
@@ -247,19 +318,30 @@ func TestWorkloadVaultAuthPlanGuardRefusesPlantedFields(t *testing.T) {
 		{"the real plan", ResolvedWorkloadVaultAuthPlan{}, nil},
 		{"a token in a nested struct", zzPlanWithNestedToken{}, []string{
 			`resolved workload Vault auth plan must not carry token, secret, lease, or raw SPIRE field "ClientToken" (carried as config.zzPlanWithNestedToken.Session.ClientToken)`,
+			`resolved workload Vault auth plan must declare only its non-secret Vault metadata fields, not field "Session"`,
 		}},
 		{"a lease in an embedded struct", zzPlanWithEmbeddedLease{}, []string{
 			`resolved workload Vault auth plan must not carry token, secret, lease, or raw SPIRE field "LeaseID" (carried as config.zzPlanWithEmbeddedLease.zzVaultLease.LeaseID)`,
 			`resolved workload Vault auth plan must not carry token, secret, lease, or raw SPIRE field "LeaseDuration" (carried as config.zzPlanWithEmbeddedLease.zzVaultLease.LeaseDuration)`,
+			`resolved workload Vault auth plan must declare only its non-secret Vault metadata fields, not field "zzVaultLease"`,
 		}},
 		{"a private key in an unexported field", zzPlanWithUnexportedKey{}, []string{
 			`resolved workload Vault auth plan must not carry token, secret, lease, or raw SPIRE field "PrivateKey" (carried as config.zzPlanWithUnexportedKey.privateKey)`,
+			`resolved workload Vault auth plan must declare only its non-secret Vault metadata fields, not field "privateKey"`,
 		}},
 		{"the address only promoted from an embedded struct", zzPlanWithPromotedAddress{}, []string{
+			`resolved workload Vault auth plan must declare only its non-secret Vault metadata fields, not field "zzVaultEndpoint"`,
 			`expected non-secret workload Vault metadata field "Address"`,
 		}},
 		{"the audience only in a nested struct", zzPlanWithNestedAudience{}, []string{
+			`resolved workload Vault auth plan must declare only its non-secret Vault metadata fields, not field "JWT"`,
 			`expected non-secret workload Vault metadata field "JWTAudience"`,
+		}},
+		{"an interface field", zzPlanWithAnyField{}, []string{
+			`resolved workload Vault auth plan must declare only its non-secret Vault metadata fields, not field "Extra"`,
+		}},
+		{"a longer name that holds a forbidden one", zzPlanWithTokenFile{}, []string{
+			`resolved workload Vault auth plan must declare only its non-secret Vault metadata fields, not field "VaultTokenFile"`,
 		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {

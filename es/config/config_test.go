@@ -355,9 +355,17 @@ func TestWorkloadVaultAuthPlanCarriesOnlyNonSecretVaultMetadata(t *testing.T) {
 
 // checkWorkloadVaultAuthPlanFields fails t when a value of plan's type can carry
 // a token, secret, lease or raw SPIRE field anywhere in it, or when plan's own
-// type lacks one of the non-secret Vault metadata fields.
+// type declares anything but exactly the non-secret Vault metadata fields.
 func checkWorkloadVaultAuthPlanFields(t testing.TB, plan any) {
 	t.Helper()
+	metadata := []string{
+		"Mode",
+		"Address",
+		"AuthMount",
+		"AuthRole",
+		"JWTAudience",
+		"CABundlePEM",
+	}
 	for _, carried := range configFieldsCarried(t, plan,
 		"VaultToken",
 		"ClientToken",
@@ -375,14 +383,10 @@ func checkWorkloadVaultAuthPlanFields(t testing.TB, plan any) {
 	) {
 		t.Errorf("resolved workload Vault auth plan must not carry token, secret, lease, or raw SPIRE field %q (carried as %s)", carried.name, carried.where)
 	}
-	for _, missing := range configOwnFieldsMissing(t, plan,
-		"Mode",
-		"Address",
-		"AuthMount",
-		"AuthRole",
-		"JWTAudience",
-		"CABundlePEM",
-	) {
+	for _, beyond := range configOwnFieldsBeyond(t, plan, metadata...) {
+		t.Errorf("resolved workload Vault auth plan must declare only its non-secret Vault metadata fields, not field %q", beyond)
+	}
+	for _, missing := range configOwnFieldsMissing(t, plan, metadata...) {
 		t.Errorf("expected non-secret workload Vault metadata field %q", missing)
 	}
 }
@@ -881,6 +885,29 @@ func configOwnFieldsMissing(t testing.TB, value any, names ...string) []string {
 		}
 	}
 	return missing
+}
+
+// configOwnFieldsBeyond answers one question: which fields does value's own
+// struct type declare beyond names? Every field the type declares counts,
+// exported or not, blank or not, of any type, in the order declared. An
+// embedded field is always beyond names, even when its type has one of those
+// names, because configOwnFieldsMissing does not count it as that field. A
+// field at depth is not the type's own; configFieldsCarried reads those.
+func configOwnFieldsBeyond(t testing.TB, value any, names ...string) []string {
+	t.Helper()
+	root := configStructType(t, value)
+	allowed := map[string]bool{}
+	for _, name := range names {
+		allowed[name] = true
+	}
+	var beyond []string
+	for i := range root.NumField() {
+		field := root.Field(i)
+		if field.Anonymous || !allowed[field.Name] {
+			beyond = append(beyond, field.Name)
+		}
+	}
+	return beyond
 }
 
 func configStructType(t testing.TB, value any) reflect.Type {
