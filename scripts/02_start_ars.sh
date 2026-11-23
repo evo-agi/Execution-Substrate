@@ -31,7 +31,16 @@ ensure_control_plane_image "${BRINGUP_DIR:-${REPO_ROOT}/.tmp/bringup}/logs/contr
 # The storage check runs in a container with ARS's name and writes the index
 # the way ARS does, so the ARS container this launcher replaces goes first.
 docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+# scripts/01_bringup.sh stops this launcher with SIGTERM to its child processes
+# and to the launcher, waits for the launcher to end, and then removes ARS's
+# container by name. During the check, that container is the check's own, so
+# the launcher stays until the check, which passes the signal on to its probe,
+# has removed its files and ended: bash runs these traps only once the check
+# has returned.
+trap 'exit 143' TERM
+trap 'exit 129' HUP
 verify_ars_storage_for_operator "${ARS_CONFIG}" "${CONTAINER_USER}"
+trap - TERM HUP
 # scripts/01_bringup.sh up starts ARS's readiness wait only once this check
 # has passed, because on large storage the check takes a while. It names a file
 # for this launcher to create then. The file only reports a passed check; there

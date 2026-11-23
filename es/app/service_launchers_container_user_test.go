@@ -1492,91 +1492,466 @@ func TestARSStorageCheckScalesToARSFullFanOut(t *testing.T) {
 
 // TestARSStorageCheckInterruptedLeavesNothingBehind interrupts the ARS storage
 // check the way Ctrl-C does, with SIGINT to its whole process group, while the
-// probe walks the storage. Docker passes the signal on to the probe, which must
-// still remove every file it created, leave the index as it was and exit, and
-// the host part must say that it was interrupted.
+// probe walks the storage. The host part must pass the signal on to the probe
+// and wait for it, and the probe must still remove every file it created,
+// leave the index as it was and exit; the host part must say that it was
+// interrupted and exit with 130, as a process stopped by SIGINT does.
 func TestARSStorageCheckInterruptedLeavesNothingBehind(t *testing.T) {
+	check := startTestARSStorageCheck(t)
+	if err := syscall.Kill(-check.command.Process.Pid, syscall.SIGINT); err != nil {
+		t.Fatalf("interrupt the storage check: %v: %s", err, check.kill())
+	}
+	check.requireStoppedLeavingNothingBehind(t, "interrupted")
+	if code := check.command.ProcessState.ExitCode(); code != 130 {
+		t.Fatalf("the interrupted storage check exited with %d, want 130: %s", code, check.output.String())
+	}
+}
+
+// TestARSStorageCheckInterruptedRepeatedlyStillWaitsForItsProbe interrupts the
+// ARS storage check five times in quick succession, with SIGINT to its whole
+// process group, as pressing Ctrl-C again and again does. The docker client
+// stops waiting for its container once it has received three such signals, so
+// the host part must keep the client out of the process group, pass on only
+// the first signal, and still end only once the probe has removed its files
+// and its container has gone.
+func TestARSStorageCheckInterruptedRepeatedlyStillWaitsForItsProbe(t *testing.T) {
+	check := startTestARSStorageCheck(t)
+	for i := 0; i < 5; i++ {
+		if err := syscall.Kill(-check.command.Process.Pid, syscall.SIGINT); err != nil && i == 0 {
+			t.Fatalf("interrupt the storage check: %v: %s", err, check.kill())
+		}
+		// Far less than the probe needs to clean up and its container to
+		// go, but long enough for the docker client to count each signal.
+		time.Sleep(5 * time.Millisecond)
+	}
+	check.requireStoppedLeavingNothingBehind(t, "repeatedly interrupted")
+	if code := check.command.ProcessState.ExitCode(); code != 130 {
+		t.Fatalf("the repeatedly interrupted storage check exited with %d, want 130: %s", code, check.output.String())
+	}
+}
+
+// TestARSLauncherStoppedDuringItsCheckEndsAfterTheCheck stops ARS's launcher,
+// scripts/02_start_ars.sh, while its storage check walks the storage, the way
+// 01_bringup.sh stops it: SIGTERM to the launcher's child processes and to
+// the launcher. 01_bringup.sh then waits for the launcher to end and removes
+// ARS's container by name, so the launcher must end only once the check's
+// container has gone, with 143 as a process stopped by SIGTERM, and having
+// left nothing behind and started no ARS.
+func TestARSLauncherStoppedDuringItsCheckEndsAfterTheCheck(t *testing.T) {
 	docker := requireTestStorageCheckDocker(t)
-	repo := executionPlatformRepoRoot(t)
-	workspace, err := filepath.EvalSymlinks(t.TempDir())
+	up := newTestBringupUp(t, true, docker)
+	storage := filepath.Join(up.proof, "ars-storage")
+	index := filepath.Join(up.proof, "ars-index", "index.json")
+	writeTestARSShards(t, storage, 64)
+	container := testControlPlaneContainerName(up.bringupDir, "ars")
+	t.Cleanup(func() { _ = docker.command("rm", "-f", container).Run() })
+	up.writeFakes(t, map[string]string{
+		"docker": `#!/bin/sh
+for arg in "$@"; do
+  if [ "$arg" = ars-storage-probe ]; then
+    exec "$ROOT_REAL_DOCKER" "$@"
+  fi
+done
+case "$1 $2 $3" in
+  "run --rm --name")
+    printf 'docker ars\n' >> "$ROOT_EVENTS"
+    exec sleep 600 ;;
+esac
+case "$1 $2" in
+  "image inspect"|"rm -f") exit 0 ;;
+esac
+printf 'docker %s\n' "$*" >> "$ROOT_EVENTS"
+exit 97
+`,
+	})
+	before := snapshotTestIndex(t, index)
+	launcher := exec.Command("/bin/bash", filepath.Join(up.repo, "scripts", "02_start_ars.sh"))
+	launcher.Env = auditControlledScriptEnv(t, up.env...)
+	launcher.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	var output bytes.Buffer
+	launcher.Stdout, launcher.Stderr = &output, &output
+	if err := launcher.Start(); err != nil {
+		t.Fatal(err)
+	}
+	finished := make(chan struct{})
+	go func() { _ = launcher.Wait(); close(finished) }()
+	kill := func() string {
+		_ = syscall.Kill(-launcher.Process.Pid, syscall.SIGKILL)
+		<-finished
+		return output.String()
+	}
+	t.Cleanup(func() { kill() })
+	if !waitForTestStorageCheckFile(storage, "", finished, 60*time.Second) {
+		t.Fatalf("the launcher's storage check created no file in storage within 60 s: %s", kill())
+	}
+	for _, child := range testChildProcesses(t, launcher.Process.Pid) {
+		_ = syscall.Kill(child, syscall.SIGTERM)
+	}
+	_ = syscall.Kill(launcher.Process.Pid, syscall.SIGTERM)
+	select {
+	case <-finished:
+	case <-time.After(60 * time.Second):
+		t.Fatalf("the stopped launcher did not end within 60 s: %s", kill())
+	}
+	running, err := docker.command("ps", "-aq", "--filter", "name=^/"+container+"$").Output()
 	if err != nil {
 		t.Fatal(err)
 	}
-	storage := filepath.Join(workspace, "ars-storage")
-	index := filepath.Join(workspace, "ars-index", "index.json")
-	if err := os.MkdirAll(filepath.Dir(index), 0o755); err != nil {
-		t.Fatal(err)
+	if strings.TrimSpace(string(running)) != "" {
+		t.Fatalf("the stopped launcher ended while its storage check container %s still existed: %s", container, output.String())
 	}
-	if err := os.WriteFile(index, []byte("{}\n"), 0o600); err != nil {
-		t.Fatal(err)
+	if code := launcher.ProcessState.ExitCode(); code != 143 {
+		t.Fatalf("the stopped launcher ended with %v, want exit status 143: %s", launcher.ProcessState, output.String())
 	}
-	// 256 x 64 shards take the walk a few seconds, much longer than it takes
-	// to see its first file in the storage root.
+	if !strings.Contains(output.String(), "ARS storage check interrupted") {
+		t.Fatalf("the stopped launcher's check did not say that it was interrupted: %s", output.String())
+	}
+	requireTestIndexUntouched(t, storage, index, before)
+	if events, _ := os.ReadFile(up.events); len(events) != 0 {
+		t.Fatalf("the stopped launcher made unexpected Docker calls or started ARS: %q", events)
+	}
+}
+
+// TestARSStorageCheckStoppedByBringupLeavesNothingBehind stops the ARS storage
+// check the way 01_bringup.sh stops ARS's launcher when up fails or is
+// interrupted (stop_managed_service): SIGTERM to the launcher's own child
+// processes, which is the check's host part, and then to the launcher itself.
+// Docker is not signalled, so the host part must pass the signal on to the
+// probe and wait for it, and the probe must remove every file it created and
+// leave the index as it was.
+func TestARSStorageCheckStoppedByBringupLeavesNothingBehind(t *testing.T) {
+	check := startTestARSStorageCheck(t)
+	shell := check.command.Process.Pid
+	children := testChildProcesses(t, shell)
+	if len(children) == 0 {
+		t.Fatalf("the storage check's shell %d has no child process: %s", shell, check.kill())
+	}
+	for _, child := range children {
+		_ = syscall.Kill(child, syscall.SIGTERM)
+	}
+	_ = syscall.Kill(shell, syscall.SIGTERM)
+	check.requireStoppedLeavingNothingBehind(t, "stopped")
+}
+
+// TestARSStorageCheckKilledLeavesAtMostOneBatch kills the probe's container
+// outright while it walks the storage, as `docker rm -f` does. Nothing can clean
+// up after SIGKILL, so the walk removes its files in batches as it goes: what
+// stays behind is at most one batch, the files of 256 walked directories, plus
+// the files of the few directories still being walked.
+func TestARSStorageCheckKilledLeavesAtMostOneBatch(t *testing.T) {
+	check := startTestARSStorageCheck(t)
+	// Kill it once the walk has passed the first 64 of the 256 first-level
+	// shards, more than 4,000 directories, well past the first batch.
+	if !waitForTestStorageCheckFile(check.storage, "40", check.finished, 60*time.Second) {
+		t.Fatalf("the storage check did not reach the shard sha256/40 within 60 s: %s", check.kill())
+	}
+	if output, err := check.docker.command("kill", "--signal", "KILL", check.container).CombinedOutput(); err != nil {
+		t.Fatalf("docker kill %s: %v: %s: %s", check.container, err, output, check.kill())
+	}
+	if err := check.wait(t, "the killed storage check"); err == nil {
+		t.Fatalf("the storage check passed although its container was killed: %s", check.output.String())
+	}
+	check.waitForContainerToGo(t)
+	left := 0
+	_ = filepath.WalkDir(check.storage, func(path string, entry fs.DirEntry, err error) error {
+		if err == nil && strings.HasPrefix(entry.Name(), ".ars-storage-check.") {
+			left++
+		}
+		return nil
+	})
+	if left > 256+4 {
+		t.Fatalf("the killed storage check left %d of its files behind, more than one batch of 256 and the 4 directories it was still walking", left)
+	}
+	t.Logf("the killed storage check left %d of its files behind", left)
+}
+
+// TestBringupUpInterruptedDuringLauncherCheckLeavesNothingBehind interrupts
+// 01_bringup.sh up the way Ctrl-C does, with SIGINT to its process group,
+// while ARS's launcher runs its storage check in real Docker. up then stops the
+// launcher and removes ARS's container by name, as it does whenever it fails.
+// The launcher's check must still remove every file it created and leave the
+// index as the launcher found it, and ARS must never start.
+func TestBringupUpInterruptedDuringLauncherCheckLeavesNothingBehind(t *testing.T) {
+	docker := requireTestStorageCheckDocker(t)
+	up := newTestBringupUp(t, true, docker)
+	storage := filepath.Join(up.proof, "ars-storage")
+	index := filepath.Join(up.proof, "ars-index", "index.json")
 	writeTestARSShards(t, storage, 64)
-	before := snapshotTestIndex(t, index)
-	command := testARSStorageCheckCommand(t, docker, repo, workspace, storage, index)
+	container := testControlPlaneContainerName(up.bringupDir, "ars")
+	t.Cleanup(func() { _ = docker.command("rm", "-f", container).Run() })
+	// Both storage checks and removing ARS's container by name go to the real
+	// daemon; ARS itself would only be recorded.
+	up.writeFakes(t, map[string]string{
+		"docker": `#!/bin/sh
+for arg in "$@"; do
+  if [ "$arg" = ars-storage-probe ]; then
+    if [ -n "${ARS_STORAGE_CHECK_PASSED_FILE:-}" ]; then
+      printf 'docker launcher-storage-check\n' >> "$ROOT_EVENTS"
+    else
+      printf 'docker storage-check\n' >> "$ROOT_EVENTS"
+    fi
+    exec "$ROOT_REAL_DOCKER" "$@"
+  fi
+done
+case "$1 $2 $3" in
+  "run --rm --name")
+    printf 'docker ars\n' >> "$ROOT_EVENTS"
+    exec sleep 600 ;;
+esac
+printf 'docker %s\n' "$1" >> "$ROOT_EVENTS"
+case "$1 $2" in
+  "rm -f") exec "$ROOT_REAL_DOCKER" "$@" ;;
+  "info "|"image inspect") exit 0 ;;
+  "run --rm") printf 'slice0-host-loopback-ok\n'; exit 0 ;;
+esac
+exit 97
+`,
+		"python3": `#!/bin/sh
+if [ "$1 $2" = "-m http.server" ]; then
+  exit 0
+fi
+exec "$ROOT_REAL_PYTHON" "$@"
+`,
+		"curl": "#!/bin/sh\nprintf 'unexpected curl\\n' >> \"$ROOT_EVENTS\"\nexit 7\n",
+	})
+	command := exec.Command("/bin/bash", filepath.Join(up.repo, "scripts", "01_bringup.sh"), "up")
+	command.Env = auditControlledScriptEnv(t, up.env...)
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	var output bytes.Buffer
 	command.Stdout, command.Stderr = &output, &output
 	if err := command.Start(); err != nil {
 		t.Fatal(err)
 	}
-	done := make(chan error, 1)
-	go func() { done <- command.Wait() }()
-	started := false
-	for deadline := time.Now().Add(60 * time.Second); !started && time.Now().Before(deadline); {
-		select {
-		case err := <-done:
-			t.Fatalf("the storage check ended before it was interrupted: %v: %s", err, output.String())
-		case <-time.After(5 * time.Millisecond):
-		}
-		entries, _ := os.ReadDir(storage)
-		for _, entry := range entries {
-			if strings.HasPrefix(entry.Name(), ".ars-storage-check.") {
-				started = true
-			}
-		}
-	}
-	// The output is read only once the check has ended.
+	finished := make(chan struct{})
+	var upErr error
+	go func() { upErr = command.Wait(); close(finished) }()
+	// The output is read only once up has ended.
 	kill := func() string {
 		_ = syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
-		<-done
+		<-finished
 		return output.String()
 	}
-	if !started {
-		t.Fatalf("the storage check created no file in the storage root within 60 s: %s", kill())
+	t.Cleanup(func() { kill() })
+	// up's own check has passed and rewritten the index when the launcher's
+	// starts, so the index is taken as the launcher found it.
+	var before testIndexSnapshot
+	for deadline := time.Now().Add(2 * time.Minute); ; {
+		events, _ := os.ReadFile(up.events)
+		if strings.Contains(string(events), "docker launcher-storage-check\n") {
+			before = snapshotTestIndex(t, index)
+			break
+		}
+		select {
+		case <-finished:
+			t.Fatalf("bring-up up ended before ARS's launcher ran its storage check: %v: %s", upErr, output.String())
+		case <-time.After(5 * time.Millisecond):
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("ARS's launcher did not start its storage check within 2 minutes: %s", kill())
+		}
+	}
+	if !waitForTestStorageCheckFile(storage, "", finished, 60*time.Second) {
+		t.Fatalf("the launcher's storage check created no file in storage within 60 s: %s", kill())
 	}
 	if err := syscall.Kill(-command.Process.Pid, syscall.SIGINT); err != nil {
-		t.Fatalf("interrupt the storage check: %v: %s", err, kill())
+		t.Fatalf("interrupt bring-up up: %v: %s", err, kill())
 	}
 	select {
-	case err = <-done:
+	case <-finished:
+	case <-time.After(2 * time.Minute):
+		t.Fatalf("the interrupted bring-up up did not end within 2 minutes: %s", kill())
+	}
+	if upErr == nil {
+		t.Fatalf("bring-up up succeeded although it was interrupted: %s", output.String())
+	}
+	waitForTestContainerToGo(t, docker, container)
+	requireTestIndexUntouched(t, storage, index, before)
+	eventBytes, err := os.ReadFile(up.events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(eventBytes), "docker ars\n") || strings.Contains(string(eventBytes), "unexpected curl") {
+		t.Fatalf("bring-up up events = %q, want ARS never started after the interrupted launcher check", eventBytes)
+	}
+}
+
+// testRunningStorageCheck is an ARS storage check started by
+// startTestARSStorageCheck.
+type testRunningStorageCheck struct {
+	docker                    testStorageCheckDocker
+	storage, index, container string
+	command                   *exec.Cmd
+	output                    bytes.Buffer
+	finished                  chan struct{}
+	err                       error
+	before                    testIndexSnapshot
+}
+
+// startTestARSStorageCheck starts the ARS storage check, in a process group of
+// its own, on a store of 256 x 64 shards with a blob in each (16,705
+// directories), and returns once the walk has created its first file. The walk
+// takes seconds there, much longer than it takes to see that file.
+func startTestARSStorageCheck(t *testing.T) *testRunningStorageCheck {
+	t.Helper()
+	docker := requireTestStorageCheckDocker(t)
+	workspace, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	check := &testRunningStorageCheck{
+		docker:    docker,
+		storage:   filepath.Join(workspace, "ars-storage"),
+		index:     filepath.Join(workspace, "ars-index", "index.json"),
+		container: testControlPlaneContainerName(filepath.Join(workspace, "bringup"), "ars"),
+		finished:  make(chan struct{}),
+	}
+	if err := os.MkdirAll(filepath.Dir(check.index), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(check.index, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeTestARSShards(t, check.storage, 64)
+	check.before = snapshotTestIndex(t, check.index)
+	check.command = testARSStorageCheckCommand(t, docker, executionPlatformRepoRoot(t), workspace, check.storage, check.index)
+	check.command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	check.command.Stdout, check.command.Stderr = &check.output, &check.output
+	if err := check.command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	go func() { check.err = check.command.Wait(); close(check.finished) }()
+	t.Cleanup(func() {
+		check.kill()
+		_ = docker.command("rm", "-f", check.container).Run()
+	})
+	if !waitForTestStorageCheckFile(check.storage, "", check.finished, 60*time.Second) {
+		t.Fatalf("the storage check created no file in storage within 60 s: %s", check.kill())
+	}
+	return check
+}
+
+// kill ends what is left of the check's process group and returns its output,
+// which is read only once the check has ended.
+func (check *testRunningStorageCheck) kill() string {
+	_ = syscall.Kill(-check.command.Process.Pid, syscall.SIGKILL)
+	<-check.finished
+	return check.output.String()
+}
+
+// wait waits up to 60 s for the check to end and returns how it ended.
+func (check *testRunningStorageCheck) wait(t *testing.T, what string) error {
+	t.Helper()
+	select {
+	case <-check.finished:
+		return check.err
 	case <-time.After(60 * time.Second):
-		t.Fatalf("the interrupted storage check did not end within 60 s: %s", kill())
+		t.Fatalf("%s did not end within 60 s: %s", what, check.kill())
+		return nil
 	}
-	if err == nil {
-		t.Fatalf("the storage check passed although it was interrupted: %s", output.String())
+}
+
+// waitForContainerToGo waits until the check's container no longer exists.
+func (check *testRunningStorageCheck) waitForContainerToGo(t *testing.T) {
+	t.Helper()
+	waitForTestContainerToGo(t, check.docker, check.container)
+}
+
+// requireStoppedLeavingNothingBehind requires a check that was sent a signal
+// to fail, to say "ARS storage check interrupted", to end only once its
+// container has gone, because 01_bringup.sh removes ARS's container by name
+// once ARS's launcher has ended, and to have left the index as it was and
+// none of its files behind.
+func (check *testRunningStorageCheck) requireStoppedLeavingNothingBehind(t *testing.T, how string) {
+	t.Helper()
+	if err := check.wait(t, "the "+how+" storage check"); err == nil {
+		t.Fatalf("the storage check passed although it was %s: %s", how, check.output.String())
 	}
-	if !strings.Contains(output.String(), "ARS storage check interrupted") {
-		t.Fatalf("the interrupted storage check did not say so: %v: %s", err, output.String())
+	if !strings.Contains(check.output.String(), "ARS storage check interrupted") {
+		t.Fatalf("the %s storage check did not say that it was interrupted: %v: %s", how, check.err, check.output.String())
 	}
-	// The probe goes on removing its files after the docker client has gone,
-	// so wait for its container to go away first.
-	name := testControlPlaneContainerName(filepath.Join(workspace, "bringup"), "ars")
+	running, err := check.docker.command("ps", "-aq", "--filter", "name=^/"+check.container+"$").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(running)) != "" {
+		check.waitForContainerToGo(t)
+		t.Fatalf("the %s storage check ended while its container %s still existed: %s", how, check.container, check.output.String())
+	}
+	requireTestIndexUntouched(t, check.storage, check.index, check.before)
+}
+
+// waitForTestContainerToGo waits up to 60 s until no container has the name.
+func waitForTestContainerToGo(t *testing.T, docker testStorageCheckDocker, name string) {
+	t.Helper()
 	for deadline := time.Now().Add(60 * time.Second); ; {
 		running, err := docker.command("ps", "-aq", "--filter", "name=^/"+name+"$").Output()
 		if err != nil {
 			t.Fatal(err)
 		}
 		if strings.TrimSpace(string(running)) == "" {
-			break
+			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("the interrupted storage check container %s still exists after 60 s", name)
+			t.Fatalf("the storage check container %s still exists after 60 s", name)
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	requireTestIndexUntouched(t, storage, index, before)
+}
+
+// waitForTestStorageCheckFile waits until the storage check has a file of its
+// own in the storage root, in sha256, or in a first-level shard sha256/xx with
+// xx at or after fromShard, and reports false when finished closes or the
+// timeout passes first.
+func waitForTestStorageCheckFile(storage, fromShard string, finished <-chan struct{}, timeout time.Duration) bool {
+	for deadline := time.Now().Add(timeout); time.Now().Before(deadline); {
+		var dirs []string
+		if fromShard == "" {
+			dirs = append(dirs, storage, filepath.Join(storage, "sha256"))
+		}
+		for a := 0; a < 256; a++ {
+			if shard := fmt.Sprintf("%02x", a); shard >= fromShard {
+				dirs = append(dirs, filepath.Join(storage, "sha256", shard))
+			}
+		}
+		for _, dir := range dirs {
+			if matches, _ := filepath.Glob(filepath.Join(dir, ".ars-storage-check.*")); len(matches) > 0 {
+				return true
+			}
+		}
+		select {
+		case <-finished:
+			return false
+		case <-time.After(time.Millisecond):
+		}
+	}
+	return false
+}
+
+// testChildProcesses lists the processes whose parent is pid, from /proc.
+func testChildProcesses(t *testing.T, pid int) []int {
+	t.Helper()
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var children []int
+	for _, entry := range entries {
+		child, err := strconv.Atoi(entry.Name())
+		if err != nil {
+			continue
+		}
+		stat, err := os.ReadFile(filepath.Join("/proc", entry.Name(), "stat"))
+		if err != nil {
+			continue
+		}
+		// The second field, the command name, is in parentheses and may hold
+		// spaces; the parent's PID is the second field after it.
+		fields := strings.Fields(string(stat[bytes.LastIndexByte(stat, ')')+1:]))
+		if len(fields) > 1 && fields[1] == strconv.Itoa(pid) {
+			children = append(children, child)
+		}
+	}
+	return children
 }
 
 // writeTestARSShards fills storage with ARS's blob layout sha256/xx/yy for all

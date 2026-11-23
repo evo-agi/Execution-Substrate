@@ -13943,6 +13943,8 @@ func TestARSStorageCheckDocsContract(t *testing.T) {
 			"`TestARSStorageCheckScalesToARSFullFanOut` requires under 30 s",
 			"ARS's readiness wait (`READY_TIMEOUT_SECONDS`) starts only once the launcher reports that its check passed",
 			"the report cannot skip the check",
+			"the check passes the first such signal on to its probe and waits until the probe has removed its files and ended, however often it is signalled again",
+			"can leave at most one batch of its empty `.ars-storage-check.*` files, those of 256 directories",
 		}},
 		{".runbooks/system/v1_bringup.md", []string{
 			"`storage.root_dir` and `storage.index_file` are absolute paths written in normal form",
@@ -13950,6 +13952,7 @@ func TestARSStorageCheckDocsContract(t *testing.T) {
 			"finds its file again by listing each storage directory",
 			"The check takes seconds even when ARS's storage holds all 65,794 directories its `sha256/xx/yy` layout can create",
 			"ARS's readiness wait (`READY_TIMEOUT_SECONDS`, 30 s by default) starts only once ARS's launcher has passed its own run of the check",
+			"Ctrl-C during the check, or during `up` while ARS's launcher runs it, leaves the storage as it was",
 		}},
 		{".docs/system_overview/configuration.md", []string{
 			"refuses unless `storage.root_dir` and `storage.index_file` are absolute and in normal form (ARS opens them exactly as written, while its mounts use the normal form)",

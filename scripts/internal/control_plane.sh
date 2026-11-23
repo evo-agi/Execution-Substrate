@@ -201,8 +201,9 @@ control_plane_operator_user() {
 #      reading. Any other entry (a symbolic link, FIFO, socket or device) is
 #      refused: ARS never creates one, and ARS would pass through a link at a
 #      blob or shard path, so the check can neither skip a link nor safely
-#      follow one. When the walk is done, it removes the files it created, in
-#      batches, and refuses the first directory where one could not be removed;
+#      follow one. It removes the files it created in batches, the files of
+#      every 256 walked directories and the rest when the walk is done, and
+#      refuses the first directory where one could not be removed;
 #   4. last, only when everything above passed, writes the index the way ARS
 #      does: a new 0600 file with the index's current content, renamed over
 #      it. The index then belongs to ARS's identity, as after ARS's first write.
@@ -210,9 +211,15 @@ control_plane_operator_user() {
 # The walk starts no process per directory (the shell's own cd, redirections
 # and pattern matching do the work), because ARS's sha256/xx/yy layout grows to
 # 65,794 directories. A refusal before step 4 leaves storage as it was, except
-# for a root created in the host step and a file the check could not remove. Storage that an earlier bring-up wrote
-# as root, or that is shared through another group, fails with the exact sudo
-# chown that hands it back; the check does not repair ownership itself. The
+# for a root created in the host step and a file the check could not remove.
+# So does a check stopped by SIGHUP, SIGINT or SIGTERM: the host part passes
+# the signal on to the probe and waits for it, and the probe removes its files
+# before it exits. A probe killed outright, for example by docker rm -f, can
+# leave at most one batch of its empty files, which are named
+# .ars-storage-check.* and which the next check reads as ordinary files.
+# Storage that an earlier bring-up wrote as root, or that is shared through
+# another group, fails with the exact sudo chown that hands it back; the check
+# does not repair ownership itself. The
 # image must provide /bin/sh with mktemp, xargs, rm, cat, chmod and mv, as the
 # generated control-plane image does through Alpine's BusyBox.
 verify_ars_storage_for_operator() {
@@ -232,6 +239,7 @@ import os
 import pathlib
 import re
 import shlex
+import signal
 import stat
 import subprocess
 import sys
@@ -327,16 +335,19 @@ list=
 marker=$(mktemp -u -p / .ars-storage-check.XXXXXX) || exit 1
 marker=${marker##*/}
 cleanup() {
+  trap '' HUP INT TERM
   exec 3>&-
   [ -z "$list" ] || { xargs -0 rm -f -- < "$list"; rm -f -- "$list"; } 2>/dev/null
   [ -z "$current_tmp" ] || rm -f -- "$current_tmp" 2>/dev/null
 }
 trap cleanup EXIT
 # Stopped by a signal, for example by Ctrl-C, the probe still removes its
-# files.
-trap 'exit 129' HUP
-trap 'exit 130' INT
-trap 'exit 143' TERM
+# files. It runs as PID 1 of its container, which gets no default action for
+# these signals, so each needs a trap; a second signal, as from pressing
+# Ctrl-C again, must not cut the removal short.
+trap 'trap "" HUP INT TERM; exit 129' HUP
+trap 'trap "" HUP INT TERM; exit 130' INT
+trap 'trap "" HUP INT TERM; exit 143' TERM
 refuse() {
   printf 'REFUSE\t%s\t%s\t%s' "$1" "$3" "$2"
   exit 42
@@ -375,8 +386,10 @@ writable() {
 # shell's own. A directory the kernel does not let ARS list expands no pattern,
 # so the file just created there is not found. The file's path goes to the
 # list on descriptor 3 before the file is created, so that a check stopped in
-# between still removes it; all are removed from that list when the walk is
-# done.
+# between still removes it. Once 256 directories have been walked, the files on
+# the list are removed and the list starts again (remove_walk_files), so a
+# probe killed outright leaves at most that many. A directory still being
+# walked has already expanded its patterns, so its file can go too.
 walk() {
   local d=$1 e seen=
   cd -P -- "$d" 2>/dev/null || refuse storage "$d" "ARS cannot search this directory"
@@ -398,6 +411,20 @@ walk() {
     fi
   done
   [ -n "$seen" ] || refuse storage "$d" "the check cannot see the files below this directory, because ARS cannot list it"
+  walked=$((walked + 1))
+  [ "$walked" -lt 256 ] || remove_walk_files
+}
+# remove_walk_files removes the files on the list, refuses the first directory
+# that still holds one, and starts the list again.
+remove_walk_files() {
+  exec 3>&-
+  if ! xargs -0 rm -f -- < "$list" 2>/dev/null; then
+    left=$root
+    left_behind "$root" || true
+    refuse remove "$left" "ARS cannot remove its own file from this directory"
+  fi
+  exec 3>| "$list"
+  walked=0
 }
 # left_behind finds, in the walk's order, the first directory that still holds
 # the walk's file.
@@ -424,15 +451,12 @@ list=$(mktemp 2>/dev/null) || {
   exit 1
 }
 exec 3> "$list"
+walked=0
 set -C
 walk "$root"
 set +C
+remove_walk_files
 exec 3>&-
-if ! xargs -0 rm -f -- < "$list" 2>/dev/null; then
-  left=$root
-  left_behind "$root" || true
-  refuse remove "$left" "ARS cannot remove its own file from this directory"
-fi
 rm -f -- "$list"
 list=
 current_tmp=$(mktemp -p "$dir" .artifact-index-check.XXXXXX 2>/dev/null) || {
@@ -449,12 +473,47 @@ command = ["docker", "run", "--rm", "--name", CONTAINER_NAME, "--network", "none
 for spec in MOUNT_SPECS:
     command += ["-v", spec]
 command += ["--entrypoint", "/bin/sh", IMAGE, "-c", PROBE, "ars-storage-probe", str(root), str(index)]
-try:
-    result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-except KeyboardInterrupt:
-    # Docker passes the interrupt on to the probe, which removes its own files.
+# Stopped by SIGHUP, SIGINT or SIGTERM, the check passes the first such signal
+# on to the docker client, which passes it on to the probe, and waits until the
+# probe has removed its files and ended. Only the first: the docker client
+# gives up waiting once it has received three such signals, and the probe
+# ignores every signal after the first anyway. The client runs in a session of
+# its own, so that only this process signals it: 01_bringup.sh stops ARS's
+# launcher by signalling the launcher's own child processes, which is this
+# one, and Ctrl-C signals the terminal's whole foreground process group. A
+# signal that this process was started to ignore stays ignored.
+received = []
+child = None
+# Whoever takes this one item passes the signal on; list.pop is atomic, so a
+# signal handler that runs in the middle of forward() cannot pass it on twice.
+forward_once = [True]
+
+
+def forward():
+    if received and child is not None:
+        try:
+            forward_once.pop()
+        except IndexError:
+            return
+        child.send_signal(received[0])
+
+
+def stop(signum, frame):
+    received.append(signum)
+    forward()
+
+
+for signum in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
+    if signal.getsignal(signum) != signal.SIG_IGN:
+        signal.signal(signum, stop)
+if not received:
+    child = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+    forward()
+    stdout, stderr = child.communicate()
+if received:
     print("ARS storage check interrupted", file=sys.stderr)
-    raise SystemExit(130)
+    raise SystemExit(128 + received[0])
+result = subprocess.CompletedProcess(command, child.returncode, stdout, stderr)
 if result.returncode == 0:
     raise SystemExit(0)
 record = result.stdout.decode("utf-8", "surrogateescape")
