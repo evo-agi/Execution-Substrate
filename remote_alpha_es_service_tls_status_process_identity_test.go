@@ -100,7 +100,8 @@ if reason is not None:
 # The grace bound of the cleanup owner is not under test here: a loaded test
 # host must not turn one late scheduling of a fixture child into a failure.
 module.CHILD_GRACE=30.0
-held=[]
+# The PID namespace of a fixed command needs root and has its own tests.
+` + remoteAlphaESStatusLocalChildNamespace + `held=[]
 def start(name,stay=True):
     ready_r,ready_w=os.pipe();hold_r,hold_w=os.pipe()
     pid=os.fork()

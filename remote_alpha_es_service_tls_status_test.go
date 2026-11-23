@@ -26,6 +26,15 @@ func remoteAlphaESServiceTLSStatusCollectorPath() string {
 // import what they use under names of their own, so they need nothing else
 // of the fixture, and in particular no import of os.
 //
+// Every fixed command of the collector runs in its own PID namespace, which
+// only root on the target can open. A fixture that is not a root test of the
+// containment replaces the namespace by an object that does nothing, and the
+// namespace part of the capability probe with it. The containment has its own
+// tests, with a deterministic backend and, as root, with the real kernel.
+const remoteAlphaESStatusLocalChildNamespace = `module.ChildNamespace=type("LocalChildNamespace",(),{"open":lambda self:None,"restore":lambda self:None,"close":lambda self:False})
+module.validate_child_namespace=lambda: None
+`
+
 // The cleanup reaches the target's process table through three functions:
 // scan_group_members lists /proc, signal_same_group_members uses pidfd_open
 // and pidfd_send_signal, and read_proc_identity reads /proc/<pid>/stat and
@@ -55,7 +64,7 @@ module.PROCESS_CAPABILITY_READY=True
 module.scan_group_members=lambda pgid: [(pgid,0)]
 module.signal_same_group_members=lambda pgid,signum: _os.kill(pgid,signum)
 module.read_proc_identity=lambda pid: None
-def _target_only(name):
+` + remoteAlphaESStatusLocalChildNamespace + `def _target_only(name):
     def reached(*_args,**_kwargs):
         _os.write(2,("local fixture reached the target-only host path: "+name+"\n").encode());_os._exit(97)
     return reached
@@ -2796,7 +2805,7 @@ import fcntl,importlib.util,json,os,pathlib,signal,subprocess,sys,threading,time
 source,root,mode=sys.argv[1:]
 spec=importlib.util.spec_from_file_location("group_failure_fixture",source)
 module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
-root=pathlib.Path(root);child=root/"fixed-openssl";pidfile=root/"desc.pid";canonical=root/"canonical.json"
+` + remoteAlphaESStatusLocalChildNamespace + `root=pathlib.Path(root);child=root/"fixed-openssl";pidfile=root/"desc.pid";canonical=root/"canonical.json"
 canonical.write_bytes(b"previous generation\n")
 child.write_text("#!/usr/bin/python3\nimport os,signal,sys,time\n"
                  "def close_std():\n    for fd in (0,1,2):\n        try:os.close(fd)\n        except OSError:pass\n"
@@ -3060,6 +3069,11 @@ func TestRemoteAlphaESServiceTLSStatusFixedCapabilityProbe(t *testing.T) {
 import importlib.util,json,os,signal,sys
 spec=importlib.util.spec_from_file_location("status_capability_backend",sys.argv[1])
 module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+` + remoteAlphaESStatusLocalChildNamespace + `# The namespace part of the probe has its own tests. Here it is counted: it
+# must run once after a first part that succeeded, and never after one that
+# did not.
+namespace_part=[]
+module.validate_child_namespace=lambda: namespace_part.append(True)
 class Backend:
     def __init__(self,mode):
         self.mode=mode;self.pid=123456;self.live=False;self.reaped=False
@@ -3105,10 +3119,11 @@ class Backend:
 results={}
 for mode in ("success","missing_waitid","missing_wnowait","missing_pidfd",
              "broken_nonreaping","reap_failure"):
-    backend=Backend(mode)
+    backend=Backend(mode);del namespace_part[:]
     try:module.validate_process_capability(backend);accepted=True
     except module.Incomplete:accepted=False
     results[mode]=(accepted==(mode=="success") and
+                   len(namespace_part)==(1 if mode=="success" else 0) and
                    (backend.reaped or not backend.forked or mode=="broken_nonreaping") and
                    (backend.nonreaping>0 if mode=="success" else True) and
                    (backend.signaled>0 if mode=="success" else True))
@@ -3280,7 +3295,7 @@ import importlib.util,json,os,pathlib,signal,subprocess,sys,time
 source,root,mode=sys.argv[1:]
 spec=importlib.util.spec_from_file_location("status_descendant",source)
 module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
-# Local generated fixtures inject the target-only process capability boundary.
+` + remoteAlphaESStatusLocalChildNamespace + `# Local generated fixtures inject the target-only process capability boundary.
 module.validate_process_capability=lambda: None
 module.PROCESS_CAPABILITY_READY=True
 module.signal_same_group_members=lambda pgid,signum: os.kill(pgid,signum)

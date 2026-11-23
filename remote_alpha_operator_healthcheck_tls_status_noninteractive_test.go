@@ -731,7 +731,7 @@ spec = importlib.util.spec_from_file_location("remote", %q)
 m = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = m
 spec.loader.exec_module(m)
-
+%s
 tmp = pathlib.Path(%q)
 cert = tmp / "operator-client-cert.pem"
 key = tmp / "operator-client-key.pem"
@@ -919,7 +919,7 @@ finally:
             os.environ[key] = value
 
 print("ok")
-`, p0vRemoteCollectorPath(), tmpDir)
+`, p0vRemoteCollectorPath(), remoteCollectorDescendantStandIn, tmpDir)
 	runPythonSnippet(t, code)
 	matches, err := filepath.Glob(filepath.Join(os.TempDir(), "p0v-collector-test-*"))
 	if err != nil {
@@ -943,7 +943,7 @@ spec = importlib.util.spec_from_file_location("remote", %q)
 m = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = m
 spec.loader.exec_module(m)
-
+%s
 tmp = pathlib.Path(%q)
 cert = tmp / "operator-client-cert.pem"
 key = tmp / "operator-client-key.pem"
@@ -1006,7 +1006,7 @@ finally:
 assert result.returncode == 0 and closed, (result, closed)
 
 print("ok")
-	`, p0vRemoteCollectorPath(), tmpDir, 65536, 65537, 8192, 8193)
+	`, p0vRemoteCollectorPath(), remoteCollectorDescendantStandIn, tmpDir, 65536, 65537, 8192, 8193)
 	runPythonSnippet(t, code)
 }
 
@@ -1023,7 +1023,7 @@ spec = importlib.util.spec_from_file_location("remote", %q)
 m = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = m
 spec.loader.exec_module(m)
-
+%s
 class Key:
     def __init__(self, fileobj, data):
         self.fileobj = fileobj
@@ -1350,7 +1350,7 @@ finally:
     m.COMMAND_TERMINATION_GRACE_SECONDS = old_grace
 
 print("ok")
-	`, p0vRemoteCollectorPath())
+	`, p0vRemoteCollectorPath(), remoteCollectorDescendantStandIn)
 	runPythonSnippet(t, code)
 }
 

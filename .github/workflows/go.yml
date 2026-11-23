@@ -166,3 +166,16 @@ jobs:
       # entry for a subtest starts another test under the path of that entry.
       - name: Listed tests still fail
         run: python3 -I -B .github/ci/go_test_gate.py still-failing "$ENVIRONMENT_ONLY_TESTS"
+
+      # Some tests of the root package need root: the tests of the
+      # PID-namespace containment of the Remote Alpha TLS status collector
+      # create PID namespaces. They skip themselves in the step "Test", and
+      # the list names them with "skips-itself". This step builds the test
+      # binary of the root package as the user of this job, runs exactly
+      # those tests once through "sudo -n" with an emptied environment, and
+      # fails unless each of them passes. Besides the package installation
+      # in the step "Install bindfs", it is the only use of sudo in this job,
+      # and the only step in which a test runs as root. Only the test binary
+      # runs as root. go_test_as_root.py gives the rules.
+      - name: Listed root-package tests pass as root
+        run: python3 -I -B .github/ci/go_test_as_root.py "$ENVIRONMENT_ONLY_TESTS" execution-substrate
