@@ -4669,6 +4669,168 @@ Digest summary for the untracked evidence files:
   `dac32b552d6da8b39411839099a3f704e6d70890da147caf2bccbad10a4c59e7`,
   5245 bytes.
 
+## Remote Alpha User Caller Identities
+
+`Bounded slice rule`: the Remote Alpha box may give a named person or agent
+its own API caller identity, `spiffe://execution.internal/user/<name>`, so
+that it calls AGS and ES as itself instead of borrowing the operator or
+Control Plane certificate. The first name is `user/claude` (decided by the box
+owner on 2026-11-23); later users follow the same `user/<name>` form. One
+operator-owned helper, `scripts/remote_alpha_user_identity.sh`, mints and
+installs these identities. It changes no ES, AGS, ARS or EGS code, contract,
+route or refusal; it changes only Remote Alpha box files.
+
+A `user/<name>` identity is an API identity only. It is not a Unix account,
+gives no SSH or sudo access, and is unrelated to any Unix login of the same
+name on the box (the box login `claude` is a separate grant). Removing someone
+entirely means revoking both.
+
+### Modes
+
+Box modes run as root on the box and change nothing without `--apply`:
+
+- `status`: read-only report of the user CA, the registry, both client CA
+  files, the `user/` entries in both allowlists, and the AGS and ES units.
+- `init-ca [--apply]`: create the user CA once. It touches no service file.
+- `issue --name <name> --csr <file> --out <file> [--apply]`: sign one leaf
+  certificate for `user/<name>` from a CSR made on the caller's machine.
+- `allow --name <name> [--apply]`: install the user CA as a client trust
+  anchor if it is not installed yet, add the exact prefix `user/<name>` to
+  the AGS and ES allowlists, and restart `ags.service` then `es.service`.
+- `revoke --name <name> [--apply] [--remove-ca]`: remove `user/<name>` from
+  both allowlists, restart both services, and mark the name revoked for good.
+  `--remove-ca` also removes the user CA from both client CA files, and is
+  refused while any other name is still active.
+
+Caller modes run as the caller (refused as root), on the machine that will
+call AGS and ES, and support the Mac's `/usr/bin/python3` (3.9) and its
+LibreSSL `openssl`:
+
+- `request --name <name> [--renew]`: generate the caller's RSA-3072 key and a
+  CSR with subject `CN=<name>` in
+  `~/.config/execution-substrate/callers/<name>/` (directory `0700`, key
+  `0600`). `--renew` puts a new key and CSR in `pending/` next to the
+  current ones.
+- `install --name <name> --cert <file> [--server-ca <file>]`: install the
+  issued certificate after checking that it carries exactly the expected URI
+  SAN and the client-auth usage and matches the local key (a match with
+  `pending/` promotes the renewal key; the old key and certificate move to
+  `previous/`). `--server-ca` stores the public AGS/ES server CA bundle for
+  `check`.
+- `check --name <name> [--url https://<host>:<port> [--service es|ags]]`:
+  check the local files, and with `--url` call the service over mTLS. For ES
+  it calls the read-only `GET /v1/executions:contract`. For AGS it sends
+  `POST /v1/artifacts:publish` with an empty body: AGS authenticates and
+  authorizes the caller first and then refuses the empty body with `400
+  invalid_request` before its publish service runs, so the check reaches the
+  authorization decision without publishing anything. The tests pin that
+  order against the real AGS handler.
+
+Only the CSR and public certificates cross machines. The caller's private key
+never leaves the caller's machine and is never printed.
+
+### User CA, custody and leaf profile
+
+The user CA is a separate CA, not the external client CA of the
+`.docs/system_overview/remote_alpha_external_tls_one_time_incident_contract.md`
+family, whose two CAs keep signing only their own named roles. Profile:
+RSA-3072, SHA-256, subject `O=Execution Substrate, CN=Execution Substrate
+Remote Alpha User CA`, critical `CA:TRUE, pathlen:0`, critical `keyCertSign,
+cRLSign`, a critical name constraint permitting only URIs in
+`execution.internal`, 400 days. `init-ca` refuses when either service's
+`security.bootstrap_issuer_common_name` equals the user CA's Common Name.
+
+Custody: the CA key stays on the box, root-only and without a passphrase, in
+`/etc/execution-substrate/user-ca/` (directory `root:root 0700`, key `0600`).
+Root on the box can already read every service key there, so a passphrase
+would add a secret to keep without protecting against anyone who can reach
+the file. The CA key never leaves the box.
+
+Leaves: critical `CA:FALSE`, critical `digitalSignature` only, EKU
+`clientAuth` only, exactly one SAN, the URI
+`spiffe://execution.internal/user/<name>`, subject `CN=<name>`, subject and
+authority key identifiers, a random 128-bit serial, and 90 days that may not
+outlast the CA. `issue` copies no CSR extension, requires the CSR subject to be
+exactly `CN=<name>` and its self-signature to verify, accepts RSA keys of 3072
+to 8192 bits or EC P-256/P-384 keys, refuses a key that the CA or any earlier
+issued certificate already uses, and checks every field of the signed leaf
+before it records or writes it. Names are 1 to 32 characters of `a-z`, `0-9`
+and `-`, starting with a letter and not ending with `-`.
+
+The registry `/etc/execution-substrate/user-ca/registry.json` records each
+name's state and every certificate issued for it (serial, SHA-256 of the
+certificate and of its public key, validity). A revoked name is never issued
+or allowed again. Each issued certificate is also kept in `issued/`.
+
+### Trust installation
+
+AGS and ES each load the file named by their `tls.client_ca_file` once, at
+startup. On the box these are
+`/etc/execution-substrate/tls/external-client-auth-ca.pem` and
+`/etc/execution-substrate/es-tls/server-client-ca.pem`, which the recovery
+runbook keeps byte-identical. `allow` appends the user CA certificate to the
+end of both files and keeps them identical; it refuses unless both services
+point at exactly those files, the two files are identical before the change,
+every block in them is a certificate, and the user CA is either absent or
+present exactly once as the final block. The external client CA stays first,
+so tools that read only the first certificate of these files (expiry checks
+and `openssl x509`) still see it.
+
+Appending to the existing files, instead of pointing the services at a new
+bundle file, keeps a stale bundle from ever breaking operator or Control
+Plane access: a recovery reissue that does not know about the user CA can
+only drop the user CA, which locks out user callers and nobody else.
+
+`allow` refuses when an allowlist entry other than `user/<name>` already
+authorizes `user/<name>` (for example a bare `user`), because revoking the
+name could not then take effect. `revoke` checks the same after removing the
+entry.
+
+### Applying, rollback and evidence
+
+`allow` and `revoke` take an exclusive lock, copy the four files they may
+change into `/etc/execution-substrate/user-ca/backups/<time>-<mode>-<name>/`,
+write each new file through a same-directory temporary file and a rename with
+the old owner, group and mode, edit only the allowlist array in each JSON file
+(every other byte is kept; duplicate JSON keys are refused), then restart
+`ags.service` and `es.service` in that order and require each to be active
+with a stable main process. Any failure restores the exact previous bytes,
+restarts the services this run restarted, and reports the result. The registry
+is updated only after both services are back. The backups hold `ags.json`,
+which carries the AGS signer key, so they stay root-only (`0600` files in
+`0700` directories), and the report prints digests of the client CA files but
+never of the configs.
+
+### Revocation and its limits
+
+ES has no certificate revocation list. Revoking a name removes its allowlist
+entry, so AGS and ES answer its calls with `403`, while its certificates stay
+cryptographically valid until they expire. One certificate cannot be revoked
+alone: revoke the name and issue a new name. A compromised user CA key means
+revoking every name and running `revoke --remove-ca`.
+
+User certificates are not SPIRE-issued, like the operator and Control Plane
+certificates. ES accepts them because their issuer Common Name is not the
+bootstrap issuer; the `403` text that names SPIRE for bootstrap callers is
+unchanged by this slice.
+
+### Recovery runbook interaction
+
+The Archived-Runbooks Remote Alpha Linux Recovery runbook must accept
+`user/<name>` allowlist entries in its topology check and, when it reissues
+the external client CA, append `/etc/execution-substrate/user-ca/ca-cert.pem`
+(when present) to the new client CA before installing it in both places.
+Until it does, its topology check refuses a box with user identities, and an
+external reissue drops user access (and only user access).
+
+### Not claimed
+
+This slice adds no per-caller run ownership, quotas, run listing, CRL, OCSP,
+CA renewal, reload without restart, or user role beyond the existing
+allowlists: a `user/<name>` caller can do everything the AGS and ES
+allowlists permit any allowed caller to do. The operator's step-by-step
+procedure is `.runbooks/system/Governed Execution ES Remote Alpha User Identity.md`.
+
 ## Direct Remote Requirements
 
 AGS and ES must be reachable from the Mac over the direct remote HTTPS/mTLS boundary.
