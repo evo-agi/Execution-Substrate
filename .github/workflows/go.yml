@@ -98,6 +98,9 @@ jobs:
       # SHA-256 that was reviewed before anything uses it: the HashiCorp
       # files were checked against HashiCorp's signed SHA256SUMS, and the
       # SPIRE file against the unsigned checksum file of its GitHub release.
+      # The SPIRE value comes from scripts/internal/spire_release.sha256, the
+      # pin file that the supported-local setup scripts check SPIRE against,
+      # so CI and those scripts accept the same file.
       - name: Install Nomad, Vault and SPIRE
         run: |
           set -euo pipefail
@@ -109,7 +112,9 @@ jobs:
           }
           fetch https://releases.hashicorp.com/nomad/2.1.1/nomad_2.1.1_linux_amd64.zip nomad.zip 073084f7690fdaea756ff1eff8b669b25c3a6c17778f19ae0c47606973ed3f39
           fetch https://releases.hashicorp.com/vault/2.2.2/vault_2.2.2_linux_amd64.zip vault.zip 5700edf139113609962fe371af7d2a53de8ecb720d545dc39b43de204515d3c4
-          fetch https://github.com/spiffe/spire/releases/download/v1.14.4/spire-1.14.4-linux-amd64-musl.tar.gz spire.tar.gz 4482db434af8a3d2f4c5aeaef8912b21311411a175ce7daeb49ea17b776bcbf5
+          source scripts/internal/spire_release.sh
+          spire_sha256="$(spire_release_pinned_sha256 spire-1.14.4-linux-amd64-musl.tar.gz)"
+          fetch https://github.com/spiffe/spire/releases/download/v1.14.4/spire-1.14.4-linux-amd64-musl.tar.gz spire.tar.gz "$spire_sha256"
           unzip -q "$tools/download/nomad.zip" nomad -d "$tools/bin"
           unzip -q "$tools/download/vault.zip" vault -d "$tools/bin"
           echo "$tools/bin" >> "$GITHUB_PATH"

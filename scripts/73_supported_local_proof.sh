@@ -5,6 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 PARENT_ROOT="$(cd "${REPO_ROOT}/.." && pwd)"
 source "${SCRIPT_DIR}/internal/supported_local_retained_result_auth.sh"
+source "${SCRIPT_DIR}/internal/spire_release.sh"
 
 ACTION="${1:-run}"
 SUPPORTED_LOCAL_INSTANCE="${SUPPORTED_LOCAL_INSTANCE:-es-lima-qemu-arm64}"
@@ -52,6 +53,12 @@ Silicon Mac + Lima qemu reference path. It:
   - publishes projected guest evidence into exclusive .out generations
   - keeps source and transport inputs in separate private host bootstrap scratch
   - removes successful guest /tmp/es-proof-* scratch after host evidence is preserved
+
+The SPIRE release file, downloaded or prebuilt, is staged for the guest only
+if its SHA-256 is the one that scripts/internal/spire_release.sha256 pins for
+SUPPORTED_LOCAL_SPIRE_ASSET, and the guest setup checks it again before it
+unpacks it. A release file with no line there is refused before the wrapper
+creates anything.
 
 Optional environment variables:
   SUPPORTED_LOCAL_INSTANCE=es-lima-qemu-arm64
@@ -472,12 +479,28 @@ prepare_host_tooling() {
   }
   run_phase runtime-support-build build_runtime_support
 
+  run_phase spire-stage stage_spire_distribution
+}
+
+# Stages the SPIRE release file for the guest only after its SHA-256 matches
+# the one pinned for SUPPORTED_LOCAL_SPIRE_ASSET. The pin is looked up before
+# the download, and the staged copy is the file that is checked.
+stage_spire_distribution() {
+  local staged="${SUPPORTED_LOCAL_HOST_BOOTSTRAP_DIR}/bin/spire.tar.gz"
+
+  if ! spire_release_pinned_sha256 "${SUPPORTED_LOCAL_SPIRE_ASSET}" >/dev/null; then
+    return 1
+  fi
   if [[ -n "${SUPPORTED_LOCAL_PREBUILT_SPIRE_TARBALL}" ]]; then
-    run_phase spire-stage cp "${SUPPORTED_LOCAL_PREBUILT_SPIRE_TARBALL}" "${SUPPORTED_LOCAL_HOST_BOOTSTRAP_DIR}/bin/spire.tar.gz"
-  else
-    run_phase spire-stage curl -L --fail --silent --show-error \
-      -o "${SUPPORTED_LOCAL_HOST_BOOTSTRAP_DIR}/bin/spire.tar.gz" \
-      "${SUPPORTED_LOCAL_SPIRE_URL}"
+    if ! cp "${SUPPORTED_LOCAL_PREBUILT_SPIRE_TARBALL}" "${staged}"; then
+      return 1
+    fi
+  elif ! curl -L --fail --silent --show-error -o "${staged}" "${SUPPORTED_LOCAL_SPIRE_URL}"; then
+    return 1
+  fi
+  if ! spire_release_verify "${staged}" "${SUPPORTED_LOCAL_SPIRE_ASSET}"; then
+    rm -f -- "${staged}"
+    return 1
   fi
 }
 
@@ -852,6 +875,9 @@ run() {
   supported_local_proof_repair_test_sentinel
   preflight_supported_local_proof_retained_result_auth
   preflight_supported_local_proof_bootstrap_scope
+  # Refuse a SPIRE release file with no pin before any host effect; the
+  # spire-stage phase checks the staged copy against it later.
+  spire_release_pinned_sha256 "${SUPPORTED_LOCAL_SPIRE_ASSET}" >/dev/null
 
   umask 077
   create_private_host_proof_dir
