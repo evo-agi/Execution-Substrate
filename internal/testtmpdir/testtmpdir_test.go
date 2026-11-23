@@ -5,6 +5,7 @@ import (
 	"errors"
 	"go/ast"
 	"go/build"
+	"go/build/constraint"
 	"go/parser"
 	"go/token"
 	"io/fs"
@@ -305,9 +306,10 @@ func testPackageDirs(t *testing.T, root string) map[string][]string {
 	return dirs
 }
 
-// buildContexts are the platforms on which the TestMain file has to build:
-// the Linux platforms that ES is built for and the macOS platforms that it is
-// developed on.
+// buildContexts are platforms on which the TestMain file has to build: the
+// Linux platforms that ES is built for and the macOS platforms that it is
+// developed on. A file name that ends in a GOOS or GOARCH suffix fails at
+// least one of them; a //go:build line is refused separately.
 func buildContexts() []build.Context {
 	var contexts []build.Context
 	for _, platform := range [][2]string{{"linux", "amd64"}, {"linux", "arm64"}, {"darwin", "arm64"}, {"darwin", "amd64"}} {
@@ -329,7 +331,7 @@ func testMainProblem(root, rel string, files []string) string {
 	var file *ast.File
 	var decl *ast.FuncDecl
 	for _, name := range files {
-		parsed, err := parser.ParseFile(fset, filepath.Join(dir, name), nil, parser.SkipObjectResolution)
+		parsed, err := parser.ParseFile(fset, filepath.Join(dir, name), nil, parser.ParseComments|parser.SkipObjectResolution)
 		if err != nil {
 			return "cannot parse " + name + ": " + err.Error()
 		}
@@ -350,6 +352,16 @@ func testMainProblem(root, rel string, files []string) string {
 		}
 		if !match {
 			return found[0] + " does not build for " + context.GOOS + "/" + context.GOARCH
+		}
+	}
+	for _, group := range file.Comments {
+		if group.Pos() > file.Package {
+			break
+		}
+		for _, comment := range group.List {
+			if constraint.IsGoBuild(comment.Text) || constraint.IsPlusBuild(comment.Text) {
+				return found[0] + " has a build constraint"
+			}
 		}
 	}
 	imports := map[string]string{}
@@ -412,9 +424,9 @@ func isSelector(expr ast.Expr, pkg, name string) bool {
 
 // TestEveryTestPackageResolvesTheTemporaryDirectory holds the rule of this
 // package for the whole module: every package that has tests runs them
-// through testtmpdir.Main, from a TestMain that builds on every platform
-// ES is built or developed on. A package that adds its first test file adds
-// that TestMain in the same change.
+// through testtmpdir.Main, from a TestMain in a file without a build
+// constraint. A package that adds its first test file adds that TestMain in
+// the same change.
 func TestEveryTestPackageResolvesTheTemporaryDirectory(t *testing.T) {
 	root := moduleRoot(t)
 	dirs := testPackageDirs(t, root)
@@ -457,6 +469,9 @@ func TestGuardRefusesTestMainsThatDoNotResolve(t *testing.T) {
 		{"TestMain that does more", map[string]string{"main_test.go": "package p\n\n" + imports + "func TestMain(m *testing.M) {\n\tos.Setenv(\"TMPDIR\", \"/var\")\n\tos.Exit(testtmpdir.Main(m))\n}\n"}, "does more than"},
 		{"Linux only", map[string]string{"main_linux_test.go": good}, "does not build for darwin/arm64"},
 		{"build constraint", map[string]string{"main_test.go": "//go:build linux\n\n" + good}, "does not build for darwin/arm64"},
+		{"build constraint that every checked platform meets", map[string]string{"main_test.go": "//go:build unix\n\n" + good}, "has a build constraint"},
+		{"old-style build constraint", map[string]string{"main_test.go": "// +build !windows\n\n" + good}, "has a build constraint"},
+		{"comment that only mentions a build constraint", map[string]string{"main_test.go": "// Not a constraint: //go:build linux\n\n" + good}, ""},
 		{"renamed import", map[string]string{"main_test.go": strings.Replace(good, "\t\"execution-substrate/internal/testtmpdir\"", "\tt2 \"execution-substrate/internal/testtmpdir\"", 1)}, "under its own name"},
 		{"wrong argument", map[string]string{"main_test.go": strings.Replace(good, "testtmpdir.Main(m)", "testtmpdir.Main(nil)", 1)}, "is not os.Exit(testtmpdir.Main(m))"},
 	}
