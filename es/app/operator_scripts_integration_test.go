@@ -363,7 +363,7 @@ advertise {
 	upCmd.Env = baseEnv
 	upOutput, err := upCmd.CombinedOutput()
 	if err != nil {
-		t.Fatalf("bringup up failed: %v output=%s", err, string(upOutput))
+		t.Fatalf("bringup up failed: %v output=%s%s", err, string(upOutput), bringupLogTails(filepath.Join(bringupDir, "logs")))
 	}
 	if !strings.Contains(string(upOutput), "bring-up complete") {
 		t.Fatalf("expected successful bringup output, got %s", string(upOutput))
@@ -386,7 +386,7 @@ advertise {
 	checkCmd.Env = baseEnv
 	checkOutput, err := checkCmd.CombinedOutput()
 	if err != nil {
-		t.Fatalf("bringup check failed: %v output=%s", err, string(checkOutput))
+		t.Fatalf("bringup check failed: %v output=%s%s", err, string(checkOutput), bringupLogTails(filepath.Join(bringupDir, "logs")))
 	}
 	if !strings.Contains(string(checkOutput), "nomad: leader=") {
 		t.Fatalf("expected nomad readiness in bringup check output, got %s", string(checkOutput))
@@ -4141,5 +4141,65 @@ func readJSONFile(t *testing.T, path string, target any) {
 	}
 	if err := json.Unmarshal(body, target); err != nil {
 		t.Fatalf("decode json file %s: %v body=%s", path, err, string(body))
+	}
+}
+
+// bringupLogTails returns the last lines of each service log that bring-up
+// wrote under logsDir, so that a failed bring-up in CI shows why a service
+// did not start (bring-up itself prints only the readiness error).
+func bringupLogTails(logsDir string) string {
+	const tailLines = 40
+	entries, err := os.ReadDir(logsDir)
+	if err != nil {
+		return "\nbring-up logs: " + err.Error()
+	}
+	var report strings.Builder
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".log") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(logsDir, entry.Name()))
+		if err != nil {
+			fmt.Fprintf(&report, "\n==> %s: %v", entry.Name(), err)
+			continue
+		}
+		lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+		if len(lines) > tailLines {
+			lines = lines[len(lines)-tailLines:]
+		}
+		fmt.Fprintf(&report, "\n==> last %d lines of %s:\n%s", len(lines), entry.Name(), strings.Join(lines, "\n"))
+	}
+	return report.String()
+}
+
+func TestBringupLogTailsShowsTheEndOfEachLog(t *testing.T) {
+	logsDir := t.TempDir()
+	var nomadLog strings.Builder
+	for i := 1; i <= 50; i++ {
+		fmt.Fprintf(&nomadLog, "nomad line %d\n", i)
+	}
+	if err := os.WriteFile(filepath.Join(logsDir, "nomad.log"), []byte(nomadLog.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(logsDir, "es.log"), []byte("es started\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(logsDir, "es.pid"), []byte("1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	report := bringupLogTails(logsDir)
+	for _, want := range []string{"last 1 lines of es.log:\nes started", "last 40 lines of nomad.log:\nnomad line 11\n", "nomad line 50"} {
+		if !strings.Contains(report, want) {
+			t.Errorf("report lacks %q:\n%s", want, report)
+		}
+	}
+	for _, unwanted := range []string{"nomad line 10\n", "es.pid"} {
+		if strings.Contains(report, unwanted) {
+			t.Errorf("report contains %q:\n%s", unwanted, report)
+		}
+	}
+	if report := bringupLogTails(filepath.Join(logsDir, "missing")); !strings.Contains(report, "bring-up logs:") {
+		t.Errorf("missing log directory gave %q", report)
 	}
 }

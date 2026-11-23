@@ -3549,25 +3549,6 @@ func socketTestRootDirPath() (string, error) {
 	return root, nil
 }
 
-func reserveTCPPort(t *testing.T) int {
-	t.Helper()
-
-	port, err := reserveTCPPortValue()
-	if err != nil {
-		t.Fatalf("reserve tcp port: %v", err)
-	}
-	return port
-}
-
-func reserveTCPPortValue() (int, error) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return 0, err
-	}
-	defer listener.Close()
-	return listener.Addr().(*net.TCPAddr).Port, nil
-}
-
 func TestSubmitPublicRouteRejectsStructuralReliableBody(t *testing.T) {
 	stack := startStack(t, stackOptions{}) // local TLS/ARS/EGS fixtures; Submit is unavailable
 	var body map[string]any
