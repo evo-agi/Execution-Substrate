@@ -82,7 +82,8 @@ if [[ "${ACTION}" == "check" ]]; then
     --es-token-file "${NOMAD_ACL_DIR}/es-token" \
     --es-token-owner "${ES_OWNER}" \
     --observer-token-file "${NOMAD_ACL_DIR}/observer-token" \
-    --observer-token-owner "${OBSERVER_OWNER}"
+    --observer-token-owner "${OBSERVER_OWNER}" \
+    --management-token-file "${NOMAD_ACL_DIR}/management-token"
 fi
 
 if [[ ! -d "${NOMAD_ACL_DIR}" ]]; then
@@ -108,7 +109,8 @@ python3 -I "${TOOL}" check \
   --es-token-file "${NOMAD_ACL_DIR}/es-token" \
   --es-token-owner "${ES_OWNER}" \
   --observer-token-file "${NOMAD_ACL_DIR}/observer-token" \
-  --observer-token-owner "${OBSERVER_OWNER}"
+  --observer-token-owner "${OBSERVER_OWNER}" \
+  --management-token-file "${NOMAD_ACL_DIR}/management-token"
 
 echo
 echo "next:"

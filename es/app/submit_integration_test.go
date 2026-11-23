@@ -2702,6 +2702,9 @@ type nomadHarnessOptions struct {
 	// aclDisabled starts Nomad without ACLs, a Nomad ES must refuse; ES then
 	// gets a well-formed token file that Nomad never issued.
 	aclDisabled bool
+	// aclUnbootstrapped starts Nomad with ACLs on but neither bootstrapped
+	// nor provisioned, for a test whose own setup does both.
+	aclUnbootstrapped bool
 	// leaderOnly skips the wait for a schedulable Docker client node, for
 	// tests that only register, plan or read jobs.
 	leaderOnly bool
@@ -2834,6 +2837,8 @@ advertise {
 			return nil, fmt.Sprintf("write unissued nomad token file: %v", err)
 		}
 		harness.esTokenFile = tokenFile
+	} else if opts.aclUnbootstrapped {
+		// The test's own setup bootstraps and provisions this Nomad.
 	} else if reason := harness.provisionACL(rootDir); reason != "" {
 		harness.stop()
 		return nil, reason

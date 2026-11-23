@@ -487,11 +487,16 @@ func (c NomadConfig) Validate(field string) error {
 
 // validateNomadTokenFilePlacement keeps the Nomad token file outside ES's
 // staging and results storage, where workload-visible or retained material
-// lives.
+// lives, and outside the SPIRE Workload API socket's directory, which every
+// workload gets as a bind mount.
 func validateNomadTokenFilePlacement(tokenFile string, execution ExecutionConfig) error {
 	if pathsOverlap(tokenFile, filepath.Clean(strings.TrimSpace(execution.StagingRootDir))) ||
 		pathsOverlap(tokenFile, filepath.Clean(strings.TrimSpace(execution.ResultsRootDir))) {
 		return fmt.Errorf("nomad.token_file must be outside staging and results storage")
+	}
+	if socketPath := strings.TrimSpace(execution.SPIREWorkloadAPISocketPath); socketPath != "" &&
+		pathsOverlap(tokenFile, filepath.Dir(filepath.Clean(socketPath))) {
+		return fmt.Errorf("nomad.token_file must be outside the directory of execution.spire_workload_api_socket_path, which workloads mount")
 	}
 	if tokenFile == execution.RetainedResultAuth.KeyFile {
 		return fmt.Errorf("nomad.token_file must differ from execution.retained_result_auth.key_file")

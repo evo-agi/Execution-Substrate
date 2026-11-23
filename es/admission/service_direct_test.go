@@ -634,7 +634,7 @@ func newExecutionRootStartupTestConfig(t *testing.T, stagingRoot string, results
 			RetainedResultAuth:         esconfig.RetainedResultAuthConfig{StoreID: "test_store", KeyID: "test_key", KeyFile: resultKeyPath},
 			BaseImage:                  "alpine:3.20",
 			RuntimeSupportBinary:       runtimeSupportPath,
-			SPIREWorkloadAPISocketPath: filepath.Join(configDir, "spire-agent.sock"),
+			SPIREWorkloadAPISocketPath: filepath.Join(configDir, "spire", "spire-agent.sock"),
 		},
 	}
 }

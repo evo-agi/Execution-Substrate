@@ -319,7 +319,7 @@ EOF
 nomad_token_curl() {
   local token=$1
   shift
-  curl --config <(printf 'header = "X-Nomad-Token: %s"\n' "${token}") "$@"
+  curl --noproxy '*' --config <(printf 'header = "X-Nomad-Token: %s"\n' "${token}") "$@"
 }
 
 # Bootstrap Nomad's ACLs once. The management secret is written root-only
@@ -333,7 +333,7 @@ bootstrap_nomad_acl() {
   local response_path
   local waited=0
 
-  while ! curl --fail --silent "${NOMAD_HTTP_ADDR}/v1/status/leader" 2>/dev/null | grep -q '"'; do
+  while ! curl --noproxy '*' --fail --silent "${NOMAD_HTTP_ADDR}/v1/status/leader" 2>/dev/null | grep -q '"'; do
     if (( waited >= NOMAD_LEADER_WAIT_SECONDS )); then
       echo "nomad: no leader within ${NOMAD_LEADER_WAIT_SECONDS}s, so ACLs cannot be bootstrapped" >&2
       return 1
@@ -371,7 +371,7 @@ bootstrap_nomad_acl() {
     return 1
   fi
 
-  status="$(curl --silent --output "${response_path}" --write-out '%{http_code}' -X POST --data-binary @- \
+  status="$(curl --noproxy '*' --silent --output "${response_path}" --write-out '%{http_code}' -X POST --data-binary @- \
     "${NOMAD_HTTP_ADDR}/v1/acl/bootstrap" <<<"{\"BootstrapSecret\":\"${secret}\"}")" || status="000"
   if [[ "${status}" == "200" ]]; then
     cleanup_tempfiles "${response_path}"
@@ -435,10 +435,18 @@ import sys
 import urllib.error
 import urllib.request
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+# No proxy and no redirects: a token reaches only the loopback Nomad.
+nomad_opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
+
 base_url = sys.argv[1].rstrip("/")
 headers = {"X-Nomad-Token": os.environ.get("NOMAD_TOKEN", "")}
 try:
-    nodes = json.load(urllib.request.urlopen(urllib.request.Request(f"{base_url}/v1/nodes", headers=headers)))
+    nodes = json.load(nomad_opener.open(urllib.request.Request(f"{base_url}/v1/nodes", headers=headers)))
 except Exception:
     raise SystemExit(1)
 
@@ -450,7 +458,7 @@ for node in ready:
     node_id = (node.get("ID") or "").strip()
     if not node_id:
         raise SystemExit(1)
-    detail = json.load(urllib.request.urlopen(urllib.request.Request(f"{base_url}/v1/node/{node_id}", headers=headers)))
+    detail = json.load(nomad_opener.open(urllib.request.Request(f"{base_url}/v1/node/{node_id}", headers=headers)))
     attrs = detail.get("Attributes") or {}
     try:
         cpu_total_compute = int(str(attrs.get("cpu.totalcompute", "0")).strip() or "0")
@@ -529,7 +537,7 @@ qualify_supported_substrate() {
   agent_path="$(mktemp)"
   nodes_path="$(mktemp)"
 
-  if ! curl --fail-with-body --silent --show-error "${NOMAD_HTTP_ADDR}/v1/status/leader" >"${leader_path}"; then
+  if ! curl --noproxy '*' --fail-with-body --silent --show-error "${NOMAD_HTTP_ADDR}/v1/status/leader" >"${leader_path}"; then
     echo "nomad: leader request failed for ${NOMAD_HTTP_ADDR}/v1/status/leader" >&2
     cleanup_tempfiles "${leader_path}" "${agent_path}" "${nodes_path}"
     return 1
@@ -551,6 +559,14 @@ import os
 import pathlib
 import sys
 import urllib.request
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+# No proxy and no redirects: a token reaches only the loopback Nomad.
+nomad_opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
 
 base_url = sys.argv[1].rstrip("/")
 headers = {"X-Nomad-Token": os.environ.get("NOMAD_TOKEN", "")}
@@ -576,7 +592,7 @@ for node in ready:
     if not node_id:
         reasons.append(f"{node_name}=missing-id")
         continue
-    detail = json.load(urllib.request.urlopen(urllib.request.Request(f"{base_url}/v1/node/{node_id}", headers=headers)))
+    detail = json.load(nomad_opener.open(urllib.request.Request(f"{base_url}/v1/node/{node_id}", headers=headers)))
     attrs = detail.get("Attributes") or {}
     drivers = detail.get("Drivers") or {}
     docker = drivers.get("docker") or {}

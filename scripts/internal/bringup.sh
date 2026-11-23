@@ -291,7 +291,7 @@ check_nomad_ready_once() {
   nodes_path="$(mktemp)"
   agent_path="$(mktemp)"
 
-  if ! curl --fail-with-body --silent --show-error "${NOMAD_ADDR}/v1/status/leader" >"${leader_path}"; then
+  if ! curl --noproxy '*' --fail-with-body --silent --show-error "${NOMAD_ADDR}/v1/status/leader" >"${leader_path}"; then
     echo "nomad: leader request failed for ${NOMAD_ADDR}/v1/status/leader" >&2
     status=1
   elif ! nomad_acl_state_check; then
@@ -310,6 +310,14 @@ import pathlib
 import sys
 import urllib.error
 import urllib.request
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+# No proxy and no redirects: a token reaches only the loopback Nomad.
+nomad_opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
 
 base_url = sys.argv[1].rstrip("/")
 with open(sys.argv[5], encoding="ascii") as token_file:
@@ -351,7 +359,7 @@ for node in ready_nodes:
         continue
     try:
         request = urllib.request.Request(f"{base_url}/v1/node/{node_id}", headers={"X-Nomad-Token": nomad_token})
-        with urllib.request.urlopen(request) as response:
+        with nomad_opener.open(request) as response:
             detail = json.load(response)
     except urllib.error.URLError as exc:
         reasons.append(f"{node_name}=detail-unavailable:{exc.reason}")
@@ -428,7 +436,7 @@ wait_for_nomad_leader() {
   local leader=""
 
   while ((SECONDS < deadline)); do
-    if leader="$(curl --fail --silent "${NOMAD_ADDR}/v1/status/leader" 2>/dev/null)" && [[ "${leader}" =~ ^\"[^\"]+\"$ ]]; then
+    if leader="$(curl --noproxy '*' --fail --silent "${NOMAD_ADDR}/v1/status/leader" 2>/dev/null)" && [[ "${leader}" =~ ^\"[^\"]+\"$ ]]; then
       return 0
     fi
     sleep 1

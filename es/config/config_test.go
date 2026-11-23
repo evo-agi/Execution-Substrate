@@ -1035,6 +1035,8 @@ func TestNomadTokenFileMustStayOutsideExecutionStorageAndDifferFromTheResultKey(
 		"/tmp/es-stage",
 		"/tmp/es-results/nomad/token",
 		"/external/private/retained-result-auth/key",
+		"/run/spire/sockets/es-token",
+		"/run/spire/sockets/nomad/es-token",
 	} {
 		t.Run(path, func(t *testing.T) {
 			cfg := validSubmitTestConfig()

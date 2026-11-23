@@ -12,8 +12,10 @@ reads and writes token files with fixed custody rules.
              read-only observer token file for operator readiness checks).
              Re-running keeps working tokens; --rotate replaces them.
   check      Verify that Nomad enforces ACLs, that the ES token is the ES
-             client token, that no anonymous policy exists, and that requests
-             without a token cannot plan jobs in the ES namespace.
+             client token and can plan in the ES namespace, that no anonymous
+             policy exists, and that requests without a token cannot plan
+             jobs there. With --management-token-file, also ask Nomad that no
+             other policy, role or auth method can submit there.
 
 Exit status: 0 on success, 1 on a refusal (one line on stderr), 2 on usage.
 """
@@ -60,6 +62,11 @@ FILE_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC
 # Nomad checks submit-job before planning, so a refused plan proves that the
 # caller cannot submit in the namespace.
 PROBE_JOB_ID = "es-acl-probe"
+# Short-lived tokens that ask Nomad whether a policy or role can submit in the
+# ES namespace. Each is deleted after its probe; the TTL bounds a token whose
+# deletion failed. Nomad's default minimum token TTL is one minute.
+PROBE_TOKEN_NAME = "es-acl-probe"
+PROBE_TOKEN_TTL = "5m"
 
 
 class Refusal(Exception):
@@ -427,20 +434,73 @@ def ensure_client_token(
     return keep_accessor
 
 
-def policy_names_that_may_grant_the_namespace(nomad: Nomad, management: str) -> list[str]:
-    """Policies, other than this tool's, whose rules name the ES namespace or
-    a namespace glob. Text matching only: it over-reports, never misses a
-    plain grant."""
-    names = []
+def _plan_probe_status(nomad: Nomad, token: str | None) -> int:
+    status, _ = nomad.request("POST", "/v1/job/" + PROBE_JOB_ID + "/plan?namespace=" + NAMESPACE, token, _probe_plan_body())
+    return status
+
+
+def grants_that_can_submit(nomad: Nomad, management: str) -> list[str]:
+    """Every ACL policy other than ES's, and every ACL role, that Nomad lets
+    plan a job in the ES namespace. Nomad itself decides, so a grant counts
+    however its rules are written (HCL, JSON, escapes, globs): for each policy
+    or role, a short-lived client token holding only it plans the probe job in
+    the ES namespace, and any answer but 403 counts as a grant. Each probe
+    token is deleted after its probe."""
+    subjects = []
     for stub in nomad.json("GET", "/v1/acl/policies", management) or []:
         name = stub.get("Name") if isinstance(stub, dict) else None
-        if not isinstance(name, str) or name in (ES_POLICY, OBSERVER_POLICY):
-            continue
-        policy = nomad.json("GET", "/v1/acl/policy/" + urllib.parse.quote(name, safe=""), management)
-        rules = policy.get("Rules", "") if isinstance(policy, dict) else ""
-        if NAMESPACE in rules or re.search(r'namespace\s+"[^"]*\*[^"]*"', rules):
-            names.append(name)
-    return sorted(names)
+        if not isinstance(name, str) or not name:
+            raise Refusal("nomad GET /v1/acl/policies returned an entry without a name")
+        if name != ES_POLICY:
+            subjects.append(("policy " + name, {"Policies": [name]}))
+    for stub in nomad.json("GET", "/v1/acl/roles", management) or []:
+        role_id = stub.get("ID") if isinstance(stub, dict) else None
+        name = stub.get("Name") if isinstance(stub, dict) else None
+        if not isinstance(role_id, str) or not role_id or not isinstance(name, str):
+            raise Refusal("nomad GET /v1/acl/roles returned an entry without an ID and a name")
+        subjects.append(("role " + name, {"Roles": [{"ID": role_id}]}))
+    granted = []
+    for label, grant in subjects:
+        body = {"Name": PROBE_TOKEN_NAME, "Type": "client", "ExpirationTTL": PROBE_TOKEN_TTL}
+        body.update(grant)
+        created = nomad.json("POST", "/v1/acl/token", management, body)
+        secret = created.get("SecretID") if isinstance(created, dict) else None
+        accessor = created.get("AccessorID") if isinstance(created, dict) else None
+        if not isinstance(accessor, str) or not accessor:
+            raise Refusal("nomad did not return a usable probe token")
+        try:
+            if not isinstance(secret, str) or not TOKEN_PATTERN.fullmatch(secret):
+                raise Refusal("nomad did not return a usable probe token")
+            status = _plan_probe_status(nomad, secret)
+        finally:
+            nomad.json("DELETE", "/v1/acl/token/" + urllib.parse.quote(accessor, safe=""), management)
+        if status != 403:
+            granted.append(label)
+    return sorted(granted)
+
+
+def require_no_auth_methods(nomad: Nomad, management: str) -> None:
+    """An auth method's binding rules can issue tokens with any policy or
+    role, including ES's, so this lock does not hold while one exists."""
+    methods = nomad.json("GET", "/v1/acl/auth-methods", management)
+    if not isinstance(methods, list):
+        raise Refusal("nomad GET /v1/acl/auth-methods did not return a list")
+    if methods:
+        names = sorted(str(method.get("Name")) for method in methods if isinstance(method, dict))
+        raise Refusal(
+            "nomad has ACL auth methods (" + ", ".join(names) + "), whose binding rules can issue tokens that "
+            "submit in " + NAMESPACE + ": ES must be the only client writer there; delete them and rerun"
+        )
+
+
+def require_exclusive_writer(nomad: Nomad, management: str) -> None:
+    require_no_auth_methods(nomad, management)
+    others = grants_that_can_submit(nomad, management)
+    if others:
+        raise Refusal(
+            "other ACL grants can submit jobs in " + NAMESPACE + " (" + ", ".join(others) + "): "
+            "ES must be the only client writer there; narrow or delete them and rerun"
+        )
 
 
 # --- commands ---------------------------------------------------------------
@@ -461,13 +521,9 @@ def command_provision(args) -> None:
     require_acl_enabled(nomad)
     management = bootstrap_or_load_management(nomad, args.management_token_file)
     require_no_anonymous_policy(nomad)
-    others = policy_names_that_may_grant_the_namespace(nomad, management)
-    if others:
-        raise Refusal(
-            "other ACL policies may grant access to " + NAMESPACE + " (" + ", ".join(others) + "): "
-            "ES must be the only client writer there; narrow or delete them and rerun"
-        )
+    # The namespace must exist for Nomad to answer the plan probes in it.
     upsert_namespace(nomad, management)
+    require_exclusive_writer(nomad, management)
     upsert_policy(nomad, management, ES_POLICY, ES_POLICY_RULES, "Execution Substrate: submit, read and log jobs in " + NAMESPACE)
     ensure_client_token(
         nomad, management, ES_TOKEN_NAME, ES_POLICY, args.es_token_file, "ES token file", es_uid, es_gid, args.rotate
@@ -536,6 +592,9 @@ def command_check(args) -> None:
     status, payload = nomad.request("POST", plan_path, None, _probe_plan_body())
     if status != 403:
         raise Refusal(f"a plan without a token in {NAMESPACE} returned HTTP {status}, want 403: {_text(payload)}")
+    status, payload = nomad.request("POST", plan_path, es_token, _probe_plan_body())
+    if status != 200:
+        raise Refusal(f"a plan with the ES token in {NAMESPACE} returned HTTP {status}, want 200: {_text(payload)}")
     default_body = _probe_plan_body()
     default_body["Job"]["Namespace"] = "default"
     status, payload = nomad.request("POST", "/v1/job/" + PROBE_JOB_ID + "/plan?namespace=default", es_token, default_body)
@@ -553,7 +612,13 @@ def command_check(args) -> None:
         status, _ = nomad.request("POST", plan_path, observer, _probe_plan_body())
         if status != 403:
             raise Refusal(f"the observer token could plan jobs in {NAMESPACE} (HTTP {status})")
-    print("nomad acl: ok (ACLs enforced, no anonymous policy, ES token is the " + ES_POLICY + " client token)")
+    exclusive = ""
+    if args.management_token_file:
+        management = read_token_file(args.management_token_file, "management token file", owner_uid=os.geteuid())
+        require_management(nomad, management)
+        require_exclusive_writer(nomad, management)
+        exclusive = ", no other grant can submit there"
+    print("nomad acl: ok (ACLs enforced, no anonymous policy, ES token is the " + ES_POLICY + " client token" + exclusive + ")")
 
 
 def main(argv: list[str]) -> int:
@@ -575,6 +640,10 @@ def main(argv: list[str]) -> int:
     check.add_argument("--es-token-owner", help="<uid>:<gid> expected to own the ES token file (default: current user)")
     check.add_argument("--observer-token-file")
     check.add_argument("--observer-token-owner")
+    check.add_argument(
+        "--management-token-file",
+        help="also prove, with the management token, that no other policy, role or auth method can submit in the ES namespace",
+    )
 
     args = parser.parse_args(argv)
     try:
@@ -588,6 +657,8 @@ def main(argv: list[str]) -> int:
                     _clean_absolute(path, label)
             command_provision(args)
         else:
+            if args.management_token_file is not None:
+                _clean_absolute(args.management_token_file, "--management-token-file")
             command_check(args)
     except Refusal as refusal:
         print(f"nomad acl: refused: {refusal}", file=sys.stderr)

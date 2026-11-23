@@ -47,7 +47,10 @@ ALLOW_CONTROL_PLANE_CALLER="${SUPPORTED_LOCAL_ALLOW_CONTROL_PLANE:-0}"
 RETAINED_RESULT_AUTH_STORE_ID="${SUPPORTED_LOCAL_RETAINED_RESULT_AUTH_STORE_ID:-}"
 RETAINED_RESULT_AUTH_KEY_ID="${SUPPORTED_LOCAL_RETAINED_RESULT_AUTH_KEY_ID:-}"
 RETAINED_RESULT_AUTH_KEY_FILE="${SUPPORTED_LOCAL_RETAINED_RESULT_AUTH_KEY_FILE:-}"
-SUPPORTED_LOCAL_NOMAD_ADDR="http://127.0.0.1:4646"
+# Nomad stays on loopback; only its HTTP port can differ from 4646 (a test
+# that starts its own Nomad uses another one).
+SUPPORTED_LOCAL_NOMAD_PORT="${SUPPORTED_LOCAL_NOMAD_PORT:-4646}"
+SUPPORTED_LOCAL_NOMAD_ADDR="http://127.0.0.1:${SUPPORTED_LOCAL_NOMAD_PORT}"
 NOMAD_ACL_DIR="${SUPPORTED_LOCAL_NOMAD_ACL_DIR:-/etc/execution-substrate/nomad-acl}"
 GO_REQUIRED_VERSION="go1.26.5"
 
@@ -121,6 +124,7 @@ Optional environment variables:
   SUPPORTED_LOCAL_RETAINED_RESULT_AUTH_KEY_ID=<stable non-secret identifier>
   SUPPORTED_LOCAL_RETAINED_RESULT_AUTH_KEY_FILE=/external/private/keys/key
   SUPPORTED_LOCAL_NOMAD_ACL_DIR=/etc/execution-substrate/nomad-acl
+  SUPPORTED_LOCAL_NOMAD_PORT=4646   Nomad HTTP port on 127.0.0.1
   SUPPORTED_LOCAL_ES_ROOTS_PROFILE=service-root-v1   only accepted profile
 
 Nomad must enforce access control (ACLs): scripts/70_linux_setup.sh enables
@@ -181,11 +185,17 @@ preflight_supported_local_setup_retained_result_auth() {
 # proof scopes and the host's Nomad enforces ACLs with no anonymous policy.
 preflight_supported_local_setup_nomad_acl() {
   local proof_dir="${1:-${PROOF_DIR}}"
+  if [[ ! "${SUPPORTED_LOCAL_NOMAD_PORT}" =~ ^[1-9][0-9]{0,4}$ ]] || (( SUPPORTED_LOCAL_NOMAD_PORT > 65535 )); then
+    echo "supported-local Nomad port must be a TCP port number" >&2
+    return 1
+  fi
+  # The SPIRE socket directory is bind-mounted into every workload.
   nomad_acl_validate_dir_placement \
     "${NOMAD_ACL_DIR}" \
     "${proof_dir}" \
     "${proof_dir}/es-staging" \
-    "${proof_dir}/es-results" || return 1
+    "${proof_dir}/es-results" \
+    "$(dirname -- "${proof_dir}/spire-agent/public/api.sock")" || return 1
   if ! NOMAD_ADDR="${SUPPORTED_LOCAL_NOMAD_ADDR}" nomad_acl_state_check >/dev/null; then
     echo "supported-local Nomad does not enforce access control; run scripts/70_linux_setup.sh as root, which enables and bootstraps Nomad ACLs" >&2
     return 1
@@ -1210,7 +1220,8 @@ write_runtime_blob_and_configs() {
     "${RETAINED_RESULT_AUTH_STORE_ID}" \
     "${RETAINED_RESULT_AUTH_KEY_ID}" \
     "${RETAINED_RESULT_AUTH_KEY_FILE}" \
-    "${NOMAD_ACL_DIR}/es-token"
+    "${NOMAD_ACL_DIR}/es-token" \
+    "${SUPPORTED_LOCAL_NOMAD_ADDR}"
 import hashlib
 import json
 import os
@@ -1246,6 +1257,7 @@ result_auth_store_id = sys.argv[26]
 result_auth_key_id = sys.argv[27]
 result_auth_key_file = sys.argv[28]
 nomad_token_file = sys.argv[29]
+nomad_base_url = sys.argv[30]
 allow_control_plane = os.environ.get("SUPPORTED_LOCAL_ALLOW_CONTROL_PLANE", "0").strip().lower() in {"1", "true", "yes"}
 operator_and_maybe_control_plane = ["operator/local"]
 if allow_control_plane:
@@ -1362,7 +1374,7 @@ es_cfg = {
         "workload_identity_binding": {"algorithm": "ed25519", "key_id": "ags-key-1", "public_key_hex": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737"},
     },
     "workload_vault_auth": {"default_mode": "vault_identity_jwt"},
-    "nomad": {"base_url": "http://127.0.0.1:4646", "datacenter": "dc1", "timeout_seconds": 5, "token_file": nomad_token_file},
+    "nomad": {"base_url": nomad_base_url, "datacenter": "dc1", "timeout_seconds": 5, "token_file": nomad_token_file},
     "execution": {
         "staging_root_dir": str(staging_root),
         "results_root_dir": str(results_root),

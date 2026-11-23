@@ -260,9 +260,26 @@ func newNomadClient(cfg esconfig.NomadConfig) (*nomadClient, error) {
 			// 		 slice, so traceparent propagation remains disabled explicitly.
 			// 		 Future external dependencies must make the same propagation decision
 			// 		 deliberately rather than inheriting internal behavior silently.
-			Transport: observability.WrapRoundTripper("execution", "nomad", false, nil),
+			Transport:     observability.WrapRoundTripper("execution", "nomad", false, newNomadTransport()),
+			CheckRedirect: refuseNomadRedirect,
 		},
 	}, nil
+}
+
+// newNomadTransport is the transport for every request that carries ES's
+// Nomad token. It uses no proxy, so the token reaches only the configured
+// Nomad address.
+func newNomadTransport() *http.Transport {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = nil
+	return transport
+}
+
+// refuseNomadRedirect keeps a redirect answer as the response instead of
+// following it: following would send ES's token to whatever the redirect
+// names. Every Nomad call then sees a non-200 status and fails closed.
+func refuseNomadRedirect(*http.Request, []*http.Request) error {
+	return http.ErrUseLastResponse
 }
 
 func (c *nomadClient) submitJob(ctx context.Context, jobSpec map[string]any) (string, error) {

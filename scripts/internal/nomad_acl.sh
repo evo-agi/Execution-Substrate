@@ -6,8 +6,9 @@
 # read Nomad with a read-only observer token named by NOMAD_TOKEN_FILE.
 #
 # A token is read from its file and handed to curl through a configuration on
-# a file descriptor, so it never appears on a command line. This file has no
-# top-level effects.
+# a file descriptor, so it never appears on a command line. Requests to Nomad
+# use no proxy and follow no redirect, so a token reaches only the loopback
+# Nomad. This file has no top-level effects.
 
 NOMAD_ACL_NAMESPACE="es-submit-v1"
 
@@ -44,7 +45,7 @@ nomad_api_get() {
     return 1
   fi
   token="$(nomad_token_from_file "${NOMAD_TOKEN_FILE}")" || return 1
-  curl --fail-with-body --silent --show-error \
+  curl --noproxy '*' --fail-with-body --silent --show-error \
     --config <(printf 'header = "X-Nomad-Token: %s"\n' "${token}") \
     "${NOMAD_ADDR}${api_path}" >"${output_path}"
 }
@@ -56,7 +57,7 @@ nomad_acl_state_check() {
   local anonymous_status
 
   self_path="$(mktemp)"
-  if ! curl --fail-with-body --silent --show-error "${NOMAD_ADDR}/v1/acl/token/self" >"${self_path}"; then
+  if ! curl --noproxy '*' --fail-with-body --silent --show-error "${NOMAD_ADDR}/v1/acl/token/self" >"${self_path}"; then
     rm -f "${self_path}"
     echo "nomad: ACL self request failed for ${NOMAD_ADDR}/v1/acl/token/self" >&2
     return 1
@@ -89,7 +90,7 @@ PY
   fi
   rm -f "${self_path}"
 
-  anonymous_status="$(curl --silent --output /dev/null --write-out '%{http_code}' "${NOMAD_ADDR}/v1/acl/policy/anonymous")" || anonymous_status="000"
+  anonymous_status="$(curl --noproxy '*' --silent --output /dev/null --write-out '%{http_code}' "${NOMAD_ADDR}/v1/acl/policy/anonymous")" || anonymous_status="000"
   if [[ "${anonymous_status}" != "404" ]]; then
     echo "nomad: an anonymous ACL policy exists or could not be checked (HTTP ${anonymous_status}); ES refuses to submit while requests without a token hold capabilities" >&2
     return 1
@@ -135,6 +136,6 @@ parts = acl_dir.split("/")
 if len(parts) > 2 and parts[1] == "tmp" and parts[2].startswith("es-proof-"):
     valid = False
 if not valid:
-    raise SystemExit("nomad: the Nomad ACL token directory must be a clean absolute path outside the proof, staging and results directories")
+    raise SystemExit("nomad: the Nomad ACL token directory must be a clean absolute path outside the proof, staging, results and SPIRE socket directories")
 PY
 }

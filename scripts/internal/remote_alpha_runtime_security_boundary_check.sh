@@ -500,7 +500,14 @@ def collect_nomad_inventory():
         def nomad_get(path):
             return urllib.request.Request("http://127.0.0.1:4646" + path, headers=nomad_headers)
 
-        with urllib.request.urlopen(nomad_get("/v1/agent/self"), timeout=3) as response:
+        class NoRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, req, fp, code, msg, headers, newurl):
+                return None
+
+        # No proxy and no redirects: the observer token reaches only Nomad.
+        nomad_opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+
+        with nomad_opener.open(nomad_get("/v1/agent/self"), timeout=3) as response:
             agent_payload = json.loads(response.read().decode("utf-8"))
         config = agent_payload.get("config") or agent_payload.get("Config") or {}
         member = agent_payload.get("member") or agent_payload.get("Member") or {}
@@ -512,11 +519,11 @@ def collect_nomad_inventory():
             "datacenter": config.get("Datacenter") or "",
         }
 
-        with urllib.request.urlopen(nomad_get("/v1/nodes"), timeout=3) as response:
+        with nomad_opener.open(nomad_get("/v1/nodes"), timeout=3) as response:
             nodes_payload = json.loads(response.read().decode("utf-8"))
         if isinstance(nodes_payload, list) and nodes_payload:
             node_id = str(nodes_payload[0].get("ID") or "")
-            with urllib.request.urlopen(nomad_get(f"/v1/node/{node_id}"), timeout=3) as response:
+            with nomad_opener.open(nomad_get(f"/v1/node/{node_id}"), timeout=3) as response:
                 node_payload = json.loads(response.read().decode("utf-8"))
             attributes = node_payload.get("Attributes") or {}
             drivers = node_payload.get("Drivers") or {}

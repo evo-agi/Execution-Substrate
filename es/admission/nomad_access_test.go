@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -216,9 +217,36 @@ func TestLoadNomadTokenRefusesLinksAndUnsafeParents(t *testing.T) {
 	}
 }
 
+// continueNomadTokenTestAsRoot reports whether the calling test may go on in
+// this process. As root it may. Otherwise the same test runs again as root
+// through passwordless sudo, as on the CI runner, and this run reports that
+// result; without passwordless sudo the test skips itself.
+func continueNomadTokenTestAsRoot(t *testing.T) bool {
+	t.Helper()
+	if os.Geteuid() == 0 {
+		return true
+	}
+	if output, err := exec.Command("sudo", "-n", "true").CombinedOutput(); err != nil {
+		t.Skipf("needs root or passwordless sudo to give a path another owner: %v: %s", err, strings.TrimSpace(string(output)))
+	}
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	output, err := exec.Command("sudo", "-n", self, "-test.run", "^"+t.Name()+"$", "-test.v", "-test.count=1").CombinedOutput()
+	t.Logf("the same test as root:\n%s", output)
+	if err != nil {
+		t.Fatalf("the test failed as root: %v", err)
+	}
+	if !strings.Contains(string(output), "--- PASS: "+t.Name()) {
+		t.Fatal("the test did not run as root")
+	}
+	return false
+}
+
 func TestLoadNomadTokenRefusesAFileOwnedByAnotherUser(t *testing.T) {
-	if os.Geteuid() != 0 {
-		t.Skip("needs root to give the token file another owner")
+	if !continueNomadTokenTestAsRoot(t) {
+		return
 	}
 	dir := privateNomadTokenDir(t)
 	path := writeNomadTokenFile(t, dir, testNomadToken, 0o400)
@@ -231,8 +259,8 @@ func TestLoadNomadTokenRefusesAFileOwnedByAnotherUser(t *testing.T) {
 }
 
 func TestLoadNomadTokenRefusesAParentOwnedByAnotherUser(t *testing.T) {
-	if os.Geteuid() != 0 {
-		t.Skip("needs root to give the parent directory another owner")
+	if !continueNomadTokenTestAsRoot(t) {
+		return
 	}
 	dir := privateNomadTokenDir(t)
 	path := writeNomadTokenFile(t, dir, testNomadToken, 0o400)
@@ -258,6 +286,49 @@ func TestNewNomadClientLoadsTheTokenOrRefusesToBuild(t *testing.T) {
 	cfg.TokenFile = filepath.Join(filepath.Dir(path), "absent")
 	if client, err := newNomadClient(cfg); err == nil || client != nil {
 		t.Fatal("client built without a readable token file")
+	}
+}
+
+// ES's Nomad client keeps a redirect answer instead of following it, so its
+// token never reaches the host a redirect names, and it uses no proxy.
+func TestNomadClientNeverFollowsARedirectOrUsesAProxy(t *testing.T) {
+	var elsewhere sync.Mutex
+	elsewhereRequests := 0
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		elsewhere.Lock()
+		elsewhereRequests++
+		elsewhere.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"EvalID":"redirected"}`))
+	}))
+	defer other.Close()
+	redirecting := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		http.Redirect(w, request, other.URL+request.URL.RequestURI(), http.StatusTemporaryRedirect)
+	}))
+	defer redirecting.Close()
+
+	cfg := minimalNomadConfigForTest(writeNomadTokenFile(t, privateNomadTokenDir(t), testNomadToken, 0o400))
+	cfg.BaseURL = redirecting.URL
+	client, err := newNomadClient(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if accessErr := client.verifyAccessControl(context.Background()); accessErr == nil {
+		t.Fatal("access control check passed on a redirect")
+	}
+	if _, err := client.submitJob(context.Background(), map[string]any{"Job": map[string]any{"ID": "redirect-probe"}}); err == nil {
+		t.Fatal("submit succeeded on a redirect")
+	}
+	elsewhere.Lock()
+	defer elsewhere.Unlock()
+	if elsewhereRequests != 0 {
+		t.Fatalf("the client followed %d redirect(s)", elsewhereRequests)
+	}
+	if newNomadTransport().Proxy != nil {
+		t.Fatal("the Nomad transport uses a proxy")
+	}
+	if client.client.CheckRedirect == nil || client.client.CheckRedirect(nil, nil) != http.ErrUseLastResponse {
+		t.Fatal("the Nomad client follows redirects")
 	}
 }
 
