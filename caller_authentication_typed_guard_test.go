@@ -591,11 +591,18 @@ func TestCallerIdentityTypedGuardCoversTheScriptsBuildTargets(t *testing.T) {
 	if !found || !closed {
 		t.Fatalf("control_plane.sh has no control_plane_target_arch function")
 	}
+	// Each scan must find what the scripts build today, so that neither
+	// passes by finding nothing.
+	if foundOS["linux"] == "" || foundArch["amd64"] == "" || foundArch["arm64"] == "" {
+		t.Fatalf("the scan found GOOS %v and GOARCH %v in scripts, want at least linux, amd64 and arm64; the scan is broken", foundOS, foundArch)
+	}
+	controlPlaneArch := map[string]bool{}
 	for _, match := range regexp.MustCompile(`printf '([a-z0-9]+)\\n'`).FindAllStringSubmatch(body, -1) {
+		controlPlaneArch[match[1]] = true
 		foundArch[match[1]] = "scripts/internal/control_plane.sh control_plane_target_arch"
 	}
-	if foundOS["linux"] == "" || foundArch["amd64"] == "" || foundArch["arm64"] == "" {
-		t.Fatalf("the scan found GOOS %v and GOARCH %v, want at least linux, amd64 and arm64; the scan is broken", foundOS, foundArch)
+	if !controlPlaneArch["amd64"] || !controlPlaneArch["arm64"] {
+		t.Fatalf("control_plane_target_arch prints %v, want at least amd64 and arm64; the scan is broken", controlPlaneArch)
 	}
 	for value, where := range foundOS {
 		if !coveredOS[value] {
