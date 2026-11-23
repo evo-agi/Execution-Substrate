@@ -1,10 +1,11 @@
 # Probe only: runs on pushes to this probe branch. On a GitHub-hosted runner
-# with Nomad, Vault and SPIRE installed, it runs the launcher tests of the
-# PR #19 A11-1 repair as the runner user (passwordless sudo, supplementary
-# groups, setfacl: none of the cases may skip) and as a second operator
-# 2500:2600, and the bring-up test once as each, checking that ARS, EGS, AGS
-# and ES ran with that operator's --user and that no root-owned file is left
-# in the workspace. Then the docs tests and, informationally, the whole es/app
+# with Nomad, Vault and SPIRE installed, it runs the launcher tests of PR #19's
+# structural ARS storage check (report 14) as the runner user (passwordless
+# sudo, supplementary groups, setfacl, Docker: none of the cases may skip) and
+# as a second operator 2500:2600, and the bring-up test once as each, checking
+# that ARS, EGS, AGS and ES ran with that operator's --user, that no root-owned
+# file is left in the workspace, and that the storage check container left
+# nothing running. Then the docs tests and, informationally, the whole es/app
 # package. Not part of the change under review.
 name: probe-services-repair
 
@@ -119,7 +120,7 @@ jobs:
             'export SUPPORTED_LOCAL_TEST_SPIRE_TARBALL=/home/op/spire.tar.gz' \
             'umask 022; cd /home/op/es' | sudo tee /home/op/env.sh >/dev/null
           sudo -u op env -i bash -c '. /home/op/env.sh; id; go mod download'
-      - name: Launcher tests as the second operator (no sudo, so the three sudo cases skip)
+      - name: Launcher tests as the second operator (no sudo, so the four sudo cases skip)
         run: |
           set +e
           sudo -u op env -i bash -c '. /home/op/env.sh; go test ./es/app -run "^(TestESLauncherContainerUser|TestServiceLaunchersContainerUser|TestBringupUpChecksARSStorageBeforeStartingServices)$" -count=1 -v > /home/op/launch-op.log 2>&1; echo $? > /home/op/launch-rc'

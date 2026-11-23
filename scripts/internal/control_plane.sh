@@ -171,35 +171,60 @@ control_plane_operator_user() {
 }
 
 # verify_ars_storage_for_operator checks, before ARS starts, that ARS can use
-# its storage as the exact container identity it will run as: the UID:GID that
-# control_plane_operator_user printed, passed as the second argument, with no
-# supplementary groups, because docker run --user UID:GID gives the container
-# none. storage.root_dir and storage.index_file must be absolute, the root is
+# its storage, by doing what ARS does with it in a short-lived container that
+# runs exactly as ARS will: the same image, the UID:GID that
+# control_plane_operator_user printed (passed as the second argument), the
+# same mounts (control_plane_mount_specs ars), and ARS's container name, so
+# that Docker refuses the check while an ARS container still exists. The
+# kernel, and on macOS Docker Desktop's file sharing, therefore decides every
+# step for that identity, with whatever groups Docker gives it, through the
+# mounts ARS will see; nothing about owners, groups, modes, ACLs or the sticky
+# rule is emulated.
+#
+# On the host, as the caller, the check only reads the config:
+# storage.root_dir and storage.index_file must be absolute, the root is
 # created as the caller when it is missing (otherwise Docker would create the
-# bind source as root), the index file must already exist (ARS refuses to start
-# without it), every directory under the root plus the index file's directory
-# must be writable and searchable, and every file there plus the index file
-# readable, by that identity. Access is decided from each entry's owner, group
-# and mode the way the kernel decides it for that one UID and GID, not with the
-# calling process's credentials, which include the caller's supplementary
-# groups. An entry that identity does not own and that carries a POSIX access
-# ACL is refused, because the check does not evaluate ACLs; where Python cannot
-# read ACLs, which is every host but Linux, an entry that identity does not own
-# is refused too. UID 0 may use any entry, as the kernel lets root.
-# ARS writes blobs and the index as 0600 files, so storage that an earlier
-# bring-up wrote as root is unusable until the operator owns it again.
+# bind source as root), and the index file must already exist as a regular
+# file, not a symbolic link (ARS refuses to start without it, and replaces it
+# with a regular file at its first write).
+#
+# In the container, as ARS's identity, it then:
+#   1. changes into every directory on the way to the storage root and to the
+#      index directory;
+#   2. creates and removes a file in the index directory, and reads the index;
+#   3. walks the storage root: creates and removes a file in every directory,
+#      lists every directory, and opens every regular file for reading
+#      (symbolic links and special files are skipped, as ARS never creates
+#      them);
+#   4. last, only when everything above passed, writes the index the way ARS
+#      does: a new 0600 file with the index's current content, renamed over
+#      it. The index then belongs to ARS's identity, as after ARS's first write.
+# Each step is one ARS takes, so a refusal names a step ARS would fail.
+# A refusal before step 4 leaves storage as it was, except for a root created
+# in the host step. Storage that an earlier bring-up wrote as root, or that is
+# shared through another group, fails with the exact sudo chown that hands it
+# back; the check does not repair ownership itself. The image must provide
+# /bin/sh with mktemp, ls, cat, chmod and mv, as the generated control-plane
+# image does through Alpine's BusyBox.
 verify_ars_storage_for_operator() {
   local config_path=$1
   local container_user=$2
+  local mount_specs=()
+  local spec
 
-  python3 - "${config_path}" "${container_user}" <<'PY'
-import errno
+  while IFS= read -r spec; do
+    [[ -n "${spec}" ]] || continue
+    mount_specs+=("${spec}")
+  done < <(control_plane_mount_specs ars "${config_path}")
+
+  python3 - "${config_path}" "${container_user}" "$(control_plane_image_ref)" "$(control_plane_container_name ars)" "${mount_specs[@]}" <<'PY'
 import json
 import os
 import pathlib
 import re
 import shlex
 import stat
+import subprocess
 import sys
 
 prefix = "ARS storage check failed"
@@ -207,9 +232,10 @@ user_match = re.fullmatch(r"([0-9]+):([0-9]+)", sys.argv[2])
 if user_match is None:
     print(f"{prefix}: the container identity must be numeric UID:GID, got {sys.argv[2]!r}", file=sys.stderr)
     raise SystemExit(1)
-UID = int(user_match.group(1))
-GID = int(user_match.group(2))
-IDENTITY = f"{UID}:{GID}"
+IDENTITY = f"{user_match.group(1)}:{user_match.group(2)}"
+IMAGE = sys.argv[3]
+CONTAINER_NAME = sys.argv[4]
+MOUNT_SPECS = sys.argv[5:]
 cfg = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
 storage = cfg.get("storage") if isinstance(cfg.get("storage"), dict) else {}
 root_dir = storage.get("root_dir") if isinstance(storage.get("root_dir"), str) else ""
@@ -218,20 +244,21 @@ root_dir = root_dir.strip()
 index_file = index_file.strip()
 
 
-def refuse(message, path=None, recursive=False):
+def refuse(message, path=None, fix=None, recursive=False):
     if path is not None:
+        message += f": {path}"
+    if fix is not None:
         chown = "chown -R" if recursive else "chown"
         message += (
-            f": {path}. ARS runs as {IDENTITY}, your UID and primary group, with no"
+            f". ARS runs as {IDENTITY}, your UID and primary group, with no"
             f" supplementary groups; if an earlier bring-up wrote this storage as root,"
             f" or it is shared through another group, hand it back with:"
-            f" sudo {chown} {IDENTITY} {shlex.quote(str(fix_path or path))}"
+            f" sudo {chown} {IDENTITY} {shlex.quote(str(fix))}"
         )
     print(f"{prefix}: {message}", file=sys.stderr)
     raise SystemExit(1)
 
 
-fix_path = None
 if not os.path.isabs(root_dir):
     refuse("storage.root_dir must be an absolute path")
 if not os.path.isabs(index_file):
@@ -239,8 +266,8 @@ if not os.path.isabs(index_file):
 root = pathlib.Path(os.path.normpath(root_dir))
 index = pathlib.Path(os.path.normpath(index_file))
 
-# The caller must be able to reach both paths; a permission error is a
-# refusal with the path, not a traceback.
+# The caller must be able to reach both paths to create the root and to see
+# the index; a permission error is a refusal with the path, not a traceback.
 try:
     root_info = os.stat(root)
 except FileNotFoundError:
@@ -256,76 +283,128 @@ except OSError as error:
 if not stat.S_ISDIR(root_info.st_mode):
     refuse(f"storage.root_dir is not a directory: {root}")
 try:
-    index_info = os.stat(index)
+    index_info = os.lstat(index)
 except (FileNotFoundError, NotADirectoryError):
     refuse(f"storage.index_file must be an existing regular file: {index}")
 except OSError as error:
     refuse(f"cannot reach storage.index_file as you: {index} ({error.strerror}); you need search permission on every directory above it")
+if stat.S_ISLNK(index_info.st_mode):
+    refuse(f"storage.index_file must be a regular file, not a symbolic link, because ARS replaces it with a regular file at its first write: {index}")
 if not stat.S_ISREG(index_info.st_mode):
     refuse(f"storage.index_file must be an existing regular file: {index}")
 
-READ, WRITE, SEARCH = 4, 2, 1
+# A refusal of the probe is one record, the only thing it prints on stdout:
+# REFUSE, the kind, the message and the path, separated by tabs. The path
+# comes last because it may contain any character but NUL.
+PROBE = r'''
+set -u
+root=$1
+index=$2
+dir=${index%/*}
+[ -n "$dir" ] || dir=/
+current_tmp=
+trap '[ -z "$current_tmp" ] || rm -f -- "$current_tmp"' EXIT
+refuse() {
+  printf 'REFUSE\t%s\t%s\t%s' "$1" "$3" "$2"
+  exit 42
+}
+# chdir needs search permission, so each step is the kernel's decision.
+reach() {
+  target=$1
+  kind=$2
+  cd / || refuse "$kind" / "ARS cannot search this directory"
+  path=
+  rest=${target#/}
+  while [ -n "$rest" ]; do
+    case $rest in
+      */*) component=${rest%%/*}; rest=${rest#*/} ;;
+      *) component=$rest; rest= ;;
+    esac
+    [ -n "$component" ] || continue
+    path=$path/$component
+    if ! cd -- "$component" 2>/dev/null; then
+      [ -z "$rest" ] || refuse above "$path" "$3"
+      refuse "$kind" "$path" "ARS cannot search this directory"
+    fi
+  done
+}
+writable() {
+  current_tmp=$(mktemp -p "$1" .ars-storage-check.XXXXXX 2>/dev/null) || {
+    current_tmp=
+    refuse "$2" "$1" "ARS cannot create files in this directory"
+  }
+  rm -f -- "$current_tmp" 2>/dev/null || refuse "$2" "$1" "ARS cannot remove its own file from this directory"
+  current_tmp=
+}
+walk() {
+  local d=$1 e
+  cd -- "$d" 2>/dev/null || refuse storage "$d" "ARS cannot search this directory"
+  writable "$d" storage
+  ls -A -- "$d" >/dev/null 2>&1 || refuse storage "$d" "the check cannot see the files below this directory, because ARS cannot list it"
+  for e in "$d"/* "$d"/.[!.]* "$d"/..?*; do
+    if [ -L "$e" ]; then
+      continue
+    elif [ -d "$e" ]; then
+      walk "$e"
+    elif [ -f "$e" ]; then
+      true 2>/dev/null < "$e" || refuse storage "$e" "ARS cannot read this file"
+    fi
+  done
+}
+reach "$root" storage "ARS cannot search this directory on its way to storage.root_dir"
+reach "$dir" "index directory" "ARS cannot search this directory on its way to storage.index_file"
+writable "$dir" "index directory"
+true 2>/dev/null < "$index" || refuse index "$index" "ARS cannot read the index file"
+walk "$root"
+current_tmp=$(mktemp -p "$dir" .artifact-index-check.XXXXXX 2>/dev/null) || {
+  current_tmp=
+  refuse "index directory" "$dir" "ARS cannot create files in this directory"
+}
+cat -- "$index" 2>/dev/null > "$current_tmp" || refuse index "$index" "ARS cannot read the index file"
+chmod 600 "$current_tmp" 2>/dev/null || refuse "index directory" "$dir" "ARS cannot set the mode of its own file in this directory"
+mv -f -- "$current_tmp" "$index" 2>/dev/null || refuse "index replace" "$index" "ARS cannot rename a new file over the index file"
+current_tmp=
+'''
 
-
-def unusable(path, info, want, what, recursive):
-    """Refuse unless IDENTITY, with no supplementary groups, has want on path.
-
-    info is the entry's stat result. Root may read, write and search any
-    directory and read any file. The owner class applies when IDENTITY owns
-    the entry, even with an ACL, because the ACL's owner entry is the owner
-    mode bits. Otherwise an access ACL could grant or deny differently from the
-    mode bits, so an entry with one is refused, as is an entry on a host that
-    cannot show ACLs. Without an ACL, the group class applies when the entry's
-    group is GID, and the other class otherwise."""
-    if UID == 0:
-        return
-    if info.st_uid == UID:
-        granted = (info.st_mode >> 6) & 7
-    else:
-        getxattr = getattr(os, "getxattr", None)
-        if getxattr is None:
-            refuse(f"{what} is not owned by your UID, and this host cannot show whether it has an access ACL", path, recursive)
-        try:
-            getxattr(path, "system.posix_acl_access")
-        except OSError as error:
-            if error.errno not in (errno.ENODATA, errno.ENOTSUP, errno.EOPNOTSUPP):
-                refuse(f"cannot read the access ACL of this {what} ({error.strerror})", path, recursive)
-        else:
-            refuse(f"{what} is not owned by your UID and has an access ACL, which this check does not evaluate", path, recursive)
-        granted = (info.st_mode >> 3) & 7 if info.st_gid == GID else info.st_mode & 7
-    if granted & want != want:
-        needs = "writable and searchable" if want == WRITE | SEARCH else "readable"
-        refuse(f"{what} is not {needs} by your UID and primary group", path, recursive)
-
-
-# The index directory and file get a non-recursive hint: the index may sit in
-# a directory that also holds other services' state.
-unusable(index.parent, os.stat(index.parent), WRITE | SEARCH, "directory", False)
-unusable(index, index_info, READ, "file", False)
-
-# Everything under the storage root belongs to ARS, so its hint is recursive
-# from the root.
-fix_path = root
-
-
-def walk_error(error):
-    refuse("cannot list directory", error.filename, recursive=True)
-
-
-def reach(path, follow):
-    try:
-        return os.stat(path) if follow else os.lstat(path)
-    except OSError as error:
-        refuse(f"cannot reach this entry as you ({error.strerror})", path, recursive=True)
-
-
-for current, dirs, files in os.walk(root, onerror=walk_error):
-    unusable(current, reach(current, True), WRITE | SEARCH, "directory", True)
-    for name in files:
-        path = os.path.join(current, name)
-        info = reach(path, False)
-        if stat.S_ISREG(info.st_mode):
-            unusable(path, info, READ, "file", True)
+command = ["docker", "run", "--rm", "--name", CONTAINER_NAME, "--network", "none", "--user", IDENTITY]
+for spec in MOUNT_SPECS:
+    command += ["-v", spec]
+command += ["--entrypoint", "/bin/sh", IMAGE, "-c", PROBE, "ars-storage-probe", str(root), str(index)]
+result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+if result.returncode == 0:
+    raise SystemExit(0)
+record = result.stdout.decode("utf-8", "surrogateescape")
+if result.returncode == 42 and record.startswith("REFUSE\t"):
+    fields = record.split("\t", 3)
+    if len(fields) == 4:
+        _, kind, message, path = fields
+        message += f" as {IDENTITY}"
+        if kind == "storage":
+            refuse(message, path, fix=root, recursive=True)
+        if kind == "index directory":
+            refuse(message, path, fix=index.parent)
+        if kind == "index":
+            refuse(message, path, fix=index)
+        if kind == "index replace":
+            refuse(
+                message, path + ". ARS writes the index that way; in a directory with the sticky bit, only the owner"
+                " of the file or of the directory may", fix=index
+            )
+        if kind == "above":
+            refuse(
+                message, path + f". ARS runs as {IDENTITY}, your UID and primary group, with no supplementary"
+                f" groups; give that identity search permission on this directory, or choose a path it can reach"
+            )
+# The docker CLI ends its errors with a pointer to docker run --help, which
+# does not apply here.
+details = "\n".join(
+    line for line in (result.stderr or result.stdout).decode("utf-8", "replace").strip().splitlines()
+    if not re.fullmatch(r"Run '.*--help' for more information\.?", line.strip())
+).strip()
+hint = ""
+if "is already in use" in details:
+    hint = "; ARS's container still exists, so stop it first, for example with scripts/01_bringup.sh down"
+refuse(f"could not run the check container as {IDENTITY} (exit {result.returncode}): {details}{hint}")
 PY
 }
 

@@ -49,6 +49,9 @@ mkdir -p "$(dirname "${OUTPUT_PATH}")"
   done
   printf '\n'
   printf '\n'
+  # verify_ars_storage_for_operator (scripts/internal/control_plane.sh) runs
+  # /bin/sh with mktemp, ls, cat, chmod and mv in this image, as ARS's
+  # identity; Alpine's BusyBox provides them.
   printf '%s\n' 'FROM alpine:3.20'
   printf '\n'
   printf '%s\n' 'RUN apk add --no-cache ca-certificates'

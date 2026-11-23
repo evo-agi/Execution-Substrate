@@ -1,7 +1,10 @@
 package app_test
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -21,11 +24,14 @@ import (
 // equals their GID. A launcher refuses before any image, storage or container
 // effect when id fails or prints a non-numeric ID, because docker run --user
 // with an empty UID runs as root. ARS also checks its storage before starting:
-// it creates a missing storage root as the caller, and refuses a missing index
-// file or storage that the container identity cannot use, before any container
-// call. That identity is the UID:GID passed to docker run --user, with no
-// supplementary groups, so access that only the caller's supplementary groups
-// grant does not count.
+// it creates a missing storage root as the caller and refuses a missing index
+// file, and then does what ARS does with its storage in a container that runs
+// exactly as ARS will: the same image, the UID:GID passed to docker run --user,
+// the same mounts and ARS's container name. The cases that reach that container
+// run it in real Docker as the identity they name; only the ARS container
+// itself is faked. The kernel therefore decides access for that identity, with
+// no supplementary groups, so access that only the caller's supplementary
+// groups grant does not count.
 func TestServiceLaunchersContainerUser(t *testing.T) {
 	repo := executionPlatformRepoRoot(t)
 	realID, err := exec.LookPath("id")
@@ -37,13 +43,17 @@ func TestServiceLaunchersContainerUser(t *testing.T) {
 	// storage, which the caller owns, passes the check on every host, and
 	// pairs it with a GID that differs from both of the caller's IDs.
 	callerUID := strconv.Itoa(os.Getuid())
+	callerGID := strconv.Itoa(os.Getgid())
 	distinctGID := testDistinctGID()
 	const idCalls = "id -u\nid -g\n"
 	const launchEvents = idCalls + "docker image\ndocker rm\ndocker run\n"
-	const storageRefusalEvents = idCalls + "docker image\n"
+	// ARS runs its storage check container before its own container. The
+	// launcher removes the ARS container it replaces first, because the
+	// check uses ARS's container name.
+	const arsLaunchEvents = launchEvents + "docker run\n"
+	const hostRefusalEvents = idCalls + "docker image\ndocker rm\n"
+	const checkRefusalEvents = hostRefusalEvents + "docker run\n"
 	const chownHint = "if an earlier bring-up wrote this storage as root, or it is shared through another group, hand it back with: sudo "
-	const accessRefusal = "is not writable and searchable by your UID and primary group"
-	foreignIdentityRefusal := testForeignIdentityDirectoryRefusal()
 
 	type testCase struct {
 		name string
@@ -72,19 +82,29 @@ func TestServiceLaunchersContainerUser(t *testing.T) {
 		// with passwordless sudo; needsSupplementaryGroup and needsSetfacl
 		// mark the other fixture requirements.
 		needsSudo, needsSupplementaryGroup, needsSetfacl bool
-		// needsACLReads marks cases about entries the identity does not own
-		// that the check decides by their mode bits. That needs a host where
-		// Python can read ACLs, which is Linux; elsewhere the check refuses
-		// such entries, which "storage the identity does not own refused
-		// where ACLs cannot be read" covers.
-		needsACLReads bool
+		// refusalTail, when set, is more text the refusal must contain.
+		refusalTail string
+		// after, when set, runs after the launcher with the index as it was
+		// right after arrange.
+		after func(t *testing.T, storage, index string, before testIndexSnapshot)
+		// storageUnderIndexDir, when set, puts the storage root below the
+		// index directory, under this directory, so that ARS gets one mount
+		// for both.
+		storageUnderIndexDir string
+		// symlinkedStorage makes the configured storage root a symbolic link
+		// to the directory that holds the storage.
+		symlinkedStorage bool
+		// existingARSContainer creates a container with ARS's name in real
+		// Docker before the launcher runs.
+		existingARSContainer bool
 		// checkCreatedRoot requires the storage root to exist afterwards,
 		// owned by the caller.
 		checkCreatedRoot bool
 		// pythonHook, when set, runs the launcher's python3 with a
 		// sitecustomize that changes how ACLs can be read: "no-acl-reads"
 		// removes os.getxattr, as on hosts other than Linux, and
-		// "acl-read-error" makes it fail with EACCES.
+		// "acl-read-error" makes it fail with EACCES. The check no longer
+		// reads ACLs, so neither may change its outcome.
 		pythonHook string
 		// storageParent, when set, puts the storage root one directory
 		// deeper, under this directory of the proof directory, so that
@@ -101,6 +121,9 @@ func TestServiceLaunchersContainerUser(t *testing.T) {
 		{name: "GID with trailing characters refused", idMode: "fake", fakeUID: "4242", fakeGID: "4343x", wantEvents: idCalls, refusal: "as the operator: id -u and id -g must print numeric IDs, got 4242 and 4343x"},
 		{name: "failing id refused", idMode: "fail", wantEvents: "id -u\n", refusal: "id: synthetic failure"},
 	}
+	// Every case below that reaches the container part of the check runs
+	// it in real Docker, as the identity the case names, through the mounts
+	// ARS would get. Only the ARS container itself is faked.
 	arsStorageCases := []testCase{
 		{
 			name: "missing storage root created as the caller", idMode: "real", wantUser: callerUser, wantEvents: launchEvents, checkCreatedRoot: true,
@@ -114,15 +137,15 @@ func TestServiceLaunchersContainerUser(t *testing.T) {
 			// The caller owns the storage and could use it, but the container
 			// runs as 4242:4343, which may only read it through the other
 			// permission class.
-			name: "storage the caller can use but the container identity cannot refused", idMode: "fake", fakeUID: "4242", fakeGID: "4343", wantEvents: storageRefusalEvents,
-			refusal: "ARS storage check failed: " + foreignIdentityRefusal, fix: "index directory", hintUser: "4242:4343",
+			name: "storage the caller can use but the container identity cannot refused", idMode: "fake", fakeUID: "4242", fakeGID: "4343", wantEvents: checkRefusalEvents,
+			refusal: "ARS storage check failed: ARS cannot create files in this directory as 4242:4343", fix: "index directory", hintUser: "4242:4343",
 		},
 		{
 			// The identity may write to the index directory through the
 			// other class but not search it, so ARS could not reach the
 			// index. The index itself is readable through the other class.
-			name: "index directory the container identity cannot search refused", idMode: "fake", fakeUID: "4242", fakeGID: "4343", wantEvents: storageRefusalEvents,
-			refusal: "ARS storage check failed: " + foreignIdentityRefusal, fix: "index directory", hintUser: "4242:4343",
+			name: "index directory the container identity cannot search refused", idMode: "fake", fakeUID: "4242", fakeGID: "4343", wantEvents: checkRefusalEvents,
+			refusal: "ARS storage check failed: ARS cannot search this directory as 4242:4343", fix: "index directory", hintUser: "4242:4343",
 			arrange: func(t *testing.T, storage, index string) {
 				for path, mode := range map[string]os.FileMode{filepath.Dir(index): 0o772, index: 0o644} {
 					if err := os.Chmod(path, mode); err != nil {
@@ -132,20 +155,22 @@ func TestServiceLaunchersContainerUser(t *testing.T) {
 			},
 		},
 		{
-			// Python can read ACLs only on Linux. Elsewhere the check cannot
-			// tell whether an entry the identity does not own has one, so it
-			// refuses the entry.
-			name: "storage the identity does not own refused where ACLs cannot be read", idMode: "fake", fakeUID: "4242", fakeGID: "4343", wantEvents: storageRefusalEvents,
-			pythonHook: "no-acl-reads", fix: "index directory", hintUser: "4242:4343",
-			refusal: "ARS storage check failed: directory is not owned by your UID, and this host cannot show whether it has an access ACL",
+			// Storage the caller owns and shares with the identity's GID,
+			// which is the caller's primary GID. The identity is another UID,
+			// so only the group class lets it in. Python cannot read ACLs
+			// here, as on every host but Linux; the check no longer reads
+			// them, so that changes nothing.
+			name: "storage shared through the identity's GID accepted where Python cannot read ACLs", idMode: "fake", fakeUID: "4242", fakeGID: callerGID,
+			wantUser: "4242:" + callerGID, wantEvents: launchEvents, pythonHook: "no-acl-reads",
+			arrange: shareTestStorageThroughGroup,
 		},
 		{
-			name: "storage whose access ACL cannot be read refused", idMode: "fake", fakeUID: "4242", fakeGID: "4343", wantEvents: storageRefusalEvents,
-			pythonHook: "acl-read-error", fix: "index directory", hintUser: "4242:4343",
-			refusal: "ARS storage check failed: cannot read the access ACL of this directory (Permission denied)",
+			name: "storage shared through the identity's GID accepted where reading an ACL fails", idMode: "fake", fakeUID: "4242", fakeGID: callerGID,
+			wantUser: "4242:" + callerGID, wantEvents: launchEvents, pythonHook: "acl-read-error",
+			arrange: shareTestStorageThroughGroup,
 		},
 		{
-			name: "missing index file refused", idMode: "real", wantEvents: storageRefusalEvents,
+			name: "missing index file refused", idMode: "real", wantEvents: hostRefusalEvents,
 			refusal: "ARS storage check failed: storage.index_file must be an existing regular file",
 			arrange: func(t *testing.T, storage, index string) {
 				if err := os.Remove(index); err != nil {
@@ -167,7 +192,7 @@ func TestServiceLaunchersContainerUser(t *testing.T) {
 			},
 		},
 		{
-			name: "index that is a directory refused", idMode: "real", wantEvents: storageRefusalEvents,
+			name: "index that is a directory refused", idMode: "real", wantEvents: hostRefusalEvents,
 			refusal: "ARS storage check failed: storage.index_file must be an existing regular file",
 			arrange: func(t *testing.T, storage, index string) {
 				if err := os.Remove(index); err != nil {
@@ -179,10 +204,26 @@ func TestServiceLaunchersContainerUser(t *testing.T) {
 			},
 		},
 		{
+			// Audit finding A12-2 (b): ARS replaces the index with a regular
+			// file at its first write, and the container sees only the index
+			// directory, so a symbolic link is refused before any container.
+			name: "index that is a symbolic link refused", idMode: "real", wantEvents: hostRefusalEvents,
+			refusal: "ARS storage check failed: storage.index_file must be a regular file, not a symbolic link",
+			arrange: func(t *testing.T, storage, index string) {
+				target := filepath.Join(filepath.Dir(filepath.Dir(index)), "index-elsewhere.json")
+				if err := os.Rename(index, target); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(target, index); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
 			// The caller cannot search the index directory, so the check
 			// cannot reach the index; it refuses with the path instead of
 			// failing with a traceback.
-			name: "index the check cannot reach refused", idMode: "real", wantEvents: storageRefusalEvents,
+			name: "index the check cannot reach refused", idMode: "real", wantEvents: hostRefusalEvents,
 			refusal: "ARS storage check failed: cannot reach storage.index_file as you: ", needsNonRoot: true,
 			arrange: func(t *testing.T, storage, index string) {
 				dir := filepath.Dir(index)
@@ -193,7 +234,7 @@ func TestServiceLaunchersContainerUser(t *testing.T) {
 			},
 		},
 		{
-			name: "storage root the check cannot reach refused", idMode: "real", wantEvents: storageRefusalEvents,
+			name: "storage root the check cannot reach refused", idMode: "real", wantEvents: hostRefusalEvents,
 			refusal: "ARS storage check failed: cannot reach storage.root_dir as you: ", needsNonRoot: true, storageParent: "locked",
 			arrange: func(t *testing.T, storage, index string) {
 				dir := filepath.Dir(storage)
@@ -204,7 +245,7 @@ func TestServiceLaunchersContainerUser(t *testing.T) {
 			},
 		},
 		{
-			name: "missing storage root the caller cannot create refused", idMode: "real", wantEvents: storageRefusalEvents,
+			name: "missing storage root the caller cannot create refused", idMode: "real", wantEvents: hostRefusalEvents,
 			refusal: "ARS storage check failed: cannot create storage.root_dir as you: ", needsNonRoot: true, storageParent: "read-only",
 			arrange: func(t *testing.T, storage, index string) {
 				if err := os.Remove(storage); err != nil {
@@ -218,10 +259,11 @@ func TestServiceLaunchersContainerUser(t *testing.T) {
 			},
 		},
 		{
-			// Root in the container may search the directory, but the
-			// caller, who runs the check, cannot reach the file in it.
-			name: "storage entry the check cannot reach refused", idMode: "fake", fakeUID: "0", fakeGID: "0", wantEvents: storageRefusalEvents,
-			refusal: "ARS storage check failed: cannot reach this entry as you (Permission denied)", needsNonRoot: true, fix: "storage", hintUser: "0:0",
+			// The caller cannot search the directory, but root in the
+			// container can, and the check walks the storage there, as ARS's
+			// identity, not as the caller (O-12-1).
+			name: "storage entry the caller cannot reach accepted for a root identity", idMode: "fake", fakeUID: "0", fakeGID: "0", wantUser: "0:0", wantEvents: launchEvents,
+			needsNonRoot: true,
 			arrange: func(t *testing.T, storage, index string) {
 				dir := filepath.Join(storage, "sha256")
 				if err := os.Mkdir(dir, 0o755); err != nil {
@@ -237,15 +279,15 @@ func TestServiceLaunchersContainerUser(t *testing.T) {
 			},
 		},
 		{
-			name: "relative storage root refused", idMode: "real", wantEvents: storageRefusalEvents,
+			name: "relative storage root refused", idMode: "real", wantEvents: hostRefusalEvents,
 			refusal: "ARS storage check failed: storage.root_dir must be an absolute path",
 		},
 		{
-			name: "relative index file refused", idMode: "real", wantEvents: storageRefusalEvents,
+			name: "relative index file refused", idMode: "real", wantEvents: hostRefusalEvents,
 			refusal: "ARS storage check failed: storage.index_file must be an absolute path",
 		},
 		{
-			name: "storage root that is a file refused", idMode: "real", wantEvents: storageRefusalEvents,
+			name: "storage root that is a file refused", idMode: "real", wantEvents: hostRefusalEvents,
 			refusal: "ARS storage check failed: storage.root_dir is not a directory",
 			arrange: func(t *testing.T, storage, index string) {
 				if err := os.Remove(storage); err != nil {
@@ -259,8 +301,8 @@ func TestServiceLaunchersContainerUser(t *testing.T) {
 		{
 			// Searchable and writable, so ARS could use it, but the check
 			// cannot list it to find the files below.
-			name: "storage directory the check cannot list refused", idMode: "real", wantEvents: storageRefusalEvents,
-			refusal: "ARS storage check failed: cannot list directory", needsNonRoot: true, fix: "storage",
+			name: "storage directory the check cannot list refused", idMode: "real", wantEvents: checkRefusalEvents,
+			refusal: "ARS storage check failed: the check cannot see the files below this directory, because ARS cannot list it", needsNonRoot: true, fix: "storage",
 			arrange: func(t *testing.T, storage, index string) {
 				dir := filepath.Join(storage, "sha256")
 				if err := os.Mkdir(dir, 0o755); err != nil {
@@ -273,8 +315,8 @@ func TestServiceLaunchersContainerUser(t *testing.T) {
 			},
 		},
 		{
-			name: "storage directory the caller cannot write refused", idMode: "real", wantEvents: storageRefusalEvents,
-			refusal: "ARS storage check failed: directory " + accessRefusal, needsNonRoot: true, fix: "storage",
+			name: "storage directory the caller cannot write refused", idMode: "real", wantEvents: checkRefusalEvents,
+			refusal: "ARS storage check failed: ARS cannot create files in this directory", needsNonRoot: true, fix: "storage",
 			arrange: func(t *testing.T, storage, index string) {
 				dir := filepath.Join(storage, "sha256", "ab")
 				if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -288,8 +330,8 @@ func TestServiceLaunchersContainerUser(t *testing.T) {
 		},
 		{
 			// Writable but not searchable: ARS could not reach anything in it.
-			name: "storage directory the caller cannot search refused", idMode: "real", wantEvents: storageRefusalEvents,
-			refusal: "ARS storage check failed: directory " + accessRefusal, needsNonRoot: true, fix: "storage",
+			name: "storage directory the caller cannot search refused", idMode: "real", wantEvents: checkRefusalEvents,
+			refusal: "ARS storage check failed: ARS cannot search this directory", needsNonRoot: true, fix: "storage",
 			arrange: func(t *testing.T, storage, index string) {
 				dir := filepath.Join(storage, "sha256")
 				if err := os.Mkdir(dir, 0o755); err != nil {
@@ -302,8 +344,8 @@ func TestServiceLaunchersContainerUser(t *testing.T) {
 			},
 		},
 		{
-			name: "storage file the caller cannot read refused", idMode: "real", wantEvents: storageRefusalEvents,
-			refusal: "ARS storage check failed: file is not readable by your UID and primary group", needsNonRoot: true, fix: "storage",
+			name: "storage file the caller cannot read refused", idMode: "real", wantEvents: checkRefusalEvents,
+			refusal: "ARS storage check failed: ARS cannot read this file", needsNonRoot: true, fix: "storage",
 			arrange: func(t *testing.T, storage, index string) {
 				dir := filepath.Join(storage, "sha256", "ab", "cd")
 				if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -314,10 +356,25 @@ func TestServiceLaunchersContainerUser(t *testing.T) {
 					t.Fatal(err)
 				}
 			},
+			after: requireTestIndexUntouched,
 		},
 		{
-			name: "index directory the caller cannot write refused", idMode: "real", wantEvents: storageRefusalEvents,
-			refusal: "ARS storage check failed: directory " + accessRefusal, needsNonRoot: true, fix: "index directory",
+			// The walk covers entries whose names start with a dot too.
+			name: "hidden storage file the caller cannot read refused", idMode: "real", wantEvents: checkRefusalEvents,
+			refusal: "ARS storage check failed: ARS cannot read this file", needsNonRoot: true, fix: "storage",
+			arrange: func(t *testing.T, storage, index string) {
+				dir := filepath.Join(storage, ".partial")
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(dir, ".blob"), []byte("blob"), 0o000); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "index directory the caller cannot write refused", idMode: "real", wantEvents: checkRefusalEvents,
+			refusal: "ARS storage check failed: ARS cannot create files in this directory", needsNonRoot: true, fix: "index directory",
 			arrange: func(t *testing.T, storage, index string) {
 				dir := filepath.Dir(index)
 				if err := os.Chmod(dir, 0o555); err != nil {
@@ -327,9 +384,23 @@ func TestServiceLaunchersContainerUser(t *testing.T) {
 			},
 		},
 		{
-			name: "index file the caller cannot read refused", idMode: "real", wantEvents: storageRefusalEvents,
-			refusal: "ARS storage check failed: file is not readable by your UID and primary group", needsNonRoot: true, fix: "index",
+			name: "index file the caller cannot read refused", idMode: "real", wantEvents: checkRefusalEvents,
+			refusal: "ARS storage check failed: ARS cannot read the index file", needsNonRoot: true, fix: "index",
 			arrange: func(t *testing.T, storage, index string) {
+				if err := os.Chmod(index, 0o000); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			// The index is checked before the storage walk, which may be
+			// long, so an unreadable index is reported first.
+			name: "unreadable index refused before the storage walk", idMode: "real", wantEvents: checkRefusalEvents,
+			refusal: "ARS storage check failed: ARS cannot read the index file", needsNonRoot: true, fix: "index",
+			arrange: func(t *testing.T, storage, index string) {
+				if err := os.WriteFile(filepath.Join(storage, "sha256:abcd"), []byte("blob"), 0o000); err != nil {
+					t.Fatal(err)
+				}
 				if err := os.Chmod(index, 0o000); err != nil {
 					t.Fatal(err)
 				}
@@ -339,9 +410,9 @@ func TestServiceLaunchersContainerUser(t *testing.T) {
 			// Audit finding A11-1: root owns the storage and shares it with a
 			// supplementary group of the caller. The caller's own process
 			// could use it, but the container has no supplementary groups.
-			name: "storage usable only through a supplementary group refused", idMode: "real", wantEvents: storageRefusalEvents,
-			refusal: "ARS storage check failed: directory " + accessRefusal, fix: "storage",
-			needsNonRoot: true, needsSudo: true, needsSupplementaryGroup: true, needsACLReads: true,
+			name: "storage usable only through a supplementary group refused", idMode: "real", wantEvents: checkRefusalEvents,
+			refusal: "ARS storage check failed: ARS cannot search this directory", fix: "storage",
+			needsNonRoot: true, needsSudo: true, needsSupplementaryGroup: true,
 			arrange: func(t *testing.T, storage, index string) {
 				giveTestStorageToRoot(t, storage, testSupplementaryGroup(t), 0o770, 0o660)
 			},
@@ -350,21 +421,32 @@ func TestServiceLaunchersContainerUser(t *testing.T) {
 			// Root owns the storage and shares it with the caller's primary
 			// group, which the container keeps.
 			name: "storage shared through the primary group accepted", idMode: "real", wantUser: callerUser, wantEvents: launchEvents,
-			needsNonRoot: true, needsSudo: true, needsACLReads: true,
+			needsNonRoot: true, needsSudo: true,
 			arrange: func(t *testing.T, storage, index string) {
 				giveTestStorageToRoot(t, storage, os.Getegid(), 0o770, 0o640)
 			},
 		},
 		{
-			// An access ACL can grant or deny differently from the mode bits
-			// the check reads, so an entry the identity does not own and that
-			// carries one is refused.
-			name: "storage with an access ACL that the identity does not own refused", idMode: "real", wantEvents: storageRefusalEvents,
-			refusal: "ARS storage check failed: directory is not owned by your UID and has an access ACL, which this check does not evaluate", fix: "storage",
-			needsNonRoot: true, needsSudo: true, needsSetfacl: true, needsACLReads: true,
+			// Root owns the storage with a group the caller is not in, so the
+			// mode bits deny the caller, and an access ACL entry for the
+			// caller's UID grants it. The kernel decides by the ACL.
+			name: "storage with an access ACL that grants the identity accepted", idMode: "real", wantUser: callerUser, wantEvents: launchEvents,
+			needsNonRoot: true, needsSudo: true, needsSetfacl: true,
+			arrange: func(t *testing.T, storage, index string) {
+				giveTestStorageToRoot(t, storage, 0, 0o770, 0o640)
+				runTestSudo(t, "setfacl", "-R", "-m", "u:"+strconv.Itoa(os.Getuid())+":rwX", storage)
+			},
+		},
+		{
+			// Root owns the storage and shares it with the caller's primary
+			// group, which would let the caller in, but a named-user ACL entry
+			// for the caller's UID takes precedence and denies it.
+			name: "storage with an access ACL that denies the identity refused", idMode: "real", wantEvents: checkRefusalEvents,
+			refusal: "ARS storage check failed: ARS cannot search this directory", fix: "storage",
+			needsNonRoot: true, needsSudo: true, needsSetfacl: true,
 			arrange: func(t *testing.T, storage, index string) {
 				giveTestStorageToRoot(t, storage, os.Getegid(), 0o770, 0o640)
-				runTestSudo(t, "setfacl", "-m", "u:"+strconv.Itoa(os.Getuid())+":rwx", storage)
+				runTestSudo(t, "setfacl", "-m", "u:"+strconv.Itoa(os.Getuid())+":---", storage)
 			},
 		},
 		{
@@ -377,6 +459,107 @@ func TestServiceLaunchersContainerUser(t *testing.T) {
 					t.Fatalf("setfacl: %v: %s", err, output)
 				}
 			},
+		},
+		{
+			// Audit finding A12-1: the storage root lies below the index
+			// directory, so ARS gets one mount, the index directory, and
+			// reaches the root through a directory between them. The caller
+			// owns that directory with 0700, so 4242:4343 cannot search it.
+			name: "storage root behind a directory the identity cannot search refused", idMode: "fake", fakeUID: "4242", fakeGID: "4343", wantEvents: checkRefusalEvents,
+			refusal: "ARS storage check failed: ARS cannot search this directory on its way to storage.root_dir as 4242:4343: ", storageUnderIndexDir: "data",
+			refusalTail: ". ARS runs as 4242:4343, your UID and primary group, with no supplementary groups; give that identity search permission on this directory, or choose a path it can reach",
+			arrange: func(t *testing.T, storage, index string) {
+				for path, mode := range map[string]os.FileMode{filepath.Dir(index): 0o777, index: 0o644, filepath.Dir(storage): 0o700, storage: 0o777} {
+					if err := os.Chmod(path, mode); err != nil {
+						t.Fatal(err)
+					}
+				}
+			},
+		},
+		{
+			// The same layout with a directory between them that the identity
+			// may search: one mount, and the check passes.
+			name: "storage root below the index directory accepted", idMode: "fake", fakeUID: "4242", fakeGID: "4343", wantUser: "4242:4343", wantEvents: launchEvents,
+			storageUnderIndexDir: "data",
+			arrange: func(t *testing.T, storage, index string) {
+				for path, mode := range map[string]os.FileMode{filepath.Dir(index): 0o777, index: 0o644, filepath.Dir(storage): 0o755, storage: 0o777} {
+					if err := os.Chmod(path, mode); err != nil {
+						t.Fatal(err)
+					}
+				}
+			},
+		},
+		{
+			// Audit finding A12-2 (a): the index directory has the sticky
+			// bit, and the identity owns neither it nor the index. It may
+			// create files there and read the index, but the kernel refuses
+			// to let it rename a file over the index, which is how ARS writes
+			// it. The refusal leaves the index as it was.
+			name: "index in a sticky directory the identity owns neither of refused", idMode: "fake", fakeUID: "4242", fakeGID: "4343", wantEvents: checkRefusalEvents,
+			refusal: "ARS storage check failed: ARS cannot rename a new file over the index file as 4242:4343: ", fix: "index", hintUser: "4242:4343",
+			refusalTail: ". ARS writes the index that way; in a directory with the sticky bit, only the owner of the file or of the directory may. ARS runs as 4242:4343,",
+			arrange: func(t *testing.T, storage, index string) {
+				for path, mode := range map[string]os.FileMode{filepath.Dir(index): 0o777 | os.ModeSticky, index: 0o644, storage: 0o777} {
+					if err := os.Chmod(path, mode); err != nil {
+						t.Fatal(err)
+					}
+				}
+			},
+			after: requireTestIndexUntouched,
+		},
+		{
+			// The identity owns the index, so the sticky rule lets it replace
+			// it (C24 of the audit).
+			name: "index the identity owns in a sticky directory accepted", idMode: "real", wantUser: callerUser, wantEvents: launchEvents,
+			arrange: func(t *testing.T, storage, index string) {
+				if err := os.Chmod(filepath.Dir(index), 0o777|os.ModeSticky); err != nil {
+					t.Fatal(err)
+				}
+			},
+			after: requireTestIndexRewrittenLikeARS,
+		},
+		{
+			// O-12-2 (Q07): GID 0 is not root. 4242:0 gets the other class on
+			// storage the caller owns with 0700, as on a host where the caller
+			// is root, and is refused.
+			name: "identity with GID 0 refused on storage only its owner may use", idMode: "fake", fakeUID: "4242", fakeGID: "0", wantEvents: checkRefusalEvents,
+			refusal: "ARS storage check failed: ARS cannot search this directory as 4242:0", fix: "storage", hintUser: "4242:0",
+			arrange: func(t *testing.T, storage, index string) {
+				for path, mode := range map[string]os.FileMode{storage: 0o700, filepath.Dir(index): 0o777, index: 0o644} {
+					if err := os.Chmod(path, mode); err != nil {
+						t.Fatal(err)
+					}
+				}
+			},
+		},
+		{
+			// O-12-2 (Q27): Docker resolves a bind source that is a symbolic
+			// link, so a symlinked storage root works for ARS and passes.
+			name: "symlinked storage root accepted", idMode: "real", wantUser: callerUser, wantEvents: launchEvents, symlinkedStorage: true,
+		},
+		{
+			// A passing check writes the index the way ARS does: same content,
+			// a new 0600 file, and nothing left behind.
+			name: "passing check rewrites the index like ARS and leaves nothing behind", idMode: "real", wantUser: callerUser, wantEvents: launchEvents,
+			arrange: func(t *testing.T, storage, index string) {
+				dir := filepath.Join(storage, "sha256", "ab")
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(dir, "sha256:ab"), []byte("blob"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			},
+			after: requireTestIndexRewrittenLikeARS,
+		},
+		{
+			// The check runs in a container with ARS's name, so Docker
+			// refuses it while an ARS container still exists, and the check
+			// never writes an index that a running ARS may be writing.
+			name: "check refused while an ARS container exists", idMode: "real", wantEvents: checkRefusalEvents,
+			refusal: "is already in use", existingARSContainer: true,
+			refusalTail: "; ARS's container still exists, so stop it first, for example with scripts/01_bringup.sh down",
+			after:       requireTestIndexUntouched,
 		},
 	}
 
@@ -393,8 +576,15 @@ func TestServiceLaunchersContainerUser(t *testing.T) {
 				if test.needsNonRoot && os.Geteuid() == 0 {
 					t.Skip("root bypasses the permission bits this case relies on")
 				}
-				if test.needsACLReads && runtime.GOOS != "linux" {
-					t.Skip("on this host the check refuses entries the identity does not own, because Python cannot read their ACLs here")
+				// A refusal from the check container has the calls of a
+				// launch without ARS's own docker run.
+				wantEvents := test.wantEvents
+				if service.name == "ars" && test.refusal == "" && wantEvents == launchEvents {
+					wantEvents = arsLaunchEvents
+				}
+				var docker testStorageCheckDocker
+				if service.name == "ars" && strings.HasSuffix(wantEvents, "docker run\n") {
+					docker = requireTestStorageCheckDocker(t)
 				}
 				if test.needsSudo {
 					if output, err := exec.Command("sudo", "-n", "true").CombinedOutput(); err != nil {
@@ -421,9 +611,23 @@ func TestServiceLaunchersContainerUser(t *testing.T) {
 				storage := filepath.Join(proof, test.storageParent, "ars-storage")
 				indexDir := filepath.Join(proof, "ars-index")
 				index := filepath.Join(indexDir, "index.json")
+				if test.storageUnderIndexDir != "" {
+					storage = filepath.Join(indexDir, test.storageUnderIndexDir, "ars-storage")
+				}
 				settings := map[string]any{}
+				var indexBefore testIndexSnapshot
 				if service.name == "ars" {
 					for _, dir := range []string{storage, indexDir} {
+						if test.symlinkedStorage && dir == storage {
+							target := filepath.Join(proof, "ars-storage-target")
+							if err := os.Mkdir(target, 0o755); err != nil {
+								t.Fatal(err)
+							}
+							if err := os.Symlink(target, storage); err != nil {
+								t.Fatal(err)
+							}
+							continue
+						}
 						if err := os.MkdirAll(dir, 0o755); err != nil {
 							t.Fatal(err)
 						}
@@ -442,6 +646,7 @@ func TestServiceLaunchersContainerUser(t *testing.T) {
 					if test.arrange != nil {
 						test.arrange(t, storage, index)
 					}
+					indexBefore = snapshotTestIndex(t, index)
 				}
 				data, err := json.Marshal(settings)
 				if err != nil {
@@ -460,8 +665,10 @@ func TestServiceLaunchersContainerUser(t *testing.T) {
 				}
 				// The fake daemon answers only the calls the launcher is
 				// expected to make; anything else fails the run with exit 97.
-				// The fake id answers only -u and -g; anything else fails with
-				// exit 96.
+				// It hands ARS's storage check container to the real daemon
+				// and records the arguments of the service container instead
+				// of running it. The fake id answers only -u and -g; anything
+				// else fails with exit 96.
 				if test.pythonHook != "" {
 					writeTestPythonHook(t, bin, test.pythonHook)
 				}
@@ -482,6 +689,12 @@ printf 'docker %s\n' "$1" >> "$LAUNCHER_EVENTS"
 case "$1 $2" in
   "image inspect"|"rm -f") exit 0 ;;
   "run --rm")
+    for arg in "$@"; do
+      if [ "$arg" = ars-storage-probe ]; then
+        printf '%s\0' "$@" > "$LAUNCHER_CHECK_ARGS"
+        exec "$LAUNCHER_REAL_DOCKER" "$@"
+      fi
+    done
     for arg in "$@"; do printf '%s\n' "$arg"; done > "$LAUNCHER_RUN_ARGS"
     exit 0 ;;
 esac
@@ -494,24 +707,57 @@ exit 97
 				}
 				events := filepath.Join(workspace, "events")
 				runArgs := filepath.Join(workspace, "run-args")
+				checkArgs := filepath.Join(workspace, "check-args")
+				bringupDir := filepath.Join(workspace, "bringup")
+				if test.existingARSContainer {
+					name := testControlPlaneContainerName(bringupDir, "ars")
+					docker.run(t, "create", "--name", name, testStorageCheckImage, "true")
+					t.Cleanup(func() { _ = exec.Command(docker.path, "rm", "-f", name).Run() })
+				}
 				configVar := strings.ToUpper(service.name) + "_CONFIG"
 				command := exec.Command("/bin/bash", filepath.Join(repo, "scripts", service.script))
 				command.Dir = workspace
-				command.Env = auditControlledScriptEnv(t,
-					"PATH="+bin+string(os.PathListSeparator)+auditSafeScriptPath(t),
-					"LAUNCHER_EVENTS="+events, "LAUNCHER_RUN_ARGS="+runArgs,
-					"LAUNCHER_REAL_ID="+realID, "LAUNCHER_ID_MODE="+test.idMode,
-					"LAUNCHER_FAKE_UID="+test.fakeUID, "LAUNCHER_FAKE_GID="+test.fakeGID,
-					configVar+"="+config,
-					"BRINGUP_DIR="+filepath.Join(workspace, "bringup"),
-					"CONTROL_PLANE_IMAGE=execution-substrate/control-plane:supported-local",
+				command.Env = auditControlledScriptEnv(t, append([]string{
+					"PATH=" + bin + string(os.PathListSeparator) + auditSafeScriptPath(t),
+					"LAUNCHER_EVENTS=" + events, "LAUNCHER_RUN_ARGS=" + runArgs, "LAUNCHER_CHECK_ARGS=" + checkArgs,
+					"LAUNCHER_REAL_ID=" + realID, "LAUNCHER_ID_MODE=" + test.idMode,
+					"LAUNCHER_FAKE_UID=" + test.fakeUID, "LAUNCHER_FAKE_GID=" + test.fakeGID,
+					"LAUNCHER_REAL_DOCKER=" + docker.path,
+					configVar + "=" + config,
+					"BRINGUP_DIR=" + bringupDir,
+					"CONTROL_PLANE_IMAGE=" + testStorageCheckImage,
 					"CONTROL_PLANE_IMAGE_BUILD=never", "CONTROL_PLANE_TARGETARCH=amd64",
-					"CONTROL_PLANE_DOCKERFILE="+dockerfile,
-				)
+					"CONTROL_PLANE_DOCKERFILE=" + dockerfile,
+				}, docker.env...)...)
 				output, err := command.CombinedOutput()
 				eventBytes, eventErr := os.ReadFile(events)
-				if eventErr != nil || string(eventBytes) != test.wantEvents {
-					t.Fatalf("launcher calls = %q (err=%v), want %q; launcher err=%v output=%q", eventBytes, eventErr, test.wantEvents, err, output)
+				if eventErr != nil || string(eventBytes) != wantEvents {
+					t.Fatalf("launcher calls = %q (err=%v), want %q; launcher err=%v output=%q", eventBytes, eventErr, wantEvents, err, output)
+				}
+				if test.after != nil {
+					defer test.after(t, storage, index, indexBefore)
+				}
+				// The check container runs exactly as ARS will: ARS's
+				// container name, the identity ARS gets, ARS's mounts and
+				// image, with no network.
+				if service.name == "ars" && strings.HasSuffix(test.wantEvents, "docker run\n") {
+					identity := callerUser
+					if test.idMode == "fake" {
+						identity = test.fakeUID + ":" + test.fakeGID
+					}
+					want := []string{"run", "--rm", "--name", testControlPlaneContainerName(bringupDir, "ars"), "--network", "none", "--user", identity}
+					want = append(want, testARSMountArgs(indexDir, storage, config, test.storageUnderIndexDir != "")...)
+					want = append(want, "--entrypoint", "/bin/sh", testStorageCheckImage, "-c")
+					checkBytes, err := os.ReadFile(checkArgs)
+					if err != nil {
+						t.Fatalf("the launcher ran no storage check container: %v", err)
+					}
+					got := strings.Split(strings.TrimSuffix(string(checkBytes), "\x00"), "\x00")
+					tail := []string{"ars-storage-probe", storage, index}
+					if len(got) != len(want)+1+len(tail) || strings.Join(got[:len(want)], "\n") != strings.Join(want, "\n") ||
+						strings.Join(got[len(want)+1:], "\n") != strings.Join(tail, "\n") {
+						t.Fatalf("storage check container args = %q, want %q, the probe, then %q", got, want, tail)
+					}
 				}
 				if test.refusal != "" {
 					if err == nil {
@@ -519,6 +765,9 @@ exit 97
 					}
 					if !strings.Contains(string(output), test.refusal) {
 						t.Fatalf("launcher output = %q, want refusal %q", output, test.refusal)
+					}
+					if test.refusalTail != "" && !strings.Contains(string(output), test.refusalTail) {
+						t.Fatalf("launcher output = %q, want %q in the refusal", output, test.refusalTail)
 					}
 					hintUser := test.hintUser
 					if hintUser == "" {
@@ -559,15 +808,12 @@ exit 97
 				got := strings.Split(strings.TrimSuffix(string(argBytes), "\n"), "\n")
 				want := []string{"run", "--rm", "--name", "", "--network", "host", "--user", test.wantUser}
 				if service.name == "ars" {
-					// The launcher lists read-write mounts in sorted order.
-					want = append(want,
-						"-v", indexDir+":"+indexDir+":rw",
-						"-v", storage+":"+storage+":rw",
-					)
+					want = append(want, testARSMountArgs(indexDir, storage, config, test.storageUnderIndexDir != "")...)
+				} else {
+					want = append(want, "-v", config+":"+config+":ro")
 				}
 				want = append(want,
-					"-v", config+":"+config+":ro",
-					"execution-substrate/control-plane:supported-local",
+					testStorageCheckImage,
 					"/usr/local/bin/"+service.name, "-config", config,
 				)
 				if len(got) != len(want) {
@@ -605,9 +851,10 @@ exit 97
 // TestBringupUpChecksARSStorageBeforeStartingServices pins that
 // scripts/01_bringup.sh up runs ARS's storage check before it starts any
 // service, so storage that ARS cannot use as the operator stops bring-up at
-// once instead of after ARS's readiness timeout, and that the check evaluates
-// the identity ARS will run as: with a fake id that prints 4242 and 4343,
-// storage the caller owns with mode 0755 must be refused for 4242:4343.
+// once instead of after ARS's readiness timeout, and that the check runs as
+// the identity ARS will run as: with a fake id that prints 4242 and 4343, the
+// check container runs as 4242:4343 in real Docker, and storage the caller
+// owns with mode 0755 is refused for it.
 func TestBringupUpChecksARSStorageBeforeStartingServices(t *testing.T) {
 	for _, scenario := range []struct {
 		name      string
@@ -617,15 +864,18 @@ func TestBringupUpChecksARSStorageBeforeStartingServices(t *testing.T) {
 		// beforeAnyEffect marks a refusal that must come before Docker,
 		// the image, the bring-up logs or the storage are touched.
 		beforeAnyEffect bool
+		// runsCheck marks a refusal that comes from the check container,
+		// which runs in real Docker.
+		runsCheck bool
 	}{
 		{name: "missing index", refusal: "ARS storage check failed: storage.index_file must be an existing regular file"},
-		{name: "storage the container identity cannot use", fakeID: "4242:4343", withIndex: true,
-			refusal: "ARS storage check failed: " + testForeignIdentityDirectoryRefusal()},
+		{name: "storage the container identity cannot use", fakeID: "4242:4343", withIndex: true, runsCheck: true,
+			refusal: "ARS storage check failed: ARS cannot create files in this directory as 4242:4343: "},
 		{name: "non-numeric identity refused before any effect", fakeID: "operator:4343", withIndex: true,
 			refusal: `cannot run ARS as the operator: id -u and id -g must print numeric IDs, got operator and 4343`, beforeAnyEffect: true},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
-			testBringupUpARSStorageRefusal(t, scenario.fakeID, scenario.withIndex, scenario.refusal, scenario.beforeAnyEffect)
+			testBringupUpARSStorageRefusal(t, scenario.fakeID, scenario.withIndex, scenario.refusal, scenario.beforeAnyEffect, scenario.runsCheck)
 		})
 	}
 }
@@ -633,8 +883,14 @@ func TestBringupUpChecksARSStorageBeforeStartingServices(t *testing.T) {
 // testBringupUpARSStorageRefusal runs 01_bringup.sh up with fake Docker and
 // requires it to stop with refusal before any service container. fakeID,
 // when set as "U:G", replaces id so that id -u prints U and id -g prints G.
-func testBringupUpARSStorageRefusal(t *testing.T, fakeID string, withIndex bool, refusal string, beforeAnyEffect bool) {
+// With runsCheck, the fake Docker hands the storage check container to the
+// real daemon.
+func testBringupUpARSStorageRefusal(t *testing.T, fakeID string, withIndex bool, refusal string, beforeAnyEffect, runsCheck bool) {
 	repo := executionPlatformRepoRoot(t)
+	var docker testStorageCheckDocker
+	if runsCheck {
+		docker = requireTestStorageCheckDocker(t)
+	}
 	realPython, err := exec.LookPath("python3")
 	if err != nil {
 		t.Fatal(err)
@@ -686,8 +942,17 @@ func testBringupUpARSStorageRefusal(t *testing.T, fakeID string, withIndex bool,
 	if err := os.Mkdir(bin, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	// The storage check container is recorded as "docker storage-check"
+	// and run by the real daemon; every other call is recorded with its
+	// arguments and faked.
 	fakes := map[string]string{
 		"docker": `#!/bin/sh
+for arg in "$@"; do
+  if [ "$arg" = ars-storage-probe ]; then
+    printf 'docker storage-check\n' >> "$ROOT_EVENTS"
+    exec "$ROOT_REAL_DOCKER" "$@"
+  fi
+done
 printf 'docker %s\n' "$*" >> "$ROOT_EVENTS"
 case "$1 $2" in
   "info "|"image inspect") exit 0 ;;
@@ -717,20 +982,20 @@ exec "$ROOT_REAL_PYTHON" "$@"
 	events := filepath.Join(workspace, "events")
 	bringupDir := filepath.Join(workspace, "bringup")
 	command := exec.Command("/bin/bash", filepath.Join(repo, "scripts", "01_bringup.sh"), "up")
-	command.Env = auditControlledScriptEnv(t,
-		"PATH="+bin+string(os.PathListSeparator)+auditSafeScriptPath(t),
-		"ROOT_REAL_PYTHON="+realPython, "ROOT_EVENTS="+events,
-		"BRINGUP_PROFILE=prepare-only", "BRINGUP_DIR="+bringupDir,
-		"CONTROL_PLANE_IMAGE=execution-substrate/control-plane:supported-local",
+	command.Env = auditControlledScriptEnv(t, append([]string{
+		"PATH=" + bin + string(os.PathListSeparator) + auditSafeScriptPath(t),
+		"ROOT_REAL_PYTHON=" + realPython, "ROOT_EVENTS=" + events, "ROOT_REAL_DOCKER=" + docker.path,
+		"BRINGUP_PROFILE=prepare-only", "BRINGUP_DIR=" + bringupDir,
+		"CONTROL_PLANE_IMAGE=" + testStorageCheckImage,
 		"CONTROL_PLANE_IMAGE_BUILD=never", "CONTROL_PLANE_TARGETARCH=amd64",
-		"CONTROL_PLANE_DOCKERFILE="+filepath.Join(proof, "Dockerfile"),
-		"ARS_CONFIG="+arsConfig, "EGS_CONFIG="+otherConfig, "AGS_CONFIG="+otherConfig, "ES_CONFIG="+esConfig,
+		"CONTROL_PLANE_DOCKERFILE=" + filepath.Join(proof, "Dockerfile"),
+		"ARS_CONFIG=" + arsConfig, "EGS_CONFIG=" + otherConfig, "AGS_CONFIG=" + otherConfig, "ES_CONFIG=" + esConfig,
 		"ARS_URL=https://127.0.0.1:1", "EGS_URL=https://127.0.0.1:2",
 		"AGS_URL=https://127.0.0.1:3", "ES_URL=https://127.0.0.1:4",
-		"CA_CERT="+filepath.Join(proof, "ca.pem"),
-		"OPERATOR_CERT="+filepath.Join(proof, "operator.pem"),
-		"OPERATOR_KEY="+filepath.Join(proof, "operator-key.pem"),
-	)
+		"CA_CERT=" + filepath.Join(proof, "ca.pem"),
+		"OPERATOR_CERT=" + filepath.Join(proof, "operator.pem"),
+		"OPERATOR_KEY=" + filepath.Join(proof, "operator-key.pem"),
+	}, docker.env...)...)
 	output, err := command.CombinedOutput()
 	if err == nil || !strings.Contains(string(output), refusal) {
 		t.Fatalf("bring-up up did not refuse at the ARS storage check with %q: err=%v output=%q", refusal, err, output)
@@ -761,8 +1026,13 @@ exec "$ROOT_REAL_PYTHON" "$@"
 		strings.Contains(string(eventBytes), "unexpected ") {
 		t.Fatalf("bring-up up touched a service container before the ARS storage check: events=%q", eventBytes)
 	}
-	if !strings.Contains(string(eventBytes), "docker run --rm --network host") {
+	loopback := strings.Index(string(eventBytes), "docker run --rm --network host")
+	if loopback < 0 {
 		t.Fatalf("bring-up up did not reach the host-loopback probe before the ARS storage check: events=%q", eventBytes)
+	}
+	check := strings.Index(string(eventBytes), "docker storage-check\n")
+	if runsCheck != (check > loopback) || strings.Count(string(eventBytes), "docker storage-check\n") > 1 {
+		t.Fatalf("bring-up up ran the storage check container %v, want %v, once after the host-loopback probe: events=%q", check >= 0, runsCheck, eventBytes)
 	}
 	if entries, err := os.ReadDir(filepath.Join(bringupDir, "logs")); err != nil {
 		t.Fatal(err)
@@ -821,17 +1091,177 @@ func testDistinctGID() string {
 	return strconv.Itoa(gid)
 }
 
-// testForeignIdentityDirectoryRefusal is the refusal the ARS storage check
-// gives for a 0755 directory owned by the caller when the container identity
-// is another UID with a GID that is not the directory's. On Linux the check
-// reads the directory's access ACL, finds none, and decides by the other
-// permission bits. Python can read ACLs only on Linux, so elsewhere the check
-// refuses every entry the identity does not own.
-func testForeignIdentityDirectoryRefusal() string {
-	if runtime.GOOS == "linux" {
-		return "directory is not writable and searchable by your UID and primary group"
+// testStorageCheckBaseImage is the base of the generated control-plane image,
+// whose BusyBox provides everything the ARS storage check runs.
+// testStorageCheckImage is the local tag for it that these tests pass as the
+// control-plane image, so that a check that ran in any other image fails them.
+const (
+	testStorageCheckBaseImage = "alpine:3.20"
+	testStorageCheckImage     = "execution-substrate/ars-storage-check-test:alpine-3.20"
+)
+
+// testStorageCheckDocker is the host's real docker and the environment it
+// needs to reach the daemon from the launchers' controlled environment, whose
+// HOME holds no Docker context.
+type testStorageCheckDocker struct {
+	path string
+	env  []string
+}
+
+func (docker testStorageCheckDocker) command(args ...string) *exec.Cmd {
+	command := exec.Command(docker.path, args...)
+	command.Env = append(os.Environ(), docker.env...)
+	return command
+}
+
+func (docker testStorageCheckDocker) run(t *testing.T, args ...string) {
+	t.Helper()
+	if output, err := docker.command(args...).CombinedOutput(); err != nil {
+		t.Fatalf("docker %s: %v: %s", strings.Join(args, " "), err, output)
 	}
-	return "directory is not owned by your UID, and this host cannot show whether it has an access ACL"
+}
+
+// requireTestStorageCheckDocker returns the real docker for cases that reach
+// the ARS storage check container, or skips. The cases pin how the Linux
+// kernel decides access for the container identity through bind mounts; on
+// macOS, Docker Desktop's file sharing decides instead, so they run only on
+// Linux, with a reachable daemon.
+func requireTestStorageCheckDocker(t *testing.T) testStorageCheckDocker {
+	t.Helper()
+	if runtime.GOOS != "linux" {
+		t.Skip("the storage check cases pin how the Linux kernel decides access through bind mounts")
+	}
+	path, err := exec.LookPath("docker")
+	if err != nil {
+		t.Skip("needs docker to run the ARS storage check container")
+	}
+	docker := testStorageCheckDocker{path: path}
+	host := os.Getenv("DOCKER_HOST")
+	if host == "" {
+		if output, err := exec.Command(path, "context", "inspect", "--format", "{{.Endpoints.docker.Host}}").Output(); err == nil {
+			host = strings.TrimSpace(string(output))
+		}
+	}
+	if host != "" {
+		docker.env = append(docker.env, "DOCKER_HOST="+host)
+	}
+	for _, name := range []string{"DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH"} {
+		if value, ok := os.LookupEnv(name); ok {
+			docker.env = append(docker.env, name+"="+value)
+		}
+	}
+	if output, err := docker.command("version", "--format", "{{.Server.Version}}").CombinedOutput(); err != nil {
+		t.Skipf("needs a reachable Docker daemon to run the ARS storage check container: %v: %s", err, strings.TrimSpace(string(output)))
+	}
+	if docker.command("image", "inspect", testStorageCheckImage).Run() != nil {
+		if docker.command("image", "inspect", testStorageCheckBaseImage).Run() != nil {
+			docker.run(t, "pull", "--quiet", testStorageCheckBaseImage)
+		}
+		docker.run(t, "tag", testStorageCheckBaseImage, testStorageCheckImage)
+	}
+	return docker
+}
+
+// testARSMountArgs is the docker run mount arguments ARS gets: its read-write
+// directories in sorted order, where a storage root below the index directory
+// shares that directory's mount, then its config read-only.
+func testARSMountArgs(indexDir, storage, config string, storageUnderIndexDir bool) []string {
+	args := []string{"-v", indexDir + ":" + indexDir + ":rw"}
+	if !storageUnderIndexDir {
+		args = append(args, "-v", storage+":"+storage+":rw")
+	}
+	return append(args, "-v", config+":"+config+":ro")
+}
+
+// testControlPlaneContainerName is control_plane_container_name for
+// BRINGUP_DIR bringupDir.
+func testControlPlaneContainerName(bringupDir, service string) string {
+	digest := sha256.Sum256([]byte(bringupDir))
+	return "execution-substrate-" + hex.EncodeToString(digest[:])[:12] + "-" + service
+}
+
+// testIndexSnapshot is what the ARS storage check may change about the index
+// file: which file it is, its owner, its mode and its content.
+type testIndexSnapshot struct {
+	regular, readable bool
+	ino               uint64
+	uid               uint32
+	mode              os.FileMode
+	content           string
+}
+
+// snapshotTestIndex records the index as the caller can see it. A path the
+// caller cannot reach, or one that is not a regular file, gives the zero
+// snapshot.
+func snapshotTestIndex(t *testing.T, index string) testIndexSnapshot {
+	t.Helper()
+	info, err := os.Lstat(index)
+	if err != nil || !info.Mode().IsRegular() {
+		return testIndexSnapshot{}
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		t.Fatalf("no stat data for the index %s", index)
+	}
+	snapshot := testIndexSnapshot{regular: true, ino: uint64(stat.Ino), uid: stat.Uid, mode: info.Mode()}
+	if content, err := os.ReadFile(index); err == nil {
+		snapshot.readable, snapshot.content = true, string(content)
+	}
+	return snapshot
+}
+
+// requireTestIndexUntouched requires a refused check to leave the index as it
+// found it, and nothing of its own behind.
+func requireTestIndexUntouched(t *testing.T, storage, index string, before testIndexSnapshot) {
+	t.Helper()
+	if !before.regular || !before.readable {
+		t.Fatalf("the index fixture %s was not a readable regular file", index)
+	}
+	if after := snapshotTestIndex(t, index); after != before {
+		t.Fatalf("the refused storage check changed the index %s: before %+v, after %+v", index, before, after)
+	}
+	requireNoTestStorageCheckLeftovers(t, storage, index)
+}
+
+// requireTestIndexRewrittenLikeARS requires a passing check, run as the
+// caller's UID, to have written the index the way ARS does: a new regular
+// file with mode 0600, owned by that UID, with the content it had.
+func requireTestIndexRewrittenLikeARS(t *testing.T, storage, index string, before testIndexSnapshot) {
+	t.Helper()
+	if !before.regular || !before.readable {
+		t.Fatalf("the index fixture %s was not a readable regular file", index)
+	}
+	after := snapshotTestIndex(t, index)
+	if !after.regular || !after.readable || after.content != before.content || after.ino == before.ino ||
+		after.mode != 0o600 || int(after.uid) != os.Getuid() {
+		t.Fatalf("the storage check did not write the index %s the way ARS does: before %+v, after %+v", index, before, after)
+	}
+	requireNoTestStorageCheckLeftovers(t, storage, index)
+}
+
+// requireNoTestStorageCheckLeftovers requires that no file the check creates
+// remains under the storage root or in the index directory.
+func requireNoTestStorageCheckLeftovers(t *testing.T, storage, index string) {
+	t.Helper()
+	for _, dir := range []string{storage, filepath.Dir(index)} {
+		_ = filepath.WalkDir(dir, func(path string, entry fs.DirEntry, err error) error {
+			if err == nil && (strings.HasPrefix(entry.Name(), ".ars-storage-check.") || strings.HasPrefix(entry.Name(), ".artifact-index-check.")) {
+				t.Errorf("the storage check left %s behind", path)
+			}
+			return nil
+		})
+	}
+}
+
+// shareTestStorageThroughGroup lets the caller's primary group, and no one
+// else, use the storage the caller owns.
+func shareTestStorageThroughGroup(t *testing.T, storage, index string) {
+	t.Helper()
+	for path, mode := range map[string]os.FileMode{storage: 0o770, filepath.Dir(index): 0o770, index: 0o640} {
+		if err := os.Chmod(path, mode); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 
 // testSupplementaryGroup returns a supplementary group of this process other

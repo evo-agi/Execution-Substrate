@@ -217,7 +217,7 @@ cmd_up() {
   require_bringup_common_env "${PROFILE}"
   trap handle_failure EXIT
 
-  # The ARS storage check evaluates the identity ARS will run as, which
+  # The ARS storage check runs as the identity ARS will run as, which
   # 02_start_ars.sh derives the same way. Like the launchers, derive it before
   # any image build or storage change.
   local ars_container_user
