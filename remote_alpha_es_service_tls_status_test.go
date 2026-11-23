@@ -22,8 +22,9 @@ func remoteAlphaESServiceTLSStatusCollectorPath() string {
 }
 
 // The standard local boundary of the collector's process cleanup, as Python
-// lines for a fixture that has loaded the collector as "module" and imported
-// os.
+// lines for a fixture that has loaded the collector as "module". The lines
+// import what they use under names of their own, so they need nothing else
+// of the fixture, and in particular no import of os.
 //
 // The cleanup reaches the target's process table through three functions:
 // scan_group_members lists /proc, signal_same_group_members uses pidfd_open
@@ -48,20 +49,20 @@ func remoteAlphaESServiceTLSStatusCollectorPath() string {
 //
 // TestRemoteAlphaESServiceTLSStatusLocalBoundary... hold these properties.
 const remoteAlphaESStatusLocalProcessBoundary = `# Local generated fixtures inject the target-only process capability boundary.
+import faulthandler as _faulthandler,os as _os,signal as _signal
 module.validate_process_capability=lambda: None
 module.PROCESS_CAPABILITY_READY=True
 module.scan_group_members=lambda pgid: [(pgid,0)]
-module.signal_same_group_members=lambda pgid,signum: os.kill(pgid,signum)
+module.signal_same_group_members=lambda pgid,signum: _os.kill(pgid,signum)
 module.read_proc_identity=lambda pid: None
 def _target_only(name):
     def reached(*_args,**_kwargs):
-        os.write(2,("local fixture reached the target-only host path: "+name+"\n").encode());os._exit(97)
+        _os.write(2,("local fixture reached the target-only host path: "+name+"\n").encode());_os._exit(97)
     return reached
 module.read_proc_stat_identity=_target_only("read_proc_stat_identity")
 module.process_absent=_target_only("process_absent")
-import faulthandler as _faulthandler,signal as _signal
 def _fixture_overdue(_signum,_frame):
-    os.write(2,b"local fixture exceeded its bound\n");_faulthandler.dump_traceback(all_threads=True);os._exit(98)
+    _os.write(2,b"local fixture exceeded its bound\n");_faulthandler.dump_traceback(all_threads=True);_os._exit(98)
 _signal.signal(_signal.SIGALRM,_fixture_overdue)
 _signal.setitimer(_signal.ITIMER_REAL,globals().get("LOCAL_FIXTURE_BOUND",120.0))
 `
