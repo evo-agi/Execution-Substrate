@@ -1459,14 +1459,14 @@ exec "$ROOT_REAL_PYTHON" "$@"
 // external command or a subshell, would start more than 65,794. The probe
 // runs in the PID namespace of a helper container, whose PIDs it takes one
 // after another, so the PIDs the helper sees before and after the check give
-// the count. Those PIDs wrap around at the namespace's pid_max, so the test
-// also counts every process the kernel started meanwhile, which it can do
-// because the daemon runs on the test's own kernel (the same boot ID), and
-// requires fewer than would reach that limit. The time is only logged: 10 to
-// 20 s in the cloud test container, varying from run to run, where a walk
-// that started one process per directory took about 50 s and the earlier one
-// with three took 112 s in audit 20. ARS's readiness wait no longer includes
-// the check
+// the count; the test also requires that the probe really ran there. Those
+// PIDs wrap around at the namespace's pid_max, so the test also counts every
+// process the kernel started meanwhile, which it can do because the daemon
+// runs on the test's own kernel (the same boot ID), and requires fewer than
+// would reach that limit. The time is only logged: 10 to 20 s in the cloud
+// test container, varying from run to run, where a walk that started one
+// process per directory took about 50 s and the earlier one with three took
+// 112 s in audit 20. ARS's readiness wait no longer includes the check
 // (TestBringupUpStartsARSReadinessWaitWhenItsLauncherCheckedStorage).
 func TestARSStorageCheckScalesToARSFullFanOut(t *testing.T) {
 	docker := requireTestStorageCheckDocker(t)
@@ -1508,8 +1508,14 @@ func TestARSStorageCheckScalesToARSFullFanOut(t *testing.T) {
 	if pidAfter <= pidBefore || forks >= uint64(pidMax-pidBefore) {
 		t.Fatalf("%d processes were started on this kernel during the storage check, enough for the PIDs of the probe's namespace to wrap around at its pid_max %d, so the check may have started a process per directory (PIDs %d before and %d after)", forks, pidMax, pidBefore, pidAfter)
 	}
-	// One PID went to the second sample itself.
+	// One PID is the second sample's own. The count also includes a few PIDs
+	// Docker takes in the namespace for the probe's container start and for
+	// the second sample (5 or 6 each with this runc), a constant that does
+	// not matter against the bound.
 	started := pidAfter - pidBefore - 1
+	if joined, _ := os.ReadFile(filepath.Join(namespace.bin, "joined")); string(joined) != "x" || started < 1 {
+		t.Fatalf("the probe did not run in the helper's PID namespace exactly once (wrapper record %q, %d processes counted), so the count measures nothing", joined, started)
+	}
 	t.Logf("the storage check walked %d directories and 65,536 blobs in %v and started %d processes (%d on the whole host)", directories, elapsed, started, forks)
 	if started*32 >= directories {
 		t.Fatalf("the storage check started %d processes for %d directories, one per 32 directories or more; the walk must start no process per directory", started, directories)
@@ -1541,8 +1547,12 @@ func startTestPIDNamespace(t *testing.T, docker testStorageCheckDocker, workspac
 }
 
 // joinProbe puts a docker first in the check's PATH that adds
-// --pid container:<helper> to the probe's docker run and passes every other
-// call to the real docker unchanged.
+// --pid container:<helper> to the probe's docker run, records that run with
+// one "x" in <bin>/joined, and passes every other call to the real docker
+// unchanged. The test requires exactly one record (audit 26, A26-1): a probe
+// that missed the namespace, because its docker run no longer carries
+// ars-storage-probe or the check called docker by another path, would
+// otherwise leave only the samples' own overhead to count, and pass.
 func (namespace testPIDNamespace) joinProbe(t *testing.T, command *exec.Cmd) {
 	t.Helper()
 	if err := os.MkdirAll(namespace.bin, 0o755); err != nil {
@@ -1553,6 +1563,7 @@ if [ "$1" = run ]; then
   for arg in "$@"; do
     if [ "$arg" = ars-storage-probe ]; then
       shift
+      printf x >> "$TEST_PID_NAMESPACE_JOINED"
       exec "$TEST_REAL_DOCKER" run --pid "container:$TEST_PID_NAMESPACE" "$@"
     fi
   done
@@ -1572,7 +1583,7 @@ exec "$TEST_REAL_DOCKER" "$@"
 	if !replaced {
 		t.Fatal("the storage check command has no PATH to put the namespace's docker in front of")
 	}
-	command.Env = append(command.Env, "TEST_REAL_DOCKER="+namespace.docker.path, "TEST_PID_NAMESPACE="+namespace.name)
+	command.Env = append(command.Env, "TEST_REAL_DOCKER="+namespace.docker.path, "TEST_PID_NAMESPACE="+namespace.name, "TEST_PID_NAMESPACE_JOINED="+filepath.Join(namespace.bin, "joined"))
 }
 
 // lastPID starts one process in the helper's namespace and returns its PID,
