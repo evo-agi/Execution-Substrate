@@ -2800,11 +2800,29 @@ print(json.dumps(results,sort_keys=True))
 // group is visible, and a killed process stays visible until its parent reaps
 // it. So the descendant keeps a parent of its own: a keeper that leaves the
 // group before the cleanup can start, because it holds the child's output
-// pipes until then, and that reaps the descendant the moment it dies. As an
-// orphan the descendant would wait for whatever process adopts orphans on the
-// host, and a host that reaps them on a slow timer would decide the result.
+// pipes until then. As an orphan the descendant would wait for whatever
+// process adopts orphans on the host, and a host that reaps them on a slow
+// timer would decide the result.
 // The descendant ignores SIGTERM before it closes those pipes, so that the
 // cleanup always has to go on to SIGKILL.
+//
+// The keeper reaps the killed descendant only when the fixture lets it: it
+// waits until the fixture closes its end of a FIFO. Until then the killed
+// descendant stays in the group, where the host shows a dead process that has
+// not been reaped. The fixture lets go once it has seen the cleanup wait for
+// that process. Three things must have happened in this order: a SIGKILL was
+// delivered to the descendant; the cleanup left the bounded wait behind that
+// SIGKILL, which shows when it delivers a further signal or reaps the fixed
+// child; and the cleanup then read the descendant's identity twice and found
+// it in the group both times. The reads inside the bounded wait do not count,
+// because a cleanup that trusts a delivered SIGKILL makes them too and stops
+// waiting right after them. When the fixture lets go, the cleanup must not
+// have returned and must still hold its lock. A cleanup that returns sooner
+// leaves the descendant held and in the group, which fails the case, so no
+// result depends on how long a step takes. Where the host does not show such
+// a process, the cleanup has nothing to wait for and the case runs as it
+// would with a keeper that reaps at once. In either case the fixture checks
+// that the keeper still held the descendant when it let go.
 func runRemoteAlphaESStatusGroupFailureCase(t *testing.T, mode string) map[string]bool {
 	t.Helper()
 	const probe = `
@@ -2818,7 +2836,9 @@ child.write_text("#!/usr/bin/python3\nimport os,signal,sys,time\n"
                  "def close_std():\n    for fd in (0,1,2):\n        try:os.close(fd)\n        except OSError:pass\n"
                  "if os.fork()==0:\n    pid=os.fork()\n    if pid==0:\n"
                  "        signal.signal(signal.SIGTERM,signal.SIG_IGN);close_std();time.sleep(3);os._exit(0)\n"
-                 "    os.setpgid(0,0);open(sys.argv[1],'w').write(str(pid));close_std()\n"
+                 "    os.setpgid(0,0);hold=os.open(sys.argv[1]+'.release',os.O_RDONLY|os.O_NONBLOCK);os.set_blocking(hold,True)\n"
+                 "    open(sys.argv[1],'w').write(str(pid));close_std()\n"
+                 "    try:os.read(hold,1)\n    except OSError:pass\n"
                  "    try:os.waitpid(pid,0)\n    except OSError:pass\n"
                  "    os._exit(0)\n")
 child.chmod(0o700);module.OPENSSL=str(child);module.CHILD_TIMEOUT=2.5;module.CHILD_GRACE=.15
@@ -2827,6 +2847,9 @@ module.PROCESS_CAPABILITY_READY=True
 real_popen=module.subprocess.Popen;real_killpg=os.killpg;real_listdir=os.listdir
 unrelated=real_popen([sys.executable,"-I","-B","-c","import time;time.sleep(3)"],start_new_session=True)
 spawned=[];signaled=[];pins={};post_reap=[False];gate=threading.Event();transient=[False];identity_reads=[0];poll_faults=[0]
+stage=[0];looks=[0];waiting=[False];early=[False];kept=[None];released=[False];seen=threading.Event();release_lock=threading.Lock()
+release_path=str(pidfile)+".release";os.mkfifo(release_path,0o600)
+reader=os.open(release_path,os.O_RDONLY|os.O_NONBLOCK);release_fd=os.open(release_path,os.O_WRONLY);os.close(reader)
 if mode=="poll_hold":
     class FaultTime:
         monotonic=staticmethod(time.monotonic)
@@ -2849,7 +2872,31 @@ def identity(pid):
         return spawned[0].pid,1  # WNOWAIT reserves the fixture leader
     try:return os.getpgid(pid),1
     except ProcessLookupError:return None
-module.read_proc_identity=identity
+def in_group(pid):
+    try:return pid>0 and bool(spawned) and os.getpgid(pid)==spawned[0].pid
+    except ProcessLookupError:return False
+def unreaped(pid):
+    if pid<=0:return False
+    try:os.kill(pid,0)
+    except OSError:return False
+    return True
+def release():
+    with release_lock:
+        if not released[0]:
+            kept[0]=unreaped(descendant());released[0]=True;os.close(release_fd)
+def delivered(signum):
+    # 0: no SIGKILL delivered yet. 1: the first one was. 2: the cleanup has
+    # left the bounded wait behind it.
+    if stage[0]>=1:stage[0]=2
+    elif signum==signal.SIGKILL:stage[0]=1
+def collector_identity(pid):
+    result=identity(pid)
+    if stage[0]==1 and spawned and getattr(spawned[0],"_status_reaped",False):stage[0]=2
+    if pid==descendant() and stage[0]==2 and not released[0] and spawned and result==(spawned[0].pid,1):
+        looks[0]+=1
+        if looks[0]>=2:waiting[0]=True;seen.set()
+    return result
+module.read_proc_identity=collector_identity
 def listdir(path):
     if path=="/proc":
         if mode in ("scan_once","scan_plain_once") and not transient[0]:
@@ -2878,6 +2925,7 @@ def pidfd_signal(fd,signum,_info=None,_flags=0):
     if mode in ("hold","poll_hold") and not gate.is_set():raise OSError("member signal unavailable")
     if mode=="transient" and not transient[0]:transient[0]=True;raise OSError("transient member failure")
     signaled.append(pid);os.kill(pid,signum)
+    if pid==descendant():delivered(signum)
 module.os.pidfd_open=pidfd_open;module.signal.pidfd_send_signal=pidfd_signal
 real_prove_absent=module.prove_group_absent
 def prove_absent(pgid):
@@ -2890,7 +2938,9 @@ def killpg(pgid,signum):
         if spawned and getattr(spawned[0],"_status_reaped",False):post_reap[0]=True
         if mode=="term" and signum==signal.SIGTERM:raise OSError("group TERM failure")
         if mode in ("both","transient","hold","poll_hold","member_error_continue","scan_once","scan_hold","pidfd_once","identity_once","report_once"):raise OSError("group signal failure")
-    return real_killpg(pgid,signum)
+    result=real_killpg(pgid,signum)
+    delivered(signum)
+    return result
 module.os.killpg=killpg
 outcome=[None]
 lock_path=root/"scope.lock"
@@ -2901,7 +2951,8 @@ def run():
         try:module.run_fixed((str(child),str(pidfile)));outcome[0]="complete"
         except module.Incomplete:outcome[0]="incomplete"
         except BaseException as exc:outcome[0]=type(exc).__name__
-    finally:os.close(lock_fd)
+        with release_lock:early[0]=not released[0] and in_group(descendant())
+    finally:os.close(lock_fd);seen.set()
 thread=threading.Thread(target=run,daemon=True)
 try:
     thread.start();deadline=time.monotonic()+2
@@ -2916,17 +2967,29 @@ try:
         finally:os.close(observer)
         gate.set()
     else:held=True;lock_held=True
+    seen.wait(2);still=locked=True
+    if waiting[0]:
+        still=thread.is_alive() and outcome[0] is None
+        observer=os.open(lock_path,os.O_RDWR)
+        try:
+            try:fcntl.flock(observer,fcntl.LOCK_EX|fcntl.LOCK_NB);locked=False
+            except BlockingIOError:locked=True
+        finally:os.close(observer)
+        release()
     thread.join(2)
     pid=descendant()
     # A briefly reparented zombie can answer kill(pid, 0) after its fixed
     # process group is gone. Check the identity-backed group disposition.
     remaining=identity(pid)
     gone=remaining is None or remaining[0]!=spawned[0].pid
+    release()
     try:os.waitpid(spawned[0].pid,os.WNOHANG);reaped=False
     except ChildProcessError:reaped=True
     print(json.dumps({"returned":not thread.is_alive() and outcome[0]=="incomplete", "held":held,
         "lock_held":lock_held,
         "descendant_gone":gone,"leader_reaped":reaped,
+        "keeper_held_descendant":kept[0] is True,
+        "no_return_while_member_visible":not early[0] and (not waiting[0] or (still and locked)),
         "member_fallback":(pid in signaled)==(mode not in ("scan_plain_once","post_reap_scan_once")),
         "only_same_group":unrelated.pid not in signaled,"no_post_reap_signal":not post_reap[0],
         "prior_unchanged":canonical.read_bytes()==b"previous generation\n",
@@ -2938,6 +3001,7 @@ finally:
             pid=descendant()
             if os.getpgid(pid)==spawned[0].pid:os.kill(pid,signal.SIGKILL)
         except ProcessLookupError:pass
+    release()
     unrelated.terminate();unrelated.wait(timeout=2)
 `
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
