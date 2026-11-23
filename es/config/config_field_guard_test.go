@@ -176,6 +176,61 @@ func TestConfigOwnFieldsBeyondCountsEveryOwnField(t *testing.T) {
 	}
 }
 
+type zzConfigPromotedBytes struct{ ZzVaultAddress []byte }
+
+// The string question counts only a field of the type's own, under its exact
+// name, and asks only whether its type is of kind string.
+func TestConfigOwnFieldsNotStringsCountsOnlyOwnFieldsOfOtherKinds(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		value any
+		want  []configOwnFieldType
+	}{
+		{"a string field", struct{ ZzVaultAddress string }{}, nil},
+		{"a field of a named string type", struct{ ZzVaultAddress WorkloadVaultAuthMode }{}, nil},
+		{"a pointer to the struct", &struct{ ZzVaultAddress string }{}, nil},
+		{"a pointer to a string", struct{ ZzVaultAddress *string }{}, []configOwnFieldType{{name: "ZzVaultAddress", typ: "*string"}}},
+		{"a byte slice", struct{ ZzVaultAddress []byte }{}, []configOwnFieldType{{name: "ZzVaultAddress", typ: "[]uint8"}}},
+		{"an interface", struct{ ZzVaultAddress any }{}, []configOwnFieldType{{name: "ZzVaultAddress", typ: "interface {}"}}},
+		{"a function", struct{ ZzVaultAddress func() string }{}, []configOwnFieldType{{name: "ZzVaultAddress", typ: "func() string"}}},
+		{"a struct", struct {
+			ZzVaultAddress struct{ Name, SecretID string }
+		}{}, []configOwnFieldType{{name: "ZzVaultAddress", typ: "struct { Name string; SecretID string }"}}},
+		{"a field in another case", struct{ zzVaultAddress []byte }{}, nil},
+		{"a name the type lacks", struct{ Mode string }{}, nil},
+		{"an embedded field of a type with that name", struct{ ZzVaultAddress }{}, nil},
+		{"a field promoted from an embedded struct", struct{ zzConfigPromotedBytes }{}, nil},
+		{"a field only in a nested struct", struct {
+			Vault struct{ ZzVaultAddress []byte }
+		}{}, nil},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := configOwnFieldsNotStrings(t, test.value, "ZzVaultAddress"); !slices.Equal(got, test.want) {
+				t.Fatalf("configOwnFieldsNotStrings(%T, ZzVaultAddress) = %+v, want %+v", test.value, got, test.want)
+			}
+		})
+	}
+
+	t.Run("a field of the type's own other than a string, asked by its exact name", func(t *testing.T) {
+		got := configOwnFieldsNotStrings(t, struct{ zzVaultAddress []byte }{}, "zzVaultAddress")
+		if want := []configOwnFieldType{{name: "zzVaultAddress", typ: "[]uint8"}}; !slices.Equal(got, want) {
+			t.Fatalf("configOwnFieldsNotStrings = %+v, want %+v", got, want)
+		}
+	})
+
+	t.Run("fields come back in the order asked", func(t *testing.T) {
+		got := configOwnFieldsNotStrings(t, struct {
+			Mode    []byte
+			Address string
+			Role    any
+		}{}, "Role", "Address", "Mode")
+		want := []configOwnFieldType{{name: "Role", typ: "interface {}"}, {name: "Mode", typ: "[]uint8"}}
+		if !slices.Equal(got, want) {
+			t.Fatalf("configOwnFieldsNotStrings = %+v, want %+v", got, want)
+		}
+	})
+}
+
 func TestConfigFieldGuardHelpersRefuseNonStructs(t *testing.T) {
 	for _, test := range []struct {
 		value any
@@ -188,8 +243,9 @@ func TestConfigFieldGuardHelpersRefuseNonStructs(t *testing.T) {
 		carried := zzConfigGuardReports(t, func(tb testing.TB) { configFieldsCarried(tb, test.value, "VaultToken") })
 		missing := zzConfigGuardReports(t, func(tb testing.TB) { configOwnFieldsMissing(tb, test.value, "Mode") })
 		beyond := zzConfigGuardReports(t, func(tb testing.TB) { configOwnFieldsBeyond(tb, test.value, "Mode") })
-		if carried.fatal != test.want || missing.fatal != test.want || beyond.fatal != test.want {
-			t.Fatalf("for %T: configFieldsCarried stopped with %q, configOwnFieldsMissing with %q and configOwnFieldsBeyond with %q, want %q", test.value, carried.fatal, missing.fatal, beyond.fatal, test.want)
+		notStrings := zzConfigGuardReports(t, func(tb testing.TB) { configOwnFieldsNotStrings(tb, test.value, "Mode") })
+		if carried.fatal != test.want || missing.fatal != test.want || beyond.fatal != test.want || notStrings.fatal != test.want {
+			t.Fatalf("for %T: configFieldsCarried stopped with %q, configOwnFieldsMissing with %q, configOwnFieldsBeyond with %q and configOwnFieldsNotStrings with %q, want %q", test.value, carried.fatal, missing.fatal, beyond.fatal, notStrings.fatal, test.want)
 		}
 	}
 }
@@ -228,11 +284,13 @@ func zzConfigGuardReports(t *testing.T, check func(testing.TB)) *zzConfigGuardRe
 	return recorder
 }
 
-// Planted copies of ResolvedWorkloadVaultAuthPlan. Each declares a field beyond
-// the plan's metadata fields. The first three carry a secret where the old
-// guard, which read only the plan's own exported field names, did not look;
-// the next two lose a metadata field of the plan's own; the last two carry
-// what no forbidden name can match.
+// Planted copies of ResolvedWorkloadVaultAuthPlan. Each of the first seven
+// declares a field beyond the plan's metadata fields. The first three carry a
+// secret where the old guard, which read only the plan's own exported field
+// names, did not look; the next two lose a metadata field of the plan's own;
+// the next two carry what no forbidden name can match. The last two declare
+// only the metadata fields: in one, a field holds a struct, not a string; in
+// the other, no field holds a string.
 
 type zzPlanWithNestedToken struct {
 	Mode        WorkloadVaultAuthMode
@@ -309,6 +367,24 @@ type zzPlanWithTokenFile struct {
 	VaultTokenFile string
 }
 
+type zzPlanWithRoleSecret struct {
+	Mode        WorkloadVaultAuthMode
+	Address     string
+	AuthMount   string
+	AuthRole    struct{ Name, SecretID string }
+	JWTAudience string
+	CABundlePEM string
+}
+
+type zzPlanWithNoStrings struct {
+	Mode        *WorkloadVaultAuthMode
+	Address     []byte
+	AuthMount   any
+	AuthRole    struct{ Name, SecretID string }
+	JWTAudience func() string
+	CABundlePEM [1]string
+}
+
 func TestWorkloadVaultAuthPlanGuardRefusesPlantedFields(t *testing.T) {
 	for _, test := range []struct {
 		name string
@@ -342,6 +418,17 @@ func TestWorkloadVaultAuthPlanGuardRefusesPlantedFields(t *testing.T) {
 		}},
 		{"a longer name that holds a forbidden one", zzPlanWithTokenFile{}, []string{
 			`resolved workload Vault auth plan must declare only its non-secret Vault metadata fields, not field "VaultTokenFile"`,
+		}},
+		{"a secret inside a metadata field", zzPlanWithRoleSecret{}, []string{
+			`resolved workload Vault auth plan field "AuthRole" must hold a string, not struct { Name string; SecretID string }`,
+		}},
+		{"no metadata field holding a string", zzPlanWithNoStrings{}, []string{
+			`resolved workload Vault auth plan field "Mode" must hold a string, not *config.WorkloadVaultAuthMode`,
+			`resolved workload Vault auth plan field "Address" must hold a string, not []uint8`,
+			`resolved workload Vault auth plan field "AuthMount" must hold a string, not interface {}`,
+			`resolved workload Vault auth plan field "AuthRole" must hold a string, not struct { Name string; SecretID string }`,
+			`resolved workload Vault auth plan field "JWTAudience" must hold a string, not func() string`,
+			`resolved workload Vault auth plan field "CABundlePEM" must hold a string, not [1]string`,
 		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {

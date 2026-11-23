@@ -355,7 +355,8 @@ func TestWorkloadVaultAuthPlanCarriesOnlyNonSecretVaultMetadata(t *testing.T) {
 
 // checkWorkloadVaultAuthPlanFields fails t when a value of plan's type can carry
 // a token, secret, lease or raw SPIRE field anywhere in it, or when plan's own
-// type declares anything but exactly the non-secret Vault metadata fields.
+// type declares anything but exactly the non-secret Vault metadata fields, each
+// holding a string.
 func checkWorkloadVaultAuthPlanFields(t testing.TB, plan any) {
 	t.Helper()
 	metadata := []string{
@@ -388,6 +389,9 @@ func checkWorkloadVaultAuthPlanFields(t testing.TB, plan any) {
 	}
 	for _, missing := range configOwnFieldsMissing(t, plan, metadata...) {
 		t.Errorf("expected non-secret workload Vault metadata field %q", missing)
+	}
+	for _, field := range configOwnFieldsNotStrings(t, plan, metadata...) {
+		t.Errorf("resolved workload Vault auth plan field %q must hold a string, not %s", field.name, field.typ)
 	}
 }
 
@@ -908,6 +912,38 @@ func configOwnFieldsBeyond(t testing.TB, value any, names ...string) []string {
 		}
 	}
 	return beyond
+}
+
+// configOwnFieldType is a field of a struct type's own and the type it holds.
+type configOwnFieldType struct {
+	name string
+	typ  string
+}
+
+// configOwnFieldsNotStrings answers one question: which of names is a field of
+// value's own struct type that does not hold a string? A field counts as in
+// configOwnFieldsMissing: the type itself declares it, not embedded, under
+// exactly that name. A name the type lacks is not reported here, because
+// configOwnFieldsMissing reports it. A field holds a string when its type is
+// of kind string, so a named string type such as WorkloadVaultAuthMode does,
+// and a pointer, slice, interface, function or struct does not. It returns
+// each such field with its type, in the order of names.
+func configOwnFieldsNotStrings(t testing.TB, value any, names ...string) []configOwnFieldType {
+	t.Helper()
+	root := configStructType(t, value)
+	own := map[string]reflect.Type{}
+	for i := range root.NumField() {
+		if field := root.Field(i); !field.Anonymous {
+			own[field.Name] = field.Type
+		}
+	}
+	var notStrings []configOwnFieldType
+	for _, name := range names {
+		if typ, ok := own[name]; ok && typ.Kind() != reflect.String {
+			notStrings = append(notStrings, configOwnFieldType{name: name, typ: typ.String()})
+		}
+	}
+	return notStrings
 }
 
 func configStructType(t testing.TB, value any) reflect.Type {
