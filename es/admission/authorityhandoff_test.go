@@ -6,7 +6,10 @@ import (
 	esconfig "execution-substrate/es/config"
 )
 
-const testWorkloadZoneVaultConfigDigest = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+// testWorkloadZoneVaultConfigDigest names the shared test Vault config blob by
+// the digest of its exact bytes, because ES uses a blob only when its bytes
+// hash to the requested digest.
+var testWorkloadZoneVaultConfigDigest = digestBytes([]byte(validWorkloadZoneVaultConfigBlob))
 
 func TestBuildExecutionAuthorityHandoffReportsSelectedNonSecretFacts(t *testing.T) {
 	handoff := buildResolvedExecutionAuthorityHandoff(newExecutionAuthorityHandoffProjection(
