@@ -86,7 +86,9 @@ under .out/es-proof-<id>; any guest /tmp workspace is internal Lima scratch.
 
 The SPIRE release file, downloaded or prebuilt, is unpacked only if its
 SHA-256 is the one that scripts/internal/spire_release.sha256 pins for it.
-A SPIRE version or architecture with no line there is refused.
+A SPIRE version with no line there for any supported architecture is refused
+before setup changes anything; one with no line for this host's architecture
+is refused before the download.
 
 Optional environment variables:
   SUPPORTED_LOCAL_PROOF_DIR=/abs/path
@@ -186,6 +188,20 @@ preflight_supported_local_setup_execution_roots() {
       return 1
     fi
   fi
+}
+
+preflight_supported_local_setup_spire_pin() {
+  # The exact release file depends on the Go architecture and is looked up
+  # again where it is used. Here, before any effect, refuse a SPIRE version
+  # that has no pinned release file for any supported architecture.
+  local arch
+  for arch in amd64 arm64; do
+    if spire_release_pinned_sha256 "spire-${SPIRE_VERSION}-linux-${arch}-musl.tar.gz" >/dev/null 2>&1; then
+      return 0
+    fi
+  done
+  spire_release_pinned_sha256 "spire-${SPIRE_VERSION}-linux-amd64-musl.tar.gz" >/dev/null
+  return 1
 }
 
 provision_supported_local_execution_roots() {
@@ -1391,6 +1407,7 @@ setup() {
   supported_local_setup_repair_test_sentinel
   preflight_supported_local_setup_retained_result_auth
   preflight_supported_local_setup_execution_roots
+  preflight_supported_local_setup_spire_pin
 
   local vault_public_host
   local vault_address

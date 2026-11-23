@@ -57,7 +57,8 @@ Silicon Mac + Lima qemu reference path. It:
 The SPIRE release file, downloaded or prebuilt, is staged for the guest only
 if its SHA-256 is the one that scripts/internal/spire_release.sha256 pins for
 SUPPORTED_LOCAL_SPIRE_ASSET, and the guest setup checks it again before it
-unpacks it. A release file with no line there is refused.
+unpacks it. A release file with no line there is refused before the wrapper
+creates anything.
 
 Optional environment variables:
   SUPPORTED_LOCAL_INSTANCE=es-lima-qemu-arm64
@@ -874,6 +875,9 @@ run() {
   supported_local_proof_repair_test_sentinel
   preflight_supported_local_proof_retained_result_auth
   preflight_supported_local_proof_bootstrap_scope
+  # Refuse a SPIRE release file with no pin before any host effect; the
+  # spire-stage phase checks the staged copy against it later.
+  spire_release_pinned_sha256 "${SUPPORTED_LOCAL_SPIRE_ASSET}" >/dev/null
 
   umask 077
   create_private_host_proof_dir

@@ -347,6 +347,27 @@ prepare_spire_distribution "$SUPPORTED_LOCAL_PROOF_DIR/downloads/spire.tar.gz" "
 			}
 		}
 	})
+
+	// cp copies faithfully and then changes the prebuilt file, as a source
+	// that changes after the copy would: the checked copy is what is unpacked.
+	t.Run("the checked copy is the file that is unpacked", func(t *testing.T) {
+		dir := t.TempDir()
+		tarball, sum := spireTestDistribution(t, dir)
+		pins := spireTestWritePins(t, filepath.Join(dir, "pins"), sum+"  "+spireTestAMD64Asset+"\n")
+		r := setup(t, `SPIRE_RELEASE_PIN_FILE="$TEST_PINS"
+cp() { command cp "$@"; printf 'changed after the copy\n' > "$1"; }
+`, "SUPPORTED_LOCAL_PREBUILT_SPIRE_TARBALL="+tarball, "TEST_PINS="+pins)
+		wantTar := "tar -xzf " + filepath.Join(r.proof, "downloads", "spire.tar.gz") + " -C " + filepath.Join(r.proof, "spire", "dist") + "\n"
+		if r.err != nil || r.events != wantTar {
+			t.Fatalf("the checked copy was not the file unpacked: err=%v output=%q events=%q", r.err, r.output, r.events)
+		}
+		for _, name := range []string{"spire-server", "spire-agent"} {
+			data, err := os.ReadFile(filepath.Join(r.proof, "bin", name))
+			if err != nil || string(data) != "#!/bin/sh\necho synthetic "+name+"\n" {
+				t.Fatalf("installed %s is not from the checked copy: %v %q", name, err, data)
+			}
+		}
+	})
 }
 
 // The proof wrapper's stage_spire_distribution stages the release file in
@@ -492,5 +513,198 @@ prepare_host_tooling`, "SUPPORTED_LOCAL_PREBUILT_SPIRE_TARBALL="+tarball,
 			t.Fatalf("spire-stage phase was not recorded as failed: %v %q", err, phase)
 		}
 		assertNotStaged(t, r)
+	})
+
+	// cp copies faithfully and then changes the prebuilt file: the guest is
+	// sent the staged copy that was checked.
+	t.Run("the checked staged copy is the file sent to the guest", func(t *testing.T) {
+		dir := t.TempDir()
+		tarball, sum := spireTestDistribution(t, dir)
+		want, err := os.ReadFile(tarball)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pins := spireTestWritePins(t, filepath.Join(dir, "pins"), sum+"  "+spireTestARM64Asset+"\n")
+		capture := filepath.Join(dir, "capture")
+		if err := os.Mkdir(capture, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		r := stage(t, `SPIRE_RELEASE_PIN_FILE="$TEST_PINS"
+cp() { command cp "$@"; printf 'changed after the copy\n' > "$1"; }
+`+direct+`
+printf 'runtime support\n' > "$SUPPORTED_LOCAL_HOST_BOOTSTRAP_DIR/bin/es-runtime-support"
+test_calls=0
+limactl() { cat > "$TEST_CAPTURE/call-$test_calls"; test_calls=$((test_calls + 1)); }
+copy_tooling_to_guest`, "SUPPORTED_LOCAL_PREBUILT_SPIRE_TARBALL="+tarball, "TEST_PINS="+pins, "TEST_CAPTURE="+capture)
+		got, err := os.ReadFile(filepath.Join(capture, "call-2"))
+		if r.err != nil || err != nil || !bytes.Equal(got, want) {
+			t.Fatalf("the guest was not sent the checked staged copy: err=%v output=%q read=%v got=%q", r.err, r.output, err, got)
+		}
+	})
+}
+
+// The pin file is the one next to the helper; an exported
+// SPIRE_RELEASE_PIN_FILE does not replace it.
+func TestSpireReleasePinFileIgnoresTheEnvironment(t *testing.T) {
+	dir := t.TempDir()
+	const sum = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	pins := spireTestWritePins(t, filepath.Join(dir, "pins"), sum+"  a.tar.gz\n")
+	output, err := auditScriptSource(t, spireTestHelper(t), `spire_release_pinned_sha256 a.tar.gz`, "SPIRE_RELEASE_PIN_FILE="+pins)
+	if err == nil || !strings.Contains(string(output), "no SHA-256 is pinned for the SPIRE release file a.tar.gz") || strings.Contains(string(output), sum) {
+		t.Fatalf("an exported SPIRE_RELEASE_PIN_FILE was used: err=%v output=%q", err, output)
+	}
+}
+
+// Setup refuses a SPIRE version with no pinned release file for any supported
+// architecture in its preflight, before it changes the host. The first effect
+// after the preflight, stopping the proof's old processes, is replaced by a
+// recorder that ends the run, so a version that passes the preflight shows
+// that it reached that point and a refused one shows that it did not.
+func TestSupportedLocalSetupRefusesAnUnpinnedSpireVersionBeforeEffects(t *testing.T) {
+	repo := executionPlatformRepoRoot(t)
+	script := filepath.Join(repo, "scripts", "72_supported_local_setup.sh")
+	const fakes = `
+require_command() { :; }
+require_supported_go_toolchain() { :; }
+uname() { printf 'Linux\n'; }
+sudo() { [[ "$1" == -n && "$2" == true ]]; }
+go() { printf 'unexpected go %s\n' "$*" >> "$ROOT_EVENTS"; return 97; }
+curl() { printf 'unexpected curl\n' >> "$ROOT_EVENTS"; return 97; }
+docker() { printf 'unexpected docker\n' >> "$ROOT_EVENTS"; return 97; }
+nomad() { printf 'unexpected nomad\n' >> "$ROOT_EVENTS"; return 97; }
+vault() { printf 'unexpected vault\n' >> "$ROOT_EVENTS"; return 97; }
+detect_docker_bridge_gateway() { printf 'unexpected bridge lookup\n' >> "$ROOT_EVENTS"; return 97; }
+stop_background_process() { printf 'first effect\n' >> "$ROOT_EVENTS"; exit 97; }
+`
+	type run struct {
+		proof, events, output string
+		err                   error
+	}
+	setup := func(t *testing.T, body string, overrides ...string) run {
+		t.Helper()
+		workspace := t.TempDir()
+		proof := filepath.Join(workspace, "proof")
+		events := filepath.Join(workspace, "events")
+		if err := os.WriteFile(events, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		output, err := auditScriptSource(t, script, fakes+body+"\nsetup", append([]string{
+			"EXECUTION_SUBSTRATE_REPO_ROOT=" + repo,
+			"SUPPORTED_LOCAL_PROOF_DIR=" + proof,
+			"SUPPORTED_LOCAL_PROOF_ID=fixture-proof",
+			"SUPPORTED_LOCAL_RETAINED_RESULT_AUTH_STORE_ID=test_store",
+			"SUPPORTED_LOCAL_RETAINED_RESULT_AUTH_KEY_ID=test_key",
+			"SUPPORTED_LOCAL_RETAINED_RESULT_AUTH_KEY_FILE=" + filepath.Join(workspace, "external", "key"),
+			"SUPPORTED_LOCAL_VAULT_PUBLIC_HOST=127.0.0.1",
+			"SUPPORTED_LOCAL_VAULT_ROOT_TOKEN=synthetic-token",
+			"SUPPORTED_LOCAL_VAULT_SECRET_VALUE=synthetic-value",
+			"SUPPORTED_LOCAL_CODEX_CREDENTIAL_VALUE=synthetic-value",
+			"ROOT_EVENTS=" + events,
+		}, overrides...)...)
+		recorded, readErr := os.ReadFile(events)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if _, statErr := os.Lstat(proof); !os.IsNotExist(statErr) {
+			t.Fatalf("setup created its proof root before the first effect: %v output=%q", statErr, output)
+		}
+		return run{proof: proof, events: string(recorded), output: string(output), err: err}
+	}
+	const sum = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+	t.Run("unpinned version", func(t *testing.T) {
+		r := setup(t, "", "SUPPORTED_LOCAL_SPIRE_VERSION=9.9.9")
+		if r.err == nil || r.events != "" || strings.Count(r.output, "\n") != 1 ||
+			!strings.HasPrefix(r.output, "no SHA-256 is pinned for the SPIRE release file spire-9.9.9-linux-amd64-musl.tar.gz: ") {
+			t.Fatalf("unpinned version was not refused before the first effect: err=%v output=%q events=%q", r.err, r.output, r.events)
+		}
+	})
+	t.Run("malformed pin file", func(t *testing.T) {
+		dir := t.TempDir()
+		pins := spireTestWritePins(t, filepath.Join(dir, "pins"), sum+" spire-1.14.4-linux-amd64-musl.tar.gz\n")
+		r := setup(t, `SPIRE_RELEASE_PIN_FILE="$TEST_PINS"`, "TEST_PINS="+pins)
+		if r.err == nil || r.events != "" || !strings.HasPrefix(r.output, "malformed line in "+pins+": ") {
+			t.Fatalf("malformed pin file was not refused before the first effect: err=%v output=%q events=%q", r.err, r.output, r.events)
+		}
+	})
+	t.Run("pinned version reaches the first effect", func(t *testing.T) {
+		r := setup(t, "")
+		if r.err == nil || r.events != "first effect\n" || r.output != "" {
+			t.Fatalf("pinned version did not pass the preflight: err=%v output=%q events=%q", r.err, r.output, r.events)
+		}
+	})
+	t.Run("version pinned only for arm64 reaches the first effect", func(t *testing.T) {
+		dir := t.TempDir()
+		pins := spireTestWritePins(t, filepath.Join(dir, "pins"), sum+"  spire-2.0.0-linux-arm64-musl.tar.gz\n")
+		r := setup(t, `SPIRE_RELEASE_PIN_FILE="$TEST_PINS"`, "TEST_PINS="+pins, "SUPPORTED_LOCAL_SPIRE_VERSION=2.0.0")
+		if r.err == nil || r.events != "first effect\n" || r.output != "" {
+			t.Fatalf("version pinned for one supported architecture did not pass the preflight: err=%v output=%q events=%q", r.err, r.output, r.events)
+		}
+	})
+}
+
+// The proof wrapper refuses a SPIRE release file with no pin before it
+// creates its host proof directory, its first effect, which a recorder
+// replaces here to end the run.
+func TestSupportedLocalProofRefusesAnUnpinnedSpireReleaseFileBeforeEffects(t *testing.T) {
+	repo := executionPlatformRepoRoot(t)
+	script := filepath.Join(repo, "scripts", "73_supported_local_proof.sh")
+	const body = `
+require_command() { :; }
+require_supported_go_toolchain() { :; }
+create_private_host_proof_dir() { printf 'first effect\n' >> "$ROOT_EVENTS"; exit 97; }
+run`
+	type run struct {
+		events, output string
+		err            error
+	}
+	wrapper := func(t *testing.T, overrides ...string) run {
+		t.Helper()
+		workspace := t.TempDir()
+		host := filepath.Join(workspace, "host-proof")
+		events := filepath.Join(workspace, "events")
+		if err := os.WriteFile(events, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		output, err := auditScriptSource(t, script, body, append([]string{
+			"SUPPORTED_LOCAL_PROOF_ID=spirepinfixture",
+			"SUPPORTED_LOCAL_HOST_PROOF_DIR=" + host,
+			"SUPPORTED_LOCAL_GUEST_PROOF_DIR=/tmp/es-proof-spirepinfixture",
+			"SUPPORTED_LOCAL_GUEST_BOOTSTRAP_DIR=/tmp/es-proof-spirepinfixture.bootstrap",
+			"SUPPORTED_LOCAL_GUEST_REPO_ROOT=/tmp/es-proof-spirepinfixture.bootstrap/repo",
+			"SUPPORTED_LOCAL_RETAINED_RESULT_AUTH_STORE_ID=test_store",
+			"SUPPORTED_LOCAL_RETAINED_RESULT_AUTH_KEY_ID=test_key",
+			"SUPPORTED_LOCAL_RETAINED_RESULT_AUTH_KEY_FILE=/opt/external auth /keys/key",
+			"ROOT_EVENTS=" + events,
+		}, overrides...)...)
+		recorded, readErr := os.ReadFile(events)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		for _, path := range []string{host, filepath.Join(filepath.Dir(repo), "es-proof-bootstrap-spirepinfixture")} {
+			if _, statErr := os.Lstat(path); !os.IsNotExist(statErr) {
+				t.Fatalf("the wrapper created %s before its first effect: %v output=%q", path, statErr, output)
+			}
+		}
+		return run{events: string(recorded), output: string(output), err: err}
+	}
+
+	for _, test := range []struct{ name, variable, value, asset string }{
+		{"unpinned version", "SUPPORTED_LOCAL_SPIRE_VERSION", "9.9.9", "spire-9.9.9-linux-arm64-musl.tar.gz"},
+		{"unpinned asset", "SUPPORTED_LOCAL_SPIRE_ASSET", "spire-1.14.4-linux-riscv64-musl.tar.gz", "spire-1.14.4-linux-riscv64-musl.tar.gz"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			r := wrapper(t, test.variable+"="+test.value)
+			if r.err == nil || r.events != "" || strings.Count(r.output, "\n") != 1 ||
+				!strings.HasPrefix(r.output, "no SHA-256 is pinned for the SPIRE release file "+test.asset+": ") {
+				t.Fatalf("unpinned release file was not refused before the first effect: err=%v output=%q events=%q", r.err, r.output, r.events)
+			}
+		})
+	}
+	t.Run("pinned release file reaches the first effect", func(t *testing.T) {
+		r := wrapper(t)
+		if r.err == nil || r.events != "first effect\n" || r.output != "" {
+			t.Fatalf("pinned release file did not pass the preflight: err=%v output=%q events=%q", r.err, r.output, r.events)
+		}
 	})
 }

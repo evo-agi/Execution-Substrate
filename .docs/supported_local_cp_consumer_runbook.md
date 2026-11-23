@@ -166,8 +166,9 @@ identity-bound cleanup removes that scratch at closeout or retains it with a
 safe diagnostic when ownership cannot be proved. The wrapper stages the SPIRE
 distribution, downloaded or prebuilt, only after its SHA-256 matches the line
 that `scripts/internal/spire_release.sha256` holds for that release file, and
-the guest setup checks it again before it unpacks it. A SPIRE version or
-architecture with no line there is refused. The source snapshot selects
+the guest setup checks it again before it unpacks it. A SPIRE release file
+with no line there is refused before the wrapper creates anything on the
+host. The source snapshot selects
 tracked and non-ignored untracked source paths through guarded Git, retains
 tracked `.out/Dockerfile`, and excludes ignored or sensitive local material.
 Only its deterministic source manifest and snapshot digest are host evidence.
