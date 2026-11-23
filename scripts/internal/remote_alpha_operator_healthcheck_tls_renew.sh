@@ -355,7 +355,7 @@ def extract_uri_sans(der: bytes) -> list[str] | None:
         fields = der_children(der, start, end)
         if fields is None or len(fields) not in {2, 3} or fields[0][0] != 0x06 or fields[-1][0] != 0x04:
             return None
-        if len(fields) == 3 and (fields[1][0] != 0x01 or fields[1][2] - fields[1][1] != 1):
+        if len(fields) == 3 and (fields[1][0] != 0x01 or fields[1][2] - fields[1][1] != 1 or der[fields[1][1]] not in (0x00, 0xFF)):
             return None
         oid = der[fields[0][1] : fields[0][2]]
         if oid in seen:

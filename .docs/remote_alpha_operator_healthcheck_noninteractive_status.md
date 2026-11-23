@@ -380,8 +380,10 @@ from the certificate's own DER encoding, through the fixed
 OpenSSL's printed SAN text, because that text cannot tell a URI that contains
 `, DNS:` apart from two entries, or a DNS name that contains `, URI:` apart
 from a URI SAN. The DER decoding accepts only one-byte tags and definite,
-minimal lengths, refuses trailing bytes, more than one extensions block, and a
-repeated extension, and refuses a URI SAN that is empty, longer than 256
+minimal lengths, refuses trailing bytes, more than one extensions block, a
+repeated extension, and an extension whose fields are not an object
+identifier, an optional one-byte critical flag of `0x00` or `0xFF`, and an
+octet string, and refuses a URI SAN that is empty, longer than 256
 bytes, or holds a byte outside printable ASCII without spaces; such a
 certificate is `identity_malformed` and fails with `identity_mismatch`. The
 host-local renew helper's `--status` mode carries the same decoder, and a test

@@ -316,6 +316,32 @@ func TestRemoteAlphaOperatorHealthcheckTLSStagedStatusPassesTheExpectedIdentity(
 	assertFileContainsNoSecrets(t, fixture.summary)
 }
 
+// A certificate file that OpenSSL cannot read has no known URI SANs. The
+// status counts none and calls the identity malformed, not a plain mismatch.
+func TestRemoteAlphaOperatorHealthcheckTLSStatusCallsAnUnreadableCertificateMalformed(t *testing.T) {
+	fixture := setupRemoteAlphaOperatorHealthcheckTLSFixtureWithLeaf(t, false, func(caPEM []byte, caKey *rsa.PrivateKey, notBefore, notAfter time.Time) ([]byte, []byte) {
+		_, key := remoteAlphaGenerateOperatorClientLeaf(t, caPEM, caKey, []string{"spiffe://execution.internal/operator/local"}, notBefore, notAfter)
+		return []byte("not a certificate\n"), key
+	})
+	output, err := runStagedRemoteAlphaOperatorHealthcheckTLSRenew(t, fixture.helperEnv("REMOTE_ALPHA_TEST_SKIP_OPERATOR_HEALTHCHECK_TLS_PROBES=1"), "--status", "--summary-path", fixture.summary)
+	if err == nil {
+		t.Fatalf("expected the status to fail, output=%s", output)
+	}
+	summary := readJSONMap(t, fixture.summary)
+	identity, ok := summary["identity"].(map[string]any)
+	if !ok {
+		t.Fatalf("summary has no identity object: %#v", summary)
+	}
+	if count, ok := identity["uri_san_count"]; !ok || count != nil {
+		t.Fatalf("identity.uri_san_count = %#v (present %v), want null", count, ok)
+	}
+	assertJSONPathEquals(t, summary, "result.status", "fail")
+	assertJSONPathEquals(t, summary, "identity.status", "fail")
+	assertJSONPathEquals(t, summary, "identity.matches_current_allowlist", false)
+	assertJSONPathEquals(t, summary, "identity.classification", "operator_identity_malformed")
+	assertFileContainsNoSecrets(t, fixture.summary)
+}
+
 func TestRemoteAlphaOperatorHealthcheckTLSRenewHelperRejectsSecretLikeArgs(t *testing.T) {
 	fixture := setupRemoteAlphaOperatorHealthcheckTLSFixture(t, false, "spiffe://execution.internal/operator/local")
 	output, err := runRemoteAlphaOperatorHealthcheckTLSRenew(t, fixture.helperEnv(), "--private-key", "dummy")

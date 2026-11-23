@@ -788,18 +788,32 @@ def extension(oid, value, critical=None):
 def san(*names):
     return extension(SAN_OID, tlv(0x30, b"".join(tlv(tag, value) for tag, value in names)))
 
-def certificate(*extensions, block=None, tail=b""):
+def certificate(*extensions, block=None, tail=b"", tbs_tail=b"", signature=None):
     if block is None:
         block = tlv(0xA3, tlv(0x30, b"".join(extensions))) if extensions else b""
+    if signature is None:
+        signature = tlv(0x03, b"\x00sig")
     validity = tlv(0x30, tlv(0x17, b"260101000000Z") + tlv(0x17, b"270101000000Z"))
     spki = tlv(0x30, ALG + tlv(0x03, b"\x00\x01"))
-    tbs = tlv(0x30, tlv(0xA0, tlv(0x02, b"\x02")) + tlv(0x02, b"\x01") + ALG + NAME + validity + NAME + spki + block)
-    return tlv(0x30, tbs + ALG + tlv(0x03, b"\x00sig") + tail)
+    tbs = tlv(0x30, tlv(0xA0, tlv(0x02, b"\x02")) + tlv(0x02, b"\x01") + ALG + NAME + validity + NAME + spki + block + tbs_tail)
+    return tlv(0x30, tbs + ALG + signature + tail)
+
+# An element whose long-form length has a leading zero byte. The content is at
+# least 0x80 bytes, so the length is not also short enough for the short form.
+def tlv_leading_zero(tag, content):
+    n = len(content)
+    assert 0x80 <= n < 0x100
+    return bytes([tag, 0x82, 0x00, n]) + content
+
+# The URI SAN of a case is EXP or this 133-byte URI, so a case is malformed
+# only because of the one rule its name gives.
+LONG_EXP = EXP + b"/" + b"a" * 90
 
 VALID = certificate(san((DNS, b"client.operator"), (URI, EXP)))
 DER = {
     "valid": VALID,
     "critical_san": certificate(extension(SAN_OID, tlv(0x30, tlv(URI, EXP)), critical=b"\xff")),
+    "noncritical_flag_explicit": certificate(extension(SAN_OID, tlv(0x30, tlv(URI, EXP)), critical=b"\x00")),
     "dns_and_expected": certificate(san((DNS, b"client.operator"), (URI, EXP))),
     "legacy": certificate(san((URI, LEGACY))),
     "expected_suffix": certificate(san((URI, EXP + b"-evil"))),
@@ -831,15 +845,39 @@ DER = {
     "duplicate_san": certificate(san((URI, EXP)), san((URI, EXP))),
     "duplicate_extension_block": certificate(block=tlv(0xA3, tlv(0x30, san((URI, EXP)))) * 2),
     "extension_block_not_sequence": certificate(block=tlv(0xA3, tlv(0x31, san((URI, EXP))))),
-    "extension_extra_field": certificate(block=tlv(0xA3, tlv(0x30, tlv(0x30, SAN_OID + tlv(0x01, b"\xff") + tlv(0x04, tlv(0x30, tlv(URI, EXP))) + tlv(0x05, b""))))),
+    "extension_block_two_sequences": certificate(block=tlv(0xA3, tlv(0x30, san((URI, EXP))) + tlv(0x30, b""))),
+    "extension_block_malformed": certificate(block=tlv(0xA3, b"\x30\x05\x00")),
+    "extensions_malformed": certificate(block=tlv(0xA3, tlv(0x30, san((URI, EXP)) + b"\x05"))),
+    "extension_not_sequence": certificate(block=tlv(0xA3, tlv(0x30, tlv(0x31, SAN_OID + tlv(0x04, tlv(0x30, tlv(URI, EXP))))))),
+    "extension_fields_malformed": certificate(block=tlv(0xA3, tlv(0x30, tlv(0x30, SAN_OID + b"\x04\x10" + tlv(0x30, tlv(URI, EXP)))))),
+    # Four fields that start with the object identifier and end with the
+    # octet string: only the field count is wrong.
+    "extension_extra_field": certificate(block=tlv(0xA3, tlv(0x30, tlv(0x30, SAN_OID + tlv(0x01, b"\xff") + tlv(0x05, b"") + tlv(0x04, tlv(0x30, tlv(URI, EXP))))))),
+    "extension_id_not_oid": certificate(block=tlv(0xA3, tlv(0x30, tlv(0x30, tlv(0x04, bytes.fromhex("551d11")) + tlv(0x04, tlv(0x30, tlv(URI, EXP))))))),
+    "extension_value_not_octet_string": certificate(block=tlv(0xA3, tlv(0x30, tlv(0x30, SAN_OID + tlv(0x03, tlv(0x30, tlv(URI, EXP))))))),
     "critical_flag_long": certificate(extension(SAN_OID, tlv(0x30, tlv(URI, EXP)), critical=b"\x00\xff")),
+    "critical_flag_not_boolean": certificate(block=tlv(0xA3, tlv(0x30, tlv(0x30, SAN_OID + tlv(0x02, b"\xff") + tlv(0x04, tlv(0x30, tlv(URI, EXP))))))),
+    "critical_flag_not_der": certificate(extension(SAN_OID, tlv(0x30, tlv(URI, EXP)), critical=b"\x01")),
     "san_not_sequence": certificate(extension(SAN_OID, tlv(0x31, tlv(URI, EXP)))),
     "san_trailing": certificate(extension(SAN_OID, tlv(0x30, tlv(URI, EXP)) + b"\x05\x00")),
-    "high_tag_name": certificate(extension(SAN_OID, tlv(0x30, b"\x9f\x1f\x01x" + tlv(URI, EXP)))),
+    # A tag-number-31 name that a reader of one-byte tags would take for a
+    # 31-byte element of tag 0x9F, followed by the expected URI.
+    "high_tag_name": certificate(extension(SAN_OID, tlv(0x30, b"\x9f\x1f\x1e" + b"a" * 30 + tlv(URI, EXP)))),
+    # A DNS name whose length runs past the end of the SAN sequence into the
+    # rest of the certificate.
+    "name_past_its_parent": certificate(extension(SAN_OID, tlv(0x30, b"\x82\x10client")), extension(KU_OID, tlv(0x03, b"\x05\xa0"))),
     "indefinite_length": b"\x30\x80" + VALID[2:] + b"\x00\x00",
     "short_length_in_long_form": b"\x30\x81\x06" + tlv(0x30, b"") + tlv(0x30, b"") + tlv(0x03, b""),
-    "length_with_leading_zero": b"\x30\x82\x00\x06" + tlv(0x30, b"") + tlv(0x30, b"") + tlv(0x03, b""),
+    "length_with_leading_zero": certificate(extension(SAN_OID, tlv(0x30, tlv_leading_zero(URI, LONG_EXP)))),
+    "certificate_not_sequence": b"\x31" + VALID[1:],
     "two_part_certificate": tlv(0x30, tlv(0x30, b"") + tlv(0x30, b"")),
+    "signature_not_bit_string": certificate(san((URI, EXP)), signature=tlv(0x04, b"\x00sig")),
+    "tbs_malformed": certificate(san((URI, EXP)), tbs_tail=b"\x05"),
+    "certificate_content_malformed": tlv(0x30, b"\x30\x05\x00"),
+    "empty_der": b"",
+    "one_byte_der": b"\x30",
+    "length_octets_missing": b"\x30\x81",
+    "bare_indefinite_length": b"\x30\x80",
 }
 
 class Runner:
@@ -957,7 +995,12 @@ for mode in [
     "trailing_byte", "truncated", "trailing_inside", "duplicate_san", "duplicate_extension_block",
     "extension_block_not_sequence", "extension_extra_field", "critical_flag_long", "san_not_sequence",
     "san_trailing", "high_tag_name", "indefinite_length", "short_length_in_long_form",
-    "length_with_leading_zero", "two_part_certificate",
+    "length_with_leading_zero", "two_part_certificate", "extension_block_two_sequences",
+    "extension_block_malformed", "extensions_malformed", "extension_not_sequence",
+    "extension_fields_malformed", "extension_id_not_oid", "extension_value_not_octet_string",
+    "critical_flag_not_boolean", "critical_flag_not_der", "name_past_its_parent",
+    "certificate_not_sequence", "signature_not_bit_string", "tbs_malformed", "certificate_content_malformed",
+    "empty_der", "one_byte_der", "length_octets_missing", "bare_indefinite_length",
 ]:
     assert m.extract_uri_sans(DER[mode]) is None, mode
     payload, _ = collect(mode)
@@ -969,6 +1012,13 @@ for mode in [
 payload, runner = collect("critical_san")
 assert payload["result"]["ok"] is True, payload
 assert payload["identity"]["matches_expected"] is True, payload
+assert m.extract_uri_sans(DER["noncritical_flag_explicit"]) == [EXP.decode()]
+# Each malformed case differs from a well-formed certificate in its one named
+# rule. Its well-formed twin decodes to the URI SAN it carries.
+assert m.extract_uri_sans(certificate(extension(SAN_OID, tlv(0x30, tlv(URI, LONG_EXP))))) == [LONG_EXP.decode()]
+assert m.extract_uri_sans(certificate(extension(SAN_OID, tlv(0x30, tlv(0x80 | 0x1E, b"a" * 30) + tlv(URI, EXP))))) == [EXP.decode()]
+assert m.extract_uri_sans(certificate(extension(SAN_OID, tlv(0x30, tlv(DNS, b"client"))), extension(KU_OID, tlv(0x03, b"\x05\xa0")))) == []
+assert m.extract_uri_sans(certificate(san((URI, EXP)), signature=tlv(0x03, b"\x00sig"))) == [EXP.decode()]
 der_argv = (m.OPENSSL, "x509", "-in", str(cert), "-outform", "DER")
 assert der_argv in runner.calls, runner.calls
 assert not any("subjectAltName" in call for call in runner.calls), runner.calls

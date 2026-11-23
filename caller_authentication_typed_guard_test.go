@@ -226,8 +226,9 @@ func callerIdentityTypedViolations(t *testing.T, target callerIdentityBuildTarge
 			t.Fatalf("type-check %s for %s: %v", item.ImportPath, target, err)
 		}
 
+		// Unadjusted, so a //line directive cannot move a finding to another file.
 		at := func(pos token.Pos, rule string) {
-			position := fset.Position(pos)
+			position := fset.PositionFor(pos, false)
 			rel, err := filepath.Rel(executionSubstrateRepoRoot, position.Filename)
 			if err != nil {
 				rel = position.Filename
@@ -338,7 +339,8 @@ func Spellings(a *alias, w wrapped, q request) ([]*url.URL, []*url.URL, int, []b
 	return a.URIs, w.URIs, len(w.Extensions), a.RawIssuer, q.TLS != nil && err == nil
 }
 `,
-		// The red-team's file inside a service API package.
+		// The red-team's file inside a service API package. Its //line
+		// directive must not move the findings to another file.
 		"ars/api/zz_calleridentityprobe.go": `package api
 
 import (
@@ -349,6 +351,7 @@ import (
 	"execution-substrate/internal/zzcalleridentityprobe"
 )
 
+//line elsewhere.go:1
 func zzCallerIdentityProbe(r *http.Request, cert *x509.Certificate) (string, string, string) {
 	id, _ := zzcalleridentityprobe.CallerID(r)
 	issuer := cert.Issuer
@@ -397,9 +400,9 @@ var _ = zzCallerIdentityProbe
 		probe + ":33: reads crypto/x509.Certificate.RawIssuer",
 		probe + ":33: reads net/http.Request.TLS",
 		api + ":7: imports execution-substrate/internal/callerauth/callerauthtest",
-		api + ":13: reads crypto/x509.Certificate.Issuer",
-		api + ":14: reads net/http.Request.TLS",
-		api + ":15: service API uses crypto/tls.HandshakeComplete",
+		api + ":14: reads crypto/x509.Certificate.Issuer",
+		api + ":15: reads net/http.Request.TLS",
+		api + ":16: service API uses crypto/tls.HandshakeComplete",
 	}
 	for _, violation := range want {
 		if !got[violation] {
