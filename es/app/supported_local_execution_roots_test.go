@@ -150,7 +150,7 @@ case "$url" in
   "$ROOT_SERVER_URL"/v1/acl/policy/anonymous)
     printf '404' ;;
   "$ROOT_SERVER_URL"/v1/agent/self)
-    printf '{"config":{"DevMode":false,"Client":{"Options":{"driver.allowlist":"docker"}},"Plugins":[{"Name":"docker","Config":{"allow_privileged":false,"allow_caps":["chown","dac_override","fowner","kill","setgid","setuid","setpcap"],"volumes":{"enabled":true},"gc":{"image":false}}}]}}\n' ;;
+    printf '{"config":{"DevMode":false,"Client":{"Options":{"driver.allowlist":"docker"}},"Plugins":[{"Name":"docker","Config":{"allow_privileged":%s,"allow_caps":["chown","dac_override","fowner","kill","setgid","setuid","setpcap"],"volumes":{"enabled":true},"gc":{"image":false}}}]}}\n' "${ROOT_AGENT_ALLOW_PRIVILEGED:-false}" ;;
   "$ROOT_SERVER_URL"/v1/nodes)
     printf '[{"ID":"node-1","Name":"fixture","Status":"ready"}]\n' ;;
   *) printf 'unexpected curl URL\n' >> "$ROOT_EVENTS"; exit 97 ;;
@@ -384,6 +384,32 @@ func TestSupportedLocalFullReadinessActualEntrypoints(t *testing.T) {
 	output, err := f.runChecker()
 	if err != nil || !strings.Contains(output, "ready=true") {
 		t.Fatalf("diagnostics-sourced checker unavailable: %v %q", err, output)
+	}
+}
+
+// Bring-up and the health check refuse a Nomad agent outside the supported
+// Docker limits (here: privileged containers allowed), in both the one-shot
+// check and the wait loop that bring-up's up uses, before any Docker check.
+func TestSupportedLocalFullReadinessRefusesALoosenedNomadAgent(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		script    string
+		args      []string
+		overrides []string
+	}{
+		{"01_bringup.sh check", "01_bringup.sh", []string{"check"}, nil},
+		{"10_health_check.sh", "10_health_check.sh", nil, nil},
+		{"10_health_check.sh waiting for readiness", "10_health_check.sh", nil, []string{"WAIT_FOR_READY=1", "READY_TIMEOUT_SECONDS=2"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newFullReadinessFixture(t)
+			output, err := f.runScript(test.script, test.args, append([]string{"ROOT_AGENT_ALLOW_PRIVILEGED=true"}, test.overrides...)...)
+			if err == nil || !strings.Contains(output, "the Docker plugin must refuse privileged containers (allow_privileged = false)") ||
+				strings.Contains(output, "submit-ready: true") || strings.Contains(f.eventText(), "docker ") {
+				t.Fatalf("readiness accepted a Nomad that allows privileged containers: %v %q events=%q", err, output, f.eventText())
+			}
+			f.assertNoReadinessMutation()
+		})
 	}
 }
 

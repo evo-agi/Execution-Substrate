@@ -647,25 +647,31 @@ bypass ES admission. ES therefore submits only to a Nomad that enforces them.
   is kept. `check` verifies the lock (an anonymous plan in `es-submit-v1`,
   ES's token in `default` or on `/v1/nodes`, and the observer token planning
   are all refused; ES's token can plan in `es-submit-v1`; the ES and
-  observer policies have exactly the tool's rules), and `rotate` issues new
+  observer tokens are client tokens with only their own policy and no roles;
+  the ES and observer policies have exactly the tool's rules and no job ACL,
+  which would give their capabilities to the workloads of the job it names),
+  and `rotate` issues new
   ES and observer tokens and deletes the old ones. Only ES may submit or
   change jobs in `es-submit-v1`, and only the read-only observer may read
   them: the tool asks Nomad itself, by issuing a short-lived (5 minute) probe
   token for each other policy and for each role, and with it reading the
-  `es-submit-v1` namespace (Nomad allows that for any capability there, so
+  `es-submit-v1` namespace (Nomad allows that for any job capability there, so
   `scale-job`, `dispatch-job`, `alloc-lifecycle`, `alloc-exec` and
   `read-job` grants all count) and planning a job there; any answer other
   than 403 to either counts as a grant and is refused. So every policy
   syntax (HCL, JSON, escaped names, namespace globs) and every role is
   covered, and a glob grant shadowed by a `deny` on `es-submit-v1` passes.
-  The observer policy is exempt only while its rules are exactly the tool's.
+  Variables capabilities are not job capabilities and are not judged; ES's
+  jobs read no Nomad variables. The observer policy is exempt only while its
+  rules are exactly the tool's and it has no job ACL.
   It also refuses when any ACL auth method exists (its binding rules could
   issue tokens), when a live management token other than the one in the
   management token file exists (every management token can submit
   anywhere), when a live token other than the ES or observer token holds
   their policy, when an anonymous policy exists, or when ACLs are off.
   Provision writes the two policies before these probes, so a widened copy
-  is restored, and deletes other tokens with ES's or the observer's policy.
+  is restored and a job ACL cleared, replaces an ES or observer token that
+  has a role, and deletes other tokens with ES's or the observer's policy.
   `scripts/nomad_acl_setup.sh check` runs all of this with the management
   token; that part writes to Nomad (it creates and deletes the probe
   tokens). `nomad_acl.py check` without `--management-token-file` checks
@@ -696,12 +702,20 @@ Known limits of this lock:
   closes this.
 - The lock governs Nomad's API, not Docker. Root and members of the `docker`
   group can start containers directly and are outside it.
-- ES's submit token still controls job shape within the Docker limits: the
-  supported Nomad enables only the Docker driver, refuses privileged
-  containers and extra capabilities, but with Docker volumes enabled and the
-  task user `0:0` a stolen ES token can still mount host paths into a
-  container as root (audit INF-02). ES's own admission decides job shape; a
-  stricter design for mounts and the task user is tracked separately.
+- ES's submit token still controls job shape within the Docker limits. The
+  supported Nomad refuses only privileged containers, capabilities beyond the
+  seven above, and drivers other than Docker. Checked on Nomad 2.1.1 and
+  2.0.0, it still runs, for any holder of ES's token (audit INF-02):
+  - bind mounts of host paths, `/` included, with the task user `0:0`;
+  - `network_mode = "host"` (the container shares the host's network,
+    including loopback services such as Nomad's API);
+  - `devices` (host device nodes mapped into the container);
+  - `security_opt`, for example `seccomp=unconfined`;
+  - on Nomad 2.0.0 only, `pid_mode = "host"` (2.1.1 refuses it).
+
+  Nomad's Docker plugin has no setting that refuses these options. ES's own
+  admission decides job shape; a stricter design for job shape and the task
+  user is tracked separately.
 
 ### Docker requirements
 

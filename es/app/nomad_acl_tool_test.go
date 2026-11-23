@@ -22,11 +22,12 @@ import (
 
 // The exclusive-writer check asks Nomad itself: a policy or role counts as a
 // grant when a short-lived token holding only it can read the ES namespace
-// (Nomad allows that for any capability there) or plan a job in it, however
-// its rules are written and whatever capability they give. Auth methods are
-// refused outright, because their binding rules can issue tokens with any
-// policy. check also refuses a second token with ES's or the observer's
-// policy, and either policy with rules other than the tool's.
+// (Nomad allows that for any job capability there) or plan a job in it,
+// however its rules are written and whatever job capability they give. Auth
+// methods are refused outright, because their binding rules can issue tokens
+// with any policy. check also refuses a second token with ES's or the
+// observer's policy, either policy with rules other than the tool's or with a
+// job ACL, and an ES or observer token with a role.
 func TestNomadACLToolAsksNomadWhichGrantsCanSubmit(t *testing.T) {
 	harness := startACLTestNomad(t, nomadHarnessOptions{})
 	aclDir := filepath.Dir(harness.esTokenFile)
@@ -208,6 +209,96 @@ func TestNomadACLToolAsksNomadWhichGrantsCanSubmit(t *testing.T) {
 		t.Fatal("the replaced wider ES token still works")
 	}
 
+	// A job ACL on ES's or the observer's policy gives the policy's
+	// capabilities to the workloads of the job it names (for ES's policy, a
+	// second writer in es-submit-v1). check refuses it and provision clears it.
+	jobACL := map[string]string{"Namespace": "es-submit-v1", "JobID": "es-jobacl-victim"}
+	policyJobACL := func(name string) any {
+		t.Helper()
+		var stored struct {
+			JobACL any `json:"JobACL"`
+		}
+		if err := json.Unmarshal([]byte(write(http.MethodGet, "/v1/acl/policy/"+name, nil)), &stored); err != nil {
+			t.Fatal(err)
+		}
+		return stored.JobACL
+	}
+	for _, policy := range []struct{ name, rules string }{
+		{"es-submit-v1", toolESPolicyRules},
+		{"es-observer-v1", toolObserverPolicyRules},
+	} {
+		write(http.MethodPost, "/v1/acl/policy/"+policy.name, map[string]any{"Name": policy.name, "Rules": policy.rules, "JobACL": jobACL})
+		if policyJobACL(policy.name) == nil {
+			t.Fatalf("nomad did not store the job ACL on the %s policy", policy.name)
+		}
+		if output, err := check(); err == nil || !strings.Contains(output, "the "+policy.name+" policy has a job ACL") {
+			t.Fatalf("check accepted a job ACL on the %s policy: %v output=%s", policy.name, err, output)
+		}
+		if output, err := provision(); err != nil {
+			t.Fatalf("provision refused while clearing the job ACL on the %s policy: %v output=%s", policy.name, err, output)
+		}
+		if got := policyJobACL(policy.name); got != nil {
+			t.Fatalf("provision left the job ACL on the %s policy: %v", policy.name, got)
+		}
+		if output, err := check(); err != nil {
+			t.Fatalf("check failed after provision cleared the job ACL on the %s policy: %v output=%s", policy.name, err, output)
+		}
+	}
+	// With a job ACL, the observer policy is not exempt from the probes either:
+	// a provision that does not write it judges it like any other grant.
+	write(http.MethodPost, "/v1/acl/policy/es-observer-v1", map[string]any{"Name": "es-observer-v1", "Rules": toolObserverPolicyRules, "JobACL": jobACL})
+	if output, err := runNomadACLTool(t, "provision", "--addr", harness.addr, "--management-token-file", management,
+		"--es-token-file", harness.esTokenFile, "--es-token-owner", owner); err == nil ||
+		!strings.Contains(output, "other ACL grants hold capabilities in es-submit-v1 (policy es-observer-v1)") {
+		t.Fatalf("provision without the observer exempted an observer policy with a job ACL: %v output=%s", err, output)
+	}
+	if output, err := provision(); err != nil || policyJobACL("es-observer-v1") != nil {
+		t.Fatalf("provision did not restore the observer policy: %v output=%s", err, output)
+	}
+
+	// A role on the ES or observer token widens it while its Policies still
+	// list only the designed policy. check refuses such a token, and provision
+	// replaces it (and deletes it in Nomad).
+	write(http.MethodPost, "/v1/acl/policy/es-acl-test-default-writer", map[string]string{"Name": "es-acl-test-default-writer",
+		"Rules": "namespace \"default\" {\n  policy = \"write\"\n}\n"})
+	var wideRole struct {
+		ID string `json:"ID"`
+	}
+	if err := json.Unmarshal([]byte(write(http.MethodPost, "/v1/acl/role", map[string]any{
+		"Name": "es-acl-test-wider", "Policies": []map[string]string{{"Name": "es-acl-test-default-writer"}},
+	})), &wideRole); err != nil || wideRole.ID == "" {
+		t.Fatalf("create a role: %v", err)
+	}
+	for _, held := range []struct{ name, file, label string }{
+		{"es-submit-v1", harness.esTokenFile, "the ES client token with only the es-submit-v1 policy and no roles"},
+		{"es-observer-v1", harness.observerTokenFile, "the observer client token with only the es-observer-v1 policy and no roles"},
+	} {
+		secret := readNomadTokenFile(t, held.file)
+		status, body := nomadRawRequest(t, http.MethodGet, harness.addr+"/v1/acl/token/self", secret, nil)
+		var self struct {
+			AccessorID string `json:"AccessorID"`
+		}
+		if status != http.StatusOK || json.Unmarshal([]byte(body), &self) != nil || self.AccessorID == "" {
+			t.Fatalf("read the %s token: HTTP %d", held.name, status)
+		}
+		write(http.MethodPost, "/v1/acl/token/"+self.AccessorID, map[string]any{"AccessorID": self.AccessorID, "Name": held.name,
+			"Type": "client", "Policies": []string{held.name}, "Roles": []map[string]string{{"ID": wideRole.ID}}})
+		if output, err := check(); err == nil || !strings.Contains(output, "does not hold "+held.label) {
+			t.Fatalf("check accepted the %s token with a role: %v output=%s", held.name, err, output)
+		}
+		output, err := provision()
+		if err != nil || !strings.Contains(output, "wrote a new "+held.name+" token") ||
+			!strings.Contains(output, "deleted the stale "+held.name+" token (accessor "+self.AccessorID+")") {
+			t.Fatalf("provision did not replace the %s token with a role: %v output=%s", held.name, err, output)
+		}
+		if readNomadTokenFile(t, held.file) == secret {
+			t.Fatalf("provision kept the %s token with a role", held.name)
+		}
+		if output, err := check(); err != nil {
+			t.Fatalf("check failed after provision replaced the %s token: %v output=%s", held.name, err, output)
+		}
+	}
+
 	var tokens []struct {
 		Name string `json:"Name"`
 	}
@@ -279,9 +370,9 @@ func (f *fakeNomadForACLCheck) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	case r.URL.Path == "/v1/acl/policy/anonymous":
 		w.WriteHeader(http.StatusNotFound)
 	case r.URL.Path == "/v1/acl/policy/es-submit-v1" && (token == testESNomadToken || token == fakeACLManagementToken):
-		writeJSON(map[string]any{"Name": "es-submit-v1", "Rules": toolESPolicyRules})
+		writeJSON(map[string]any{"Name": "es-submit-v1", "Rules": toolESPolicyRules, "JobACL": nil})
 	case r.URL.Path == "/v1/acl/policy/es-observer-v1" && (token == testObserverNomadToken || token == fakeACLManagementToken):
-		writeJSON(map[string]any{"Name": "es-observer-v1", "Rules": toolObserverPolicyRules})
+		writeJSON(map[string]any{"Name": "es-observer-v1", "Rules": toolObserverPolicyRules, "JobACL": nil})
 	case r.URL.Path == "/v1/namespace/es-submit-v1":
 		// Only the probe token for the default-readers policy asks.
 		w.WriteHeader(http.StatusForbidden)
@@ -427,7 +518,15 @@ func TestNomadACLToolCheckRefusesEachDeviation(t *testing.T) {
 		{"ES token can plan in default", plan(testESNomadToken, "default", http.StatusOK), "a plan with the ES token in namespace default returned HTTP 200"},
 		{"ES token can read nodes", answer("/v1/nodes", testESNomadToken, http.StatusOK, []any{}), "the ES token could read nodes"},
 		{"observer token has another policy", answer("/v1/acl/token/self", testObserverNomadToken, http.StatusOK,
-			map[string]any{"SecretID": testObserverNomadToken, "Type": "client", "Policies": []string{"es-submit-v1"}}), "does not hold the observer token"},
+			map[string]any{"SecretID": testObserverNomadToken, "Type": "client", "Policies": []string{"es-submit-v1"}}), "does not hold the observer client token"},
+		{"ES token has a role", answer("/v1/acl/token/self", testESNomadToken, http.StatusOK,
+			map[string]any{"SecretID": testESNomadToken, "Type": "client", "Policies": []string{"es-submit-v1"},
+				"Roles": []map[string]string{{"ID": "role-id", "Name": "wider"}}}), "does not hold the ES client token with only the es-submit-v1 policy and no roles"},
+		{"observer token has a role", answer("/v1/acl/token/self", testObserverNomadToken, http.StatusOK,
+			map[string]any{"SecretID": testObserverNomadToken, "Type": "client", "Policies": []string{"es-observer-v1"},
+				"Roles": []map[string]string{{"ID": "role-id", "Name": "wider"}}}), "does not hold the observer client token with only the es-observer-v1 policy and no roles"},
+		{"observer token file holds a management token", answer("/v1/acl/token/self", testObserverNomadToken, http.StatusOK,
+			map[string]any{"SecretID": testObserverNomadToken, "Type": "management", "Policies": []string{"es-observer-v1"}}), "does not hold the observer client token"},
 		{"observer token can plan", plan(testObserverNomadToken, "es-submit-v1", http.StatusOK), "the observer token could plan jobs in es-submit-v1"},
 		{"management token is not one", answer("/v1/acl/token/self", fakeACLManagementToken, http.StatusOK,
 			map[string]any{"SecretID": fakeACLManagementToken, "Type": "client"}), "does not hold a working Nomad management token"},
@@ -454,6 +553,21 @@ func TestNomadACLToolCheckRefusesEachDeviation(t *testing.T) {
 			map[string]any{"Name": "es-observer-v1", "Rules": toolObserverPolicyRules + "operator {\n  policy = \"write\"\n}\n"}),
 			"the es-observer-v1 policy's rules differ"},
 		{"ES policy missing", answer("/v1/acl/policy/es-submit-v1", testESNomadToken, http.StatusNotFound, nil), "the es-submit-v1 policy's rules differ"},
+		{"ES policy has a job ACL", answer("/v1/acl/policy/es-submit-v1", testESNomadToken, http.StatusOK,
+			map[string]any{"Name": "es-submit-v1", "Rules": toolESPolicyRules, "JobACL": map[string]string{"Namespace": "es-submit-v1", "JobID": "victim"}}),
+			"the es-submit-v1 policy has a job ACL"},
+		{"observer policy has a job ACL", answer("/v1/acl/policy/es-observer-v1", testObserverNomadToken, http.StatusOK,
+			map[string]any{"Name": "es-observer-v1", "Rules": toolObserverPolicyRules, "JobACL": map[string]string{"Namespace": "es-submit-v1", "JobID": "victim"}}),
+			"the es-observer-v1 policy has a job ACL"},
+		{"observer policy has a job ACL, as the management token reads it", answer("/v1/acl/policy/es-observer-v1", fakeACLManagementToken, http.StatusOK,
+			map[string]any{"Name": "es-observer-v1", "Rules": toolObserverPolicyRules, "JobACL": map[string]string{"Namespace": "es-submit-v1", "JobID": "victim"}}),
+			"the es-observer-v1 policy has a job ACL"},
+		{"another management token whose expiry is unreadable", answer("/v1/acl/tokens", fakeACLManagementToken, http.StatusOK, []map[string]any{
+			{"AccessorID": "management", "Type": "management"},
+			{"AccessorID": "es", "Type": "client", "Policies": []string{"es-submit-v1"}},
+			{"AccessorID": "observer", "Type": "client", "Policies": []string{"es-observer-v1"}},
+			{"AccessorID": "unreadable-expiry", "Type": "management", "ExpirationTime": "next Tuesday"},
+		}), "nomad has other management tokens (accessors unreadable-expiry)"},
 		{"second token with the ES policy", answer("/v1/acl/tokens", fakeACLManagementToken, http.StatusOK, []map[string]any{
 			{"AccessorID": "management", "Type": "management"},
 			{"AccessorID": "es", "Type": "client", "Policies": []string{"es-submit-v1"}},

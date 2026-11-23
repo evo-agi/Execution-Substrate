@@ -197,9 +197,11 @@ func TestNomadRuntimePostureCheckRefusesLoosenedDockerLimits(t *testing.T) {
 
 // On a real Nomad started with the supported limits, the posture check
 // passes, the node offers only the Docker driver, and ES's own token cannot
-// get a privileged container, an extra capability or another driver. What
-// the limits do not cover (bind mounts of host paths as container root,
-// audit INF-02) is recorded in the configuration docs.
+// get a privileged container, an extra capability or another driver. Those
+// three are all the limits refuse. Host bind mounts as container root, host
+// networking, host devices, security_opt (seccomp=unconfined) and, on Nomad
+// 2.0.0, the host PID namespace still run (audit INF-02); the configuration
+// docs record them.
 func TestRealNomadOffersOnlyTheLimitedDockerDriver(t *testing.T) {
 	harness := startACLTestNomad(t, nomadHarnessOptions{})
 	// startACLTestNomad waits only for a leader; the drivers are read from
