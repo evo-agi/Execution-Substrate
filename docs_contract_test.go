@@ -14166,6 +14166,7 @@ func operationalV2AssuranceOwnerRule(owner string) bool {
 		strings.Contains(owner, "The exported\nsurface of the package is a closed list") &&
 		strings.Contains(owner, "package is pinned by the SHA-256 hash of its bytes") &&
 		strings.Contains(owner, "Installing a view takes\n`Service.mu` and then the lock of the admission state") &&
+		strings.Contains(owner, "field of a production struct whose type holds one of its two handle types,\nfails the guard until it has an inventory, and a package variable that holds\na handle is refused") &&
 		!strings.Contains(owner, "operationalAdmissionSnapshot") &&
 		!strings.Contains(owner, "the latches and the\nconfirmation included") &&
 		strings.Contains(owner, "independently build the full scope-3 TLV and PB1") &&
@@ -14523,6 +14524,8 @@ func TestOperationalSubmitHandoffCurrentAdmissionV2RejectsUnsafeMutants(t *testi
 		{"MissingClosedSurface", "surface of the package is a closed list"},
 		{"MissingStateFilePin", "package is pinned by the SHA-256 hash of its bytes"},
 		{"MissingInstallLockOrder", "`Service.mu` and then the lock of the admission state"},
+		{"MissingHolderInventoryRule", "fails the guard until it has an inventory"},
+		{"MissingHandleVariableRule", "a package variable that holds\na handle is refused"},
 		{"MissingIndependentBindingOracle", "independently build the full scope-3 TLV and PB1"},
 		{"MissingParenthesizedAssignmentRule", "targets remain assignments"},
 		{"MissingParenthesizedReadWriteRule", "targets remain read-writes"},
@@ -14597,6 +14600,8 @@ func TestOperationalSubmitHandoffCurrentAdmissionV2RejectsUnsafeMutants(t *testi
 		{"SurfaceOpen", "surface of the package is a closed list", "surface of the package is open"},
 		{"StateFileHeldByNameOnly", "package is pinned by the SHA-256 hash of its bytes", "package is held by its name"},
 		{"InstallLockOrderReversed", "Installing a view takes\n`Service.mu` and then the lock of the admission state", "Installing a view takes\nthe lock of the admission state and then `Service.mu`"},
+		{"HoldersNeedNoInventory", "fails the guard until it has an inventory", "needs no inventory"},
+		{"HandleVariableAllowed", "a package variable that holds\na handle is refused", "a package variable may hold\na handle"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if strings.Count(owner, tc.from) != 1 {

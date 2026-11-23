@@ -1867,7 +1867,7 @@ func TestOperationalHandoffNoPublicStartupOrdinaryOrFixtureCaller(t *testing.T) 
 		}
 	})
 	// The inventories of the admission state package (validateState, which the
-	// validation above runs as well) over the real
+	// validation above runs as well; the subtest shows that too) over the real
 	// packages with one function added in memory. A call is all another
 	// package can do to the state, so each added call, of each exported
 	// function and method, has to fail the inventory of exactly that member.
@@ -1942,6 +1942,15 @@ func TestOperationalHandoffNoPublicStartupOrdinaryOrFixtureCaller(t *testing.T) 
 				if !probed[member.typ+"."+member.name] {
 					t.Fatalf("no added call of %s.%s was tried", member.typ, member.name)
 				}
+			}
+			// The validation of the real packages above runs these inventories:
+			// an added call fails it as well, and the first control does not.
+			if err := validate(overlaid("func zzGuardProbeState(s *Service) *Service { return s }")); err != nil {
+				t.Fatalf("%s: a control function changed an inventory of the whole validation: %v", view.target, err)
+			}
+			if err := validate(overlaid("func zzGuardProbeState(c admissionstate.Content) bool { _, ok := admissionstate.Digest(c); return ok }")); err == nil ||
+				!strings.HasPrefix(err.Error(), "admissionstate .Digest ") || !strings.Contains(err.Error(), "zzGuardProbeState") {
+				t.Fatalf("%s: a call of the admission state package was added and the whole validation answered: %v", view.target, err)
 			}
 			// Inside the package, a second place that makes a state or a view
 			// fails the construction inventory.

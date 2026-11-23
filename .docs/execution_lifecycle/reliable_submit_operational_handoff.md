@@ -612,7 +612,11 @@ state package the installed view/withdrawal/supersession/confirmation and
 the view identity/token/content, then the handoff owner links and proof
 hooks; mutex
 reference counts do not replace
-these access inventories. An occurrence inside a function literal is an access
+these access inventories. Which fields must have one is read from the types:
+every field of the two structs of the admission state package, and every
+field of a production struct whose type holds one of its two handle types,
+fails the guard until it has an inventory, and a package variable that holds
+a handle is refused. An occurrence inside a function literal is an access
 kind of its own and passes only where an inventory lists it: the two token
 reads of the qualification callback. Transparent parentheses enclosing a resolved field
 selector do not change its access kind: parenthesized reads, including right-hand

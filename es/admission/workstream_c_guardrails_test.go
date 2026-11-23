@@ -2879,6 +2879,27 @@ func TestExecutionSubstrateSynchronizedMutableStateReferenceInventoryIsExact(t *
 			t.Fatal(err)
 		}
 	}
+	// Which fields must have an inventory because of the admission state is
+	// read from the types, not from the lists above: every field of the two
+	// structs of the state package, and every field of a struct of any package
+	// whose type holds one of the two handle types. A list that loses such an
+	// entry fails here, and so does a new field of either kind.
+	inventoried := make(map[string]bool)
+	for _, inventory := range inventories {
+		inventoried[inventory.importPath+"."+inventory.typeName+"."+inventory.fieldName] = true
+	}
+	for _, field := range accessFields {
+		inventoried[field.importPath+"."+field.field.owner+"."+field.field.name] = true
+	}
+	validateHolders := func(packages []*typedProductionPackage) error {
+		fields, variables := admissionStateHolders(t, packages, statePath)
+		return validateAdmissionStateHolders(fields, variables, inventoried)
+	}
+	for _, view := range views {
+		if err := validateHolders(view.packages); err != nil {
+			t.Fatalf("%s: %v", view.target, err)
+		}
+	}
 	// The inventories above are run again over the real packages with probe
 	// functions added in memory to the file that declares each protected
 	// struct. Each probe takes a pointer to the struct and reaches its storage
@@ -3030,6 +3051,100 @@ func TestExecutionSubstrateSynchronizedMutableStateReferenceInventoryIsExact(t *
 			}
 			if err := validateGenerics(aliased, importPath); err == nil {
 				t.Fatalf("type parameter inventory of %s passed with generic probes in the package", importPath)
+			}
+		}
+	})
+	// The rule that every holder of admission state has an inventory, over the
+	// real packages with one declaration added in memory. A handle may sit
+	// behind a pointer, in a container, in a function type, in a struct without
+	// a name, behind a named type or an alias, or in a type argument.
+	t.Run("what holds admission state has an inventory", func(t *testing.T) {
+		view := views[len(views)-1]
+		const hostName = "es/admission/reliable_submit_operational_handoff.go"
+		const stateName = "es/admission/internal/admissionstate/state.go"
+		hostSource, hosted := requireTypedProductionPackage(t, view.packages, admissionPath).sources[hostName]
+		stateSource, stated := requireTypedProductionPackage(t, view.packages, statePath).sources[stateName]
+		if !hosted || !stated || !strings.Contains(hostSource, "\"execution-substrate/es/admission/internal/admissionstate\"") {
+			t.Fatalf("%s must be a file of %s that imports the admission state package, and %s a file of that package", hostName, admissionPath, stateName)
+		}
+		with := func(importPath string, fileName string, source string) []*typedProductionPackage {
+			packages := []*typedProductionPackage{view.metadata.typeCheckWithOverlay(t, importPath, map[string]string{fileName: source})}
+			for _, pkg := range view.packages {
+				if pkg.importPath != importPath {
+					packages = append(packages, pkg)
+				}
+			}
+			return packages
+		}
+		// What the real packages hold: the fields of the two structs, the
+		// handle of the Service and the view of a handoff owner, and no
+		// package variable.
+		fields, variables := admissionStateHolders(t, view.packages, statePath)
+		for _, name := range []string{statePath + ".state.withdrawn", statePath + ".view.content", admissionPath + ".Service.operational", admissionPath + ".handoffOwner.admission"} {
+			if index := sort.SearchStrings(fields, name); index == len(fields) || fields[index] != name {
+				t.Fatalf("%s is not among the holders of admission state: %q", name, fields)
+			}
+		}
+		if len(variables) != 0 {
+			t.Fatalf("package variables hold a handle: %q", variables)
+		}
+		for name, text := range map[string]string{
+			"plain data of the state package": "type zzGuardProbeHolder struct {\n\tcontent admissionstate.Content\n\towner *Service\n\tnext *zzGuardProbeHolder\n}",
+			"a variable with plain data":      "var zzGuardProbeKept []admissionstate.Policy",
+			"a named type that names itself":  "type zzGuardProbeList []zzGuardProbeList\ntype zzGuardProbeHolder struct{ kept zzGuardProbeList }",
+			"a named type of handles alone":   "type zzGuardProbeViews []admissionstate.View",
+		} {
+			if err := validateHolders(with(admissionPath, hostName, hostSource+"\n"+text+"\n")); err != nil {
+				t.Fatalf("control %q: %v", name, err)
+			}
+		}
+		for name, text := range map[string]string{
+			"a view":                         "type zzGuardProbeHolder struct{ kept admissionstate.View }",
+			"a state":                        "type zzGuardProbeHolder struct{ kept admissionstate.State }",
+			"an embedded state":              "type zzGuardProbeHolder struct{ admissionstate.State }",
+			"a pointer to a view":            "type zzGuardProbeHolder struct{ kept *admissionstate.View }",
+			"a slice of views":               "type zzGuardProbeHolder struct{ kept []admissionstate.View }",
+			"an array of states":             "type zzGuardProbeHolder struct{ kept [2]admissionstate.State }",
+			"a map to views":                 "type zzGuardProbeHolder struct{ kept map[string]admissionstate.View }",
+			"a map keyed by views":           "type zzGuardProbeHolder struct{ kept map[admissionstate.View]bool }",
+			"a channel of views":             "type zzGuardProbeHolder struct{ kept chan admissionstate.View }",
+			"a function that returns a view": "type zzGuardProbeHolder struct{ kept func() admissionstate.View }",
+			"a function that takes a state":  "type zzGuardProbeHolder struct{ kept func(admissionstate.State) }",
+			"a struct without a name":        "type zzGuardProbeHolder struct{ kept struct{ inner admissionstate.View } }",
+			"a named slice of views":         "type zzGuardProbeViews []admissionstate.View\ntype zzGuardProbeHolder struct{ kept zzGuardProbeViews }",
+			"an alias of the view":           "type zzGuardProbeAlias = admissionstate.View\ntype zzGuardProbeHolder struct{ kept zzGuardProbeAlias }",
+			"a type argument":                "type zzGuardProbeBox[T any] struct{ value T }\ntype zzGuardProbeHolder struct{ kept zzGuardProbeBox[admissionstate.View] }",
+			"the result of an inspection":    "type zzGuardProbeHolder struct{ kept admissionstate.Status }",
+		} {
+			err := validateHolders(with(admissionPath, hostName, hostSource+"\n"+text+"\n"))
+			if err == nil || !strings.Contains(err.Error(), admissionPath+".zzGuardProbeHolder.") || !strings.Contains(err.Error(), "has no inventory") {
+				t.Fatalf("a field that holds %s: %v", name, err)
+			}
+		}
+		for name, text := range map[string]string{
+			"a view":         "var zzGuardProbeKept admissionstate.View",
+			"a map of views": "var zzGuardProbeKept = map[string]admissionstate.View{}",
+		} {
+			err := validateHolders(with(admissionPath, hostName, hostSource+"\n"+text+"\n"))
+			if err == nil || !strings.Contains(err.Error(), "package variable "+admissionPath+".zzGuardProbeKept holds a handle") {
+				t.Fatalf("a package variable that holds %s: %v", name, err)
+			}
+		}
+		// Inside the state package: a struct beside the two changes nothing,
+		// and a new field of either of the two has no inventory.
+		if err := validateHolders(with(statePath, stateName, stateSource+"\ntype zzGuardProbeOther struct{ plain int }\n")); err != nil {
+			t.Fatalf("control: a third struct in the state package: %v", err)
+		}
+		for name, line := range map[string]string{
+			"state": "\twithdrawn  bool\n",
+			"view":  "\tproof        any\n",
+		} {
+			if strings.Count(stateSource, line) != 1 {
+				t.Fatalf("%s has %d lines %q", stateName, strings.Count(stateSource, line), line)
+			}
+			err := validateHolders(with(statePath, stateName, strings.Replace(stateSource, line, line+"\tzzGuardProbeAdded bool\n", 1)))
+			if err == nil || !strings.Contains(err.Error(), statePath+"."+name+".zzGuardProbeAdded has no inventory") {
+				t.Fatalf("a new field of %s: %v", name, err)
 			}
 		}
 	})
@@ -5716,6 +5831,120 @@ func requirePackageStructField(t *testing.T, pkg *typedProductionPackage, typeNa
 func validateProtectedFieldName(importPath string, typeName string, fieldName string) error {
 	if token.IsExported(fieldName) {
 		return fmt.Errorf("protected field %s.%s.%s is exported", importPath, typeName, fieldName)
+	}
+	return nil
+}
+
+// admissionStateHolders lists what holds admission state in the loaded
+// packages: every field of the two structs of the state package and, in every
+// other package, every field of a package-level struct whose type holds one of
+// the two handle types and every package variable whose type does. A field is
+// named "import path.type.field" and a variable "import path.name". The other
+// declarations of the state package are not listed: the one file of that
+// package is held by the hash of its content.
+func admissionStateHolders(t *testing.T, packages []*typedProductionPackage, statePath string) (fields []string, variables []string) {
+	t.Helper()
+	held := make(map[string]bool)
+	state := requireTypedProductionPackage(t, packages, statePath)
+	for _, typeName := range []string{"state", "view"} {
+		structure := requirePackageStruct(t, state, typeName)
+		for index := 0; index < structure.NumFields(); index++ {
+			held[statePath+"."+typeName+"."+structure.Field(index).Name()] = true
+		}
+	}
+	for _, pkg := range packages {
+		if pkg.importPath == statePath {
+			continue
+		}
+		scope := pkg.pkg.Scope()
+		for _, name := range scope.Names() {
+			switch object := scope.Lookup(name).(type) {
+			case *types.Var:
+				if holdsAdmissionStateHandle(object.Type(), statePath, make(map[*types.Named]bool)) {
+					variables = append(variables, pkg.importPath+"."+name)
+				}
+			case *types.TypeName:
+				structure, ok := object.Type().Underlying().(*types.Struct)
+				if !ok || object.IsAlias() {
+					continue
+				}
+				for index := 0; index < structure.NumFields(); index++ {
+					if field := structure.Field(index); holdsAdmissionStateHandle(field.Type(), statePath, make(map[*types.Named]bool)) {
+						held[pkg.importPath+"."+name+"."+field.Name()] = true
+					}
+				}
+			}
+		}
+	}
+	sort.Strings(variables)
+	return sortedStringSet(held), variables
+}
+
+// holdsAdmissionStateHandle reports whether a value of the type holds a handle
+// of the admission state: the type is one of the two handle types, or is built
+// from one by a pointer, a container, a function type, a struct without a
+// name, a type argument, an alias or a named type that is not a struct. A
+// named struct of the state package is looked into as well: the result of an
+// inspection carries a view. A named struct of another package is not: its
+// own fields are judged where it is declared. A value behind an interface type
+// is not seen.
+func holdsAdmissionStateHandle(typ types.Type, statePath string, seen map[*types.Named]bool) bool {
+	switch typ := types.Unalias(typ).(type) {
+	case *types.Named:
+		object := typ.Obj()
+		ofState := object.Pkg() != nil && object.Pkg().Path() == statePath
+		if ofState && (object.Name() == "State" || object.Name() == "View") {
+			return true
+		}
+		for index := 0; index < typ.TypeArgs().Len(); index++ {
+			if holdsAdmissionStateHandle(typ.TypeArgs().At(index), statePath, seen) {
+				return true
+			}
+		}
+		if _, isStruct := typ.Underlying().(*types.Struct); (isStruct && !ofState) || seen[typ] {
+			return false
+		}
+		seen[typ] = true
+		return holdsAdmissionStateHandle(typ.Underlying(), statePath, seen)
+	case *types.Pointer:
+		return holdsAdmissionStateHandle(typ.Elem(), statePath, seen)
+	case *types.Slice:
+		return holdsAdmissionStateHandle(typ.Elem(), statePath, seen)
+	case *types.Array:
+		return holdsAdmissionStateHandle(typ.Elem(), statePath, seen)
+	case *types.Chan:
+		return holdsAdmissionStateHandle(typ.Elem(), statePath, seen)
+	case *types.Map:
+		return holdsAdmissionStateHandle(typ.Key(), statePath, seen) || holdsAdmissionStateHandle(typ.Elem(), statePath, seen)
+	case *types.Struct:
+		for index := 0; index < typ.NumFields(); index++ {
+			if holdsAdmissionStateHandle(typ.Field(index).Type(), statePath, seen) {
+				return true
+			}
+		}
+	case *types.Signature:
+		return holdsAdmissionStateHandle(typ.Params(), statePath, seen) || holdsAdmissionStateHandle(typ.Results(), statePath, seen)
+	case *types.Tuple:
+		for index := 0; index < typ.Len(); index++ {
+			if holdsAdmissionStateHandle(typ.At(index).Type(), statePath, seen) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// validateAdmissionStateHolders requires an inventory for every field that
+// holds admission state or a handle of it. A package variable that holds a
+// handle is refused: it has no owning type whose accesses a list could name.
+func validateAdmissionStateHolders(fields []string, variables []string, inventoried map[string]bool) error {
+	if len(variables) != 0 {
+		return fmt.Errorf("package variable %s holds a handle of the admission state", variables[0])
+	}
+	for _, field := range fields {
+		if !inventoried[field] {
+			return fmt.Errorf("%s has no inventory: it holds admission state or a handle of it", field)
+		}
 	}
 	return nil
 }
