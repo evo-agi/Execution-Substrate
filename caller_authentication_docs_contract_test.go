@@ -49,6 +49,10 @@ func TestCallerAuthenticationContractIsDocumentedOnce(t *testing.T) {
 	assertContainsAll(t, "operator healthcheck TLS status identity rule", status,
 		"The identity passes only when the certificate carries exactly one URI SAN and that URI is `spiffe://execution.internal/operator/local`, because the caller authentication contract (`.docs/system_overview/contracts.md` section 3A) refuses a certificate with more than one URI SAN.",
 		"Expected operator/local identity mismatch, legacy-only identity, or more than one URI SAN: `identity_mismatch`.",
+		// Red-team N1 and re-audit O7-1: OpenSSL's printed SAN text is ambiguous.
+		"The collector reads the URI SAN entries from the certificate's own DER encoding, through the fixed `openssl x509 -outform DER` read of the public certificate, and never from OpenSSL's printed SAN text,",
+		"The host-local renew helper's `--status` mode carries the same decoder, and a test keeps the two copies identical.",
+		"(including the fixed DER encoding of the public operator certificate, from which the URI SAN entries are decoded)",
 	)
 
 	boundaries := compactDocSection(t, mustRead(t, ".docs/system_overview/boundaries.md"), "## 11. Cross-cutting packages that are not service boundaries", "## 12. Boundary leaks and pressure points")

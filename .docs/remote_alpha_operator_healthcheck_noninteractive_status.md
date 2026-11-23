@@ -374,8 +374,19 @@ carries exactly one URI SAN and that URI is
 authentication contract (`.docs/system_overview/contracts.md` section 3A)
 refuses a certificate with more than one URI SAN. A certificate with several
 URI SANs, including the same URI twice, fails with `identity_mismatch` even
-when one of them is the expected URI. Malformed identity output maps only to
-fixed classification labels and fixed failure classes.
+when one of them is the expected URI. The collector reads the URI SAN entries
+from the certificate's own DER encoding, through the fixed
+`openssl x509 -outform DER` read of the public certificate, and never from
+OpenSSL's printed SAN text, because that text cannot tell a URI that contains
+`, DNS:` apart from two entries, or a DNS name that contains `, URI:` apart
+from a URI SAN. The DER decoding accepts only one-byte tags and definite,
+minimal lengths, refuses trailing bytes, more than one extensions block, and a
+repeated extension, and refuses a URI SAN that is empty, longer than 256
+bytes, or holds a byte outside printable ASCII without spaces; such a
+certificate is `identity_malformed` and fails with `identity_mismatch`. The
+host-local renew helper's `--status` mode carries the same decoder, and a test
+keeps the two copies identical. Malformed identity output maps only to fixed
+classification labels and fixed failure classes.
 
 Every fixed child command runs with an explicit minimal environment including
 `LC_ALL=C`, `LANG=C`, `TZ=UTC`, fixed minimal `PATH`, fixed non-sensitive
@@ -420,9 +431,11 @@ Direct reads and direct fixed OpenSSL operations are preferred when permitted.
 If a fixed root-only read is required, the collector may attempt `sudo -n`
 only for a closed in-source set of immutable, non-mutating argv tuples over the
 three fixed ES-owned files. The set may contain only the minimum exact
-operations needed for fixed certificate metadata/public-key extraction, fixed
-private-key public-key extraction, fixed certificate verification against the
-fixed ES server client CA, fixed file SHA-256, and fixed stat metadata.
+operations needed for fixed certificate metadata/public-key extraction
+(including the fixed DER encoding of the public operator certificate, from
+which the URI SAN entries are decoded), fixed private-key public-key
+extraction, fixed certificate verification against the fixed ES server client
+CA, fixed file SHA-256, and fixed stat metadata.
 
 The bounded elevated command set uses absolute executables, fixed absolute data
 paths, no caller values, no shell, no glob, no command substitution, no

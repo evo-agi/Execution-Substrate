@@ -40,7 +40,6 @@ COMMAND_TERMINATION_GRACE_SECONDS = 1.0
 READ_CHUNK_SIZE = 16384
 
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
-URI_SAN_RE = re.compile(r"(?:^|[\s,])URI:([^,\s]+)")
 FORBIDDEN_PATTERNS = [
     re.compile(r"-----BEGIN"),
     re.compile(r"PRIVATE KEY"),
@@ -493,7 +492,7 @@ def sudo_allowlist(paths: Paths) -> set[tuple[str, ...]]:
         (OPENSSL, "x509", "-in", paths.cert, "-noout", "-fingerprint", "-sha256"),
         (OPENSSL, "x509", "-in", paths.cert, "-pubkey", "-noout"),
         (OPENSSL, "x509", "-in", paths.cert, "-noout", "-subject", "-issuer", "-nameopt", "RFC2253"),
-        (OPENSSL, "x509", "-in", paths.cert, "-noout", "-ext", "subjectAltName"),
+        (OPENSSL, "x509", "-in", paths.cert, "-outform", "DER"),
         (OPENSSL, "verify", "-CAfile", paths.ca, paths.cert),
         (OPENSSL, "pkey", "-in", paths.key, "-pubout", "-outform", "DER"),
         (SHA256SUM, paths.cert),
@@ -627,21 +626,121 @@ def rfc2253_component_values(name: str, key: str) -> list[str] | None:
     return values
 
 
-def extract_uri_sans(stdout: bytes) -> list[str] | None:
-    """Return every URI SAN in certificate order, duplicates included."""
-    try:
-        text = stdout.decode("utf-8", "strict")
-    except UnicodeDecodeError:
+# The same URI SAN decoder is in
+# scripts/internal/remote_alpha_operator_healthcheck_tls_renew.sh. Both tools
+# must stay self-contained (this collector is streamed over SSH and its hash is
+# pinned; the staged renew route copies only its two shell scripts), so each
+# carries the decoder, and
+# TestRemoteAlphaOperatorHealthcheckTLSURISANDecoderCopiesMatch fails unless the
+# lines between the BEGIN and END markers are identical in both files.
+# BEGIN uri-san-der-decoder
+SUBJECT_ALT_NAME_OID = bytes((0x55, 0x1D, 0x11))
+MAX_URI_SAN_LENGTH = 256
+
+
+def der_element(data: bytes, offset: int, end: int) -> tuple[int, int, int] | None:
+    """Return (tag, content start, content end) of the DER element at offset.
+
+    Only what certificates use is accepted: one-byte tags and definite,
+    minimally encoded lengths that stay inside data[:end].
+    """
+    if offset + 2 > end:
         return None
-    if contains_control(text):
+    tag = data[offset]
+    if tag & 0x1F == 0x1F:
+        return None
+    first = data[offset + 1]
+    position = offset + 2
+    if first < 0x80:
+        length = first
+    else:
+        count = first & 0x7F
+        if count == 0 or count > 4 or position + count > end or data[position] == 0:
+            return None
+        length = int.from_bytes(data[position : position + count], "big")
+        if length < 0x80:
+            return None
+        position += count
+    if length > end - position:
+        return None
+    return tag, position, position + length
+
+
+def der_children(data: bytes, start: int, end: int) -> list[tuple[int, int, int]] | None:
+    """Return the DER elements that exactly fill data[start:end]."""
+    children: list[tuple[int, int, int]] = []
+    offset = start
+    while offset < end:
+        element = der_element(data, offset, end)
+        if element is None:
+            return None
+        children.append(element)
+        offset = element[2]
+    return children
+
+
+def extract_uri_sans(der: bytes) -> list[str] | None:
+    """Return every URI SAN of a DER certificate in certificate order, duplicates included.
+
+    The certificate is decoded structurally. OpenSSL's printed SAN text cannot
+    tell a URI that contains ", DNS:" apart from two SAN entries, or a DNS name
+    that contains ", URI:" apart from a URI SAN. None means the certificate,
+    its extensions or a URI SAN is malformed; [] means it has no URI SAN.
+    """
+    certificate = der_element(der, 0, len(der))
+    if certificate is None or certificate[0] != 0x30 or certificate[2] != len(der):
+        return None
+    parts = der_children(der, certificate[1], certificate[2])
+    if parts is None or [part[0] for part in parts] != [0x30, 0x30, 0x03]:
+        return None
+    tbs = der_children(der, parts[0][1], parts[0][2])
+    if tbs is None:
+        return None
+    blocks = [item for item in tbs if item[0] == 0xA3]
+    if len(blocks) > 1:
+        return None
+    if not blocks:
+        return []
+    wrapper = der_children(der, blocks[0][1], blocks[0][2])
+    if wrapper is None or len(wrapper) != 1 or wrapper[0][0] != 0x30:
+        return None
+    extensions = der_children(der, wrapper[0][1], wrapper[0][2])
+    if extensions is None:
+        return None
+    seen: set[bytes] = set()
+    san_value: tuple[int, int, int] | None = None
+    for tag, start, end in extensions:
+        if tag != 0x30:
+            return None
+        fields = der_children(der, start, end)
+        if fields is None or len(fields) not in {2, 3} or fields[0][0] != 0x06 or fields[-1][0] != 0x04:
+            return None
+        if len(fields) == 3 and (fields[1][0] != 0x01 or fields[1][2] - fields[1][1] != 1):
+            return None
+        oid = der[fields[0][1] : fields[0][2]]
+        if oid in seen:
+            return None
+        seen.add(oid)
+        if oid == SUBJECT_ALT_NAME_OID:
+            san_value = fields[-1]
+    if san_value is None:
+        return []
+    names = der_element(der, san_value[1], san_value[2])
+    if names is None or names[0] != 0x30 or names[2] != san_value[2]:
+        return None
+    general_names = der_children(der, names[1], names[2])
+    if general_names is None:
         return None
     uris: list[str] = []
-    for match in URI_SAN_RE.finditer(text):
-        uri = match.group(1)
-        if not uri or len(uri) > 256 or any(ord(ch) < 33 or ord(ch) > 126 for ch in uri):
+    for tag, start, end in general_names:
+        if tag != 0x86:
+            continue
+        raw = der[start:end]
+        if not raw or len(raw) > MAX_URI_SAN_LENGTH or any(byte < 33 or byte > 126 for byte in raw):
             return None
-        uris.append(uri)
+        uris.append(raw.decode("ascii"))
     return uris
+# END uri-san-der-decoder
 
 
 def command_unavailable(result: CommandResult) -> bool:
@@ -722,7 +821,7 @@ def classify_identity(
     paths: Paths,
     runner: Callable[[tuple[str, ...], bytes | None], CommandResult],
 ) -> tuple[dict[str, object], bool, bool]:
-    result = run_fixed((OPENSSL, "x509", "-in", paths.cert, "-noout", "-ext", "subjectAltName"), paths=paths, runner=runner)
+    result = run_fixed((OPENSSL, "x509", "-in", paths.cert, "-outform", "DER"), paths=paths, runner=runner)
     if not result.ok:
         return (
             {

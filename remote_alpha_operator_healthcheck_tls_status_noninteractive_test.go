@@ -4,12 +4,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func p0vLocalRuntimePath() string {
@@ -718,6 +720,23 @@ print("ok")
 
 func TestRemoteAlphaOperatorHealthcheckTLSStatusNoninteractiveRemoteCollectorPureFunctions(t *testing.T) {
 	tmpDir := t.TempDir()
+	// Certificates made by Go's x509 package, so that the collector's DER
+	// decoding is checked against real certificates and not only against the
+	// hand-encoded ones below.
+	now := time.Now().UTC()
+	caPEM, caKey, _ := remoteAlphaGenerateCA(t, now.Add(-time.Hour), now.Add(24*time.Hour))
+	for name, uris := range map[string][]string{
+		"real-expected.der": {"spiffe://execution.internal/operator/local"},
+		"real-two-uris.der": {"spiffe://execution.internal/service/execution", "spiffe://execution.internal/operator/local"},
+		"real-no-uri.der":   nil,
+	} {
+		certPEM, _ := remoteAlphaGenerateOperatorClientLeaf(t, caPEM, caKey, uris, now.Add(-time.Hour), now.Add(time.Hour))
+		block, _ := pem.Decode(certPEM)
+		if block == nil {
+			t.Fatalf("decode %s", name)
+		}
+		writeFile(t, filepath.Join(tmpDir, name), block.Bytes, 0o600)
+	}
 	code := fmt.Sprintf(`
 import datetime as dt
 import hashlib
@@ -741,6 +760,88 @@ key.write_bytes(b"key-private-bytes-not-emitted")
 ca.write_bytes(b"ca-public-bytes")
 paths = m.Paths(str(cert), str(key), str(ca))
 
+# Hand-encoded DER certificates. The collector reads URI SANs only from the
+# certificate's DER encoding, so each mode is a certificate, not OpenSSL text.
+def tlv(tag, content):
+    n = len(content)
+    if n < 0x80:
+        length = bytes([n])
+    else:
+        body = n.to_bytes((n.bit_length() + 7) // 8, "big")
+        length = bytes([0x80 | len(body)]) + body
+    return bytes([tag]) + length + content
+
+DNS = 0x82
+URI = 0x86
+EXP = b"spiffe://execution.internal/operator/local"
+LEGACY = b"spiffe://execution.internal/operator"
+OTHER = b"spiffe://execution.internal/other"
+SAN_OID = tlv(0x06, bytes.fromhex("551d11"))
+KU_OID = tlv(0x06, bytes.fromhex("551d0f"))
+ALG = tlv(0x30, tlv(0x06, bytes.fromhex("2a864886f70d01010b")) + tlv(0x05, b""))
+NAME = tlv(0x30, tlv(0x31, tlv(0x30, tlv(0x06, bytes.fromhex("550403")) + tlv(0x0C, b"client.operator"))))
+
+def extension(oid, value, critical=None):
+    flag = b"" if critical is None else tlv(0x01, critical)
+    return tlv(0x30, oid + flag + tlv(0x04, value))
+
+def san(*names):
+    return extension(SAN_OID, tlv(0x30, b"".join(tlv(tag, value) for tag, value in names)))
+
+def certificate(*extensions, block=None, tail=b""):
+    if block is None:
+        block = tlv(0xA3, tlv(0x30, b"".join(extensions))) if extensions else b""
+    validity = tlv(0x30, tlv(0x17, b"260101000000Z") + tlv(0x17, b"270101000000Z"))
+    spki = tlv(0x30, ALG + tlv(0x03, b"\x00\x01"))
+    tbs = tlv(0x30, tlv(0xA0, tlv(0x02, b"\x02")) + tlv(0x02, b"\x01") + ALG + NAME + validity + NAME + spki + block)
+    return tlv(0x30, tbs + ALG + tlv(0x03, b"\x00sig") + tail)
+
+VALID = certificate(san((DNS, b"client.operator"), (URI, EXP)))
+DER = {
+    "valid": VALID,
+    "critical_san": certificate(extension(SAN_OID, tlv(0x30, tlv(URI, EXP)), critical=b"\xff")),
+    "dns_and_expected": certificate(san((DNS, b"client.operator"), (URI, EXP))),
+    "legacy": certificate(san((URI, LEGACY))),
+    "expected_suffix": certificate(san((URI, EXP + b"-evil"))),
+    "expected_prefix": certificate(san((URI, b"x" + EXP))),
+    "expected_substring": certificate(san((URI, b"https://example.invalid/" + EXP))),
+    "multiple_exact": certificate(san((DNS, b"client.operator"), (URI, OTHER), (URI, EXP))),
+    "multiple_without_exact": certificate(san((URI, OTHER), (URI, EXP + b"-evil"))),
+    "legacy_and_expected": certificate(san((DNS, b"client.operator"), (URI, LEGACY), (URI, EXP))),
+    "expected_twice": certificate(san((URI, EXP), (URI, EXP))),
+    # One URI SAN whose text holds a comma: OpenSSL prints it like the
+    # expected URI followed by more text, and ES refuses it.
+    "comma_in_uri": certificate(san((DNS, b"client.operator"), (URI, EXP + b",evil"))),
+    # A DNS name that reads like a URI SAN in OpenSSL's text, and no URI SAN.
+    "dns_text_only": certificate(san((DNS, b"client.operator, URI:" + EXP))),
+    "dns_text_and_other_uri": certificate(san((DNS, b"x, URI:" + EXP), (URI, EXP + b"-evil"))),
+    "no_san": certificate(extension(KU_OID, tlv(0x03, b"\x05\xa0"))),
+    "no_extensions": certificate(),
+    # Malformed URI SANs.
+    "malformed_san": certificate(san((URI, EXP + b"\x01"))),
+    "space_in_uri": certificate(san((DNS, b"client.operator"), (URI, EXP + b" evil"))),
+    "dns_inside_uri": certificate(san((DNS, b"client.operator"), (URI, EXP + b", DNS:x"))),
+    "non_ascii_uri": certificate(san((URI, EXP + b"\xc3\xa9"))),
+    "empty_uri": certificate(san((URI, b""))),
+    "long_uri": certificate(san((URI, EXP + b"/" + b"a" * 256))),
+    # Malformed certificates and extensions.
+    "trailing_byte": VALID + b"\x00",
+    "truncated": VALID[:-1],
+    "trailing_inside": certificate(san((URI, EXP)), tail=b"\x05\x00"),
+    "duplicate_san": certificate(san((URI, EXP)), san((URI, EXP))),
+    "duplicate_extension_block": certificate(block=tlv(0xA3, tlv(0x30, san((URI, EXP)))) * 2),
+    "extension_block_not_sequence": certificate(block=tlv(0xA3, tlv(0x31, san((URI, EXP))))),
+    "extension_extra_field": certificate(block=tlv(0xA3, tlv(0x30, tlv(0x30, SAN_OID + tlv(0x01, b"\xff") + tlv(0x04, tlv(0x30, tlv(URI, EXP))) + tlv(0x05, b""))))),
+    "critical_flag_long": certificate(extension(SAN_OID, tlv(0x30, tlv(URI, EXP)), critical=b"\x00\xff")),
+    "san_not_sequence": certificate(extension(SAN_OID, tlv(0x31, tlv(URI, EXP)))),
+    "san_trailing": certificate(extension(SAN_OID, tlv(0x30, tlv(URI, EXP)) + b"\x05\x00")),
+    "high_tag_name": certificate(extension(SAN_OID, tlv(0x30, b"\x9f\x1f\x01x" + tlv(URI, EXP)))),
+    "indefinite_length": b"\x30\x80" + VALID[2:] + b"\x00\x00",
+    "short_length_in_long_form": b"\x30\x81\x06" + tlv(0x30, b"") + tlv(0x30, b"") + tlv(0x03, b""),
+    "length_with_leading_zero": b"\x30\x82\x00\x06" + tlv(0x30, b"") + tlv(0x30, b"") + tlv(0x03, b""),
+    "two_part_certificate": tlv(0x30, tlv(0x30, b"") + tlv(0x30, b"")),
+}
+
 class Runner:
     def __init__(self, mode="valid"):
         self.mode = mode
@@ -757,6 +858,8 @@ class Runner:
             return m.CommandResult(1, b"", b"permission denied")
         return self.direct(tuple(args), input_bytes)
     def direct(self, args, input_bytes):
+        if args == (m.OPENSSL, "x509", "-in", str(cert), "-outform", "DER"):
+            return m.CommandResult(0, DER.get(self.mode, VALID))
         if args == (m.OPENSSL, "x509", "-in", str(cert), "-pubkey", "-noout"):
             return m.CommandResult(0, b"PUBLIC KEY")
         if args[:5] == (m.OPENSSL, "x509", "-in", str(cert), "-noout"):
@@ -778,28 +881,6 @@ class Runner:
                 if self.mode == "control_subject":
                     return m.CommandResult(0, b"subject=CN=client.operator\x01\nissuer=CN=operator-ca\n")
                 return m.CommandResult(0, b"subject=CN=client.operator\nissuer=CN=operator-ca\n")
-            if args[-1] == "subjectAltName":
-                if self.mode == "legacy":
-                    return m.CommandResult(0, b"URI:spiffe://execution.internal/operator\n")
-                if self.mode == "expected_suffix":
-                    return m.CommandResult(0, b"URI:spiffe://execution.internal/operator/local-evil\n")
-                if self.mode == "expected_prefix":
-                    return m.CommandResult(0, b"URI:xspiffe://execution.internal/operator/local\n")
-                if self.mode == "expected_substring":
-                    return m.CommandResult(0, b"URI:https://example.invalid/spiffe://execution.internal/operator/local\n")
-                if self.mode == "multiple_exact":
-                    return m.CommandResult(0, b"DNS:client.operator, URI:spiffe://execution.internal/other, URI:spiffe://execution.internal/operator/local\n")
-                if self.mode == "multiple_without_exact":
-                    return m.CommandResult(0, b"URI:spiffe://execution.internal/other, URI:spiffe://execution.internal/operator/local-evil\n")
-                if self.mode == "legacy_and_expected":
-                    return m.CommandResult(0, b"DNS:client.operator, URI:spiffe://execution.internal/operator, URI:spiffe://execution.internal/operator/local\n")
-                if self.mode == "expected_twice":
-                    return m.CommandResult(0, b"URI:spiffe://execution.internal/operator/local, URI:spiffe://execution.internal/operator/local\n")
-                if self.mode == "dns_and_expected":
-                    return m.CommandResult(0, b"DNS:client.operator, URI:spiffe://execution.internal/operator/local\n")
-                if self.mode == "malformed_san":
-                    return m.CommandResult(0, b"URI:spiffe://execution.internal/operator/local\x01\n")
-                return m.CommandResult(0, b"URI:spiffe://execution.internal/operator/local\n")
         if args[:3] == (m.OPENSSL, "pkey", "-pubin"):
             return m.CommandResult(0, b"cert-public-key-der")
         if args[:3] == (m.OPENSSL, "pkey", "-in"):
@@ -859,6 +940,49 @@ for mode in ["expected_suffix", "expected_prefix", "expected_substring", "multip
     assert payload["result"]["failure_class"] == "identity_mismatch", (mode, payload)
     assert payload["identity"]["matches_expected"] is False, (mode, payload)
     assert "operator/local-evil" not in json.dumps(payload), payload
+
+# The URI SANs come from the certificate's DER structure, not from OpenSSL's
+# printed SAN text, which reads these certificates like the expected identity
+# although ES refuses them (red-team N1, re-audit O7-1).
+for mode in ["comma_in_uri", "dns_text_only", "dns_text_and_other_uri", "no_san", "no_extensions"]:
+    payload, _ = collect(mode)
+    assert payload["result"]["ok"] is False, (mode, payload)
+    assert payload["result"]["failure_class"] == "identity_mismatch", (mode, payload)
+    assert payload["identity"]["status"] == "fail", (mode, payload)
+    assert payload["identity"]["matches_expected"] is False, (mode, payload)
+    assert payload["identity"]["classification"] == "identity_mismatch", (mode, payload)
+    assert payload["identity"]["failure_class"] == "identity_mismatch", (mode, payload)
+for mode in [
+    "malformed_san", "space_in_uri", "dns_inside_uri", "non_ascii_uri", "empty_uri", "long_uri",
+    "trailing_byte", "truncated", "trailing_inside", "duplicate_san", "duplicate_extension_block",
+    "extension_block_not_sequence", "extension_extra_field", "critical_flag_long", "san_not_sequence",
+    "san_trailing", "high_tag_name", "indefinite_length", "short_length_in_long_form",
+    "length_with_leading_zero", "two_part_certificate",
+]:
+    assert m.extract_uri_sans(DER[mode]) is None, mode
+    payload, _ = collect(mode)
+    assert payload["result"]["ok"] is False, (mode, payload)
+    assert payload["result"]["failure_class"] == "identity_mismatch", (mode, payload)
+    assert payload["identity"]["status"] == "fail", (mode, payload)
+    assert payload["identity"]["matches_expected"] is False, (mode, payload)
+    assert payload["identity"]["classification"] == "identity_malformed", (mode, payload)
+payload, runner = collect("critical_san")
+assert payload["result"]["ok"] is True, payload
+assert payload["identity"]["matches_expected"] is True, payload
+der_argv = (m.OPENSSL, "x509", "-in", str(cert), "-outform", "DER")
+assert der_argv in runner.calls, runner.calls
+assert not any("subjectAltName" in call for call in runner.calls), runner.calls
+assert der_argv in m.sudo_allowlist(paths), m.sudo_allowlist(paths)
+assert not any("subjectAltName" in argv for argv in m.sudo_allowlist(paths)), m.sudo_allowlist(paths)
+assert m.extract_uri_sans(DER["valid"]) == [EXP.decode()]
+assert m.extract_uri_sans(DER["expected_twice"]) == [EXP.decode(), EXP.decode()]
+assert m.extract_uri_sans(DER["multiple_exact"]) == [OTHER.decode(), EXP.decode()]
+assert m.extract_uri_sans(DER["comma_in_uri"]) == [EXP.decode() + ",evil"]
+assert m.extract_uri_sans(DER["dns_text_only"]) == []
+assert m.extract_uri_sans(DER["no_extensions"]) == []
+assert m.extract_uri_sans((tmp / "real-expected.der").read_bytes()) == ["spiffe://execution.internal/operator/local"]
+assert m.extract_uri_sans((tmp / "real-two-uris.der").read_bytes()) == ["spiffe://execution.internal/service/execution", "spiffe://execution.internal/operator/local"]
+assert m.extract_uri_sans((tmp / "real-no-uri.der").read_bytes()) == []
 
 for mode in ["subject_spoof", "escaped_subject"]:
     payload, _ = collect(mode)
@@ -1768,5 +1892,53 @@ func runIsolatedPythonSnippet(t *testing.T, code string) {
 	}
 	if strings.TrimSpace(string(output)) != "ok" {
 		t.Fatalf("unexpected isolated python snippet output: %s", output)
+	}
+}
+
+// remoteAlphaURISANDecoderBlock returns the lines strictly between the one
+// "# BEGIN uri-san-der-decoder" line and the one "# END uri-san-der-decoder"
+// line of a file.
+func remoteAlphaURISANDecoderBlock(t *testing.T, path string) string {
+	t.Helper()
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	lines := strings.Split(string(content), "\n")
+	begin, end := -1, -1
+	for i, line := range lines {
+		switch line {
+		case "# BEGIN uri-san-der-decoder":
+			if begin != -1 {
+				t.Fatalf("%s has more than one BEGIN uri-san-der-decoder line", path)
+			}
+			begin = i
+		case "# END uri-san-der-decoder":
+			if end != -1 {
+				t.Fatalf("%s has more than one END uri-san-der-decoder line", path)
+			}
+			end = i
+		}
+	}
+	if begin == -1 || end == -1 || end <= begin+1 {
+		t.Fatalf("%s has no uri-san-der-decoder block (begin=%d end=%d)", path, begin, end)
+	}
+	return strings.Join(lines[begin+1:end], "\n")
+}
+
+// The collector is streamed over SSH with a pinned hash and the renew helper
+// is staged as exactly two shell scripts, so each carries the URI SAN decoder.
+// The two copies must be the same code, so that both operator status tools
+// judge the operator identity the same way.
+func TestRemoteAlphaOperatorHealthcheckTLSURISANDecoderCopiesMatch(t *testing.T) {
+	collector := remoteAlphaURISANDecoderBlock(t, p0vRemoteCollectorPath())
+	renew := remoteAlphaURISANDecoderBlock(t, filepath.Join(executionSubstrateRepoRoot, "scripts", "internal", "remote_alpha_operator_healthcheck_tls_renew.sh"))
+	if collector != renew {
+		t.Fatalf("the URI SAN decoder in the renew helper differs from the collector's; copy the collector's block between the markers into the renew helper unchanged")
+	}
+	for _, want := range []string{"def der_element(", "def der_children(", "def extract_uri_sans(", "SUBJECT_ALT_NAME_OID = bytes((0x55, 0x1D, 0x11))", "MAX_URI_SAN_LENGTH = 256"} {
+		if !strings.Contains(collector, want) {
+			t.Fatalf("the shared URI SAN decoder block lacks %q", want)
+		}
 	}
 }

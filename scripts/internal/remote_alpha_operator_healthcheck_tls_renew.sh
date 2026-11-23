@@ -144,6 +144,8 @@ remote_alpha_operator_healthcheck_tls_collect_status() {
     "${REMOTE_ALPHA_HEALTHCHECK_SERVER_CA_PATH}" \
     "${REMOTE_ALPHA_EXPECTED_OPERATOR_SPIFFE_URI}" \
     "${REMOTE_ALPHA_LEGACY_OPERATOR_SPIFFE_URI}" <<'PY'
+from __future__ import annotations
+
 import datetime as dt
 import hashlib
 import json
@@ -262,6 +264,131 @@ def key_pubkey_digest(key_path):
     if der.returncode != 0:
         return "", safe_error(text_output(der))
     return hashlib.sha256(der.stdout).hexdigest(), ""
+
+
+# The same URI SAN decoder is in
+# scripts/internal/remote_alpha_operator_healthcheck_tls_status_noninteractive_remote.py.
+# Both tools must stay self-contained (the collector is streamed over SSH and
+# its hash is pinned; the staged renew route copies only its two shell
+# scripts), so each carries the decoder, and
+# TestRemoteAlphaOperatorHealthcheckTLSURISANDecoderCopiesMatch fails unless the
+# lines between the BEGIN and END markers are identical in both files.
+# BEGIN uri-san-der-decoder
+SUBJECT_ALT_NAME_OID = bytes((0x55, 0x1D, 0x11))
+MAX_URI_SAN_LENGTH = 256
+
+
+def der_element(data: bytes, offset: int, end: int) -> tuple[int, int, int] | None:
+    """Return (tag, content start, content end) of the DER element at offset.
+
+    Only what certificates use is accepted: one-byte tags and definite,
+    minimally encoded lengths that stay inside data[:end].
+    """
+    if offset + 2 > end:
+        return None
+    tag = data[offset]
+    if tag & 0x1F == 0x1F:
+        return None
+    first = data[offset + 1]
+    position = offset + 2
+    if first < 0x80:
+        length = first
+    else:
+        count = first & 0x7F
+        if count == 0 or count > 4 or position + count > end or data[position] == 0:
+            return None
+        length = int.from_bytes(data[position : position + count], "big")
+        if length < 0x80:
+            return None
+        position += count
+    if length > end - position:
+        return None
+    return tag, position, position + length
+
+
+def der_children(data: bytes, start: int, end: int) -> list[tuple[int, int, int]] | None:
+    """Return the DER elements that exactly fill data[start:end]."""
+    children: list[tuple[int, int, int]] = []
+    offset = start
+    while offset < end:
+        element = der_element(data, offset, end)
+        if element is None:
+            return None
+        children.append(element)
+        offset = element[2]
+    return children
+
+
+def extract_uri_sans(der: bytes) -> list[str] | None:
+    """Return every URI SAN of a DER certificate in certificate order, duplicates included.
+
+    The certificate is decoded structurally. OpenSSL's printed SAN text cannot
+    tell a URI that contains ", DNS:" apart from two SAN entries, or a DNS name
+    that contains ", URI:" apart from a URI SAN. None means the certificate,
+    its extensions or a URI SAN is malformed; [] means it has no URI SAN.
+    """
+    certificate = der_element(der, 0, len(der))
+    if certificate is None or certificate[0] != 0x30 or certificate[2] != len(der):
+        return None
+    parts = der_children(der, certificate[1], certificate[2])
+    if parts is None or [part[0] for part in parts] != [0x30, 0x30, 0x03]:
+        return None
+    tbs = der_children(der, parts[0][1], parts[0][2])
+    if tbs is None:
+        return None
+    blocks = [item for item in tbs if item[0] == 0xA3]
+    if len(blocks) > 1:
+        return None
+    if not blocks:
+        return []
+    wrapper = der_children(der, blocks[0][1], blocks[0][2])
+    if wrapper is None or len(wrapper) != 1 or wrapper[0][0] != 0x30:
+        return None
+    extensions = der_children(der, wrapper[0][1], wrapper[0][2])
+    if extensions is None:
+        return None
+    seen: set[bytes] = set()
+    san_value: tuple[int, int, int] | None = None
+    for tag, start, end in extensions:
+        if tag != 0x30:
+            return None
+        fields = der_children(der, start, end)
+        if fields is None or len(fields) not in {2, 3} or fields[0][0] != 0x06 or fields[-1][0] != 0x04:
+            return None
+        if len(fields) == 3 and (fields[1][0] != 0x01 or fields[1][2] - fields[1][1] != 1):
+            return None
+        oid = der[fields[0][1] : fields[0][2]]
+        if oid in seen:
+            return None
+        seen.add(oid)
+        if oid == SUBJECT_ALT_NAME_OID:
+            san_value = fields[-1]
+    if san_value is None:
+        return []
+    names = der_element(der, san_value[1], san_value[2])
+    if names is None or names[0] != 0x30 or names[2] != san_value[2]:
+        return None
+    general_names = der_children(der, names[1], names[2])
+    if general_names is None:
+        return None
+    uris: list[str] = []
+    for tag, start, end in general_names:
+        if tag != 0x86:
+            continue
+        raw = der[start:end]
+        if not raw or len(raw) > MAX_URI_SAN_LENGTH or any(byte < 33 or byte > 126 for byte in raw):
+            return None
+        uris.append(raw.decode("ascii"))
+    return uris
+# END uri-san-der-decoder
+
+
+def cert_uri_sans(cert_path):
+    """Return the certificate's URI SANs from its DER structure, or None."""
+    proc = run(["openssl", "x509", "-in", cert_path, "-outform", "DER"])
+    if proc.returncode != 0:
+        return None
+    return extract_uri_sans(proc.stdout)
 
 
 def cert_ext(cert_path, name):
@@ -393,20 +520,25 @@ if not es_client_ca:
 
 cert = cert_record(operator_cert_path)
 key_pair = key_pair_record(operator_cert_path, operator_key_path)
-# Exact URI SAN entries, in certificate order, duplicates included. ES refuses
-# a certificate with more than one URI SAN (caller authentication contract,
-# contracts.md section 3A), so the expected identity must be the only one.
-uri_sans = re.findall(r"(?:^|[\s,])URI:([^,\s]+)", cert.get("subject_alt_name", ""))
+# Exact URI SAN entries from the certificate's DER structure, in certificate
+# order, duplicates included; the printed SAN text above is for reading only,
+# because it cannot tell a URI that contains ", DNS:" or a DNS name that
+# contains ", URI:" apart from separate entries. ES refuses a certificate with
+# more than one URI SAN (caller authentication contract, contracts.md section
+# 3A), so the expected identity must be the only one.
+uri_sans = cert_uri_sans(operator_cert_path) if cert.get("exists") else None
 identity = {
     "expected_uri": expected_spiffe_uri,
     "legacy_uri": legacy_spiffe_uri,
     "subject_alt_name": cert.get("subject_alt_name", ""),
-    "uri_san_count": len(uri_sans),
+    "uri_san_count": len(uri_sans) if uri_sans is not None else None,
     "matches_current_allowlist": uri_sans == [expected_spiffe_uri],
-    "legacy_operator_uri_present": legacy_spiffe_uri in uri_sans,
+    "legacy_operator_uri_present": uri_sans is not None and legacy_spiffe_uri in uri_sans,
 }
 identity["status"] = "pass" if identity["matches_current_allowlist"] else "fail"
-if identity["legacy_operator_uri_present"] and not identity["matches_current_allowlist"]:
+if uri_sans is None:
+    identity["classification"] = "operator_identity_malformed"
+elif identity["legacy_operator_uri_present"] and not identity["matches_current_allowlist"]:
     identity["classification"] = "legacy_operator_identity_requires_operator_local_renewal"
 else:
     identity["classification"] = "current_operator_local_identity" if identity["matches_current_allowlist"] else "operator_identity_mismatch"

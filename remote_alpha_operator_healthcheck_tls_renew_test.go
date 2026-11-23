@@ -5,6 +5,7 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/asn1"
 	"encoding/pem"
 	"fmt"
 	"math/big"
@@ -12,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -34,6 +36,15 @@ func remoteAlphaOperatorHealthcheckTLSScriptPath() string {
 }
 
 func setupRemoteAlphaOperatorHealthcheckTLSFixture(t *testing.T, expired bool, spiffeURIs ...string) *remoteAlphaOperatorHealthcheckTLSFixture {
+	t.Helper()
+	return setupRemoteAlphaOperatorHealthcheckTLSFixtureWithLeaf(t, expired, func(caPEM []byte, caKey *rsa.PrivateKey, notBefore, notAfter time.Time) ([]byte, []byte) {
+		return remoteAlphaGenerateOperatorClientLeaf(t, caPEM, caKey, spiffeURIs, notBefore, notAfter)
+	})
+}
+
+// setupRemoteAlphaOperatorHealthcheckTLSFixtureWithLeaf is the fixture with
+// an operator client leaf made by leaf, signed by the fixture CA.
+func setupRemoteAlphaOperatorHealthcheckTLSFixtureWithLeaf(t *testing.T, expired bool, leaf func(caPEM []byte, caKey *rsa.PrivateKey, notBefore, notAfter time.Time) ([]byte, []byte)) *remoteAlphaOperatorHealthcheckTLSFixture {
 	t.Helper()
 	now := time.Now().UTC()
 	notBefore := now.Add(-48 * time.Hour)
@@ -67,7 +78,7 @@ func setupRemoteAlphaOperatorHealthcheckTLSFixture(t *testing.T, expired bool, s
 	writeFile(t, filepath.Join(fixture.tlsDir, "server-client-ca.pem"), caCertPEM, 0o640)
 	writeFile(t, filepath.Join(fixture.tlsDir, "combined-service-ca-bundle.pem"), caCertPEM, 0o640)
 
-	cert, key := remoteAlphaGenerateOperatorClientLeaf(t, caCertPEM, caKey, spiffeURIs, notBefore, notAfter)
+	cert, key := leaf(caCertPEM, caKey, notBefore, notAfter)
 	writeFile(t, filepath.Join(fixture.tlsDir, "operator-client-cert.pem"), cert, 0o644)
 	writeFile(t, filepath.Join(fixture.tlsDir, "operator-client-key.pem"), key, 0o600)
 
@@ -103,6 +114,33 @@ func runRemoteAlphaOperatorHealthcheckTLSRenew(t *testing.T, env []string, args 
 	t.Helper()
 	cmd := exec.Command("/bin/bash", append([]string{remoteAlphaOperatorHealthcheckTLSScriptPath()}, args...)...)
 	cmd.Dir = executionSubstrateRepoRoot
+	cmd.Env = env
+	output, err := cmd.CombinedOutput()
+	return string(output), err
+}
+
+// runStagedRemoteAlphaOperatorHealthcheckTLSRenew runs the helper the way
+// the Mac-side operator-healthcheck-tls routes run it on the remote host: from
+// a directory that holds only the two staged shell scripts, in their
+// scripts/ and scripts/internal/ layout, and nothing else from the repository.
+func runStagedRemoteAlphaOperatorHealthcheckTLSRenew(t *testing.T, env []string, args ...string) (string, error) {
+	t.Helper()
+	stage := t.TempDir()
+	for _, rel := range []string{
+		filepath.Join("scripts", "remote_alpha_operator_healthcheck_tls_renew.sh"),
+		filepath.Join("scripts", "internal", "remote_alpha_operator_healthcheck_tls_renew.sh"),
+	} {
+		content, err := os.ReadFile(filepath.Join(executionSubstrateRepoRoot, rel))
+		if err != nil {
+			t.Fatalf("read %s: %v", rel, err)
+		}
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(stage, rel)), 0o755); err != nil {
+			t.Fatalf("mkdir for %s: %v", rel, err)
+		}
+		writeFile(t, filepath.Join(stage, rel), content, 0o755)
+	}
+	cmd := exec.Command("/bin/bash", append([]string{filepath.Join(stage, "scripts", "remote_alpha_operator_healthcheck_tls_renew.sh")}, args...)...)
+	cmd.Dir = stage
 	cmd.Env = env
 	output, err := cmd.CombinedOutput()
 	return string(output), err
@@ -200,6 +238,84 @@ func TestRemoteAlphaOperatorHealthcheckTLSStatusRequiresExactlyTheExpectedURISAN
 	}
 }
 
+// The status reads the URI SANs from the certificate's DER structure. OpenSSL
+// prints the SAN of each of these certificates with the text
+// "URI:spiffe://execution.internal/operator/local", as if that were the only
+// URI SAN, and ES refuses each of them (red-team N1, re-audit O7-1). The
+// helper runs from the staged layout, so the decoding needs nothing beyond the
+// two shell scripts the Mac-side route stages.
+func TestRemoteAlphaOperatorHealthcheckTLSStatusDecodesURISANsFromTheCertificate(t *testing.T) {
+	const expected = "spiffe://execution.internal/operator/local"
+	dns := func(name string) asn1.RawValue {
+		return asn1.RawValue{Class: asn1.ClassContextSpecific, Tag: 2, Bytes: []byte(name)}
+	}
+	uri := func(value string) asn1.RawValue {
+		return asn1.RawValue{Class: asn1.ClassContextSpecific, Tag: 6, Bytes: []byte(value)}
+	}
+	for _, tc := range []struct {
+		name           string
+		names          []asn1.RawValue
+		count          any
+		classification string
+	}{
+		{name: "comma inside the URI", names: []asn1.RawValue{dns("client.operator"), uri(expected + ",evil")}, count: float64(1), classification: "operator_identity_mismatch"},
+		{name: "space inside the URI", names: []asn1.RawValue{dns("client.operator"), uri(expected + " evil")}, count: nil, classification: "operator_identity_malformed"},
+		{name: "DNS entry text inside the URI", names: []asn1.RawValue{dns("client.operator"), uri(expected + ", DNS:x")}, count: nil, classification: "operator_identity_malformed"},
+		{name: "URI text inside a DNS name", names: []asn1.RawValue{dns("client.operator, URI:" + expected)}, count: float64(0), classification: "operator_identity_mismatch"},
+		{name: "URI text inside a DNS name and another URI", names: []asn1.RawValue{dns("x, URI:" + expected), uri(expected + "-evil")}, count: float64(1), classification: "operator_identity_mismatch"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rawSAN, err := asn1.Marshal(tc.names)
+			if err != nil {
+				t.Fatalf("encode subjectAltName: %v", err)
+			}
+			fixture := setupRemoteAlphaOperatorHealthcheckTLSFixtureWithLeaf(t, false, func(caPEM []byte, caKey *rsa.PrivateKey, notBefore, notAfter time.Time) ([]byte, []byte) {
+				return remoteAlphaGenerateOperatorClientLeafWithSAN(t, caPEM, caKey, nil, rawSAN, notBefore, notAfter)
+			})
+			output, err := runStagedRemoteAlphaOperatorHealthcheckTLSRenew(t, fixture.helperEnv("REMOTE_ALPHA_TEST_SKIP_OPERATOR_HEALTHCHECK_TLS_PROBES=1"), "--status", "--summary-path", fixture.summary)
+			if err == nil {
+				t.Fatalf("expected the status to fail, output=%s", output)
+			}
+			summary := readJSONMap(t, fixture.summary)
+			identity, ok := summary["identity"].(map[string]any)
+			if !ok {
+				t.Fatalf("summary has no identity object: %#v", summary)
+			}
+			if text, _ := identity["subject_alt_name"].(string); !strings.Contains(text, "URI:"+expected) {
+				t.Fatalf("OpenSSL SAN text %q does not show the expected URI; the case does not test what it claims", text)
+			}
+			if _, ok := identity["uri_san_count"]; !ok {
+				t.Fatalf("identity has no uri_san_count: %#v", identity)
+			}
+			assertJSONPathEquals(t, summary, "result.status", "fail")
+			assertJSONPathEquals(t, summary, "identity.status", "fail")
+			assertJSONPathEquals(t, summary, "identity.matches_current_allowlist", false)
+			assertJSONPathEquals(t, summary, "identity.uri_san_count", tc.count)
+			assertJSONPathEquals(t, summary, "identity.legacy_operator_uri_present", false)
+			assertJSONPathEquals(t, summary, "identity.classification", tc.classification)
+			assertContainsAll(t, "operator certificate URI SAN blocker", readIfExists(fixture.summary), "operator certificate must carry exactly one URI SAN, spiffe://execution.internal/operator/local")
+			assertFileContainsNoSecrets(t, fixture.summary)
+		})
+	}
+}
+
+// The staged helper alone passes a certificate whose only URI SAN is the
+// expected identity, beside a DNS name, as every operator certificate the repo
+// issues carries.
+func TestRemoteAlphaOperatorHealthcheckTLSStagedStatusPassesTheExpectedIdentity(t *testing.T) {
+	fixture := setupRemoteAlphaOperatorHealthcheckTLSFixture(t, false, "spiffe://execution.internal/operator/local")
+	output, err := runStagedRemoteAlphaOperatorHealthcheckTLSRenew(t, fixture.helperEnv("REMOTE_ALPHA_TEST_SKIP_OPERATOR_HEALTHCHECK_TLS_PROBES=1"), "--status", "--summary-path", fixture.summary)
+	if err != nil {
+		t.Fatalf("expected the staged status to pass: %v\n%s\nsummary=%s", err, output, readIfExists(fixture.summary))
+	}
+	summary := readJSONMap(t, fixture.summary)
+	assertJSONPathEquals(t, summary, "result.status", "pass")
+	assertJSONPathEquals(t, summary, "identity.status", "pass")
+	assertJSONPathEquals(t, summary, "identity.uri_san_count", float64(1))
+	assertJSONPathEquals(t, summary, "identity.classification", "current_operator_local_identity")
+	assertFileContainsNoSecrets(t, fixture.summary)
+}
+
 func TestRemoteAlphaOperatorHealthcheckTLSRenewHelperRejectsSecretLikeArgs(t *testing.T) {
 	fixture := setupRemoteAlphaOperatorHealthcheckTLSFixture(t, false, "spiffe://execution.internal/operator/local")
 	output, err := runRemoteAlphaOperatorHealthcheckTLSRenew(t, fixture.helperEnv(), "--private-key", "dummy")
@@ -276,6 +392,14 @@ func TestRemoteAlphaOperatorHealthcheckTLSRenewDoesNotUseRetainedRuntimeCAKeyTop
 
 func remoteAlphaGenerateOperatorClientLeaf(t *testing.T, caPEM []byte, caKey *rsa.PrivateKey, spiffeURIs []string, notBefore, notAfter time.Time) ([]byte, []byte) {
 	t.Helper()
+	return remoteAlphaGenerateOperatorClientLeafWithSAN(t, caPEM, caKey, spiffeURIs, nil, notBefore, notAfter)
+}
+
+// remoteAlphaGenerateOperatorClientLeafWithSAN makes the operator client leaf.
+// When rawSAN is set, it is the leaf's subjectAltName extension value as is,
+// in place of the DNS name and spiffeURIs.
+func remoteAlphaGenerateOperatorClientLeafWithSAN(t *testing.T, caPEM []byte, caKey *rsa.PrivateKey, spiffeURIs []string, rawSAN []byte, notBefore, notAfter time.Time) ([]byte, []byte) {
+	t.Helper()
 	block, _ := pem.Decode(caPEM)
 	if block == nil {
 		t.Fatalf("decode CA PEM")
@@ -306,6 +430,11 @@ func remoteAlphaGenerateOperatorClientLeaf(t *testing.T, caPEM []byte, caKey *rs
 		BasicConstraintsValid: true,
 		DNSNames:              []string{"client.operator"},
 		URIs:                  parsedURIs,
+	}
+	if rawSAN != nil {
+		template.DNSNames = nil
+		template.URIs = nil
+		template.ExtraExtensions = []pkix.Extension{{Id: asn1.ObjectIdentifier{2, 5, 29, 17}, Value: rawSAN}}
 	}
 	der, err := x509.CreateCertificate(rand.Reader, template, caCert, &key.PublicKey, caKey)
 	if err != nil {
