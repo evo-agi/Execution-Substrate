@@ -16,11 +16,11 @@ flowchart TD
     Publisher(["Publisher"])
     Caller(["Caller"])
 
-    subgraph Host["Linux host or VM that you operate"]
+    subgraph Host["Your Linux host or VM"]
         AGS["AGS<br/>signs evidence"]
+        ES["ES<br/>admits and submits"]
         ARS[("ARS<br/>stores packages")]
         EGS["EGS<br/>trusted signers"]
-        ES["ES<br/>admits and submits"]
         Nomad["Nomad<br/>schedules"]
         SPIRE["SPIRE<br/>identity"]
         Vault["Vault<br/>secrets"]
@@ -28,14 +28,14 @@ flowchart TD
     end
 
     Publisher -->|"1 publish"| AGS
-    AGS --> ARS
-    ARS -->|"package, evidence"| ES
-    EGS -->|"signed trust"| ES
+    AGS -->|"store"| ARS
     Caller -->|"2 prepare, submit<br/>4 status, logs, result, cancel"| ES
+    ES -->|"read package<br/>and evidence"| ARS
+    ES -->|"read trust"| EGS
     ES -->|"3 submit job"| Nomad
     Nomad --> Task
     SPIRE -.->|"identity"| Task
-    Vault -.->|"secrets, after<br/>the workload logs in"| Task
+    Vault -.->|"secrets, after<br/>it logs in"| Task
 ```
 
 1. **Publish.** A publisher sends a workload package to AGS: an archive with
