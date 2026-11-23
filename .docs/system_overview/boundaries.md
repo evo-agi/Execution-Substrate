@@ -233,9 +233,10 @@ Those absences are current facts, not design commitments.
 - The later ES-private admission binding v1 producer consumes the actual
   frozen resolver tuple, checks signed returned mount artifact and payload
   identities against requested identity and captured bytes, and builds an
-  opaque commitment and existing fourteen-category witness. The legacy
-  resolver only carries the two verified mount identities; it does not add a
-  live requested-versus-returned artifact refusal. The producer is always
+  opaque commitment and existing fourteen-category witness. The resolver
+  carries the two verified mount identities and itself refuses a mount whose
+  discovery record names another artifact than the request (contracts section
+  5A). The producer is always
   not-effect-ready. At PB1 it had no production caller; the later bounded
   codec-3 synthetic composer is its only selected private non-test caller.
   It adds no public grammar, shared kernel, provider call, genuine image pin,
@@ -977,6 +978,7 @@ Provide a separate authorize-only decision surface for workload credential acces
 | `internal/contracts/evidence/v1` | Active shared kernel for the aggregate AGS -> ARS -> ES artifact-evidence path | Cross-service kernel and redesign pressure point, but not a standalone service boundary |
 | `internal/httpx` | Cross-cutting transport helper for strict JSON request decoding, text responses, JSON responses, and method negotiation headers | Support layer only; it standardizes low-level HTTP mechanics without owning auth, lifecycle, or domain behavior |
 | `internal/observability` | Cross-cutting utility for request tracing, dependency logging, and trace propagation decisions | Support layer only; it does not own business behavior or define service authority |
+| `internal/callerauth` | Cross-cutting caller authentication for ARS, AGS, EGS, CGS, and ES: reads the caller's SPIFFE ID from the verified client certificate and applies the one rule in `contracts.md` section 3A, including the bootstrap-issuer refusal | Authentication only; every allowlist, route, and policy decision (authorization) stays service-local. `internal/callerauth/callerauthtest` is test support that only test files import |
 | service bootstrap / config entrypoints | Service-local startup wiring, config loading, auth setup, and dependency client construction | Support layer; may reveal coupling, but does not by itself define a service boundary |
 
 These layers can create coupling pressure without owning domain responsibilities. Future edits must not let a shared package silently become a de facto new service boundary.

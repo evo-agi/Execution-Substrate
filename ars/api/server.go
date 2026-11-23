@@ -1,7 +1,6 @@
 package api
 
 import (
-	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"io"
@@ -14,6 +13,7 @@ import (
 
 	"execution-substrate/ars/index"
 	"execution-substrate/ars/store"
+	"execution-substrate/internal/callerauth"
 	"execution-substrate/internal/httpx"
 	"execution-substrate/internal/observability"
 )
@@ -30,7 +30,7 @@ type Server struct {
 	blobStore           store.BlobStore
 	artifactIndex       index.Lookup
 	allowedPathPrefixes []string
-	bootstrapIssuerCN   string
+	callers             callerauth.Authenticator
 	isStarted           func() bool
 }
 
@@ -39,7 +39,7 @@ func NewServer(blobStore store.BlobStore, artifactIndex index.Lookup, allowedPat
 		blobStore:           blobStore,
 		artifactIndex:       artifactIndex,
 		allowedPathPrefixes: append([]string(nil), allowedPathPrefixes...),
-		bootstrapIssuerCN:   strings.TrimSpace(bootstrapIssuerCN),
+		callers:             callerauth.NewAuthenticator(bootstrapIssuerCN),
 		isStarted:           isStarted,
 	}
 }
@@ -539,18 +539,13 @@ func (s *Server) writeBlobReadError(w http.ResponseWriter, digest string, err er
 }
 
 func (s *Server) requireAuthorizedCaller(w http.ResponseWriter, r *http.Request) bool {
-	path, issuerCommonName, ok := callerSPIFFEPath(r)
+	caller, ok := s.callers.Authenticate(w, r)
 	if !ok {
-		writeText(w, http.StatusUnauthorized, "Authenticated caller identity required")
-		return true
-	}
-	if issuerCommonName == s.bootstrapIssuerCN {
-		writeText(w, http.StatusForbidden, "Bootstrap PKI callers are not accepted; use a SPIRE-issued identity")
 		return true
 	}
 
 	for _, prefix := range s.allowedPathPrefixes {
-		if matchesAuthorizedPathPrefix(path, prefix) {
+		if matchesAuthorizedPathPrefix(caller.ID().Path(), prefix) {
 			return false
 		}
 	}
@@ -560,52 +555,17 @@ func (s *Server) requireAuthorizedCaller(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *Server) requireWriterCaller(w http.ResponseWriter, r *http.Request) bool {
-	path, issuerCommonName, ok := callerSPIFFEPath(r)
+	caller, ok := s.callers.Authenticate(w, r)
 	if !ok {
-		writeText(w, http.StatusUnauthorized, "Authenticated caller identity required")
-		return true
-	}
-	if issuerCommonName == s.bootstrapIssuerCN {
-		writeText(w, http.StatusForbidden, "Bootstrap PKI callers are not accepted; use a SPIRE-issued identity")
 		return true
 	}
 
-	if matchesAuthorizedPathPrefix(path, writerSPIFFEPath) {
+	if matchesAuthorizedPathPrefix(caller.ID().Path(), writerSPIFFEPath) {
 		return false
 	}
 
 	writeText(w, http.StatusForbidden, "Caller not authorized for this operation")
 	return true
-}
-
-func callerSPIFFEPath(r *http.Request) (path string, issuerCommonName string, ok bool) {
-	if r.TLS == nil || len(r.TLS.VerifiedChains) == 0 {
-		return "", "", false
-	}
-
-	cert := r.TLS.VerifiedChains[0][0]
-	if cert == nil {
-		return "", "", false
-	}
-
-	path, ok = spiffePathFromCertificate(cert)
-	if !ok {
-		return "", "", false
-	}
-	return path, cert.Issuer.CommonName, true
-}
-
-func spiffePathFromCertificate(cert *x509.Certificate) (string, bool) {
-	const prefix = "spiffe://execution.internal/"
-
-	for _, uri := range cert.URIs {
-		value := uri.String()
-		if strings.HasPrefix(value, prefix) {
-			return strings.TrimPrefix(value, prefix), true
-		}
-	}
-
-	return "", false
 }
 
 func matchesAuthorizedPathPrefix(path string, prefix string) bool {

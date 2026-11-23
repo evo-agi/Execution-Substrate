@@ -1,13 +1,13 @@
 package api
 
 import (
-	"crypto/x509"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 
 	"execution-substrate/cgs/policy"
+	"execution-substrate/internal/callerauth"
 	"execution-substrate/internal/httpx"
 	"execution-substrate/internal/observability"
 )
@@ -15,14 +15,14 @@ import (
 const serviceName = "credential-governance"
 
 type Server struct {
-	policies          *policy.Set
-	bootstrapIssuerCN string
+	policies *policy.Set
+	callers  callerauth.Authenticator
 }
 
 func NewServer(policies *policy.Set, bootstrapIssuerCN string) *Server {
 	return &Server{
-		policies:          policies,
-		bootstrapIssuerCN: strings.TrimSpace(bootstrapIssuerCN),
+		policies: policies,
+		callers:  callerauth.NewAuthenticator(bootstrapIssuerCN),
 	}
 }
 
@@ -33,15 +33,11 @@ func (s *Server) Handler() http.Handler {
 }
 
 func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
-	callerIdentity, issuerCommonName, ok := authenticatedCallerIdentity(r)
+	caller, ok := s.callers.Authenticate(w, r)
 	if !ok {
-		writeText(w, http.StatusUnauthorized, "Authenticated caller identity required")
 		return
 	}
-	if s.bootstrapIssuerCN != "" && issuerCommonName == s.bootstrapIssuerCN {
-		writeText(w, http.StatusForbidden, "Bootstrap PKI callers are not accepted; use a SPIRE-issued identity")
-		return
-	}
+	callerIdentity := caller.ID().String()
 
 	var request AuthorizeRequest
 	if err := decodeJSONBody(r.Body, &request); err != nil {
@@ -147,33 +143,6 @@ func decodeJSONBody(reader io.ReadCloser, target any) error {
 		return fmt.Errorf("malformed JSON request body")
 	}
 	return nil
-}
-
-func authenticatedCallerIdentity(r *http.Request) (identityID string, issuerCommonName string, ok bool) {
-	if r.TLS == nil || len(r.TLS.VerifiedChains) == 0 || len(r.TLS.VerifiedChains[0]) == 0 {
-		return "", "", false
-	}
-
-	cert := r.TLS.VerifiedChains[0][0]
-	if cert == nil {
-		return "", "", false
-	}
-
-	identityID, ok = spiffeIdentityFromCertificate(cert)
-	if !ok {
-		return "", "", false
-	}
-
-	return identityID, cert.Issuer.CommonName, true
-}
-
-func spiffeIdentityFromCertificate(cert *x509.Certificate) (string, bool) {
-	for _, uri := range cert.URIs {
-		if uri != nil && uri.Scheme == "spiffe" && uri.Host != "" {
-			return uri.String(), true
-		}
-	}
-	return "", false
 }
 
 func writeText(w http.ResponseWriter, status int, value string) {

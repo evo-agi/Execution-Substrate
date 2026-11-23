@@ -183,8 +183,9 @@ evidence.
   resolved witness categories plus an opaque HMAC-SHA-256 `PlanBinding`.
   Assessment is always not-effect-ready. At PB1 it had no production caller;
   the later bounded codec-3 synthetic composer is its only selected private
-  non-test caller. There is no public/runtime semantic or new model mask, and
-  the legacy requested-versus-returned mount artifact check is not hardened.
+  non-test caller. There is no public/runtime semantic or new model mask. The
+  live resolver's own requested-versus-returned mount artifact refusal came
+  later, with ARS blob byte verification (contracts section 5A).
   Exact format and future retry prerequisites are owned by
   `submit_idempotency_correlation_and_recovery.md`.
 - C3 is the focused tests/docs guardrail slice for retained-result and

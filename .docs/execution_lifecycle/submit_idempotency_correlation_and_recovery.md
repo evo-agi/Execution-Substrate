@@ -532,11 +532,11 @@ after the parser's single normalization. Raw `"./ name"` may legitimately
 produce stored `" name"`; permitted directory repeats and implicit directories
 remain governed by the parser. This adds bounded in-memory work and temporary
 memory for the unwired producer; the legacy runtime peak bound is not a claim
-for the new producer. The current legacy path still lacks an independent
-requested-versus-returned signed mount artifact equality check. A signed
-request-A/discovery-B/payload-P combination may therefore reach legacy staging
-if other current checks pass; this is a residual current-path limitation, not
-a live policy repair by this producer.
+for the new producer. The live resolver refuses a mount whose discovery record
+names another artifact than the requested source (contracts section 5A), so a
+signed request-A/discovery-B/payload-P combination does not reach staging.
+That refusal is the resolver's own; this producer keeps its independent
+requested-versus-verified check.
 
 The v1 binding is a computational commitment under HMAC-SHA-256 and the
 specified encoder, not mathematical injectivity, encryption, host eligibility,
