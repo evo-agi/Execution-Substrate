@@ -21,15 +21,43 @@ var externalMarkdownLinkTargets = map[string]string{
 }
 
 var (
-	markdownFence      = regexp.MustCompile("(?ms)^ {0,3}(```|~~~).*?^ {0,3}(```|~~~)[^\n]*$")
-	markdownCodeSpan   = regexp.MustCompile("`[^`\n]*`")
-	markdownInlineLink = regexp.MustCompile(`\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)`)
-	markdownURLScheme  = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9+.-]*:`)
+	markdownFence    = regexp.MustCompile("(?ms)^ {0,3}(```|~~~).*?^ {0,3}(```|~~~)[^\n]*$")
+	markdownCodeSpan = regexp.MustCompile("`[^`\n]*`")
+	// An inline link or image: ](target) or ](<target>), optionally with a
+	// title in double quotes, single quotes or parentheses.
+	markdownInlineLink = regexp.MustCompile(`\]\(\s*(?:<([^<>\n]*)>|([^)\s<>]+))(?:\s+(?:"[^"\n]*"|'[^'\n]*'|\([^()\n]*\)))?\s*\)`)
+	// A reference definition, [label]: target. A label that starts with "^"
+	// is a footnote, whose text is not a link target.
+	markdownReferenceDefinition = regexp.MustCompile(`(?m)^ {0,3}\[[^\]^\n][^\]\n]*\]:[ \t]*(?:<([^<>\n]*)>|(\S+))`)
+	// An href or src attribute in an HTML tag.
+	markdownHTMLLink  = regexp.MustCompile(`(?i)<[a-z][a-z0-9-]*\s[^>]*?\b(?:href|src)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))`)
+	markdownURLScheme = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9+.-]*:`)
 	// A runbook path: segments of word characters, dots and dashes, with
 	// single spaces allowed inside a segment (the runbook names contain
 	// spaces), ending in ".md".
 	runbookPathMention = regexp.MustCompile(`\.runbooks/(?:[A-Za-z0-9_.-]+(?: [A-Za-z0-9_.-]+)*/)*[A-Za-z0-9_.-]+(?: [A-Za-z0-9_.-]+)*\.md`)
 )
+
+// markdownLinkTargets returns every link target in a Markdown text: inline
+// links and images, reference definitions, and HTML href and src attributes.
+// Targets inside fenced code blocks and code spans are not links and are left
+// out.
+func markdownLinkTargets(markdown string) []string {
+	text := markdownFence.ReplaceAllString(markdown, "")
+	text = markdownCodeSpan.ReplaceAllString(text, "x")
+	var targets []string
+	for _, pattern := range []*regexp.Regexp{markdownInlineLink, markdownReferenceDefinition, markdownHTMLLink} {
+		for _, match := range pattern.FindAllStringSubmatch(text, -1) {
+			for _, group := range match[1:] {
+				if group != "" {
+					targets = append(targets, group)
+					break
+				}
+			}
+		}
+	}
+	return targets
+}
 
 // trackedTextFiles returns the tracked files that exist in the worktree and
 // contain no NUL byte, with their contents.
@@ -69,8 +97,8 @@ func trackedTextFiles(t *testing.T) map[string][]byte {
 }
 
 // TestMarkdownRelativeLinksResolve requires every relative link in a tracked
-// Markdown file to name a file or directory in this repository, apart from
-// the named external targets above.
+// Markdown file (in any form markdownLinkTargets reads) to name a file or
+// directory in this repository, apart from the named external targets above.
 func TestMarkdownRelativeLinksResolve(t *testing.T) {
 	files := trackedTextFiles(t)
 	names := make([]string, 0, len(files))
@@ -85,10 +113,7 @@ func TestMarkdownRelativeLinksResolve(t *testing.T) {
 	usedExternal := map[string]bool{}
 	var broken []string
 	for _, name := range names {
-		text := markdownFence.ReplaceAllString(string(files[name]), "")
-		text = markdownCodeSpan.ReplaceAllString(text, "x")
-		for _, match := range markdownInlineLink.FindAllStringSubmatch(text, -1) {
-			target := match[1]
+		for _, target := range markdownLinkTargets(string(files[name])) {
 			if markdownURLScheme.MatchString(target) || strings.HasPrefix(target, "#") {
 				continue
 			}
@@ -135,6 +160,8 @@ func TestMarkdownRelativeLinksResolve(t *testing.T) {
 // TestRunbookPathMentionsExist requires every .runbooks/…/*.md path written
 // in a tracked file (scripts, Go code, docs) to exist, so that a rename or a
 // careless merge cannot leave a script printing a runbook path that is gone.
+// A mention must sit on one line: a path wrapped across two lines, or built
+// from parts at run time, is not seen.
 func TestRunbookPathMentionsExist(t *testing.T) {
 	files := trackedTextFiles(t)
 	names := make([]string, 0, len(files))
@@ -164,5 +191,38 @@ func TestRunbookPathMentionsExist(t *testing.T) {
 	}
 	if len(missing) > 0 {
 		t.Fatalf("runbook paths named in tracked files that do not exist:\n%s", strings.Join(missing, "\n"))
+	}
+}
+
+// TestMarkdownLinkTargetsReadsEveryLinkForm pins the link forms that
+// TestMarkdownRelativeLinksResolve checks, so that narrowing a pattern fails
+// here instead of quietly checking fewer links.
+func TestMarkdownLinkTargetsReadsEveryLinkForm(t *testing.T) {
+	cases := []struct {
+		markdown string
+		want     []string
+	}{
+		{"[a](plain.md)", []string{"plain.md"}},
+		{"![a](image.png)", []string{"image.png"}},
+		{"[a](Name%20With%20Spaces.md#part)", []string{"Name%20With%20Spaces.md#part"}},
+		{"[a](<name with spaces.md>)", []string{"name with spaces.md"}},
+		{`[a](double.md "title")`, []string{"double.md"}},
+		{"[a](single.md 'title')", []string{"single.md"}},
+		{"[a](paren.md (title))", []string{"paren.md"}},
+		{"[a](https://example.com/x.md)", []string{"https://example.com/x.md"}},
+		{"[ref]: reference.md", []string{"reference.md"}},
+		{"   [ref]: <reference with spaces.md> \"title\"", []string{"reference with spaces.md"}},
+		{"[^1]: A footnote, not a link.", nil},
+		{`<a href="html-double.md">a</a>`, []string{"html-double.md"}},
+		{"<img alt='x' src='html-single.png'>", []string{"html-single.png"}},
+		{"<a class=x href=html-bare.md>a</a>", []string{"html-bare.md"}},
+		{"`[a](in-code-span.md)`", nil},
+		{"```\n[a](in-fence.md)\n```", nil},
+	}
+	for _, tc := range cases {
+		got := markdownLinkTargets(tc.markdown)
+		if strings.Join(got, "\n") != strings.Join(tc.want, "\n") {
+			t.Errorf("markdownLinkTargets(%q) = %q, want %q", tc.markdown, got, tc.want)
+		}
 	}
 }
