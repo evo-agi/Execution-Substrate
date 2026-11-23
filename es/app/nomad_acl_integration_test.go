@@ -6,8 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -133,7 +133,7 @@ func nomadACLToolPath() string {
 
 // waitLeaderResult waits for a Nomad leader; /v1/status/leader needs no token.
 func (n *nomadHarness) waitLeaderResult(timeout time.Duration) string {
-	client := &http.Client{Timeout: 2 * time.Second}
+	client := &http.Client{Timeout: 2 * time.Second, Transport: n.tls.transport()}
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		response, err := client.Get(n.addr + "/v1/status/leader")
@@ -166,6 +166,7 @@ func (n *nomadHarness) provisionACL(rootDir string) string {
 	observerTokenFile := filepath.Join(aclDir, "observer-token")
 	command := exec.Command("python3", "-I", nomadACLToolPath(), "provision",
 		"--addr", n.addr,
+		"--ca-file", n.tls.caFile,
 		"--management-token-file", managementFile,
 		"--es-token-file", esTokenFile,
 		"--es-token-owner", owner,
@@ -206,25 +207,25 @@ func (transport nomadHarnessTransport) RoundTrip(request *http.Request) (*http.R
 }
 
 func (n *nomadHarness) httpClient(timeout time.Duration) *http.Client {
-	return &http.Client{Timeout: timeout, Transport: nomadHarnessTransport{token: n.managementToken, base: http.DefaultTransport}}
+	return &http.Client{Timeout: timeout, Transport: nomadHarnessTransport{token: n.managementToken, base: n.tls.transport()}}
 }
 
 // cliEnv is the environment for a nomad CLI call as the test operator.
 func (n *nomadHarness) cliEnv() []string {
-	env := []string{"NOMAD_ADDR=" + n.addr, "NOMAD_NAMESPACE=" + nomadACLNamespace}
+	env := []string{"NOMAD_ADDR=" + n.addr, "NOMAD_CACERT=" + n.tls.caFile, "NOMAD_NAMESPACE=" + nomadACLNamespace}
 	if n.managementToken != "" {
 		env = append(env, "NOMAD_TOKEN="+n.managementToken)
 	}
 	return env
 }
 
-func nomadCLIEnv(t *testing.T, addr string, tokenFile string) []string {
+func nomadCLIEnv(t *testing.T, addr string, caFile string, tokenFile string) []string {
 	t.Helper()
 	token, err := os.ReadFile(tokenFile)
 	if err != nil {
 		t.Fatalf("read nomad token file: %v", err)
 	}
-	return []string{"NOMAD_ADDR=" + addr, "NOMAD_NAMESPACE=" + nomadACLNamespace, "NOMAD_TOKEN=" + strings.TrimSpace(string(token))}
+	return []string{"NOMAD_ADDR=" + addr, "NOMAD_CACERT=" + caFile, "NOMAD_NAMESPACE=" + nomadACLNamespace, "NOMAD_TOKEN=" + strings.TrimSpace(string(token))}
 }
 
 func assertNomadTokenFileCustody(t *testing.T, label string, path string, wantMode os.FileMode) {
@@ -320,7 +321,7 @@ func nomadRawRequest(t *testing.T, method string, url string, token string, body
 	if token != "" {
 		request.Header.Set("X-Nomad-Token", token)
 	}
-	response, err := (&http.Client{Timeout: 5 * time.Second}).Do(request)
+	response, err := (&http.Client{Timeout: 5 * time.Second, Transport: testNomadRawTransport()}).Do(request)
 	if err != nil {
 		t.Fatalf("%s %s: %v", method, url, err)
 	}
@@ -412,7 +413,7 @@ func TestRealNomadRefusesJobsWithoutTheESToken(t *testing.T) {
 		t.Fatalf("ES token could not stop its job: HTTP %d %s", status, body)
 	}
 
-	check := exec.Command("python3", "-I", nomadACLToolPath(), "check", "--addr", harness.addr, "--es-token-file", harness.esTokenFile, "--observer-token-file", harness.observerTokenFile)
+	check := exec.Command("python3", "-I", nomadACLToolPath(), "check", "--addr", harness.addr, "--ca-file", harness.tls.caFile, "--es-token-file", harness.esTokenFile, "--observer-token-file", harness.observerTokenFile)
 	if output, err := check.CombinedOutput(); err != nil {
 		t.Fatalf("nomad_acl.py check failed on the provisioned Nomad: %v output=%s", err, output)
 	}
@@ -445,7 +446,7 @@ func TestNomadACLToolKeepsRotatesAndRefusesUnsafeStates(t *testing.T) {
 	aclDir := filepath.Dir(harness.esTokenFile)
 	owner := strconv.Itoa(os.Geteuid()) + ":" + strconv.Itoa(os.Getegid())
 	provision := func(extra ...string) (string, error) {
-		args := append([]string{"provision", "--addr", harness.addr,
+		args := append([]string{"provision", "--addr", harness.addr, "--ca-file", harness.tls.caFile,
 			"--management-token-file", filepath.Join(aclDir, "management-token"),
 			"--es-token-file", harness.esTokenFile, "--es-token-owner", owner,
 			"--observer-token-file", harness.observerTokenFile, "--observer-token-owner", owner,
@@ -453,7 +454,7 @@ func TestNomadACLToolKeepsRotatesAndRefusesUnsafeStates(t *testing.T) {
 		return runNomadACLTool(t, args...)
 	}
 	check := func() (string, error) {
-		return runNomadACLTool(t, "check", "--addr", harness.addr, "--es-token-file", harness.esTokenFile)
+		return runNomadACLTool(t, "check", "--addr", harness.addr, "--ca-file", harness.tls.caFile, "--es-token-file", harness.esTokenFile)
 	}
 
 	firstToken := readNomadTokenFile(t, harness.esTokenFile)
@@ -540,7 +541,7 @@ func TestNomadACLToolRefusesANomadWithoutACLs(t *testing.T) {
 		t.Fatal(err)
 	}
 	owner := strconv.Itoa(os.Geteuid()) + ":" + strconv.Itoa(os.Getegid())
-	output, err := runNomadACLTool(t, "provision", "--addr", harness.addr,
+	output, err := runNomadACLTool(t, "provision", "--addr", harness.addr, "--ca-file", harness.tls.caFile,
 		"--management-token-file", filepath.Join(aclDir, "management-token"),
 		"--es-token-file", filepath.Join(aclDir, "es-token"), "--es-token-owner", owner)
 	if err == nil || !strings.Contains(output, "nomad ACLs are disabled") {
@@ -549,7 +550,7 @@ func TestNomadACLToolRefusesANomadWithoutACLs(t *testing.T) {
 	if entries, readErr := os.ReadDir(aclDir); readErr != nil || len(entries) != 0 {
 		t.Fatalf("refused provision wrote files: entries=%v err=%v", entries, readErr)
 	}
-	output, err = runNomadACLTool(t, "check", "--addr", harness.addr, "--es-token-file", harness.esTokenFile)
+	output, err = runNomadACLTool(t, "check", "--addr", harness.addr, "--ca-file", harness.tls.caFile, "--es-token-file", harness.esTokenFile)
 	if err == nil || !strings.Contains(output, "nomad ACLs are disabled") {
 		t.Fatalf("check accepted a Nomad without ACLs: %v output=%s", err, output)
 	}
@@ -614,13 +615,29 @@ func TestSubmitRefusesANomadThatDoesNotEnforceACLs(t *testing.T) {
 }
 
 // Supported-local setup refuses, before it changes anything, a Nomad that does
-// not enforce access control and a token directory placed inside the proof's
+// not enforce access control, a Nomad without its CA or presenting a
+// certificate from another CA, and a token directory placed inside the proof's
 // scopes. On a locked Nomad it keeps or issues the tokens through the root
 // wrapper, with ES's token owned by root (ES runs as root in that profile) and
-// the observer token owned by the user who runs setup.
+// the observer token owned by the user who runs setup. The Nomad is a TLS
+// stand-in with setup-issued material, so the key pin is a real handshake.
 func TestSupportedLocalSetupLocksNomadBeforeProofEffects(t *testing.T) {
 	repo := executionPlatformRepoRoot(t)
 	script := filepath.Join(repo, "scripts", "72_supported_local_setup.sh")
+	startNomad := func(t *testing.T) (nomadTLSMaterial, string) {
+		t.Helper()
+		material, err := issueNomadTLSMaterial(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		server, err := material.startTLSServer(http.NotFoundHandler())
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(server.Close)
+		return material, strconv.Itoa(server.Listener.Addr().(*net.TCPAddr).Port)
+	}
+	nomadTLS, nomadPort := startNomad(t)
 	const fakes = `
 require_command() { :; }
 require_supported_go_toolchain() { :; }
@@ -669,6 +686,8 @@ setup`
 			"SUPPORTED_LOCAL_RETAINED_RESULT_AUTH_KEY_ID=test_key",
 			"SUPPORTED_LOCAL_RETAINED_RESULT_AUTH_KEY_FILE=" + filepath.Join(workspace, "external", "key"),
 			"SUPPORTED_LOCAL_NOMAD_ACL_DIR=" + filepath.Join(workspace, "nomad-acl"),
+			"SUPPORTED_LOCAL_NOMAD_PORT=" + nomadPort,
+			"SUPPORTED_LOCAL_NOMAD_CACERT=" + nomadTLS.caFile,
 			"SUPPORTED_LOCAL_VAULT_PUBLIC_HOST=127.0.0.1",
 			"SUPPORTED_LOCAL_VAULT_ROOT_TOKEN=synthetic-token",
 			"SUPPORTED_LOCAL_VAULT_SECRET_VALUE=synthetic-value",
@@ -677,8 +696,9 @@ setup`
 			"ROOT_ACCESSOR=anonymous",
 			"ROOT_ANONYMOUS_STATUS=404",
 			"ROOT_AGENT_SELF=" + string(mustMarshalJSON(t, map[string]any{"config": map[string]any{
-				"Client":  map[string]any{"Options": map[string]any{"driver.allowlist": "docker"}},
-				"Plugins": supportedNomadDockerPluginAgentConfig(),
+				"Client":    map[string]any{"Options": map[string]any{"driver.allowlist": "docker"}},
+				"Plugins":   supportedNomadDockerPluginAgentConfig(),
+				"TLSConfig": supportedNomadTLSAgentConfig(),
 			}})),
 		}, overrides...)...)
 		recorded, err := os.ReadFile(events)
@@ -704,6 +724,23 @@ setup`
 	t.Run("anonymous policy present", func(t *testing.T) {
 		r := run(t, "ROOT_ANONYMOUS_STATUS=200")
 		refusedBeforeEffects(t, r, "supported-local Nomad does not enforce access control")
+	})
+	t.Run("Nomad CA missing", func(t *testing.T) {
+		r := run(t, "SUPPORTED_LOCAL_NOMAD_CACERT="+filepath.Join(t.TempDir(), "ca.pem"))
+		refusedBeforeEffects(t, r, "supported-local Nomad CA certificate is missing")
+	})
+	t.Run("Nomad CA is a symbolic link", func(t *testing.T) {
+		link := filepath.Join(t.TempDir(), "ca.pem")
+		if err := os.Symlink(nomadTLS.caFile, link); err != nil {
+			t.Fatal(err)
+		}
+		r := run(t, "SUPPORTED_LOCAL_NOMAD_CACERT="+link)
+		refusedBeforeEffects(t, r, "supported-local Nomad CA certificate is missing")
+	})
+	t.Run("Nomad presents a certificate from another CA", func(t *testing.T) {
+		_, otherPort := startNomad(t)
+		r := run(t, "SUPPORTED_LOCAL_NOMAD_PORT="+otherPort)
+		refusedBeforeEffects(t, r, "supported-local Nomad does not present a certificate from its CA")
 	})
 	t.Run("token directory inside the proof directory", func(t *testing.T) {
 		workspace := t.TempDir()
@@ -737,8 +774,9 @@ setup`
 		plugins := supportedNomadDockerPluginAgentConfig()
 		plugins[0]["Config"].(map[string]any)["allow_privileged"] = true
 		r := run(t, "ROOT_AGENT_SELF="+string(mustMarshalJSON(t, map[string]any{"config": map[string]any{
-			"Client":  map[string]any{"Options": map[string]any{"driver.allowlist": "docker"}},
-			"Plugins": plugins,
+			"Client":    map[string]any{"Options": map[string]any{"driver.allowlist": "docker"}},
+			"Plugins":   plugins,
+			"TLSConfig": supportedNomadTLSAgentConfig(),
 		}})))
 		if !strings.Contains(r.output, "the Docker plugin must refuse privileged containers") ||
 			!strings.Contains(r.output, "supported-local Nomad does not limit its drivers the supported way") ||
@@ -752,7 +790,8 @@ setup`
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := "sudo -n env NOMAD_ADDR=http://127.0.0.1:4646 NOMAD_ACL_DIR=" + filepath.Join(r.workspace, "nomad-acl") +
+		want := "sudo -n env NOMAD_ADDR=https://127.0.0.1:" + nomadPort + " NOMAD_CACERT=" + nomadTLS.caFile +
+			" NOMAD_ACL_DIR=" + filepath.Join(r.workspace, "nomad-acl") +
 			" ES_USER=root OBSERVER_USER=" + strings.TrimSpace(string(current)) +
 			" bash " + filepath.Join(repo, "scripts", "nomad_acl_setup.sh") + " provision\n"
 		if os.Geteuid() == 0 {
@@ -771,7 +810,7 @@ setup`
 func TestSupportedLocalProofNodeDetailsSendTheObserverToken(t *testing.T) {
 	const nodeID = "01234567-89ab-cdef-0123-456789abcdef"
 	var requests, refused atomic.Int64
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server, nomadTLS := startNomadTLSStandIn(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
 		if r.Header.Get("X-Nomad-Token") != testObserverNomadToken {
 			refused.Add(1)
@@ -787,14 +826,13 @@ func TestSupportedLocalProofNodeDetailsSendTheObserverToken(t *testing.T) {
 			http.NotFound(w, r)
 		}
 	}))
-	defer server.Close()
 	workspace := t.TempDir()
 	tokenFile := writeFakeNomadObserverTokenFile(t, workspace)
 	project := func(tokenEnv string) (string, []byte, error) {
 		path := filepath.Join(t.TempDir(), "node-details-safe.json")
 		command := exec.Command("python3", filepath.Join(executionPlatformRepoRoot(t), "scripts", "internal", "supported_local_proof_projection.py"),
 			"fetch-node-details", server.URL, path)
-		command.Env = []string{"PATH=" + os.Getenv("PATH"), "PYTHONDONTWRITEBYTECODE=1"}
+		command.Env = []string{"PATH=" + os.Getenv("PATH"), "PYTHONDONTWRITEBYTECODE=1", "NOMAD_CACERT=" + nomadTLS.caFile}
 		if tokenEnv != "" {
 			command.Env = append(command.Env, "NOMAD_TOKEN_FILE="+tokenEnv)
 		}

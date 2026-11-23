@@ -164,8 +164,16 @@ export ARS_URL="https://127.0.0.1:8442"
 export EGS_URL="https://127.0.0.1:8443"
 export AGS_URL="https://127.0.0.1:8444"
 export ES_URL="https://127.0.0.1:8445"
-export NOMAD_ADDR="http://127.0.0.1:4646"
+export NOMAD_ADDR="https://127.0.0.1:4646"
+export NOMAD_CACERT="/etc/nomad.d/tls/ca.pem"
 ```
+
+Nomad serves HTTPS only (TLS 1.3), with the certificate
+`scripts/70_linux_setup.sh` issues; the scripts trust only `NOMAD_CACERT`.
+ES's config names the same Nomad in `nomad.base_url`, `nomad.server_name`,
+`nomad.root_ca_file` and `nomad.server_spki_sha256` (the setup script prints
+these values; see
+[Nomad HTTPS](../../.docs/system_overview/configuration.md#nomad-https)).
 
 Optional local hostname overrides for `curl --resolve`:
 
@@ -330,7 +338,8 @@ For the full profile, `submit-ready: true` means:
 - Nomad `GET /v1/agent/self` does not report `config.DevMode=true`
 - Nomad has a leader and at least one ready node with positive `cpu.totalcompute` and a healthy Docker driver
 - `docker info` succeeds
-- ES submit config still includes `nomad.base_url`, `nomad.datacenter`, `execution.staging_root_dir`, `execution.results_root_dir`, and `execution.base_image`
+- ES submit config still includes `nomad.base_url`, `nomad.server_name`, `nomad.root_ca_file`, `nomad.server_spki_sha256`, `nomad.datacenter`, `execution.staging_root_dir`, `execution.results_root_dir`, and `execution.base_image`
+- Nomad at `nomad.base_url` (which must be `NOMAD_ADDR`) presents, over TLS 1.3, a certificate from `nomad.root_ca_file` for `nomad.server_name` whose key matches `nomad.server_spki_sha256`, with at least 14 days left
 - required enabled runtime-profile images are present according to `docker image inspect`
 - Nomad enables only the Docker driver and its Docker plugin refuses privileged containers and allows only ES's runtime-helper capabilities
 - enabled local runtime-profile images are protected from Nomad stopped-task image cleanup by the Docker plugin's `gc { image = false }`

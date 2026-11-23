@@ -47,10 +47,14 @@ ALLOW_CONTROL_PLANE_CALLER="${SUPPORTED_LOCAL_ALLOW_CONTROL_PLANE:-0}"
 RETAINED_RESULT_AUTH_STORE_ID="${SUPPORTED_LOCAL_RETAINED_RESULT_AUTH_STORE_ID:-}"
 RETAINED_RESULT_AUTH_KEY_ID="${SUPPORTED_LOCAL_RETAINED_RESULT_AUTH_KEY_ID:-}"
 RETAINED_RESULT_AUTH_KEY_FILE="${SUPPORTED_LOCAL_RETAINED_RESULT_AUTH_KEY_FILE:-}"
-# Nomad stays on loopback; only its HTTP port can differ from 4646 (a test
-# that starts its own Nomad uses another one).
+# Nomad stays on loopback and serves HTTPS only; only its port can differ
+# from 4646 (a test that starts its own Nomad uses another one). Its CA is
+# the one scripts/70_linux_setup.sh issues; ES also pins the server key.
 SUPPORTED_LOCAL_NOMAD_PORT="${SUPPORTED_LOCAL_NOMAD_PORT:-4646}"
-SUPPORTED_LOCAL_NOMAD_ADDR="http://127.0.0.1:${SUPPORTED_LOCAL_NOMAD_PORT}"
+SUPPORTED_LOCAL_NOMAD_ADDR="https://127.0.0.1:${SUPPORTED_LOCAL_NOMAD_PORT}"
+SUPPORTED_LOCAL_NOMAD_CACERT="${SUPPORTED_LOCAL_NOMAD_CACERT:-/etc/nomad.d/tls/ca.pem}"
+SUPPORTED_LOCAL_NOMAD_SERVER_NAME="server.global.nomad"
+SUPPORTED_LOCAL_NOMAD_SERVER_SPKI_SHA256=""
 NOMAD_ACL_DIR="${SUPPORTED_LOCAL_NOMAD_ACL_DIR:-/etc/execution-substrate/nomad-acl}"
 GO_REQUIRED_VERSION="go1.26.5"
 
@@ -124,7 +128,8 @@ Optional environment variables:
   SUPPORTED_LOCAL_RETAINED_RESULT_AUTH_KEY_ID=<stable non-secret identifier>
   SUPPORTED_LOCAL_RETAINED_RESULT_AUTH_KEY_FILE=/external/private/keys/key
   SUPPORTED_LOCAL_NOMAD_ACL_DIR=/etc/execution-substrate/nomad-acl
-  SUPPORTED_LOCAL_NOMAD_PORT=4646   Nomad HTTP port on 127.0.0.1
+  SUPPORTED_LOCAL_NOMAD_PORT=4646   Nomad HTTPS port on 127.0.0.1
+  SUPPORTED_LOCAL_NOMAD_CACERT=/etc/nomad.d/tls/ca.pem   Nomad's CA certificate
   SUPPORTED_LOCAL_ES_ROOTS_PROFILE=service-root-v1   only accepted profile
 
 Nomad must enforce access control (ACLs): scripts/70_linux_setup.sh enables
@@ -134,6 +139,9 @@ root (sudo -n) to keep or issue ES's submit token (es-token, owned by root,
 because ES runs as root in this profile) and a read-only observer token
 (observer-token, owned by the user running setup). es.json names es-token as
 nomad.token_file and env.sh exports NOMAD_TOKEN_FILE=<observer-token>.
+Nomad serves HTTPS only (TLS 1.3); scripts trust only
+SUPPORTED_LOCAL_NOMAD_CACERT, and es.json pins the key of the certificate
+the running Nomad presents (nomad.server_spki_sha256).
 EOF
 }
 
@@ -182,11 +190,16 @@ preflight_supported_local_setup_retained_result_auth() {
 }
 
 # Refuse before any effect unless the token directory is placed outside the
-# proof scopes and the host's Nomad enforces ACLs with no anonymous policy.
+# proof scopes and the host's Nomad presents a certificate from its CA and
+# enforces ACLs with no anonymous policy.
 preflight_supported_local_setup_nomad_acl() {
   local proof_dir="${1:-${PROOF_DIR}}"
   if [[ ! "${SUPPORTED_LOCAL_NOMAD_PORT}" =~ ^[1-9][0-9]{0,4}$ ]] || (( SUPPORTED_LOCAL_NOMAD_PORT > 65535 )); then
     echo "supported-local Nomad port must be a TCP port number" >&2
+    return 1
+  fi
+  if [[ "${SUPPORTED_LOCAL_NOMAD_CACERT}" != /* || -L "${SUPPORTED_LOCAL_NOMAD_CACERT}" || ! -f "${SUPPORTED_LOCAL_NOMAD_CACERT}" || ! -r "${SUPPORTED_LOCAL_NOMAD_CACERT}" ]]; then
+    echo "supported-local Nomad CA certificate is missing; run scripts/70_linux_setup.sh as root, which issues Nomad's TLS certificate" >&2
     return 1
   fi
   # The SPIRE socket directory is bind-mounted into every workload.
@@ -196,7 +209,8 @@ preflight_supported_local_setup_nomad_acl() {
     "${proof_dir}/es-staging" \
     "${proof_dir}/es-results" \
     "$(dirname -- "${proof_dir}/spire-agent/public/api.sock")" || return 1
-  if ! NOMAD_ADDR="${SUPPORTED_LOCAL_NOMAD_ADDR}" nomad_acl_state_check >/dev/null; then
+  observe_supported_local_nomad_server_key || return 1
+  if ! NOMAD_ADDR="${SUPPORTED_LOCAL_NOMAD_ADDR}" NOMAD_CACERT="${SUPPORTED_LOCAL_NOMAD_CACERT}" nomad_acl_state_check >/dev/null; then
     echo "supported-local Nomad does not enforce access control; run scripts/70_linux_setup.sh as root, which enables and bootstraps Nomad ACLs" >&2
     return 1
   fi
@@ -268,6 +282,7 @@ provision_supported_local_nomad_acl() {
   command=(
     env
     "NOMAD_ADDR=${SUPPORTED_LOCAL_NOMAD_ADDR}"
+    "NOMAD_CACERT=${SUPPORTED_LOCAL_NOMAD_CACERT}"
     "NOMAD_ACL_DIR=${NOMAD_ACL_DIR}"
     "ES_USER=root"
     "OBSERVER_USER=${observer_user}"
@@ -289,13 +304,24 @@ verify_supported_local_nomad_runtime_posture() {
   local status=0
 
   agent_path="$(mktemp)"
-  if ! NOMAD_ADDR="${SUPPORTED_LOCAL_NOMAD_ADDR}" NOMAD_TOKEN_FILE="${NOMAD_ACL_DIR}/observer-token" \
+  if ! NOMAD_ADDR="${SUPPORTED_LOCAL_NOMAD_ADDR}" NOMAD_CACERT="${SUPPORTED_LOCAL_NOMAD_CACERT}" NOMAD_TOKEN_FILE="${NOMAD_ACL_DIR}/observer-token" \
       nomad_api_get "/v1/agent/self" "${agent_path}" || ! nomad_runtime_posture_check "${agent_path}"; then
     echo "supported-local Nomad does not limit its drivers the supported way; run scripts/70_linux_setup.sh as root, then rerun this setup" >&2
     status=1
   fi
   rm -f "${agent_path}"
   return "${status}"
+}
+
+# es.json pins the key of the certificate the running Nomad presents, once it
+# verified under Nomad's CA for its server name: the certificate
+# scripts/70_linux_setup.sh issued, because that CA signs nothing else.
+observe_supported_local_nomad_server_key() {
+  if ! SUPPORTED_LOCAL_NOMAD_SERVER_SPKI_SHA256="$(python3 -I "${SCRIPT_DIR}/internal/nomad_tls_identity.py" pin \
+      "${SUPPORTED_LOCAL_NOMAD_ADDR}" "${SUPPORTED_LOCAL_NOMAD_CACERT}" "${SUPPORTED_LOCAL_NOMAD_SERVER_NAME}")"; then
+    echo "supported-local Nomad does not present a certificate from its CA; run scripts/70_linux_setup.sh as root, then rerun this setup" >&2
+    return 1
+  fi
 }
 
 write_supported_local_execution_root_evidence() {
@@ -1237,7 +1263,10 @@ write_runtime_blob_and_configs() {
     "${RETAINED_RESULT_AUTH_KEY_ID}" \
     "${RETAINED_RESULT_AUTH_KEY_FILE}" \
     "${NOMAD_ACL_DIR}/es-token" \
-    "${SUPPORTED_LOCAL_NOMAD_ADDR}"
+    "${SUPPORTED_LOCAL_NOMAD_ADDR}" \
+    "${SUPPORTED_LOCAL_NOMAD_SERVER_NAME}" \
+    "${SUPPORTED_LOCAL_NOMAD_CACERT}" \
+    "${SUPPORTED_LOCAL_NOMAD_SERVER_SPKI_SHA256}"
 import hashlib
 import json
 import os
@@ -1274,6 +1303,13 @@ result_auth_key_id = sys.argv[27]
 result_auth_key_file = sys.argv[28]
 nomad_token_file = sys.argv[29]
 nomad_base_url = sys.argv[30]
+nomad_server_name = sys.argv[31]
+nomad_root_ca_file = sys.argv[32]
+nomad_server_spki_sha256 = sys.argv[33]
+# The pin comes from the running Nomad (observe_supported_local_nomad_server_key
+# in the preflight); es.json is never written without it.
+if len(nomad_server_spki_sha256) != 64 or any(c not in "0123456789abcdef" for c in nomad_server_spki_sha256):
+    raise SystemExit("supported-local Nomad server key pin is missing; the preflight observes it from the running Nomad")
 allow_control_plane = os.environ.get("SUPPORTED_LOCAL_ALLOW_CONTROL_PLANE", "0").strip().lower() in {"1", "true", "yes"}
 operator_and_maybe_control_plane = ["operator/local"]
 if allow_control_plane:
@@ -1390,7 +1426,15 @@ es_cfg = {
         "workload_identity_binding": {"algorithm": "ed25519", "key_id": "ags-key-1", "public_key_hex": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737"},
     },
     "workload_vault_auth": {"default_mode": "vault_identity_jwt"},
-    "nomad": {"base_url": nomad_base_url, "datacenter": "dc1", "timeout_seconds": 5, "token_file": nomad_token_file},
+    "nomad": {
+        "base_url": nomad_base_url,
+        "server_name": nomad_server_name,
+        "root_ca_file": nomad_root_ca_file,
+        "server_spki_sha256": nomad_server_spki_sha256,
+        "datacenter": "dc1",
+        "timeout_seconds": 5,
+        "token_file": nomad_token_file,
+    },
     "execution": {
         "staging_root_dir": str(staging_root),
         "results_root_dir": str(results_root),
@@ -1445,6 +1489,7 @@ export EGS_URL="https://${EGS_HOST}:${EGS_PORT}"
 export AGS_URL="https://${AGS_HOST}:${AGS_PORT}"
 export ES_URL="https://${ES_HOST}:${ES_PORT}"
 export NOMAD_ADDR="${SUPPORTED_LOCAL_NOMAD_ADDR}"
+export NOMAD_CACERT="${SUPPORTED_LOCAL_NOMAD_CACERT}"
 export NOMAD_TOKEN_FILE="${NOMAD_ACL_DIR}/observer-token"
 export ARS_RESOLVE="${ARS_HOST}:${ARS_PORT}:127.0.0.1"
 export EGS_RESOLVE="${EGS_HOST}:${EGS_PORT}:127.0.0.1"

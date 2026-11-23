@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import re
+import ssl
 import stat
 import sys
 import tarfile
@@ -519,17 +520,23 @@ def fetch_node_details(base_url: str) -> dict:
     require("?" not in base_url and "#" not in base_url)
     parsed = urllib.parse.urlsplit(base_url)
     port = parsed.port
-    require(parsed.scheme in ("http", "https") and parsed.hostname == "127.0.0.1" and
+    require(parsed.scheme == "https" and parsed.hostname == "127.0.0.1" and
             parsed.username is None and parsed.password is None and port is not None and
             1 <= port <= 65535 and parsed.netloc == f"127.0.0.1:{port}" and
             parsed.path in ("", "/") and not parsed.query and not parsed.fragment)
-    base = f"{parsed.scheme}://127.0.0.1:{port}"
+    base = f"https://127.0.0.1:{port}"
 
     class NoRedirect(urllib.request.HTTPRedirectHandler):
         def redirect_request(self, request, response, code, message, headers, next_url):
             raise ProjectionError
 
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+    # TLS 1.3, trusting only Nomad's CA (NOMAD_CACERT); no proxy, no redirect.
+    ca_file = os.environ.get("NOMAD_CACERT", "")
+    require(ca_file.startswith("/") and stat.S_ISREG(os.lstat(ca_file).st_mode))
+    context = ssl.create_default_context(cafile=ca_file)
+    context.minimum_version = ssl.TLSVersion.TLSv1_3
+    opener = urllib.request.build_opener(
+        urllib.request.ProxyHandler({}), urllib.request.HTTPSHandler(context=context), NoRedirect())
     headers = nomad_token_header()
     total_bytes = 0
 

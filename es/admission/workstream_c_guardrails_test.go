@@ -7004,7 +7004,7 @@ func newWorkstreamCTestService(t *testing.T, fixture preparedArtifactFixture) (*
 			DefaultMode: esconfig.WorkloadVaultAuthModeVaultIdentityJWT,
 		},
 		Nomad: esconfig.NomadConfig{
-			BaseURL:        "http://127.0.0.1:4646",
+			BaseURL:        "https://127.0.0.1:4646",
 			Datacenter:     "dc1",
 			TimeoutSeconds: 1,
 		},

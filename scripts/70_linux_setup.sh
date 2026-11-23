@@ -89,7 +89,11 @@ NOMAD_CONFIG_DIR="/etc/nomad.d"
 NOMAD_CONFIG_PATH="${NOMAD_CONFIG_DIR}/nomad.hcl"
 NOMAD_CONFIG_BACKUP_PATH="${NOMAD_CONFIG_DIR}/nomad.hcl.execution-substrate.bak"
 NOMAD_DATA_DIR="/opt/nomad/data"
-NOMAD_HTTP_ADDR="${NOMAD_HTTP_ADDR:-http://127.0.0.1:4646}"
+NOMAD_HTTP_ADDR="${NOMAD_HTTP_ADDR:-https://127.0.0.1:4646}"
+# Nomad's API and RPC use TLS 1.3 with a certificate this script issues (see
+# nomad_tls_issue). Readers trust only this CA; ES also pins the server key.
+NOMAD_TLS_DIR="${NOMAD_CONFIG_DIR}/tls"
+NOMAD_CACERT="${NOMAD_TLS_DIR}/ca.pem"
 NOMAD_MANAGED_MARKER="# Managed by Execution Substrate scripts/70_linux_setup.sh for the single-node workload-zone baseline."
 # The supported Nomad enforces ACLs: ES submits only with its own token and
 # refuses a Nomad that accepts jobs without one. This script bootstraps the
@@ -99,6 +103,7 @@ NOMAD_ACL_DIR="${NOMAD_ACL_DIR:-/etc/execution-substrate/nomad-acl}"
 NOMAD_ACL_MANAGEMENT_TOKEN_FILE="${NOMAD_ACL_DIR}/management-token"
 NOMAD_LEADER_WAIT_SECONDS=30
 NOMAD_CONFIG_CHANGED=0
+NOMAD_TLS_ISSUED=0
 NOMAD_QUALIFY_TOKEN=""
 GO_REQUIRED_VERSION="go1.26.5"
 GO_DOWNLOAD_BASE_URL="https://go.dev/dl"
@@ -256,6 +261,114 @@ ensure_user_in_docker_group() {
   DOCKER_GROUP_CHANGED=1
 }
 
+# BEGIN nomad_tls (the tests run these functions on their own)
+# Nomad's HTTPS identity: a server certificate for server.global.nomad,
+# localhost, 127.0.0.1 and ::1, signed by a CA that signs nothing else. The CA's
+# key exists only while the certificate is issued, so no other certificate can
+# chain to ca.pem. ES pins the server certificate's public key as well.
+NOMAD_TLS_SERVER_NAME="server.global.nomad"
+NOMAD_TLS_VALID_DAYS=825
+NOMAD_TLS_RENEW_DAYS=30
+
+# nomad_tls_issue <dir>: write ca.pem, server.pem (0644) and server-key.pem
+# (0600) into <dir>, owned by the user who runs it (root on a host).
+nomad_tls_issue() {
+  local dir=$1
+  local work
+  local status=0
+
+  work="$(umask 077 && mktemp -d)" || return 1
+  # Each step stops the subshell on failure (set -e does not apply inside a
+  # subshell whose status is tested).
+  (
+    umask 077
+    cd "${work}" || exit 1
+    openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out ca-key.pem || exit 1
+    openssl req -x509 -new -key ca-key.pem -sha256 -days "${NOMAD_TLS_VALID_DAYS}" \
+      -subj "/CN=Execution Substrate Nomad CA" \
+      -addext "basicConstraints=critical,CA:TRUE,pathlen:0" \
+      -addext "keyUsage=critical,keyCertSign" \
+      -addext "subjectKeyIdentifier=hash" \
+      -out ca.pem || exit 1
+    openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out server-key.pem || exit 1
+    openssl req -new -key server-key.pem -subj "/CN=${NOMAD_TLS_SERVER_NAME}" -out server.csr || exit 1
+    printf '%s\n' \
+      "basicConstraints=critical,CA:FALSE" \
+      "keyUsage=critical,digitalSignature" \
+      "extendedKeyUsage=serverAuth,clientAuth" \
+      "subjectAltName=DNS:${NOMAD_TLS_SERVER_NAME},DNS:localhost,IP:127.0.0.1,IP:::1" \
+      "subjectKeyIdentifier=hash" \
+      "authorityKeyIdentifier=keyid" >server.ext || exit 1
+    serial="$(openssl rand -hex 16)" || exit 1
+    openssl x509 -req -in server.csr -CA ca.pem -CAkey ca-key.pem -set_serial "0x${serial}" \
+      -days "${NOMAD_TLS_VALID_DAYS}" -sha256 -extfile server.ext -out server.pem 2>/dev/null || exit 1
+    rm -f ca-key.pem || exit 1
+    openssl verify -CAfile ca.pem -purpose sslserver server.pem >/dev/null || exit 1
+    mkdir -p "${dir}" && chmod 0755 "${dir}" || exit 1
+    chmod 0644 ca.pem server.pem && chmod 0600 server-key.pem || exit 1
+    # Replace the key first and the CA last: a reader that sees the new CA
+    # also finds the certificate it signed.
+    mv -f server-key.pem "${dir}/server-key.pem" || exit 1
+    mv -f server.pem "${dir}/server.pem" || exit 1
+    mv -f ca.pem "${dir}/ca.pem" || exit 1
+  ) || status=$?
+  rm -rf "${work}"
+  return "${status}"
+}
+
+# nomad_tls_material_ok <dir>: succeed when <dir> holds, owned by the user
+# who runs it, a server certificate for Nomad's names that ca.pem signed, the
+# matching key (mode 0600), and at least NOMAD_TLS_RENEW_DAYS of validity.
+nomad_tls_material_ok() {
+  local dir=$1
+  local file
+  local check
+
+  for file in ca.pem server.pem server-key.pem; do
+    [[ -f "${dir}/${file}" && ! -L "${dir}/${file}" && -O "${dir}/${file}" ]] || return 1
+  done
+  [[ "$(stat -c '%a' "${dir}/server-key.pem")" == "600" ]] || return 1
+  openssl verify -CAfile "${dir}/ca.pem" -purpose sslserver "${dir}/server.pem" >/dev/null 2>&1 || return 1
+  openssl x509 -in "${dir}/server.pem" -noout -checkend "$((NOMAD_TLS_RENEW_DAYS * 86400))" >/dev/null 2>&1 || return 1
+  # One name per call: openssl x509 honours only the last -checkip given.
+  for check in "-checkhost ${NOMAD_TLS_SERVER_NAME}" "-checkhost localhost" "-checkip 127.0.0.1" "-checkip ::1"; do
+    # shellcheck disable=SC2086 # option and name split on purpose
+    [[ "$(openssl x509 -in "${dir}/server.pem" -noout ${check} 2>/dev/null)" == *" does match certificate" ]] || return 1
+  done
+  [[ "$(openssl x509 -in "${dir}/server.pem" -noout -pubkey 2>/dev/null)" == \
+    "$(openssl pkey -in "${dir}/server-key.pem" -pubout 2>/dev/null)" ]] || return 1
+}
+
+# nomad_tls_spki_sha256 <certificate>: print the lowercase hex SHA-256 of the
+# certificate's public key (SubjectPublicKeyInfo), the value ES pins in
+# nomad.server_spki_sha256.
+nomad_tls_spki_sha256() {
+  local digest
+  digest="$(openssl x509 -in "$1" -noout -pubkey | openssl pkey -pubin -outform DER | openssl dgst -sha256 -r)" || return 1
+  printf '%s\n' "${digest%% *}"
+}
+
+# nomad_tls_as_root <function> <args...>: run one of the functions above as
+# root, so Nomad's key is created and read only by root.
+nomad_tls_as_root() {
+  sudo bash -c "set -euo pipefail; $(declare -p NOMAD_TLS_SERVER_NAME NOMAD_TLS_VALID_DAYS NOMAD_TLS_RENEW_DAYS); $(declare -f nomad_tls_issue nomad_tls_material_ok nomad_tls_spki_sha256); \"\$@\"" nomad-tls "$@"
+}
+# END nomad_tls
+
+# Keep Nomad's TLS material while it is sound and has at least
+# NOMAD_TLS_RENEW_DAYS left; otherwise issue new material, which changes the
+# key ES pins (nomad.server_spki_sha256) and restarts Nomad.
+install_nomad_tls_material() {
+  if nomad_tls_as_root nomad_tls_material_ok "${NOMAD_TLS_DIR}"; then
+    echo "nomad tls: keeping the certificate in ${NOMAD_TLS_DIR}"
+    return 0
+  fi
+  echo "==> Issuing Nomad's TLS certificate in ${NOMAD_TLS_DIR}"
+  nomad_tls_as_root nomad_tls_issue "${NOMAD_TLS_DIR}"
+  NOMAD_TLS_ISSUED=1
+  NOMAD_CONFIG_CHANGED=1
+}
+
 install_nomad_service_config() {
   local backup_suffix
 
@@ -265,6 +378,8 @@ install_nomad_service_config() {
   # the keyring) are root-owned.
   sudo install -d -o root -g root -m 0755 "${NOMAD_CONFIG_DIR}"
   sudo install -d -o root -g root -m 0700 "${NOMAD_DATA_DIR}"
+  sudo install -d -o root -g root -m 0755 "${NOMAD_TLS_DIR}"
+  install_nomad_tls_material
 
   if sudo test -f "${NOMAD_CONFIG_PATH}" && ! sudo grep -Fq "${NOMAD_MANAGED_MARKER}" "${NOMAD_CONFIG_PATH}"; then
     backup_suffix="$(date +%Y%m%d%H%M%S)"
@@ -328,6 +443,21 @@ advertise {
   rpc  = "127.0.0.1:4647"
   serf = "127.0.0.1:4648"
 }
+
+# HTTPS and RPC over TLS 1.3 only, with the certificate this script issues.
+# Clients authenticate with ACL tokens, not certificates.
+tls {
+  http = true
+  rpc  = true
+
+  ca_file   = "${NOMAD_TLS_DIR}/ca.pem"
+  cert_file = "${NOMAD_TLS_DIR}/server.pem"
+  key_file  = "${NOMAD_TLS_DIR}/server-key.pem"
+
+  verify_server_hostname = true
+  verify_https_client    = false
+  tls_min_version        = "tls13"
+}
 EOF
   sudo chown root:root "${NOMAD_CONFIG_PATH}"
   sudo chmod 0640 "${NOMAD_CONFIG_PATH}"
@@ -336,12 +466,18 @@ EOF
   fi
 }
 
+# nomad_curl <curl args...>: HTTPS to Nomad only, TLS 1.3, trusting only
+# Nomad's CA, with no proxy.
+nomad_curl() {
+  curl --noproxy '*' --proto =https --tlsv1.3 --cacert "${NOMAD_CACERT}" --capath /dev/null "$@"
+}
+
 # nomad_token_curl <token> <curl args...>: the token reaches curl through a
 # configuration on a file descriptor, never through a command line.
 nomad_token_curl() {
   local token=$1
   shift
-  curl --noproxy '*' --config <(printf 'header = "X-Nomad-Token: %s"\n' "${token}") "$@"
+  nomad_curl --config <(printf 'header = "X-Nomad-Token: %s"\n' "${token}") "$@"
 }
 
 # Bootstrap Nomad's ACLs once. The management secret is written root-only
@@ -355,7 +491,7 @@ bootstrap_nomad_acl() {
   local response_path
   local waited=0
 
-  while ! curl --noproxy '*' --fail --silent "${NOMAD_HTTP_ADDR}/v1/status/leader" 2>/dev/null | grep -q '"'; do
+  while ! nomad_curl --fail --silent "${NOMAD_HTTP_ADDR}/v1/status/leader" 2>/dev/null | grep -q '"'; do
     if (( waited >= NOMAD_LEADER_WAIT_SECONDS )); then
       echo "nomad: no leader within ${NOMAD_LEADER_WAIT_SECONDS}s, so ACLs cannot be bootstrapped" >&2
       return 1
@@ -393,7 +529,7 @@ bootstrap_nomad_acl() {
     return 1
   fi
 
-  status="$(curl --noproxy '*' --silent --output "${response_path}" --write-out '%{http_code}' -X POST --data-binary @- \
+  status="$(nomad_curl --silent --output "${response_path}" --write-out '%{http_code}' -X POST --data-binary @- \
     "${NOMAD_HTTP_ADDR}/v1/acl/bootstrap" <<<"{\"BootstrapSecret\":\"${secret}\"}")" || status="000"
   if [[ "${status}" == "200" ]]; then
     cleanup_tempfiles "${response_path}"
@@ -450,9 +586,10 @@ report_nomad_cpu_visibility_diagnostics() {
   local proc_cpu_mhz
   local dmi_current_speed="unavailable"
 
-  if ! NOMAD_TOKEN="${NOMAD_QUALIFY_TOKEN}" python3 - <<'PY' "${NOMAD_HTTP_ADDR}" >/dev/null 2>&1
+  if ! NOMAD_TOKEN="${NOMAD_QUALIFY_TOKEN}" NOMAD_CACERT="${NOMAD_CACERT}" python3 - <<'PY' "${NOMAD_HTTP_ADDR}" >/dev/null 2>&1
 import json
 import os
+import ssl
 import sys
 import urllib.error
 import urllib.request
@@ -462,10 +599,17 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-# No proxy and no redirects: a token reaches only the loopback Nomad.
-nomad_opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
+# HTTPS with TLS 1.3, trusting only Nomad's CA; no proxy and no redirects:
+# a token reaches only the loopback Nomad.
+nomad_tls = ssl.create_default_context(cafile=os.environ["NOMAD_CACERT"])
+nomad_tls.minimum_version = ssl.TLSVersion.TLSv1_3
+nomad_opener = urllib.request.build_opener(
+    urllib.request.ProxyHandler({}), urllib.request.HTTPSHandler(context=nomad_tls), _NoRedirect()
+)
 
 base_url = sys.argv[1].rstrip("/")
+if not base_url.startswith("https://"):
+    raise SystemExit("nomad: the Nomad address must use https")
 headers = {"X-Nomad-Token": os.environ.get("NOMAD_TOKEN", "")}
 try:
     nodes = json.load(nomad_opener.open(urllib.request.Request(f"{base_url}/v1/nodes", headers=headers)))
@@ -559,7 +703,7 @@ qualify_supported_substrate() {
   agent_path="$(mktemp)"
   nodes_path="$(mktemp)"
 
-  if ! curl --noproxy '*' --fail-with-body --silent --show-error "${NOMAD_HTTP_ADDR}/v1/status/leader" >"${leader_path}"; then
+  if ! nomad_curl --fail-with-body --silent --show-error "${NOMAD_HTTP_ADDR}/v1/status/leader" >"${leader_path}"; then
     echo "nomad: leader request failed for ${NOMAD_HTTP_ADDR}/v1/status/leader" >&2
     cleanup_tempfiles "${leader_path}" "${agent_path}" "${nodes_path}"
     return 1
@@ -575,10 +719,11 @@ qualify_supported_substrate() {
     return 1
   fi
 
-  if ! NOMAD_TOKEN="${NOMAD_QUALIFY_TOKEN}" python3 - <<'PY' "${NOMAD_HTTP_ADDR}" "${leader_path}" "${agent_path}" "${nodes_path}"
+  if ! NOMAD_TOKEN="${NOMAD_QUALIFY_TOKEN}" NOMAD_CACERT="${NOMAD_CACERT}" python3 - <<'PY' "${NOMAD_HTTP_ADDR}" "${leader_path}" "${agent_path}" "${nodes_path}"
 import json
 import os
 import pathlib
+import ssl
 import sys
 import urllib.request
 
@@ -587,10 +732,17 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-# No proxy and no redirects: a token reaches only the loopback Nomad.
-nomad_opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
+# HTTPS with TLS 1.3, trusting only Nomad's CA; no proxy and no redirects:
+# a token reaches only the loopback Nomad.
+nomad_tls = ssl.create_default_context(cafile=os.environ["NOMAD_CACERT"])
+nomad_tls.minimum_version = ssl.TLSVersion.TLSv1_3
+nomad_opener = urllib.request.build_opener(
+    urllib.request.ProxyHandler({}), urllib.request.HTTPSHandler(context=nomad_tls), _NoRedirect()
+)
 
 base_url = sys.argv[1].rstrip("/")
+if not base_url.startswith("https://"):
+    raise SystemExit("nomad: the Nomad address must use https")
 headers = {"X-Nomad-Token": os.environ.get("NOMAD_TOKEN", "")}
 leader = json.loads(pathlib.Path(sys.argv[2]).read_text(encoding="utf-8"))
 if not isinstance(leader, str) or not leader.strip():
@@ -759,6 +911,8 @@ printf 'vault: '; vault version | head -n 1
 printf 'nomad: '; nomad version | head -n 1
 printf 'docker: '; docker --version
 
+NOMAD_SERVER_SPKI_SHA256="$(nomad_tls_spki_sha256 "${NOMAD_TLS_DIR}/server.pem" 2>/dev/null)" || NOMAD_SERVER_SPKI_SHA256="<unavailable: rerun this script>"
+
 echo
 echo "==> Next steps"
 echo "1. Review the governed submit bring-up runbook:"
@@ -768,6 +922,7 @@ echo "   \"$CLONE_DIR/.runbooks/execution/Governed Execution ES Submit Runtime I
 echo "3. Keep the legacy compatibility runbook only for older reference-bridge validation:"
 echo "   \"$CLONE_DIR/.runbooks/execution/Governed Execution ES Submit Runtime Identity Reference Workload.md\""
 echo "4. Lock Nomad so only ES can submit: run 'sudo \"$CLONE_DIR/scripts/nomad_acl_setup.sh\"' (ES_USER=<ES's user> if ES does not run as root), set nomad.token_file in ES's config to ${NOMAD_ACL_DIR}/es-token, and export NOMAD_TOKEN_FILE=${NOMAD_ACL_DIR}/observer-token for readiness checks."
+echo "   In ES's config set nomad.base_url to ${NOMAD_HTTP_ADDR}, nomad.server_name to ${NOMAD_TLS_SERVER_NAME}, nomad.root_ca_file to ${NOMAD_CACERT} and nomad.server_spki_sha256 to ${NOMAD_SERVER_SPKI_SHA256}; export NOMAD_ADDR=${NOMAD_HTTP_ADDR} and NOMAD_CACERT=${NOMAD_CACERT} for the scripts and the nomad CLI."
 echo "   Start the Go platform with explicit configs and TLS material."
 echo "5. Verify the VM still reports nomad-startup-mode: pre-managed, submit-ready-mode: natural, and supported-environment: supported through scripts/01_bringup.sh check."
 echo "6. Treat script-managed local Nomad startup and any compute override as bounded fallback/troubleshooting, not the supported Linux environment story."
@@ -781,11 +936,15 @@ echo "- This script writes /etc/nomad.d/nomad.hcl for the single-node loopback N
 echo "- That Nomad config enables ACLs; the bootstrap management token is in ${NOMAD_ACL_MANAGEMENT_TOKEN_FILE} (root only). Keep it out of ES and operator scripts."
 echo "- That Nomad config disables Docker image cleanup so local runtime-profile images survive completed allocations for repeated supported-local client runs."
 echo "- That Nomad config enables only the Docker driver, refuses privileged containers and allows only the capabilities ES's runtime helper uses; it and Nomad's data directory are root-owned."
+echo "- That Nomad config serves its API and RPC over TLS 1.3 only, with a certificate this script issued in ${NOMAD_TLS_DIR} (key root-only; the CA's key was destroyed after signing). A rerun keeps it until fewer than ${NOMAD_TLS_RENEW_DAYS} days remain, then issues a new one: update nomad.server_spki_sha256 and restart ES after that."
 echo "- If supported-substrate qualification failed above, do not treat this VM as supported yet."
 echo "- If nomad.service could not start or remain healthy, fix that with root-managed host investigation instead of falling back to a user-started Nomad proof."
 echo "- Some proof VMs may still need manual root investigation or bounded fallback when Nomad fingerprinting leaves cpu.totalcompute at 0."
 echo "- A host that still reports cpu.totalcompute=0 under the root-managed non-dev service and exposes no usable CPU-frequency data via cpufreq sysfs, /proc/cpuinfo, or SMBIOS Current Speed is currently unsupported for the supported Linux profile."
 echo "- The workload-visible Vault address must be reachable from bridge-networked containers."
+if [[ "${NOMAD_TLS_ISSUED}" == "1" ]]; then
+  echo "- This run issued a new Nomad certificate: its key pin is ${NOMAD_SERVER_SPKI_SHA256}. Put it in nomad.server_spki_sha256 and restart ES."
+fi
 if [[ "${DOCKER_GROUP_CHANGED}" == "1" ]]; then
   echo "- Docker group membership changed for ${CURRENT_USER}; log out and back in before running repo scripts without sudo."
 fi

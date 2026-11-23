@@ -128,6 +128,11 @@ func TestNomadACLShellHelpersIgnoreProxySettings(t *testing.T) {
 	}))
 	defer proxy.Close()
 	tokenFile := writeFakeNomadObserverTokenFile(t, t.TempDir())
+	nomadTLS, err := issueNomadTLSMaterial(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	caFile := nomadTLS.caFile
 	for _, call := range []string{
 		`nomad_api_get /v1/agent/self "$OUT"`,
 		`nomad_acl_state_check`,
@@ -137,7 +142,8 @@ func TestNomadACLShellHelpersIgnoreProxySettings(t *testing.T) {
 			command := exec.Command("bash", "-c", `source "$1"; `+call, "bash", filepath.Join(repo, "scripts", "internal", "nomad_acl.sh"))
 			command.Env = []string{
 				"PATH=" + os.Getenv("PATH"),
-				"NOMAD_ADDR=http://nomad-proxy-probe.invalid:4646",
+				"NOMAD_ADDR=https://nomad-proxy-probe.invalid:4646",
+				"NOMAD_CACERT=" + caFile,
 				"NOMAD_TOKEN_FILE=" + tokenFile,
 				"OUT=" + filepath.Join(t.TempDir(), "out.json"),
 				"http_proxy=" + proxy.URL, "HTTP_PROXY=" + proxy.URL,
@@ -151,6 +157,76 @@ func TestNomadACLShellHelpersIgnoreProxySettings(t *testing.T) {
 			}
 			if got := requests.Load() - before; got != 0 {
 				t.Fatalf("%s sent %d request(s) to the proxy: output=%s", call, got, output)
+			}
+		})
+	}
+}
+
+// The shell helpers send requests to Nomad only over TLS 1.3, trusting only
+// NOMAD_CACERT. They refuse a plain-HTTP NOMAD_ADDR and a CA file that is
+// missing or a symbolic link before any request; a Nomad whose certificate
+// another CA signed, or that offers only TLS 1.2, fails the handshake, so no
+// request (and no token) reaches it. With Nomad's own CA the token arrives.
+func TestNomadShellHelpersTrustOnlyNomadsCA(t *testing.T) {
+	repo := executionPlatformRepoRoot(t)
+	tokenFile := writeFakeNomadObserverTokenFile(t, t.TempDir())
+	var requests atomic.Int32
+	var authorized atomic.Int32
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		if r.Header.Get("X-Nomad-Token") == testObserverNomadToken {
+			authorized.Add(1)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"config":{}}`))
+	})
+	server, nomadTLS := startNomadTLSStandIn(t, handler)
+	plain := httptest.NewServer(handler)
+	defer plain.Close()
+	tls12 := httptestTLS12Server(t, nomadTLS, handler)
+	other, err := issueNomadTLSMaterial(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(t.TempDir(), "ca.pem")
+	if err := os.Symlink(nomadTLS.caFile, link); err != nil {
+		t.Fatal(err)
+	}
+	get := func(addr string, caFile string) (string, error) {
+		command := exec.Command("bash", "-c", `source "$1"; nomad_api_get /v1/agent/self "$OUT"`, "bash",
+			filepath.Join(repo, "scripts", "internal", "nomad_acl.sh"))
+		command.Env = []string{
+			"PATH=" + os.Getenv("PATH"),
+			"NOMAD_ADDR=" + addr,
+			"NOMAD_CACERT=" + caFile,
+			"NOMAD_TOKEN_FILE=" + tokenFile,
+			"OUT=" + filepath.Join(t.TempDir(), "out.json"),
+		}
+		output, err := command.CombinedOutput()
+		return string(output), err
+	}
+
+	if output, err := get(server.URL, nomadTLS.caFile); err != nil || authorized.Load() != 1 {
+		t.Fatalf("nomad_api_get with Nomad's CA failed: %v authorized=%d output=%s", err, authorized.Load(), output)
+	}
+	for _, test := range []struct {
+		name, addr, caFile, want string
+	}{
+		{"plain HTTP address", plain.URL, nomadTLS.caFile, "NOMAD_ADDR must be Nomad's https:// address"},
+		{"no CA file", server.URL, "", "NOMAD_CACERT must name Nomad's CA certificate file"},
+		{"CA file missing", server.URL, filepath.Join(t.TempDir(), "missing.pem"), "NOMAD_CACERT must name Nomad's CA certificate file"},
+		{"CA file is a symbolic link", server.URL, link, "NOMAD_CACERT must name Nomad's CA certificate file"},
+		{"certificate from another CA", server.URL, other.caFile, ""},
+		{"Nomad offers only TLS 1.2", tls12.URL, nomadTLS.caFile, ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			requests.Store(0)
+			output, err := get(test.addr, test.caFile)
+			if err == nil || !strings.Contains(output, test.want) {
+				t.Fatalf("nomad_api_get did not refuse with %q: %v output=%s", test.want, err, output)
+			}
+			if got := requests.Load(); got != 0 {
+				t.Fatalf("refused nomad_api_get sent %d request(s)", got)
 			}
 		})
 	}

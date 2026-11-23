@@ -9,7 +9,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"os"
 	"os/exec"
@@ -186,6 +185,14 @@ func TestBringupScriptUpCheckDownFullProfile(t *testing.T) {
 		},
 	}
 
+	// Bring-up starts this Nomad from NOMAD_CONFIG, with the TLS material
+	// the setup script's issuer writes.
+	nomadTLS, err := issueNomadTLSMaterial(filepath.Join(rootDir, "nomad-tls"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	nomadAddr := "https://127.0.0.1:" + itoa(t, nomadHTTPPort)
+
 	esCfg := esconfig.Config{
 		HTTP: esconfig.HTTPConfig{
 			BindAddress:            "127.0.0.1",
@@ -253,13 +260,8 @@ func TestBringupScriptUpCheckDownFullProfile(t *testing.T) {
 		WorkloadVaultAuth: esconfig.WorkloadVaultAuthConfig{
 			DefaultMode: esconfig.WorkloadVaultAuthModeVaultIdentityJWT,
 		},
-		Nomad: esconfig.NomadConfig{
-			BaseURL:        "http://127.0.0.1:" + itoa(t, nomadHTTPPort),
-			Datacenter:     "dc1",
-			TimeoutSeconds: 5,
-			// Bring-up writes this token after it starts Nomad and before ES.
-			TokenFile: filepath.Join(rootDir, "nomad-es-token", "es-token"),
-		},
+		// Bring-up writes the token after it starts Nomad and before ES.
+		Nomad: nomadTLS.esNomadConfig(nomadAddr, filepath.Join(rootDir, "nomad-es-token", "es-token")),
 		Execution: esconfig.ExecutionConfig{
 			StagingRootDir:             filepath.Join(rootDir, "es-stage"),
 			ResultsRootDir:             filepath.Join(rootDir, "es-results"),
@@ -299,7 +301,7 @@ advertise {
   rpc  = "127.0.0.1:`+itoa(t, nomadRPCPort)+`"
   serf = "127.0.0.1:`+itoa(t, nomadSerfPort)+`"
 }
-`) + "\n")
+`+supportedNomadTLSBlock(nomadTLS.dir)) + "\n")
 	if err := os.WriteFile(nomadConfigPath, nomadConfig, 0o600); err != nil {
 		t.Fatalf("write nomad config: %v", err)
 	}
@@ -330,7 +332,8 @@ advertise {
 		"EGS_URL="+egsURL,
 		"AGS_URL="+agsURL,
 		"ES_URL="+esURL,
-		"NOMAD_ADDR=http://127.0.0.1:"+itoa(t, nomadHTTPPort),
+		"NOMAD_ADDR="+nomadAddr,
+		"NOMAD_CACERT="+nomadTLS.caFile,
 		"ARS_RESOLVE="+fixture.arsServerName+":"+itoa(t, arsPort)+":127.0.0.1",
 		"EGS_RESOLVE="+fixture.egsServerName+":"+itoa(t, egsPort)+":127.0.0.1",
 		"AGS_RESOLVE="+fixture.agsServerName+":"+itoa(t, agsPort)+":127.0.0.1",
@@ -396,6 +399,9 @@ advertise {
 	if !strings.Contains(string(checkOutput), supportedNomadPostureLine) {
 		t.Fatalf("expected the Docker-only, limited Nomad posture in bringup check output, got %s", string(checkOutput))
 	}
+	if !strings.Contains(string(checkOutput), "nomad tls: tls=1.3 server_name="+nomadTLSServerName+" key=pinned") {
+		t.Fatalf("expected ES's pinned Nomad identity in bringup check output, got %s", string(checkOutput))
+	}
 	if !strings.Contains(string(checkOutput), "prepare-ready: true") || !strings.Contains(string(checkOutput), "submit-ready: true") {
 		t.Fatalf("expected explicit prepare-ready and submit-ready output, got %s", string(checkOutput))
 	}
@@ -447,7 +453,8 @@ advertise {
 	assertBringupNomadACLMaterial(t, bringupDir, esCfg.Nomad.TokenFile)
 	assertNomadBindSourcesUnderStagingRoot(
 		t,
-		"http://127.0.0.1:"+itoa(t, nomadHTTPPort),
+		nomadAddr,
+		nomadTLS.caFile,
 		filepath.Join(bringupDir, "nomad-acl", "observer-token"),
 		runtimeIdentityResult.Summary.RunID,
 		esCfg.Execution.StagingRootDir,
@@ -730,7 +737,8 @@ printf '%s\n' '{"config":{"Client":{"Options":{"docker.cleanup.image":"false"}},
 	cmd.Env = append(os.Environ(),
 		"PATH="+fakeBinDir+string(os.PathListSeparator)+os.Getenv("PATH"),
 		"ES_CONFIG="+esConfigPath,
-		"NOMAD_ADDR=http://127.0.0.1:4646",
+		"NOMAD_ADDR=https://127.0.0.1:4646",
+		"NOMAD_CACERT="+writeUnusedNomadCACertFile(rootDir),
 		"NOMAD_TOKEN_FILE="+writeFakeNomadObserverTokenFile(t, rootDir),
 	)
 
@@ -784,7 +792,8 @@ func TestRuntimeProfileImageReadinessAcceptsNomadDockerImageCleanupDisabled(t *t
 			cmd.Env = append(os.Environ(),
 				"PATH="+fakeBinDir+string(os.PathListSeparator)+os.Getenv("PATH"),
 				"ES_CONFIG="+esConfigPath,
-				"NOMAD_ADDR=http://127.0.0.1:4646",
+				"NOMAD_ADDR=https://127.0.0.1:4646",
+				"NOMAD_CACERT="+writeUnusedNomadCACertFile(rootDir),
 				"NOMAD_TOKEN_FILE="+tokenFile,
 			)
 
@@ -905,7 +914,7 @@ func TestHealthCheckScriptRejectsPreManagedDevNomad(t *testing.T) {
 		t.Fatalf("split es addr: %v", err)
 	}
 
-	nomadServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	nomadServer, nomadTLS := startNomadTLSStandIn(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/v1/status/leader":
@@ -924,6 +933,7 @@ func TestHealthCheckScriptRejectsPreManagedDevNomad(t *testing.T) {
 					"Server":     map[string]any{"Enabled": true},
 					"Client":     map[string]any{"Enabled": true, "Options": map[string]any{"driver.allowlist": "docker"}},
 					"Plugins":    supportedNomadDockerPluginAgentConfig(),
+					"TLSConfig":  supportedNomadTLSAgentConfig(),
 				},
 			})
 		case "/v1/nodes":
@@ -946,7 +956,6 @@ func TestHealthCheckScriptRejectsPreManagedDevNomad(t *testing.T) {
 			http.NotFound(w, r)
 		}
 	}))
-	defer nomadServer.Close()
 
 	rootDir := t.TempDir()
 	stagingRootDir := filepath.Join(rootDir, "staging")
@@ -978,11 +987,7 @@ func TestHealthCheckScriptRejectsPreManagedDevNomad(t *testing.T) {
 	}()
 
 	esConfigPath := writeJSONConfigFile(t, rootDir, "es-full-health.json", map[string]any{
-		"nomad": map[string]any{
-			"base_url":   nomadServer.URL,
-			"datacenter": "dc1",
-			"token_file": writeFakeNomadTokenFile(t, rootDir),
-		},
+		"nomad": nomadTLS.esNomadConfigJSON(nomadServer.URL, writeFakeNomadTokenFile(t, rootDir)),
 		"execution": map[string]any{
 			"staging_root_dir":               stagingRootDir,
 			"results_root_dir":               resultsRootDir,
@@ -1014,6 +1019,7 @@ func TestHealthCheckScriptRejectsPreManagedDevNomad(t *testing.T) {
 		"AGS_URL=https://"+stack.fixture.agsServerName+":"+agsPort,
 		"ES_URL=https://"+stack.fixture.esServerName+":"+esPort,
 		"NOMAD_ADDR="+nomadServer.URL,
+		"NOMAD_CACERT="+nomadTLS.caFile,
 		"NOMAD_TOKEN_FILE="+writeFakeNomadObserverTokenFile(t, rootDir),
 		"ARS_RESOLVE="+stack.fixture.arsServerName+":"+arsPort+":"+arsHost,
 		"EGS_RESOLVE="+stack.fixture.egsServerName+":"+egsPort+":"+egsHost,
@@ -3960,11 +3966,11 @@ func assertBringupServicesRunAsOperator(t *testing.T, bringupDir, arsRootDir, in
 	}
 }
 
-func assertNomadBindSourcesUnderStagingRoot(t *testing.T, nomadAddr string, nomadTokenFile string, runID string, stagingRoot string, allowedExternalSources ...string) {
+func assertNomadBindSourcesUnderStagingRoot(t *testing.T, nomadAddr string, nomadCACert string, nomadTokenFile string, runID string, stagingRoot string, allowedExternalSources ...string) {
 	t.Helper()
 
 	cmd := exec.Command("nomad", "job", "inspect", "-json", "exec-"+runID)
-	cmd.Env = append(os.Environ(), nomadCLIEnv(t, nomadAddr, nomadTokenFile)...)
+	cmd.Env = append(os.Environ(), nomadCLIEnv(t, nomadAddr, nomadCACert, nomadTokenFile)...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("inspect nomad job: %v output=%s", err, string(output))

@@ -68,7 +68,7 @@ func TestSupportedLocalSetupScriptBootstrapsRealSPIREAndVaultDevTarget(t *testin
 	}
 	nomad := startNomadHarnessWithOptions(t, newExecutionWorkspaceTempDir(t, "supported-local-nomad-"), nomadHarnessOptions{aclUnbootstrapped: true, leaderOnly: true})
 	t.Cleanup(nomad.stop)
-	nomadPort := strings.TrimPrefix(nomad.baseURL(), "http://127.0.0.1:")
+	nomadPort := strings.TrimPrefix(nomad.baseURL(), "https://127.0.0.1:")
 	nomadACLDir := filepath.Join(rootDir, "nomad-acl")
 	t.Cleanup(func() {
 		remove := exec.Command("rm", "-rf", "--", nomadACLDir)
@@ -97,6 +97,7 @@ func TestSupportedLocalSetupScriptBootstrapsRealSPIREAndVaultDevTarget(t *testin
 		"SUPPORTED_LOCAL_VAULT_PUBLIC_HOST=127.0.0.1",
 		"SUPPORTED_LOCAL_VAULT_PORT="+strconv.Itoa(vaultPort),
 		"SUPPORTED_LOCAL_NOMAD_PORT="+nomadPort,
+		"SUPPORTED_LOCAL_NOMAD_CACERT="+nomad.tls.caFile,
 		"SUPPORTED_LOCAL_NOMAD_ACL_DIR="+nomadACLDir,
 	)
 	if spireTarball := strings.TrimSpace(os.Getenv("SUPPORTED_LOCAL_TEST_SPIRE_TARBALL")); spireTarball != "" {
@@ -282,8 +283,9 @@ func TestSupportedLocalSetupScriptBootstrapsRealSPIREAndVaultDevTarget(t *testin
 	assertSupportedLocalNomadLock(t, proofDir, nomad, nomadACLDir)
 }
 
-// Setup bootstrapped the test Nomad, pointed ES at its own token and the
-// operator environment at the observer token, which can read but not submit.
+// Setup bootstrapped the test Nomad, pointed ES at its own token and at the
+// key of the certificate the Nomad presents, and the operator environment at
+// the observer token, which can read but not submit.
 func assertSupportedLocalNomadLock(t *testing.T, proofDir string, nomad *nomadHarness, aclDir string) {
 	t.Helper()
 	configBytes, err := os.ReadFile(filepath.Join(proofDir, "es.json"))
@@ -292,15 +294,20 @@ func assertSupportedLocalNomadLock(t *testing.T, proofDir string, nomad *nomadHa
 	}
 	var payload struct {
 		Nomad struct {
-			BaseURL   string `json:"base_url"`
-			TokenFile string `json:"token_file"`
+			BaseURL          string `json:"base_url"`
+			ServerName       string `json:"server_name"`
+			RootCAFile       string `json:"root_ca_file"`
+			ServerSPKISHA256 string `json:"server_spki_sha256"`
+			TokenFile        string `json:"token_file"`
 		} `json:"nomad"`
 	}
 	if err := json.Unmarshal(configBytes, &payload); err != nil {
 		t.Fatalf("decode es config: %v", err)
 	}
-	if payload.Nomad.BaseURL != nomad.baseURL() || payload.Nomad.TokenFile != filepath.Join(aclDir, "es-token") {
-		t.Fatalf("es.json nomad block = %+v", payload.Nomad)
+	if payload.Nomad.BaseURL != nomad.baseURL() || payload.Nomad.TokenFile != filepath.Join(aclDir, "es-token") ||
+		payload.Nomad.ServerName != nomadTLSServerName || payload.Nomad.RootCAFile != nomad.tls.caFile ||
+		payload.Nomad.ServerSPKISHA256 != nomad.tls.spkiSHA256 {
+		t.Fatalf("es.json nomad block = %+v, want the test Nomad's CA and key pin %s", payload.Nomad, nomad.tls.spkiSHA256)
 	}
 	env, err := os.ReadFile(filepath.Join(proofDir, "env.sh"))
 	if err != nil {
@@ -308,7 +315,8 @@ func assertSupportedLocalNomadLock(t *testing.T, proofDir string, nomad *nomadHa
 	}
 	observerTokenFile := filepath.Join(aclDir, "observer-token")
 	if !strings.Contains(string(env), `export NOMAD_TOKEN_FILE="`+observerTokenFile+`"`) ||
-		!strings.Contains(string(env), `export NOMAD_ADDR="`+nomad.baseURL()+`"`) {
+		!strings.Contains(string(env), `export NOMAD_ADDR="`+nomad.baseURL()+`"`) ||
+		!strings.Contains(string(env), `export NOMAD_CACERT="`+nomad.tls.caFile+`"`) {
 		t.Fatalf("env.sh does not name the test Nomad and its observer token:\n%s", env)
 	}
 	observerToken := readNomadTokenFile(t, observerTokenFile)

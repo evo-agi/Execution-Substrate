@@ -2,6 +2,7 @@ package admission
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -272,13 +273,21 @@ func TestLoadNomadTokenRefusesAParentOwnedByAnotherUser(t *testing.T) {
 	}
 }
 
-func minimalNomadConfigForTest(tokenFile string) esconfig.NomadConfig {
-	return esconfig.NomadConfig{BaseURL: "http://127.0.0.1:4646", Datacenter: "dc1", TimeoutSeconds: 5, TokenFile: tokenFile}
+// minimalNomadConfigForTest is a complete ES Nomad config for a Nomad that
+// is never contacted: its CA file and pin come from a fresh test CA.
+func minimalNomadConfigForTest(t *testing.T, tokenFile string) esconfig.NomadConfig {
+	t.Helper()
+	pki := newTestNomadPKI(t)
+	_, pin := pki.serverCert(t, testNomadServerCertOptions{})
+	return esconfig.NomadConfig{
+		BaseURL: "https://127.0.0.1:4646", ServerName: testNomadServerName, RootCAFile: pki.caFile, ServerSPKISHA256: pin,
+		Datacenter: "dc1", TimeoutSeconds: 5, TokenFile: tokenFile,
+	}
 }
 
 func TestNewNomadClientLoadsTheTokenOrRefusesToBuild(t *testing.T) {
 	path := writeNomadTokenFile(t, privateNomadTokenDir(t), testNomadToken, 0o400)
-	cfg := minimalNomadConfigForTest(path)
+	cfg := minimalNomadConfigForTest(t, path)
 	client, err := newNomadClient(cfg)
 	if err != nil || client.token != testNomadToken {
 		t.Fatalf("client did not load the token: err=%v", err)
@@ -294,21 +303,23 @@ func TestNewNomadClientLoadsTheTokenOrRefusesToBuild(t *testing.T) {
 func TestNomadClientNeverFollowsARedirectOrUsesAProxy(t *testing.T) {
 	var elsewhere sync.Mutex
 	elsewhereRequests := 0
-	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+	// Both servers carry the pinned certificate, so only the redirect rule
+	// keeps the token from the second one.
+	pki := newTestNomadPKI(t)
+	certificate, pin := pki.serverCert(t, testNomadServerCertOptions{})
+	other := startTestNomadTLSServer(t, http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		elsewhere.Lock()
 		elsewhereRequests++
 		elsewhere.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"EvalID":"redirected"}`))
-	}))
-	defer other.Close()
-	redirecting := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+	}), certificate, 0)
+	redirecting := startTestNomadTLSServer(t, http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		http.Redirect(w, request, other.URL+request.URL.RequestURI(), http.StatusTemporaryRedirect)
-	}))
-	defer redirecting.Close()
+	}), certificate, 0)
 
-	cfg := minimalNomadConfigForTest(writeNomadTokenFile(t, privateNomadTokenDir(t), testNomadToken, 0o400))
-	cfg.BaseURL = redirecting.URL
+	cfg := minimalNomadConfigForTest(t, writeNomadTokenFile(t, privateNomadTokenDir(t), testNomadToken, 0o400))
+	cfg.BaseURL, cfg.RootCAFile, cfg.ServerSPKISHA256 = redirecting.URL, pki.caFile, pin
 	client, err := newNomadClient(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -324,8 +335,9 @@ func TestNomadClientNeverFollowsARedirectOrUsesAProxy(t *testing.T) {
 	if elsewhereRequests != 0 {
 		t.Fatalf("the client followed %d redirect(s)", elsewhereRequests)
 	}
-	if newNomadTransport().Proxy != nil {
-		t.Fatal("the Nomad transport uses a proxy")
+	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS13}
+	if transport := newNomadTransport(tlsConfig); transport.Proxy != nil || transport.TLSClientConfig != tlsConfig {
+		t.Fatal("the Nomad transport uses a proxy or not ES's TLS configuration")
 	}
 	if client.client.CheckRedirect == nil || client.client.CheckRedirect(nil, nil) != http.ErrUseLastResponse {
 		t.Fatal("the Nomad client follows redirects")

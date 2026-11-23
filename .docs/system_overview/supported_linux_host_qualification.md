@@ -44,7 +44,7 @@ The bounded platform direction remains unchanged:
 A host is `supported` only when the normal operator/readiness path can honestly report all of the following without `NOMAD_CLIENT_CPU_TOTAL_COMPUTE`:
 
 - Docker healthy
-- pre-managed Nomad service already running at `NOMAD_ADDR`
+- pre-managed Nomad service already running at `NOMAD_ADDR`, serving HTTPS over TLS 1.3 with the certificate ES pins
 - `GET /v1/agent/self` reports `config.DevMode=false`
 - at least one ready Nomad node with positive natural `cpu.totalcompute`
 - healthy Docker driver on that ready node
@@ -90,6 +90,7 @@ The current supported Linux host profile requires all of the following.
 - `nomad.service` active and enabled
 - `GET /v1/agent/self` reports `config.DevMode=false`
 - access control (ACLs) enforced: `acl { enabled = true }`, bootstrapped, and no anonymous policy; ES's least-privilege token and the read-only observer token provisioned by `sudo scripts/nomad_acl_setup.sh` (see [configuration.md](configuration.md#nomad-access-control))
+- HTTPS only: a `tls` block serving HTTP and RPC over TLS 1.3 with server names verified, using the certificate `scripts/70_linux_setup.sh` issues in `/etc/nomad.d/tls`, whose key ES pins (see [configuration.md](configuration.md#nomad-https))
 - at least one ready client node
 - that ready node exposes positive natural `cpu.totalcompute`
 - that ready node reports Docker driver `Healthy`, and no other driver: the client enables only Docker (`client.options["driver.allowlist"] = "docker"`)
@@ -232,16 +233,20 @@ systemctl status nomad --no-pager --full | sed -n '1,80p'
 ps -eo pid,user,args | grep '[n]omad' || true
 ss -ltnp '( sport = :4646 )' || true
 sudo scripts/nomad_acl_setup.sh check
+export NOMAD_ADDR=https://127.0.0.1:4646
+export NOMAD_CACERT=/etc/nomad.d/tls/ca.pem
 export NOMAD_TOKEN_FILE=/etc/execution-substrate/nomad-acl/observer-token
+python3 -I scripts/internal/nomad_tls_identity.py check /etc/execution-substrate/es.json "${NOMAD_ADDR}"
 source scripts/internal/nomad_acl.sh
-NOMAD_ADDR=http://127.0.0.1:4646 nomad_acl_state_check
-NOMAD_ADDR=http://127.0.0.1:4646 nomad_api_get /v1/agent/self /dev/stdout
-NOMAD_ADDR=http://127.0.0.1:4646 nomad_api_get /v1/status/leader /dev/stdout
-NOMAD_ADDR=http://127.0.0.1:4646 nomad_api_get /v1/nodes /dev/stdout
+nomad_acl_state_check
+nomad_api_get /v1/agent/self /dev/stdout
+nomad_api_get /v1/status/leader /dev/stdout
+nomad_api_get /v1/nodes /dev/stdout
 ```
 
 The observer token is read from its file and passed to curl through a file
-descriptor, never on a command line.
+descriptor, never on a command line. Every request goes over TLS 1.3 and
+trusts only `NOMAD_CACERT`.
 
 Pass only if all of the following hold:
 
@@ -249,6 +254,7 @@ Pass only if all of the following hold:
 - the service is pre-managed rather than a user-started foreground agent
 - `DevMode=false`
 - leader is present
+- the TLS check passes: Nomad presents, over TLS 1.3, a certificate from `nomad.root_ca_file` for `nomad.server_name` whose key matches `nomad.server_spki_sha256`, with at least 14 days left (`nomad tls: tls=1.3 ... key=pinned ...`)
 - the ACL check passes: ACLs enforced, no anonymous policy, ES's token is the `es-submit-v1` client token, and an anonymous plan, ES's token outside its namespace and the observer token's plan are all refused
 
 Fail immediately if:
@@ -262,18 +268,22 @@ Fail immediately if:
 For each ready node, inspect node detail:
 
 ```bash
-python3 - <<'PY'
-import json, urllib.request
-nodes = json.load(urllib.request.urlopen("http://127.0.0.1:4646/v1/nodes"))
-for node in nodes:
-    if node.get("Status") != "ready":
-        continue
-    node_id = (node.get("ID") or "").strip()
-    detail = json.load(urllib.request.urlopen(f"http://127.0.0.1:4646/v1/node/{node_id}"))
-    attrs = detail.get("Attributes") or {}
-    docker = ((detail.get("Drivers") or {}).get("docker") or {})
-    print(node.get("Name"), attrs.get("cpu.totalcompute"), docker.get("Healthy"), docker.get("HealthDescription"))
+# In the shell from step 1 (NOMAD_ADDR, NOMAD_CACERT and NOMAD_TOKEN_FILE
+# exported, scripts/internal/nomad_acl.sh sourced).
+nodes_file="$(mktemp)"
+detail_file="$(mktemp)"
+nomad_api_get /v1/nodes "${nodes_file}"
+for node_id in $(python3 -c 'import json, sys; print(" ".join(n["ID"] for n in json.load(open(sys.argv[1])) if n.get("Status") == "ready"))' "${nodes_file}"); do
+  nomad_api_get "/v1/node/${node_id}" "${detail_file}"
+  python3 - "${detail_file}" <<'PY'
+import json, sys
+detail = json.load(open(sys.argv[1]))
+attrs = detail.get("Attributes") or {}
+docker = (detail.get("Drivers") or {}).get("docker") or {}
+print(detail.get("Name"), attrs.get("cpu.totalcompute"), docker.get("Healthy"), docker.get("HealthDescription"))
 PY
+done
+rm -f -- "${nodes_file}" "${detail_file}"
 ```
 
 Pass only if at least one ready node reports:

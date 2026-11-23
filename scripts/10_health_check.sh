@@ -28,6 +28,7 @@ validate_env() {
   if [[ "${PROFILE}" == "full" ]]; then
     require_command docker
     require_env NOMAD_ADDR
+    require_readable_env NOMAD_CACERT
     default_bringup_nomad_token_file
     require_env NOMAD_TOKEN_FILE
   fi
@@ -77,12 +78,13 @@ if [[ "${PROFILE}" == "full" ]]; then
   else
     check_nomad_ready_once
   fi
+  check_es_nomad_identity_once "${ES_CONFIG}"
   check_docker_ready
   check_runtime_profile_images_once "${ES_CONFIG}"
   check_runtime_profile_image_gc_policy_once "${ES_CONFIG}"
   supported_environment_line
   if [[ "${prepare_ready_verified}" == "1" ]]; then
-    echo "submit-ready: true (prepare-ready, ES submit config, Docker, required runtime profile images, runtime image durability, and Nomad client/leader checks all passed)"
+    echo "submit-ready: true (prepare-ready, ES submit config, Docker, required runtime profile images, runtime image durability, Nomad client/leader, and Nomad pinned-identity checks all passed)"
   else
     echo "submit-ready: partial (Docker, required runtime profile images, runtime image durability, Nomad, and ES submit config passed, but prepare readiness was not fully verified)"
   fi

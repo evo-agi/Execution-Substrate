@@ -47,6 +47,8 @@ type fullReadinessFixture struct {
 	roots   map[string]os.FileInfo
 	// observerToken is the read-only Nomad token file readiness reads with.
 	observerToken string
+	// nomadCACert is the CA of the stand-in Nomad's certificate.
+	nomadCACert string
 }
 
 func newFullReadinessFixture(t *testing.T) *fullReadinessFixture {
@@ -83,19 +85,20 @@ func newFullReadinessFixture(t *testing.T) *fullReadinessFixture {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = listener.Close() })
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// Nomad is a TLS stand-in with setup-issued material, so readiness's
+	// key pin check is a real handshake; the stand-in curl answers the rest.
+	server, nomadTLS := startNomadTLSStandIn(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/node/node-1" {
 			http.NotFound(w, r)
 			return
 		}
 		_, _ = w.Write([]byte(`{"Attributes":{"cpu.totalcompute":"4000"},"Drivers":{"docker":{"Healthy":true}}}`))
 	}))
-	t.Cleanup(server.Close)
 	config := filepath.Join(proof, "es.json")
 	esTokenFile := writeFakeNomadTokenFile(t, workspace)
 	observerTokenFile := writeFakeNomadObserverTokenFile(t, workspace)
 	data, err := json.Marshal(map[string]any{
-		"nomad":          map[string]any{"base_url": server.URL, "datacenter": "dc1", "token_file": esTokenFile},
+		"nomad":          nomadTLS.esNomadConfigJSON(server.URL, esTokenFile),
 		"runtime_config": map[string]any{"workload_zone_vault_config_ref": map[string]any{"digest": "fixture-digest"}},
 		"execution": map[string]any{
 			"staging_root_dir": filepath.Join(proof, "es-staging"), "results_root_dir": filepath.Join(proof, "es-results"),
@@ -118,7 +121,7 @@ func newFullReadinessFixture(t *testing.T) *fullReadinessFixture {
 	}
 	f := &fullReadinessFixture{t: t, repo: repo, proof: proof, config: config, state: state, bin: bin,
 		events: filepath.Join(workspace, "events"), server: server, initial: data, roots: map[string]os.FileInfo{},
-		observerToken: observerTokenFile}
+		observerToken: observerTokenFile, nomadCACert: nomadTLS.caFile}
 	for _, name := range []string{"es-staging", "es-results"} {
 		info, err := os.Stat(filepath.Join(proof, name))
 		if err != nil {
@@ -150,7 +153,7 @@ case "$url" in
   "$ROOT_SERVER_URL"/v1/acl/policy/anonymous)
     printf '404' ;;
   "$ROOT_SERVER_URL"/v1/agent/self)
-    printf '{"config":{"DevMode":false,"Client":{"Options":{"driver.allowlist":"docker"}},"Plugins":[{"Name":"docker","Config":{"allow_privileged":%s,"allow_caps":["chown","dac_override","fowner","kill","setgid","setuid","setpcap"],"volumes":{"enabled":true},"gc":{"image":false}}}]}}\n' "${ROOT_AGENT_ALLOW_PRIVILEGED:-false}" ;;
+    printf '{"config":{"DevMode":false,"Client":{"Options":{"driver.allowlist":"docker"}},"Plugins":[{"Name":"docker","Config":{"allow_privileged":%s,"allow_caps":["chown","dac_override","fowner","kill","setgid","setuid","setpcap"],"volumes":{"enabled":true},"gc":{"image":false}}}],"TLSConfig":{"EnableHTTP":true,"EnableRPC":true,"TLSMinVersion":"tls13","VerifyServerHostname":true,"RPCUpgradeMode":false}}}\n' "${ROOT_AGENT_ALLOW_PRIVILEGED:-false}" ;;
   "$ROOT_SERVER_URL"/v1/nodes)
     printf '[{"ID":"node-1","Name":"fixture","Status":"ready"}]\n' ;;
   *) printf 'unexpected curl URL\n' >> "$ROOT_EVENTS"; exit 97 ;;
@@ -192,7 +195,7 @@ func (f *fullReadinessFixture) env(overrides ...string) []string {
 		"SUPPORTED_LOCAL_PROOF_ID=fixture-proof", "CONTROL_PLANE_IMAGE=execution-substrate/control-plane:supported-local",
 		"CONTROL_PLANE_DOCKERFILE=" + filepath.Join(f.proof, "Dockerfile"),
 		"BRINGUP_PROFILE=full", "BRINGUP_DIR=" + f.state,
-		"ES_CONFIG=" + f.config, "NOMAD_ADDR=" + f.server.URL, "NOMAD_TOKEN_FILE=" + f.observerToken,
+		"ES_CONFIG=" + f.config, "NOMAD_ADDR=" + f.server.URL, "NOMAD_CACERT=" + f.nomadCACert, "NOMAD_TOKEN_FILE=" + f.observerToken,
 		"ARS_URL=" + f.server.URL + "/ars", "EGS_URL=" + f.server.URL + "/egs",
 		"AGS_URL=" + f.server.URL + "/ags", "ES_URL=" + f.server.URL + "/es",
 		"CA_CERT=" + filepath.Join(f.proof, "ca.pem"),
@@ -413,6 +416,61 @@ func TestSupportedLocalFullReadinessRefusesALoosenedNomadAgent(t *testing.T) {
 	}
 }
 
+// Readiness makes ES's TLS checks against the running Nomad, after Nomad
+// readiness: an ES config that pins another key, trusts another CA, names
+// another server or names an address other than NOMAD_ADDR is refused before
+// any Docker check, and submit-ready: true is not printed.
+func TestSupportedLocalFullReadinessChecksNomadsPinnedIdentity(t *testing.T) {
+	other, err := issueNomadTLSMaterial(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	identityLine := "nomad tls: tls=1.3 server_name=" + nomadTLSServerName + " key=pinned"
+	f := newFullReadinessFixture(t)
+	output, err := f.runScript("10_health_check.sh", nil)
+	if err != nil || !strings.Contains(output, "submit-ready: true") || !strings.Contains(output, identityLine) {
+		t.Fatalf("readiness did not check the pinned Nomad: %v %q", err, output)
+	}
+	// The identity check runs once Nomad is ready (a Nomad that is still
+	// starting is waited for first) and before the Docker checks.
+	if nomadReady, identity := strings.Index(output, "nomad: leader="), strings.Index(output, identityLine); nomadReady < 0 || identity < nomadReady {
+		t.Fatalf("readiness checked Nomad's identity before Nomad readiness: %q", output)
+	}
+	for _, test := range []struct {
+		name   string
+		change func(map[string]any)
+		want   string
+	}{
+		{"another key pinned", func(n map[string]any) { n["server_spki_sha256"] = other.spkiSHA256 }, "Nomad's server key does not match nomad.server_spki_sha256"},
+		{"another CA", func(n map[string]any) { n["root_ca_file"] = other.caFile }, "Nomad's certificate does not verify under the CA"},
+		{"another server name", func(n map[string]any) { n["server_name"] = "client.global.nomad" }, "does not verify under the CA for client.global.nomad"},
+		{"another address", func(n map[string]any) { n["base_url"] = "https://127.0.0.1:1" }, "is not the Nomad address the checks use"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newFullReadinessFixture(t)
+			var config map[string]any
+			if err := json.Unmarshal(f.initial, &config); err != nil {
+				t.Fatal(err)
+			}
+			test.change(config["nomad"].(map[string]any))
+			data, err := json.Marshal(config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(f.config, data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			f.initial = data
+			output, err := f.runScript("10_health_check.sh", nil)
+			if err == nil || !strings.Contains(output, test.want) || strings.Contains(output, "submit-ready: true") ||
+				strings.Contains(output, identityLine) || strings.Contains(f.eventText(), "docker ") {
+				t.Fatalf("readiness accepted an ES config that does not pin this Nomad: %v %q events=%q", err, output, f.eventText())
+			}
+			f.assertNoReadinessMutation()
+		})
+	}
+}
+
 func TestSupportedLocalFullReadinessStillChecksSubmitPrerequisites(t *testing.T) {
 	f := newFullReadinessFixture(t)
 	output, err := f.runScript("10_health_check.sh", nil, "ROOT_IMAGE_PRESENT=0")
@@ -446,6 +504,7 @@ vault() { printf 'unexpected vault\n' >> "$ROOT_EVENTS"; return 97; }
 limactl() { printf 'unexpected limactl\n' >> "$ROOT_EVENTS"; return 97; }
 curl() { printf 'unexpected curl\n' >> "$ROOT_EVENTS"; return 97; }
 nomad_acl_state_check() { :; }
+observe_supported_local_nomad_server_key() { :; }
 ss() { printf 'unexpected ss\n' >> "$ROOT_EVENTS"; return 97; }
 stop_background_process() { :; }
 stop_vault_dev_listener() { :; }
@@ -462,6 +521,7 @@ setup`
 		"SUPPORTED_LOCAL_VAULT_ROOT_TOKEN=synthetic-token",
 		"SUPPORTED_LOCAL_VAULT_SECRET_VALUE=synthetic-value",
 		"SUPPORTED_LOCAL_CODEX_CREDENTIAL_VALUE=synthetic-value",
+		"SUPPORTED_LOCAL_NOMAD_CACERT="+writeUnusedNomadCACertFile(workspace),
 		"ROOT_EVENTS="+events,
 	)
 	if err == nil || string(output) != "supported-local execution roots invalid\n" {

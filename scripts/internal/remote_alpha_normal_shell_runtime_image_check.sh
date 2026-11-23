@@ -281,7 +281,9 @@ PY
     fi
   fi
 
-  if ! output="$(NOMAD_TOKEN="${token}" nomad node status -json 2>/dev/null)"; then
+  # Nomad serves HTTPS only; the CLI trusts only Nomad's CA.
+  if ! output="$(NOMAD_ADDR="${NOMAD_ADDR:-https://127.0.0.1:4646}" NOMAD_CACERT="${NOMAD_CACERT:-/etc/nomad.d/tls/ca.pem}" \
+      NOMAD_TOKEN="${token}" nomad node status -json 2>/dev/null)"; then
     python3 - <<'PY'
 import json
 print(json.dumps({"ready": False, "ready_nodes": 0, "error": "nomad node status did not succeed"}, sort_keys=True))

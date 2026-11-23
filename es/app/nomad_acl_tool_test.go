@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -34,13 +35,13 @@ func TestNomadACLToolAsksNomadWhichGrantsCanSubmit(t *testing.T) {
 	management := filepath.Join(aclDir, "management-token")
 	owner := strconv.Itoa(os.Geteuid()) + ":" + strconv.Itoa(os.Getegid())
 	provision := func() (string, error) {
-		return runNomadACLTool(t, "provision", "--addr", harness.addr,
+		return runNomadACLTool(t, "provision", "--addr", harness.addr, "--ca-file", harness.tls.caFile,
 			"--management-token-file", management,
 			"--es-token-file", harness.esTokenFile, "--es-token-owner", owner,
 			"--observer-token-file", harness.observerTokenFile, "--observer-token-owner", owner)
 	}
 	check := func() (string, error) {
-		return runNomadACLTool(t, "check", "--addr", harness.addr, "--es-token-file", harness.esTokenFile,
+		return runNomadACLTool(t, "check", "--addr", harness.addr, "--ca-file", harness.tls.caFile, "--es-token-file", harness.esTokenFile,
 			"--observer-token-file", harness.observerTokenFile, "--management-token-file", management)
 	}
 	write := func(method string, path string, body any) string {
@@ -161,7 +162,7 @@ func TestNomadACLToolAsksNomadWhichGrantsCanSubmit(t *testing.T) {
 	// file) judges a widened copy like any other grant.
 	write(http.MethodPost, "/v1/acl/policy/es-observer-v1", map[string]string{"Name": "es-observer-v1",
 		"Rules": "namespace \"es-submit-v1\" {\n  capabilities = [\"read-job\", \"alloc-lifecycle\"]\n}\n"})
-	if output, err := runNomadACLTool(t, "provision", "--addr", harness.addr, "--management-token-file", management,
+	if output, err := runNomadACLTool(t, "provision", "--addr", harness.addr, "--ca-file", harness.tls.caFile, "--management-token-file", management,
 		"--es-token-file", harness.esTokenFile, "--es-token-owner", owner); err == nil ||
 		!strings.Contains(output, "other ACL grants hold capabilities in es-submit-v1 (policy es-observer-v1)") {
 		t.Fatalf("provision without the observer accepted a widened observer policy: %v output=%s", err, output)
@@ -247,7 +248,7 @@ func TestNomadACLToolAsksNomadWhichGrantsCanSubmit(t *testing.T) {
 	// With a job ACL, the observer policy is not exempt from the probes either:
 	// a provision that does not write it judges it like any other grant.
 	write(http.MethodPost, "/v1/acl/policy/es-observer-v1", map[string]any{"Name": "es-observer-v1", "Rules": toolObserverPolicyRules, "JobACL": jobACL})
-	if output, err := runNomadACLTool(t, "provision", "--addr", harness.addr, "--management-token-file", management,
+	if output, err := runNomadACLTool(t, "provision", "--addr", harness.addr, "--ca-file", harness.tls.caFile, "--management-token-file", management,
 		"--es-token-file", harness.esTokenFile, "--es-token-owner", owner); err == nil ||
 		!strings.Contains(output, "other ACL grants hold capabilities in es-submit-v1 (policy es-observer-v1)") {
 		t.Fatalf("provision without the observer exempted an observer policy with a job ACL: %v output=%s", err, output)
@@ -332,7 +333,14 @@ func replaceNomadTokenFileContent(t *testing.T, path string, token string) {
 type fakeNomadForACLCheck struct {
 	mu      sync.Mutex
 	deviate func(w http.ResponseWriter, r *http.Request, token string) bool
-	tokens  map[string]string // probe secret -> granted policy or role
+}
+
+// setDeviation sets the one answer that departs from a locked Nomad (nil for
+// none) for the requests that follow.
+func (f *fakeNomadForACLCheck) setDeviation(deviate func(http.ResponseWriter, *http.Request, string) bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.deviate = deviate
 }
 
 const (
@@ -347,7 +355,10 @@ const (
 func (f *fakeNomadForACLCheck) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	token := r.Header.Get("X-Nomad-Token")
 	w.Header().Set("Content-Type", "application/json")
-	if f.deviate != nil && f.deviate(w, r, token) {
+	f.mu.Lock()
+	deviate := f.deviate
+	f.mu.Unlock()
+	if deviate != nil && deviate(w, r, token) {
 		return
 	}
 	writeJSON := func(value any) { _ = json.NewEncoder(w).Encode(value) }
@@ -428,10 +439,12 @@ func TestNomadACLToolCheckRefusesEachDeviation(t *testing.T) {
 	if err := os.WriteFile(managementFile, []byte(fakeACLManagementToken+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	fake := &fakeNomadForACLCheck{}
+	server, nomadTLS := startNomadTLSStandIn(t, fake)
 	run := func(deviate func(http.ResponseWriter, *http.Request, string) bool) (string, error) {
-		server := httptest.NewServer(&fakeNomadForACLCheck{deviate: deviate})
-		defer server.Close()
-		return runNomadACLTool(t, "check", "--addr", server.URL, "--es-token-file", esTokenFile,
+		fake.setDeviation(deviate)
+		defer fake.setDeviation(nil)
+		return runNomadACLTool(t, "check", "--addr", server.URL, "--ca-file", nomadTLS.caFile, "--es-token-file", esTokenFile,
 			"--observer-token-file", observerTokenFile, "--management-token-file", managementFile)
 	}
 	if output, err := run(nil); err != nil || !strings.Contains(output, "no other grant holds capabilities there") {
@@ -460,14 +473,19 @@ func TestNomadACLToolCheckRefusesEachDeviation(t *testing.T) {
 		}
 	}
 	// The tool sends tokens straight to the Nomad address: it follows no
-	// redirect and ignores proxy settings in its environment.
+	// redirect and ignores proxy settings in its environment. The redirect
+	// target presents a certificate from the same CA, so only the refusal to
+	// follow keeps the token from it.
 	startElsewhere := func(t *testing.T) (*httptest.Server, *atomic.Int32) {
 		var requests atomic.Int32
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		server, err := nomadTLS.startTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			requests.Add(1)
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"AccessorID":"anonymous","Type":"client"}`))
 		}))
+		if err != nil {
+			t.Fatal(err)
+		}
 		t.Cleanup(server.Close)
 		return server, &requests
 	}
@@ -485,12 +503,16 @@ func TestNomadACLToolCheckRefusesEachDeviation(t *testing.T) {
 		}
 	})
 	t.Run("proxy settings are ignored", func(t *testing.T) {
-		proxy, requests := startElsewhere(t)
-		server := httptest.NewServer(&fakeNomadForACLCheck{})
-		defer server.Close()
-		command := exec.Command("python3", "-I", nomadACLToolPath(), "check", "--addr", server.URL,
+		var requests atomic.Int32
+		proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			requests.Add(1)
+			http.Error(w, "proxy", http.StatusBadGateway)
+		}))
+		defer proxy.Close()
+		command := exec.Command("python3", "-I", nomadACLToolPath(), "check", "--addr", server.URL, "--ca-file", nomadTLS.caFile,
 			"--es-token-file", esTokenFile, "--observer-token-file", observerTokenFile, "--management-token-file", managementFile)
-		command.Env = append(os.Environ(), "http_proxy="+proxy.URL, "HTTP_PROXY="+proxy.URL, "all_proxy="+proxy.URL, "no_proxy=", "NO_PROXY=")
+		command.Env = append(os.Environ(), "https_proxy="+proxy.URL, "HTTPS_PROXY="+proxy.URL, "http_proxy="+proxy.URL, "HTTP_PROXY="+proxy.URL,
+			"all_proxy="+proxy.URL, "ALL_PROXY="+proxy.URL, "no_proxy=", "NO_PROXY=")
 		output, err := command.CombinedOutput()
 		if err != nil {
 			t.Fatalf("check with proxy settings failed: %v output=%s", err, output)
@@ -587,6 +609,77 @@ func TestNomadACLToolCheckRefusesEachDeviation(t *testing.T) {
 			output, err := run(test.deviate)
 			if err == nil || !strings.Contains(output, test.want) {
 				t.Fatalf("check did not refuse with %q: %v output=%s", test.want, err, output)
+			}
+		})
+	}
+}
+
+// The tool reaches Nomad only over TLS 1.3 and trusts only the CA file it is
+// given. It refuses a plain-HTTP or non-IP address and a CA file that is
+// missing, a symbolic link or not a certificate before any request; a Nomad
+// whose certificate another CA signed, or that offers only TLS 1.2, fails the
+// handshake, so no request (and no token) reaches it.
+func TestNomadACLToolTrustsOnlyNomadsCA(t *testing.T) {
+	dir := t.TempDir()
+	esTokenFile, err := writeNomadTokenFileAt(dir, "es-token", testESNomadToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var requests atomic.Int32
+	counting := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		(&fakeNomadForACLCheck{}).ServeHTTP(w, r)
+	})
+	server, nomadTLS := startNomadTLSStandIn(t, counting)
+	check := func(addr string, caFile string) (string, error) {
+		args := []string{"check", "--addr", addr}
+		if caFile != "" {
+			args = append(args, "--ca-file", caFile)
+		}
+		return runNomadACLTool(t, append(args, "--es-token-file", esTokenFile)...)
+	}
+	if output, err := check(server.URL, nomadTLS.caFile); err != nil || requests.Load() == 0 {
+		t.Fatalf("check refused the locked fake over TLS: %v requests=%d output=%s", err, requests.Load(), output)
+	}
+
+	plain := httptest.NewServer(counting)
+	defer plain.Close()
+	tls12 := httptestTLS12Server(t, nomadTLS, counting)
+	other, err := issueNomadTLSMaterial(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "ca-link.pem")
+	if err := os.Symlink(nomadTLS.caFile, link); err != nil {
+		t.Fatal(err)
+	}
+	notCertificate := filepath.Join(dir, "not-a-certificate.pem")
+	if err := os.WriteFile(notCertificate, []byte("not a certificate\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	port := strconv.Itoa(server.Listener.Addr().(*net.TCPAddr).Port)
+	const badAddress = "nomad address must be https://127.0.0.1:<port> or https://[::1]:<port>"
+	const badCA = "--ca-file must name Nomad's CA certificate file (PEM)"
+	for _, test := range []struct {
+		name, addr, caFile, want string
+	}{
+		{"plain HTTP address", plain.URL, nomadTLS.caFile, badAddress},
+		{"host name instead of a loopback IP", "https://localhost:" + port, nomadTLS.caFile, badAddress},
+		{"no CA file", server.URL, "", "the following arguments are required: --ca-file"},
+		{"CA file missing", server.URL, filepath.Join(dir, "missing.pem"), badCA},
+		{"CA file is a symbolic link", server.URL, link, badCA},
+		{"CA file is not a certificate", server.URL, notCertificate, badCA},
+		{"certificate from another CA", server.URL, other.caFile, "CERTIFICATE_VERIFY_FAILED"},
+		{"Nomad offers only TLS 1.2", tls12.URL, nomadTLS.caFile, "nomad is unreachable at " + tls12.URL},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			requests.Store(0)
+			output, err := check(test.addr, test.caFile)
+			if err == nil || !strings.Contains(output, test.want) {
+				t.Fatalf("check did not refuse with %q: %v output=%s", test.want, err, output)
+			}
+			if got := requests.Load(); got != 0 {
+				t.Fatalf("refused check sent %d request(s)", got)
 			}
 		})
 	}

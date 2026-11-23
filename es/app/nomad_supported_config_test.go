@@ -61,6 +61,19 @@ func supportedNomadDockerPluginAgentConfig() []map[string]any {
 	}}
 }
 
+// supportedNomadTLSAgentConfig is the TLSConfig an agent running the
+// supported tls block reports in /v1/agent/self (Nomad 2.1.1 and 2.0.0 agree),
+// reduced to the fields the posture check reads.
+func supportedNomadTLSAgentConfig() map[string]any {
+	return map[string]any{
+		"EnableHTTP":           true,
+		"EnableRPC":            true,
+		"TLSMinVersion":        "tls13",
+		"VerifyServerHostname": true,
+		"RPCUpgradeMode":       false,
+	}
+}
+
 // extractNomadBlock returns the top-level block that starts with header, up
 // to and including its closing brace at the start of a line.
 func extractNomadBlock(t *testing.T, text string, header string) string {
@@ -78,10 +91,14 @@ func extractNomadBlock(t *testing.T, text string, header string) string {
 }
 
 // The supported setup script, the example configuration and the test Nomad
-// agents carry the same Docker limits, so CI proves what hosts run.
+// agents carry the same Docker limits and the same tls block, so CI proves
+// what hosts run.
 func TestSupportedNomadDockerLimitsMatchSetupExampleAndTests(t *testing.T) {
 	repoRoot := executionPlatformRepoRoot(t)
-	for _, rel := range []string{filepath.Join("scripts", "70_linux_setup.sh"), filepath.Join(".examples", "config", "nomad.hcl")} {
+	for rel, tlsDir := range map[string]string{
+		filepath.Join("scripts", "70_linux_setup.sh"):     "${NOMAD_TLS_DIR}",
+		filepath.Join(".examples", "config", "nomad.hcl"): "/etc/nomad.d/tls",
+	} {
 		body, err := os.ReadFile(filepath.Join(repoRoot, rel))
 		if err != nil {
 			t.Fatal(err)
@@ -89,6 +106,9 @@ func TestSupportedNomadDockerLimitsMatchSetupExampleAndTests(t *testing.T) {
 		text := string(body)
 		if got := extractNomadBlock(t, text, `plugin "docker"`); got != supportedNomadDockerPluginBlock {
 			t.Fatalf("%s Docker plugin block differs from the tested one:\n%s", rel, got)
+		}
+		if got := extractNomadBlock(t, text, "tls"); got != supportedNomadTLSBlock(tlsDir) {
+			t.Fatalf("%s tls block differs from the tested one:\n%s", rel, got)
 		}
 		client := extractNomadBlock(t, text, "client")
 		if !strings.Contains(client, supportedNomadClientOptions+"\n") {
@@ -148,7 +168,7 @@ func runNomadRuntimePostureCheck(t *testing.T, agentSelf any) (string, error) {
 	return strings.TrimSpace(string(output)), err
 }
 
-const supportedNomadPostureLine = "nomad: drivers=docker docker_privileged=refused docker_caps=chown,dac_override,fowner,kill,setgid,setpcap,setuid"
+const supportedNomadPostureLine = "nomad: drivers=docker docker_privileged=refused docker_caps=chown,dac_override,fowner,kill,setgid,setpcap,setuid tls=1.3"
 
 // The posture check accepts the supported agent and refuses each loosening of
 // the driver allowlist or the Docker plugin limits.
@@ -156,8 +176,9 @@ func TestNomadRuntimePostureCheckRefusesLoosenedDockerLimits(t *testing.T) {
 	agent := func(edit func(config map[string]any, plugin map[string]any)) map[string]any {
 		plugins := supportedNomadDockerPluginAgentConfig()
 		config := map[string]any{
-			"Client":  map[string]any{"Enabled": true, "Options": map[string]any{"driver.allowlist": "docker"}},
-			"Plugins": plugins,
+			"Client":    map[string]any{"Enabled": true, "Options": map[string]any{"driver.allowlist": "docker"}},
+			"Plugins":   plugins,
+			"TLSConfig": supportedNomadTLSAgentConfig(),
 		}
 		if edit != nil {
 			edit(config, plugins[0]["Config"].(map[string]any))
@@ -184,6 +205,13 @@ func TestNomadRuntimePostureCheckRefusesLoosenedDockerLimits(t *testing.T) {
 		}), "allow only capabilities ES's runtime helper uses"},
 		{"Docker default capabilities", agent(func(_, p map[string]any) { delete(p, "allow_caps") }), "allow only capabilities ES's runtime helper uses"},
 		{"empty capability list", agent(func(_, p map[string]any) { p["allow_caps"] = []string{} }), "allow only capabilities ES's runtime helper uses"},
+		{"plain HTTP", agent(func(c, _ map[string]any) { c["TLSConfig"].(map[string]any)["EnableHTTP"] = false }), "TLS 1.3 only"},
+		{"plain RPC", agent(func(c, _ map[string]any) { c["TLSConfig"].(map[string]any)["EnableRPC"] = false }), "TLS 1.3 only"},
+		{"TLS 1.2 allowed", agent(func(c, _ map[string]any) { c["TLSConfig"].(map[string]any)["TLSMinVersion"] = "tls12" }), "TLS 1.3 only"},
+		{"TLS version unset", agent(func(c, _ map[string]any) { c["TLSConfig"].(map[string]any)["TLSMinVersion"] = "" }), "TLS 1.3 only"},
+		{"server names not verified", agent(func(c, _ map[string]any) { c["TLSConfig"].(map[string]any)["VerifyServerHostname"] = false }), "TLS 1.3 only"},
+		{"RPC upgrade mode", agent(func(c, _ map[string]any) { c["TLSConfig"].(map[string]any)["RPCUpgradeMode"] = true }), "TLS 1.3 only"},
+		{"no TLS settings", agent(func(c, _ map[string]any) { delete(c, "TLSConfig") }), "TLS 1.3 only"},
 		{"unreadable answer", "{not json", "the agent configuration could not be read"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -223,8 +251,9 @@ func TestRealNomadOffersOnlyTheLimitedDockerDriver(t *testing.T) {
 	// every field those checks read.
 	var agentSelf struct {
 		Config struct {
-			Plugins []map[string]any `json:"Plugins"`
-			Version struct {
+			Plugins   []map[string]any `json:"Plugins"`
+			TLSConfig map[string]any   `json:"TLSConfig"`
+			Version   struct {
 				Version string `json:"Version"`
 			} `json:"Version"`
 		} `json:"config"`
@@ -238,6 +267,11 @@ func TestRealNomadOffersOnlyTheLimitedDockerDriver(t *testing.T) {
 	// Nomad 2.0 runs the host PID, IPC and user namespace modes that
 	// Nomad 2.1 refuses.
 	hostNamespacesOpen := strings.HasPrefix(agentSelf.Config.Version.Version, "2.0.")
+	for field, want := range supportedNomadTLSAgentConfig() {
+		if got := agentSelf.Config.TLSConfig[field]; string(mustMarshalJSON(t, got)) != string(mustMarshalJSON(t, want)) {
+			t.Fatalf("real agent TLSConfig.%s = %s, fixture has %s", field, mustMarshalJSON(t, got), mustMarshalJSON(t, want))
+		}
+	}
 	var realDocker map[string]any
 	for _, plugin := range agentSelf.Config.Plugins {
 		if plugin["Name"] == "docker" {

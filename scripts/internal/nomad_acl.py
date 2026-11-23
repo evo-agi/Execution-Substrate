@@ -3,8 +3,9 @@
 
 ES submits Nomad jobs with one least-privilege ACL client token. This tool is
 the one place that sets that up and checks it. It talks to a loopback Nomad
-HTTP address only, never prints or passes a token on a command line, and
-reads and writes token files with fixed custody rules.
+HTTPS address only (TLS 1.3, trusting only the CA file it is given), never
+prints or passes a token on a command line, and reads and writes token files
+with fixed custody rules.
 
   provision  Bootstrap Nomad's ACL system when needed (the operator keeps the
              management token in a root-only file), create the ES namespace
@@ -32,6 +33,7 @@ import datetime
 import json
 import os
 import re
+import ssl
 import stat
 import sys
 import urllib.error
@@ -85,11 +87,11 @@ class Refusal(Exception):
 
 
 class Nomad:
-    def __init__(self, address: str) -> None:
+    def __init__(self, address: str, ca_file: str) -> None:
         parsed = urllib.parse.urlsplit(address)
         host = parsed.hostname or ""
         if (
-            parsed.scheme != "http"
+            parsed.scheme != "https"
             or host not in ("127.0.0.1", "::1")
             or parsed.port is None
             or parsed.username is not None
@@ -98,12 +100,23 @@ class Nomad:
             or parsed.query
             or parsed.fragment
         ):
-            raise Refusal("nomad address must be http://127.0.0.1:<port> or http://[::1]:<port>")
+            raise Refusal("nomad address must be https://127.0.0.1:<port> or https://[::1]:<port>")
         self.base = address.rstrip("/")
+        # Trust only Nomad's own CA (no system CAs), over TLS 1.3, checking
+        # that the certificate names the loopback address.
+        try:
+            info = os.lstat(ca_file)
+            if not stat.S_ISREG(info.st_mode):
+                raise OSError("not a regular file")
+            context = ssl.create_default_context(cafile=ca_file)
+        except (OSError, ssl.SSLError, ValueError):
+            raise Refusal("--ca-file must name Nomad's CA certificate file (PEM)") from None
+        context.minimum_version = ssl.TLSVersion.TLSv1_3
         # Never follow redirects and never use a proxy: a token must reach
         # only the loopback Nomad named here.
         self.opener = urllib.request.build_opener(
             urllib.request.ProxyHandler({}),
+            urllib.request.HTTPSHandler(context=context),
             _NoRedirect(),
         )
 
@@ -641,7 +654,7 @@ def require_designed_policy(nomad: Nomad, token: str, name: str, rules: str, req
 
 
 def command_provision(args) -> None:
-    nomad = Nomad(args.addr)
+    nomad = Nomad(args.addr, args.ca_file)
     es_uid, es_gid = parse_owner(args.es_token_owner)
     observer_owner = None
     if args.observer_token_file:
@@ -707,7 +720,7 @@ def _probe_plan_body() -> dict:
 
 
 def command_check(args) -> None:
-    nomad = Nomad(args.addr)
+    nomad = Nomad(args.addr, args.ca_file)
     require_acl_enabled(nomad)
     require_no_anonymous_policy(nomad)
 
@@ -799,7 +812,8 @@ def main(argv: list[str]) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
 
     provision = sub.add_parser("provision")
-    provision.add_argument("--addr", required=True)
+    provision.add_argument("--addr", required=True, help="Nomad's loopback https:// address")
+    provision.add_argument("--ca-file", required=True, help="Nomad's CA certificate (PEM), the only CA trusted")
     provision.add_argument("--management-token-file", required=True)
     provision.add_argument("--es-token-file", required=True)
     provision.add_argument("--es-token-owner", required=True, help="<uid>:<gid> of the user ES runs as")
@@ -808,7 +822,8 @@ def main(argv: list[str]) -> int:
     provision.add_argument("--rotate", action="store_true", help="replace the ES and observer tokens")
 
     check = sub.add_parser("check")
-    check.add_argument("--addr", required=True)
+    check.add_argument("--addr", required=True, help="Nomad's loopback https:// address")
+    check.add_argument("--ca-file", required=True, help="Nomad's CA certificate (PEM), the only CA trusted")
     check.add_argument("--es-token-file", required=True)
     check.add_argument("--es-token-owner", help="<uid>:<gid> expected to own the ES token file (default: current user)")
     check.add_argument("--observer-token-file")

@@ -288,17 +288,19 @@ func (transport *mountedRegistrationTransport) RoundTrip(request *http.Request) 
 	return transport.next.RoundTrip(request)
 }
 
-func newMountedSourceRegistrationProxy(nomadURL, stagingRoot string, capture *mountedSourceRegistrationCapture) (*httptest.Server, error) {
+// The proxy presents the test Nomad's own certificate, so ES's pinned HTTPS
+// checks pass through it, and reaches that Nomad trusting only its CA.
+func newMountedSourceRegistrationProxy(nomadURL string, nomadTLS nomadTLSMaterial, stagingRoot string, capture *mountedSourceRegistrationCapture) (*httptest.Server, error) {
 	target, err := url.Parse(nomadURL)
-	if err != nil || target.Scheme != "http" || target.Hostname() != "127.0.0.1" || capture == nil {
+	if err != nil || target.Scheme != "https" || target.Hostname() != "127.0.0.1" || capture == nil {
 		return nil, errors.New("mount witness: test-owned Nomad target unavailable")
 	}
 	proxy := httputil.NewSingleHostReverseProxy(target)
-	proxy.Transport = &mountedRegistrationTransport{next: &http.Transport{Proxy: nil}, stagingRoot: stagingRoot, capture: capture}
+	proxy.Transport = &mountedRegistrationTransport{next: nomadTLS.transport(), stagingRoot: stagingRoot, capture: capture}
 	proxy.ErrorHandler = func(writer http.ResponseWriter, _ *http.Request, _ error) {
 		http.Error(writer, "test-owned provider registration refused", http.StatusBadGateway)
 	}
-	return httptest.NewServer(proxy), nil
+	return nomadTLS.startTLSServer(proxy)
 }
 
 type mountedSourceObservation struct {
@@ -394,7 +396,7 @@ func validateMountedSourceJob(job mountedNomadJob, anchor *heldMountedSource) er
 
 func (n *nomadHarness) mountedNomadEndpoint() (string, error) {
 	target, err := url.Parse(n.addr)
-	if err != nil || target.Scheme != "http" || target.Hostname() != "127.0.0.1" || target.Port() == "" ||
+	if err != nil || target.Scheme != "https" || target.Hostname() != "127.0.0.1" || target.Port() == "" ||
 		target.User != nil || target.Path != "" || target.RawQuery != "" || target.Fragment != "" {
 		return "", errors.New("mount witness: test-owned Nomad endpoint unavailable")
 	}
@@ -1456,7 +1458,7 @@ func TestMountedSourceIdentityCaptureBoundsAndTeardown(t *testing.T) {
 		t.Fatal("missing container did not trigger exact job cancellation and handle closure")
 	}
 	cancelRequests := 0
-	localNomad := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+	localNomad, localNomadTLS := startNomadTLSStandIn(t, http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.Method != http.MethodDelete || request.URL.Path != "/v1/job/"+anchor.jobID || request.URL.Query().Get("purge") != "true" {
 			writer.WriteHeader(http.StatusBadRequest)
 			return
@@ -1465,8 +1467,7 @@ func TestMountedSourceIdentityCaptureBoundsAndTeardown(t *testing.T) {
 		writer.WriteHeader(http.StatusOK)
 		_, _ = writer.Write([]byte(`{"EvalID":"synthetic"}`))
 	}))
-	defer localNomad.Close()
-	if err := (&nomadHarness{addr: localNomad.URL}).cancelMountedJob(anchor.jobID); err != nil || cancelRequests != 1 {
+	if err := (&nomadHarness{addr: localNomad.URL, tls: localNomadTLS}).cancelMountedJob(anchor.jobID); err != nil || cancelRequests != 1 {
 		t.Fatalf("bounded exact test-owned job cancellation failed: %v", err)
 	}
 	evidenceAnchor := modeledMountedAnchor(t)
@@ -1852,6 +1853,10 @@ func TestMountedSourceIdentitySafeNomadFailureDiagnostics(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	nomadTLS, err := issueNomadTLSMaterial(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, test := range []struct {
 		name    string
 		status  int
@@ -1864,7 +1869,7 @@ func TestMountedSourceIdentitySafeNomadFailureDiagnostics(t *testing.T) {
 		{"valid selected job", http.StatusOK, jobBytes, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+			server, err := nomadTLS.startTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 				if request.URL.Path != "/v1/job/"+anchor.jobID {
 					writer.WriteHeader(http.StatusNotFound)
 					return
@@ -1872,10 +1877,13 @@ func TestMountedSourceIdentitySafeNomadFailureDiagnostics(t *testing.T) {
 				writer.WriteHeader(test.status)
 				_, _ = writer.Write(test.body)
 			}))
+			if err != nil {
+				t.Fatal(err)
+			}
 			defer server.Close()
 			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 			defer cancel()
-			job, err := (&nomadHarness{addr: server.URL}).fetchMountedSourceJob(ctx, anchor)
+			job, err := (&nomadHarness{addr: server.URL, tls: nomadTLS}).fetchMountedSourceJob(ctx, anchor)
 			if test.success != (err == nil) {
 				t.Fatalf("selected job observation outcome mismatch: %v", err)
 			}
@@ -1919,7 +1927,7 @@ func TestMountedSourceIdentitySafeNomadFailureDiagnostics(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			requests := 0
-			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+			server, err := nomadTLS.startTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 				requests++
 				switch request.URL.Path {
 				case "/v1/job/" + anchor.jobID + "/allocations":
@@ -1930,12 +1938,15 @@ func TestMountedSourceIdentitySafeNomadFailureDiagnostics(t *testing.T) {
 					writer.WriteHeader(http.StatusNotFound)
 				}
 			}))
+			if err != nil {
+				t.Fatal(err)
+			}
 			defer server.Close()
 			privateLog := filepath.Join(t.TempDir(), "nomad-private-log")
 			if err := os.WriteFile(privateLog, []byte(canary+anchor.sourcePath), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			at, err := (&nomadHarness{addr: server.URL, outputPath: privateLog}).waitForMountedTerminalAllocation(anchor, allocationID, test.timeout)
+			at, err := (&nomadHarness{addr: server.URL, outputPath: privateLog, tls: nomadTLS}).waitForMountedTerminalAllocation(anchor, allocationID, test.timeout)
 			if test.success != (err == nil) || test.success == at.IsZero() {
 				t.Fatalf("selected terminal observation outcome mismatch: %v", err)
 			}

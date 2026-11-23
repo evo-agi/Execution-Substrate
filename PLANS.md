@@ -20,12 +20,18 @@ now offers only the Docker task driver, through an explicit `plugin "docker"`
 block that refuses privileged containers and allows only the seven
 capabilities the submit path needs; its configuration and data are
 root-owned, and setup, bring-up and readiness refuse a Nomad whose live
-driver set, privileged setting or capability list differ. Known limits:
-Nomad's API is plain HTTP on loopback (Nomad HTTPS with a pinned server key
-is the next part), the lock does not cover the Docker socket, and ES's token
-still expresses job shape (mounts, task user). PR 12's reliable-submit
-operational provider is not yet covered: its change list is in the Nomad ACL
-report.
+driver set, privileged setting or capability list differ. Nomad serves its
+API and RPC only over TLS 1.3 with a certificate the supported setup issues
+from a CA whose key it deletes after signing; ES trusts only that CA
+(`nomad.root_ca_file`), verifies `nomad.server_name`, and pins the server key
+(`nomad.server_spki_sha256`), so its token reaches only that Nomad. The
+scripts and the ACL tool use TLS 1.3 and trust only `NOMAD_CACERT`, and
+readiness makes ES's TLS checks against the running Nomad and refuses a
+certificate with fewer than 14 days left. Known limits: the lock does not
+cover the Docker socket, and ES's token still expresses job shape (mounts,
+task user). PR 12's reliable-submit operational provider is not yet covered:
+its change list, including the HTTPS realm built from the same config
+fields, is in the Nomad ACL reports.
 
 ### One caller authentication rule for the five services (2026-11-23)
 
@@ -3549,6 +3555,7 @@ The following are useful current implementation facts and should remain visible 
 - The current publication flow is `AGS -> ARS`.
 - The current admission and execution flow is `request -> ES -> EGS / ARS -> Nomad -> Docker`.
 - ES submits to Nomad only with its own least-privilege ACL token in namespace `es-submit-v1`, and only while Nomad enforces ACLs with no anonymous policy; Nomad's management token never reaches ES.
+- ES reaches Nomad only over TLS 1.3 at a loopback `nomad.base_url`, trusting only `nomad.root_ca_file` for `nomad.server_name` and only the server key `nomad.server_spki_sha256` pins.
 - ES currently composes startup-owned runtime-config references, ARS, and EGS in its hot path. CGS exists but is not in the current ES hot path.
 - The current primary artifact model crossing AGS, ARS, and ES is aggregate evidence plus payload, with manifest retained as supporting publication data.
 - The repository now also carries a first parallel shared evidence kernel in `internal/contracts/evidence/v1` for the primary `AGS -> ARS -> ES` artifact path, and ES now requires that aggregate evidence on its first-class admission path.

@@ -20,7 +20,8 @@ set -euo pipefail
 #                     readiness checks: export NOMAD_TOKEN_FILE=<this path>.
 #
 # Environment:
-#   NOMAD_ADDR      default http://127.0.0.1:4646 (loopback only)
+#   NOMAD_ADDR      default https://127.0.0.1:4646 (loopback HTTPS only)
+#   NOMAD_CACERT    Nomad's CA certificate, default /etc/nomad.d/tls/ca.pem
 #   NOMAD_ACL_DIR   default /etc/execution-substrate/nomad-acl
 #   ES_USER         user ES runs as; default root (the supported-local
 #                   service-root-v1 profile). Remote Alpha's es.service: es
@@ -31,13 +32,14 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TOOL="${SCRIPT_DIR}/internal/nomad_acl.py"
 ACTION="${1:-provision}"
-NOMAD_ADDR="${NOMAD_ADDR:-http://127.0.0.1:4646}"
+NOMAD_ADDR="${NOMAD_ADDR:-https://127.0.0.1:4646}"
+NOMAD_CACERT="${NOMAD_CACERT:-/etc/nomad.d/tls/ca.pem}"
 NOMAD_ACL_DIR="${NOMAD_ACL_DIR:-/etc/execution-substrate/nomad-acl}"
 ES_USER="${ES_USER:-root}"
 OBSERVER_USER="${OBSERVER_USER:-${SUDO_USER:-root}}"
 
 usage() {
-  sed -n '4,27p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '4,28p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 owner_of_user() {
@@ -79,6 +81,7 @@ OBSERVER_OWNER="$(owner_of_user "${OBSERVER_USER}")"
 if [[ "${ACTION}" == "check" ]]; then
   exec python3 -I "${TOOL}" check \
     --addr "${NOMAD_ADDR}" \
+    --ca-file "${NOMAD_CACERT}" \
     --es-token-file "${NOMAD_ACL_DIR}/es-token" \
     --es-token-owner "${ES_OWNER}" \
     --observer-token-file "${NOMAD_ACL_DIR}/observer-token" \
@@ -97,6 +100,7 @@ fi
 
 python3 -I "${TOOL}" provision \
   --addr "${NOMAD_ADDR}" \
+  --ca-file "${NOMAD_CACERT}" \
   --management-token-file "${NOMAD_ACL_DIR}/management-token" \
   --es-token-file "${NOMAD_ACL_DIR}/es-token" \
   --es-token-owner "${ES_OWNER}" \
@@ -106,6 +110,7 @@ python3 -I "${TOOL}" provision \
 
 python3 -I "${TOOL}" check \
   --addr "${NOMAD_ADDR}" \
+  --ca-file "${NOMAD_CACERT}" \
   --es-token-file "${NOMAD_ACL_DIR}/es-token" \
   --es-token-owner "${ES_OWNER}" \
   --observer-token-file "${NOMAD_ACL_DIR}/observer-token" \
@@ -115,4 +120,5 @@ python3 -I "${TOOL}" check \
 echo
 echo "next:"
 echo "  set nomad.token_file to ${NOMAD_ACL_DIR}/es-token in ES's config and restart ES"
+echo "  ES's nomad.root_ca_file is ${NOMAD_CACERT} (see scripts/70_linux_setup.sh for nomad.server_spki_sha256)"
 echo "  export NOMAD_TOKEN_FILE=${NOMAD_ACL_DIR}/observer-token before readiness checks"

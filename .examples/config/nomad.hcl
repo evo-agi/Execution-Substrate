@@ -46,3 +46,21 @@ advertise {
   rpc  = "127.0.0.1:4647"
   serf = "127.0.0.1:4648"
 }
+
+# HTTPS and RPC over TLS 1.3 only. scripts/70_linux_setup.sh issues this
+# certificate (server.global.nomad, localhost, 127.0.0.1, ::1) from a CA
+# whose key it destroys after signing; ES trusts only that CA and pins the
+# server key (nomad.root_ca_file, nomad.server_spki_sha256). Clients
+# authenticate with ACL tokens, not certificates.
+tls {
+  http = true
+  rpc  = true
+
+  ca_file   = "/etc/nomad.d/tls/ca.pem"
+  cert_file = "/etc/nomad.d/tls/server.pem"
+  key_file  = "/etc/nomad.d/tls/server-key.pem"
+
+  verify_server_hostname = true
+  verify_https_client    = false
+  tls_min_version        = "tls13"
+}

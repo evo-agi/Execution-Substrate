@@ -1195,16 +1195,25 @@ unchanged.
   execution plan is resolved and before a run is assigned or anything is
   staged, ES asks Nomad, with its own token, whether that token is a client
   token, and asks without a token whether ACLs are enabled and whether an
-  anonymous policy exists. ACLs off, an anonymous policy, any other answer or
-  any transport failure refuses with the fixed access-control message above,
-  creates no run and registers no job. The check runs before every submit, so
-  a Nomad that loses its lock later is refused at the next submit.
+  anonymous policy exists. ACLs off, an anonymous policy or any other answer
+  refuses with the fixed access-control message above; a transport failure
+  refuses as execution runtime unavailable (`503
+  execution_runtime_unavailable`, "execution runtime is unavailable"). Either
+  way ES creates no run and registers no job. The check runs before every
+  submit, so a Nomad that loses its lock later is refused at the next submit.
 - ES registers jobs only in Nomad namespace `es-submit-v1`, with a
   least-privilege client token (policy `es-submit-v1`: `submit-job`,
   `read-job` and `read-logs` in that namespace, nothing else). Status, logs,
   result and cancel read and stop jobs in the same namespace with the same
   token. The token file is configured as `nomad.token_file`; see
   [configuration.md](../system_overview/configuration.md#nomad-access-control).
+- ES reaches Nomad only over TLS 1.3 and sends its token only to the server
+  whose certificate verifies under `nomad.root_ca_file` for
+  `nomad.server_name` and carries the key `nomad.server_spki_sha256` pins.
+  Any other certificate fails the handshake before ES sends anything; that
+  is a transport failure, so the access-control check refuses the submit as
+  execution runtime unavailable, as above; see
+  [configuration.md](../system_overview/configuration.md#nomad-https).
 - `control-plane-normal-shell/v1` is a bounded runtime contract for the CP-owned normal-shell attempt path, not an ES-owned orchestration, review, checkpoint, or finalization contract.
 
 ### Reopened seams
