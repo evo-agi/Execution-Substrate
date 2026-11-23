@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"execution-substrate/es/admission"
 )
@@ -1411,8 +1412,10 @@ func lifecycleRequestWithCallerAndBody(method string, target string, callerPath 
 	request.TLS = &tls.ConnectionState{
 		VerifiedChains: [][]*x509.Certificate{{
 			{
-				Issuer: pkix.Name{CommonName: "runtime"},
-				URIs:   []*url.URL{spiffeURI},
+				Issuer:    pkix.Name{CommonName: "runtime"},
+				NotBefore: time.Now().Add(-time.Hour),
+				NotAfter:  time.Now().Add(time.Hour),
+				URIs:      []*url.URL{spiffeURI},
 			},
 		}},
 	}

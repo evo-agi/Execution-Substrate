@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/spiffe/go-spiffe/v2/bundle/x509bundle"
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
@@ -190,6 +191,9 @@ func TestCallerFromConnectionStateRefusesEveryListedCredential(t *testing.T) {
 		"no_verified_chain":              callerauth.ErrNoVerifiedCertificate,
 		"empty_verified_chain":           callerauth.ErrNoVerifiedCertificate,
 		"nil_leaf":                       callerauth.ErrNoVerifiedCertificate,
+		"expired_leaf":                   callerauth.ErrOutsideValidity,
+		"not_yet_valid_leaf":             callerauth.ErrOutsideValidity,
+		"expired_issuer_in_chain":        callerauth.ErrOutsideValidity,
 		"CA_leaf":                        callerauth.ErrNotEndEntity,
 		"keyCertSign_leaf":               callerauth.ErrNotEndEntity,
 		"cRLSign_leaf":                   callerauth.ErrNotEndEntity,
@@ -214,7 +218,7 @@ func TestCallerFromConnectionStateRefusesEveryListedCredential(t *testing.T) {
 			if tc.State != nil {
 				state = tc.State(t)
 			}
-			caller, err := callerauth.CallerFromConnectionState(state)
+			caller, err := callerauth.CallerFromConnectionState(state, time.Now())
 			if err == nil {
 				t.Fatalf("accepted caller %q", caller.ID())
 			}
@@ -235,7 +239,7 @@ func TestCallerFromConnectionStateRefusesEveryListedCredential(t *testing.T) {
 func TestCallerFromConnectionStateAcceptsOneConformingURISAN(t *testing.T) {
 	for _, tc := range acceptedIDs {
 		cert := callerauthtest.Certificate(t, callerauthtest.RuntimeIssuer, tc.raw)
-		caller, err := callerauth.CallerFromConnectionState(callerauthtest.State(cert))
+		caller, err := callerauth.CallerFromConnectionState(callerauthtest.State(cert), time.Now())
 		if err != nil {
 			t.Errorf("%q: %v", tc.raw, err)
 			continue
@@ -262,7 +266,7 @@ func TestCallerFromConnectionStateAcceptsAnEndEntityLeafWithCAFalse(t *testing.T
 		if !cert.BasicConstraintsValid || cert.IsCA {
 			t.Fatalf("fixture: basic constraints valid %v, CA %v", cert.BasicConstraintsValid, cert.IsCA)
 		}
-		caller, err := callerauth.CallerFromConnectionState(callerauthtest.State(cert))
+		caller, err := callerauth.CallerFromConnectionState(callerauthtest.State(cert), time.Now())
 		if err != nil || caller.ID().Path() != "operator/local" {
 			t.Fatalf("key usage %b: caller %q, error %v", cert.KeyUsage, caller.ID(), err)
 		}
@@ -276,7 +280,7 @@ func TestCallerFromConnectionStateReadsTheURIAsTheCertificateParserHandsItOver(t
 		"spiffe://execution.internal/operator/local#",
 	} {
 		cert := callerauthtest.Certificate(t, callerauthtest.RuntimeIssuer, raw)
-		caller, err := callerauth.CallerFromConnectionState(callerauthtest.State(cert))
+		caller, err := callerauth.CallerFromConnectionState(callerauthtest.State(cert), time.Now())
 		if err != nil || caller.ID().String() != "spiffe://execution.internal/operator/local" {
 			t.Errorf("%q: caller %q, error %v; want spiffe://execution.internal/operator/local", raw, caller.ID(), err)
 		}
@@ -300,6 +304,9 @@ func (noBundles) GetX509BundleForTrustDomain(spiffeid.TrustDomain) (*x509bundle.
 // The reference is go-spiffe's x509svid.Verify up to the bundle lookup: the
 // ID reader (IDFromCert) and the leaf rules (not a CA, no keyCertSign, no
 // cRLSign). Chain verification is the TLS stack's job and is not compared.
+// go-spiffe checks the validity period inside that chain verification, after
+// the bundle lookup, so the comparison adds the leaf's validity period to the
+// reference.
 func TestCallerFromConnectionStateAgreesWithTheSPIFFEReferenceValidator(t *testing.T) {
 	var certs []*x509.Certificate
 	for _, tc := range callerauthtest.RefusedCallers("operator/local") {
@@ -319,9 +326,11 @@ func TestCallerFromConnectionStateAgreesWithTheSPIFFEReferenceValidator(t *testi
 		t.Fatalf("compared %d certificates, want at least 35", len(certs))
 	}
 	for _, cert := range certs {
-		_, err := callerauth.CallerFromConnectionState(callerauthtest.State(cert))
+		now := time.Now()
+		_, err := callerauth.CallerFromConnectionState(callerauthtest.State(cert), now)
 		ref, _, refErr := x509svid.Verify([]*x509.Certificate{cert}, noBundles{})
-		want := errors.Is(refErr, errNoBundle) && ref.TrustDomain().Name() == callerauth.TrustDomain && ref.Path() != ""
+		want := errors.Is(refErr, errNoBundle) && ref.TrustDomain().Name() == callerauth.TrustDomain && ref.Path() != "" &&
+			!now.Before(cert.NotBefore) && !now.After(cert.NotAfter)
 		if got := err == nil; got != want {
 			t.Errorf("URIs %q, CA %v, key usage %b: accepted=%v, reference accepted=%v (%v)", cert.URIs, cert.IsCA, cert.KeyUsage, got, want, refErr)
 		}
@@ -331,16 +340,16 @@ func TestCallerFromConnectionStateAgreesWithTheSPIFFEReferenceValidator(t *testi
 func TestCallerFromConnectionStateReadsTheLeafOfTheFirstVerifiedChain(t *testing.T) {
 	good := callerauthtest.Certificate(t, callerauthtest.RuntimeIssuer, "spiffe://execution.internal/operator/local")
 	bad := callerauthtest.Certificate(t, callerauthtest.RuntimeIssuer, "spiffe://other.internal/operator/local")
-	ca := &x509.Certificate{Subject: pkix.Name{CommonName: callerauthtest.RuntimeIssuer}}
+	ca := &x509.Certificate{Subject: pkix.Name{CommonName: callerauthtest.RuntimeIssuer}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour)}
 
-	caller, err := callerauth.CallerFromConnectionState(&tls.ConnectionState{VerifiedChains: [][]*x509.Certificate{{good, ca}, {bad, ca}}})
+	caller, err := callerauth.CallerFromConnectionState(&tls.ConnectionState{VerifiedChains: [][]*x509.Certificate{{good, ca}, {bad, ca}}}, time.Now())
 	if err != nil || caller.ID().Path() != "operator/local" {
 		t.Fatalf("first chain good: caller %q, error %v", caller.ID(), err)
 	}
-	if _, err := callerauth.CallerFromConnectionState(&tls.ConnectionState{VerifiedChains: [][]*x509.Certificate{{bad, ca}, {good, ca}}}); !errors.Is(err, callerauth.ErrForeignTrustDomain) {
+	if _, err := callerauth.CallerFromConnectionState(&tls.ConnectionState{VerifiedChains: [][]*x509.Certificate{{bad, ca}, {good, ca}}}, time.Now()); !errors.Is(err, callerauth.ErrForeignTrustDomain) {
 		t.Fatalf("first chain foreign: error %v, want %v", err, callerauth.ErrForeignTrustDomain)
 	}
-	if _, err := callerauth.CallerFromConnectionState(&tls.ConnectionState{PeerCertificates: []*x509.Certificate{good}}); !errors.Is(err, callerauth.ErrNoVerifiedCertificate) {
+	if _, err := callerauth.CallerFromConnectionState(&tls.ConnectionState{PeerCertificates: []*x509.Certificate{good}}, time.Now()); !errors.Is(err, callerauth.ErrNoVerifiedCertificate) {
 		t.Fatalf("peer certificate without a verified chain: error %v, want %v", err, callerauth.ErrNoVerifiedCertificate)
 	}
 }
@@ -436,4 +445,103 @@ func TestAuthenticatorWithoutABootstrapIssuerRefusesEveryRequest(t *testing.T) {
 			assertRefused(t, recorder, ok, caller, http.StatusUnauthorized, unauthenticatedBody)
 		}
 	}
+}
+
+// validityCA returns a CA certificate valid from notBefore to notAfter. The
+// validity rule reads only the times, so the certificate is not signed.
+func validityCA(notBefore, notAfter time.Time) *x509.Certificate {
+	return &x509.Certificate{
+		Subject:               pkix.Name{CommonName: callerauthtest.RuntimeIssuer},
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+		NotBefore:             notBefore,
+		NotAfter:              notAfter,
+	}
+}
+
+// Go's TLS server verifies the client's chains once, at the handshake. The
+// rule checks again at the time of every request: the leaf and every other
+// certificate of a chain that starts with the leaf must be within their
+// validity periods, NotBefore and NotAfter included, as Go's verifier counts
+// them.
+func TestCallerFromConnectionStateChecksTheValidityPeriodAtTheGivenTime(t *testing.T) {
+	leaf := callerauthtest.Certificate(t, callerauthtest.RuntimeIssuer, "spiffe://execution.internal/operator/local")
+	ca := validityCA(leaf.NotBefore.Add(-time.Hour), leaf.NotAfter.Add(time.Hour))
+	state := &tls.ConnectionState{VerifiedChains: [][]*x509.Certificate{{leaf, ca}}}
+	for _, tc := range []struct {
+		name string
+		at   time.Time
+		want error
+	}{
+		{name: "at NotBefore", at: leaf.NotBefore},
+		{name: "inside", at: leaf.NotBefore.Add(time.Minute)},
+		{name: "at NotAfter", at: leaf.NotAfter},
+		{name: "just before NotBefore", at: leaf.NotBefore.Add(-time.Nanosecond), want: callerauth.ErrOutsideValidity},
+		{name: "just after NotAfter", at: leaf.NotAfter.Add(time.Nanosecond), want: callerauth.ErrOutsideValidity},
+	} {
+		caller, err := callerauth.CallerFromConnectionState(state, tc.at)
+		if tc.want == nil && (err != nil || caller.ID().Path() != "operator/local") {
+			t.Errorf("%s: caller %q, error %v; want operator/local", tc.name, caller.ID(), err)
+		}
+		if tc.want != nil && (!errors.Is(err, tc.want) || caller != (callerauth.Caller{})) {
+			t.Errorf("%s: caller %q, error %v; want %v", tc.name, caller.ID(), err, tc.want)
+		}
+	}
+
+	inside := leaf.NotBefore.Add(time.Minute)
+	for name, issuer := range map[string]*x509.Certificate{
+		"expired issuer":       validityCA(inside.Add(-2*time.Hour), inside.Add(-time.Nanosecond)),
+		"not yet valid issuer": validityCA(inside.Add(time.Nanosecond), inside.Add(2*time.Hour)),
+	} {
+		if _, err := callerauth.CallerFromConnectionState(&tls.ConnectionState{VerifiedChains: [][]*x509.Certificate{{leaf, issuer}}}, inside); !errors.Is(err, callerauth.ErrOutsideValidity) {
+			t.Errorf("%s: error %v, want %v", name, err, callerauth.ErrOutsideValidity)
+		}
+	}
+}
+
+// A client chain can verify along more than one path, for example through a
+// cross-signed intermediate. One chain that starts with the leaf and is
+// still valid is enough; a valid chain that starts with another certificate
+// is not.
+func TestCallerFromConnectionStateAcceptsAnyStillValidChainOfTheLeaf(t *testing.T) {
+	leaf := callerauthtest.Certificate(t, callerauthtest.RuntimeIssuer, "spiffe://execution.internal/operator/local")
+	other := callerauthtest.Certificate(t, callerauthtest.RuntimeIssuer, "spiffe://execution.internal/operator/local")
+	now := leaf.NotBefore.Add(time.Minute)
+	expired := validityCA(now.Add(-2*time.Hour), now.Add(-time.Minute))
+	valid := validityCA(now.Add(-time.Hour), now.Add(time.Hour))
+
+	caller, err := callerauth.CallerFromConnectionState(&tls.ConnectionState{VerifiedChains: [][]*x509.Certificate{{leaf, expired}, {leaf, valid}}}, now)
+	if err != nil || caller.ID().Path() != "operator/local" {
+		t.Fatalf("expired first chain, valid second chain: caller %q, error %v", caller.ID(), err)
+	}
+	if _, err := callerauth.CallerFromConnectionState(&tls.ConnectionState{VerifiedChains: [][]*x509.Certificate{{leaf, expired}, {other, valid}}}, now); !errors.Is(err, callerauth.ErrOutsideValidity) {
+		t.Fatalf("only another leaf's chain is valid: error %v, want %v", err, callerauth.ErrOutsideValidity)
+	}
+	if _, err := callerauth.CallerFromConnectionState(&tls.ConnectionState{VerifiedChains: [][]*x509.Certificate{{leaf, expired}, {leaf, nil}}}, now); !errors.Is(err, callerauth.ErrOutsideValidity) {
+		t.Fatalf("second chain with a nil certificate: error %v, want %v", err, callerauth.ErrOutsideValidity)
+	}
+}
+
+// Authenticate checks the validity period at the time it runs, on its own
+// clock, so a caller whose certificate expires during a connection is
+// refused from then on.
+func TestAuthenticateRefusesACallerWhoseCertificateHasExpiredSinceTheHandshake(t *testing.T) {
+	state := goodState(t, callerauthtest.RuntimeIssuer)
+	leaf := state.VerifiedChains[0][0]
+	now := leaf.NotBefore.Add(time.Minute)
+	auth := callerauth.NewAuthenticator(bootstrapIssuer).WithClock(func() time.Time { return now })
+
+	recorder := httptest.NewRecorder()
+	if caller, ok := auth.Authenticate(recorder, request(state)); !ok || caller.ID().Path() != "operator/local" {
+		t.Fatalf("inside the validity period: caller %q, ok %v, response %d %q", caller.ID(), ok, recorder.Code, recorder.Body.String())
+	}
+	now = leaf.NotAfter.Add(time.Second)
+	recorder = httptest.NewRecorder()
+	caller, ok := auth.Authenticate(recorder, request(state))
+	assertRefused(t, recorder, ok, caller, http.StatusUnauthorized, unauthenticatedBody)
+
+	now = leaf.NotBefore.Add(-time.Second)
+	recorder = httptest.NewRecorder()
+	caller, ok = auth.Authenticate(recorder, request(state))
+	assertRefused(t, recorder, ok, caller, http.StatusUnauthorized, unauthenticatedBody)
 }

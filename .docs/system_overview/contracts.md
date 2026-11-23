@@ -161,6 +161,14 @@ route, stays with each service and is described in that service's section.
 - The caller identity is read from the leaf certificate of the first verified
   client certificate chain. A request without a verified chain, or whose
   first chain has no leaf, has no caller identity.
+- The verified chain must still be within its validity period at the time of
+  each request, not only at the TLS handshake. A request has a caller
+  identity only if at least one verified chain that starts with the leaf has
+  every certificate between its `notBefore` and `notAfter` at the time the
+  request is authenticated. Go's TLS server checks the chain once per
+  connection, so without this rule a client that keeps its connection busy
+  would stay authenticated after its certificate expired, which defeats
+  short-lived certificates as the way to cut a caller off.
 - The leaf must be an end-entity certificate. A leaf whose basic constraints
   mark it as a CA, or whose key usage includes `keyCertSign` or `cRLSign`,
   has no caller identity: the SPIFFE X.509-SVID standard requires every

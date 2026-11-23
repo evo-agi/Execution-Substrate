@@ -62,10 +62,10 @@ func CertificateDER(issuerCommonName string, uris ...string) ([]byte, error) {
 	return certificateDER(issuerCommonName, LeafProfile{}, uris)
 }
 
-// LeafProfile sets the basic constraints and key usage of the leaf that
-// CertificateWithProfile builds. The zero value is the end-entity profile
-// that Certificate uses: no basic constraints and the digitalSignature key
-// usage.
+// LeafProfile sets the basic constraints, key usage and validity period of
+// the leaf that CertificateWithProfile builds. The zero value is the
+// end-entity profile that Certificate uses: no basic constraints, the
+// digitalSignature key usage, and valid from an hour ago to an hour from now.
 type LeafProfile struct {
 	// BasicConstraints writes a basic constraints extension; it says CA:FALSE
 	// unless IsCA is set. SPIRE and the repository's scripts issue client
@@ -75,6 +75,9 @@ type LeafProfile struct {
 	IsCA bool
 	// KeyUsage replaces the digitalSignature key usage when it is not zero.
 	KeyUsage x509.KeyUsage
+	// NotBefore and NotAfter replace the default validity period when they
+	// are not zero.
+	NotBefore, NotAfter time.Time
 }
 
 // CertificateWithProfile is Certificate with the leaf's basic constraints
@@ -137,6 +140,12 @@ func certificateDER(issuerCommonName string, profile LeafProfile, uris []string)
 	if profile.BasicConstraints || profile.IsCA {
 		leafTemplate.BasicConstraintsValid = true
 		leafTemplate.IsCA = profile.IsCA
+	}
+	if !profile.NotBefore.IsZero() {
+		leafTemplate.NotBefore = profile.NotBefore
+	}
+	if !profile.NotAfter.IsZero() {
+		leafTemplate.NotAfter = profile.NotAfter
 	}
 	return x509.CreateCertificate(rand.Reader, leafTemplate, ca, leafPublic, caPrivate)
 }
@@ -209,7 +218,19 @@ func RefusedCallers(allowedPath string) []RefusedCaller {
 		{Name: "no_verified_chain", State: fixed(&tls.ConnectionState{HandshakeComplete: true})},
 		{Name: "empty_verified_chain", State: fixed(&tls.ConnectionState{HandshakeComplete: true, VerifiedChains: [][]*x509.Certificate{{}}})},
 		{Name: "nil_leaf", State: fixed(&tls.ConnectionState{HandshakeComplete: true, VerifiedChains: [][]*x509.Certificate{{nil}}})},
-		{Name: "nil_URI_entry", State: fixed(State(&x509.Certificate{Issuer: pkix.Name{CommonName: RuntimeIssuer}, URIs: []*url.URL{nil}}))},
+		{Name: "nil_URI_entry", State: fixed(State(&x509.Certificate{Issuer: pkix.Name{CommonName: RuntimeIssuer}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour), URIs: []*url.URL{nil}}))},
+
+		// Outside its validity period at the time of the request, even with
+		// exactly the allowed identity: a connection can outlive the
+		// certificates its handshake verified.
+		{Name: "expired_leaf", State: withProfile(LeafProfile{NotBefore: time.Now().Add(-2 * time.Hour), NotAfter: time.Now().Add(-time.Minute)})},
+		{Name: "not_yet_valid_leaf", State: withProfile(LeafProfile{NotBefore: time.Now().Add(time.Hour), NotAfter: time.Now().Add(2 * time.Hour)})},
+		{Name: "expired_issuer_in_chain", State: func(t testing.TB) *tls.ConnectionState {
+			t.Helper()
+			leaf := Certificate(t, RuntimeIssuer, id)
+			issuer := &x509.Certificate{Subject: pkix.Name{CommonName: RuntimeIssuer}, BasicConstraintsValid: true, IsCA: true, NotBefore: time.Now().Add(-2 * time.Hour), NotAfter: time.Now().Add(-time.Minute)}
+			return &tls.ConnectionState{HandshakeComplete: true, PeerCertificates: []*x509.Certificate{leaf}, VerifiedChains: [][]*x509.Certificate{{leaf, issuer}}}
+		}},
 
 		// Not an end-entity certificate (X.509-SVID section 5.2), even with
 		// exactly the allowed identity.

@@ -10,6 +10,8 @@ func TestCallerAuthenticationContractIsDocumentedOnce(t *testing.T) {
 	section := compactDocSection(t, contractsRaw, "## 3A. Caller Authentication Contract", "## 4. Workload-Zone Vault Runtime-Config Contract")
 	assertContainsAll(t, "caller authentication contract", section,
 		"ARS, AGS, EGS, CGS, and ES authenticate the caller of every route that checks a caller with the one shared package `internal/callerauth`.",
+		"The verified chain must still be within its validity period at the time of each request, not only at the TLS handshake.",
+		"A request has a caller identity only if at least one verified chain that starts with the leaf has every certificate between its `notBefore` and `notAfter` at the time the request is authenticated.",
 		"The leaf must be an end-entity certificate. A leaf whose basic constraints mark it as a CA, or whose key usage includes `keyCertSign` or `cRLSign`, has no caller identity",
 		"The leaf must carry exactly one URI SAN.",
 		"A certificate with more than one URI SAN is refused even when one of them would be acceptable",

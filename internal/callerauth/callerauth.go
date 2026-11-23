@@ -2,8 +2,9 @@
 // (ARS, AGS, EGS, CGS and ES). It reads the caller's SPIFFE ID from the
 // verified TLS client certificate and refuses the request when that identity
 // is missing, ambiguous, malformed or outside the ES trust domain, when the
-// certificate is not an end-entity certificate, or when the certificate was
-// issued by the configured bootstrap issuer.
+// verified chain is no longer (or not yet) within its validity period, when
+// the certificate is not an end-entity certificate, or when the certificate
+// was issued by the configured bootstrap issuer.
 //
 // The package owns authentication only: who is calling. Which authenticated
 // callers may use which route (authorization) stays with each service.
@@ -19,6 +20,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"execution-substrate/internal/httpx"
 )
@@ -39,6 +41,7 @@ const (
 // which one applied: every one of them is answered with the same 401.
 var (
 	ErrNoVerifiedCertificate = errors.New("callerauth: no verified client certificate")
+	ErrOutsideValidity       = errors.New("callerauth: no verified client certificate chain is within its validity period now")
 	ErrNotEndEntity          = errors.New("callerauth: client certificate is a CA certificate or may sign certificates or CRLs")
 	ErrNoURISAN              = errors.New("callerauth: client certificate carries no URI SAN")
 	ErrMultipleURISANs       = errors.New("callerauth: client certificate carries more than one URI SAN")
@@ -109,22 +112,28 @@ func (c Caller) ID() SPIFFEID {
 	return c.id
 }
 
-// CallerFromConnectionState returns the caller identified by the verified
-// client certificate of a TLS connection. It reads the leaf of the first
-// verified chain; Go's TLS server puts the peer's leaf first in every
-// verified chain. The leaf must be an end-entity certificate: not a CA, and
-// with neither the keyCertSign nor the cRLSign key usage. It must carry
-// exactly one URI SAN, and that URI must pass ParseSPIFFEID. Other SAN types
-// (DNS names, IP addresses, e-mail addresses) are not read.
+// CallerFromConnectionState returns the caller identified, at time now, by
+// the verified client certificate of a TLS connection. It reads the leaf of
+// the first verified chain; Go's TLS server puts the peer's leaf first in
+// every verified chain. At least one verified chain that starts with that
+// leaf must have every certificate within its validity period at now: Go
+// checks the chains once, at the handshake, and a connection can outlive
+// them. The leaf must be an end-entity certificate: not a CA, and with
+// neither the keyCertSign nor the cRLSign key usage. It must carry exactly
+// one URI SAN, and that URI must pass ParseSPIFFEID. Other SAN types (DNS
+// names, IP addresses, e-mail addresses) are not read.
 //
 // It does not apply the bootstrap-issuer rule; Authenticator does.
-func CallerFromConnectionState(state *tls.ConnectionState) (Caller, error) {
+func CallerFromConnectionState(state *tls.ConnectionState, now time.Time) (Caller, error) {
 	if state == nil || len(state.VerifiedChains) == 0 || len(state.VerifiedChains[0]) == 0 {
 		return Caller{}, ErrNoVerifiedCertificate
 	}
 	leaf := state.VerifiedChains[0][0]
 	if leaf == nil {
 		return Caller{}, ErrNoVerifiedCertificate
+	}
+	if !verifiedChainValidAt(state.VerifiedChains, leaf, now) {
+		return Caller{}, ErrOutsideValidity
 	}
 	// X.509-SVID section 5.2: a validator refuses a leaf whose basic
 	// constraints mark it as a CA, or whose key usage includes keyCertSign
@@ -160,6 +169,7 @@ func CallerFromConnectionState(state *tls.ConnectionState) (Caller, error) {
 // one with NewAuthenticator.
 type Authenticator struct {
 	bootstrapIssuerCommonName string
+	now                       func() time.Time
 }
 
 // NewAuthenticator returns an Authenticator that refuses callers whose
@@ -168,15 +178,16 @@ type Authenticator struct {
 // configuration refuses an empty value; an Authenticator made with an empty
 // value, and the zero Authenticator, refuse every request.
 func NewAuthenticator(bootstrapIssuerCommonName string) Authenticator {
-	return Authenticator{bootstrapIssuerCommonName: strings.TrimSpace(bootstrapIssuerCommonName)}
+	return Authenticator{bootstrapIssuerCommonName: strings.TrimSpace(bootstrapIssuerCommonName), now: time.Now}
 }
 
 // Authenticate returns the authenticated caller of r and true. Otherwise it
 // writes the refusal and returns false:
 //
 //   - 401 "Authenticated caller identity required" when r has no acceptable
-//     caller identity (see CallerFromConnectionState), and when the
-//     Authenticator has no bootstrap issuer;
+//     caller identity at the time of the request (see
+//     CallerFromConnectionState), and when the Authenticator has no
+//     bootstrap issuer;
 //   - 403 "Bootstrap PKI callers are not accepted; use a SPIRE-issued
 //     identity" when the client certificate's issuer common name is the
 //     bootstrap issuer.
@@ -187,7 +198,11 @@ func (a Authenticator) Authenticate(w http.ResponseWriter, r *http.Request) (Cal
 		httpx.WriteText(w, http.StatusUnauthorized, unauthenticatedBody)
 		return Caller{}, false
 	}
-	caller, err := CallerFromConnectionState(r.TLS)
+	now := time.Now
+	if a.now != nil {
+		now = a.now
+	}
+	caller, err := CallerFromConnectionState(r.TLS, now())
 	if err != nil {
 		httpx.WriteText(w, http.StatusUnauthorized, unauthenticatedBody)
 		return Caller{}, false
@@ -197,6 +212,29 @@ func (a Authenticator) Authenticate(w http.ResponseWriter, r *http.Request) (Cal
 		return Caller{}, false
 	}
 	return caller, true
+}
+
+// verifiedChainValidAt reports whether one of chains starts with leaf and
+// has every certificate within its validity period at now. Like Go's
+// verifier, it counts a certificate as valid from its NotBefore through its
+// NotAfter, both included.
+func verifiedChainValidAt(chains [][]*x509.Certificate, leaf *x509.Certificate, now time.Time) bool {
+	for _, chain := range chains {
+		if len(chain) == 0 || (chain[0] != leaf && !chain[0].Equal(leaf)) {
+			continue
+		}
+		valid := true
+		for _, cert := range chain {
+			if cert == nil || now.Before(cert.NotBefore) || now.After(cert.NotAfter) {
+				valid = false
+				break
+			}
+		}
+		if valid {
+			return true
+		}
+	}
+	return false
 }
 
 // validTrustDomainName reports whether name is a non-empty trust domain name
