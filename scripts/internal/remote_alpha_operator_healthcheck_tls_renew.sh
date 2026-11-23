@@ -393,12 +393,17 @@ if not es_client_ca:
 
 cert = cert_record(operator_cert_path)
 key_pair = key_pair_record(operator_cert_path, operator_key_path)
+# Exact URI SAN entries, in certificate order, duplicates included. ES refuses
+# a certificate with more than one URI SAN (caller authentication contract,
+# contracts.md section 3A), so the expected identity must be the only one.
+uri_sans = re.findall(r"(?:^|[\s,])URI:([^,\s]+)", cert.get("subject_alt_name", ""))
 identity = {
     "expected_uri": expected_spiffe_uri,
     "legacy_uri": legacy_spiffe_uri,
     "subject_alt_name": cert.get("subject_alt_name", ""),
-    "matches_current_allowlist": expected_spiffe_uri in cert.get("subject_alt_name", ""),
-    "legacy_operator_uri_present": legacy_spiffe_uri in cert.get("subject_alt_name", ""),
+    "uri_san_count": len(uri_sans),
+    "matches_current_allowlist": uri_sans == [expected_spiffe_uri],
+    "legacy_operator_uri_present": legacy_spiffe_uri in uri_sans,
 }
 identity["status"] = "pass" if identity["matches_current_allowlist"] else "fail"
 if identity["legacy_operator_uri_present"] and not identity["matches_current_allowlist"]:
@@ -455,7 +460,7 @@ if cert.get("status") != "pass":
 if key_pair.get("status") != "pass":
     blockers.append("operator certificate and key public keys do not match")
 if identity.get("status") != "pass":
-    blockers.append(f"operator certificate SAN must include {expected_spiffe_uri}")
+    blockers.append(f"operator certificate must carry exactly one URI SAN, {expected_spiffe_uri}")
 for record in verification:
     if record.get("status") == "fail":
         blockers.append(f"verification {record['label']} failed")

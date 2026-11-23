@@ -125,6 +125,116 @@ Workstream A decision explicitly classifies it that way.
 - The shared-kernel role of `internal/contracts/evidence/v1` remains explicitly reopened by `PLANS.md`.
 - The new aggregate evidence record is active today, but it is still a first migration cut rather than the declared end-state kernel.
 
+## 3A. Caller Authentication Contract
+
+### Purpose
+
+Define once what "authenticated SPIFFE caller identity" means for every
+current service boundary: ARS, AGS, EGS, CGS, and ES. Authentication answers
+who is calling. Authorization, which authenticated callers may use which
+route, stays with each service and is described in that service's section.
+
+### Current producers / consumers
+
+- Callers present an X.509 client certificate on a mutual-TLS connection.
+  Each service's TLS listener requires a client certificate that verifies
+  against that service's configured client CA bundle, including on `/health`.
+- ARS, AGS, EGS, CGS, and ES authenticate the caller of every route that
+  checks a caller with the one shared package `internal/callerauth`. No
+  service keeps its own copy of these rules.
+
+### Public surface
+
+`Observed current contract`
+
+- `401` plain text `Authenticated caller identity required` when the
+  request carries no acceptable caller identity.
+- `403` plain text
+  `Bootstrap PKI callers are not accepted; use a SPIRE-issued identity`
+  when the client certificate was issued by the configured bootstrap issuer.
+- Neither response says which rule refused the request.
+
+### Current invariants
+
+`Current invariant`
+
+- The caller identity is read from the leaf certificate of the first verified
+  client certificate chain. A request without a verified chain, or whose
+  first chain has no leaf, has no caller identity.
+- The verified chain must still be within its validity period at the time of
+  each request, not only at the TLS handshake. A request has a caller
+  identity only if at least one verified chain that starts with the leaf has
+  every certificate between its `notBefore` and `notAfter` at the time the
+  request is authenticated. Go's TLS server checks the chain once per
+  connection, so without this rule a client that keeps its connection busy
+  would stay authenticated after its certificate expired, which defeats
+  short-lived certificates as the way to cut a caller off.
+- The leaf must be an end-entity certificate. A leaf whose basic constraints
+  mark it as a CA, or whose key usage includes `keyCertSign` or `cRLSign`,
+  has no caller identity: the SPIFFE X.509-SVID standard requires every
+  validator to refuse such a leaf, and a CA certificate that carries an ES
+  identity would otherwise authenticate as that caller. The
+  `digitalSignature` key usage is an issuer rule and is not checked.
+- The leaf must carry exactly one URI SAN. A certificate with no URI SAN has
+  no caller identity. A certificate with more than one URI SAN is refused
+  even when one of them would be acceptable: the SPIFFE X.509-SVID standard
+  allows exactly one URI SAN, and no service picks one of several.
+  DNS-name, IP-address, and e-mail SANs are not read.
+- That URI must be a SPIFFE ID in the trust domain `execution.internal`,
+  written as `spiffe://execution.internal/<segment>[/<segment>...]`, where
+  every segment is one or more of `A-Z`, `a-z`, `0-9`, `.`, `-`, and `_` and
+  is not `.` or `..`. These are the SPIFFE ID rules of the SPIFFE standard,
+  plus the requirement of a path, because the trust domain's own ID names no
+  workload.
+- Therefore refused: any other trust domain (including names that contain
+  `execution.internal`), user information, a port, upper-case letters in the
+  trust domain, a query, a fragment, percent encoding, an empty segment, a
+  trailing slash, `.` and `..` segments, and an ID without a path.
+- The rule applies to the URI as Go's certificate parser hands it over. That
+  parser lower-cases the URI scheme and drops an empty fragment (a trailing
+  `#`), so such a SAN names the same ID as without them. go-spiffe's
+  `x509svid.IDFromCert` reads a certificate the same way.
+- Identity failures return `401` before the bootstrap-issuer rule runs. A
+  caller whose leaf certificate names the configured bootstrap issuer common
+  name (`security.bootstrap_issuer_common_name`, compared exactly after
+  trimming surrounding white space from the configured value) gets `403`.
+- Every service's startup configuration refuses an empty bootstrap issuer
+  common name. A service whose authenticator has none refuses every request
+  with `401`.
+- After authentication, services authorize the canonical identity only: the
+  path after `spiffe://execution.internal/` for path-prefix and exact-path
+  allowlists, and the full canonical SPIFFE ID where a service compares
+  whole identities (AGS publication caller binding, CGS caller/workload
+  match). A path that is not in canonical form never reaches authorization.
+
+### Ownership boundary
+
+- `internal/callerauth` owns caller authentication only. It does not own any
+  allowlist, route, policy decision, or service grammar.
+- Each service owns its authorization: ARS read prefixes and its writer
+  path, AGS and ES configured prefixes, EGS's fixed caller list, and CGS's
+  caller/workload match plus `id.conf`.
+
+### Temporary compatibility edges
+
+- The bootstrap issuer is recognized by the issuer common name string in the
+  leaf certificate, not by the issuing key. The rule lives in one place so a
+  stronger rule can replace it in one change.
+
+### Reopened seams
+
+`Reopened redesign seam`
+
+- One trust domain is accepted. Federation with other trust domains is not
+  designed; adding it requires an explicit contract change, not a list in
+  configuration.
+- The inert outside-observer protocol
+  (`.docs/execution_lifecycle/outside_observer_protocol.md`) names fixed
+  SPIFFE ID values in the trust domain `governed-execution.local`. They are
+  message field values, not callers of any service today. If that observer
+  ever authenticates to an ES service over mutual TLS, this contract refuses
+  it until the trust-domain rule is changed explicitly.
+
 ## 4. Workload-Zone Vault Runtime-Config Contract
 
 ### Purpose
@@ -238,7 +348,7 @@ Current response shape:
 
 `Current invariant`
 
-- AGS requires authenticated SPIFFE caller identity and rejects bootstrap-PKI callers.
+- AGS requires authenticated SPIFFE caller identity and rejects bootstrap-PKI callers under the caller authentication contract in section 3A.
 - AGS authorizes publish callers by configured SPIFFE path prefixes from `authorization.allowed_spiffe_path_prefixes`.
 - The current repo-owned runbooks, proofs, and generated helper configs keep that AGS caller allowlist operator-only:
   - `spiffe://execution.internal/operator/local`
@@ -338,6 +448,7 @@ Current registration record is discovery-centered:
 `Current invariant`
 
 - ARS is the only current publication and retrieval boundary for published artifacts.
+- ARS authenticates every read and write caller under the caller authentication contract in section 3A, including the bootstrap-issuer refusal on both paths.
 - Write access is limited to SPIFFE caller path `service/artifact-governance`.
 - `PUT /v1/blobs/{digest}` recomputes the digest from received bytes.
 - Upload is idempotent for identical content.
@@ -673,7 +784,7 @@ Current successful response shapes:
 
 `Current invariant`
 
-- ES requires authenticated SPIFFE caller identity and rejects bootstrap-PKI callers.
+- ES requires authenticated SPIFFE caller identity and rejects bootstrap-PKI callers under the caller authentication contract in section 3A.
 - ES authorizes execution and lifecycle callers by configured SPIFFE path prefixes from `authorization.allowed_spiffe_path_prefixes`.
 - ES prefix matching is exact-or-subpath: the authenticated caller path must
   equal a configured prefix or start with that prefix followed by `/`.
@@ -910,6 +1021,7 @@ Current `publication` metadata shape:
 
 `Current invariant`
 
+- EGS authenticates `GET /v1/trust-model` callers under the caller authentication contract in section 3A, then accepts exactly the caller paths `service/execution` and `operator/local`.
 - EGS signs the canonical runtime-trust payload, not artifact facts.
 - The signed `runtime_trust` payload is intentionally limited to signer and
   artifact trust policy. It does not carry authorization decisions, runtime
@@ -1018,7 +1130,7 @@ Current response shape:
 `Current invariant`
 
 - CGS exposes only `POST /v1/credential/authorize` in the current Go contract.
-- CGS requires authenticated SPIFFE caller identity and rejects bootstrap-PKI callers.
+- CGS requires authenticated SPIFFE caller identity and rejects bootstrap-PKI callers under the caller authentication contract in section 3A. A caller identity from any trust domain other than `execution.internal` is refused with `401` before policy evaluation.
 - The authenticated caller identity must equal `workload.workload_identity_id`.
 - CGS is a direct authorize-only boundary. The current request/response surface
   does not carry runtime auth-plan fields, credential material, Vault token
@@ -1038,6 +1150,10 @@ Current response shape:
   - `principal: "spiffe://..."`
   - `role: "<role>"`
   - `}`
+- A `principal` must be a SPIFFE ID that the caller authentication contract
+  in section 3A accepts, written exactly in that form. `id.conf` loading
+  refuses any other principal, because no authenticated caller could ever
+  match it.
 - The repo now carries a minimal checked-in baseline at `cgs/policy/id.conf`.
   - It is grounded in current Go-repo tests/examples only.
   - It must not be mistaken for a complete production policy file or final long-term policy grammar.
