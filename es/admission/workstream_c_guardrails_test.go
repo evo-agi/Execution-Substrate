@@ -1554,7 +1554,7 @@ func validateTrancheB1LiteralGoldenSource(resolvedTestSource string, submitTestS
 	if goldenTest == nil || goldenTest.Body == nil {
 		return fmt.Errorf("complete literal golden owning test is absent")
 	}
-	section := resolvedTestSource[fset.Position(goldenTest.Pos()).Offset:fset.Position(goldenTest.End()).Offset]
+	section := resolvedTestSource[guardPosition(fset, goldenTest.Pos()).Offset:guardPosition(fset, goldenTest.End()).Offset]
 	for _, required := range []string{
 		"service.Submit(context.Background(), request)",
 		"json.Unmarshal(submittedBody, &actualJob)",
@@ -1580,7 +1580,7 @@ func validateTrancheB1LiteralGoldenSource(resolvedTestSource string, submitTestS
 		case *ast.AssignStmt:
 			for _, lhs := range typed.Lhs {
 				if trancheB1ExpressionContainsIdentifier(lhs, "expectedJob") || trancheB1ExpressionContainsIdentifier(lhs, "expectedHandoff") {
-					err = fmt.Errorf("literal golden expected tree is assigned from an external value at %s", fset.Position(lhs.Pos()))
+					err = fmt.Errorf("literal golden expected tree is assigned from an external value at %s", guardPosition(fset, lhs.Pos()))
 					return false
 				}
 			}
@@ -3986,7 +3986,7 @@ func productionStructDeclarationText(t *testing.T, pkg *typedProductionPackage, 
 					t.Fatalf("%s.%s is not declared as a struct type", pkg.importPath, typeName)
 				}
 				source := pkg.sources[fileName]
-				return fileName, source[pkg.fset.Position(structure.Pos()).Offset:pkg.fset.Position(structure.End()).Offset]
+				return fileName, source[guardPosition(pkg.fset, structure.Pos()).Offset:guardPosition(pkg.fset, structure.End()).Offset]
 			}
 		}
 	}
@@ -4488,6 +4488,17 @@ func TestOperationalGuardReviewedDependencyPackagesAreExact(t *testing.T) {
 	})
 }
 
+// guardPosition is the position of pos in the file that holds it. A //line or
+// /*line directive makes FileSet.Position report another file name, line and
+// column for the code below it, so a file could name a sibling and have its
+// code judged as the sibling's. Every guard reads positions through this
+// function, unadjusted, and a test refuses any other way of reading one
+// (TestOperationalGuardReadsUnadjustedPositions). Production files may hold no
+// such directive either (TestOperationalGuardProductionFilesHoldNoLineDirective).
+func guardPosition(fset *token.FileSet, pos token.Pos) token.Position {
+	return fset.PositionFor(pos, false)
+}
+
 // operationalGuardRawPointerType says whether a value of a type converts to
 // a pointer of any type, and back from an integer address: its underlying
 // type is unsafe.Pointer. A tuple and a function type count when one of
@@ -4523,7 +4534,7 @@ func operationalGuardRawPointerSites(pkg *typedProductionPackage) map[string][]s
 		if !pos.IsValid() || !operationalGuardRawPointerType(typ) {
 			return
 		}
-		position := pkg.fset.Position(pos)
+		position := guardPosition(pkg.fset, pos)
 		name, ok := files[position.Filename]
 		if !ok {
 			name = position.Filename
@@ -4806,6 +4817,569 @@ func zzReopen(offset uintptr) {
 			t.Fatalf("integer addresses alone were refused: %v", err)
 		}
 	})
+	// The rule judges the file that holds each site, not its package: a road
+	// beside a sibling file that imports unsafe is refused all the same. A
+	// //line or /*line directive that names that sibling, or a file that does
+	// not exist, does not move the site out of the file that holds it.
+	// Production files may hold no such directive at all; the overlays here
+	// show that the rule does not depend on that.
+	view := func(goos, goarch string) typedProductionView {
+		for _, candidate := range views {
+			if candidate.target.goos == goos && candidate.target.goarch == goarch {
+				return candidate
+			}
+		}
+		t.Fatalf("no %s/%s view", goos, goarch)
+		return typedProductionView{}
+	}
+	for _, sibling := range []struct {
+		name, goos, goarch, importPath, file, packageClause, unsafeFile, imports, road string
+	}{
+		{
+			name: "es/admission beside execution_roots_darwin.go", goos: "darwin", goarch: "arm64",
+			importPath: importPath, file: file, packageClause: "package admission\n",
+			unsafeFile: "execution_roots_darwin.go", imports: road2,
+			road: window + `func zzReopen(offset uintptr) {
+	var typeError *zzjson.UnmarshalTypeError
+	var d zztime.Duration
+	_ = zzerrors.As(zzjson.Unmarshal([]byte("\"x\""), &d), &typeError)
+	(*zzWindow)(typeError.Type.Method(0).Func.UnsafePointer())[offset] = 0
+}`,
+		},
+		{
+			name: "es/runtimehelper beside privilege_linux.go", goos: "linux", goarch: "amd64",
+			importPath: "execution-substrate/es/runtimehelper", file: "es/runtimehelper/common.go", packageClause: "package runtimehelper\n",
+			unsafeFile: "privilege_linux.go", imports: road1,
+			road: window + `func zzReopen(offset uintptr) {
+	p, _ := zzunix.MmapPtr(-1, 0, nil, 4096, zzunix.PROT_READ|zzunix.PROT_WRITE, zzunix.MAP_PRIVATE|zzunix.MAP_ANONYMOUS)
+	(*zzWindow)(p)[offset] = 0
+}`,
+		},
+	} {
+		target := view(sibling.goos, sibling.goarch)
+		var source string
+		var siblingImportsUnsafe bool
+		for _, pkg := range target.packages {
+			if pkg.importPath != sibling.importPath {
+				continue
+			}
+			source = pkg.sources[sibling.file]
+			for name, parsed := range pkg.files {
+				if filepath.Base(name) != sibling.unsafeFile {
+					continue
+				}
+				for _, spec := range parsed.Imports {
+					if path, err := strconv.Unquote(spec.Path.Value); err == nil && path == "unsafe" {
+						siblingImportsUnsafe = true
+					}
+				}
+			}
+		}
+		if source == "" || !strings.Contains(source, sibling.packageClause) || !siblingImportsUnsafe {
+			t.Fatalf("%s: %s was not read, or %s does not import unsafe in the %s/%s view", sibling.name, sibling.file, sibling.unsafeFile, sibling.goos, sibling.goarch)
+		}
+		for _, directive := range []struct{ name, text string }{
+			{"no directive", ""},
+			{"a //line directive naming the sibling", "//line " + sibling.unsafeFile + ":1\n"},
+			{"a /*line directive naming the sibling", "/*line " + sibling.unsafeFile + ":1:1*/ "},
+			{"a //line directive naming no file of the package", "//line zz_no_such_file.go:1\n"},
+		} {
+			overlay := map[string]string{sibling.file: strings.Replace(source, sibling.packageClause, sibling.packageClause+"\n"+sibling.imports+"\n", 1) + "\n" + directive.text + sibling.road + "\n"}
+			t.Run("refused: "+sibling.name+", "+directive.name, func(t *testing.T) {
+				pkg := target.metadata.typeCheckWithOverlay(t, sibling.importPath, overlay)
+				err := validateOperationalRawPointerFiles(pkg)
+				if err == nil || !strings.Contains(err.Error(), sibling.file+" holds a value whose type converts to any pointer") {
+					t.Fatalf("the road passed the raw pointer rule in a file beside %s: %v", sibling.unsafeFile, err)
+				}
+				if directive.text == "" {
+					return
+				}
+				// The directive did move the adjusted positions, so the
+				// subtest is about the directive and not about an ignored
+				// comment; and the directive check refuses the file too.
+				if operationalGuardMovedPosition(pkg.fset, pkg.files[sibling.file]) == "" {
+					t.Fatalf("the directive %q moved no position", directive.text)
+				}
+				if err := validateOperationalNoLineDirective(overlay); err == nil {
+					t.Fatalf("the directive check accepted %q", directive.text)
+				}
+			})
+		}
+	}
+	// A site whose file is not one of the package's files is refused, not
+	// dropped. Real positions always name a file of the package, so the
+	// subtest takes the file out of the package's list to reach the branch.
+	t.Run("a site in no file of the package is refused", func(t *testing.T) {
+		pkg := linux.metadata.typeCheckWithOverlay(t, importPath, with(road2, window+`func zzReopen(offset uintptr) {
+	var typeError *zzjson.UnmarshalTypeError
+	var d zztime.Duration
+	_ = zzerrors.As(zzjson.Unmarshal([]byte("\"x\""), &d), &typeError)
+	(*zzWindow)(typeError.Type.Method(0).Func.UnsafePointer())[offset] = 0
+}`))
+		withoutFile := *pkg
+		withoutFile.files = make(map[string]*ast.File, len(pkg.files))
+		for name, parsed := range pkg.files {
+			if name != file {
+				withoutFile.files[name] = parsed
+			}
+		}
+		if len(withoutFile.files) != len(pkg.files)-1 {
+			t.Fatalf("%s is not a file of the package", file)
+		}
+		if err := validateOperationalRawPointerFiles(&withoutFile); err == nil || !strings.Contains(err.Error(), "is in no file of "+importPath) {
+			t.Fatalf("a site in no file of the package was not refused: %v", err)
+		}
+	})
+	// The rule reads the static types of the source. A raw pointer can be
+	// held through a type parameter that inference sets to unsafe.Pointer,
+	// with no expression or name of a raw pointer type in the file (the
+	// instance is recorded only in the type checker's list of instances).
+	// Such a value cannot become a typed pointer there: a conversion from a
+	// type parameter needs a constraint whose type set holds unsafe.Pointer,
+	// and spelling one is a raw pointer type the rule sees.
+	t.Run("a raw pointer held through an inferred type parameter is not a raw type of the source", func(t *testing.T) {
+		pkg := linux.metadata.typeCheckWithOverlay(t, importPath, with(road2, `type zzRV[P any] interface{ UnsafePointer() P }
+
+func zzHold[V zzRV[P], P any](v V) []P { return []P{v.UnsafePointer()} }
+
+func zzHeld() int {
+	var typeError *zzjson.UnmarshalTypeError
+	var d zztime.Duration
+	_ = zzerrors.As(zzjson.Unmarshal([]byte("\"x\""), &d), &typeError)
+	return len(zzHold(typeError.Type.Method(0).Func))
+}`))
+		if err := validateOperationalRawPointerFiles(pkg); err != nil {
+			t.Fatalf("the rule now reads instances; update the documents and this subtest: %v", err)
+		}
+	})
+	t.Run("an inferred type parameter does not convert to a pointer", func(t *testing.T) {
+		errorsFound := linux.metadata.typeErrorsWithOverlay(t, importPath, with(road2, `func zzConvert[P any](p P) *bool { return (*bool)(p) }
+
+type zzRV[P any] interface{ UnsafePointer() P }
+
+func zzGet[V zzRV[P], P any](v V) *bool { return zzConvert(v.UnsafePointer()) }`))
+		if len(errorsFound) == 0 || !strings.Contains(strings.Join(errorsFound, "\n"), "cannot convert") {
+			t.Fatalf("a type parameter converted to a pointer: %v", errorsFound)
+		}
+	})
+}
+
+// operationalGuardLineDirective says whether a comment is a line directive,
+// or looks like one: "//line " or "/*line " followed by anything, in any
+// column. The go command honours //line only at the start of a line and
+// only with a position after a colon; this check is stricter on purpose.
+func operationalGuardLineDirective(text string) bool {
+	return strings.HasPrefix(text, "//line ") || strings.HasPrefix(text, "/*line ") ||
+		strings.HasPrefix(text, "//line\t") || strings.HasPrefix(text, "/*line\t")
+}
+
+// validateOperationalNoLineDirective refuses a line directive in any of the
+// given sources, and any position that a directive of a form not matched by
+// name has moved.
+func validateOperationalNoLineDirective(sources map[string]string) error {
+	return validateOperationalLineDirectives(sources, operationalGuardLineDirective)
+}
+
+// validateOperationalLineDirectives refuses every comment that isDirective
+// names and every position that a line directive moved, in any of the given
+// sources. The second check needs no name: it holds any form of directive
+// that the parser honours, whatever its spelling.
+func validateOperationalLineDirectives(sources map[string]string, isDirective func(string) bool) error {
+	names := make([]string, 0, len(sources))
+	for name := range sources {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	var refused []error
+	for _, name := range names {
+		fset := token.NewFileSet()
+		parsed, err := parser.ParseFile(fset, name, sources[name], parser.ParseComments|parser.SkipObjectResolution)
+		if err != nil {
+			refused = append(refused, fmt.Errorf("%s does not parse: %v", name, err))
+			continue
+		}
+		for _, group := range parsed.Comments {
+			for _, comment := range group.List {
+				if isDirective(comment.Text) {
+					position := guardPosition(fset, comment.Pos())
+					refused = append(refused, fmt.Errorf("%s:%d:%d holds a line directive %q: a directive makes tools read the code below it as code of another file or line, so production files may hold none", name, position.Line, position.Column, comment.Text))
+				}
+			}
+		}
+		if moved := operationalGuardMovedPosition(fset, parsed); moved != "" {
+			refused = append(refused, fmt.Errorf("a line directive moved a position: %s", moved))
+		}
+	}
+	return errors.Join(refused...)
+}
+
+// operationalGuardMovedPosition is the one place where a guard reads an
+// adjusted position, to compare it with the real one: it names the first node
+// below root whose position a line directive moved, or returns "" when a
+// directive moved none.
+func operationalGuardMovedPosition(fset *token.FileSet, root ast.Node) string {
+	moved := ""
+	ast.Inspect(root, func(node ast.Node) bool {
+		if moved != "" {
+			return false
+		}
+		if node == nil || !node.Pos().IsValid() {
+			return true
+		}
+		if adjusted, real := fset.PositionFor(node.Pos(), true), guardPosition(fset, node.Pos()); adjusted != real {
+			moved = fmt.Sprintf("%s:%d:%d reads as %s", real.Filename, real.Line, real.Column, adjusted)
+		}
+		return true
+	})
+	return moved
+}
+
+// A //line or /*line directive makes tools, the guard's type checker among
+// them, read the code below it as code of another file and line. The guard
+// reads positions unadjusted, so a directive cannot move a site to another
+// file; and no production file needs one, since none is generated from
+// another source, so every non-test Go file of the repository is refused one,
+// whatever build target compiles it.
+func TestOperationalGuardProductionFilesHoldNoLineDirective(t *testing.T) {
+	root := repositoryRootForAdmissionGuard(t)
+	_, sources := repositoryProductionListings(t, root)
+	if len(sources) == 0 {
+		t.Fatal("no production source was read")
+	}
+	if err := validateOperationalNoLineDirective(sources); err != nil {
+		t.Fatal(err)
+	}
+	const file = "es/admission/zz_added.go"
+	for name, source := range map[string]string{
+		"//line at the start of a line":          "package admission\n\n//line other.go:1\nvar zz = 1\n",
+		"//line without a file name":             "package admission\n\n//line :40\nvar zz = 1\n",
+		"//line naming the file itself":          "package admission\n\n//line zz_added.go:3\nvar zz = 1\n",
+		"//line inside a function":               "package admission\n\nfunc zz() int {\n//line other.go:9\n\treturn 1\n}\n",
+		"//line after code on the same line":     "package admission\n\nvar zz = 1 //line other.go:1\n",
+		"/*line inside a line":                   "package admission\n\nvar zz = /*line other.go:9:1*/ 1\n",
+		"/*line at the start of a line":          "package admission\n\n/*line other.go:9:1*/\nvar zz = 1\n",
+		"/*line with no position":                "package admission\n\nvar zz = /*line other.go*/ 1\n",
+		"a tab after the word line":              "package admission\n\n//line\tother.go:1\nvar zz = 1\n",
+		"a directive in the last line of a file": "package admission\n\nvar zz = 1\n\n//line other.go:1",
+	} {
+		t.Run("refused: "+name, func(t *testing.T) {
+			if err := validateOperationalNoLineDirective(map[string]string{file: source}); err == nil || !strings.Contains(err.Error(), file) {
+				t.Fatalf("the directive was accepted: %v", err)
+			}
+		})
+	}
+	for name, source := range map[string]string{
+		"a comment about a line":            "package admission\n\n// line of text\nvar zz = 1\n",
+		"a comment that starts with lines":  "package admission\n\n//lines are counted\nvar zz = 1\n",
+		"a directive inside a string":       "package admission\n\nvar zz = \"//line other.go:1\"\n",
+		"a directive inside a raw string":   "package admission\n\nvar zz = `\n//line other.go:1\n`\n",
+		"a build constraint and a go: line": "//go:build linux\n\npackage admission\n\n//go:noinline\nfunc zz() {}\n",
+	} {
+		t.Run("not refused: "+name, func(t *testing.T) {
+			if err := validateOperationalNoLineDirective(map[string]string{file: source}); err != nil {
+				t.Fatalf("a file without a line directive was refused: %v", err)
+			}
+		})
+	}
+	// The position check holds a directive whose comment the name check
+	// would miss, by itself: with no comment named a directive, a file whose
+	// positions a directive moved is refused and a file without one is not.
+	// The name check is needed as well: a comment that only looks like a
+	// directive, after code or without a position, moves nothing today.
+	t.Run("a moved position is refused by itself", func(t *testing.T) {
+		never := func(string) bool { return false }
+		for source, refused := range map[string]bool{
+			"package admission\n\n//line other.go:1\nvar zz = 1\n":              true,
+			"package admission\n\nvar zz = /*line other.go:9:1*/ 1\n":           true,
+			"package admission\n\nfunc zz() int {\n//line :40\n\treturn 1\n}\n": true,
+			"package admission\n\n// line of text\nvar zz = 1\n":                false,
+			"package admission\n\nfunc zz() int {\n\t// line\n\treturn 1\n}\n":  false,
+			"package admission\n\nvar zz = 1 //line other.go:1\n\nvar zy = 2\n": false,
+			"package admission\n\nvar zz = /*line other.go*/ 1\n":               false,
+		} {
+			err := validateOperationalLineDirectives(map[string]string{file: source}, never)
+			if got := err != nil && strings.Contains(err.Error(), "a line directive moved a position: "+file); got != refused {
+				t.Errorf("%q: refused %t, want %t: %v", source, got, refused, err)
+			}
+		}
+	})
+}
+
+// A line directive in a production file moves no site of a guard inventory.
+// Every production package of the three build targets is type-checked again
+// with a /*line directive after the package name of each of its files, on the
+// same line, so that every later adjusted position names another file and
+// line while the real lines and columns stay as they were. The raw pointer
+// sites and the typed references to every object are then the same as
+// without the directive. Production files may hold no directive
+// (TestOperationalGuardProductionFilesHoldNoLineDirective); this test shows
+// that the guards do not depend on that.
+func TestOperationalGuardLineDirectivesMoveNoInventorySite(t *testing.T) {
+	const directive = " /*line zz_elsewhere.go:9000:1*/"
+	views := loadTypedProductionPackages(t, "./...")
+	inventory := func(pkg *typedProductionPackage) string {
+		var lines []string
+		for name, sites := range operationalGuardRawPointerSites(pkg) {
+			lines = append(lines, "raw pointer "+name+" "+strings.Join(sites, " "))
+		}
+		for _, reference := range pkg.referencesMatching(func(types.Object) bool { return true }) {
+			lines = append(lines, fmt.Sprintf("reference %s %s %s %s %s:%d:%d", reference.site, reference.objectIdentity, reference.referenceKind, reference.accessKind,
+				reference.position.Filename, reference.position.Line, reference.position.Column))
+		}
+		sort.Strings(lines)
+		return strings.Join(lines, "\n")
+	}
+	packages, references := 0, 0
+	for _, view := range views {
+		for _, pkg := range view.packages {
+			overlay := make(map[string]string, len(pkg.files))
+			for name, file := range pkg.files {
+				end := guardPosition(pkg.fset, file.Name.End()).Offset
+				overlay[name] = pkg.sources[name][:end] + directive + pkg.sources[name][end:]
+			}
+			moved := view.metadata.typeCheckWithOverlay(t, pkg.importPath, overlay)
+			for name, file := range moved.files {
+				if len(file.Decls) > 0 && operationalGuardMovedPosition(moved.fset, file) == "" {
+					t.Fatalf("%s: the directive moved no position of %s", view.target, name)
+				}
+			}
+			before, after := inventory(pkg), inventory(moved)
+			if before != after {
+				t.Errorf("%s %s: a line directive moved an inventory site:\nwithout:\n%s\nwith:\n%s", view.target, pkg.importPath, before, after)
+			}
+			packages++
+			references += strings.Count(before, "\nreference ")
+		}
+	}
+	if packages < 3*10 || references < 1000 {
+		t.Fatalf("too little was compared: %d packages, %d references", packages, references)
+	}
+	t.Logf("compared %d packages and %d references", packages, references)
+}
+
+// validateGuardPositionReads refuses, in the given Go test sources, a way of
+// reading an adjusted position: token.FileSet.Position, token.File.Position
+// and token.File.Line apply line directives, and so does PositionFor with a
+// second argument other than false. It reads the syntax: any selector named
+// Position, called or taken as a value, any call of a selector named Line,
+// and any selector named PositionFor other than a call with two arguments
+// whose second is false. A method value of Line looks like the field Line of
+// a token.Position and is not refused; production files hold no line
+// directive at all (TestOperationalGuardProductionFilesHoldNoLineDirective),
+// so that a guard that read one would still read real positions.
+func validateGuardPositionReads(sources map[string]string) error {
+	names := make([]string, 0, len(sources))
+	for name := range sources {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	var refused []error
+	for _, name := range names {
+		fset := token.NewFileSet()
+		parsed, err := parser.ParseFile(fset, name, sources[name], parser.SkipObjectResolution)
+		if err != nil {
+			refused = append(refused, fmt.Errorf("%s does not parse: %v", name, err))
+			continue
+		}
+		calls := make(map[ast.Expr]*ast.CallExpr)
+		ast.Inspect(parsed, func(node ast.Node) bool {
+			if call, ok := node.(*ast.CallExpr); ok {
+				calls[call.Fun] = call
+			}
+			return true
+		})
+		ast.Inspect(parsed, func(node ast.Node) bool {
+			selector, ok := node.(*ast.SelectorExpr)
+			if !ok {
+				return true
+			}
+			call := calls[selector]
+			line := guardPosition(fset, selector.Pos()).Line
+			if qualifier, ok := selector.X.(*ast.Ident); ok && qualifier.Name == "token" && selector.Sel.Name == "Position" {
+				return true // the type token.Position
+			}
+			switch selector.Sel.Name {
+			case "Position":
+				refused = append(refused, fmt.Errorf("%s:%d reads an adjusted position with Position; use guardPosition", name, line))
+			case "Line":
+				if call != nil {
+					refused = append(refused, fmt.Errorf("%s:%d reads an adjusted line with Line; use guardPosition", name, line))
+				}
+			case "PositionFor":
+				if call == nil || len(call.Args) != 2 {
+					refused = append(refused, fmt.Errorf("%s:%d uses PositionFor other than with a position and false; use guardPosition", name, line))
+					return true
+				}
+				if adjusted, ok := call.Args[1].(*ast.Ident); !ok || adjusted.Name != "false" {
+					refused = append(refused, fmt.Errorf("%s:%d calls PositionFor without false; use guardPosition", name, line))
+				}
+			}
+			return true
+		})
+	}
+	return errors.Join(refused...)
+}
+
+// Every guard of the module reads positions unadjusted, through
+// guardPosition, so that a line directive cannot move a site to another file
+// or line in any inventory or any other check. The test reads every test file
+// of the module, the guards among them, except the one function that compares
+// adjusted and real positions on purpose.
+func TestOperationalGuardReadsUnadjustedPositions(t *testing.T) {
+	root := repositoryRootForAdmissionGuard(t)
+	sources := make(map[string]string)
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			if path != root && entry.Name() == ".git" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(entry.Name(), "_test.go") {
+			return nil
+		}
+		contents, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		relative, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		sources[filepath.ToSlash(relative)] = string(contents)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	guard, ok := sources[operationalGuardPositionFile]
+	if !ok || len(sources) < 100 {
+		t.Fatalf("the test files were not read: %d files", len(sources))
+	}
+	if err := validateGuardPositionReadsOfModule(sources); err != nil {
+		t.Fatal(err)
+	}
+	// A read anywhere else is refused, in the guard file outside the
+	// exempted function and in any other test file.
+	const planted = "\nfunc zzPlanted(fset *token.FileSet, pos token.Pos) token.Position { return fset.Position(pos) }\n"
+	for _, name := range []string{operationalGuardPositionFile, "es/admission/reliable_submit_guardrails_test.go", "docs_contract_test.go"} {
+		t.Run("refused: a read planted in "+name, func(t *testing.T) {
+			changed := make(map[string]string, len(sources))
+			for key, value := range sources {
+				changed[key] = value
+			}
+			if _, ok := changed[name]; !ok {
+				t.Fatalf("%s was not read", name)
+			}
+			changed[name] += planted
+			if err := validateGuardPositionReadsOfModule(changed); err == nil || !strings.Contains(err.Error(), name+":") {
+				t.Fatalf("a read planted in %s was accepted: %v", name, err)
+			}
+		})
+	}
+	const file = "es/admission/zz_added_test.go"
+	for name, use := range map[string]string{
+		"FileSet.Position":                    "fset.Position(pos)",
+		"File.Position":                       "fset.File(pos).Position(pos)",
+		"File.Line":                           "token.Position{Line: fset.File(pos).Line(pos)}",
+		"a method expression of Position":     "(*token.FileSet).Position(fset, pos)",
+		"a method value of Position":          "func() token.Position { read := fset.Position; return read(pos) }()",
+		"Position in parentheses":             "(fset.Position)(pos)",
+		"PositionFor with true":               "fset.PositionFor(pos, true)",
+		"PositionFor with a variable":         "fset.PositionFor(pos, adjusted)",
+		"a method expression of PositionFor":  "(*token.FileSet).PositionFor(fset, pos, false)",
+		"a method value of PositionFor":       "func() token.Position { read := fset.PositionFor; return read(pos, false) }()",
+		"File.PositionFor with true":          "fset.File(pos).PositionFor(pos, true)",
+		"PositionFor with a negated constant": "fset.PositionFor(pos, !true)",
+	} {
+		t.Run("refused: "+name, func(t *testing.T) {
+			source := "package admission\n\nimport \"go/token\"\n\nfunc zz(fset *token.FileSet, pos token.Pos, adjusted bool) token.Position { return " + use + " }\n"
+			if err := validateGuardPositionReads(map[string]string{file: source}); err == nil || !strings.Contains(err.Error(), file) {
+				t.Fatalf("%s was accepted: %v", use, err)
+			}
+		})
+	}
+	for name, use := range map[string]string{
+		"guardPosition":                "guardPosition(fset, pos)",
+		"PositionFor with false":       "fset.PositionFor(pos, false)",
+		"File.PositionFor with false":  "fset.File(pos).PositionFor(pos, false)",
+		"the field Line of a position": "token.Position{Line: guardPosition(fset, pos).Line}",
+		"the offset of a position":     "token.Position{Offset: fset.File(pos).Offset(pos)}",
+	} {
+		t.Run("not refused: "+name, func(t *testing.T) {
+			source := "package admission\n\nimport \"go/token\"\n\nfunc zz(fset *token.FileSet, pos token.Pos) token.Position { return " + use + " }\n"
+			if err := validateGuardPositionReads(map[string]string{file: source}); err != nil {
+				t.Fatalf("%s was refused: %v", use, err)
+			}
+		})
+	}
+	// The exemption is needed: the exempted function reads an adjusted
+	// position, so the check refuses the guard file without it.
+	t.Run("the exemption is needed", func(t *testing.T) {
+		if err := validateGuardPositionReads(map[string]string{operationalGuardPositionFile: guard}); err == nil {
+			t.Fatalf("the guard file reads no adjusted position: remove %s from the exemption", operationalGuardPositionExemption)
+		}
+	})
+}
+
+const (
+	operationalGuardPositionFile      = "es/admission/workstream_c_guardrails_test.go"
+	operationalGuardPositionExemption = "operationalGuardMovedPosition"
+)
+
+// validateGuardPositionReadsOfModule refuses an adjusted position read in
+// the test files of the module, keyed by repository-relative path, except in
+// the body of the one function of the guard file that compares adjusted and
+// real positions on purpose.
+func validateGuardPositionReadsOfModule(sources map[string]string) error {
+	guard, ok := sources[operationalGuardPositionFile]
+	if !ok {
+		return fmt.Errorf("%s was not read", operationalGuardPositionFile)
+	}
+	without, err := operationalGuardWithoutFunctions(guard, operationalGuardPositionExemption)
+	if err != nil {
+		return err
+	}
+	checked := make(map[string]string, len(sources))
+	for name, source := range sources {
+		checked[name] = source
+	}
+	checked[operationalGuardPositionFile] = without
+	return validateGuardPositionReads(checked)
+}
+
+// operationalGuardWithoutFunctions returns a Go source with the bodies of the
+// named top-level functions emptied, and fails when one is not found.
+func operationalGuardWithoutFunctions(source string, names ...string) (string, error) {
+	fset := token.NewFileSet()
+	parsed, err := parser.ParseFile(fset, "guard.go", source, parser.SkipObjectResolution)
+	if err != nil {
+		return "", err
+	}
+	type span struct{ start, end int }
+	var spans []span
+	for _, name := range names {
+		found := false
+		for _, declaration := range parsed.Decls {
+			function, ok := declaration.(*ast.FuncDecl)
+			if !ok || function.Recv != nil || function.Name.Name != name || function.Body == nil {
+				continue
+			}
+			spans = append(spans, span{guardPosition(fset, function.Body.Lbrace).Offset + 1, guardPosition(fset, function.Body.Rbrace).Offset})
+			found = true
+		}
+		if !found {
+			return "", fmt.Errorf("function %s was not found", name)
+		}
+	}
+	sort.Slice(spans, func(i, j int) bool { return spans[i].start > spans[j].start })
+	for _, s := range spans {
+		source = source[:s.start] + "\n" + source[s.end:]
+	}
+	return source, nil
 }
 
 func slicesContain(values []string, value string) bool {
@@ -6270,7 +6844,7 @@ func (metadata *typedProductionMetadata) typeCheckCollecting(t *testing.T, item 
 				*typeErrors = append(*typeErrors, err.Error())
 				return
 			}
-			position := typeError.Fset.Position(typeError.Pos)
+			position := guardPosition(typeError.Fset, typeError.Pos)
 			name := position.Filename
 			if relative, relErr := filepath.Rel(metadata.repositoryRoot, name); relErr == nil {
 				name = filepath.ToSlash(relative)
@@ -6764,7 +7338,7 @@ func (pkg *typedProductionPackage) dynamicMethodReferences(target *types.Func) [
 				referenceKind:     kind,
 				accessKind:        kind,
 				insideFuncLiteral: insideFunctionLiteral(parents, identifier),
-				position:          pkg.fset.Position(identifier.Pos()),
+				position:          guardPosition(pkg.fset, identifier.Pos()),
 			})
 			return true
 		})
@@ -7064,7 +7638,7 @@ func (pkg *typedProductionPackage) wholeValueOccurrences(target owningStruct, fi
 				referenceKind:     "whole-value",
 				accessKind:        accessKind,
 				insideFuncLiteral: insideFunctionLiteral(parents, node),
-				position:          pkg.fset.Position(node.Pos()),
+				position:          guardPosition(pkg.fset, node.Pos()),
 			})
 		}
 		unnamed := func(list *ast.FieldList) {
@@ -7327,7 +7901,7 @@ func (pkg *typedProductionPackage) referencesMatching(matches func(types.Object)
 				directCall:        directCall,
 				methodExpression:  methodExpression,
 				insideFuncLiteral: insideLiteral,
-				position:          pkg.fset.Position(identifier.Pos()),
+				position:          guardPosition(pkg.fset, identifier.Pos()),
 			})
 			return true
 		})
@@ -8388,7 +8962,7 @@ func trancheB1BuiltinMutationDestination(name string, arguments []ast.Expr) ast.
 }
 
 func trancheB1SemanticOccurrence(pkg *typedProductionPackage, fileName string, parents map[ast.Node]ast.Node, node ast.Node, kind string, objectIdentity string) string {
-	position := pkg.fset.Position(node.Pos())
+	position := guardPosition(pkg.fset, node.Pos())
 	return fmt.Sprintf("%s@%d:%d[%s:%s]", typedFunctionSite(fileName, enclosingFunction(parents, node)), position.Line, position.Column, kind, objectIdentity)
 }
 
@@ -8740,7 +9314,7 @@ func trancheB1BuildPostFreezeClosure(pkg *typedProductionPackage) (trancheB1Post
 				if variable, ok := object.(*types.Var); ok {
 					switch {
 					case variable == retainedNomadDatacenter && trancheB1IdentifierIsRead(typed, parents):
-						position := pkg.fset.Position(typed.Pos())
+						position := guardPosition(pkg.fset, typed.Pos())
 						violations = append(violations, fmt.Sprintf("%s reads forbidden retained nomadClient.datacenter at %s:%d:%d", site, filepath.Base(position.Filename), position.Line, position.Column))
 					case serviceFields[variable] && variable.Name() != "nomadClient":
 						violations = append(violations, site+" references forbidden Service field "+variable.Name())

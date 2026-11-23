@@ -218,7 +218,7 @@ func TestReliableSubmitBindingProducerHasNoProductionCaller(t *testing.T) {
 				if !ok || function.Pkg() == nil || function.Pkg().Path() != admissionPackagePath {
 					return true
 				}
-				definitionFile := filepath.Base(pkg.fset.Position(function.Pos()).Filename)
+				definitionFile := filepath.Base(guardPosition(pkg.fset, function.Pos()).Filename)
 				if allowed[definitionFile] {
 					return true
 				}
@@ -2019,7 +2019,7 @@ func productionMethodSignatureText(t *testing.T, pkg *typedProductionPackage, re
 				continue
 			}
 			source := pkg.sources[fileName]
-			return fileName, source[pkg.fset.Position(function.Type.Params.Pos()).Offset:pkg.fset.Position(function.Type.End()).Offset]
+			return fileName, source[guardPosition(pkg.fset, function.Type.Params.Pos()).Offset:guardPosition(pkg.fset, function.Type.End()).Offset]
 		}
 	}
 	t.Fatalf("%s.%s.%s declaration was not found", pkg.importPath, receiverName, methodName)
