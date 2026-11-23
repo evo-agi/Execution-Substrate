@@ -341,9 +341,10 @@ can:
 - stage, inside a nested staging directory, one entry of each mode staging
   uses, with staging's identity checks;
 - create, inside a natural result directory, retention's file modes with
-  retention's identity checks, and prove the results no-replace rename both
-  ways: refused as existing onto a name that exists, and successful onto a free
-  name; and
+  retention's identity checks;
+- prove the results no-replace rename both ways: refuse the results no-replace
+  publication primitive when the destination already exists, and require it to
+  succeed onto a free name while keeping the same file; and
 - retain the exclusive startup probe fixtures when exact effect-time deletion
   identity cannot be proved; no pathname cleanup or recursion is selected.
 

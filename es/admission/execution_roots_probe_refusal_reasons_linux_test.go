@@ -64,6 +64,37 @@ func TestExecutionRootProbeNamesTheCheckThatRefuses(t *testing.T) {
 			want: "staged file mode 0750 is unavailable",
 		},
 		{
+			// The roots' group is set on the file system below, because the
+			// mount ignores group changes made through it. For a process that
+			// is not root it is a group the process is in, where it has one,
+			// so that the kernel passes the change on to the file system,
+			// which then ignores it.
+			name: "roots on a file system that ignores group changes",
+			roots: func(t *testing.T) (string, string) {
+				group := "54321"
+				if os.Geteuid() != 0 {
+					if groups, err := os.Getgroups(); err == nil {
+						for _, candidate := range groups {
+							if candidate != os.Getgid() {
+								group = strconv.Itoa(candidate)
+								break
+							}
+						}
+					}
+				}
+				mount := mountTestBindfs(t, bindfs, "--chown-ignore", "--chgrp-ignore")
+				backing := filepath.Join(filepath.Dir(mount), "backing")
+				for _, name := range []string{"staging", "results"} {
+					runTestPrivileged(t, "mkdir", filepath.Join(backing, name))
+					runTestPrivileged(t, "chown", uid+":"+group, filepath.Join(backing, name))
+					runTestPrivileged(t, "chmod", "0755", filepath.Join(backing, name))
+				}
+				return filepath.Join(mount, "staging"), filepath.Join(mount, "results")
+			},
+			use:  "stage",
+			want: "staging probe directory ownership is unavailable",
+		},
+		{
 			name: "results on an overlay with separate layer file systems",
 			roots: func(t *testing.T) (string, string) {
 				_, results := createTestRootsOwnedByThisProcess(t, mountTestSplitLayerOverlay(t))
