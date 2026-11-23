@@ -152,7 +152,7 @@ export ARS_READ_KEY="/abs/path/execution-client-key.pem"
 
 `scripts/01_bringup.sh` and `scripts/10_health_check.sh` use a runtime-issued client certificate for all service health checks because `/health` is now behind strict mTLS. They use the ARS read client only for the workload-zone Vault blob read when the operator identity is not sufficient. If `ARS_READ_CERT` and `ARS_READ_KEY` are omitted, those checks fall back to `OPERATOR_CERT` and `OPERATOR_KEY`.
 
-The current repo-owned AGS and ES configs keep `authorization.allowed_spiffe_path_prefixes=["operator"]`, so the operator identity above remains the right credential for the documented helper path even though those services now authorize callers from configured SPIFFE path prefixes rather than from hard-coded caller checks.
+The current repo-owned AGS and ES configs keep `authorization.allowed_spiffe_path_prefixes=["operator/local"]`, so the operator identity above remains the right credential for the documented helper path even though those services now authorize callers from configured SPIFFE path prefixes rather than from hard-coded caller checks.
 
 ### Required service URLs
 

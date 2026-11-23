@@ -77,3 +77,20 @@ func TestAGSAuthorizationStaysLocalAfterAuthentication(t *testing.T) {
 		t.Fatalf("unauthorized callers reached the publish service %d times", publisher.count())
 	}
 }
+
+// AGS matches publish callers with the shared allowlist rule: a configured
+// prefix that fails it matches nothing, even when a server is built with it
+// directly instead of from a checked configuration. The old matcher trimmed
+// slashes and took a one-segment prefix as a parent of every path below it.
+func TestAGSAllowlistPrefixThatFailsTheSharedRuleMatchesNothing(t *testing.T) {
+	publisher := &recordingPublisher{}
+	server := api.NewServer(publisher, testBootstrapIssuer, []string{"operator", "/operator/local", "operator/local/"}, func() bool { return true })
+	state := callerauthtest.State(callerauthtest.Certificate(t, callerauthtest.RuntimeIssuer, callerauthtest.SPIFFEID("operator/local")))
+	response := callerauthtest.Serve(t, server.Handler(), http.MethodPost, "/v1/artifacts:publish", "{}", state)
+	if response.Code != http.StatusForbidden || response.Body.String() != "Caller not authorized for this operation" {
+		t.Fatalf("publish as operator/local: %d %q", response.Code, response.Body.String())
+	}
+	if publisher.count() != 0 {
+		t.Fatalf("the caller reached the publish service %d times", publisher.count())
+	}
+}

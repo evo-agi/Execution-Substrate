@@ -722,6 +722,13 @@ func TestConfigValidateRejectsBroadOrMalformedSPIFFEPathPrefixes(t *testing.T) {
 		{name: "dot segment", prefix: "service/./control-plane"},
 		{name: "dotdot segment", prefix: "service/../control-plane"},
 		{name: "full spiffe uri", prefix: "spiffe://execution.internal/service/control-plane"},
+		// Since the shared rule in internal/callerallowlist (PR 27 red-team R6):
+		// prefixes no canonical caller path can match.
+		{name: "leading whitespace", prefix: " service/control-plane"},
+		{name: "space inside a segment", prefix: "service/control plane"},
+		{name: "query", prefix: "service/control-plane?x"},
+		{name: "percent encoding", prefix: "service/control%2Dplane"},
+		{name: "non-ASCII letter", prefix: "service/contröl-plane"},
 	}
 
 	for _, tt := range tests {
