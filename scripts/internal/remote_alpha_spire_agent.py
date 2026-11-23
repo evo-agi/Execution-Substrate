@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import base64
 import binascii
+import contextlib
 import dataclasses
 import datetime
 import fcntl
@@ -130,6 +131,33 @@ class Failure(Exception):
     """A step failed after this run started to change the box."""
 
 
+class Interrupted(Failure):
+    """SIGHUP, SIGINT or SIGTERM asked this run to stop."""
+
+
+_STOP_SIGNALS = (signal.SIGHUP, signal.SIGINT, signal.SIGTERM)
+
+
+def _stop_on_signal(signum, frame):
+    # Ignore further stop signals so cleanup and rollback can finish.
+    for sig in _STOP_SIGNALS:
+        signal.signal(sig, signal.SIG_IGN)
+    raise Interrupted(f"stopped by {signal.Signals(signum).name}")
+
+
+@contextlib.contextmanager
+def signals_deferred():
+    """Hold stop signals while a cleanup or rollback step runs, so a first
+    signal cannot cut it short; a held signal is delivered (and raises
+    Interrupted) when the step ends. Yields the mask from before, which a
+    process started inside must get back (children inherit the blocked mask)."""
+    old = signal.pthread_sigmask(signal.SIG_BLOCK, _STOP_SIGNALS)
+    try:
+        yield old
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK, old)
+
+
 class CommandError(Exception):
     def __init__(self, message: str, returncode: int | None = None, output: str = ""):
         super().__init__(message)
@@ -184,7 +212,19 @@ class Report:
             "plan": self.plan,
             "actions": self.actions,
         }
-        return json.loads(self.redact(json.dumps(doc, sort_keys=True)))
+        return self._redact_tree(doc)
+
+    def _redact_tree(self, value):
+        # Redact each string where it stands. A regex over serialized JSON
+        # can swallow the backslash of an escaped quote that follows an agent
+        # ID (SPIRE logs spiffe_id="..."), which breaks the JSON.
+        if isinstance(value, str):
+            return self.redact(value)
+        if isinstance(value, list):
+            return [self._redact_tree(v) for v in value]
+        if isinstance(value, dict):
+            return {k: self._redact_tree(v) for k, v in value.items()}
+        return value
 
     def render_text(self) -> str:
         doc = self.document()
@@ -556,16 +596,28 @@ def check_server_socket(r: Runner) -> None:
     user, group = owner_names(st)
     if (user, group) != (L.spire_user, L.spire_group) or stat.S_IMODE(st.st_mode) != 0o600:
         raise Refusal(f"server admin socket is {describe(st)}, expected {L.spire_user}:{L.spire_group} 0600")
-    # Only root and the SPIRE account may be able to replace the socket: the
-    # directory holding it is owned by one of them, is not world writable,
-    # and is group writable only for a SPIRE group with no other member.
+    # Only root and the SPIRE account may be able to replace the socket or
+    # any directory above it up to the runtime root: each directory is owned
+    # by one of them, is not world writable, and is group writable only for
+    # a SPIRE group with no other member (listed or by primary group).
     parent = os.path.dirname(L.server_socket)
-    pst = os.lstat(parent)
-    puser, pgroup = owner_names(pst)
-    pmode = stat.S_IMODE(pst.st_mode)
-    group_ok = not pmode & 0o020 or (pgroup == L.spire_group and set(grp.getgrnam(pgroup).gr_mem) <= {L.spire_user})
-    if not stat.S_ISDIR(pst.st_mode) or puser not in (L.file_owner, L.spire_user) or pmode & 0o002 or not group_ok:
-        raise Refusal(f"server admin socket directory {parent} is {describe(pst)}; only {L.file_owner} and {L.spire_user} may be able to write it")
+    root = os.path.normpath(L.runtime_dir_root)
+    if os.path.commonpath([root, parent]) != root or parent == root:
+        raise Refusal(f"server admin socket {L.server_socket} is not below {root}")
+    while parent != root:
+        pst = os.lstat(parent)
+        puser, pgroup = owner_names(pst)
+        pmode = stat.S_IMODE(pst.st_mode)
+        group_ok = not pmode & 0o020 or (pgroup == L.spire_group and group_members(pgroup) <= {L.spire_user})
+        if not stat.S_ISDIR(pst.st_mode) or puser not in (L.file_owner, L.spire_user) or pmode & 0o002 or not group_ok:
+            raise Refusal(f"server admin socket directory {parent} is {describe(pst)}; only {L.file_owner} and {L.spire_user} may be able to write it")
+        parent = os.path.dirname(parent)
+
+
+def group_members(group: str) -> set[str]:
+    """Listed members plus accounts whose primary group it is."""
+    g = grp.getgrnam(group)
+    return set(g.gr_mem) | {pw.pw_name for pw in pwd.getpwall() if pw.pw_gid == g.gr_gid}
 
 
 def export_server_bundle(r: Runner) -> list[bytes]:
@@ -636,6 +688,10 @@ def analyze_agent_config(text: str, bundle_path: str) -> dict:
         return unrecognized("carriage returns")
     if "/*" in text:
         return unrecognized("a block comment")
+    if "<<" in text:
+        return unrecognized("a heredoc")
+    if re.search(r'(?m)^\s*"[^"\n]*"\s*=', text):
+        return unrecognized("a quoted key")
     lines = text.split("\n")
     opens = [i for i, line in enumerate(lines) if re.fullmatch(r"agent\s*\{\s*", line)]
     if len(opens) != 1:
@@ -651,7 +707,8 @@ def analyze_agent_config(text: str, bundle_path: str) -> dict:
             m = pattern.fullmatch(lines[i])
             if m:
                 found[key].append((i, m.group(1)))
-        if text.count(key) != len(found[key]):
+        # HCL matches keys without regard to case.
+        if text.lower().count(key) != len(found[key]):
             return unrecognized(f"{key} appears outside a plain line of the agent block")
     insecure = found["insecure_bootstrap"]
     paths = found["trust_bundle_path"]
@@ -695,6 +752,25 @@ def read_agent_config(r: Runner) -> tuple[bytes, os.stat_result, dict]:
     except UnicodeDecodeError:
         raise Refusal(f"{r.L.agent_config} is not UTF-8") from None
     return data, st, analyze_agent_config(text, r.L.bundle_path)
+
+
+def spire_confirms_pinned(r: Runner) -> tuple[bool, str]:
+    """Ask SPIRE's own config parser whether agent.conf is pinned, since the
+    line scan above can miss spellings HCL accepts. Plain validate refuses a
+    config in which SPIRE sees no trust bundle and no insecure_bootstrap
+    (say, a trust_bundle_path line swallowed by a heredoc). With -trustBundle
+    on the command line, validate refuses a config that SPIRE reads as
+    insecure ("only one of insecure_bootstrap or trust_bundle_path ...").
+    The scan allows no other bundle source, so a config that passes both is
+    read by SPIRE with the one trust_bundle_path line the scan saw."""
+    L = r.L
+    for label, extra in (("plain", []),
+                         ("with -trustBundle", ["-trustBundle", L.bundle_path, "-trustBundleFormat", "pem"])):
+        proc = r.run([L.spire_agent_bin, "validate", "-config", L.agent_config] + extra, spire=True, check=False)
+        if proc.returncode != 0:
+            detail = (proc.stdout + proc.stderr).decode("utf-8", "replace").strip()[-400:]
+            return False, f"spire-agent validate {label}: {detail}"
+    return True, ""
 
 
 def tmpfiles_coverage(r: Runner) -> dict:
@@ -767,7 +843,8 @@ def sandbox_check_tmpfiles(r: Runner, body: str, expected: list[tuple[str, str, 
             if st is None or not stat.S_ISDIR(st.st_mode) or stat.S_IMODE(st.st_mode) != mode or (st.st_uid, st.st_gid) != (uid, gid):
                 raise Failure(f"systemd-tmpfiles did not create {path} as the rule says in a sandbox; nothing was written")
     finally:
-        shutil.rmtree(sandbox, ignore_errors=True)
+        with signals_deferred():
+            shutil.rmtree(sandbox, ignore_errors=True)
 
 
 # --------------------------------------------------------------------------
@@ -878,7 +955,10 @@ class Pinning:
         if self.config_state["state"] == "insecure":
             self.rep.check("bootstrap", "attention", "insecure_bootstrap = true")
         else:
-            self.rep.check("bootstrap", "ok", f"trust_bundle_path = \"{L.bundle_path}\"")
+            confirmed, detail = spire_confirms_pinned(self.r)
+            if not confirmed:
+                raise Refusal(f"{L.agent_config} reads as pinned to this helper, but SPIRE's own parser does not confirm it ({detail}); inspect it by hand")
+            self.rep.check("bootstrap", "ok", f"trust_bundle_path = \"{L.bundle_path}\" (confirmed by spire-agent validate, plain and with -trustBundle)")
         self.server_ders = export_server_bundle(self.r)
         self.bundle_state = bundle_file_state(self.r, self.server_ders)
         if self.bundle_state["state"] == "not_regular":
@@ -898,7 +978,7 @@ class Pinning:
         else:
             self.rep.check("reboot readiness", "ok", "every SPIRE runtime directory is recreated at boot")
         if self.config_state["state"] == "insecure":
-            self.rep.planned(f"replace insecure_bootstrap = true with trust_bundle_path = \"{L.bundle_path}\" in {L.agent_config}, keeping a timestamped backup, then run spire-agent validate as {L.spire_user} and restore the backup if it refuses")
+            self.rep.planned(f"replace insecure_bootstrap = true with trust_bundle_path = \"{L.bundle_path}\" in {L.agent_config}, keeping a timestamped backup, then run spire-agent validate as {L.spire_user}, plain and with -trustBundle {L.bundle_path}, and restore the backup if either refuses")
 
     def apply_bundle(self) -> None:
         L = self.L
@@ -922,25 +1002,30 @@ class Pinning:
         self.backup_path = f"{L.agent_config}.bak-{stamp_utc()}"
         create_exclusive(self.backup_path, self.config_bytes, stat.S_IMODE(st.st_mode), st.st_uid, st.st_gid)
         self.rep.action(f"backed up {L.agent_config} to {self.backup_path}")
-        atomic_write(L.agent_config, new_text.encode("utf-8"), stat.S_IMODE(st.st_mode), st.st_uid, st.st_gid)
         self.config_changed = True
-        self.rep.action(f"replaced insecure_bootstrap = true with trust_bundle_path = \"{L.bundle_path}\" in {L.agent_config}")
-        proc = self.r.run([L.spire_agent_bin, "validate", "-config", L.agent_config], spire=True, check=False)
-        if proc.returncode != 0:
-            detail = (proc.stdout + proc.stderr).decode("utf-8", "replace").strip()[-400:]
+        try:
+            atomic_write(L.agent_config, new_text.encode("utf-8"), stat.S_IMODE(st.st_mode), st.st_uid, st.st_gid)
+            self.rep.action(f"replaced insecure_bootstrap = true with trust_bundle_path = \"{L.bundle_path}\" in {L.agent_config}")
+            confirmed, detail = spire_confirms_pinned(self.r)
+            if not confirmed:
+                raise Failure(f"spire-agent validate refused the edited config ({detail})")
+        except BaseException as exc:
             self.restore_config()
-            raise Failure(f"spire-agent validate refused the edited config ({detail}); the original config was restored")
-        self.rep.action("spire-agent validate accepted the edited config")
+            if isinstance(exc, Failure) and not isinstance(exc, Interrupted):
+                raise Failure(f"{exc}; the original config was restored") from None
+            raise
+        self.rep.action("spire-agent validate accepted the edited config, plain and with -trustBundle")
 
     def restore_config(self) -> None:
         L = self.L
         st = self.config_stat
-        atomic_write(L.agent_config, self.config_bytes, stat.S_IMODE(st.st_mode), st.st_uid, st.st_gid)
-        back = read_regular_file(L.agent_config)
-        if back is None or back[0] != self.config_bytes:
-            raise Failure(f"restoring {L.agent_config} from {self.backup_path} did not reproduce the original bytes")
-        self.config_changed = False
-        self.rep.action(f"restored the original {L.agent_config} (backup kept at {self.backup_path})")
+        with signals_deferred():
+            atomic_write(L.agent_config, self.config_bytes, stat.S_IMODE(st.st_mode), st.st_uid, st.st_gid)
+            back = read_regular_file(L.agent_config)
+            if back is None or back[0] != self.config_bytes:
+                raise Failure(f"restoring {L.agent_config} from {self.backup_path} did not reproduce the original bytes")
+            self.config_changed = False
+            self.rep.action(f"restored the original {L.agent_config} (backup kept at {self.backup_path})")
 
     def apply_tmpfiles(self) -> None:
         L = self.L
@@ -1026,10 +1111,14 @@ def mode_status(r: Runner, rep: Report) -> None:
         if analysis["state"] == "insecure":
             rep.check("bootstrap", "attention", f"insecure_bootstrap = true in {L.agent_config} ({meta}): a fresh bootstrap trusts any server on the agent's server address; run sudo {PUBLIC_SCRIPT} pin")
         elif analysis["state"] == "pinned":
-            rep.check("bootstrap", "ok", f"trust_bundle_path = \"{L.bundle_path}\" in {L.agent_config} ({meta})")
+            confirmed, detail = spire_confirms_pinned(r)
+            if confirmed:
+                rep.check("bootstrap", "ok", f"trust_bundle_path = \"{L.bundle_path}\" in {L.agent_config} ({meta}), confirmed by spire-agent validate, plain and with -trustBundle")
+            else:
+                rep.check("bootstrap", "attention", f"{L.agent_config} ({meta}) reads as pinned to this helper, but SPIRE's own parser does not confirm it ({detail}); inspect it by hand")
         else:
             rep.check("bootstrap", "attention", f"unrecognized bootstrap setting in {L.agent_config}: {analysis['reason']}")
-    except Refusal as exc:
+    except (Refusal, CommandError) as exc:
         analysis = {"state": "unreadable"}
         rep.check("bootstrap", "fail", str(exc))
 
@@ -1183,7 +1272,7 @@ def mode_recover(r: Runner, rep: Report, apply: bool, evict_old: bool) -> None:
     else:
         rep.planned(f"create {L.agent_data_dir} as {L.spire_user}:{L.spire_group} {L.agent_data_dir_mode:04o}")
     rep.planned(f"generate a join token for {alias} with a {L.join_token_ttl_seconds} s lifetime, kept in memory and in a 0600 file in a private directory under {L.scratch_parent}, never printed or passed as an argument")
-    rep.planned(f"attest once as {L.spire_user} with the pinned agent.conf and that token file, delete the token file as soon as the new agent appears, then stop that process")
+    rep.planned(f"attest once as {L.spire_user} with the pinned agent.conf, -trustBundle {L.bundle_path} (so SPIRE itself refuses to start if it still reads insecure_bootstrap) and that token file, delete the token file as soon as the new agent appears, then stop that process")
     rep.planned(f"start {L.agent_unit} and {', '.join(L.dependent_units)}, and check health, the new identity and a workload SVID")
     if evict_old and old_id:
         rep.planned(f"evict the old agent record and delete its {len(old_aliases)} alias entr{'y' if len(old_aliases) == 1 else 'ies'}")
@@ -1201,24 +1290,26 @@ def mode_recover(r: Runner, rep: Report, apply: bool, evict_old: bool) -> None:
         raise Failure(f"{L.agent_unit} did not stop")
     rep.action(f"stopped {L.agent_unit}")
     spire_uid, spire_gid = resolve_ids(L.spire_user, L.spire_group)
-    moved = False
     if data_st is not None:
-        os.rename(L.agent_data_dir, backup_dir)
-        moved = True
-        rep.action(f"moved {L.agent_data_dir} to {backup_dir}")
         new_uid, new_gid, new_mode = data_st.st_uid, data_st.st_gid, stat.S_IMODE(data_st.st_mode)
     else:
         new_uid, new_gid, new_mode = spire_uid, spire_gid, L.agent_data_dir_mode
-    os.mkdir(L.agent_data_dir, 0o700)
-    os.chown(L.agent_data_dir, new_uid, new_gid)
-    os.chmod(L.agent_data_dir, new_mode)
-    rep.action(f"created an empty {L.agent_data_dir}")
-
+    # From the rename on, any failure or stop signal puts the old data
+    # directory back. The rollback reads what is on disk, so it is right
+    # wherever in these steps the failure happened.
     try:
+        if data_st is not None:
+            os.rename(L.agent_data_dir, backup_dir)
+            rep.action(f"moved {L.agent_data_dir} to {backup_dir}")
+        os.mkdir(L.agent_data_dir, 0o700)
+        os.chown(L.agent_data_dir, new_uid, new_gid)
+        os.chmod(L.agent_data_dir, new_mode)
+        rep.action(f"created an empty {L.agent_data_dir}")
         new_id = attest_once(r, rep, old_id, alias, spire_uid, spire_gid)
-    except (CommandError, Failure) as exc:
-        rollback_data_dir(r, rep, moved, backup_dir, stamp)
-        raise Failure(f"attestation failed: {exc}") from None
+    except (CommandError, Failure, OSError) as exc:
+        rollback_data_dir(r, rep, backup_dir, stamp, had_data_dir=data_st is not None)
+        reason = f"{exc.strerror}: {exc.filename}" if isinstance(exc, OSError) else str(exc)
+        raise Failure(f"attestation failed: {reason}") from None
 
     r.unit_action("start", L.agent_unit)
     rep.action(f"started {L.agent_unit}")
@@ -1264,11 +1355,20 @@ def attest_once(r: Runner, rep: Report, old_id: str, alias: str, spire_uid: int,
         rep.action(f"generated a join token ({L.join_token_ttl_seconds} s lifetime) into a 0600 file in a private directory")
         log_path = os.path.join(scratch, "attest.log")
         log_file = open(log_path, "wb")
-        proc = subprocess.Popen(
-            r.as_spire([L.spire_agent_bin, "run", "-config", L.agent_config, "-joinTokenFile", token_path]),
-            stdin=subprocess.DEVNULL, stdout=log_file, stderr=subprocess.STDOUT,
-            env=r.env(), cwd="/", start_new_session=True,
-        )
+        # A stop signal while Popen waits for the exec would leave the agent
+        # running with no handle to stop it, so signals are held until proc
+        # is set; the agent itself starts with the normal mask.
+        with signals_deferred() as mask:
+            proc = subprocess.Popen(
+                # -trustBundle makes SPIRE refuse to start if its own reading
+                # of agent.conf still has insecure_bootstrap ("only one of ...").
+                r.as_spire([L.spire_agent_bin, "run", "-config", L.agent_config,
+                            "-trustBundle", L.bundle_path, "-trustBundleFormat", "pem",
+                            "-joinTokenFile", token_path]),
+                stdin=subprocess.DEVNULL, stdout=log_file, stderr=subprocess.STDOUT,
+                env=r.env(), cwd="/", start_new_session=True,
+                preexec_fn=lambda: signal.pthread_sigmask(signal.SIG_SETMASK, mask),
+            )
 
         def attested():
             if proc.poll() is not None:
@@ -1286,41 +1386,50 @@ def attest_once(r: Runner, rep: Report, old_id: str, alias: str, spire_uid: int,
         if not outcome or outcome == "exited":
             log_file.flush()
             with open(log_path, "rb") as fh:
-                tail = fh.read()[-1500:].decode("utf-8", "replace")
+                # Redact before cutting, so a cut cannot split a token.
+                tail = rep.redact(fh.read(1 << 20).decode("utf-8", "replace"))[-1500:]
             why = "the attesting agent exited" if outcome == "exited" else f"no new agent identity within {L.attestation_timeout_seconds} s"
-            raise Failure(f"{why}; agent log tail: {rep.redact(tail)}")
+            raise Failure(f"{why}; agent log tail: {tail}")
         new_id = outcome
         if not any(a["id"] == new_id and a["expires_at"] > utc_now() for a in list_agents(r)):
             raise Failure("the server does not list the newly attested agent")
         rep.action(f"attested a new agent {fingerprint(new_id)}; the token file was deleted")
         return new_id
     finally:
-        if proc is not None and proc.poll() is None:
-            proc.send_signal(signal.SIGTERM)
-            try:
-                proc.wait(timeout=15)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait(timeout=15)
-        if log_file is not None:
-            log_file.close()
-        shutil.rmtree(scratch, ignore_errors=True)
-        if os.path.lexists(scratch):
-            rep.action(f"WARNING: could not remove {scratch}; delete it by hand")
+        with signals_deferred():
+            if proc is not None and proc.poll() is None:
+                proc.send_signal(signal.SIGTERM)
+                try:
+                    proc.wait(timeout=15)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait(timeout=15)
+            if log_file is not None:
+                log_file.close()
+            shutil.rmtree(scratch, ignore_errors=True)
+            if os.path.lexists(scratch):
+                rep.action(f"WARNING: could not remove {scratch}; delete it by hand")
 
 
-def rollback_data_dir(r: Runner, rep: Report, moved: bool, backup_dir: str, stamp: str) -> None:
+def rollback_data_dir(r: Runner, rep: Report, backup_dir: str, stamp: str, had_data_dir: bool) -> None:
+    """Put the data directory back as it was before recover's swap. It acts
+    on what is on disk: the backup exists only if the rename happened (its
+    name was checked to be free before), and without an old directory any
+    directory now there is the one this run created."""
     L = r.L
-    try:
-        failed_dir = f"{L.agent_data_dir}.failed-{stamp}"
-        os.rename(L.agent_data_dir, failed_dir)
-        rep.action(f"moved the new data directory aside to {failed_dir}")
-        if moved:
-            os.rename(backup_dir, L.agent_data_dir)
-            rep.action(f"moved {backup_dir} back to {L.agent_data_dir}")
-    except OSError as exc:
-        rep.action(f"WARNING: could not put the old data directory back: {exc.strerror}")
-    rep.action(f"{L.agent_unit} and {', '.join(L.dependent_units)} are left stopped; the join token expires {L.join_token_ttl_seconds} s after it was generated")
+    with signals_deferred():
+        try:
+            swapped = os.path.lexists(backup_dir)
+            if (swapped or not had_data_dir) and os.path.lexists(L.agent_data_dir):
+                failed_dir = f"{L.agent_data_dir}.failed-{stamp}"
+                os.rename(L.agent_data_dir, failed_dir)
+                rep.action(f"moved the new data directory aside to {failed_dir}")
+            if swapped:
+                os.rename(backup_dir, L.agent_data_dir)
+                rep.action(f"moved {backup_dir} back to {L.agent_data_dir}")
+        except OSError as exc:
+            rep.action(f"WARNING: could not put the old data directory back: {exc.strerror}")
+        rep.action(f"{L.agent_unit} and {', '.join(L.dependent_units)} are left stopped; a join token generated by this run expires {L.join_token_ttl_seconds} s after it was generated")
 
 
 # --------------------------------------------------------------------------
@@ -1364,25 +1473,38 @@ def main(argv: list[str], layout: Layout) -> int:
     code = 0
     lock_fd = None
     try:
-        require_commands(layout)
-        if args.mode != "status":
-            lock_fd = take_lock(layout)
-        if args.mode == "status":
-            mode_status(runner, rep)
-            code = 0 if rep.result == "ok" else 1
-        elif args.mode == "pin":
-            mode_pin(runner, rep, args.apply)
-        else:
-            mode_recover(runner, rep, args.apply, args.evict_old_agent)
-    except Refusal as exc:
-        rep.result = "refused"
-        rep.message = f"{exc}; nothing was changed"
-        code = 1
-    except (Failure, CommandError, OSError) as exc:
+        try:
+            # A stop signal (Ctrl-C, an SSH hangup, systemd or kill) raises
+            # Interrupted, so the steps below clean up, roll back and report.
+            for sig in _STOP_SIGNALS:
+                signal.signal(sig, _stop_on_signal)
+            require_commands(layout)
+            if args.mode != "status":
+                lock_fd = take_lock(layout)
+            if args.mode == "status":
+                mode_status(runner, rep)
+                code = 0 if rep.result == "ok" else 1
+            elif args.mode == "pin":
+                mode_pin(runner, rep, args.apply)
+            else:
+                mode_recover(runner, rep, args.apply, args.evict_old_agent)
+        except Refusal as exc:
+            rep.result = "refused"
+            rep.message = f"{exc}; nothing was changed"
+            code = 1
+        except (Failure, CommandError, OSError) as exc:
+            rep.result = "failed"
+            rep.message = str(exc) if not isinstance(exc, OSError) else f"{exc.strerror}: {exc.filename}"
+            code = 1
+    except Interrupted as exc:
+        # The first stop signal landed inside one of the handlers above;
+        # later ones are ignored, so this handler cannot be cut short.
         rep.result = "failed"
-        rep.message = str(exc) if not isinstance(exc, OSError) else f"{exc.strerror}: {exc.filename}"
+        rep.message = str(exc)
         code = 1
     finally:
+        for sig in _STOP_SIGNALS:
+            signal.signal(sig, signal.SIG_IGN)
         if lock_fd is not None:
             os.close(lock_fd)
     out = json.dumps(rep.document(), indent=2, sort_keys=True) + "\n" if args.json else rep.render_text()

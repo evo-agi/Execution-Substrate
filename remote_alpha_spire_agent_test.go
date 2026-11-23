@@ -60,7 +60,8 @@ var spireAgentHelperModule = filepath.Join(executionSubstrateRepoRoot, "scripts"
 
 // spireAgentHelperDriver imports the helper module from its path and runs
 // main with a Layout built from a JSON file of overrides, or prints the
-// default Layout, or classifies an agent.conf, or runs the server bundle
+// default Layout, or classifies an agent.conf, or runs the SPIRE-side
+// pinned check with a Layout from a JSON file, or runs the server bundle
 // checks on a PEM file standing in for "spire-server bundle show" output
 // (only the spire-server call is replaced; openssl runs for real). It is
 // test code only.
@@ -74,6 +75,14 @@ if sys.argv[2] == "--dump-layout":
     sys.exit(0)
 if sys.argv[2] == "--analyze-config":
     print(json.dumps(mod.analyze_agent_config(open(sys.argv[3], newline="").read(), sys.argv[4]), sort_keys=True))
+    sys.exit(0)
+if sys.argv[2] == "--confirm-pinned":
+    overrides = json.load(open(sys.argv[3]))
+    for key, value in list(overrides.items()):
+        if isinstance(value, list):
+            overrides[key] = tuple(value)
+    ok, detail = mod.spire_confirms_pinned(mod.Runner(mod.Layout(**overrides), mod.Report("status", False)))
+    print(json.dumps({"ok": ok, "detail": detail}))
     sys.exit(0)
 if sys.argv[2] == "--export-bundle":
     pem = open(sys.argv[3], newline="").read()
@@ -226,25 +235,47 @@ os.execve(args[5], args[5:], {"PATH": "/usr/local/bin:/bin:/usr/bin", "HOME": "/
 `
 
 // A shim in front of a real SPIRE binary logs its argv, and for
-// -joinTokenFile the file's mode and owner, then runs the real binary.
+// -joinTokenFile the file's mode and owner and which stop signals arrive
+// blocked, then runs the real binary.
 // While a marker file exists, "validate" fails, or a "run" with a join token
 // (in a file or, which the helper must never do, on the command line) exits
-// at once, so the tests can reach the helper's failure paths.
-const spireAgentHelperShim = `import json, os, sys
-LOG, REAL, FAIL_VALIDATE, FAIL_ATTEST = %q, %q, %q, %q
+// at once, so the tests can reach the helper's failure paths. Two more
+// markers hold an attesting run or a "validate" at its start, so a test can
+// signal the helper at that point.
+const spireAgentHelperShim = `import json, os, sys, time
+LOG, REAL, FAIL_VALIDATE, FAIL_ATTEST, HOLD_ATTEST, HOLD_VALIDATE = %q, %q, %q, %q, %q, %q
 args = sys.argv[1:]
 entry = {"tool": os.path.basename(REAL), "argv": args}
 if "-joinTokenFile" in args:
     path = args[args.index("-joinTokenFile") + 1]
     st = os.lstat(path)
-    entry["token_file"] = {"path": path, "mode": oct(st.st_mode & 0o7777), "uid": st.st_uid, "size": st.st_size}
+    entry["token_file"] = {"path": path, "mode": oct(st.st_mode & 0o7777), "uid": st.st_uid, "size": st.st_size,
+                           "dir_mode": oct(os.lstat(os.path.dirname(path)).st_mode & 0o7777)}
+    if "-config" in args:
+        conf = open(args[args.index("-config") + 1]).read().lower()
+        entry["config_names_insecure_bootstrap"] = "insecure_bootstrap" in conf
+    blocked = int(next(l for l in open("/proc/self/status") if l.startswith("SigBlk:")).split()[1], 16)
+    entry["stop_signals_blocked"] = [s for s in (1, 2, 15) if blocked >> (s - 1) & 1]
 with open(LOG, "a") as fh:
     fh.write(json.dumps(entry) + "\n")
+while HOLD_ATTEST and args[:1] == ["run"] and ("-joinTokenFile" in args or "-joinToken" in args) and os.path.exists(HOLD_ATTEST):
+    time.sleep(0.05)
+while HOLD_VALIDATE and args[:1] == ["validate"] and os.path.exists(HOLD_VALIDATE):
+    time.sleep(0.05)
 if FAIL_VALIDATE and args[:1] == ["validate"] and os.path.exists(FAIL_VALIDATE):
     print("SPIRE agent configuration file is invalid: injected by the test")
     sys.exit(1)
 if FAIL_ATTEST and args[:1] == ["run"] and ("-joinTokenFile" in args or "-joinToken" in args) and os.path.exists(FAIL_ATTEST):
-    print("agent crashed: injected by the test")
+    # The real token first, placed so that cutting this log to its last
+    # 1500 bytes splits it in half (the helper must redact before it cuts),
+    # then SPIRE's own success line with a quoted agent ID.
+    if "-joinTokenFile" in args:
+        token = open(args[args.index("-joinTokenFile") + 1]).read()
+    else:
+        token = args[args.index("-joinToken") + 1]
+    rest = ('\ntime="2026-01-01T00:00:00Z" level=info msg="Node attestation was successful" spiffe_id="spiffe://execution.internal/spire/agent/join_token/0f0f0f0f-1e1e-4d4d-8c8c-7b7b7b7b7b7b" subsystem_name=attestor'
+            "\nagent crashed: injected by the test\n")
+    sys.stdout.write("join token " + token + "." * (1500 - len(token) // 2 - len(rest)) + rest)
     sys.exit(3)
 os.execv(REAL, [REAL] + args)
 `
@@ -261,6 +292,8 @@ type spireAgentHelperBox struct {
 	shimLog     string
 	failMarker  string
 	failAttest  string
+	holdAttest  string
+	holdValid   string
 	port        int
 	serverConf  string
 	agentConf   string
@@ -475,6 +508,8 @@ func newSPIREAgentHelperBox(t *testing.T, svidTTL string) *spireAgentHelperBox {
 	b.shimLog = filepath.Join(b.logsDir, "commands.jsonl")
 	b.failMarker = filepath.Join(root, "fail-validate")
 	b.failAttest = filepath.Join(root, "fail-attest")
+	b.holdAttest = filepath.Join(root, "hold-attest")
+	b.holdValid = filepath.Join(root, "hold-validate")
 	b.port = spireAgentHelperFreePort(t)
 	b.serverSock = filepath.Join(root, "run/spire/server/private/api.sock")
 	b.agentSock = filepath.Join(root, "run/spire/sockets/agent.sock")
@@ -503,8 +538,8 @@ func newSPIREAgentHelperBox(t *testing.T, svidTTL string) *spireAgentHelperBox {
 	b.write(setpriv, "#!"+python+"\n"+fmt.Sprintf(spireAgentHelperFakeSetpriv, b.shimLog, b.user, b.group), 0o755)
 	shimServer := filepath.Join(root, "bin", "spire-server")
 	shimAgent := filepath.Join(root, "bin", "spire-agent")
-	b.write(shimServer, "#!"+python+"\n"+fmt.Sprintf(spireAgentHelperShim, b.shimLog, b.realServer, "", ""), 0o755)
-	b.write(shimAgent, "#!"+python+"\n"+fmt.Sprintf(spireAgentHelperShim, b.shimLog, b.realAgent, b.failMarker, b.failAttest), 0o755)
+	b.write(shimServer, "#!"+python+"\n"+fmt.Sprintf(spireAgentHelperShim, b.shimLog, b.realServer, "", "", "", ""), 0o755)
+	b.write(shimAgent, "#!"+python+"\n"+fmt.Sprintf(spireAgentHelperShim, b.shimLog, b.realAgent, b.failMarker, b.failAttest, b.holdAttest, b.holdValid), 0o755)
 	openssl, _ := exec.LookPath("openssl")
 
 	layout := map[string]any{
@@ -778,6 +813,71 @@ func (b *spireAgentHelperBox) helper(args ...string) spireAgentHelperRun {
 	return run
 }
 
+// startHelper runs the helper in the background, for a test that signals it.
+func (b *spireAgentHelperBox) startHelper(args ...string) (*exec.Cmd, *bytes.Buffer) {
+	b.t.Helper()
+	driver := filepath.Join(b.root, "driver.py")
+	if _, err := os.Stat(driver); err != nil {
+		b.write(driver, spireAgentHelperDriver, 0o644)
+	}
+	cmd := exec.Command(b.python, append([]string{"-I", "-B", driver, spireAgentHelperModule, b.layoutPath}, append(args, "--json")...)...)
+	cmd.Env = []string{"PATH=/usr/bin:/bin", "LC_ALL=C"}
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	if err := cmd.Start(); err != nil {
+		b.t.Fatal(err)
+	}
+	return cmd, &out
+}
+
+// attestingRuns counts the logged spire-agent runs with a join token, in a
+// file or (which the helper must never do) on the command line.
+func (b *spireAgentHelperBox) attestingRuns() int {
+	n := 0
+	sc := bufio.NewScanner(strings.NewReader(b.commandLog()))
+	for sc.Scan() {
+		var entry struct {
+			Tool string   `json:"tool"`
+			Argv []string `json:"argv"`
+		}
+		if json.Unmarshal(sc.Bytes(), &entry) != nil || entry.Tool != "spire-agent" || len(entry.Argv) == 0 || entry.Argv[0] != "run" {
+			continue
+		}
+		for _, arg := range entry.Argv {
+			if arg == "-joinTokenFile" || arg == "-joinToken" {
+				n++
+				break
+			}
+		}
+	}
+	return n
+}
+
+// confirmPinned runs the helper's SPIRE-side check (spire-agent validate,
+// plain and with -trustBundle, as the SPIRE account) on the config at path.
+func (b *spireAgentHelperBox) confirmPinned(path string) (bool, string) {
+	b.t.Helper()
+	var layout map[string]any
+	if err := json.Unmarshal(spireAgentHelperRead(b.t, b.layoutPath), &layout); err != nil {
+		b.t.Fatal(err)
+	}
+	layout["agent_config"] = path
+	alt := filepath.Join(b.root, "layout-confirm.json")
+	b.writeJSON(alt, layout)
+	code, out, stderr := spireAgentHelperDriverRun(b.t, "--confirm-pinned", alt)
+	if code != 0 {
+		b.t.Fatalf("confirm-pinned driver exited %d: %s", code, stderr)
+	}
+	var got struct {
+		OK     bool   `json:"ok"`
+		Detail string `json:"detail"`
+	}
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		b.t.Fatalf("confirm-pinned output %q: %v", out, err)
+	}
+	return got.OK, got.Detail
+}
+
 func (r spireAgentHelperRun) check(name string) map[string]any {
 	checks, _ := r.report["checks"].([]any)
 	for _, c := range checks {
@@ -955,6 +1055,36 @@ func TestRemoteAlphaSPIREAgentPinAgainstRealSPIRE(t *testing.T) {
 		t.Fatalf("status printed the join token part of the agent ID")
 	}
 
+	// The bundle is trusted because only root and the SPIRE account can
+	// answer on the admin socket: a socket directory others can write, or a
+	// socket others can use, is refused before anything changes.
+	privateDir := filepath.Dir(b.serverSock)
+	for _, bad := range []struct {
+		path string
+		mode os.FileMode
+	}{{privateDir, 0o777}, {filepath.Dir(privateDir), 0o777}, {b.serverSock, 0o666}} {
+		fi, err := os.Lstat(bad.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		good := fi.Mode().Perm()
+		if err := os.Chmod(bad.path, bad.mode); err != nil {
+			t.Fatal(err)
+		}
+		st := b.helper("status")
+		if c := st.check("server admin socket"); c == nil || c["state"] != "fail" {
+			t.Fatalf("status accepted %s at %o:\n%s", bad.path, bad.mode, st)
+		}
+		refusedPin := b.helper("pin", "--apply")
+		refusedPin.expect(t, 1, "refused")
+		if err := os.Chmod(bad.path, good); err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(spireAgentHelperRead(t, b.agentConf), original) || len(spireAgentHelperGlob(t, b.bundlePath)) != 0 {
+			t.Fatalf("a refused pin changed a file")
+		}
+	}
+
 	// pin without --apply changes nothing.
 	agentPid, esPid := b.pid("spire-agent.service"), b.pid("es.service")
 	plan := b.helper("pin")
@@ -1036,6 +1166,51 @@ func TestRemoteAlphaSPIREAgentPinAgainstRealSPIRE(t *testing.T) {
 	// The backup name has one-second resolution; make sure it differs.
 	time.Sleep(1100 * time.Millisecond)
 
+	// A SIGTERM (or an SSH hangup) while spire-agent validate checks the
+	// edited config: the helper restores the original config, leaves the
+	// agent running untouched, and still prints its report.
+	b.write(b.holdValid, "", 0o644)
+	validatesBefore := strings.Count(b.commandLog(), `"argv": ["validate"`)
+	sigPin, sigPinOut := b.startHelper("pin", "--apply")
+	b.waitFor("the held validate", 60*time.Second, func() bool {
+		return strings.Count(b.commandLog(), `"argv": ["validate"`) > validatesBefore
+	})
+	_ = sigPin.Process.Signal(syscall.SIGTERM)
+	_ = sigPin.Wait()
+	if err := os.Remove(b.holdValid); err != nil {
+		t.Fatal(err)
+	}
+	var sigPinReport map[string]any
+	if err := json.Unmarshal(sigPinOut.Bytes(), &sigPinReport); err != nil || sigPinReport["result"] != "failed" || !strings.Contains(fmt.Sprint(sigPinReport["message"]), "SIGTERM") {
+		t.Fatalf("a SIGTERM during validate gave no failure report (%v): %s", err, sigPinOut.String())
+	}
+	if !bytes.Equal(spireAgentHelperRead(t, b.agentConf), original) || !strings.Contains(fmt.Sprint(sigPinReport["actions"]), "restored the original") {
+		t.Fatalf("a SIGTERM during validate did not restore agent.conf: %s", sigPinOut.String())
+	}
+	if b.pid("spire-agent.service") != agentPid || b.pid("es.service") != esPid {
+		t.Fatalf("a SIGTERM during validate restarted the agent or es.service")
+	}
+	if procs, _ := filepath.Glob("/proc/[0-9]*/cmdline"); len(procs) > 0 {
+		for _, p := range procs {
+			if data, err := os.ReadFile(p); err == nil && strings.Contains(string(data), "validate") && strings.Contains(string(data), b.agentConf) {
+				t.Fatalf("a held validate outlived the SIGTERM: %q", strings.ReplaceAll(string(data), "\x00", " "))
+			}
+		}
+	}
+	for _, path := range []string{b.bundlePath, filepath.Join(b.tmpfilesDir, "etc/tmpfiles.d/spire.conf")} {
+		if err := os.Remove(path); err != nil {
+			t.Fatalf("the interrupted run should have written %s before the config: %v", path, err)
+		}
+	}
+	backups = spireAgentHelperGlob(t, b.agentConf+".bak-*")
+	if len(backups) != 1 || !bytes.Equal(spireAgentHelperRead(t, backups[0]), original) {
+		t.Fatalf("expected one backup with the original bytes after the interrupted run, got %v", backups)
+	}
+	if err := os.Rename(backups[0], filepath.Join(b.root, "interrupted-backup")); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(1100 * time.Millisecond)
+
 	pinned := b.helper("pin", "--apply")
 	pinned.expect(t, 0, "ok")
 	after := spireAgentHelperRead(t, b.agentConf)
@@ -1105,6 +1280,43 @@ func TestRemoteAlphaSPIREAgentPinAgainstRealSPIRE(t *testing.T) {
 	if again.report["message"] != "nothing to change" || len(spireAgentHelperGlob(t, b.agentConf+".bak-*")) != 1 || !bytes.Equal(spireAgentHelperRead(t, b.agentConf), after) || b.pid("spire-agent.service") != agentPid || b.pid("es.service") != esPid {
 		t.Fatalf("second pin --apply was not a no-op:\n%s", again)
 	}
+
+	// SPIRE's own reading decides whether a config counts as pinned. The
+	// pinned file passes. The original, and a heredoc that hides an
+	// insecure_bootstrap from a line scan, fail validate -trustBundle; a
+	// heredoc that hides the trust_bundle_path line fails plain validate.
+	if ok, detail := b.confirmPinned(b.agentConf); !ok {
+		t.Fatalf("SPIRE did not confirm the pinned agent.conf: %s", detail)
+	}
+	pathLine := "    trust_bundle_path = \"" + b.bundlePath + "\"\n"
+	hidden := filepath.Join(b.root, "heredoc-agent.conf")
+	b.write(hidden, strings.Replace(string(after), pathLine, "    admin_socket_path = <<EOT\n"+pathLine+"EOT\n    Insecure_Bootstrap = true\n", 1), 0o644)
+	insecureCopy := filepath.Join(b.root, "insecure-agent.conf")
+	b.write(insecureCopy, string(original), 0o644)
+	hiddenPath := filepath.Join(b.root, "heredoc-path-agent.conf")
+	b.write(hiddenPath, strings.Replace(string(after), pathLine, "    join_token = <<EOT\n"+pathLine+"EOT\n", 1), 0o644)
+	for path, want := range map[string]string{
+		hidden:       "with -trustBundle: SPIRE agent configuration file is invalid: only one of insecure_bootstrap or trust_bundle_path",
+		insecureCopy: "with -trustBundle: SPIRE agent configuration file is invalid: only one of insecure_bootstrap or trust_bundle_path",
+		hiddenPath:   "plain: SPIRE agent configuration file is invalid: trust_bundle_path or trust_bundle_url must be configured",
+	} {
+		if ok, detail := b.confirmPinned(path); ok || !strings.Contains(detail, want) {
+			t.Fatalf("SPIRE confirmed %s as pinned (%v), or for another reason: %s", filepath.Base(path), ok, detail)
+		}
+	}
+	// A config the line scan calls pinned but SPIRE refuses is flagged by
+	// status and refused by pin, and nothing changes.
+	b.write(b.agentConf, strings.Replace(string(after), "    trust_domain = \""+spireAgentHelperTrustDomain+"\"\n", "", 1), 0o644)
+	disagree := b.helper("status")
+	if c := disagree.check("bootstrap"); c == nil || c["state"] != "attention" || !strings.Contains(fmt.Sprint(c["detail"]), "SPIRE's own parser does not confirm it") {
+		t.Fatalf("status did not flag a config SPIRE refuses:\n%s", disagree)
+	}
+	refusedDisagree := b.helper("pin", "--apply")
+	refusedDisagree.expect(t, 1, "refused")
+	if !strings.Contains(refusedDisagree.report["message"].(string), "SPIRE's own parser does not confirm it") || b.pid("spire-agent.service") != agentPid {
+		t.Fatalf("pin did not refuse a config SPIRE refuses:\n%s", refusedDisagree)
+	}
+	b.write(b.agentConf, string(after), 0o644)
 
 	// The security proof (INF-14). With the real server down, an impostor
 	// server holds its port. A fresh bootstrap with the pinned agent.conf
@@ -1269,6 +1481,20 @@ func TestRemoteAlphaSPIREAgentRecoverAgainstRealSPIRE(t *testing.T) {
 	}
 	oldData := spireAgentHelperRead(t, filepath.Join(b.dataDir, "agent-data.json"))
 
+	// With no registration entry under the alias, a new agent would serve
+	// nothing: recover refuses before any change.
+	for _, e := range b.entries() {
+		if e.ParentID == spireAgentHelperAlias {
+			b.server("entry", "delete", "-entryID", e.ID)
+		}
+	}
+	noChildren := b.helper("recover", "--apply")
+	noChildren.expect(t, 1, "refused")
+	if !strings.Contains(noChildren.report["message"].(string), "no registration entry names") || !bytes.Equal(spireAgentHelperRead(t, b.agentConf), original) || len(spireAgentHelperGlob(t, b.bundlePath)) != 0 {
+		t.Fatalf("recover without workload entries was not refused before any change:\n%s", noChildren)
+	}
+	b.server("entry", "create", "-parentID", spireAgentHelperAlias, "-spiffeID", spireAgentHelperWorkload, "-selector", "unix:uid:"+strconv.Itoa(b.uid))
+
 	plan := b.helper("recover")
 	plan.expect(t, 0, "planned")
 	if !bytes.Equal(spireAgentHelperRead(t, b.agentConf), original) || !bytes.Equal(spireAgentHelperRead(t, filepath.Join(b.dataDir, "agent-data.json")), oldData) || len(spireAgentHelperGlob(t, b.bundlePath)) != 0 {
@@ -1283,6 +1509,14 @@ func TestRemoteAlphaSPIREAgentRecoverAgainstRealSPIRE(t *testing.T) {
 	if !strings.Contains(crashed.report["message"].(string), "the attesting agent exited") {
 		t.Fatalf("attestation failure not reported:\n%s", crashed)
 	}
+	if strings.Contains(crashed.stdout, "0f0f0f0f-1e1e-4d4d-8c8c-7b7b7b7b7b7b") || !strings.Contains(crashed.report["message"].(string), "join_token/<redacted>") {
+		t.Fatalf("the agent log tail in the failure report was not redacted:\n%s", crashed)
+	}
+	// The shim printed the token where a cut before redaction would leave
+	// its second half in the tail.
+	if !strings.Contains(crashed.report["message"].(string), "<redacted>"+strings.Repeat(".", 100)) || regexp.MustCompile(`[0-9a-f-]{8}\.{100}`).MatchString(crashed.stdout) {
+		t.Fatalf("part of the join token reached the failure report:\n%s", crashed)
+	}
 	if !bytes.Equal(spireAgentHelperRead(t, filepath.Join(b.dataDir, "agent-data.json")), oldData) || len(spireAgentHelperGlob(t, b.dataDir+".failed-*")) != 1 || len(spireAgentHelperGlob(t, b.dataDir+".recover-*")) != 0 {
 		t.Fatalf("a failed attestation did not put the old data directory back")
 	}
@@ -1296,6 +1530,63 @@ func TestRemoteAlphaSPIREAgentRecoverAgainstRealSPIRE(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The backup name has one-second resolution; make sure it differs.
+	time.Sleep(1100 * time.Millisecond)
+
+	// An OS error after the swap (here the token directory cannot be
+	// created, as with a full /run) also puts the old data directory back.
+	if err := os.Rename(b.scratch, b.scratch+".away"); err != nil {
+		t.Fatal(err)
+	}
+	osErr := b.helper("recover", "--apply")
+	if err := os.Rename(b.scratch+".away", b.scratch); err != nil {
+		t.Fatal(err)
+	}
+	osErr.expect(t, 1, "failed")
+	if !strings.Contains(osErr.report["message"].(string), "attestation failed") {
+		t.Fatalf("an OS error during the swap was not reported as a failed attestation:\n%s", osErr)
+	}
+	if !bytes.Equal(spireAgentHelperRead(t, filepath.Join(b.dataDir, "agent-data.json")), oldData) || len(spireAgentHelperGlob(t, b.dataDir+".failed-*")) != 2 || len(spireAgentHelperGlob(t, b.dataDir+".recover-*")) != 0 {
+		t.Fatalf("an OS error during the swap did not put the old data directory back:\n%s", osErr)
+	}
+	time.Sleep(1100 * time.Millisecond)
+
+	// A SIGTERM (or an SSH hangup) while the token file exists: the helper
+	// stops the attesting agent, removes the token file and puts the old data
+	// directory back, and still prints its report. The shim holds the
+	// attesting run at its start, so the signal lands during attestation.
+	b.write(b.holdAttest, "", 0o644)
+	driver := filepath.Join(b.root, "driver.py")
+	sigCmd := exec.Command(b.python, "-I", "-B", driver, spireAgentHelperModule, b.layoutPath, "recover", "--apply", "--json")
+	sigCmd.Env = []string{"PATH=/usr/bin:/bin", "LC_ALL=C"}
+	var sigOut bytes.Buffer
+	sigCmd.Stdout = &sigOut
+	if err := sigCmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	b.waitFor("the held attesting run", 60*time.Second, func() bool {
+		return b.attestingRuns() == 2
+	})
+	_ = sigCmd.Process.Signal(syscall.SIGTERM)
+	_ = sigCmd.Wait()
+	if err := os.Remove(b.holdAttest); err != nil {
+		t.Fatal(err)
+	}
+	var sigReport map[string]any
+	if err := json.Unmarshal(sigOut.Bytes(), &sigReport); err != nil || sigReport["result"] != "failed" || !strings.Contains(fmt.Sprint(sigReport["message"]), "SIGTERM") {
+		t.Fatalf("a SIGTERM during attestation gave no failure report (%v): %s", err, sigOut.String())
+	}
+	if left := spireAgentHelperGlob(t, filepath.Join(b.scratch, "*")); len(left) != 0 {
+		t.Fatalf("a SIGTERM during attestation left scratch entries: %v", left)
+	}
+	if !bytes.Equal(spireAgentHelperRead(t, filepath.Join(b.dataDir, "agent-data.json")), oldData) || len(spireAgentHelperGlob(t, b.dataDir+".recover-*")) != 0 {
+		t.Fatalf("a SIGTERM during attestation did not put the old data directory back")
+	}
+	procs, _ := filepath.Glob("/proc/[0-9]*/cmdline")
+	for _, p := range procs {
+		if data, err := os.ReadFile(p); err == nil && strings.Contains(string(data), b.scratch) {
+			t.Fatalf("an attesting agent outlived the SIGTERM: %q", strings.ReplaceAll(string(data), "\x00", " "))
+		}
+	}
 	time.Sleep(1100 * time.Millisecond)
 
 	entriesBefore := len(b.entries())
@@ -1326,7 +1617,8 @@ func TestRemoteAlphaSPIREAgentRecoverAgainstRealSPIRE(t *testing.T) {
 			t.Fatalf("the join token appeared in a process command line: %q", strings.ReplaceAll(line, "\x00", " "))
 		}
 	}
-	// Two runs had a join token file: the injected crash and the recovery.
+	// Three runs had a join token file: the injected crash, the SIGTERM
+	// step and the recovery.
 	var tokenFiles []map[string]any
 	sc := bufio.NewScanner(strings.NewReader(b.commandLog()))
 	for sc.Scan() {
@@ -1335,11 +1627,44 @@ func TestRemoteAlphaSPIREAgentRecoverAgainstRealSPIRE(t *testing.T) {
 			tokenFiles = append(tokenFiles, entry["token_file"].(map[string]any))
 		}
 	}
-	if len(tokenFiles) != 2 {
-		t.Fatalf("expected 2 runs with a join token file, got %d", len(tokenFiles))
+	if len(tokenFiles) != 3 {
+		t.Fatalf("expected 3 runs with a join token file (crash, SIGTERM, recovery), got %d", len(tokenFiles))
+	}
+	var attestRuns, setprivTokens, setprivRuns int
+	sc = bufio.NewScanner(strings.NewReader(b.commandLog()))
+	for sc.Scan() {
+		var entry struct {
+			Tool     string   `json:"tool"`
+			Argv     []string `json:"argv"`
+			Insecure *bool    `json:"config_names_insecure_bootstrap"`
+			Blocked  *[]int   `json:"stop_signals_blocked"`
+		}
+		if json.Unmarshal(sc.Bytes(), &entry) != nil {
+			continue
+		}
+		argv := strings.Join(entry.Argv, " ")
+		switch {
+		case entry.Tool == "spire-agent" && strings.Contains(argv, "-joinTokenFile"):
+			attestRuns++
+			if entry.Insecure == nil || *entry.Insecure || !strings.Contains(argv, "-trustBundle "+b.bundlePath+" -trustBundleFormat pem ") {
+				t.Fatalf("an attesting run did not use the pinned bundle: %s (config names insecure_bootstrap: %v)", argv, entry.Insecure)
+			}
+			// The helper holds stop signals while it starts the agent; the
+			// agent must not inherit that, or it could not be stopped.
+			if entry.Blocked == nil || len(*entry.Blocked) != 0 {
+				t.Fatalf("an attesting run started with stop signals blocked: %v", entry.Blocked)
+			}
+		case entry.Tool == "setpriv" && strings.Contains(argv, " token generate ") && strings.Contains(argv, " -ttl 120 "):
+			setprivTokens++
+		case entry.Tool == "setpriv" && strings.Contains(argv, " run -config ") && strings.Contains(argv, "-joinTokenFile"):
+			setprivRuns++
+		}
+	}
+	if attestRuns != 3 || setprivTokens != 3 || setprivRuns != 3 {
+		t.Fatalf("attesting runs %d, token generations as the SPIRE account with -ttl 120: %d, attesting runs as the SPIRE account: %d; want 3 each", attestRuns, setprivTokens, setprivRuns)
 	}
 	for _, tf := range tokenFiles {
-		if tf["mode"] != "0o600" || int(tf["uid"].(float64)) != b.uid || !strings.HasPrefix(tf["path"].(string), b.scratch+"/") {
+		if tf["mode"] != "0o600" || tf["dir_mode"] != "0o700" || int(tf["uid"].(float64)) != b.uid || !strings.HasPrefix(tf["path"].(string), b.scratch+"/") {
 			t.Fatalf("join token file was not a 0600 file of the SPIRE account under the scratch parent: %v", tf)
 		}
 	}
@@ -1379,6 +1704,7 @@ func TestRemoteAlphaSPIREAgentRecoverAgainstRealSPIRE(t *testing.T) {
 	// A second expiry, recovered with --evict-old-agent, removes exactly the
 	// replaced agent's record and alias entry.
 	secondOld := b.expireAgent()
+	entriesBeforeEvict := len(b.entries())
 	evicted := b.helper("recover", "--apply", "--evict-old-agent")
 	evicted.expect(t, 0, "ok")
 	var firstStill, secondStill bool
@@ -1389,10 +1715,18 @@ func TestRemoteAlphaSPIREAgentRecoverAgainstRealSPIRE(t *testing.T) {
 	if !firstStill || secondStill {
 		t.Fatalf("--evict-old-agent evicted the wrong records (first present=%v, second present=%v)", firstStill, secondStill)
 	}
+	workloads := 0
 	for _, e := range b.entries() {
 		if e.ParentID == secondOld {
 			t.Fatalf("--evict-old-agent left the replaced agent's alias entry")
 		}
+		if e.SPIFFEID == spireAgentHelperWorkload {
+			workloads++
+		}
+	}
+	// One alias entry added for the new agent, one removed for the old.
+	if got := len(b.entries()); got != entriesBeforeEvict || workloads != 1 {
+		t.Fatalf("--evict-old-agent deleted more than the replaced agent's alias entry (entries %d -> %d, workload entries %d)", entriesBeforeEvict, got, workloads)
 	}
 	final := b.helper("status")
 	final.expect(t, 0, "ok")
@@ -1512,6 +1846,13 @@ func TestRemoteAlphaSPIREAgentConfigAnalysis(t *testing.T) {
 		{"one_line_block", "agent { insecure_bootstrap = true }\n", "unrecognized"},
 		{"crlf", strings.ReplaceAll(box, "\n", "\r\n"), "unrecognized"},
 		{"two_agent_blocks", box + box, "unrecognized"},
+		// SPIRE 1.14.4 reads each of these as insecure_bootstrap = true.
+		{"pinned_plus_case_variant", strings.Replace(pinned, "agent {\n", "agent {\n    Insecure_Bootstrap = true\n", 1), "unrecognized"},
+		{"pinned_plus_escaped_quoted_key", strings.Replace(pinned, "agent {\n", "agent {\n    \"insecure\\u005fbootstrap\" = true\n", 1), "unrecognized"},
+		{"heredoc_hides_path", strings.Replace(box, "    insecure_bootstrap = true\n", "    admin_socket_path = <<EOT\n    trust_bundle_path = \""+bundle+"\"\nEOT\n    Insecure_Bootstrap = true\n", 1), "unrecognized"},
+		// SPIRE 1.14.4 reads no trust_bundle_path here: the heredoc is the
+		// join_token value. Only the heredoc rule tells the scan.
+		{"heredoc_swallows_path", strings.Replace(box, "    insecure_bootstrap = true\n", "    join_token = <<EOT\n    trust_bundle_path = \""+bundle+"\"\nEOT\n", 1), "unrecognized"},
 	}
 	dir := t.TempDir()
 	for _, tc := range cases {
@@ -1685,6 +2026,8 @@ func TestRemoteAlphaSPIREAgentHelperIsDocumented(t *testing.T) {
 		"`/etc/spire/agent/bootstrap-bundle.pem`",
 		"`/etc/tmpfiles.d/spire.conf`",
 		"If the box or `spire-server.service` has been off for more than a day",
+		"-trustBundle /etc/spire/agent/bootstrap-bundle.pem -trustBundleFormat pem -joinTokenFile <file>",
+		"a stop signal (`SIGINT`, `SIGHUP` from an SSH drop, `SIGTERM`)",
 	} {
 		if !strings.Contains(remote, compactText(required)) {
 			t.Fatalf("remote alpha doc missing %q", required)

@@ -6489,7 +6489,11 @@ a caller that is not root.
 SVID read from `/var/lib/spire/agent/agent-data.json` (expiry and hours left;
 under 12h is attention, expired is a failure); the server's record of that
 agent and the count of other agent records; whether `agent.conf` uses
-`insecure_bootstrap` or `trust_bundle_path`; whether
+`insecure_bootstrap` or `trust_bundle_path` (a `trust_bundle_path` file
+counts as pinned only when `spire-agent validate` accepts it both plain and
+with `-trustBundle /etc/spire/agent/bootstrap-bundle.pem`, so SPIRE's own
+parser confirms that it reads a trust bundle and no `insecure_bootstrap`);
+whether
 `/etc/spire/agent/bootstrap-bundle.pem` matches the server's current bundle;
 whether every SPIRE runtime directory (`/run/spire`, `/run/spire/server`,
 `/run/spire/server/private`, `/run/spire/sockets`) is recreated at boot by a
@@ -6500,7 +6504,10 @@ unit's `RuntimeDirectory=`; and `spire-agent healthcheck`.
 valid SVID and an unbanned server record. In this order it:
 
 1. Reads the server bundle as `spire` over the admin socket, which a process
-   that only holds TCP 127.0.0.1:8081 cannot answer. Every certificate must
+   that only holds TCP 127.0.0.1:8081 cannot answer. The socket must be
+   `spire:spire 0600`, and every directory from its own up to `/run` must be
+   writable only by root or `spire` (group-writable only for a `spire` group
+   with no other member, listed or by primary group). Every certificate must
    be a CA certificate whose only URI SAN is the trust domain, at least one
    must be unexpired, and nothing but CERTIFICATE blocks may appear. It
    writes the bundle atomically to `/etc/spire/agent/bootstrap-bundle.pem`,
@@ -6517,9 +6524,15 @@ valid SVID and an unbanned server record. In this order it:
    with `trust_bundle_path = "/etc/spire/agent/bootstrap-bundle.pem"` and
    keeps the original bytes, owner and mode in
    `agent.conf.bak-<UTC timestamp>`. It runs `spire-agent validate` as
-   `spire` and restores the original when validation fails. Any other
-   bootstrap shape (a second key, a comment naming a key, a block comment,
-   `trust_bundle_url`, another bundle path) is refused for a hand edit.
+   `spire`, plain and with `-trustBundle
+   /etc/spire/agent/bootstrap-bundle.pem -trustBundleFormat pem` (which SPIRE
+   refuses while its own reading still has `insecure_bootstrap`), and
+   restores the original when either refuses or a stop signal arrives. Any
+   other bootstrap shape (a second key, a key in another letter case, a
+   quoted key, a heredoc, a comment naming a key, a block comment,
+   `trust_bundle_url`, another bundle path) is refused for a hand edit, and
+   a file the scan calls pinned is refused when SPIRE's check above does not
+   confirm it.
 4. Only when it edited `agent.conf`, restarts `spire-agent.service`, which
    restarts `es.service` through `Requires=`. It then requires within fixed
    timeouts: a healthy agent, the same agent ID as before (no
@@ -6545,14 +6558,23 @@ with a 120 s lifetime over the admin socket as `spire`. The token stays in
 the helper's memory and in a `0600` file owned by `spire` inside a private
 `0700` directory under `/run` (tmpfs); it is never printed, logged by the
 helper, put in an environment or on any command line. The helper runs
-`spire-agent run -config /etc/spire/agent/agent.conf -joinTokenFile <file>`
-as `spire` until the new agent's SVID appears, deletes the token file at
+`spire-agent run -config /etc/spire/agent/agent.conf -trustBundle /etc/spire/agent/bootstrap-bundle.pem -trustBundleFormat pem -joinTokenFile <file>`
+as `spire` until the new agent's SVID appears (with `-trustBundle`, SPIRE
+itself refuses to start if it still reads `insecure_bootstrap` in
+`agent.conf`, whatever the helper's own scan concluded), deletes the token file at
 once, checks the server lists the new agent, stops that process and removes
 the private directory. It then starts `spire-agent.service` and
 `es.service` and requires the same health, identity, server record,
 workload SVID and unit checks as `pin`. If the attestation fails, it moves
 the new data directory aside to `/var/lib/spire/agent.failed-<UTC timestamp>`,
-puts the old one back and leaves both units stopped.
+puts the old one back and leaves both units stopped. An OS error or a stop
+signal (`SIGINT`, `SIGHUP` from an SSH drop, `SIGTERM`) during the swap or
+the attestation ends the same way: the attesting process is stopped, the
+token file and its directory are removed, the old data directory is put
+back, and the report is printed.
+Cleanup and rollback hold further stop signals until they finish. After a
+successful attestation, a failed start or verification is reported and not
+rolled back, because the old identity has expired.
 
 A join token is single use, and SPIRE names an agent after its token
 (`spiffe://execution.internal/spire/agent/join_token/<token>`), so SPIRE's
@@ -6563,7 +6585,9 @@ that part redacted, plus a `sha256:` fingerprint for comparison.
 `--evict-old-agent` evicts exactly the agent record that this run replaced
 and deletes the alias entries whose parent is that agent; both are
 deletions on the SPIRE server, so a host run uses the flag only with the
-owner's go.
+owner's go. The evict command names the old agent ID, which contains the
+old, already spent join token; the new token never appears on a command
+line.
 
 Operator rule: If the box or `spire-server.service` has been off for more
 than a day, run `sudo scripts/remote_alpha_spire_agent.sh status` before
