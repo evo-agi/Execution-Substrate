@@ -8,7 +8,8 @@ package executionsubstrate_test
 // it), checked against scripts/internal/spire_release.sha256. The server and
 // agent configurations copy the box's (join token attestation, disk key
 // managers, unix workload attestor, the same alias and workload entries)
-// with a 15 s SVID lifetime. systemd is replaced by a small fake systemctl
+// with a short CA lifetime and a 60 s (pin test) or 15 s (recover test) SVID
+// lifetime. systemd is replaced by a small fake systemctl
 // that runs the real binaries and follows the box units' Requires= chain
 // (es.service -> spire-agent.service -> spire-server.service), and setpriv by
 // a fake that checks its arguments and runs the command as the test user.
