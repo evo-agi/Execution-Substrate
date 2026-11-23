@@ -9,6 +9,7 @@ else
   REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 fi
 source "${SCRIPT_DIR}/internal/supported_local_retained_result_auth.sh"
+source "${SCRIPT_DIR}/internal/spire_release.sh"
 ES_ROOTS_HELPER="${SCRIPT_DIR}/internal/supported_local_execution_roots.py"
 ES_ROOTS_PROFILE="service-root-v1"
 
@@ -82,6 +83,12 @@ What it writes under /tmp/execution-substrate-supported-local-proof by default:
 This helper is the guest-side setup layer for the supported-local proof path.
 On the current Apple Silicon Mac, the canonical proof record lives on the host
 under .out/es-proof-<id>; any guest /tmp workspace is internal Lima scratch.
+
+The SPIRE release file, downloaded or prebuilt, is unpacked only if its
+SHA-256 is the one that scripts/internal/spire_release.sha256 pins for it.
+A SPIRE version with no line there for any supported architecture is refused
+before setup changes anything; one with no line for this host's architecture
+is refused before the download.
 
 Optional environment variables:
   SUPPORTED_LOCAL_PROOF_DIR=/abs/path
@@ -181,6 +188,20 @@ preflight_supported_local_setup_execution_roots() {
       return 1
     fi
   fi
+}
+
+preflight_supported_local_setup_spire_pin() {
+  # The exact release file depends on the Go architecture and is looked up
+  # again where it is used. Here, before any effect, refuse a SPIRE version
+  # that has no pinned release file for any supported architecture.
+  local arch
+  for arch in amd64 arm64; do
+    if spire_release_pinned_sha256 "spire-${SPIRE_VERSION}-linux-${arch}-musl.tar.gz" >/dev/null 2>&1; then
+      return 0
+    fi
+  done
+  spire_release_pinned_sha256 "spire-${SPIRE_VERSION}-linux-amd64-musl.tar.gz" >/dev/null
+  return 1
 }
 
 provision_supported_local_execution_roots() {
@@ -430,6 +451,14 @@ prepare_spire_distribution() {
   asset_name="spire-${SPIRE_VERSION}-linux-${asset_arch}-musl.tar.gz"
   download_url="https://github.com/spiffe/spire/releases/download/v${SPIRE_VERSION}/${asset_name}"
 
+  # Only a release file with a SHA-256 pinned in
+  # scripts/internal/spire_release.sha256 is used, downloaded or prebuilt.
+  # The pin is looked up before the download, and the file is checked where
+  # it lands, before it is unpacked.
+  if ! spire_release_pinned_sha256 "${asset_name}" >/dev/null; then
+    exit 1
+  fi
+
   mkdir -p "$(dirname "${tarball_path}")"
   if [[ -n "${PREBUILT_SPIRE_TARBALL}" ]]; then
     install_prebuilt_file "${PREBUILT_SPIRE_TARBALL}" "${tarball_path}" "SPIRE distribution"
@@ -438,6 +467,11 @@ prepare_spire_distribution() {
     curl -L --fail --silent --show-error -o "${tarball_path}" "${download_url}"
   fi
   chmod 600 "${tarball_path}"
+  if ! spire_release_verify "${tarball_path}" "${asset_name}"; then
+    rm -f -- "${tarball_path}"
+    echo "refused the SPIRE distribution; nothing was unpacked" >&2
+    exit 1
+  fi
 
   rm -rf "${extract_root}"
   mkdir -p "${extract_root}"
@@ -1373,6 +1407,7 @@ setup() {
   supported_local_setup_repair_test_sentinel
   preflight_supported_local_setup_retained_result_auth
   preflight_supported_local_setup_execution_roots
+  preflight_supported_local_setup_spire_pin
 
   local vault_public_host
   local vault_address
