@@ -1,4 +1,4 @@
-package executionsubstrate_test
+package scripts_test
 
 import (
 	"bytes"
@@ -54,7 +54,7 @@ func TestRetiredRemoteAlphaRoutesAreFixedForEveryArgumentShape(t *testing.T) {
 func TestRetiredRemoteAlphaInternalSourcesAreExactEffectFreeTombstones(t *testing.T) {
 	for _, route := range retiredRemoteAlphaRoutes {
 		t.Run(route.name, func(t *testing.T) {
-			content, err := os.ReadFile(route.internalPath)
+			content, err := os.ReadFile(repoPath(route.internalPath))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -62,7 +62,7 @@ func TestRetiredRemoteAlphaInternalSourcesAreExactEffectFreeTombstones(t *testin
 			if string(content) != want {
 				t.Fatalf("internal tombstone bytes differ\nwant:\n%s\ngot:\n%s", want, content)
 			}
-			info, err := os.Stat(route.internalPath)
+			info, err := os.Stat(repoPath(route.internalPath))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -93,11 +93,11 @@ func TestRetiredRemoteAlphaProtectedWrappersAndHistoricalFixturesRemainExact(t *
 		"testdata/remote_alpha_es_service_user_rollback_rehearsal/warning/es-service-user-migration-check-only.json":    {0o644, 732, "5722b2f89094a1ea451871b9b39d07ae8814b6da242d1a326f53b9d82bde2b3e"},
 	}
 	for path, expected := range want {
-		content, err := os.ReadFile(path)
+		content, err := os.ReadFile(repoPath(path))
 		if err != nil {
 			t.Fatal(err)
 		}
-		info, err := os.Stat(path)
+		info, err := os.Stat(repoPath(path))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -126,18 +126,14 @@ func assertRetiredRemoteAlphaRoute(t *testing.T, path string, args []string) {
 			t.Fatal(err)
 		}
 	}
-	absolute, err := filepath.Abs(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cmd := exec.Command("/bin/bash", append([]string{absolute}, args...)...)
+	cmd := exec.Command("/bin/bash", append([]string{repoPath(path)}, args...)...)
 	cmd.Dir = home
 	cmd.Env = []string{"PATH=" + shimDir + ":/usr/bin:/bin", "TMPDIR=" + tmp, "HOME=" + home}
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	err = cmd.Run()
+	err := cmd.Run()
 	exitErr, ok := err.(*exec.ExitError)
 	if !ok || exitErr.ExitCode() != 2 {
 		t.Fatalf("exit = %v, want 2", err)

@@ -1,4 +1,4 @@
-package executionsubstrate_test
+package scripts_test
 
 import (
 	"bytes"
@@ -21,14 +21,6 @@ import (
 
 func remoteAlphaOperatorScriptPath() string {
 	return filepath.Join(remoteAlphaOperatorRepoRoot(), "scripts", "remote_alpha_operator.sh")
-}
-
-func remoteAlphaOperatorRepoRoot() string {
-	root, err := os.Getwd()
-	if err != nil {
-		panic(fmt.Sprintf("resolve repository root: %v", err))
-	}
-	return root
 }
 
 func runRemoteAlphaOperator(args ...string) (string, error) {
@@ -2906,6 +2898,7 @@ func statusSSHCommandTokens(t *testing.T, h *fakeRemoteAlphaESTLSStatusHarness) 
 	}
 	parser := exec.Command("/usr/bin/python3", "-I", "-B", "-c",
 		"import json,shlex,sys; print(json.dumps(shlex.split(sys.stdin.read())))")
+	parser.Dir = executionSubstrateRepoRoot
 	parser.Stdin = strings.NewReader(argv[2])
 	decoded, err := parser.Output()
 	if err != nil {
@@ -3075,6 +3068,7 @@ func TestRemoteAlphaOperatorRecoverySessionESTLSStatusRejectsHostileTransportInp
 		{validStage, "18446744073709551616:1", "artifact-registry", validDigest},
 	} {
 		cmd := exec.Command("/bin/bash", append([]string{"-c", build, "status-builder"}, operands...)...)
+		cmd.Dir = executionSubstrateRepoRoot
 		output, err := cmd.CombinedOutput()
 		if err == nil || len(output) != 0 {
 			t.Fatal("hostile fixed-command operand was accepted or echoed")
@@ -3087,6 +3081,7 @@ func TestRemoteAlphaOperatorRecoverySessionESTLSStatusRejectsHostileTransportInp
 	forcedOverlarge := strings.Replace(build, sizeGuard, `[[ ${#remote_command} -le 1 ]]`, 1)
 	cmd := exec.Command("/bin/bash", "-c", forcedOverlarge, "status-builder",
 		validStage, "123:456", "artifact-registry", validDigest)
+	cmd.Dir = executionSubstrateRepoRoot
 	output, err := cmd.CombinedOutput()
 	if err == nil || len(output) != 0 {
 		t.Fatal("overlarge fixed command was accepted or echoed")
@@ -6652,6 +6647,7 @@ printf 'CLEANUP\n' >> "$FAKE_STATUS_SUDO_LOG"
 exit 0
 `)
 			cmd := exec.Command("/bin/bash", "-s", "--", stage, identity, "artifact-registry", strings.Repeat("a", 64))
+			cmd.Dir = executionSubstrateRepoRoot
 			cmd.Stdin = strings.NewReader(wrapper)
 			cmd.Env = envWithPath(bin,
 				"FAKE_STATUS_SUDO_LOG="+log,
@@ -6739,6 +6735,7 @@ func TestRemoteAlphaOperatorRecoverySessionESTLSStatusStageCustodyAcquisition(t 
 	run := func(path string) (string, error) {
 		t.Helper()
 		cmd := exec.Command("/usr/bin/python3", "-I", "-B", "-", path)
+		cmd.Dir = executionSubstrateRepoRoot
 		cmd.Stdin = strings.NewReader(script)
 		cmd.Env = append(os.Environ(), "PYTHONDONTWRITEBYTECODE=1")
 		output, err := cmd.CombinedOutput()
@@ -6793,6 +6790,7 @@ func TestRemoteAlphaOperatorRecoverySessionESTLSStatusStageCustodyAcquisition(t 
 	linkedScript := strings.ReplaceAll(script, parent, parentLink)
 	linkedStage := filepath.Join(parentLink, filepath.Base(stage))
 	cmd := exec.Command("/usr/bin/python3", "-I", "-B", "-", linkedStage)
+	cmd.Dir = executionSubstrateRepoRoot
 	cmd.Stdin = strings.NewReader(linkedScript)
 	cmd.Env = append(os.Environ(), "PYTHONDONTWRITEBYTECODE=1")
 	if output, err := cmd.CombinedOutput(); err == nil || len(output) != 0 {
@@ -6804,6 +6802,7 @@ func TestRemoteAlphaOperatorRecoverySessionESTLSStatusStageCustodyAcquisition(t 
 	}
 	nonDirScript := strings.ReplaceAll(script, parent, nonDir)
 	cmd = exec.Command("/usr/bin/python3", "-I", "-B", "-", filepath.Join(nonDir, filepath.Base(stage)))
+	cmd.Dir = executionSubstrateRepoRoot
 	cmd.Stdin = strings.NewReader(nonDirScript)
 	cmd.Env = append(os.Environ(), "PYTHONDONTWRITEBYTECODE=1")
 	if output, err := cmd.CombinedOutput(); err == nil || len(output) != 0 {

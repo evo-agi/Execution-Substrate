@@ -1,4 +1,4 @@
-package executionsubstrate_test
+package scripts_test
 
 import (
 	"bytes"
@@ -191,6 +191,7 @@ print(json.dumps({"refused":refused,"previous_unchanged":pathlib.Path(previous).
 					defer cancel()
 					cmd := exec.CommandContext(ctx, "/usr/bin/python3", "-I", "-B", "-c", probe,
 						remoteAlphaESServiceTLSStatusCollectorPath(), tc.path, tc.kind, previous)
+					cmd.Dir = executionSubstrateRepoRoot
 					cmd.Env = append(os.Environ(), "PYTHONDONTWRITEBYTECODE=1")
 					output, err := cmd.CombinedOutput()
 					if ctx.Err() != nil {
@@ -244,6 +245,7 @@ print(json.dumps({"swapped":swapped[0],"refused":refused,"restored":path.read_by
 			defer cancel()
 			cmd := exec.CommandContext(ctx, "/usr/bin/python3", "-I", "-B", "-c", probe,
 				remoteAlphaESServiceTLSStatusCollectorPath(), path)
+			cmd.Dir = executionSubstrateRepoRoot
 			cmd.Env = append(os.Environ(), "PYTHONDONTWRITEBYTECODE=1")
 			output, err := cmd.CombinedOutput()
 			if ctx.Err() != nil {
@@ -876,6 +878,7 @@ print(json.dumps(results,sort_keys=True))
 `
 	cmd := exec.Command("/usr/bin/python3", "-I", "-B", "-c", probe,
 		remoteAlphaESServiceTLSStatusCollectorPath(), t.TempDir())
+	cmd.Dir = executionSubstrateRepoRoot
 	cmd.Env = append(os.Environ(), "PYTHONDONTWRITEBYTECODE=1")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -965,6 +968,7 @@ print(json.dumps(results,sort_keys=True))
 `
 	cmd := exec.Command("/usr/bin/python3", "-I", "-B", "-c", probe,
 		remoteAlphaESServiceTLSStatusCollectorPath(), t.TempDir())
+	cmd.Dir = executionSubstrateRepoRoot
 	cmd.Env = append(os.Environ(), "PYTHONDONTWRITEBYTECODE=1")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -1258,6 +1262,7 @@ print(json.dumps({"exit_incomplete":result==1,"spawned_once":len(spawned)==1,"re
 		t.Run(mode, func(t *testing.T) {
 			cmd := exec.Command("/usr/bin/python3", "-I", "-B", "-c", probe,
 				remoteAlphaESServiceTLSStatusCollectorPath(), t.TempDir(), mode)
+			cmd.Dir = executionSubstrateRepoRoot
 			cmd.Env = append(os.Environ(), "PYTHONDONTWRITEBYTECODE=1")
 			output, err := cmd.CombinedOutput()
 			if err != nil {
@@ -1378,6 +1383,7 @@ try:module.collect_topology(module.SCOPES[scope]);sys.exit(1)
 except module.Incomplete:sys.exit(0)
 `
 				cmd := exec.Command("/usr/bin/python3", "-I", "-B", "-c", probe, remoteAlphaESServiceTLSStatusCollectorPath(), f.root, tc.scope)
+				cmd.Dir = executionSubstrateRepoRoot
 				cmd.Env = append(os.Environ(), "PYTHONDONTWRITEBYTECODE=1")
 				if output, err := cmd.CombinedOutput(); err != nil {
 					t.Fatalf("unsafe related config did not fail incomplete: %v\n%s", err, output)
@@ -1445,6 +1451,7 @@ finally:
 			root := t.TempDir()
 			cmd := exec.Command("/usr/bin/python3", "-I", "-B", "-c", probe,
 				remoteAlphaESServiceTLSStatusCollectorPath(), root, mode)
+			cmd.Dir = executionSubstrateRepoRoot
 			cmd.Env = append(os.Environ(), "PYTHONDONTWRITEBYTECODE=1")
 			output, err := cmd.CombinedOutput()
 			if mode == "pass" && err != nil {
@@ -1523,6 +1530,7 @@ print(json.dumps({"failed":failed,"injected":injected[0],"canonical_unchanged":c
 		t.Run(mode, func(t *testing.T) {
 			cmd := exec.Command("/usr/bin/python3", "-I", "-B", "-c", probe,
 				remoteAlphaESServiceTLSStatusCollectorPath(), t.TempDir(), mode)
+			cmd.Dir = executionSubstrateRepoRoot
 			cmd.Env = append(os.Environ(), "PYTHONDONTWRITEBYTECODE=1")
 			output, err := cmd.CombinedOutput()
 			if err != nil {
@@ -1692,6 +1700,7 @@ finally:
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "/usr/bin/python3", "-I", "-B", "-c", probe,
 		remoteAlphaOperatorScriptPath(), t.TempDir(), mode)
+	cmd.Dir = executionSubstrateRepoRoot
 	cmd.Env = append(os.Environ(), "PYTHONDONTWRITEBYTECODE=1")
 	output, err := cmd.CombinedOutput()
 	if ctx.Err() != nil {
@@ -1742,6 +1751,7 @@ func TestRemoteAlphaESServiceTLSStatusStageFIFOSubstitution(t *testing.T) {
 func TestRemoteAlphaESServiceTLSStatusDirectPathInvocationRefusal(t *testing.T) {
 	cmd := exec.Command("/usr/bin/python3", "-I", "-B", remoteAlphaESServiceTLSStatusCollectorPath(),
 		"--scope", "artifact-registry")
+	cmd.Dir = executionSubstrateRepoRoot
 	cmd.Env = append(os.Environ(), "PYTHONDONTWRITEBYTECODE=1")
 	if output, err := cmd.CombinedOutput(); err == nil || len(output) != 0 {
 		t.Fatalf("direct collector path did not refuse quietly: err=%v output=%q", err, output)
@@ -1819,6 +1829,7 @@ print(json.dumps(results,sort_keys=True))
 `
 	cmd := exec.Command("/usr/bin/python3", "-I", "-B", "-c", probe,
 		remoteAlphaESServiceTLSStatusCollectorPath(), t.TempDir())
+	cmd.Dir = executionSubstrateRepoRoot
 	cmd.Env = append(os.Environ(), "PYTHONDONTWRITEBYTECODE=1")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -1928,6 +1939,7 @@ print(json.dumps({"expected":expected,"swap_exercised":(swapped[0] if mode.start
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "/usr/bin/python3", "-I", "-B", "-c", probe,
 		remoteAlphaESServiceTLSStatusCollectorPath(), t.TempDir(), scope, which, mode)
+	cmd.Dir = executionSubstrateRepoRoot
 	cmd.Env = append(os.Environ(), "PYTHONDONTWRITEBYTECODE=1")
 	output, err := cmd.CombinedOutput()
 	if ctx.Err() != nil {
@@ -2078,6 +2090,7 @@ print(json.dumps(results,sort_keys=True))
 `
 	cmd := exec.Command("/usr/bin/python3", "-I", "-B", "-c", probe,
 		remoteAlphaESServiceTLSStatusCollectorPath(), t.TempDir(), f.root)
+	cmd.Dir = executionSubstrateRepoRoot
 	cmd.Env = append(os.Environ(), "PYTHONDONTWRITEBYTECODE=1")
 	cmd.Stdin = strings.NewReader(string(encoded))
 	output, err := cmd.CombinedOutput()
@@ -2163,6 +2176,7 @@ print(json.dumps(results,sort_keys=True))
 `
 			cmd := exec.Command("/usr/bin/python3", "-I", "-B", "-c", probe,
 				remoteAlphaESServiceTLSStatusCollectorPath(), f.root, tc.scope, tc.required, tc.optional)
+			cmd.Dir = executionSubstrateRepoRoot
 			cmd.Env = append(os.Environ(), "PYTHONDONTWRITEBYTECODE=1")
 			output, err := cmd.CombinedOutput()
 			if err != nil {
@@ -2342,6 +2356,7 @@ print(json.dumps(results,sort_keys=True))
 		defer cancel()
 		cmd := exec.CommandContext(ctx, "/usr/bin/python3", "-I", "-B", "-c", probe,
 			remoteAlphaESServiceTLSStatusCollectorPath(), t.TempDir(), mode, scope, validPath)
+		cmd.Dir = executionSubstrateRepoRoot
 		cmd.Env = append(os.Environ(), "PYTHONDONTWRITEBYTECODE=1")
 		output, err := cmd.CombinedOutput()
 		if ctx.Err() != nil {
@@ -2572,6 +2587,7 @@ print(json.dumps(results,sort_keys=True))
 			defer cancel()
 			cmd := exec.CommandContext(ctx, "/usr/bin/python3", "-I", "-B", "-c", probe,
 				remoteAlphaESServiceTLSStatusCollectorPath(), t.TempDir(), scope)
+			cmd.Dir = executionSubstrateRepoRoot
 			cmd.Env = append(os.Environ(), "PYTHONDONTWRITEBYTECODE=1")
 			output, err := cmd.CombinedOutput()
 			if ctx.Err() != nil || err != nil || strings.Contains(string(output), "Traceback") ||
@@ -2628,6 +2644,7 @@ print(json.dumps(results,sort_keys=True))
 `
 	cmd := exec.Command("/usr/bin/python3", "-I", "-B", "-c", probe,
 		remoteAlphaESServiceTLSStatusCollectorPath(), t.TempDir())
+	cmd.Dir = executionSubstrateRepoRoot
 	cmd.Env = append(os.Environ(), "PYTHONDONTWRITEBYTECODE=1")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -2690,6 +2707,7 @@ print(json.dumps(results,sort_keys=True))
 `
 	cmd := exec.Command("/usr/bin/python3", "-I", "-B", "-c", probe,
 		remoteAlphaESServiceTLSStatusCollectorPath(), t.TempDir())
+	cmd.Dir = executionSubstrateRepoRoot
 	cmd.Env = append(os.Environ(), "PYTHONDONTWRITEBYTECODE=1")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -2742,6 +2760,7 @@ print(json.dumps(results,sort_keys=True))
 `
 	cmd := exec.Command("/usr/bin/python3", "-I", "-B", "-c", probe,
 		remoteAlphaESServiceTLSStatusCollectorPath(), f.root)
+	cmd.Dir = executionSubstrateRepoRoot
 	cmd.Env = append(os.Environ(), "PYTHONDONTWRITEBYTECODE=1")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -2974,6 +2993,7 @@ finally:
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "/usr/bin/python3", "-I", "-B", "-c", probe,
 		remoteAlphaESServiceTLSStatusCollectorPath(), t.TempDir(), mode)
+	cmd.Dir = executionSubstrateRepoRoot
 	cmd.Env = append(os.Environ(), "PYTHONDONTWRITEBYTECODE=1")
 	output, err := cmd.CombinedOutput()
 	if ctx.Err() != nil {
@@ -3039,6 +3059,7 @@ print(json.dumps({"refused":refused,"not_spawned":not spawned[0]}))
 `
 	cmd := exec.Command("/usr/bin/python3", "-I", "-B", "-c", probe,
 		remoteAlphaESServiceTLSStatusCollectorPath())
+	cmd.Dir = executionSubstrateRepoRoot
 	cmd.Env = append(os.Environ(), "PYTHONDONTWRITEBYTECODE=1")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -3124,6 +3145,7 @@ print(json.dumps(results,sort_keys=True))
 `
 	cmd := exec.Command("/usr/bin/python3", "-I", "-B", "-c", probe,
 		remoteAlphaESServiceTLSStatusCollectorPath())
+	cmd.Dir = executionSubstrateRepoRoot
 	cmd.Env = append(os.Environ(), "PYTHONDONTWRITEBYTECODE=1")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -3188,6 +3210,7 @@ print(json.dumps(results,sort_keys=True))
 `
 	cmd := exec.Command("/usr/bin/python3", "-I", "-B", "-c", probe,
 		remoteAlphaESServiceTLSStatusCollectorPath(), t.TempDir())
+	cmd.Dir = executionSubstrateRepoRoot
 	cmd.Env = append(os.Environ(), "PYTHONDONTWRITEBYTECODE=1")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -3256,6 +3279,7 @@ print(json.dumps({"incomplete":incomplete,"spawned_once":len(spawned)==1,"reaped
 		t.Run(mode, func(t *testing.T) {
 			cmd := exec.Command("/usr/bin/python3", "-I", "-B", "-c", probe,
 				remoteAlphaESServiceTLSStatusCollectorPath(), t.TempDir(), mode)
+			cmd.Dir = executionSubstrateRepoRoot
 			cmd.Env = append(os.Environ(), "PYTHONDONTWRITEBYTECODE=1")
 			output, err := cmd.CombinedOutput()
 			if err != nil {
@@ -3367,6 +3391,7 @@ print(json.dumps({"incomplete":incomplete,"injected":injected[0],"only_fixture_g
 			defer cancel()
 			cmd := exec.CommandContext(ctx, "/usr/bin/python3", "-I", "-B", "-c", probe,
 				remoteAlphaESServiceTLSStatusCollectorPath(), t.TempDir(), mode)
+			cmd.Dir = executionSubstrateRepoRoot
 			cmd.Env = append(os.Environ(), "PYTHONDONTWRITEBYTECODE=1")
 			output, err := cmd.CombinedOutput()
 			if ctx.Err() != nil {
@@ -3421,6 +3446,7 @@ print(json.dumps({"completed":(code,out,err)==(0,b"fixed output",b""),
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "/usr/bin/python3", "-I", "-B", "-c", probe,
 		remoteAlphaESServiceTLSStatusCollectorPath(), t.TempDir())
+	cmd.Dir = executionSubstrateRepoRoot
 	cmd.Env = append(os.Environ(), "PYTHONDONTWRITEBYTECODE=1")
 	output, err := cmd.CombinedOutput()
 	if ctx.Err() != nil {
@@ -3468,6 +3494,7 @@ print(json.dumps({"good_selected_anchor":good==(0,b"/dev/stdin: OK\n",b""),
 `
 	cmd := exec.Command("/usr/bin/python3", "-I", "-B", "-c", probe,
 		remoteAlphaESServiceTLSStatusCollectorPath(), f.root, wrongPath)
+	cmd.Dir = executionSubstrateRepoRoot
 	cmd.Env = append(os.Environ(), "PYTHONDONTWRITEBYTECODE=1")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -3540,6 +3567,7 @@ print(json.dumps(results,sort_keys=True))
 			cmd := exec.CommandContext(ctx, "/usr/bin/python3", "-I", "-B", "-c", probe,
 				remoteAlphaESServiceTLSStatusCollectorPath(), selected, wrongPath, keyPath,
 				filepath.Join(f.root, "etc", "execution-substrate", leaf))
+			cmd.Dir = executionSubstrateRepoRoot
 			cmd.Env = append(os.Environ(), "PYTHONDONTWRITEBYTECODE=1")
 			output, err := cmd.CombinedOutput()
 			if ctx.Err() != nil {
@@ -3606,6 +3634,7 @@ print(json.dumps({"unsupported_exact_server_command_is_incomplete":incomplete,
 `
 	cmd := exec.Command("/usr/bin/python3", "-I", "-B", "-c", probe,
 		remoteAlphaESServiceTLSStatusCollectorPath(), t.TempDir())
+	cmd.Dir = executionSubstrateRepoRoot
 	cmd.Env = append(os.Environ(), "PYTHONDONTWRITEBYTECODE=1")
 	output, err := cmd.CombinedOutput()
 	if err != nil {

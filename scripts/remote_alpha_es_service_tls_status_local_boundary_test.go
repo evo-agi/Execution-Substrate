@@ -1,4 +1,4 @@
-package executionsubstrate_test
+package scripts_test
 
 import (
 	"context"
@@ -60,7 +60,7 @@ func (s remoteAlphaESStatusFixtureScript) String() string {
 // of its resolvable parts, so that the caller can refuse it.
 func remoteAlphaESStatusFixtureScripts(t *testing.T) (scripts, unresolved []remoteAlphaESStatusFixtureScript) {
 	t.Helper()
-	names, err := filepath.Glob(filepath.Join(executionSubstrateRepoRoot, "*_test.go"))
+	names, err := filepath.Glob(filepath.Join(testPackageDir, "*_test.go"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -598,6 +598,7 @@ print(json.dumps({"named":{name:sorted(named[name]) for name in wanted},"undefin
 	}
 	sort.Strings(names)
 	cmd := exec.Command("/usr/bin/python3", "-I", "-B", "-c", probe, remoteAlphaESServiceTLSStatusCollectorPath(), strings.Join(names, ","))
+	cmd.Dir = executionSubstrateRepoRoot
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("call graph probe: %v\n%s", err, output)
@@ -655,6 +656,7 @@ func runRemoteAlphaESStatusLocalBoundaryProbe(t *testing.T, probe string, args .
 	defer cancel()
 	argv := append([]string{"-I", "-B", "-c", probe, remoteAlphaESServiceTLSStatusCollectorPath()}, args...)
 	cmd := exec.CommandContext(ctx, "/usr/bin/python3", argv...)
+	cmd.Dir = executionSubstrateRepoRoot
 	cmd.Env = append(os.Environ(), "PYTHONDONTWRITEBYTECODE=1")
 	cmd.WaitDelay = 10 * time.Second
 	output, err := cmd.CombinedOutput()

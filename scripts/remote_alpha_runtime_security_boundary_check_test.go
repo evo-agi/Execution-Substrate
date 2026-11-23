@@ -1,4 +1,4 @@
-package executionsubstrate_test
+package scripts_test
 
 import (
 	"encoding/json"
@@ -242,7 +242,7 @@ func TestRemoteAlphaRuntimeSecuritySpireFixtureCleanup(t *testing.T) {
 	})
 
 	t.Run("single helper-owned creation expression", func(t *testing.T) {
-		sourcePath := filepath.Join(executionSubstrateRepoRoot, "remote_alpha_runtime_security_boundary_check_test.go")
+		sourcePath := filepath.Join(testPackageDir, "remote_alpha_runtime_security_boundary_check_test.go")
 		sourceBytes, err := os.ReadFile(sourcePath)
 		if err != nil {
 			t.Fatalf("read runtime-security fixture source: %v", err)

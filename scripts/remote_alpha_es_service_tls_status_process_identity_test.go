@@ -1,4 +1,4 @@
-package executionsubstrate_test
+package scripts_test
 
 import (
 	"context"
@@ -19,6 +19,7 @@ func runRemoteAlphaESProcessIdentityProbe(t *testing.T, probe string, args ...st
 	defer cancel()
 	argv := append([]string{"-I", "-B", "-c", probe, remoteAlphaESServiceTLSStatusCollectorPath()}, args...)
 	cmd := exec.CommandContext(ctx, "/usr/bin/python3", argv...)
+	cmd.Dir = executionSubstrateRepoRoot
 	cmd.Env = append(os.Environ(), "PYTHONDONTWRITEBYTECODE=1")
 	cmd.WaitDelay = 10 * time.Second
 	output, err := cmd.CombinedOutput()

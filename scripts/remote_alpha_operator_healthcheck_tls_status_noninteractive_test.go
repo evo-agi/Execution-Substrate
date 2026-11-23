@@ -1,4 +1,4 @@
-package executionsubstrate_test
+package scripts_test
 
 import (
 	"crypto/sha256"
@@ -581,6 +581,7 @@ func TestRemoteAlphaOperatorHealthcheckTLSStatusNoninteractivePythonIsolationFla
 		t.Fatalf("write usercustomize: %v", err)
 	}
 	cmd := exec.Command("python3", "-I", "-S", "-B", "-c", "import sys; assert not sys.flags.inspect; print('ok')")
+	cmd.Dir = executionSubstrateRepoRoot
 	cmd.Env = append(os.Environ(),
 		"PYTHONPATH="+tmp,
 		"PYTHONINSPECT=1",

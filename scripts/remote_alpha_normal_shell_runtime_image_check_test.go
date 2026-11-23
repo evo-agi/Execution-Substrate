@@ -1,4 +1,4 @@
-package executionsubstrate_test
+package scripts_test
 
 import (
 	"crypto/sha256"
@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 )
@@ -14,26 +13,6 @@ import (
 const remoteAlphaRuntimeImageRef = "execution-substrate/control-plane-normal-shell:supported-local"
 const remoteAlphaRuntimeImageBuildScript = "scripts/remote_alpha_build_normal_shell_runtime_image.sh"
 const remoteAlphaRuntimeImageDockerfile = "es/runtimeprofiles/control_plane_normal_shell/Dockerfile"
-
-var executionSubstrateRepoRoot = mustExecutionSubstrateRepoRoot()
-
-func mustExecutionSubstrateRepoRoot() string {
-	_, sourceFile, _, ok := runtime.Caller(0)
-	if !ok || sourceFile == "" || !filepath.IsAbs(sourceFile) {
-		panic("cannot resolve an absolute Execution Substrate test source path")
-	}
-
-	root := filepath.Dir(sourceFile)
-	module, err := os.Stat(filepath.Join(root, "go.mod"))
-	if err != nil || !module.Mode().IsRegular() {
-		panic(fmt.Sprintf("Execution Substrate test root %q lacks a regular go.mod: %v", root, err))
-	}
-	scripts, err := os.Stat(filepath.Join(root, "scripts"))
-	if err != nil || !scripts.IsDir() {
-		panic(fmt.Sprintf("Execution Substrate test root %q lacks a scripts directory: %v", root, err))
-	}
-	return root
-}
 
 func runSourcedRuntimeImageHelper(t *testing.T, env []string, shellBody string) ([]byte, error) {
 	t.Helper()

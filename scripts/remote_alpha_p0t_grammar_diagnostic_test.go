@@ -1,4 +1,4 @@
-package executionsubstrate_test
+package scripts_test
 
 import (
 	"crypto/sha256"
@@ -680,6 +680,7 @@ print("OK")
 	}
 	parser := exec.Command("/usr/bin/python3", "-I", "-B", "-c",
 		"import json,shlex,sys;print(json.dumps(shlex.split(sys.stdin.read())))")
+	parser.Dir = executionSubstrateRepoRoot
 	parser.Stdin = strings.NewReader(fields[2])
 	decoded, err := parser.Output()
 	if err != nil {
