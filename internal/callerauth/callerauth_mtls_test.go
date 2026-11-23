@@ -133,6 +133,35 @@ func TestAuthenticateRefusesACACertificatePresentedAsTheClientCertificate(t *tes
 	}
 }
 
+// The same refusal when the CA certificate sits below an intermediate and
+// the client sends both, as a client with a SPIRE-shaped chain would. Found
+// by the re-audit of the A2-1 repair (O4-1).
+func TestAuthenticateRefusesACACertificateBelowAnIntermediate(t *testing.T) {
+	root := newRootCA(t)
+	intermediate := issue(t, &x509.Certificate{
+		SerialNumber:          big.NewInt(2),
+		Subject:               pkix.Name{CommonName: "callerauth-mtls-intermediate"},
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
+		URIs:                  []*url.URL{mustURL(t, "spiffe://execution.internal")},
+	}, newTestKey(t), &root)
+	key := newTestKey(t)
+	signer := issue(t, &x509.Certificate{
+		SerialNumber:          big.NewInt(3),
+		Subject:               pkix.Name{CommonName: "callerauth-mtls-signing-leaf"},
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+		KeyUsage:              x509.KeyUsageCertSign,
+		URIs:                  []*url.URL{mustURL(t, "spiffe://execution.internal/operator/local")},
+	}, key, &intermediate)
+
+	status, body := serveMutualTLS(t, root, [][]byte{signer.der, intermediate.der}, key)
+	if status != http.StatusUnauthorized || body != unauthenticatedBody {
+		t.Fatalf("CA certificate below an intermediate: %d %q, want 401 %q", status, body, unauthenticatedBody)
+	}
+}
+
 // A SPIRE-style client chain: the leaf carries the caller's ID and the
 // intermediate CA carries only the trust domain's ID. The caller is the leaf,
 // never the intermediate or the last certificate the client sent.
