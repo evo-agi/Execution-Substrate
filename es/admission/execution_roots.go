@@ -12,6 +12,10 @@ import (
 
 const executionRootDirectoryMode = 0o755
 
+// nestedStagingProbeName names the directory the startup probe creates inside
+// its staging probe directory (probeNestedStagingDirectory).
+const nestedStagingProbeName = "nested"
+
 type executionRootAcquisitionLedger struct {
 	Count int
 }
@@ -455,29 +459,11 @@ func (roots *qualifiedExecutionRoots) probeCapabilities(owner executionPlatformS
 		return err
 	}
 	stagingName := ".execution-substrate-staging-probe-" + token
-	if err := roots.reobserve(); err != nil {
-		return err
-	}
-	if err := unix.Mkdirat(roots.staging.existingFD, stagingName, stableStageDirMode); err != nil {
-		return err
-	}
-	stagingFD, err := platformOpenAtNoFollow(roots.staging.existingFD, stagingName, unix.O_RDONLY|unix.O_DIRECTORY, 0, true)
+	stagingFD, err := roots.probeStagedDirectory(roots.staging.existingFD, stagingName, stableStageDirMode, owner, "staging probe directory")
 	if err != nil {
 		return err
 	}
-	if err := roots.reobserve(); err != nil {
-		_ = unix.Close(stagingFD)
-		return err
-	}
-	if err := unix.Fchown(stagingFD, owner.UID, owner.GID); err != nil {
-		_ = unix.Close(stagingFD)
-		return err
-	}
-	if err := roots.reobserve(); err != nil {
-		_ = unix.Close(stagingFD)
-		return err
-	}
-	if err := unix.Fchmod(stagingFD, uint32(stableStageDirMode)); err != nil {
+	if err := roots.probeNestedStagingDirectory(stagingFD, owner); err != nil {
 		_ = unix.Close(stagingFD)
 		return err
 	}
@@ -500,52 +486,152 @@ func (roots *qualifiedExecutionRoots) probeCapabilities(owner executionPlatformS
 	} else if !errors.Is(err, unix.ELOOP) && !errors.Is(err, unix.ENOTDIR) {
 		return fmt.Errorf("no-follow open did not prove staging symlink refusal: %w", err)
 	}
-
-	resultsName := ".execution-substrate-results-probe-" + token
-	if err := roots.reobserve(); err != nil {
-		return err
-	}
-	resultsFD, err := platformOpenAtNoFollow(roots.results.existingFD, resultsName, unix.O_RDWR|unix.O_CREAT|unix.O_EXCL, retainedResultBundleFileMode, true)
-	if err != nil {
-		return err
-	}
-	if err := roots.reobserve(); err != nil {
-		_ = unix.Close(resultsFD)
-		return err
-	}
-	if err := unix.Fchown(resultsFD, owner.UID, owner.GID); err != nil {
-		_ = unix.Close(resultsFD)
-		return err
-	}
-	if err := roots.reobserve(); err != nil {
-		_ = unix.Close(resultsFD)
-		return err
-	}
-	if err := unix.Fchmod(resultsFD, uint32(retainedResultBundleFileMode)); err != nil {
-		_ = unix.Close(resultsFD)
-		return err
-	}
-	if err := unix.Close(resultsFD); err != nil {
-		return err
-	}
-	collisionName := resultsName + "-collision"
-	if err := roots.reobserve(); err != nil {
-		return err
-	}
-	collisionFD, err := platformOpenAtNoFollow(roots.results.existingFD, collisionName, unix.O_RDWR|unix.O_CREAT|unix.O_EXCL, retainedResultBundleFileMode, true)
-	if err != nil {
-		return err
-	}
-	if err := unix.Close(collisionFD); err != nil {
-		return err
-	}
-	if err := roots.reobserve(); err != nil {
-		return err
-	}
-	if err := platformRenameNoReplace(roots.results.existingFD, resultsName, roots.results.existingFD, collisionName); err == nil {
-		return fmt.Errorf("no-replace rename unexpectedly replaced a result probe destination")
-	}
 	return roots.probeNaturalResultDirectory(owner, token)
+}
+
+// probeStagedDirectory creates a directory the way staging creates one, both
+// a claimed run staging root (claimStagingCustodyFromQualifiedRoot) and the
+// directories inside it (stagingCustody.ensureDirectory): it creates the
+// directory, opens it by name, refuses it unless it already belongs to the
+// roots' owning user, gives it the roots' owner and the mode, and holds it to
+// staging's checks. It returns the open directory.
+func (roots *qualifiedExecutionRoots) probeStagedDirectory(parentFD int, name string, mode os.FileMode, owner executionPlatformStateOwner, label string) (int, error) {
+	if err := roots.reobserve(); err != nil {
+		return -1, err
+	}
+	if err := unix.Mkdirat(parentFD, name, uint32(mode.Perm())); err != nil {
+		return -1, err
+	}
+	fd, err := platformOpenAtNoFollow(parentFD, name, unix.O_RDONLY|unix.O_DIRECTORY, 0, true)
+	if err != nil {
+		return -1, err
+	}
+	fail := func(cause error) (int, error) {
+		_ = unix.Close(fd)
+		return -1, cause
+	}
+	if err := requireOpenedDirectoryOwnedByRootsUser(fd, owner, label); err != nil {
+		return fail(err)
+	}
+	if err := roots.reobserve(); err != nil {
+		return fail(err)
+	}
+	if err := unix.Fchown(fd, owner.UID, owner.GID); err != nil {
+		return fail(fmt.Errorf("%s ownership is unavailable: %w", label, err))
+	}
+	if err := roots.reobserve(); err != nil {
+		return fail(err)
+	}
+	if err := unix.Fchmod(fd, uint32(mode.Perm())); err != nil {
+		return fail(fmt.Errorf("%s mode is unavailable: %w", label, err))
+	}
+	var stat unix.Stat_t
+	if err := unix.Fstat(fd, &stat); err != nil {
+		return fail(err)
+	}
+	identity := custodyIdentityFromStat(stat)
+	switch {
+	case !custodyIdentityIsDirectory(identity) ||
+		identity.Device != roots.staging.existingIdentity.Device ||
+		identity.Links < 1:
+		return fail(fmt.Errorf("%s has an invalid identity", label))
+	case identity.UID != owner.UID || identity.GID != owner.GID:
+		return fail(fmt.Errorf("%s ownership is unavailable", label))
+	case !sameCustodyRecordedMode(identity.Mode, unix.S_IFDIR|uint32(mode.Perm())):
+		return fail(fmt.Errorf("%s mode is unavailable", label))
+	}
+	return fd, nil
+}
+
+// probeNestedStagingDirectory repeats, inside the staging probe directory, what
+// staging does inside a run staging root: it creates a directory, gives it the
+// roots' owner and the stable stage mode, and checks the result. The probe
+// directory, like a claimed run staging root, has just been set to the stable
+// stage mode, which carries no setgid bit, so the new directory gets this
+// process's effective GID rather than the roots' GID. Giving it the roots' GID
+// then needs membership of that group or the privilege to change any group.
+// Probes that create entries directly in the roots cannot see this when the
+// roots hand their group down through the setgid bit. Inside the new
+// directory it then stages one entry of each mode staging uses.
+func (roots *qualifiedExecutionRoots) probeNestedStagingDirectory(stagingFD int, owner executionPlatformStateOwner) error {
+	nestedFD, err := roots.probeStagedDirectory(stagingFD, nestedStagingProbeName, stableStageDirMode, owner, "nested staging directory")
+	if err != nil {
+		return err
+	}
+	defer unix.Close(nestedFD)
+	return roots.probeStagedEntries(nestedFD, owner)
+}
+
+// probeStagedEntries stages, inside the nested staging directory, one
+// directory for each directory mode staging uses beyond the stable stage mode
+// of the nested directory itself, and one regular file for each file mode
+// staging uses (stagedDirectoryModes and stagedFileModes), and holds each to
+// staging's checks. A file system can pass the directory checks and still fail
+// these: an overlay whose layers are on different file systems reports
+// another device for regular files than for directories, and a file system
+// that does not keep the modes it is asked for fails on the first mode it
+// cannot keep. Staging would refuse submissions there: on such an overlay all
+// of them, and on a file system that cannot keep a mode, those that need it.
+// The governed-mount modes are needed only by submissions with governed
+// mounts, so startup also refuses a staging file system that cannot keep
+// them, although submissions without governed mounts would work there. That
+// is the chosen rule (STARTUP-PROBE-USE-AGREEMENT-01): no submission ES
+// accepts fails for want of a mode.
+func (roots *qualifiedExecutionRoots) probeStagedEntries(nestedFD int, owner executionPlatformStateOwner) error {
+	for _, mode := range stagedDirectoryModes() {
+		if mode == stableStageDirMode {
+			continue
+		}
+		fd, err := roots.probeStagedDirectory(nestedFD, fmt.Sprintf("directory-%04o", uint32(mode)), mode, owner, fmt.Sprintf("staged %04o directory", uint32(mode)))
+		if err != nil {
+			return err
+		}
+		if err := unix.Close(fd); err != nil {
+			return err
+		}
+	}
+	if err := roots.reobserve(); err != nil {
+		return err
+	}
+	for _, mode := range stagedFileModes() {
+		if err := probeStagedFile(nestedFD, mode, owner, roots.staging.existingIdentity.Device); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// probeStagedFile creates a regular file the way staging writes one
+// (stagingCustody.writeFileWithHookAndParentMode) and holds it to staging's
+// checks.
+func probeStagedFile(parentFD int, mode os.FileMode, owner executionPlatformStateOwner, stagingDevice uint64) error {
+	fd, err := platformOpenAtNoFollow(parentFD, fmt.Sprintf("file-%04o", uint32(mode)), unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL, uint32(mode.Perm()), true)
+	if err != nil {
+		return fmt.Errorf("staged file creation is unavailable: %w", err)
+	}
+	defer unix.Close(fd)
+	if err := unix.Fchown(fd, owner.UID, owner.GID); err != nil {
+		return fmt.Errorf("staged file ownership is unavailable: %w", err)
+	}
+	if err := unix.Fchmod(fd, uint32(mode.Perm())); err != nil {
+		return fmt.Errorf("staged file mode %04o is unavailable: %w", uint32(mode), err)
+	}
+	var stat unix.Stat_t
+	if err := unix.Fstat(fd, &stat); err != nil {
+		return err
+	}
+	identity := custodyIdentityFromStat(stat)
+	switch {
+	case !custodyIdentityIsRegular(identity) || identity.Links != 1:
+		return fmt.Errorf("staged file has an invalid identity")
+	case identity.Device != stagingDevice:
+		return fmt.Errorf("staged files report another device than the staging root")
+	case identity.UID != owner.UID || identity.GID != owner.GID:
+		return fmt.Errorf("staged file ownership is unavailable")
+	case !sameCustodyRecordedMode(identity.Mode, unix.S_IFREG|uint32(mode.Perm())):
+		return fmt.Errorf("staged file mode %04o is unavailable", uint32(mode))
+	}
+	return nil
 }
 
 func (roots *qualifiedExecutionRoots) probeNaturalResultDirectory(owner executionPlatformStateOwner, token string) error {
@@ -575,6 +661,118 @@ func (roots *qualifiedExecutionRoots) probeNaturalResultDirectory(owner executio
 		resultDirIdentity.UID != owner.UID || resultDirIdentity.GID != owner.GID ||
 		os.FileMode(resultDirIdentity.Mode).Perm() != retainedResultRunDirMode {
 		return fmt.Errorf("natural retained result directory creation is unavailable")
+	}
+	return roots.probeRetainedResultFiles(resultDirFD, owner)
+}
+
+// probeRetainedResultFiles repeats, inside the natural result directory probe,
+// what retention does inside a retained result directory: it creates one file
+// for each mode retention gives its files, gives each the roots' owner and its
+// mode, and holds it to retention's checks (createTempFile,
+// ensureNormalizationEvidenceWithHook and publishRetainedResultRecord). Then
+// it renames the bundle-mode file with the no-replace rename, as
+// publishTemporaryBundle does: onto a name that exists, which must be refused
+// as existing, and onto a free name, which must succeed and keep the file.
+// Linux refuses a no-replace rename onto an existing name before it asks the
+// file system, so only the second rename shows that the file system supports
+// the primitive. A file system whose rename accepts no flags fails it, and
+// retention would then fail for every run.
+func (roots *qualifiedExecutionRoots) probeRetainedResultFiles(directoryFD int, owner executionPlatformStateOwner) error {
+	const (
+		bundleName    = "bundle"
+		evidenceName  = "evidence"
+		collisionName = "collision"
+		renamedName   = "renamed"
+	)
+	resultsDevice := roots.results.existingIdentity.Device
+	if err := roots.reobserve(); err != nil {
+		return err
+	}
+	bundleFD, err := probeRetainedResultFile(directoryFD, bundleName, retainedResultBundleFileMode, owner, resultsDevice)
+	if err != nil {
+		return err
+	}
+	defer unix.Close(bundleFD)
+	evidenceFD, err := probeRetainedResultFile(directoryFD, evidenceName, retainedNormalizationEvidenceFileMode, owner, resultsDevice)
+	if err != nil {
+		return err
+	}
+	if err := unix.Close(evidenceFD); err != nil {
+		return err
+	}
+	collisionFD, err := platformOpenAtNoFollow(directoryFD, collisionName, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL, retainedResultBundleFileMode, true)
+	if err != nil {
+		return err
+	}
+	if err := unix.Close(collisionFD); err != nil {
+		return err
+	}
+	if err := platformRenameNoReplace(directoryFD, bundleName, directoryFD, collisionName); err == nil {
+		return fmt.Errorf("no-replace rename unexpectedly replaced a result probe destination")
+	} else if !errors.Is(err, unix.EEXIST) {
+		return fmt.Errorf("no-replace rename onto an existing result name did not report it as existing: %w", err)
+	}
+	if err := platformRenameNoReplace(directoryFD, bundleName, directoryFD, renamedName); err != nil {
+		return fmt.Errorf("no-replace rename to a free result name is unavailable: %w", err)
+	}
+	var held, renamed unix.Stat_t
+	if err := unix.Fstat(bundleFD, &held); err != nil {
+		return err
+	}
+	if err := unix.Fstatat(directoryFD, renamedName, &renamed, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+		return fmt.Errorf("no-replace rename did not move the result probe file: %w", err)
+	}
+	renamedIdentity := custodyIdentityFromStat(renamed)
+	if !sameCustodyObject(custodyIdentityFromStat(held), renamedIdentity) {
+		return fmt.Errorf("no-replace rename did not move the result probe file")
+	}
+	if err := retainedResultFileIdentityError(renamedIdentity, retainedResultBundleFileMode, owner, resultsDevice); err != nil {
+		return fmt.Errorf("no-replace rename did not keep the result probe file: %w", err)
+	}
+	return nil
+}
+
+// probeRetainedResultFile creates a file the way retention creates its files
+// and holds it to retention's checks (validateRetainedResultStat). It returns
+// the open file.
+func probeRetainedResultFile(directoryFD int, name string, mode os.FileMode, owner executionPlatformStateOwner, resultsDevice uint64) (int, error) {
+	fd, err := platformOpenAtNoFollow(directoryFD, name, unix.O_RDWR|unix.O_CREAT|unix.O_EXCL, uint32(mode.Perm()), true)
+	if err != nil {
+		return -1, fmt.Errorf("retained result file creation is unavailable: %w", err)
+	}
+	fail := func(cause error) (int, error) {
+		_ = unix.Close(fd)
+		return -1, cause
+	}
+	if err := unix.Fchown(fd, owner.UID, owner.GID); err != nil {
+		return fail(fmt.Errorf("retained result file ownership is unavailable: %w", err))
+	}
+	if err := unix.Fchmod(fd, uint32(mode.Perm())); err != nil {
+		return fail(fmt.Errorf("retained result file mode %04o is unavailable: %w", uint32(mode), err))
+	}
+	var stat unix.Stat_t
+	if err := unix.Fstat(fd, &stat); err != nil {
+		return fail(err)
+	}
+	if err := retainedResultFileIdentityError(custodyIdentityFromStat(stat), mode, owner, resultsDevice); err != nil {
+		return fail(err)
+	}
+	return fd, nil
+}
+
+// retainedResultFileIdentityError applies the identity check retention applies
+// to its files (retainedResultDirectory.validateRetainedResultStat) and names
+// the part that fails.
+func retainedResultFileIdentityError(identity custodyIdentity, mode os.FileMode, owner executionPlatformStateOwner, resultsDevice uint64) error {
+	switch {
+	case !custodyIdentityIsRegular(identity) || identity.Links != 1:
+		return fmt.Errorf("retained result file has an invalid identity")
+	case identity.Device != resultsDevice:
+		return fmt.Errorf("retained result files report another device than the results root")
+	case identity.UID != owner.UID || identity.GID != owner.GID:
+		return fmt.Errorf("retained result file ownership is unavailable")
+	case os.FileMode(identity.Mode).Perm() != mode.Perm():
+		return fmt.Errorf("retained result file mode %04o is unavailable", uint32(mode))
 	}
 	return nil
 }

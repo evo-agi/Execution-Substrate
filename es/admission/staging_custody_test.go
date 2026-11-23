@@ -780,8 +780,8 @@ func TestStagingCustodyExpectedTreeRegistrationIsIdempotentAndRejectsConflicts(t
 	if beforeNodes != afterNodes || beforeDirectories != afterDirectories || beforeBytes != afterBytes {
 		t.Fatalf("identical registration changed expected tree accounting: before %d/%d/%d after %d/%d/%d", beforeNodes, beforeDirectories, beforeBytes, afterNodes, afterDirectories, afterBytes)
 	}
-	if err := custody.ensureDirectory("shared/path", 0o700); err == nil {
-		t.Fatal("conflicting directory mode registration was accepted")
+	if err := custody.ensureDirectory("shared/path", governedMountDirMode); err == nil || !strings.Contains(err.Error(), "staging directory registration conflicts with an owned child") {
+		t.Fatalf("conflicting directory mode registration was accepted: %v", err)
 	}
 	if err := custody.writeFile("file-child", []byte("owned"), stableStageFileMode); err != nil {
 		t.Fatal(err)

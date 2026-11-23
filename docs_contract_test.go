@@ -13554,6 +13554,95 @@ func TestRetainedResultReview04ConsumerEntrypointAndOwnedScopeDocs(t *testing.T)
 	}
 }
 
+func TestStartupProbeUseAgreementDocsContract(t *testing.T) {
+	checks := []struct {
+		path    string
+		phrases []string
+	}{
+		{"PLANS.md", []string{"`STARTUP-PROBE-USE-AGREEMENT-01` (bounded slice rule)", "staging refuses any mode outside it, so a new staging mode cannot skip the probe", "only the second rename proves the primitive", "ES also never changes the owning user of a directory it opened by name", "`staging probe directory does not belong to the execution roots' owning user`", "The probe retains 13 entries per start", "ES also refuses to start on a staging file system that cannot keep those modes although submissions without governed mounts would work there", "ES starts only where every submission it accepts can be staged", "a bindfs mount with `--create-for-user`, is refused although it started before this rule"}},
+		{".docs/system_overview/capability_probing.md", []string{"Staging refuses any mode the probe does not stage.", "a results file system whose rename accepts no flags refuses startup instead of losing every result", "it never changes an owning user", "prove the results no-replace rename both ways", "a staging file system that cannot keep them refuses startup even though submissions without governed mounts would work there"}},
+		{".docs/execution_lifecycle/implementation.md", []string{"(`probeStagedEntries`)", "(`probeRetainedResultFiles`)", "(`requireOpenedDirectoryOwnedByRootsUser`)", "onto an existing name, which must fail with `EEXIST`", "startup refuses a staging file system that cannot keep them even when no submission would use governed mounts"}},
+		{".runbooks/system/v1_bringup.md", []string{"the file system under the roots stores the modes ES gives files and directories, gives regular files the same device as directories, and supports the no-replace rename", "`no-replace rename to a free result name is unavailable`", "ES refuses such a file system even if your submissions never use governed mounts"}},
+		{"es/admission/staging_custody.go", []string{"so a mode cannot reach staging without reaching the startup probe", "is not proved by the startup probe", "gives somebody else's directory to the roots' owner."}},
+	}
+	for _, check := range checks {
+		content := compactText(mustRead(t, check.path))
+		for _, phrase := range check.phrases {
+			if !strings.Contains(content, phrase) {
+				t.Fatalf("%s missing startup probe and use agreement contract %q", check.path, phrase)
+			}
+		}
+	}
+	// The probe description from before the free-name rename must not come back.
+	assertContainsNone(t, "capability_probing.md one-sided no-replace probe", compactText(mustRead(t, ".docs/system_overview/capability_probing.md")),
+		"refuse the results no-replace publication primitive when the destination already exists; and",
+	)
+	// The refused file systems do not all fail every submission: those that
+	// cannot keep only the governed-mount modes stage the others (audit 16 of
+	// pull request #20, finding A16-2).
+	assertContainsNone(t, "capability_probing.md every-submission claim", compactText(mustRead(t, ".docs/system_overview/capability_probing.md")),
+		"refuses startup instead of failing every submission",
+	)
+	assertContainsNone(t, "PLANS.md every-submission claim", compactText(mustRead(t, "PLANS.md")),
+		"instead of reporting ready while every submission, or every retention, fails",
+	)
+	// Nor may the comments of the admission code (audit 18 of pull request
+	// #20, finding A18-1): the comment of probeStagedEntries states the chosen
+	// rule. Comment markers are dropped so that a phrase may span lines.
+	commentText := func(path string) string {
+		lines := strings.Split(mustRead(t, path), "\n")
+		for i, line := range lines {
+			lines[i] = strings.TrimPrefix(strings.TrimSpace(line), "//")
+		}
+		return compactText(strings.Join(lines, "\n"))
+	}
+	if !strings.Contains(commentText("es/admission/execution_roots.go"), "so startup also refuses a staging file system that cannot keep them, although submissions without governed mounts would work there") {
+		t.Fatal("es/admission/execution_roots.go missing the governed-mount mode rule in the comment of probeStagedEntries")
+	}
+	sources, err := filepath.Glob("es/admission/*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range sources {
+		if strings.HasSuffix(path, "_test.go") {
+			continue
+		}
+		assertContainsNone(t, path+" every-submission claim", commentText(path),
+			"refuse every submission", "refuses every submission", "fail every submission", "fails every submission",
+		)
+	}
+}
+
+func TestNestedStagingOwnerProbeDocsContract(t *testing.T) {
+	checks := []struct {
+		path    string
+		phrases []string
+	}{
+		{"PLANS.md", []string{"`NESTED-STAGING-OWNER-PROBE-01` (bounded slice rule)", "as staging does inside each claimed run staging root", "inherited a group it is not a member of from a setgid parent directory", "`nested staging directory ownership is unavailable`"}},
+		{".docs/system_overview/capability_probing.md", []string{"creates a `nested` directory inside its staging probe directory", "as staging does inside each claimed run staging root", "`nested staging directory ownership is unavailable`", "roots that inherit another group from a setgid parent directory refuse startup instead of failing at the first submission"}},
+		{".docs/execution_lifecycle/implementation.md", []string{"(`probeNestedStagingDirectory`)", "`stagingCustody.ensureDirectory` does the same inside each claimed run staging root", "`nested staging directory ownership is unavailable`", "the nested staging probe above refuses them"}},
+		{".runbooks/system/v1_bringup.md", []string{"or inherited from a setgid parent directory; the inherited case is reported as `nested staging directory ownership is unavailable`"}},
+		{"es/admission/execution_roots.go", []string{"roots.probeNestedStagingDirectory(stagingFD, owner)", `nestedStagingProbeName, stableStageDirMode, owner, "nested staging directory")`, `fmt.Errorf("%s ownership is unavailable: %w", label, err)`}},
+	}
+	for _, check := range checks {
+		content := compactText(mustRead(t, check.path))
+		for _, phrase := range check.phrases {
+			if !strings.Contains(content, phrase) {
+				t.Fatalf("%s missing nested staging owner probe contract %q", check.path, phrase)
+			}
+		}
+	}
+	// The known gap these documents described before the probe existed must
+	// not come back.
+	for _, path := range []string{".runbooks/system/v1_bringup.md", ".docs/execution_lifecycle/implementation.md", ".docs/system_overview/capability_probing.md"} {
+		assertContainsNone(t, path+" stale setgid-inherited group gap", compactText(mustRead(t, path)),
+			"inherit another group from a setgid parent directory are not refused",
+			"do not yet catch roots that inherit another group",
+			"so ES reports ready but every submission fails to stage",
+		)
+	}
+}
+
 func TestRetainedResultReviewDocsContract(t *testing.T) {
 	checks := []struct {
 		path    string
