@@ -1,26 +1,34 @@
-package executionsubstrate_test
+package callerauth_test
 
 import (
 	"go/ast"
 	"go/parser"
 	"go/token"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+
+	"execution-substrate/internal/testutil"
 )
 
 // No production code outside internal/callerauth reads a certificate's URI
 // SANs or issuer common name, and the five service API packages do not
 // touch the TLS connection state at all. A sixth copy of the identity rule
-// fails here.
+// fails here. The test walks the repository from its root; see package
+// testutil.
 func TestCallerIdentityIsReadOnlyByCallerauth(t *testing.T) {
 	apiPackages := []string{"ars/api", "ags/api", "egs/api", "cgs/api", "es/api"}
 	seenAPI := map[string]bool{}
 	files := 0
 
-	err := filepath.WalkDir(".", func(path string, entry fs.DirEntry, err error) error {
+	err := filepath.WalkDir(testutil.Root, func(absolute string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		path, err := filepath.Rel(testutil.Root, absolute)
 		if err != nil {
 			return err
 		}
@@ -39,7 +47,11 @@ func TestCallerIdentityIsReadOnlyByCallerauth(t *testing.T) {
 		}
 		files++
 		fset := token.NewFileSet()
-		file, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
+		source, err := os.ReadFile(absolute)
+		if err != nil {
+			return err
+		}
+		file, err := parser.ParseFile(fset, path, source, parser.SkipObjectResolution)
 		if err != nil {
 			return err
 		}
@@ -69,9 +81,8 @@ func TestCallerIdentityIsReadOnlyByCallerauth(t *testing.T) {
 			return true
 		})
 		if inAPI && filepath.Base(path) == "server.go" {
-			source := mustRead(t, path)
 			for _, required := range []string{`"execution-substrate/internal/callerauth"`, "callerauth.NewAuthenticator(bootstrapIssuerCN)", ".callers.Authenticate(w, r)"} {
-				if !strings.Contains(source, required) {
+				if !strings.Contains(string(source), required) {
 					t.Errorf("%s does not contain %s", path, required)
 				}
 			}
