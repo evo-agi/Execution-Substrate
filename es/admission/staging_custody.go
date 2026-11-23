@@ -139,6 +139,59 @@ var beforeStagingHandoffValidationForTest func(*stagingCustody)
 // recorded in the expected tree.
 var beforeStagingChildRegistrationStatForTest func(relativePath string, fd int, directory bool)
 
+// stagedFileModes and stagedDirectoryModes return every mode staging gives
+// the entries it creates in a claimed run staging root. The configured-Submit
+// startup probe stages one entry of each (probeStagedEntries in
+// execution_roots.go), and ensureDirectory and writeFile refuse any other
+// mode, so a mode cannot reach staging without reaching the startup probe.
+func stagedFileModes() []os.FileMode {
+	return []os.FileMode{
+		retainedResultBundleFileMode,
+		stableStageFileMode,
+		stableStageExecFileMode,
+		governedMountFileMode,
+		governedMountExecFileMode,
+	}
+}
+
+func stagedDirectoryModes() []os.FileMode {
+	return []os.FileMode{
+		stableStageDirMode,
+		governedMountDirMode,
+	}
+}
+
+func stagedModeProbedAtStartup(modes []os.FileMode, mode os.FileMode) bool {
+	for _, probed := range modes {
+		if mode == probed {
+			return true
+		}
+	}
+	return false
+}
+
+// requireOpenedDirectoryOwnedByRootsUser refuses a directory that this process
+// created and then opened by name, unless its owning user already is the
+// execution roots' owning user. There is no call that creates a directory and
+// opens it in one step, so between the two another user who may rename
+// entries of the parent can put a directory of somebody else's in its place.
+// Every caller then changes the directory's owner and mode. ES only ever needs
+// to change the group of a directory it created, because the entries it
+// creates must already belong to the roots' owning user: the startup probe
+// requires it, and retained result directories, which ES never gives an owner,
+// need it anyway. So ES refuses before any owner or mode change, and never
+// gives somebody else's directory to the roots' owner.
+func requireOpenedDirectoryOwnedByRootsUser(fd int, owner executionPlatformStateOwner, label string) error {
+	var stat unix.Stat_t
+	if err := unix.Fstat(fd, &stat); err != nil {
+		return err
+	}
+	if custodyIdentityFromStat(stat).UID != owner.UID {
+		return fmt.Errorf("%s does not belong to the execution roots' owning user", label)
+	}
+	return nil
+}
+
 // stagingTree is read-only descriptor custody for a run tree. Unlike
 // stagingCustody it has no materialization ownership and is used only for
 // read-only result packaging. Neither type confers run-root deletion authority.
@@ -503,6 +556,9 @@ func claimStagingCustodyFromQualifiedRoot(parent *qualifiedDirectory, runID stri
 	if !sameCustodyObject(custody.rootIdentity, custodyIdentityFromStat(openedStat)) {
 		return failAfterCreation(fmt.Errorf("exclusive run staging claim identity changed"))
 	}
+	if err := requireOpenedDirectoryOwnedByRootsUser(rootFD, owner, "claimed staging root"); err != nil {
+		return failAfterCreation(err)
+	}
 	if err := unix.Fchown(rootFD, owner.UID, owner.GID); err != nil {
 		return failAfterCreation(err)
 	}
@@ -526,6 +582,9 @@ func claimStagingCustodyFromQualifiedRoot(parent *qualifiedDirectory, runID stri
 	return custody, nil
 }
 func (custody *stagingCustody) ensureDirectory(relativePath string, mode os.FileMode) error {
+	if !stagedModeProbedAtStartup(stagedDirectoryModes(), mode) {
+		return fmt.Errorf("staging directory mode %04o is not proved by the startup probe", uint32(mode))
+	}
 	relativePath, err := cleanCustodyRelative(relativePath, true)
 	if err != nil {
 		return err
@@ -577,6 +636,11 @@ func (custody *stagingCustody) ensureDirectory(relativePath string, mode os.File
 			_ = unix.Close(nextFD)
 			_ = unix.Close(currentFD)
 			return fmt.Errorf("staging directory was replaced")
+		}
+		if err := requireOpenedDirectoryOwnedByRootsUser(nextFD, custody.owner, "staging directory"); err != nil {
+			_ = unix.Close(nextFD)
+			_ = unix.Close(currentFD)
+			return err
 		}
 		if err := unix.Fchown(nextFD, custody.owner.UID, custody.owner.GID); err != nil {
 			_ = unix.Close(nextFD)
@@ -638,6 +702,9 @@ func (custody *stagingCustody) writeFileWithParentMode(relativePath string, cont
 }
 
 func (custody *stagingCustody) writeFileWithHookAndParentMode(relativePath string, content []byte, mode os.FileMode, parentMode os.FileMode, afterCreate func(parentFD int, name string) error) error {
+	if !stagedModeProbedAtStartup(stagedFileModes(), mode) {
+		return fmt.Errorf("staging file mode %04o is not proved by the startup probe", uint32(mode))
+	}
 	relativePath, err := cleanCustodyRelative(relativePath, false)
 	if err != nil {
 		return err

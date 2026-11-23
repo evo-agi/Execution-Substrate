@@ -141,7 +141,31 @@ Configured Submit startup also creates an exclusive synthetic directory under th
 results root and verifies its natural owner and exact `0750` mode without
 chown/chmod. A restrictive process mask or owner mismatch refuses configured
 Submit startup before work; the small probe directory remains in place because
-exact-object unlink ownership is not proven. A genuinely Submit-disabled service
+exact-object unlink ownership is not proven. Configured Submit startup also
+creates a `nested` directory inside its staging probe directory after setting
+that directory to the stable `0750` stage mode, gives it the roots' owner and
+that mode, and verifies both, as staging does inside each claimed run staging
+root. A process that cannot give that directory the roots' group, for example
+because the roots inherited a group it is not a member of from a setgid parent
+directory, refuses configured Submit startup with `nested staging directory
+ownership is unavailable`; probes that create entries directly in the roots
+cannot see that case. Inside `nested`, startup then stages one directory for
+each directory mode staging uses beyond `0750` and one regular file for each
+file mode staging uses, and holds each to staging's checks, so an overlay whose
+layers are on different file systems, where regular files report another
+device than directories, or a file system that does not keep those modes,
+refuses startup instead of failing submissions. Those modes include the ones
+only governed mounts use (`0755` directories, `0644` and `0755` files), so a
+staging file system that cannot keep them refuses startup even though
+submissions without governed mounts would work there. Staging refuses any mode
+the probe does not stage. Inside the natural result directory probe, startup
+creates retention's file modes with retention's checks and renames the
+bundle-mode file with the no-replace rename onto a name that exists, which must
+be refused as existing, and onto a free name, which must succeed and keep the
+file, so a results file system whose rename accepts no flags refuses startup
+instead of losing every result. Before it gives any directory it opened by name
+the roots' owner, ES refuses one whose owning user is not already the roots'
+owning user; it never changes an owning user. A genuinely Submit-disabled service
 does not run this configured-Submit startup probe. `BRINGUP_PROFILE=prepare-only`
 only changes orchestration; the supported-local generated ES configuration
 retains Submit fields, so key loading and root capability qualification still
@@ -156,6 +180,14 @@ read-write mounts before readiness can omit the ordinary operator's root-write
 test. Generic readiness still requires caller-writable existing roots; an
 unknown profile refuses. Static inspection by the operator is sufficient for
 the selected service roots, while ES retains its later behavioral checks.
+The generic ES launcher runs ES as the caller's numeric effective UID and
+primary GID and does not inspect daemon labels; ES's startup checks, not the
+launcher, decide whether that identity owns the roots and can read the files
+its config names. Those checks include the nested staging directory probe
+above, so roots that inherit another group from a setgid parent directory
+refuse startup instead of failing at the first submission. On a user-namespace-remapped Docker daemon,
+Docker refuses the host networking that bring-up requires before any service
+starts.
 The fixed setup safe projection records only that static owner/mode check and
 explicitly leaves container capability unproved; retained proof evidence does
 not promote it into a behavioral result.
@@ -309,8 +341,13 @@ can:
 - create an exclusive run-scoped directory on staging and hold its identity by
   descriptor;
 - refuse symlink traversal on staging for the complete opened path;
-- create an exclusive temporary on results and refuse the results no-replace
-  publication primitive when the destination already exists; and
+- stage, inside a nested staging directory, one entry of each mode staging
+  uses, with staging's identity checks;
+- create, inside a natural result directory, retention's file modes with
+  retention's identity checks;
+- prove the results no-replace rename both ways: refuse the results no-replace
+  publication primitive when the destination already exists, and require it to
+  succeed onto a free name while keeping the same file; and
 - retain the exclusive startup probe fixtures when exact effect-time deletion
   identity cannot be proved; no pathname cleanup or recursion is selected.
 
@@ -357,6 +394,34 @@ behavior and static resources, not OS labels or fallback identity.
 
 This is test hygiene only. It does not change ES public contracts, readiness semantics, startup validation, runtime identity ownership, or runtime failure semantics. Tests that cover prepare-only behavior, caller authorization, static submit/job-spec shape, or submit-time validation without requiring helper socket reachability do not use this gate.
 
+Every test binary of the module runs its tests under a temporary directory
+whose path holds no symbolic link. ES refuses a symbolic link in any component
+of its configured staging and results roots, key files, runtime support binary
+and reliable-submit store roots, and the Remote Alpha TLS status collector and
+the supported-local execution-root helper refuse one in the paths they check.
+The default temporary directory of macOS lies below `/var/folders/`, behind the
+symbolic link `/var` -> `private/var`, and `/tmp` is the symbolic link `/tmp`
+-> `private/tmp`. A test that hands ES a path below that directory tests the
+refusal instead of what it is named for: a test that expects success fails,
+and a test that expects a refusal can pass for the wrong reason.
+
+Each package that has tests therefore declares a `TestMain` whose only
+statement is `os.Exit(testtmpdir.Main(m))`, from `internal/testtmpdir`, in a
+file without a build constraint. Before any test runs, `testtmpdir.Main`
+resolves the temporary directory and, when its path goes through a symbolic
+link, sets `TMPDIR` to the physical path of the same directory, so that
+`t.TempDir()` and every process the tests start use that path. It changes
+nothing where the temporary directory is already physical, as on the Linux CI
+runner, an unset `TMPDIR` included. When the directory cannot be resolved, the
+test binary runs no test and exits with status 2. A guard test applies the
+rule to every package of the module that has test files. The package's own
+tests run a test binary under a temporary directory behind a symbolic link and
+check what its tests and the processes they start see.
+
+Tests that exercise a refusal of a symbolic link create the link themselves.
+This is test hygiene only. It does not weaken any refusal of a symbolic link
+and changes no ES contract, startup validation, or capability probe.
+
 `es/admission` unit tests that intentionally exercise chmod-backed filesystem denial use test-local behavior probes before asserting permission-sensitive fail-closed behavior.
 
 The probe must create or mark a temporary fixture with the restrictive mode needed by the test, attempt the same class of operation the assertion depends on, and continue only when the current process receives a permission-denied error. If the current process can bypass the fixture permissions, the test skips with a specific `skipping permission-denied fixture: ...` reason.
@@ -364,3 +429,40 @@ The probe must create or mark a temporary fixture with the restrictive mode need
 This is also test hygiene only. It does not change ES public contracts,
 retained-staging semantics, retained-result semantics, readiness boundaries, or
 production capability probing placement.
+
+Root-package tests of the Remote Alpha TLS status collector use two kinds of
+fixture, and never a mixture. A live fixture uses the collector's real
+process-table reads and pidfd operations on real processes. It first attempts
+to read its own entry of the process table and skips with an explicit reason
+when that read is refused. It never decides by an operating-system label, and
+it sets the capability flag only after the collector's real process-capability
+probe has passed. A local fixture runs on every host. It replaces the probe
+and the whole boundary through which the cleanup reaches the target's process
+table: `scan_group_members`, `signal_same_group_members`, and
+`read_proc_identity`, each either by a stand-in for the function or by
+stand-ins for the operating-system primitives that the function uses.
+
+A fixture must not replace only part of that boundary. The part left real
+would read the host on its own: beside identities that the stand-ins
+invented on a host that has `/proc`, and without an end on a host that has
+neither `/proc` nor `pidfd_open`, where a listed process can never be
+confirmed absent and the group-absence hold never returns. The standard local
+boundary is therefore one shared test constant. It imports what it uses
+itself, so a fixture needs nothing but the loaded collector for it. It also
+ends a fixture that reaches a target-only reader, and a fixture that is still
+running after a fixed bound, with a nonzero status and a stack trace, so that
+a stuck cleanup hold fails one test and does not stop the test binary. A
+guard test applies the rule to every fixture script of the package, and one
+test runs the shared boundary with `/proc` and the pidfd operations denied.
+
+A stand-in for the probe alone is the same partial replacement. The
+collector's entry points run the probe and then declare the capability
+themselves, so a fixture that replaces the probe and runs an entry point is a
+local fixture: it replaces the whole boundary, or it replaces a function on
+every path from that entry point to the fixed command, so that no fixed child
+is started. The guard test knows those paths, and one more test holds those
+paths against the collector's source, so that a change of the collector's
+call graph fails there first.
+
+This is test hygiene only. It changes no collector behavior, capability
+criterion, hold, signal, reap, lock, or publication rule.

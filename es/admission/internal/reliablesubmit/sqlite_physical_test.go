@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -177,6 +178,13 @@ func TestSQLiteClaimStoreTwoHandlesBusyTimeoutAndHelperProcessContention(t *test
 		"RELIABLE_SUBMIT_SQLITE_LOCK_HELPER=1",
 		"RELIABLE_SUBMIT_SQLITE_LOCK_PATH="+path,
 	)
+	// The helper holds the write lock until this pipe closes. The lock cannot
+	// end on its own, so the contended write below meets it however slowly
+	// this process gets there.
+	release, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatalf("helper stdin: %v", err)
+	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		t.Fatalf("helper stdout: %v", err)
@@ -185,9 +193,15 @@ func TestSQLiteClaimStoreTwoHandlesBusyTimeoutAndHelperProcessContention(t *test
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start helper: %v", err)
 	}
+	helperReaped := false
+	defer func() {
+		if !helperReaped {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		}
+	}()
 	scanner := bufio.NewScanner(stdout)
 	if !scanner.Scan() || scanner.Text() != "locked" {
-		_ = cmd.Process.Kill()
 		t.Fatalf("helper did not report lock; text=%q err=%v", scanner.Text(), scanner.Err())
 	}
 	otherCaller := mustPrivateCallerRef(t, bytes.Repeat([]byte{0x33}, 32))
@@ -200,9 +214,12 @@ func TestSQLiteClaimStoreTwoHandlesBusyTimeoutAndHelperProcessContention(t *test
 	}
 	_, err = second.establishClaim(context.Background(), establishClaimCommand{record: other})
 	if !errors.Is(err, errClaimStoreBusy) {
-		_ = cmd.Process.Kill()
 		t.Fatalf("busy contention error = %v", err)
 	}
+	if err := release.Close(); err != nil {
+		t.Fatalf("release helper lock: %v", err)
+	}
+	helperReaped = true
 	if err := cmd.Wait(); err != nil {
 		t.Fatalf("helper wait: %v", err)
 	}
@@ -227,7 +244,11 @@ func TestSQLiteClaimStoreLockHelperProcess(t *testing.T) {
 		t.Fatalf("helper begin immediate: %v", err)
 	}
 	fmt.Println("locked")
-	time.Sleep(300 * time.Millisecond)
+	// Hold the lock until the parent closes its end of the pipe. It does so
+	// after its contended write was refused, and also by exiting.
+	if _, err := io.Copy(io.Discard, os.Stdin); err != nil {
+		t.Fatalf("helper wait for release: %v", err)
+	}
 	if _, err := conn.ExecContext(context.Background(), "ROLLBACK"); err != nil {
 		t.Fatalf("helper rollback: %v", err)
 	}

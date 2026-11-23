@@ -31,7 +31,7 @@ func TestSupportedLocalSetupScriptBootstrapsRealSPIREAndVaultDevTarget(t *testin
 	}
 
 	repoRoot := executionPlatformRepoRoot(t)
-	rootDir := newExecutionWorkspaceTempDir(t, "supported-local-setup-")
+	rootDir := newSupportedLocalProofWorkspace(t)
 	proofDir := filepath.Join(rootDir, "proof")
 	resultAuthDir := filepath.Join(rootDir, "external-result-auth")
 	if err := os.Mkdir(resultAuthDir, 0o700); err != nil {
@@ -41,6 +41,14 @@ func TestSupportedLocalSetupScriptBootstrapsRealSPIREAndVaultDevTarget(t *testin
 	if err := os.WriteFile(resultAuthKey, bytes.Repeat([]byte{0x53}, 32), 0o600); err != nil {
 		t.Fatalf("write synthetic external result-auth key: %v", err)
 	}
+	// The install destination must differ from the build output
+	// (<proof>/bin/es-runtime-support): install refuses to copy a file onto
+	// itself, and setup only installs into an existing directory.
+	runtimeSupportDir := filepath.Join(rootDir, "runtime-support")
+	if err := os.Mkdir(runtimeSupportDir, 0o755); err != nil {
+		t.Fatalf("mkdir runtime support install dir: %v", err)
+	}
+	runtimeSupportBinary := filepath.Join(runtimeSupportDir, "es-runtime-support")
 	fakeBinDir := filepath.Join(rootDir, "fake-bin")
 	if err := os.MkdirAll(fakeBinDir, 0o755); err != nil {
 		t.Fatalf("mkdir fake bin dir: %v", err)
@@ -59,7 +67,7 @@ func TestSupportedLocalSetupScriptBootstrapsRealSPIREAndVaultDevTarget(t *testin
 		"SUPPORTED_LOCAL_RETAINED_RESULT_AUTH_STORE_ID=validation_store",
 		"SUPPORTED_LOCAL_RETAINED_RESULT_AUTH_KEY_ID=validation_key",
 		"SUPPORTED_LOCAL_RETAINED_RESULT_AUTH_KEY_FILE="+resultAuthKey,
-		"SUPPORTED_LOCAL_RUNTIME_SUPPORT_BINARY="+filepath.Join(proofDir, "bin", "es-runtime-support"),
+		"SUPPORTED_LOCAL_RUNTIME_SUPPORT_BINARY="+runtimeSupportBinary,
 		"SUPPORTED_LOCAL_VAULT_BIND_ADDRESS=127.0.0.1",
 		"SUPPORTED_LOCAL_VAULT_PUBLIC_HOST=127.0.0.1",
 		"SUPPORTED_LOCAL_VAULT_PORT="+strconv.Itoa(vaultPort),
@@ -88,6 +96,23 @@ func TestSupportedLocalSetupScriptBootstrapsRealSPIREAndVaultDevTarget(t *testin
 	}
 
 	managed := readShellAssignments(t, managedSecretsPath)
+	if managed["PROOF_RUNTIME_SUPPORT_BINARY"] != runtimeSupportBinary {
+		t.Fatalf("expected PROOF_RUNTIME_SUPPORT_BINARY %q, got %q", runtimeSupportBinary, managed["PROOF_RUNTIME_SUPPORT_BINARY"])
+	}
+	builtRuntimeSupport, err := os.ReadFile(filepath.Join(proofDir, "bin", "es-runtime-support"))
+	if err != nil {
+		t.Fatalf("read built es-runtime-support: %v", err)
+	}
+	installedRuntimeSupport, err := os.ReadFile(runtimeSupportBinary)
+	if err != nil {
+		t.Fatalf("read installed es-runtime-support: %v", err)
+	}
+	if len(builtRuntimeSupport) == 0 || !bytes.Equal(builtRuntimeSupport, installedRuntimeSupport) {
+		t.Fatalf("installed es-runtime-support differs from the built binary")
+	}
+	if info, err := os.Stat(runtimeSupportBinary); err != nil || info.Mode().Perm() != 0o755 {
+		t.Fatalf("installed es-runtime-support mode: info=%v err=%v", info, err)
+	}
 	for _, key := range []string{
 		"PROOF_RUNTIME_SUPPORT_BINARY",
 		"PROOF_VAULT_ADDR",
@@ -227,6 +252,29 @@ func TestSupportedLocalSetupScriptBootstrapsRealSPIREAndVaultDevTarget(t *testin
 
 	assertSupportedLocalVaultBlobAlignment(t, proofDir, managed)
 	assertSupportedLocalSPIRERuntimeAlignment(t, proofDir, managed)
+}
+
+// newSupportedLocalProofWorkspace returns a fresh workspace for the proof
+// directory and its sibling inputs. Supported-local setup refuses a proof path
+// inside, or containing, the source tree
+// (scripts/internal/supported_local_execution_roots.py clean_proof_path), so
+// the workspace cannot live under the repository's .out tree. It is a short
+// /tmp path because the proof directory holds the SPIRE Unix sockets.
+func newSupportedLocalProofWorkspace(t *testing.T) string {
+	t.Helper()
+
+	dir, err := os.MkdirTemp("/tmp", "esls-")
+	if err != nil {
+		t.Fatalf("create supported-local proof workspace: %v", err)
+	}
+	if os.Getenv("EXECUTION_PLATFORM_KEEP_TEST_WORKSPACE") != "1" {
+		t.Cleanup(func() {
+			_ = os.RemoveAll(dir)
+		})
+	} else {
+		t.Logf("keeping workspace temp dir: %s", dir)
+	}
+	return dir
 }
 
 func writeFakeCommand(t *testing.T, path string) {

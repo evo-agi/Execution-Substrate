@@ -892,8 +892,9 @@ func TestGo1265ToolchainBaselineDocsAndBuildContract(t *testing.T) {
 	offline := compactDocSection(t, baselineDoc, "## 6. Offline Behavior", "## 7. Compatibility And Runtime Limits")
 	runtimeLimits := compactDocSection(t, baselineDoc, "## 7. Compatibility And Runtime Limits", "## 8. Database Dependency Scope")
 	databaseDependencyScope := compactDocSection(t, baselineDoc, "## 8. Database Dependency Scope", "## 9. Rollback")
-	rollback := compactDocSection(t, baselineDoc, "## 9. Rollback", "## 10. Explicit Non-Claims")
-	nonClaims := compactDocSection(t, baselineDoc, "## 10. Explicit Non-Claims", "")
+	rollback := compactDocSection(t, baselineDoc, "## 9. Rollback", "## 10. Continuous Integration")
+	continuousIntegration := compactDocSection(t, baselineDoc, "## 10. Continuous Integration", "## 11. Explicit Non-Claims")
+	nonClaims := compactDocSection(t, baselineDoc, "## 11. Explicit Non-Claims", "")
 	assertContainsAll(t, "Go baseline current status", currentStatus,
 		"Go 1.26.5 is the current Execution Substrate minimum Go version",
 		"supported scripted build/proof toolchain",
@@ -954,9 +955,117 @@ func TestGo1265ToolchainBaselineDocsAndBuildContract(t *testing.T) {
 		"Rollback of the reliable-submit SQLite source is a separate source/dependency rollback",
 		"runtime-state migration",
 	)
+	assertContainsAll(t, "Go baseline continuous integration", continuousIntegration,
+		"`.github/workflows/go.yml` runs on every pull request and on every push to `trunk_dev`",
+		"GitHub-hosted `ubuntu-24.04` runner",
+		"`GOTOOLCHAIN=local` and `GOFLAGS=-mod=readonly`",
+		"restores no build or module cache",
+		"`go mod download`, `go mod verify`, `go build ./...`, `go vet ./...`, and the tests of every package of the module",
+		"One more step runs `GOOS=darwin GOARCH=arm64 go vet ./...`",
+		"It type-checks the files that build only on macOS and runs no test",
+		"Before the tests, the workflow installs Nomad 2.1.1, Vault 2.2.2 and SPIRE 1.14.4 from release downloads that it checks against reviewed SHA-256 values, and pulls the container images that the tests run by reviewed digest",
+		"It reads the SPIRE value from `scripts/internal/spire_release.sha256`, the pin file that `scripts/72_supported_local_setup.sh` and `scripts/73_supported_local_proof.sh` check SPIRE against, so CI and those scripts accept the same SPIRE file",
+		"So the `es/app` integration tests that start a Nomad agent with the Docker driver, and the supported-local setup test that runs Vault and SPIRE, run on that runner",
+		"The job sets `AWS_EC2_METADATA_DISABLED=true`: the runner's EC2 metadata endpoint does not answer, and Nomad's AWS fingerprinter would otherwise fail the client of a test agent",
+		"`.github/ci/environment-only-tests.txt` is the single statement of what the test step excludes and of which tests exclude themselves on that runner",
+		"An entry names a test or subtest that cannot pass on that runner for host reasons",
+		"`.github/ci/go_test_gate.py` skips those entries, each only in the package it names",
+		"A `skips-itself` line names a test or subtest that skips itself on that runner",
+		"The test step fails the run unless the tests that skipped themselves are exactly the tests that those lines name",
+		"a test that skips itself on the runner needs a line, and a line cannot outlive its reason",
+		"The log of the step names every test that skipped itself",
+		"For every package the step also fails the run unless every top-level test that `go test` lists for the package, and that is not an entry, reported a verdict",
+		"`go test` reads a test path as the start of a path, so the skip for a listed subtest also covers every test whose path starts with the path of that entry",
+		"a skipped test leaves no trace in the output",
+		"runs a package that has an entry for a subtest a second time, with a test binary that writes down every test that `-skip` drops",
+		"It fails the run unless those tests are exactly the entries of that package",
+		"For that one run `go test -overlay` builds the test binary with a copy of `src/testing/match.go` of the Go standard library, to which the gate adds the call that writes the name down",
+		"The installed toolchain is not changed, and no other run uses the copy",
+		"The gate makes the copy only from the file of the exact Go version that it names, so a change of the Go baseline has to review that file and change the gate in the same change",
+		"That run needs a Go installation outside the module cache, as `actions/setup-go` makes one on the runner",
+		"the `go` command does not let `-overlay` replace a file beneath `GOMODCACHE`, so with a toolchain that the `go` command downloaded itself the test step fails and shows that error",
+		"A second blocking step judges every entry twice: in a run of its whole package with nothing skipped, and in a `go test` of its own",
+		"It fails the run when an entry no longer fails on the runner in one of the two",
+		"An entry fails there only if the testing package reported its failure",
+		"A test that was running when the test binary stopped has reported none, so a test that ends the process without reporting, for example with `os.Exit` or `log.Fatal`, cannot be listed",
+		"The run of a package has to come to its end",
+		"When a listed test panics, the package runs again without it",
+		"The step fails when a run stops and no listed test reported a failure as it stopped: a test that is not listed, or the time limit of `go test`, stopped it",
+		"It also fails the run when the run of an entry for a subtest starts another test under the path of that entry",
+		"`.github/ci/go_test_gate_selftest.py` checks these behaviors on every run before the tests",
+		"It also holds the workflow file by its SHA-256, so every edit of the workflow has to change that value in the same change",
+		"A green run is validation evidence for the committed tree on that runner image",
+		"It is not design authority",
+		"It is not a macOS run, a race-detector run, a Linux runtime proof, a Remote Alpha proof, or a supported-local proof",
+		"does not replace the exact-Go preflights of the supported scripts",
+		"The Nomad, Vault and SPIRE that a test starts there are throwaway test instances, not a deployment",
+		"It does not show that a test named in the list passes: on that runner those tests fail or skip themselves",
+	)
+	assertContainsNone(t, "Go baseline stale CI denial", baselineDoc,
+		"no CI system introduced",
+		"skips exactly those entries",
+	)
+	ciWorkflow := mustRead(t, ".github/workflows/go.yml")
+	assertContainsAll(t, "Go CI workflow matches the documented baseline", ciWorkflow,
+		"\n  pull_request:\n",
+		"\n  push:\n    branches:\n      - trunk_dev\n",
+		"runs-on: ubuntu-24.04",
+		"GOTOOLCHAIN: local",
+		"GOFLAGS: -mod=readonly",
+		"go-version-file: go.mod",
+		"cache: false",
+		"ENVIRONMENT_ONLY_TESTS: .github/ci/environment-only-tests.txt",
+		"AWS_EC2_METADATA_DISABLED: \"true\"",
+		"fetch https://releases.hashicorp.com/nomad/2.1.1/nomad_2.1.1_linux_amd64.zip nomad.zip 073084f7690fdaea756ff1eff8b669b25c3a6c17778f19ae0c47606973ed3f39",
+		"fetch https://releases.hashicorp.com/vault/2.2.2/vault_2.2.2_linux_amd64.zip vault.zip 5700edf139113609962fe371af7d2a53de8ecb720d545dc39b43de204515d3c4",
+		"source scripts/internal/spire_release.sh\n          spire_sha256=\"$(spire_release_pinned_sha256 spire-1.14.4-linux-amd64-musl.tar.gz)\"\n          fetch https://github.com/spiffe/spire/releases/download/v1.14.4/spire-1.14.4-linux-amd64-musl.tar.gz spire.tar.gz \"$spire_sha256\"\n",
+		"echo \"$3  $tools/download/$2\" | sha256sum --check --strict",
+		"run: nomad version && vault version",
+		"run: go mod download",
+		"run: go mod verify",
+		"run: go build ./...",
+		"run: go vet ./...",
+		"run: GOOS=darwin GOARCH=arm64 go vet ./...",
+		"run: python3 -I -B .github/ci/go_test_gate_selftest.py",
+		"run: python3 -I -B .github/ci/go_test_gate.py gate \"$ENVIRONMENT_ONLY_TESTS\"",
+		"run: python3 -I -B .github/ci/go_test_gate.py still-failing \"$ENVIRONMENT_ONLY_TESTS\"",
+	)
+	// The SPIRE release files that CI and the supported-local scripts accept.
+	// Each line is the line of the release's own checksum file, checked by
+	// downloading the file and hashing it. A change of a pin, or a new version
+	// or architecture, has to come to this test as well.
+	const spireReleasePins = "4482db434af8a3d2f4c5aeaef8912b21311411a175ce7daeb49ea17b776bcbf5  spire-1.14.4-linux-amd64-musl.tar.gz\n" +
+		"05dd598f80b39499fd2b1660ee419cbb2d204290abe9fa0a87256177836ce7f0  spire-1.14.4-linux-arm64-musl.tar.gz\n"
+	if got := mustRead(t, "scripts/internal/spire_release.sha256"); got != spireReleasePins {
+		t.Fatalf("scripts/internal/spire_release.sha256 changed; review each line against its release checksum file, then update this test: got %q", got)
+	}
+	// The CI self-check holds the workflow file by its SHA-256. This test
+	// requires that value to be the hash of the file as it is, so an edit of
+	// the workflow is also caught by go test on any host, and not only by the
+	// workflow step that runs the self-check.
+	ciWorkflowHold := fmt.Sprintf("WORKFLOW_SHA256 = \"%x\"\n", sha256.Sum256([]byte(ciWorkflow)))
+	if !strings.Contains(mustRead(t, ".github/ci/go_test_gate_selftest.py"), "\n"+ciWorkflowHold) {
+		t.Fatalf("the CI self-check does not hold .github/workflows/go.yml as it is; review the whole workflow, then set %s", strings.TrimSpace(ciWorkflowHold))
+	}
+	// The observed run of the CI gate is written against one Go version and
+	// one file of its standard library. A change of the Go baseline has to
+	// come to this test, and so to these two values.
+	assertContainsAll(t, "Go CI gate observed-run toolchain", mustRead(t, ".github/ci/go_test_gate.py"),
+		"\nOBSERVED_GO_VERSION = \"go1.26.5\"\n",
+		"\nMATCH_GO_SHA256 = \"f28418759ed48c72821b5ecc3700041b74151108557618f50d355ea98a1bbebe\"\n",
+	)
+	for _, path := range []string{
+		".github/ci/environment-only-tests.txt",
+		".github/ci/go_test_gate.py",
+		".github/ci/go_test_gate_selftest.py",
+	} {
+		if strings.TrimSpace(mustRead(t, path)) == "" {
+			t.Fatalf("Go CI file %s is empty", path)
+		}
+	}
 	assertContainsAll(t, "Go baseline non-claims", nonClaims,
 		"no runtime behavior change",
-		"no CI system introduced",
+		"no CI claim beyond section 10",
 		"no vendoring",
 		"no system-wide toolchain manager",
 		"no Linux runtime proof",
@@ -4083,7 +4192,7 @@ func TestReliableSubmitPersistenceAndConcurrencyADRDocsContract(t *testing.T) {
 	if err != nil {
 		t.Fatalf("glob reliable-submit package files: %v", err)
 	}
-	if got, want := len(reliableSubmitFiles), 38; got != want {
+	if got, want := len(reliableSubmitFiles), 39; got != want {
 		t.Fatalf("reliable-submit package inventory has %d files: %v", got, reliableSubmitFiles)
 	}
 	assertContainsAll(t, "reliable-submit package current file set", strings.Join(reliableSubmitFiles, " "),
@@ -4125,6 +4234,7 @@ func TestReliableSubmitPersistenceAndConcurrencyADRDocsContract(t *testing.T) {
 		"es/admission/internal/reliablesubmit/sqlite_replay_schema_test.go",
 		"es/admission/internal/reliablesubmit/sqlite_replay_shape.go",
 		"es/admission/internal/reliablesubmit/sqlite_replay_shape_test.go",
+		"es/admission/internal/reliablesubmit/testtmpdir_main_test.go",
 	)
 
 	submitSource := mustRead(t, "es/admission/submit.go")
@@ -13470,6 +13580,95 @@ func TestRetainedResultReview04ConsumerEntrypointAndOwnedScopeDocs(t *testing.T)
 	}
 }
 
+func TestStartupProbeUseAgreementDocsContract(t *testing.T) {
+	checks := []struct {
+		path    string
+		phrases []string
+	}{
+		{"PLANS.md", []string{"`STARTUP-PROBE-USE-AGREEMENT-01` (bounded slice rule)", "staging refuses any mode outside it, so a new staging mode cannot skip the probe", "only the second rename proves the primitive", "ES also never changes the owning user of a directory it opened by name", "`staging probe directory does not belong to the execution roots' owning user`", "The probe retains 13 entries per start", "ES also refuses to start on a staging file system that cannot keep those modes although submissions without governed mounts would work there", "ES starts only where every submission it accepts can be staged", "a bindfs mount with `--create-for-user`, is refused although it started before this rule"}},
+		{".docs/system_overview/capability_probing.md", []string{"Staging refuses any mode the probe does not stage.", "a results file system whose rename accepts no flags refuses startup instead of losing every result", "it never changes an owning user", "prove the results no-replace rename both ways", "a staging file system that cannot keep them refuses startup even though submissions without governed mounts would work there"}},
+		{".docs/execution_lifecycle/implementation.md", []string{"(`probeStagedEntries`)", "(`probeRetainedResultFiles`)", "(`requireOpenedDirectoryOwnedByRootsUser`)", "onto an existing name, which must fail with `EEXIST`", "startup refuses a staging file system that cannot keep them even when no submission would use governed mounts"}},
+		{".runbooks/system/v1_bringup.md", []string{"the file system under the roots stores the modes ES gives files and directories, gives regular files the same device as directories, and supports the no-replace rename", "`no-replace rename to a free result name is unavailable`", "ES refuses such a file system even if your submissions never use governed mounts"}},
+		{"es/admission/staging_custody.go", []string{"so a mode cannot reach staging without reaching the startup probe", "is not proved by the startup probe", "gives somebody else's directory to the roots' owner."}},
+	}
+	for _, check := range checks {
+		content := compactText(mustRead(t, check.path))
+		for _, phrase := range check.phrases {
+			if !strings.Contains(content, phrase) {
+				t.Fatalf("%s missing startup probe and use agreement contract %q", check.path, phrase)
+			}
+		}
+	}
+	// The probe description from before the free-name rename must not come back.
+	assertContainsNone(t, "capability_probing.md one-sided no-replace probe", compactText(mustRead(t, ".docs/system_overview/capability_probing.md")),
+		"refuse the results no-replace publication primitive when the destination already exists; and",
+	)
+	// The refused file systems do not all fail every submission: those that
+	// cannot keep only the governed-mount modes stage the others (audit 16 of
+	// pull request #20, finding A16-2).
+	assertContainsNone(t, "capability_probing.md every-submission claim", compactText(mustRead(t, ".docs/system_overview/capability_probing.md")),
+		"refuses startup instead of failing every submission",
+	)
+	assertContainsNone(t, "PLANS.md every-submission claim", compactText(mustRead(t, "PLANS.md")),
+		"instead of reporting ready while every submission, or every retention, fails",
+	)
+	// Nor may the comments of the admission code (audit 18 of pull request
+	// #20, finding A18-1): the comment of probeStagedEntries states the chosen
+	// rule. Comment markers are dropped so that a phrase may span lines.
+	commentText := func(path string) string {
+		lines := strings.Split(mustRead(t, path), "\n")
+		for i, line := range lines {
+			lines[i] = strings.TrimPrefix(strings.TrimSpace(line), "//")
+		}
+		return compactText(strings.Join(lines, "\n"))
+	}
+	if !strings.Contains(commentText("es/admission/execution_roots.go"), "so startup also refuses a staging file system that cannot keep them, although submissions without governed mounts would work there") {
+		t.Fatal("es/admission/execution_roots.go missing the governed-mount mode rule in the comment of probeStagedEntries")
+	}
+	sources, err := filepath.Glob("es/admission/*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range sources {
+		if strings.HasSuffix(path, "_test.go") {
+			continue
+		}
+		assertContainsNone(t, path+" every-submission claim", commentText(path),
+			"refuse every submission", "refuses every submission", "fail every submission", "fails every submission",
+		)
+	}
+}
+
+func TestNestedStagingOwnerProbeDocsContract(t *testing.T) {
+	checks := []struct {
+		path    string
+		phrases []string
+	}{
+		{"PLANS.md", []string{"`NESTED-STAGING-OWNER-PROBE-01` (bounded slice rule)", "as staging does inside each claimed run staging root", "inherited a group it is not a member of from a setgid parent directory", "`nested staging directory ownership is unavailable`"}},
+		{".docs/system_overview/capability_probing.md", []string{"creates a `nested` directory inside its staging probe directory", "as staging does inside each claimed run staging root", "`nested staging directory ownership is unavailable`", "roots that inherit another group from a setgid parent directory refuse startup instead of failing at the first submission"}},
+		{".docs/execution_lifecycle/implementation.md", []string{"(`probeNestedStagingDirectory`)", "`stagingCustody.ensureDirectory` does the same inside each claimed run staging root", "`nested staging directory ownership is unavailable`", "the nested staging probe above refuses them"}},
+		{".runbooks/system/v1_bringup.md", []string{"or inherited from a setgid parent directory; the inherited case is reported as `nested staging directory ownership is unavailable`"}},
+		{"es/admission/execution_roots.go", []string{"roots.probeNestedStagingDirectory(stagingFD, owner)", `nestedStagingProbeName, stableStageDirMode, owner, "nested staging directory")`, `fmt.Errorf("%s ownership is unavailable: %w", label, err)`}},
+	}
+	for _, check := range checks {
+		content := compactText(mustRead(t, check.path))
+		for _, phrase := range check.phrases {
+			if !strings.Contains(content, phrase) {
+				t.Fatalf("%s missing nested staging owner probe contract %q", check.path, phrase)
+			}
+		}
+	}
+	// The known gap these documents described before the probe existed must
+	// not come back.
+	for _, path := range []string{".runbooks/system/v1_bringup.md", ".docs/execution_lifecycle/implementation.md", ".docs/system_overview/capability_probing.md"} {
+		assertContainsNone(t, path+" stale setgid-inherited group gap", compactText(mustRead(t, path)),
+			"inherit another group from a setgid parent directory are not refused",
+			"do not yet catch roots that inherit another group",
+			"so ES reports ready but every submission fails to stage",
+		)
+	}
+}
+
 func TestRetainedResultReviewDocsContract(t *testing.T) {
 	checks := []struct {
 		path    string
@@ -14777,4 +14976,58 @@ func TestOperationalSubmitHandoffCurrentAdmissionV2RejectsUnsafeMutants(t *testi
 			t.Fatalf("a removed gate prerequisite was still read: %q", ids)
 		}
 	})
+}
+
+// TestARSStorageCheckDocsContract pins what the plan, the bring-up runbook and
+// the configuration page say about bring-up's ARS storage check after audit
+// 20 of pull request #19: storage paths must be in normal form (A20-1), the
+// check scales to ARS's full sha256/xx/yy fan-out and ARS's readiness wait
+// starts only after its launcher's check (A20-2), the check no longer lists
+// directories with ls, and the full fan-out test pins the check's cost by the
+// processes it starts, not by a time limit (audit 24, O24-1).
+func TestARSStorageCheckDocsContract(t *testing.T) {
+	stale := []string{
+		"few hundred",
+		"lists every storage directory",
+		"lists every such directory",
+		"`mktemp`, `ls`, `cat`",
+		"requires under 30 s",
+	}
+	checks := []struct {
+		path     string
+		required []string
+	}{
+		{"PLANS.md", []string{
+			"`storage.root_dir` and `storage.index_file` must be absolute and written in normal form, as Python's `os.path.normpath` writes it",
+			"because ARS opens both exactly as written while the mounts it gets use the normal form",
+			"creates a file in every directory under the storage root and finds it again by listing that directory",
+			"The check needs `/bin/sh` with `mktemp`, `xargs`, `rm`, `cat`, `chmod` and `mv` in the image",
+			"starts no process per directory, because ARS's blob layout `sha256/xx/yy/<digest>` grows to 65,794 directories with the root",
+			"`TestARSStorageCheckScalesToARSFullFanOut` pins that cost by structure, not by time: it counts the processes the check starts at that size",
+			"and requires fewer than one per 32 directories",
+			"ARS's readiness wait (`READY_TIMEOUT_SECONDS`) starts only once the launcher reports that its check passed",
+			"the report cannot skip the check",
+			"the check passes the first such signal on to its probe and waits until the probe has removed its files and ended, however often it is signalled again",
+			"can leave at most one batch of its empty `.ars-storage-check.*` files, those of 256 directories",
+		}},
+		{".runbooks/system/v1_bringup.md", []string{
+			"`storage.root_dir` and `storage.index_file` are absolute paths written in normal form",
+			"so the refusal prints the form to write instead",
+			"finds its file again by listing each storage directory",
+			"The check takes seconds even when ARS's storage holds all 65,794 directories its `sha256/xx/yy` layout can create",
+			"ARS's readiness wait (`READY_TIMEOUT_SECONDS`, 30 s by default) starts only once ARS's launcher has passed its own run of the check",
+			"Ctrl-C during the check, or during `up` while ARS's launcher runs it, leaves the storage as it was",
+		}},
+		{".docs/system_overview/configuration.md", []string{
+			"refuses unless `storage.root_dir` and `storage.index_file` are absolute and in normal form (ARS opens them exactly as written, while its mounts use the normal form)",
+			"finds its file again by listing each storage directory",
+			"The check starts no process per directory and takes seconds even at ARS's full `sha256/xx/yy` fan-out of 65,794 directories",
+			"`scripts/01_bringup.sh up` starts ARS's readiness wait only once ARS's launcher has passed its own run of the check",
+		}},
+	}
+	for _, check := range checks {
+		text := compactText(mustRead(t, check.path))
+		assertContainsAll(t, check.path+" ARS storage check", text, check.required...)
+		assertContainsNone(t, check.path+" stale ARS storage check", text, stale...)
+	}
 }

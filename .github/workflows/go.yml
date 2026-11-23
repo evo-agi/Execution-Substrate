@@ -1,0 +1,168 @@
+# Build, vet and test the Go module on Linux.
+#
+# A pull_request run uses this file as it appears in the pull request's merge
+# commit, so a pull request can be checked before this file reaches its base.
+# Push runs cover trunk_dev after a merge.
+name: go
+
+on:
+  pull_request:
+  push:
+    branches:
+      - trunk_dev
+
+permissions:
+  contents: read
+
+concurrency:
+  # A newer push to a pull request replaces that pull request's older run.
+  # Each push to trunk_dev has its own group, so every commit there keeps its
+  # own result.
+  group: go-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test:
+    name: build, vet and test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      # Use exactly the toolchain installed from go.mod and the committed
+      # go.sum; never download a different toolchain or rewrite go.mod.
+      GOTOOLCHAIN: local
+      GOFLAGS: -mod=readonly
+      # Tests that cannot pass on this runner for host reasons, and tests that
+      # skip themselves on it. Each line names one package and one test or
+      # subtest. The file gives the reason for each line and says which
+      # subtests cannot be listed.
+      ENVIRONMENT_ONLY_TESTS: .github/ci/environment-only-tests.txt
+      # The runner is a cloud instance whose EC2 metadata endpoint does not
+      # answer. Nomad's env_aws fingerprinter would wait for it and fail the
+      # client of a test agent. This tells the AWS SDK inside Nomad not to
+      # ask. No code of this module reads it.
+      AWS_EC2_METADATA_DISABLED: "true"
+    steps:
+      # Actions are pinned to full commit SHAs. The comment names the release
+      # tag that pointed at that commit when it was pinned. Both releases
+      # target the Node.js 24 runtime.
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # No build or module cache is restored. Every run downloads the modules
+      # that "go mod verify" then checks, and compiles everything from source.
+      - name: Set up Go from go.mod
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Show toolchain
+        run: go version
+
+      # Typed source guards load packages offline (GOPROXY=off), so every
+      # module in the graph must already be in the module cache.
+      - name: Download modules
+        run: go mod download
+
+      - name: Verify module downloads
+        run: go mod verify
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      # Some test files build only on macOS, and no other step compiles them
+      # on this runner. This step type-checks and vets every package as built
+      # for macOS. It runs no test.
+      - name: Vet for macOS
+        run: GOOS=darwin GOARCH=arm64 go vet ./...
+
+      # Three tests of es/admission show that ES's startup probe refuses file
+      # systems that staging or result retention cannot use, and which check
+      # refuses each one. Their fixtures are bindfs mounts, a FUSE file system
+      # that bends one rule of the file system below it. Without bindfs the
+      # three tests skip themselves, and the step "Test" fails on the skips.
+      # The version is pinned because the fixture for a rename that accepts
+      # no flags needs a bindfs without the no-replace rename, which a newer
+      # bindfs may add: then one test skips itself and another fails.
+      - name: Install bindfs
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends bindfs=1.14.7-1.1build2
+
+      # The es/app integration tests start a Nomad agent with the Docker
+      # driver, the supported-local setup test runs Vault and SPIRE, and the
+      # runner image has none of them. Each download is checked against the
+      # SHA-256 that was reviewed before anything uses it: the HashiCorp
+      # files were checked against HashiCorp's signed SHA256SUMS, and the
+      # SPIRE file against the unsigned checksum file of its GitHub release.
+      # The SPIRE value comes from scripts/internal/spire_release.sha256, the
+      # pin file that the supported-local setup scripts check SPIRE against,
+      # so CI and those scripts accept the same file.
+      - name: Install Nomad, Vault and SPIRE
+        run: |
+          set -euo pipefail
+          tools="$RUNNER_TEMP/tools"
+          mkdir -p "$tools/bin" "$tools/download"
+          fetch() {
+            curl --fail --silent --show-error --location --retry 3 -o "$tools/download/$2" "$1"
+            echo "$3  $tools/download/$2" | sha256sum --check --strict
+          }
+          fetch https://releases.hashicorp.com/nomad/2.1.1/nomad_2.1.1_linux_amd64.zip nomad.zip 073084f7690fdaea756ff1eff8b669b25c3a6c17778f19ae0c47606973ed3f39
+          fetch https://releases.hashicorp.com/vault/2.2.2/vault_2.2.2_linux_amd64.zip vault.zip 5700edf139113609962fe371af7d2a53de8ecb720d545dc39b43de204515d3c4
+          source scripts/internal/spire_release.sh
+          spire_sha256="$(spire_release_pinned_sha256 spire-1.14.4-linux-amd64-musl.tar.gz)"
+          fetch https://github.com/spiffe/spire/releases/download/v1.14.4/spire-1.14.4-linux-amd64-musl.tar.gz spire.tar.gz "$spire_sha256"
+          unzip -q "$tools/download/nomad.zip" nomad -d "$tools/bin"
+          unzip -q "$tools/download/vault.zip" vault -d "$tools/bin"
+          echo "$tools/bin" >> "$GITHUB_PATH"
+          echo "SUPPORTED_LOCAL_TEST_SPIRE_TARBALL=$tools/download/spire.tar.gz" >> "$GITHUB_ENV"
+
+      - name: Show Nomad and Vault
+        run: nomad version && vault version
+
+      # The images that the tests run, pulled by the digest that was reviewed
+      # and tagged with the name that the tests use, so no test pulls a tag.
+      - name: Pull test images by digest
+        run: |
+          set -euo pipefail
+          pull() {
+            docker pull --quiet "$1@$2"
+            docker tag "$1@$2" "$1:$3"
+          }
+          pull alpine sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc 3.20
+          pull python sha256:9ef1a599f863231c3d91e941389bfdc4a2d6070557243d54df1a4e57015b960e 3.13-alpine
+          pull golang sha256:0178a641fbb4858c5f1b48e34bdaabe0350a330a1b1149aabd498d0699ff5fb2 1.26.5-alpine3.24
+
+      # Proves on throwaway modules that the two steps below do what they say.
+      # It also holds this file by its SHA-256: an edit of this file fails
+      # here until the value in the self-check is changed in the same change.
+      - name: Check the test gate
+        run: python3 -I -B .github/ci/go_test_gate_selftest.py
+
+      # Runs every package. A package with entries runs with its own entries
+      # skipped; every other package runs with nothing skipped. For every
+      # package the step fails unless every test that go test lists for it,
+      # and that is not an entry, reported a verdict, and unless the tests
+      # that skipped themselves are exactly the "skips-itself" lines of the
+      # list. The log names every test that skipped itself. A package with
+      # an entry for a subtest then runs a second time, with a test binary
+      # that writes down every test that go test skips, and the step fails
+      # unless those are exactly the entries. Only that test binary is built
+      # with a changed copy of one file of the Go standard library, which
+      # go_test_gate.py describes. The installed toolchain is not changed.
+      - name: Test
+        run: python3 -I -B .github/ci/go_test_gate.py gate "$ENVIRONMENT_ONLY_TESTS"
+
+      # Judges every entry twice: in a run of its whole package with nothing
+      # skipped, and in a go test of its own. Fails when an entry does not
+      # fail in both on this runner: it passes, skips itself, does not run
+      # or reports no failure before the test binary stops. Such an entry no
+      # longer belongs in the list, and its line has to be deleted. Fails
+      # when the run of a package stops before its end and no listed test
+      # reported a failure as it stopped. Also fails when the run of an
+      # entry for a subtest starts another test under the path of that entry.
+      - name: Listed tests still fail
+        run: python3 -I -B .github/ci/go_test_gate.py still-failing "$ENVIRONMENT_ONLY_TESTS"

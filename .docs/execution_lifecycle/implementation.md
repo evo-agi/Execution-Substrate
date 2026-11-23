@@ -987,7 +987,35 @@ How Docker appears in the implementation:
   behavior under the active process mask using an exclusive synthetic child
   under the qualified results root. It never chowns or chmods the child and
   retains the fixture under the no-uncertain-unlink rule; genuinely
-  Submit-disabled service startup does not probe. The selected supported-local
+  Submit-disabled service startup does not probe. Startup also creates a
+  `nested` directory inside its exclusive staging probe directory, after that
+  directory is set to the stable `0750` stage mode, gives it the roots' owner
+  and that mode, and verifies both (`probeNestedStagingDirectory`), because
+  `stagingCustody.ensureDirectory` does the same inside each claimed run
+  staging root. The stage mode carries no setgid bit, so the new directory
+  gets ES's effective GID; when ES cannot change it to the roots' GID, for
+  example because the roots inherited a group ES is not a member of from a
+  setgid parent, startup refuses with `nested staging directory ownership is
+  unavailable`. The nested directory is retained with its probe directory.
+  Inside it, startup stages one directory for each mode in
+  `stagedDirectoryModes` beyond `0750` and one regular file for each mode in
+  `stagedFileModes` (`probeStagedEntries`), with the checks
+  `stagingCustody.writeFileWithHookAndParentMode` and `ensureDirectory` apply,
+  and those two refuse any mode outside the lists. The lists include the
+  governed-mount modes (`0755` directories, `0644` and `0755` files), so
+  startup refuses a staging file system that cannot keep them even when no
+  submission would use governed mounts. Inside the natural result
+  directory probe, startup creates the `0600` and `0640` files retention
+  creates, with retention's checks, and renames the `0600` file with the
+  no-replace rename onto an existing name, which must fail with `EEXIST`, and
+  onto a free name, which must succeed and keep the same file
+  (`probeRetainedResultFiles`). The probe, the claim of a run staging root and
+  `ensureDirectory` refuse a directory they opened by name unless its owning
+  user already is the roots' owning user
+  (`requireOpenedDirectoryOwnedByRootsUser`), before any owner or mode
+  change, so ES never gives a directory that another user renamed into place
+  to the roots' owner.
+  The selected supported-local
   root-service profile provisions only the two fresh configured roots as
   UID:GID `0:0`, exact `0755` directory mode. Its static bring-up check does
   not replace this later behavioral probe or qualify a future container view.
@@ -996,6 +1024,16 @@ How Docker appears in the implementation:
   owner/mode/identity, and exact same-path read-write mounts. Only this
   validated profile omits the ordinary operator's write test; generic
   readiness still requires existing caller-writable roots and creates none.
+  The generic ES launcher runs the ES container as the caller's numeric
+  effective UID and primary GID, with no supplementary groups, so this probe
+  sees ES create directories with the UID and GID of roots the operator
+  created. Roots whose group was set directly to another group are refused
+  earlier in ES's startup capability probes, when ES cannot give its staging
+  probe directory that group. Roots that inherit another group from a setgid
+  parent pass those probes, because entries created directly in them inherit
+  that group; the nested staging probe above refuses them, because staging
+  clears the setgid bit on the run directory and could not give a nested
+  directory that group.
   Setup retains only a fixed safe projection of its static configured-root
   check, without raw root paths, key contents, or a container-capability claim.
   The setup helper keeps each newly opened child descriptor from the

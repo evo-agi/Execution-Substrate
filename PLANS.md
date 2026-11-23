@@ -648,6 +648,8 @@ Current bounded implementation status:
 - The current supported local proof path is repo-owned and converged with the bounded useful credential-flow proof: `scripts/72_supported_local_setup.sh` prepares the guest-side supported-local proof environment, including proof-scoped SPIRE and Vault dev/test targets, while `scripts/73_supported_local_proof.sh run` is the canonical host wrapper on this Mac. The host `.out/es-proof-<id>/` path is evidence-only; task-owned host bootstrap/transport scratch is separate and private. Guest `/tmp` scratch remains an internal Lima implementation detail because the mounted repo tree is read-only inside the guest.
 - `SUPPORTED-LOCAL-ROOT-OWNER-01` is a bounded supported-local configured-consumer integration refinement. The selected rootful, identity-mapped generic ES service profile is UID:GID `0:0`: canonical setup must require a fresh proof root and create only its two fresh configured execution roots as `0:0` with exact `0755` directory mode through a narrow noninteractive privileged helper. The generated profile requires one read-only validator of that static owner/mode contract, proof binding, service image, config, and exact same-path read-write mounts in prepare-only bring-up, the ES launcher, and full-profile submit-readiness (including direct health check and diagnostics use). The ordinary operator needs static inspection access, not write authority to service-owned roots. Generic callers without this explicit profile retain caller-writable readiness; unknown profiles refuse. A fixed safe setup projection records that static owner/mode check in retained proof evidence without paths, key material, or a claim that container capability passed. Existing failed proof roots remain for separately bounded cleanup rather than in-place owner migration. Prepare-only orchestration retains configured Submit, key loading and root capability qualification before listening. ES's `0750` per-run natural-directory capability rule, external result-auth key, and workload `10000:10000` boundary remain unchanged. Review-15's failed full check did not capture its first failed subcheck; this source-demonstrated readiness mismatch does not retrospectively identify that subcheck. Offline fixtures do not qualify a future container view or live supported-local proof; independent review and live proof remain open.
 - `R14-ROOT-CUSTODY-01` refines only that helper's fresh-child custody: it must bind each visible fixed child to the same held descriptor before owner/mode normalization, retain both descriptor identities through a final pair check, and refuse drift without repair or cleanup. The operator-owned proof parent permits an independent writer to replace an entry between `mkdir` and descriptor acquisition; those calls are not atomic creation-and-open proof. No protected creation namespace or proof-parent ownership change is selected here. This bounded source repair closes the initialized-descriptor/reopened-name substitution, while arbitrary concurrent pre-acquisition interference remains an explicit design and live-proof limit.
+- `GENERIC-ES-LAUNCHER-USER-01` is a **Bounded slice rule** refinement of the generic (no-profile) ES launcher. That path creates missing execution roots as the calling operator and requires them to be caller-writable, while configured-Submit startup requires ES's naturally created `0750` result directory to carry the roots' UID and GID. The launcher therefore runs the ES container as the caller's effective UID and primary GID instead of the image's default root user, so ES holds no more host authority than the operator who started it. It reads both IDs with `id` before any image, root or container effect and refuses unless both are numeric, because `docker run --user` with an empty UID runs as root. Docker gives that identity no supplementary groups, so the roots must carry the caller's UID and primary GID, and every file the ES config names must be readable by that UID or GID. ES's behavioral startup checks stay the only capability gate; the launcher does not branch on daemon labels. On a user-namespace-remapped Docker daemon, Docker itself refuses the host networking that bring-up requires, so bring-up stops at its host-loopback check and ES never starts; rootless Docker is untested and unsupported for bring-up. The `service-root-v1` profile keeps the image's default user for its `0:0` roots. `GENERIC-SERVICE-LAUNCHER-USER-01` applies the same identity to the other bring-up services.
+- `GENERIC-SERVICE-LAUNCHER-USER-01` is a **Bounded slice rule** refinement of the bring-up launchers for ARS, EGS and AGS. They run their containers as the caller's numeric effective UID and primary GID instead of the image's default root user, through the same `control_plane_operator_user` helper as the generic ES launcher, which refuses before any image, storage or container effect unless both IDs are numeric. None of the three needs root in bring-up: the documented ports (8442 to 8445) are unprivileged, so a configured port below 1024 now fails to bind unless the host allows unprivileged binding there, and none of them changes file ownership. EGS and AGS only read their config and TLS files. ARS writes its blob store and index as `0600` files, so `scripts/02_start_ars.sh` (and `scripts/01_bringup.sh up`, before starting any service) first checks that ARS can use its storage. On the host, as the caller, the check only reads the config: `storage.root_dir` and `storage.index_file` must be absolute and written in normal form, as Python's `os.path.normpath` writes it (no `.` or `..` component, no repeated or trailing slash, no leading or trailing whitespace; POSIX keeps a leading `//`), because ARS opens both exactly as written while the mounts it gets use the normal form, so only a path in normal form means the same file to both; the refusal names the form to write. A missing storage root is created as the caller instead of letting Docker create the bind source as root, and the index file must already exist as a regular file, not a symbolic link (ARS refuses to start without it, and replaces it with a regular file at its first write). The check then does what ARS does with that storage in a short-lived container that runs exactly as ARS will: the control-plane image, the UID:GID that `control_plane_operator_user` printed, so with no supplementary groups, the mounts `control_plane_mount_specs ars` gives ARS, and ARS's container name, so Docker refuses the check while an ARS container still exists (`02_start_ars.sh` removes the container it replaces first). In that container it changes into every directory on the way to the storage root and the index directory, creates and removes a file in the index directory, creates a file in every directory under the storage root and finds it again by listing that directory, opens the index and every regular file under the root for reading, refuses any other entry under the root (a symbolic link or special file, which ARS never creates, and a link ARS would pass through at a blob or shard path), removes the files it created in batches and refuses the first directory where ARS could not remove its own file, and last, only when all of that passed, writes the index the way ARS does: a new `0600` file with the index's content, renamed over it. The kernel, and on macOS Docker Desktop's file sharing, therefore decides every step for that identity through the mounts ARS will see; owners, groups, modes, POSIX ACLs and the sticky rule are not emulated, and UID 0 gets what root gets in a container. A passing check leaves the index owned by that identity with mode `0600`, as ARS's first write would. Stopped by SIGHUP, SIGINT or SIGTERM, which covers Ctrl-C and the way `scripts/01_bringup.sh` stops ARS's launcher when `up` fails, the check passes the first such signal on to its probe and waits until the probe has removed its files and ended, however often it is signalled again; a probe killed outright, for example by `docker rm -f`, can leave at most one batch of its empty `.ars-storage-check.*` files, those of 256 directories, which the next check reads as ordinary files. The check needs `/bin/sh` with `mktemp`, `xargs`, `rm`, `cat`, `chmod` and `mv` in the image, which the generated image's Alpine BusyBox provides. Its walk uses only shell built-ins per directory and starts no process per directory, because ARS's blob layout `sha256/xx/yy/<digest>` grows to 65,794 directories with the root; at that size the check took 10 to 20 s in the cloud test container, varying from run to run. `TestARSStorageCheckScalesToARSFullFanOut` pins that cost by structure, not by time: it counts the processes the check starts at that size, about 540 with removal in batches of 256 directories, and requires fewer than one per 32 directories. `scripts/01_bringup.sh up` runs the check itself and ARS's launcher runs it again before it starts ARS; ARS's readiness wait (`READY_TIMEOUT_SECONDS`) starts only once the launcher reports that its check passed, through a file `02_start_ars.sh` writes after the check, so the check's time never counts against ARS's readiness and the report cannot skip the check. If the launcher stops before that, `up` fails with the end of its log. `scripts/01_bringup.sh up` derives that identity before any image, storage or container effect, like the launchers. Storage that an earlier bring-up wrote as root, or that is shared through another group, fails that check with the exact `sudo chown` that hands it back, and a directory above the storage that the identity cannot search is refused with its path; the check does not repair ownership itself. Every file named in an ARS, EGS or AGS config must be readable by the caller's UID or primary GID, because Docker gives the container no supplementary groups. The `service-root-v1` profile concerns only ES's roots, so these services run as the caller under it too.
 - The first bounded Control Plane normal-shell runtime contract is now an explicit opt-in ES runtime profile named `control-plane-normal-shell/v1`. It remains a bounded slice rule on the reopened ES runtime/package seam: CP still owns orchestration, review, checkpoint, and finalization semantics, while ES owns the governed Docker/Nomad runtime realization, platform-owned runtime identity delivery, the profile image selection, and non-secret credential-location metadata needed for workload-side Codex credential retrieval.
 - The supported-local runtime surface for enabled local runtime-profile images now also owns the narrow Nomad/Docker image-lifecycle guardrail needed for repeated client runs from the same prepared environment: the supported single-node Nomad baseline disables Nomad Docker image cleanup through `client.options["docker.cleanup.image"]="false"`, and submit-readiness for enabled runtime-profile images refuses to claim ready when that guardrail is absent. This is a bounded slice rule for local image durability, not a general registry or image-cache architecture.
 - The supported-local proof realization for that profile now uses a repo-owned deterministic proof Codex shim at the configured `EXEC_CODEX_CLI_PATH`, invokes it through the bounded normal-shell profile path, proves workload-side Vault credential acquisition, creates a deterministic workspace mutation and runner-style artifacts, fetches the retained ES result bundle, and validates the expected proof artifacts without depending on a live upstream Codex service.
@@ -1204,6 +1206,53 @@ prepared different candidates still follow the no-overwrite conflict rule.
 Configured Submit startup also qualifies natural `0750` result run-directory
 creation under its process mask, retaining its exclusive synthetic probe;
 failure refuses startup rather than repairing directory metadata.
+`NESTED-STAGING-OWNER-PROBE-01` (bounded slice rule): configured Submit startup
+also creates a `nested` directory inside its staging probe directory after
+setting that directory to the stable `0750` stage mode, gives it the roots'
+owner and that mode, and verifies both, as staging does inside each claimed run
+staging root. The stage mode carries no setgid bit, so the new directory gets
+ES's effective GID; a process that cannot change it to the roots' GID, for
+example because the roots inherited a group it is not a member of from a setgid
+parent directory, refuses startup with `nested staging directory ownership is
+unavailable` instead of reporting ready while every submission fails to stage.
+The nested directory is retained with its probe fixture.
+`STARTUP-PROBE-USE-AGREEMENT-01` (bounded slice rule): the configured-Submit
+startup probe and use must agree. Inside the nested directory, startup stages
+one directory for each directory mode staging uses beyond the stable `0750`
+stage mode, and one regular file for each file mode staging uses, and holds
+each to staging's checks: a regular file with one link, on the staging root's
+device, with the roots' owner and the exact mode. The modes come from one list
+in staging custody (`stagedFileModes`, `stagedDirectoryModes`), and staging
+refuses any mode outside it, so a new staging mode cannot skip the probe.
+Inside the natural result directory probe, startup creates one file for each
+mode retention gives its files, holds each to retention's checks, and renames
+the bundle-mode file with the no-replace rename twice: onto a name that exists,
+which must be refused as existing, and onto a free name, which must succeed and
+keep the file. Linux refuses a no-replace rename onto an existing name before
+it asks the file system, so only the second rename proves the primitive.
+Startup therefore refuses an overlay whose layers are on different file
+systems, a file system that does not keep a mode staging or retention can need,
+and a results file system whose rename accepts no flags, instead of reporting
+ready while submissions or retentions fail. The staged modes include the `0755`
+directories and the `0644` and `0755` files that only submissions with governed
+mounts use, so ES also refuses to start on a staging file system that cannot
+keep those modes although submissions without governed mounts would work
+there. That is deliberate: ES starts only where every submission it accepts can
+be staged, rather than reporting ready and failing the submissions that have
+governed mounts. ES also never changes
+the owning user of a directory it opened by name: the startup probe, the claim
+of a run staging root and `stagingCustody.ensureDirectory` refuse a directory
+whose owning user is not already the roots' owning user, before any owner or
+mode change. Nothing ties such an open to the creation an instant before, so a
+user who may rename entries of the parent could otherwise have a root ES give
+them somebody else's directory. Entries ES creates must therefore already
+belong to the roots' owning user, as retained result directories always
+required, so a root ES whose staging file system gives new entries to another
+user, for example a bindfs mount with `--create-for-user`, is refused although
+it started before this rule; a root ES on roots owned by another user is refused at startup with
+`staging probe directory does not belong to the execution roots' owning user`.
+The probe retains 13 entries per start, 9 under the staging root and 4 under
+the results root, under the same no-uncertain-unlink rule.
 The isolated candidate's AUTH-01 exact-path correction also applies to
 transitive ancestry re-observation: a qualified key parent and descriptor
 presentation are reopened component for component, including whitespace in an
@@ -2686,6 +2735,27 @@ After one member fault, later observed candidates still require their own
 pidfd and exact group/start-time revalidation before signaling. Aggregate
 member uncertainty enters the existing child-owner hold after that finite
 scan, without changing its signal, reap, or lock authority.
+`Bounded slice rule` process-identity refinement: every membership scan reads
+the proc stat line of every process on the host, so the reader must not let a
+process outside the fixed group decide its result. The reader parses that line
+as bytes. The process name between the first `(` and the last `)` is chosen by
+its own process and may hold any byte; it is never decoded, compared, or
+otherwise interpreted. Only the kernel-written fields after the last `)`
+supply the group ID and the start time. The stat file never proves that a
+process is absent: while a thread other than the first thread of a live
+process calls exec, the kernel can answer `ENOENT` or `ESRCH` at open,
+`ESRCH` at read, or a line with a negative group ID. After such an answer a
+listed process is absent only when `pidfd_open` confirms that no process has
+its ID, by `ESRCH`, or by `EINVAL` from a kernel that answers so for a number
+that no process leads. When a process still has the ID, the reader reads the
+stat file again, four times at most, and an answer that stays unclear is
+unproved, never absent. Every other open or read error is unproved, never
+absent, and a missing `<pid> (` prefix, an oversized line, and a missing or
+non-numeric field remain `process_identity_unproved`. The name or the exit of
+an unrelated process therefore neither fails the capability probe nor prolongs
+the unresolved-cleanup hold. This refinement adds no time limit to that hold,
+never counts a visible zombie as absent, and changes no signal, reap, lock,
+publication, or retry authority.
 
 The facade uses one fixed remote Python stage-creation helper. It opens the
 fixed `/tmp` parent, refuses an existing generated name, creates only that

@@ -1207,11 +1207,13 @@ func TestReplayVisibleParentReplacementRefused(t *testing.T) {
 
 func TestReplayExistingStateModeNotRepaired(t *testing.T) {
 	for _, special := range []uint16{0o1000, 0o2000, 0o4000} {
-		dir := unix.Stat_t{Mode: uint16(unix.S_IFDIR) | 0o700 | special, Uid: uint32(os.Getuid()), Gid: uint32(os.Getgid())}
+		dir := unix.Stat_t{Uid: uint32(os.Getuid()), Gid: uint32(os.Getgid())}
+		dir.Mode = probeMode(dir.Mode, uint32(unix.S_IFDIR)|0o700|uint32(special))
 		if replayDirectoryQualified(dir) {
 			t.Fatal("special directory mode accepted")
 		}
-		file := unix.Stat_t{Mode: uint16(unix.S_IFREG) | 0o600 | special, Uid: uint32(os.Getuid()), Gid: uint32(os.Getgid()), Nlink: 1}
+		file := unix.Stat_t{Uid: uint32(os.Getuid()), Gid: uint32(os.Getgid()), Nlink: 1}
+		file.Mode = probeMode(file.Mode, uint32(unix.S_IFREG)|0o600|uint32(special))
 		if replayFileQualified(file) {
 			t.Fatal("special file mode accepted")
 		}
@@ -1908,3 +1910,5 @@ func TestPrivateReplayScope1PublicationPreflight(t *testing.T) {
 		})
 	}
 }
+
+func probeMode[T ~uint16 | ~uint32](_ T, v uint32) T { return T(v) }
