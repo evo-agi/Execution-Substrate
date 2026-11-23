@@ -31,12 +31,16 @@ flowchart LR
     AGS -->|"store"| ARS
     Caller -->|"2 prepare, submit<br/>4 status, logs,<br/>result, cancel"| ES
     ES -->|"read package<br/>and evidence"| ARS
-    ES -->|"read trust"| EGS
+    ES -->|"read trust<br/>at startup"| EGS
     ES -->|"3 submit job"| Nomad
     Nomad --> Task
     SPIRE -.->|"identity"| Task
     Vault -.->|"secrets, after<br/>it logs in"| Task
 ```
+
+ARS is the Artifact Registry Service, AGS the Artifact Governance Service, EGS
+the Execution Governance Service, and ES the Execution Substrate service
+itself. [Components](#components) below says what each part does.
 
 1. **Publish.** A publisher sends a workload package to AGS: an archive with
    the code to run, plus what it declares it needs (environment variables,
@@ -44,8 +48,8 @@ flowchart LR
    published and stores both in ARS.
 2. **Admit.** A caller asks ES to run that exact package. ES reads the package
    and its evidence from ARS and checks them against the signed runtime trust
-   that EGS publishes. Missing or corrupt evidence means the request is
-   refused. `prepare` runs these checks without starting anything; `submit`
+   that EGS publishes. ES loads that trust once, when it starts. Missing or
+   corrupt evidence means the request is refused. `prepare` runs these checks without starting anything; `submit`
    runs them and then hands the run off.
 3. **Run.** ES submits a job to Nomad, which starts the workload in a Docker
    container. A workload that needs secrets gets an identity from SPIRE and
@@ -79,21 +83,15 @@ ES is a working, bounded platform. It is not a finished product.
 - **In progress:** current work and open design questions are tracked in
   [PLANS.md](PLANS.md).
 
-The repository is operating as a bounded platform with explicit reopened
-seams. The current system is coherent and implemented. Some
-architecture-defining seams remain intentionally reopened in `PLANS.md`, but
-rewrite-by-default is no longer the operating stance. Authoritative design
-intent lives in `PLANS.md` and `.docs/`, not in the README.
-
 ## Components
 
 | Part | What it does |
 | --- | --- |
-| ARS | Artifact storage. Keeps published packages and their evidence, checks their integrity, and lets ES find them. |
-| AGS | Publication. Accepts a package, records signed evidence of exactly what it is, and writes both to ARS. |
-| EGS | Runtime trust. Publishes the signed statement of which signers and artifacts ES may trust. |
-| CGS | A separate, authorize-only policy service. It is not on the path ES uses to run work today. |
-| ES | Admission and execution. Checks a request, submits the run to Nomad, and reports status, logs, results and cancellation. |
+| ARS (Artifact Registry Service) | Artifact storage. Keeps published packages and their evidence, checks their integrity, and lets ES find them. |
+| AGS (Artifact Governance Service) | Publication. Accepts a package, records signed evidence of exactly what it is, and writes both to ARS. |
+| EGS (Execution Governance Service) | Runtime trust. Publishes the signed statement of which signers and artifacts ES may trust. |
+| CGS (credential governance) | A separate, authorize-only policy service. It is not on the path ES uses to run work today. |
+| ES (Execution Substrate) | Admission and execution. Checks a request, submits the run to Nomad, and reports status, logs, results and cancellation. |
 | Nomad | Schedules runs. Once a run is submitted, Nomad is the source of truth for its lifecycle. |
 | Docker | Runs the workload's container under Nomad. |
 | SPIRE | Issues workload identities (SPIFFE IDs). |
@@ -169,7 +167,7 @@ governed migration contract.
 
 For the bounded supported-local Control Plane consumer path, including the `control-plane-normal-shell/v1` runtime profile, submit-ready meaning, workload-visible identity/Vault/trust-material handoff, retained-result behavior, and ownership boundaries, use the canonical ES-side runbook: [.docs/supported_local_cp_consumer_runbook.md](.docs/supported_local_cp_consumer_runbook.md).
 
-The Control Plane-owned long-running operator mode, releaseability, and scaling freeze lives in the adjacent Control Plane repo at [`.docs/long-running-operator-mode-contract.md`](../Control%20Plane/.docs/long-running-operator-mode-contract.md). ES must not widen this supported-local surface into CP orchestration, review, checkpoint, hold/resume/reject, or release authority without an explicit new contract.
+The Control Plane-owned long-running operator mode, releaseability, and scaling freeze lives in the adjacent Control Plane repo at `.docs/long-running-operator-mode-contract.md` (a separate repository, so it is not linked from here). ES must not widen this supported-local surface into CP orchestration, review, checkpoint, hold/resume/reject, or release authority without an explicit new contract.
 
 ## Repo Structure
 
@@ -185,6 +183,12 @@ High-level layout:
 ## Where To Start
 
 This section is an index for contributors and coding agents. Use the README as a navigation entrypoint only. For architecture, contracts, boundaries, lifecycle semantics, and redesign intent, defer to the authoritative docs below. Where this README and those docs disagree, the docs win.
+
+The repository is operating as a bounded platform with explicit reopened
+seams. The current system is coherent and implemented. Some
+architecture-defining seams remain intentionally reopened in `PLANS.md`, but
+rewrite-by-default is no longer the operating stance. Authoritative design
+intent lives in `PLANS.md` and `.docs/`, not in the README.
 
 Read these in order:
 
