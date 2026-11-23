@@ -888,19 +888,20 @@ def rfc2253_component_values(name: str, key: str) -> list[str] | None:
     return values
 
 
-def extract_uri_sans(stdout: bytes) -> set[str] | None:
+def extract_uri_sans(stdout: bytes) -> list[str] | None:
+    """Return every URI SAN in certificate order, duplicates included."""
     try:
         text = stdout.decode("utf-8", "strict")
     except UnicodeDecodeError:
         return None
     if contains_control(text):
         return None
-    uris: set[str] = set()
+    uris: list[str] = []
     for match in URI_SAN_RE.finditer(text):
         uri = match.group(1)
         if not uri or len(uri) > 256 or any(ord(ch) < 33 or ord(ch) > 126 for ch in uri):
             return None
-        uris.add(uri)
+        uris.append(uri)
     return uris
 
 
@@ -1010,7 +1011,10 @@ def classify_identity(
             result.fixed_sudo_used,
             False,
         )
-    expected = EXPECTED_OPERATOR_URI in uris
+    # ES refuses a certificate with more than one URI SAN (caller
+    # authentication contract, contracts.md section 3A), so the expected
+    # identity must be the certificate's only URI SAN.
+    expected = uris == [EXPECTED_OPERATOR_URI]
     legacy = LEGACY_OPERATOR_URI in uris
     if expected:
         status = "pass"

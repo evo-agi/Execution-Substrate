@@ -791,6 +791,12 @@ class Runner:
                     return m.CommandResult(0, b"DNS:client.operator, URI:spiffe://execution.internal/other, URI:spiffe://execution.internal/operator/local\n")
                 if self.mode == "multiple_without_exact":
                     return m.CommandResult(0, b"URI:spiffe://execution.internal/other, URI:spiffe://execution.internal/operator/local-evil\n")
+                if self.mode == "legacy_and_expected":
+                    return m.CommandResult(0, b"DNS:client.operator, URI:spiffe://execution.internal/operator, URI:spiffe://execution.internal/operator/local\n")
+                if self.mode == "expected_twice":
+                    return m.CommandResult(0, b"URI:spiffe://execution.internal/operator/local, URI:spiffe://execution.internal/operator/local\n")
+                if self.mode == "dns_and_expected":
+                    return m.CommandResult(0, b"DNS:client.operator, URI:spiffe://execution.internal/operator/local\n")
                 if self.mode == "malformed_san":
                     return m.CommandResult(0, b"URI:spiffe://execution.internal/operator/local\x01\n")
                 return m.CommandResult(0, b"URI:spiffe://execution.internal/operator/local\n")
@@ -829,8 +835,23 @@ assert payload["identity"]["matches_expected"] is True, payload
 assert payload["key_pair"]["public_key_match"] is True, payload
 assert payload["trust_chain"]["status"] == "pass", payload
 
-payload, _ = collect("multiple_exact")
+payload, _ = collect("dns_and_expected")
+assert payload["result"]["ok"] is True, payload
 assert payload["identity"]["matches_expected"] is True, payload
+assert payload["identity"]["legacy_operator_uri_present"] is False, payload
+
+# ES refuses a certificate with more than one URI SAN (contracts.md section
+# 3A), so the status fails even when one of them is the expected URI.
+for mode in ["multiple_exact", "legacy_and_expected", "expected_twice"]:
+    payload, _ = collect(mode)
+    assert payload["result"]["ok"] is False, (mode, payload)
+    assert payload["result"]["failure_class"] == "identity_mismatch", (mode, payload)
+    assert payload["identity"]["status"] == "fail", (mode, payload)
+    assert payload["identity"]["matches_expected"] is False, (mode, payload)
+    assert payload["identity"]["failure_class"] == "identity_mismatch", (mode, payload)
+payload, _ = collect("legacy_and_expected")
+assert payload["identity"]["legacy_operator_uri_present"] is True, payload
+payload, _ = collect("expected_twice")
 assert payload["identity"]["legacy_operator_uri_present"] is False, payload
 
 for mode in ["expected_suffix", "expected_prefix", "expected_substring", "multiple_without_exact", "malformed_san"]:
