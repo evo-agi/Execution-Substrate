@@ -4,12 +4,14 @@ import (
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -196,6 +198,77 @@ func TestWorkstreamAESImplementationDoesNotExposeAGSPublicationGrammar(t *testin
 	}, allowedWorkstreamAPublicationOccurrence)
 }
 
+// The allow rule of the publication guard judges the identifier or literal
+// that holds a forbidden spelling, never the text of its line: a comment
+// that names an allowed identifier, or an allowed field written beside other
+// code, allows nothing.
+func TestWorkstreamAPublicationAllowRuleJudgesTheCodeNotTheLine(t *testing.T) {
+	terms := []workstreamASourceTerm{
+		{
+			name:        "AGS-owned publication Go identifier",
+			identifiers: []string{"Publication", "publication", "Published", "published", "Publisher", "publisher", "BuilderService", "builderService", "BuildLogDigest", "PolicyDecision", "PolicyDecisions", "Invoker", "SourceURI", "SourceUri", "PublishedAt"},
+		},
+		{
+			name:            "AGS-owned publication JSON/string spelling",
+			stringSpellings: []string{"builder_service", "source_uri", "published_at", "publication", "build_log_digest", "policy_decisions", "invoker"},
+		},
+	}
+	refused := func(file, source string) []string {
+		var names []string
+		for _, occurrence := range workstreamASourceOccurrencesOf(t, file, []byte(source), terms) {
+			if !allowedWorkstreamAPublicationOccurrence(occurrence) {
+				names = append(names, fmt.Sprintf("%d:%s", occurrence.line, occurrence.spelling))
+			}
+		}
+		return names
+	}
+	const policy = "package admission\n\n" +
+		"type AdmissionPolicyDecision struct{ Allowed bool }\n\n" +
+		"func AllowAdmissionPolicyDecision() AdmissionPolicyDecision { return AdmissionPolicyDecision{Allowed: true} }\n\n" +
+		"func DenyAdmissionPolicyDecision() AdmissionPolicyDecision { return AdmissionPolicyDecision{} }\n"
+	const service = "package admission\n\nimport \"encoding/json\"\n\n" +
+		"type signedRuntimeTrustResponse struct {\n" +
+		"\tSignature   string          `json:\"signature\"`\n" +
+		"\tPublication json.RawMessage `json:\"publication,omitempty\"`\n" +
+		"}\n"
+	for name, test := range map[string]struct{ file, source string }{
+		"the policy seam type and its constructors":   {"policy.go", policy},
+		"the ignored runtime-trust publication field": {"service.go", service},
+	} {
+		t.Run("allowed: "+name, func(t *testing.T) {
+			if got := refused(test.file, test.source); len(got) != 0 {
+				t.Fatalf("an allowed occurrence was refused: %v", got)
+			}
+		})
+	}
+	for name, test := range map[string]struct{ file, source, want string }{
+		"an identifier with a comment that names the seam type": {"policy.go", policy + "\nvar zzProbePolicyDecision = 1 // AdmissionPolicyDecision\n", "9:PolicyDecision"},
+		"an identifier on a line that uses the seam type":       {"policy.go", policy + "\nvar zzPolicyDecision AdmissionPolicyDecision\n", "9:PolicyDecision"},
+		"the seam type in another file":                         {"service.go", policy, "3:PolicyDecision"},
+		"an identifier that contains the seam type's name":      {"policy.go", policy + "\nvar AdmissionPolicyDecisionOverride = 1\n", "9:PolicyDecision"},
+		"the seam type in a policy.go of another package":       {"../app/policy.go", policy, "3:PolicyDecision"},
+		"an identifier with a comment that spells the field": {"service.go", service +
+			"\nvar zzPublication = 1 // Publication json.RawMessage `json:\"publication,omitempty\"`\n", "10:Publication"},
+		"an identifier of type json.RawMessage with the tag in a comment": {"service.go", service +
+			"\nvar zzPublication json.RawMessage // `json:\"publication,omitempty\"`\n", "10:Publication"},
+		"a read of the field on a line that spells it": {"service.go", service +
+			"\nfunc zz(r signedRuntimeTrustResponse) json.RawMessage { return r.Publication } // json.RawMessage `json:\"publication,omitempty\"`\n", "10:Publication"},
+		"the same field in another struct": {"service.go", service +
+			"\ntype PrepareRequest struct {\n\tPublication json.RawMessage `json:\"publication,omitempty\"`\n}\n", "11:Publication"},
+		"the field in a service.go of another package": {"../app/service.go", service, "7:Publication"},
+		"the field in another struct only":             {"service.go", strings.Replace(service, "signedRuntimeTrustResponse", "PrepareRequest", 1), "7:Publication"},
+		"the field with another tag":                   {"service.go", strings.Replace(service, "json:\"publication,omitempty\"", "json:\"publication\"", 1), "7:Publication"},
+		"the field with another type":                  {"service.go", strings.Replace(service, "json.RawMessage", "string         ", 1), "7:Publication"},
+		"the tag in another field":                     {"service.go", strings.Replace(service, "Publication json.RawMessage", "Payload     json.RawMessage", 1), "7:publication"},
+	} {
+		t.Run("refused: "+name, func(t *testing.T) {
+			if got := refused(test.file, test.source); !slices.Contains(got, test.want) {
+				t.Fatalf("refused %v, want %s among them", got, test.want)
+			}
+		})
+	}
+}
+
 func TestWorkstreamAESBoundaryImportsExcludeARSSupportAndAGSPublicationPackages(t *testing.T) {
 	blocked := []workstreamABlockedImport{
 		{path: "execution-substrate/ars/index", reason: "ARS index support remains ARS-owned and must not become ES grammar"},
@@ -373,6 +446,11 @@ type workstreamASourceOccurrence struct {
 	term     workstreamASourceTerm
 	spelling string
 	source   string
+	// node is the identifier or string literal that holds the spelling, and
+	// syntax the parsed file around it. An allow rule judges these, never
+	// the text of the line, which a comment can fill with anything.
+	node   ast.Node
+	syntax *ast.File
 }
 
 type workstreamABlockedImport struct {
@@ -400,6 +478,15 @@ func forbiddenWorkstreamASourceOccurrences(t *testing.T, file string, terms []wo
 	if err != nil {
 		t.Fatalf("read %s: %v", file, err)
 	}
+	return workstreamASourceOccurrencesOf(t, file, data, terms)
+}
+
+// workstreamASourceOccurrencesOf lists the occurrences of the terms in the
+// identifiers and string literals of one Go source, read as the file named
+// file.
+func workstreamASourceOccurrencesOf(t *testing.T, file string, data []byte, terms []workstreamASourceTerm) []workstreamASourceOccurrence {
+	t.Helper()
+
 	fileSet := token.NewFileSet()
 	parsed, err := parser.ParseFile(fileSet, file, data, 0)
 	if err != nil {
@@ -420,6 +507,8 @@ func forbiddenWorkstreamASourceOccurrences(t *testing.T, file string, terms []wo
 							term:     term,
 							spelling: spelling,
 							source:   workstreamASourceLine(lines, fileSet.Position(n.Pos()).Line),
+							node:     n,
+							syntax:   parsed,
 						})
 					}
 				}
@@ -441,6 +530,8 @@ func forbiddenWorkstreamASourceOccurrences(t *testing.T, file string, terms []wo
 							term:     term,
 							spelling: spelling,
 							source:   workstreamASourceLine(lines, fileSet.Position(n.Pos()).Line),
+							node:     n,
+							syntax:   parsed,
 						})
 					}
 				}
@@ -458,25 +549,74 @@ func workstreamASourceLine(lines []string, line int) string {
 	return strings.TrimSpace(lines[line-1])
 }
 
+// workstreamAAdmissionPolicyDecisionNames are the identifiers of es/admission's
+// policy.go that hold PolicyDecision: ES Admission Policy Layer v0 owns
+// AdmissionPolicyDecision as a local policy seam type and its two
+// constructors. This is not AGS claims.package.publication PolicyDecision
+// grammar.
+var workstreamAAdmissionPolicyDecisionNames = map[string]bool{
+	"AdmissionPolicyDecision":      true,
+	"AllowAdmissionPolicyDecision": true,
+	"DenyAdmissionPolicyDecision":  true,
+}
+
+// allowedWorkstreamAPublicationOccurrence allows an occurrence by the code
+// that holds it, never by the text of its line: a comment on the same line
+// allows nothing.
 func allowedWorkstreamAPublicationOccurrence(occurrence workstreamASourceOccurrence) bool {
-	if occurrence.spelling == "PolicyDecision" &&
-		filepath.Base(occurrence.file) == "policy.go" &&
-		strings.Contains(occurrence.source, "AdmissionPolicyDecision") {
-		// ES Admission Policy Layer v0 owns AdmissionPolicyDecision as a local
-		// policy seam type. This is not AGS claims.package.publication
-		// PolicyDecision grammar.
-		return true
+	switch occurrence.spelling {
+	case "PolicyDecision":
+		identifier, ok := occurrence.node.(*ast.Ident)
+		return ok && occurrence.file == "policy.go" && workstreamAAdmissionPolicyDecisionNames[identifier.Name]
+	case "Publication", "publication":
+		// EGS publishes unsigned runtime-trust publication metadata beside the
+		// signed runtime-trust payload. ES ignores that dependency metadata;
+		// this is not AGS claims.package.publication or an ES public
+		// admission/API/app field. Only the name and the tag of that one field
+		// are allowed.
+		field := workstreamAIgnoredRuntimeTrustPublicationField(occurrence.syntax)
+		return occurrence.file == "service.go" && field != nil &&
+			(occurrence.node == field.Names[0] || occurrence.node == field.Tag)
 	}
-	if occurrence.spelling != "Publication" && occurrence.spelling != "publication" {
-		return false
+	return false
+}
+
+// workstreamAIgnoredRuntimeTrustPublicationField finds the field
+// Publication json.RawMessage `json:"publication,omitempty"` of the struct
+// type signedRuntimeTrustResponse, or returns nil.
+func workstreamAIgnoredRuntimeTrustPublicationField(syntax *ast.File) *ast.Field {
+	if syntax == nil {
+		return nil
 	}
-	// EGS publishes unsigned runtime-trust publication metadata beside the
-	// signed runtime-trust payload. ES ignores that dependency metadata; this is
-	// not AGS claims.package.publication or an ES public admission/API/app field.
-	return filepath.Base(occurrence.file) == "service.go" &&
-		strings.Contains(occurrence.source, "Publication") &&
-		strings.Contains(occurrence.source, "json.RawMessage") &&
-		strings.Contains(occurrence.source, `json:"publication,omitempty"`)
+	for _, declaration := range syntax.Decls {
+		general, ok := declaration.(*ast.GenDecl)
+		if !ok || general.Tok != token.TYPE {
+			continue
+		}
+		for _, spec := range general.Specs {
+			typeSpec, ok := spec.(*ast.TypeSpec)
+			if !ok || typeSpec.Name.Name != "signedRuntimeTrustResponse" {
+				continue
+			}
+			structType, ok := typeSpec.Type.(*ast.StructType)
+			if !ok {
+				return nil
+			}
+			for _, field := range structType.Fields.List {
+				if len(field.Names) != 1 || field.Names[0].Name != "Publication" || field.Tag == nil || field.Tag.Value != "`json:\"publication,omitempty\"`" {
+					continue
+				}
+				selector, ok := field.Type.(*ast.SelectorExpr)
+				if !ok {
+					continue
+				}
+				if pkg, ok := selector.X.(*ast.Ident); ok && pkg.Name == "json" && selector.Sel.Name == "RawMessage" {
+					return field
+				}
+			}
+		}
+	}
+	return nil
 }
 
 func blockedWorkstreamAImportMatches(importPath string, blockedPath string) bool {
