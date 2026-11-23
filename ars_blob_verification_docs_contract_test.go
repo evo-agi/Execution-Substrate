@@ -88,6 +88,7 @@ func TestARSBlobVerificationContractNamesEveryCoveredReadAndRule(t *testing.T) {
 		"When the admission policy already read the payload, Submit stages that same verified buffer as the primary payload.",
 		"A mismatch fails closed. Every covered read happens before the Submit freeze point, so a mismatch leaves no run ID, staging directory, file write, ownership change, or Nomad registration behind.",
 		"`HEAD /v1/blobs/{digest}`, the ARS `Content-Digest` header, and ARS read-path verification are not used as evidence of byte integrity.",
+		"ES's ARS and EGS clients do not follow redirects. A `3xx` answer is the dependency's final answer: ES refuses it like any other unexpected status and sends no request to the address it names, on the dependency or elsewhere.",
 		"A mismatch keeps each read's existing HTTP status and code.",
 		"No digest value, byte count, or received byte is exposed.",
 		"| Admission-policy payload input | `403` | `admission_policy_input_unavailable` | the existing fixed admission-policy input message |",

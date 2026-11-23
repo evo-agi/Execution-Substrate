@@ -841,6 +841,12 @@ func newDependencyClient(cfg esconfig.DependencyConfig, dependencyName string) (
 		client: &http.Client{
 			Timeout:   time.Duration(cfg.TimeoutSeconds) * time.Second,
 			Transport: observability.WrapRoundTripper("execution", strings.TrimSpace(dependencyName), true, transport),
+			// A redirect is the dependency's answer, never an instruction:
+			// following one would let a compromised ARS or EGS make ES send
+			// requests to any origin it can reach, including over cleartext.
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
 		},
 	}, nil
 }

@@ -10,7 +10,9 @@ import (
 	"io/fs"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -846,19 +848,7 @@ func TestFetchVerifiedARSBlobIsTheOnlyARSBlobReadInES(t *testing.T) {
 	var registryConfigUses []site
 	var discoveryReads []site
 	files := 0
-	walkErr := filepath.WalkDir(esRoot, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if entry.IsDir() {
-			if name := entry.Name(); path != esRoot && (name == "testdata" || strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_")) {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
-			return nil
-		}
+	inspectFile := func(path string) error {
 		source, err := os.ReadFile(path)
 		if err != nil {
 			return err
@@ -926,6 +916,21 @@ func TestFetchVerifiedARSBlobIsTheOnlyARSBlobReadInES(t *testing.T) {
 			})
 		}
 		return nil
+	}
+	walkErr := filepath.WalkDir(esRoot, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			if name := entry.Name(); path != esRoot && (name == "testdata" || strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_")) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		return inspectFile(path)
 	})
 	if walkErr != nil {
 		t.Fatal(walkErr)
@@ -933,8 +938,39 @@ func TestFetchVerifiedARSBlobIsTheOnlyARSBlobReadInES(t *testing.T) {
 	if files < 50 {
 		t.Fatalf("ES source walk found only %d production files", files)
 	}
-	want := site{file: "admission/ars_blob_fetch.go", fn: "fetchVerifiedARSBlob", text: "/v1/blobs/"}
-	if len(sites) != 1 || sites[0] != want {
+	// ES code is not only under es/: the ES binary links module packages from
+	// internal/, ars/, egs/ and cmd/es. A read placed there (a shared client
+	// package handed s.cfg.Dependencies, say) would otherwise escape every rule
+	// above. Inspect every non-test file of every module package that cmd/es
+	// links, on each supported platform, with the same rules.
+	outsideDirs := esBinaryModulePackageDirsOutside(t, filepath.Dir(esRoot), esRoot)
+	if len(outsideDirs) < 5 {
+		t.Fatalf("ES binary dependency walk found only %d module packages outside es/: %v", len(outsideDirs), outsideDirs)
+	}
+	for _, dir := range outsideDirs {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, entry := range entries {
+			name := entry.Name()
+			if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+				continue
+			}
+			if err := inspectFile(filepath.Join(dir, name)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	// The only other "blobs" literal ES links is the ARS server's own route
+	// prefix (ES imports ars/api for its wire types). It is a server route,
+	// not a read.
+	wantSites := []site{
+		{file: "../ars/api/server.go", fn: "<package scope>", text: "/v1/blobs/"},
+		{file: "admission/ars_blob_fetch.go", fn: "fetchVerifiedARSBlob", text: "/v1/blobs/"},
+	}
+	slices.SortFunc(sites, func(a, b site) int { return strings.Compare(a.file+" "+a.fn+" "+a.text, b.file+" "+b.fn+" "+b.text) })
+	if !slices.Equal(sites, wantSites) {
 		t.Fatalf("ARS blob reads in ES production code must go through fetchVerifiedARSBlob; found %+v", sites)
 	}
 	wantClientUses := []site{
@@ -982,6 +1018,44 @@ func TestFetchVerifiedARSBlobIsTheOnlyARSBlobReadInES(t *testing.T) {
 	if !slices.Equal(discoveryReads, wantDiscoveryReads) {
 		t.Fatalf("the unverified discovery read has a caller that is not known to bind the record to the requested artifact: %+v", discoveryReads)
 	}
+}
+
+// esBinaryModulePackageDirsOutside lists the directories of the module
+// packages that cmd/es links on linux/amd64 and darwin/arm64, other than those
+// under esRoot (which the guard walks in full).
+func esBinaryModulePackageDirsOutside(t *testing.T, repositoryRoot string, esRoot string) []string {
+	t.Helper()
+	goBinary := filepath.Join(runtime.GOROOT(), "bin", "go")
+	seen := map[string]bool{}
+	var dirs []string
+	for _, target := range []productionBuildTarget{{goos: "linux", goarch: "amd64"}, {goos: "darwin", goarch: "arm64"}} {
+		command := exec.Command(goBinary, "list", "-deps", "-f", "{{if .Module}}{{if .Module.Main}}{{.Dir}}{{end}}{{end}}", "./cmd/es")
+		command.Dir = repositoryRoot
+		// The same hermetic environment as the other production go list
+		// guards: local toolchain, no proxy, no GOENV, no inherited GIT_*.
+		command.Env = productionGoListEnvironment(target)
+		var stdout, stderr bytes.Buffer
+		command.Stdout = &stdout
+		command.Stderr = &stderr
+		if err := command.Run(); err != nil {
+			t.Fatalf("list ES binary dependencies for %s: %v: %s", target, err, stderr.String())
+		}
+		for _, dir := range strings.Fields(stdout.String()) {
+			relative, err := filepath.Rel(esRoot, dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if relative == "." || (!strings.HasPrefix(relative, "..") && !filepath.IsAbs(relative)) {
+				continue
+			}
+			if !seen[dir] {
+				seen[dir] = true
+				dirs = append(dirs, dir)
+			}
+		}
+	}
+	slices.Sort(dirs)
+	return dirs
 }
 
 // TestARSBlobReadsKeepTheirOwnReadLimits serves one byte more than each read's

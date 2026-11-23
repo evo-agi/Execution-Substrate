@@ -697,6 +697,10 @@ There is no other:
   ownership change, or Nomad registration behind.
 - `HEAD /v1/blobs/{digest}`, the ARS `Content-Digest` header, and ARS
   read-path verification are not used as evidence of byte integrity.
+- ES's ARS and EGS clients do not follow redirects. A `3xx` answer is the
+  dependency's final answer: ES refuses it like any other unexpected status
+  and sends no request to the address it names, on the dependency or
+  elsewhere.
 
 **Public mapping.** A mismatch keeps each read's existing HTTP status and code.
 Only the message names the cause. No digest value, byte count, or received
