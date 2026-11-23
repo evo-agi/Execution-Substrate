@@ -397,5 +397,20 @@ hold fails one test and does not stop the test binary. A guard test applies
 the rule to every fixture script of the package, and one test runs the shared
 boundary with `/proc` and the pidfd operations denied.
 
+Each fixed command of the collector also runs in a PID namespace of its own,
+which only root can create on Linux. A local fixture and a live fixture
+therefore replace the namespace by one shared stand-in that does nothing,
+together with the namespace part of the capability probe. A fixture replaces
+both or neither, and the same guard test refuses a fixture that replaces only
+one of the two. A fixture that uses the stand-in proves nothing about the
+containment. The containment has tests of its own. One group puts a
+deterministic backend in the place of the kernel operations and runs on every
+host. The other group uses the real kernel: each of its tests attempts to
+create a PID namespace in a child of its own and skips itself, with an
+explicit reason, only when the kernel refuses. The CI job runs that group
+once more as root and fails unless each of its tests passes, so a skip never
+stands in for the proof there. That step is the only use of root in the CI
+job, and only the test binary runs as root.
+
 This is test hygiene only. It changes no collector behavior, capability
 criterion, hold, signal, reap, lock, or publication rule.

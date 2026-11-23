@@ -30,6 +30,12 @@ entry for a subtest fail, and the output says why.
     not let -overlay replace a file beneath GOMODCACHE, and a toolchain that
     the go command downloaded itself lies there.
 
+One group checks go_test_as_root.py, the step that runs as root the tests
+of the root package that skip themselves without root. It runs that program
+in a throwaway module exactly as the workflow runs it. A stand-in for sudo
+comes first on PATH there; it writes down its arguments and runs the command
+as the current user, so the checks need no privilege and prove none.
+
 The last group reads ../workflows/go.yml beside this file. It holds that file
 as a whole by its SHA-256, so every edit of the workflow has to change the
 value in this file in the same change, and it checks some properties of the
@@ -37,6 +43,7 @@ workflow that the gate's guarantees depend on.
 """
 
 import hashlib
+import importlib.util
 import os
 import re
 import shutil
@@ -47,10 +54,11 @@ import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 GATE = os.path.join(HERE, "go_test_gate.py")
+ROOT_STEP = os.path.join(HERE, "go_test_as_root.py")
 WORKFLOW = os.path.join(HERE, os.pardir, "workflows", "go.yml")
 # SHA-256 of that file as it was last reviewed. See
 # test_the_workflow_file_is_the_text_that_was_reviewed.
-WORKFLOW_SHA256 = "d8578b0e6b5901d06ae82f0ec4acf81390d48ff8831a574a76d8d57d1c58bd18"
+WORKFLOW_SHA256 = "66e138fd5abc6d33e14276d5648a1f30959bf806636256e01b0d29df6ab99acf"
 
 PASS = "pass"
 FAIL = "fail"
@@ -3770,6 +3778,206 @@ class ListedSubtestStandsForItselfAlone(GateCase):
         self.wide(output, ("synth/a TestLate/reg", "TestLate/reg/custody", "TestLate"))
 
 
+STAND_IN_SUDO = """#!/bin/sh
+# Stands in for sudo in the checks of go_test_as_root.py. It writes down its
+# arguments and runs the command as the current user.
+printf '%s\\n' "$*" >> "$ROOT_STEP_SELFTEST_CALLS"
+[ "$1" = -n ] && [ "$2" = -- ] || exit 97
+shift 2
+exec "$@"
+"""
+
+# Refuses as sudo does when it would have to ask for a password.
+REFUSING_SUDO = """#!/bin/sh
+printf '%s\\n' "$*" >> "$ROOT_STEP_SELFTEST_CALLS"
+echo "sudo: a password is required" >&2
+exit 1
+"""
+
+ROOT_STEP_TESTS = """package synth
+
+import (
+	"os"
+	"testing"
+)
+
+// The step empties the environment and runs in the directory of the package.
+func TestPasses(t *testing.T) {
+	if env := os.Environ(); len(env) != 1 || env[0] != "PATH=/usr/bin:/bin" {
+		t.Fatalf("the environment is %q", env)
+	}
+	if _, err := os.Stat("code.go"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAlsoPasses(t *testing.T) {
+	t.Run("part", func(t *testing.T) { t.Skip("a subtest may skip") })
+}
+
+func TestSkips(t *testing.T) { t.Skip("cannot here") }
+
+func TestFails(t *testing.T) { t.Fatal("fails") }
+
+func TestNotListed(t *testing.T) { t.Fatal("this test must not run") }
+"""
+
+
+def run_root_step(listing, arguments=None, sudo=STAND_IN_SUDO):
+    """Run go_test_as_root.py in a new module. Return (exit status, output, sudo calls).
+
+    An argument "{list}" stands for the path of the list file. Every sudo
+    call is one line: the arguments that the stand-in for sudo was given.
+    """
+    with tempfile.TemporaryDirectory() as root:
+        module = os.path.join(root, "module")
+        tools = os.path.join(root, "bin")
+        os.makedirs(module)
+        os.makedirs(tools)
+        write_module(module, {"": {}}, {"root_test.go": ROOT_STEP_TESTS})
+        list_path = os.path.join(root, "list.txt")
+        with open(list_path, "w") as handle:
+            handle.write(listing)
+        calls = os.path.join(root, "calls.txt")
+        with open(calls, "w"):
+            pass
+        with open(os.path.join(tools, "sudo"), "w") as handle:
+            handle.write(sudo)
+        os.chmod(os.path.join(tools, "sudo"), 0o755)
+        environment = dict(os.environ)
+        environment["ROOT_STEP_SELFTEST_CALLS"] = calls
+        environment["PATH"] = tools + os.pathsep + environment.get("PATH", "")
+        if arguments is None:
+            arguments = ["{list}", "synth"]
+        arguments = [list_path if argument == "{list}" else argument for argument in arguments]
+        done = subprocess.run(
+            [sys.executable, "-I", "-B", ROOT_STEP] + arguments,
+            cwd=module,
+            env=environment,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+        with open(calls) as handle:
+            made = handle.read().splitlines()
+        return done.returncode, done.stdout.decode("utf-8", "replace"), made
+
+
+class RootStepRunsExactlyTheListedTests(unittest.TestCase):
+    """go_test_as_root.py: the listed tests of one package, once, through sudo."""
+
+    def test_listed_tests_that_pass_are_run_once_through_sudo(self):
+        status, output, calls = run_root_step(
+            "synth TestFails\n"
+            "skips-itself synth TestPasses\n"
+            "skips-itself synth TestAlsoPasses\n"
+            "skips-itself synth/other TestElsewhere\n"
+        )
+        self.assertEqual(status, 0, output)
+        self.assertIn("--- PASS: TestPasses (", output)
+        self.assertIn("--- PASS: TestAlsoPasses (", output)
+        self.assertIn("tests as root passed: 2 of synth", output)
+        # Only what the list names for this package with "skips-itself" ran:
+        # not the entry, not the test of another package, not an unlisted test.
+        for name in ("TestFails", "TestNotListed", "TestSkips", "TestElsewhere"):
+            self.assertNotIn("--- PASS: " + name, output)
+            self.assertNotIn("--- FAIL: " + name, output)
+        self.assertEqual(len(calls), 1, calls)
+        self.assertRegex(
+            calls[0],
+            r"^-n -- /usr/bin/env -i PATH=/usr/bin:/bin \S+/package\.test "
+            r"-test\.run \^\(TestPasses\|TestAlsoPasses\)\$ -test\.v -test\.count=1 -test\.timeout=10m$",
+        )
+
+    def test_a_listed_test_that_skips_itself_as_root_fails_the_step(self):
+        status, output, calls = run_root_step(
+            "skips-itself synth TestPasses\nskips-itself synth TestSkips\n"
+        )
+        self.assertEqual(status, 1, output)
+        self.assertIn("::error::tests as root: TestSkips did not pass as root: SKIP", output)
+        self.assertNotIn("TestPasses did not pass", output)
+        self.assertNotIn("tests as root passed", output)
+        self.assertEqual(len(calls), 1, calls)
+
+    def test_a_listed_test_that_fails_as_root_fails_the_step(self):
+        status, output, calls = run_root_step("skips-itself synth TestFails\n")
+        self.assertEqual(status, 1, output)
+        self.assertIn("::error::tests as root: TestFails did not pass as root: FAIL", output)
+        self.assertIn("::error::tests as root: the test binary ended with status 1", output)
+
+    def test_a_listed_test_that_the_package_does_not_have_fails_before_sudo(self):
+        status, output, calls = run_root_step(
+            "skips-itself synth TestPasses\nskips-itself synth TestAbsent\n"
+        )
+        self.assertEqual(status, 1, output)
+        self.assertIn("the list names tests that synth does not have: TestAbsent", output)
+        self.assertEqual(calls, [])
+
+    def test_a_list_without_a_line_for_the_package_is_an_error(self):
+        # Otherwise a list that lost its lines would turn the step into one
+        # that runs nothing and passes.
+        for listing in ("", "synth TestFails\n", "skips-itself synth/other TestElsewhere\n"):
+            with self.subTest(listing=listing):
+                status, output, calls = run_root_step(listing)
+                self.assertEqual(status, 2, output)
+                self.assertIn("so this step would run nothing", output)
+                self.assertEqual(calls, [])
+
+    def test_a_line_for_a_subtest_is_an_error(self):
+        status, output, calls = run_root_step("skips-itself synth TestAlsoPasses/part\n")
+        self.assertEqual(status, 2, output)
+        self.assertIn("does not name a top-level test", output)
+        self.assertEqual(calls, [])
+
+    def test_a_list_that_the_gate_refuses_is_refused_here(self):
+        status, output, calls = run_root_step("skips-itself synth TestPasses\nnot a line\n")
+        self.assertEqual(status, 2, output)
+        self.assertIn("::error::tests as root, list:", output)
+        self.assertEqual(calls, [])
+
+    def test_a_sudo_that_refuses_fails_the_step(self):
+        status, output, calls = run_root_step("skips-itself synth TestPasses\n", sudo=REFUSING_SUDO)
+        self.assertEqual(status, 1, output)
+        self.assertIn("::error::tests as root: TestPasses reported no verdict", output)
+        self.assertIn("::error::tests as root: the test binary ended with status 1", output)
+        self.assertEqual(len(calls), 1, calls)
+
+    def test_other_arguments_are_an_error(self):
+        for arguments in ([], ["{list}"], ["{list}", "synth", "more"]):
+            with self.subTest(arguments=arguments):
+                status, output, calls = run_root_step("skips-itself synth TestPasses\n", arguments)
+                self.assertEqual(status, 2, output)
+                self.assertIn("usage: go_test_as_root.py LIST PACKAGE", output)
+                self.assertEqual(calls, [])
+
+    def test_only_one_passing_verdict_for_each_listed_test_is_accepted(self):
+        spec = importlib.util.spec_from_file_location("go_test_as_root", ROOT_STEP)
+        step = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(step)
+        passed = "--- PASS: TestA (0.01s)\n"
+        self.assertEqual(step.judge(["TestA"], 0, "=== RUN   TestA\n" + passed + "PASS\n"), [])
+        # The verdict of a subtest is indented, and so is what a test logs.
+        self.assertEqual(
+            step.judge(["TestA"], 0, "    --- SKIP: TestA/part (0.00s)\n" + passed), []
+        )
+        self.assertEqual(
+            step.judge(["TestA"], 0, "    --- PASS: TestA (0.00s)\n"), ["TestA reported no verdict"]
+        )
+        self.assertEqual(
+            step.judge(["TestA"], 0, passed + passed), ["TestA did not pass as root: PASS, PASS"]
+        )
+        self.assertEqual(
+            step.judge(["TestA"], 0, passed + "--- PASS: TestB (0.00s)\n"),
+            ["TestB ran although the list does not name it"],
+        )
+        self.assertEqual(
+            step.judge(["TestA"], 2, passed), ["the test binary ended with status 2"]
+        )
+        self.assertEqual(
+            step.judge(["TestA", "TestB"], 0, passed + "--- SKIP: TestB (0.00s)\n"),
+            ["TestB did not pass as root: SKIP"],
+        )
+
+
 class WorkflowKeepsWhatTheGateDependsOn(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -3816,6 +4024,15 @@ class WorkflowKeepsWhatTheGateDependsOn(unittest.TestCase):
             # No line in the plain style allows a step to fail or makes one
             # conditional. Other spellings are caught by the hash above.
             self.assertFalse(line.startswith(("continue-on-error:", "if:", "- if:")), line)
+
+    def test_the_tests_as_root_are_the_last_command_and_no_step_calls_sudo(self):
+        commands = [line[len("run: "):] for line in self.lines if line.startswith("run: ")]
+        as_root = 'python3 -I -B .github/ci/go_test_as_root.py "$ENVIRONMENT_ONLY_TESTS" execution-substrate'
+        self.assertEqual([command for command in commands if "go_test_as_root" in command], [as_root])
+        self.assertEqual(commands[-1], as_root)
+        # go_test_as_root.py calls sudo for one command. No step does.
+        for command in commands:
+            self.assertNotIn("sudo", command)
 
     def test_the_module_is_type_checked_for_macos(self):
         # Some test files of the module build only on macOS. The Linux

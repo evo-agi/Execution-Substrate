@@ -3516,7 +3516,9 @@ before its fixed release and is reaped on every path. One successful
 invocation-local capability state is required by every fixed OpenSSL command;
 no command forks another probe. Failure or indeterminate capability reads no
 status input, spawns no OpenSSL child, publishes no generation, and leaves no
-probe descriptor or process. On group signal
+probe descriptor or process. A second part of the same probe proves the
+PID-namespace containment stated below with two further fixed internal fork
+children, a probe anchor and one probe member, under the same rules. On group signal
 failure it enumerates only members whose observed PGID equals the reserved
 leader PGID, acquires pidfds, revalidates identity and membership, signals
 members through pidfds, and repeats bounded scans until nonleader members are
@@ -3531,7 +3533,8 @@ identity revalidation, signaling, polling, waiting, or cleanup-state
 reporting is contained by this unresolved-cleanup hold. One-shot faults
 recover on later iterations; persistent faults retain the invocation and
 lock with bounded backoff. No outer retry may return until group absence
-and exactly one direct-child reap are proved. No unrelated process is signaled.
+and exactly one direct-child reap are proved, and no fixed command returns
+before the anchor of its PID namespace is reaped. No unrelated process is signaled.
 Group TERM and KILL occur while the child remains unreaped, so
 its PID remains reserved; cleanup never signals a process group after reaping.
 Nonreaping `waitid` with `WNOWAIT` detects terminal leader state without
@@ -3575,6 +3578,98 @@ error is unproved, never absent, and a missing `<pid> (` prefix, a line over
 therefore neither fails the capability probe nor prolongs the
 unresolved-cleanup hold. This rule adds no time limit to that hold and never
 counts a visible zombie as absent.
+
+`Bounded slice rule` for fixed-child containment: the process-group
+disposition reaches only a process that stays in the fixed child's process
+group and that one identity scan observes. A descendant that leaves the group
+with `setsid` or `setpgid`, or that ignores TERM and replaces itself with a
+new process between two scans, is outside both. Each fixed OpenSSL command
+therefore runs in a PID namespace of its own, and the kernel, not a scan,
+accounts for its processes. The sequence for one command is fixed:
+
+1. The collector opens `/proc/self/ns/pid` and proves that
+   `/proc/self/ns/pid_for_children` names the same namespace object, by
+   device and inode. Otherwise the command refuses before any spawn.
+2. It creates one control pipe, calls `unshare(CLONE_NEWPID)`, and forks
+   exactly one fixed internal anchor. The anchor is the first process of the
+   new namespace. It closes every inherited descriptor except its standard
+   streams and the read end of the control pipe, including the status lock
+   and the trust-anchor pipe, checks that none is left, and ends with a
+   nonzero status when one is. It then reaps every orphan of the namespace
+   and ends with status zero when the control pipe reports end of input. The
+   reaping is required: an orphan that ends as a zombie in the fixed child's
+   process group would otherwise stay visible to the absence scan of step 5
+   and hold it. The anchor runs no other code and reads no status input.
+3. The collector spawns the fixed child exactly as before. The child is the
+   second process of the namespace and a direct child of the collector, so
+   the collector sees its ordinary process and group IDs and every existing
+   cleanup step applies to it unchanged.
+4. Directly after the spawn attempt, successful or not, the collector calls
+   `setns` with its own namespace and proves the reset by the check of step 1.
+5. Collection, the cleanup owner, process-group disposition, the
+   unresolved-cleanup hold, the direct-child reap, and the post-reap absence
+   scan run unchanged.
+6. Only after they return does the collector close the control pipe. When the
+   anchor ends, the kernel kills every process that is still in the
+   namespace, admits no new process into it, and lets the anchor become
+   terminal only when no other process of the namespace is left, which
+   includes an unreaped direct child of the collector.
+7. The collector waits for the anchor alone with a nonblocking `waitpid`,
+   sends it one KILL when it is not terminal after the grace period or when
+   the pipe close failed, and reaps it exactly once. No fixed command returns, with a result
+   or incomplete, before that reap.
+
+The control pipe closes when the collector closes its end and also when the
+collector ceases to exist, so a killed collector takes its fixed child and
+every descendant in the namespace with it. As the first process of its
+namespace the anchor cannot be ended by a signal from inside it. An anchor
+that does not become terminal holds the invocation with lifecycle ownership
+and the status lock retained, as the unresolved-cleanup hold does, and that
+hold has no time limit.
+
+Failure never selects a weaker mode. A missing `os.unshare` or `os.setns`, a
+refused namespace, or a failed anchor fork means no spawn and an incomplete
+command. An unproved reset, a failed control-pipe close, an anchor that ends
+in any way other than status zero or the collector's own KILL, and an
+unproved anchor reap are incomplete after the complete cleanup; the private
+`child_namespace_unproved` literal maps to the existing
+`openssl_child_unproved` collection witness reason. While the reset stays
+unproved, every later command refuses at step 1. No command falls back to
+process-group disposition alone.
+
+The process-capability probe proves this by behavior in its second part,
+after its first part succeeded and before any status input is read. It opens
+one probe namespace by steps 1, 2 and 4 with one fixed internal member in
+place of the fixed child. The member closes its inherited descriptors and
+then waits for input that never comes, so it never ends by itself. After the
+collector closes the control pipe, the member must become terminal by the
+kernel's KILL within the grace period, the anchor must not be terminal while
+the member is unreaped, and after the member's reap the anchor must end with
+status zero without a KILL from the collector. Both children are reaped and
+every probe descriptor is closed on every path. Any other outcome is
+`process_capability_unproved` before any status input is read and before any
+OpenSSL spawn. The decision is by behavior, never by an OS label, a kernel
+version, or the caller's user ID.
+
+Limits that this rule states and does not remove:
+
+- The fixed child still runs as root. It cannot leave its PID namespace, but
+  a hostile child could ask a service of the host to start a process outside
+  it, or write any file that root may write. The rule contains the processes
+  of the fixed command, not the authority of root.
+- A process that cannot die, for example one that is stuck in the kernel,
+  keeps the anchor from becoming terminal. The invocation then holds.
+- Inside its namespace the fixed child has process ID 2 and parent ID 0,
+  while `/proc` stays the host's and shows the host's process IDs.
+- The namespace setting belongs to the calling thread, and a kernel may
+  refuse `unshare(CLONE_NEWPID)` to a process with several threads. The
+  collector keeps exactly one thread.
+- Creating a PID namespace needs root on Linux. Local and unprivileged tests
+  replace the namespace steps with a stand-in and prove nothing about the
+  kernel path; only a run as root on Linux does.
+
+This rule changes no process-group signal, hold, direct-child reap, lock,
+publication, public code, schema, reader, or retry authority.
 
 The exact client verification argv is `/usr/bin/openssl verify -trusted
 <selected-ca-fd> -purpose sslclient /dev/stdin`. The server argv is

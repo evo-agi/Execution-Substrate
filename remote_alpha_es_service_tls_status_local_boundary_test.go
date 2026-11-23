@@ -283,16 +283,41 @@ func remoteAlphaESStatusBoundaryFault(text string) string {
 	return ""
 }
 
+// The PID namespace of a fixed command and the namespace part of the
+// capability probe are replaced together or not at all. A fixture with only
+// one of them replaced is neither a local fixture nor a test of the
+// containment.
+func remoteAlphaESStatusNamespaceFault(text string) string {
+	namespace := remoteAlphaESStatusReplaces(text, "", "ChildNamespace")
+	probe := remoteAlphaESStatusReplaces(text, "", "validate_child_namespace")
+	switch {
+	case namespace && !probe:
+		return "replaces the PID namespace of the fixed command and leaves the namespace part of the capability probe real"
+	case probe && !namespace:
+		return "replaces the namespace part of the capability probe and leaves the PID namespace of the fixed command real"
+	}
+	return ""
+}
+
 func TestRemoteAlphaESServiceTLSStatusLocalBoundaryIsInjectedWhole(t *testing.T) {
 	scripts, unresolved := remoteAlphaESStatusFixtureScripts(t)
 	mentions := regexp.MustCompile(`scan_group_members|signal_same_group_members|read_proc_identity|PROCESS_CAPABILITY_READY|pidfd_open|pidfd_send_signal|own_child_until_proved|terminate_child|prove_group_absent`)
+	namespaceMentions := regexp.MustCompile(`ChildNamespace|validate_child_namespace`)
 	for _, script := range unresolved {
-		if mentions.MatchString(script.text) {
+		if mentions.MatchString(script.text) || namespaceMentions.MatchString(script.text) {
 			t.Errorf("%s: a fixture script that names the process boundary is joined from a part that this guard cannot resolve", script)
 		}
 	}
-	shared, judged, whole := 0, 0, 0
+	shared, judged, whole, standIns := 0, 0, 0, 0
 	for _, script := range scripts {
+		if namespaceMentions.MatchString(script.text) {
+			if fault := remoteAlphaESStatusNamespaceFault(script.text); fault != "" {
+				t.Errorf("%s: fixture script %s", script, fault)
+			}
+			if strings.Contains(script.text, remoteAlphaESStatusLocalChildNamespace) && script.text != remoteAlphaESStatusLocalChildNamespace {
+				standIns++
+			}
+		}
 		if !mentions.MatchString(script.text) {
 			continue
 		}
@@ -312,7 +337,8 @@ func TestRemoteAlphaESServiceTLSStatusLocalBoundaryIsInjectedWhole(t *testing.T)
 			t.Errorf("%s: fixture script %s", script, fault)
 		}
 	}
-	t.Logf("%d scripts name the process boundary, %d use the shared local boundary, %d replace the whole boundary", judged, shared, whole)
+	t.Logf("%d scripts name the process boundary, %d use the shared local boundary, %d replace the whole boundary, %d use the shared namespace stand-in",
+		judged, shared, whole, standIns)
 	// The guard must have seen the fixtures. The numbers are floors, so that
 	// a new fixture does not have to change them, and a guard that no longer
 	// sees the fixtures fails. A floor goes down only together with a fixture
@@ -387,7 +413,40 @@ func TestRemoteAlphaESServiceTLSStatusLocalBoundaryIsInjectedWhole(t *testing.T)
 	if fault := remoteAlphaESStatusBoundaryFault(remoteAlphaESStatusLocalProcessBoundary); fault != "" {
 		t.Errorf("the shared local boundary breaks the rule: %s", fault)
 	}
+
+	// The same for the namespace pair. Its names are spelled in capitals too.
+	if standIns < remoteAlphaESStatusNamespaceStandInFloor {
+		t.Errorf("guard saw %d scripts with the shared namespace stand-in; want at least %d", standIns, remoteAlphaESStatusNamespaceStandInFloor)
+	}
+	pair := strings.NewReplacer("NAMESPACE", "ChildNamespace", "PROBE_PART", "validate_child_namespace")
+	for _, tc := range []struct {
+		name, text string
+		refused    bool
+	}{
+		{"neither", "module.OPENSSL=str(child)\n", false},
+		{"both", "m.NAMESPACE=standin\nm.PROBE_PART=lambda: None\n", false},
+		{"both as entries", "namespace[\"NAMESPACE\"] = fake\nnamespace[\"PROBE_PART\"] = fake\n", false},
+		{"used and not replaced", "namespace=module.NAMESPACE(backend)\nmodule.PROBE_PART(backend)\n", false},
+		{"compared and not replaced", "same=module.NAMESPACE==kept\n", false},
+		{"namespace alone", "module.NAMESPACE=type(\"x\",(),{})\n", true},
+		{"probe part alone", "module.PROBE_PART=lambda: None\n", true},
+		{"namespace entry alone", "namespace[\"NAMESPACE\"] = fake\n", true},
+		{"patched probe part alone", "mock.patch.object(module,\"PROBE_PART\",fake)\n", true},
+		{"probe part with the namespace only used", "module.PROBE_PART=lambda: None\nmodule.NAMESPACE()\n", true},
+	} {
+		fault := remoteAlphaESStatusNamespaceFault(pair.Replace(tc.text))
+		if (fault != "") != tc.refused {
+			t.Errorf("namespace rule on %q: fault %q, want refused=%v", tc.name, fault, tc.refused)
+		}
+	}
+	if fault := remoteAlphaESStatusNamespaceFault(remoteAlphaESStatusLocalChildNamespace); fault != "" {
+		t.Errorf("the shared namespace stand-in breaks the rule: %s", fault)
+	}
 }
+
+// The number of fixture scripts that hold the shared namespace stand-in. It
+// is a floor, as the two numbers above.
+const remoteAlphaESStatusNamespaceStandInFloor = 36
 
 // runRemoteAlphaESStatusLocalBoundaryProbe runs one Python child that loads
 // only the source-controlled collector and returns its exit status and
