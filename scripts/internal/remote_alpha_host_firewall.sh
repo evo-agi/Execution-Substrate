@@ -40,7 +40,7 @@ remote_alpha_host_firewall_schema_version="execution-substrate.remote-alpha.host
 # ===========================================================================
 
 # Names the settings file may set. Paths stay environment-only (tests).
-remote_alpha_host_firewall_file_settings="SSH_SOURCES SSH_PASSWORD_SOURCES SSH_PORT SERVICE_CALLERS SERVICE_PORTS VAULT_ADDRESS VAULT_PORT CONTAINER_DNS_SERVERS CONTAINER_INTERFACES CONTAINER_BRIDGE_SUBNETS ACCEPT_BLOCKED_LISTENERS ROLLBACK_SECONDS PROBE_IMAGE PROBE_LAN_ADDRESS PROBE_LAN_GATEWAY PROBE_DNS_NAME PROBE_INTERNET_PORT"
+remote_alpha_host_firewall_file_settings="SSH_SOURCES SSH_PASSWORD_SOURCES SSH_PORT SERVICE_CALLERS SERVICE_PORTS VAULT_ADDRESS VAULT_PORT CONTAINER_DNS_SERVERS CONTAINER_INTERFACES ACCEPT_BLOCKED_LISTENERS ROLLBACK_SECONDS PROBE_IMAGE PROBE_LAN_ADDRESS PROBE_LAN_GATEWAY PROBE_DNS_NAME PROBE_INTERNET_PORT"
 
 remote_alpha_host_firewall_defaults() {
   # Who may open SSH to the box. The whole home LAN by default, so that a new
@@ -76,10 +76,6 @@ remote_alpha_host_firewall_defaults() {
   # Interfaces whose traffic counts as container traffic. A trailing "*"
   # matches a prefix: "br-*" covers user-defined Docker networks.
   : "${REMOTE_ALPHA_HOST_FIREWALL_CONTAINER_INTERFACES:=docker0 br-* nomad}"
-
-  # Bridge subnets whose containers must not reach each other at layer 2.
-  # Must include the subnet of the bridge that holds VAULT_ADDRESS (docker0).
-  : "${REMOTE_ALPHA_HOST_FIREWALL_CONTAINER_BRIDGE_SUBNETS:=172.17.0.0/16}"
 
   # Listening sockets that the firewall makes unreachable from the LAN and
   # that an operator has checked nobody needs, as tcp/PORT or udp/PORT.
@@ -123,7 +119,7 @@ remote_alpha_host_firewall_defaults() {
     REMOTE_ALPHA_HOST_FIREWALL_SERVICE_CALLERS REMOTE_ALPHA_HOST_FIREWALL_SERVICE_PORTS \
     REMOTE_ALPHA_HOST_FIREWALL_VAULT_ADDRESS REMOTE_ALPHA_HOST_FIREWALL_VAULT_PORT \
     REMOTE_ALPHA_HOST_FIREWALL_CONTAINER_DNS_SERVERS REMOTE_ALPHA_HOST_FIREWALL_CONTAINER_INTERFACES \
-    REMOTE_ALPHA_HOST_FIREWALL_CONTAINER_BRIDGE_SUBNETS REMOTE_ALPHA_HOST_FIREWALL_ACCEPT_BLOCKED_LISTENERS \
+    REMOTE_ALPHA_HOST_FIREWALL_ACCEPT_BLOCKED_LISTENERS \
     REMOTE_ALPHA_HOST_FIREWALL_DOCKER_DAEMON_JSON REMOTE_ALPHA_HOST_FIREWALL_RESOLV_CONF \
     REMOTE_ALPHA_HOST_FIREWALL_SYSTEMD_RESOLV_CONF
 }
@@ -247,9 +243,11 @@ Modes:
               then cancel the rollback timer.
   --status    Read-only: report whether the installed rules are loaded and
               unchanged, whether the sshd drop-in matches the settings and
-              sshd -T agrees, the unit state, a pending rollback, the source
-              Vault sees for the box and the counters. Exit 0 only when
-              installed and unchanged.
+              sshd -T agrees, the unit state, a pending rollback, whether
+              every bridge is still a container interface and no container
+              interface has IPv6, the source Vault sees for the box and the
+              counters. Exit 0 only when installed and unchanged and both
+              host checks pass.
   --probe     Start two short-lived containers from PROBE_IMAGE and check
               from inside one of them that Vault, DNS and the internet work
               and that the box's LAN services, the LAN gateway and the other
@@ -560,9 +558,9 @@ remote_alpha_host_firewall_checks() {
   rm -f "${candidate}.nft-check"
 
   if ip -o -4 addr show 2>/dev/null | remote_alpha_host_firewall_py bridge-check >/dev/null; then
-    printf 'container bridge holds the Vault address and is isolated: pass\n'
+    printf 'the Vault address is on a container interface: pass\n'
   else
-    printf 'container bridge holds the Vault address and is isolated: FAIL (see host facts)\n'
+    printf 'the Vault address is on a container interface: FAIL (see host facts)\n'
     failed=1
   fi
 
@@ -895,7 +893,7 @@ remote_alpha_host_firewall_confirm() {
 remote_alpha_host_firewall_status() {
   local ruleset_path listing_path status=0 work
   remote_alpha_host_firewall_require_root || return 1
-  remote_alpha_host_firewall_require_commands nft systemctl python3 sshd || return 1
+  remote_alpha_host_firewall_require_commands nft ip systemctl python3 sshd || return 1
   ruleset_path=$(remote_alpha_host_firewall_ruleset_path)
   listing_path=$(remote_alpha_host_firewall_listing_path)
   printf 'Remote Alpha host firewall: status (read-only)\n'
@@ -959,6 +957,25 @@ remote_alpha_host_firewall_status() {
     && grep -Eq '^[[:space:]]*flush[[:space:]]+ruleset' "${REMOTE_ALPHA_HOST_FIREWALL_NFTABLES_CONF}" 2>/dev/null; then
     printf 'warning: nftables.service is enabled and flushes the whole ruleset when restarted\n'
   fi
+  # Two checks of --apply that a later change on the host can break: a
+  # bridge that is not a container interface loses every frame between its
+  # ports, and a container network given IPv6 reaches the LAN's IPv6 hosts.
+  work=$(mktemp)
+  if ip -o link show type bridge 2>/dev/null | remote_alpha_host_firewall_py bridges >"${work}"; then
+    printf 'every bridge is a container interface: pass\n'
+  else
+    printf 'every bridge is a container interface: FAIL\n'
+    cat "${work}"
+    [[ "${status}" -eq 0 ]] && status=1
+  fi
+  if ip -o -6 addr show scope global 2>/dev/null | remote_alpha_host_firewall_py container-ipv6 >"${work}"; then
+    printf 'no container interface has IPv6: pass\n'
+  else
+    printf 'no container interface has IPv6: FAIL\n'
+    cat "${work}"
+    [[ "${status}" -eq 0 ]] && status=1
+  fi
+  rm -f "${work}"
   remote_alpha_host_firewall_py host-vault-source || true
   if nft list table inet "${remote_alpha_host_firewall_table}" >/dev/null 2>&1; then
     printf 'counters:\n'
@@ -968,7 +985,7 @@ remote_alpha_host_firewall_status() {
   case "${status}" in
     0) printf 'RESULT: installed and unchanged\n' ;;
     3) printf 'RESULT: apply awaiting confirm\n' ;;
-    *) printf 'RESULT: not installed or changed\n' ;;
+    *) printf 'RESULT: not installed, changed, or a host check failed\n' ;;
   esac
   return "${status}"
 }

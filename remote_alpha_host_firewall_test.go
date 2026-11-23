@@ -231,9 +231,11 @@ func TestRemoteAlphaHostFirewallRulesetInvariants(t *testing.T) {
 		// requests are rate-limited.
 		"ct state invalid counter name \"invalid_in\" drop",
 		"icmp type echo-request limit rate 10/second accept",
-		// Layer-2 isolation of the Vault bridge: IPv4 by destination only
-		// (a forged source does not help), and no IPv6 between bridge ports.
-		"ether type ip ip daddr 172.17.0.0/16 counter name \"container_to_container\" drop\n\t\tether type ip6 counter name \"container_to_container\" drop\n",
+		// Layer-2 isolation: the bridge table's forward chain, the last
+		// chain of the file, holds one rule that drops every frame from one
+		// bridge port to another (IPv4 whatever its addresses, IPv6,
+		// VLAN-tagged frames, ARP).
+		"type filter hook forward priority filter - 10; policy accept;\n\t\tcounter name \"container_to_container\" drop\n\t}\n}\n",
 		// Nothing new is forwarded into a container, published ports included.
 		"oifname { \"docker0\", \"nomad\" } ct state new counter name \"into_container\" drop",
 		// The box's own connections to Vault keep the bridge address as their
@@ -362,7 +364,6 @@ func TestRemoteAlphaHostFirewallRejectsInvalidSettings(t *testing.T) {
 		{"interface with quote", []string{"REMOTE_ALPHA_HOST_FIREWALL_CONTAINER_INTERFACES=docker0 eth\"0"}, "is not an interface name"},
 		{"interface too long", []string{"REMOTE_ALPHA_HOST_FIREWALL_CONTAINER_INTERFACES=abcdefghijklmnop"}, "is not an interface name"},
 		{"interface star inside", []string{"REMOTE_ALPHA_HOST_FIREWALL_CONTAINER_INTERFACES=br*x"}, "is not an interface name"},
-		{"bridge subnet ipv6", []string{"REMOTE_ALPHA_HOST_FIREWALL_CONTAINER_BRIDGE_SUBNETS=fd00::/64"}, "IPv4 networks only"},
 		{"dns loopback", []string{"REMOTE_ALPHA_HOST_FIREWALL_CONTAINER_DNS_SERVERS=127.0.0.53"}, "loopback resolver"},
 		{"vault network", []string{"REMOTE_ALPHA_HOST_FIREWALL_VAULT_ADDRESS=172.17.0.1/16"}, "is not an IP address"},
 		{"accept token", []string{"REMOTE_ALPHA_HOST_FIREWALL_ACCEPT_BLOCKED_LISTENERS=tcp:5353"}, "tcp/PORT or udp/PORT"},
@@ -429,6 +430,9 @@ func TestRemoteAlphaHostFirewallSettingsFile(t *testing.T) {
 		name, content, want string
 	}{
 		{"unknown name", "SERVICE_CALLERS=192.168.1.210/32\nSTATE_DIR=/tmp\n", "unknown setting STATE_DIR"},
+		// Retired: the bridge table drops every frame between bridge ports,
+		// so no subnet list decides layer-2 isolation any more.
+		{"retired bridge subnets", "SERVICE_CALLERS=192.168.1.210/32\nCONTAINER_BRIDGE_SUBNETS=172.17.0.0/16\n", "unknown setting CONTAINER_BRIDGE_SUBNETS"},
 		{"set twice", "SERVICE_CALLERS=192.168.1.210/32\nSERVICE_CALLERS=192.168.1.0/24\n", "SERVICE_CALLERS is set twice"},
 		{"not an assignment", "SERVICE_CALLERS 192.168.1.210/32\n", "expected NAME="},
 		{"command substitution", "SERVICE_CALLERS=\"$(touch " + marker + ")\"\n", "not allowed"},
@@ -784,11 +788,14 @@ func TestRemoteAlphaHostFirewallBridgeCheck(t *testing.T) {
 	assertContainsAll(t, "bridge check", output,
 		"wlp2s0", "LAN side (inbound default deny)",
 		"docker0", "containers isolated from each other at layer 2; holds the Vault address",
-		"br-abc123", "NOT isolated at layer 2",
+		"  br-abc123        172.18.0.1/16        container side; containers isolated from each other at layer 2\n",
 	)
-	output, code = runHostFirewallPython(t, hostFirewallBaseEnv(t, "", "REMOTE_ALPHA_HOST_FIREWALL_CONTAINER_BRIDGE_SUBNETS=172.18.0.0/16"), addrs, "bridge-check")
-	if code != 7 {
-		t.Fatalf("expected refusal when the Vault bridge is not isolated, got %d\n%s", code, output)
+	if strings.Contains(output, "NOT isolated") {
+		t.Fatalf("the bridge table drops every frame between bridge ports, so no container bridge is reported as not isolated:\n%s", output)
+	}
+	output, code = runHostFirewallPython(t, hostFirewallBaseEnv(t, "", "REMOTE_ALPHA_HOST_FIREWALL_CONTAINER_INTERFACES=br-* nomad"), addrs, "bridge-check")
+	if code != 7 || !strings.Contains(output, "must be a container interface listed in CONTAINER_INTERFACES") {
+		t.Fatalf("expected refusal when the Vault address is not on a container interface, got %d\n%s", code, output)
 	}
 	output, code = runHostFirewallPython(t, env, "2: wlp2s0    inet 192.168.1.156/24 scope global wlp2s0\n", "bridge-check")
 	if code != 7 || !strings.Contains(output, "no interface holds the Vault address") {
@@ -839,6 +846,8 @@ func TestRemoteAlphaHostFirewallArgumentsAndRoot(t *testing.T) {
 		"container\n              interface with a global or unique-local IPv6 address",
 		"never confirmed or rolled back",
 		"From a new SSH connection from SSH_SOURCES (loopback does not",
+		"every bridge is still a container interface and no container\n              interface has IPv6",
+		"both\n              host checks pass",
 		"records of an earlier --apply in\n              RUN_DIR",
 		"(/var/lib/es-host-firewall\n  by default",
 		"Not egress lanes",
@@ -867,6 +876,9 @@ func TestRemoteAlphaHostFirewallArgumentsAndRoot(t *testing.T) {
 // The fake nft keeps a "loaded" copy of the last ruleset it loaded and lists
 // it in place of the kernel; the fake systemd-run records the rollback
 // command; the fake systemctl keeps the timer and unit state in files.
+// FAKE_NFT_LOAD_FAIL makes nft refuse to load a ruleset of this script,
+// FAKE_SYSTEMD_RUN_FAIL makes systemd-run fail, and FAKE_SYSTEMD_RUN_NO_TIMER
+// makes it succeed without a waiting timer.
 func hostFirewallFakes(t *testing.T, ssEstablished string) (string, string) {
 	t.Helper()
 	fakeBin := t.TempDir()
@@ -881,6 +893,7 @@ state=%q
 echo "nft $*" >>%q
 if [[ "$1" == "-c" ]]; then [[ -n "${FAKE_NFT_CHECK_FAIL:-}" ]] && { echo "check failed" >&2; exit 1; }; exit 0; fi
 if [[ "$1" == "-f" ]]; then
+  if [[ -n "${FAKE_NFT_LOAD_FAIL:-}" ]] && grep -q "^table inet es_host_firewall {" "$2"; then echo "Error: Could not process rule" >&2; exit 1; fi
   if grep -q "^table inet es_host_firewall {" "$2"; then cp "$2" "$state/loaded"; else rm -f "$state/loaded"; fi
   exit 0
 fi
@@ -894,9 +907,11 @@ exit 0
 `, state, log))
 	writeExecutable(t, fakeBin, "systemd-run", fmt.Sprintf(`#!/bin/bash
 echo "systemd-run $*" >>%q
+[[ -n "${FAKE_SYSTEMD_RUN_FAIL:-}" ]] && { echo "Failed to start transient timer unit" >&2; exit 1; }
 cmd=()
 for arg in "$@"; do case "$arg" in --*) ;; *) cmd+=("$arg") ;; esac; done
 printf '%%q ' "${cmd[@]}" >%q/rollback-command
+[[ -n "${FAKE_SYSTEMD_RUN_NO_TIMER:-}" ]] && exit 0
 echo waiting >%q/timer
 `, log, state, state))
 	writeExecutable(t, fakeBin, "systemctl", fmt.Sprintf(`#!/bin/bash
@@ -1100,8 +1115,20 @@ func TestRemoteAlphaHostFirewallApplyConfirmRollbackOrderWithFakes(t *testing.T)
 
 	// Status: installed and unchanged.
 	stdout, _, code = runHostFirewall(t, env, "--status")
-	if code != 0 || !strings.Contains(stdout, "RESULT: installed and unchanged") || !strings.Contains(stdout, "host to Vault source: ") {
+	if code != 0 || !strings.Contains(stdout, "RESULT: installed and unchanged") || !strings.Contains(stdout, "host to Vault source: ") ||
+		!strings.Contains(stdout, "every bridge is a container interface: pass") || !strings.Contains(stdout, "no container interface has IPv6: pass") {
 		t.Fatalf("status: exit %d\n%s", code, stdout)
+	}
+	// Host drift that --apply would refuse: a bridge that is not a container
+	// interface, or a container interface with IPv6, appears later.
+	for _, drift := range []struct{ name, env, want string }{
+		{"other bridge", "FAKE_IP_BRIDGES=12: virbr0: <BROADCAST,MULTICAST,UP> mtu 1500 qdisc noqueue state DOWN mode DEFAULT", "every bridge is a container interface: FAIL\n  bridge docker0"},
+		{"container ipv6", "FAKE_IP_V6=3: docker0    inet6 fd00:dead:beef::1/64 scope global", "no container interface has IPv6: FAIL\n  container interface with IPv6: docker0 fd00:dead:beef::1/64"},
+	} {
+		stdout, _, code = runHostFirewall(t, append(append([]string{}, env...), drift.env), "--status")
+		if code != 1 || !strings.Contains(stdout, drift.want) || !strings.Contains(stdout, "RESULT: not installed, changed, or a host check failed") {
+			t.Fatalf("status with %s: exit %d\n%s", drift.name, code, stdout)
+		}
 	}
 	// Drift: the sshd drop-in edited by hand.
 	writeFile(t, dropIn, []byte(renderedDropIn+"PasswordAuthentication yes\n"), 0o644)
@@ -1227,6 +1254,67 @@ func TestRemoteAlphaHostFirewallApplyRefusesOtherBridgesAndContainerIPv6(t *test
 // unconfirmed marker; an apply whose timer vanished (a reboot inside the
 // confirm window) leaves the marker, which --status reports and --plan and
 // --apply refuse until --rollback.
+// An --apply that stops before the ruleset is loaded changes nothing, so it
+// must not leave the unconfirmed marker behind: a later --plan or --apply
+// would otherwise refuse with "never confirmed" until --rollback.
+func TestRemoteAlphaHostFirewallApplyFailuresLeaveNoUnconfirmedMarker(t *testing.T) {
+	for _, tc := range []struct {
+		name, env, stderr string
+		timerStopped      bool
+	}{
+		{"timer_cannot_be_armed", "FAKE_SYSTEMD_RUN_FAIL=1", "could not arm the rollback timer; nothing was changed", false},
+		{"timer_not_active_after_arming", "FAKE_SYSTEMD_RUN_NO_TIMER=1", "the rollback timer is not active after arming it; nothing was changed", false},
+		{"nft_refuses_the_ruleset", "FAKE_NFT_LOAD_FAIL=1", "nft refused the ruleset; the transaction changed nothing", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fakeBin, state := hostFirewallFakes(t, "0 0 192.168.1.156:22 192.168.1.23:50000\n")
+			root := t.TempDir()
+			unitPath := filepath.Join(root, "systemd", "es-host-firewall.service")
+			runDir := filepath.Join(root, "run")
+			for _, dir := range []string{filepath.Dir(unitPath), filepath.Join(root, "state"), runDir} {
+				if err := os.MkdirAll(dir, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			env := hostFirewallBaseEnv(t, fakeBin,
+				"REMOTE_ALPHA_HOST_FIREWALL_STATE_DIR="+filepath.Join(root, "state"),
+				"REMOTE_ALPHA_HOST_FIREWALL_RUN_DIR="+runDir,
+				"REMOTE_ALPHA_HOST_FIREWALL_UNIT_PATH="+unitPath,
+				"FAKE_UNIT_PATH="+unitPath,
+			)
+			var dropIn string
+			for _, entry := range env {
+				if k, v, _ := strings.Cut(entry, "="); k == "REMOTE_ALPHA_HOST_FIREWALL_SSHD_DROP_IN" {
+					dropIn = v
+				}
+			}
+			stdout, stderr, code := runHostFirewall(t, append(append([]string{}, env...), tc.env), "--apply")
+			if code != 1 || !strings.Contains(stderr, tc.stderr) {
+				t.Fatalf("apply: expected exit 1 and %q, got %d\n%s\n%s", tc.stderr, code, stdout, stderr)
+			}
+			if _, err := os.Stat(filepath.Join(runDir, "unconfirmed")); !os.IsNotExist(err) {
+				t.Fatalf("a failed apply must not leave the unconfirmed marker, stat err=%v", err)
+			}
+			if _, err := os.Stat(filepath.Join(state, "loaded")); !os.IsNotExist(err) {
+				t.Fatalf("no ruleset may be loaded, stat err=%v", err)
+			}
+			if _, err := os.Stat(dropIn); !os.IsNotExist(err) {
+				t.Fatalf("no sshd drop-in may be installed, stat err=%v", err)
+			}
+			if tc.timerStopped {
+				if got := strings.TrimSpace(readIfExists(filepath.Join(state, "timer"))); got != "dead" {
+					t.Fatalf("the armed rollback timer must be stopped, got %q", got)
+				}
+			}
+			// Nothing left over: the next plan passes, with no complaint about
+			// an earlier apply.
+			if stdout, _, code := runHostFirewall(t, env, "--plan"); code != 0 || !strings.Contains(stdout, "no earlier apply awaiting confirm: pass") {
+				t.Fatalf("plan after the failed apply: exit %d\n%s", code, stdout)
+			}
+		})
+	}
+}
+
 func TestRemoteAlphaHostFirewallUnconfirmedApplyRecords(t *testing.T) {
 	fakeBin, state := hostFirewallFakes(t, "0 0 192.168.1.156:22 192.168.1.23:50000\n")
 	root := t.TempDir()
@@ -1767,7 +1855,7 @@ s = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(0x0003))
 s.bind(("eth0", 0))
 s.settimeout(0.2)
 print("ready", flush=True)
-counts = {"ipv4": 0, "ipv6": 0}
+seen = {"ipv4": set(), "ipv6": set(), "tagged": set(), "arp": set()}
 deadline = time.monotonic() + float(sys.argv[1])
 while time.monotonic() < deadline:
     try:
@@ -1775,13 +1863,19 @@ while time.monotonic() < deadline:
     except socket.timeout:
         continue
     # Count arriving frames only, not what this namespace sends (such as an
-    # ICMP error that quotes the marker).
-    if address[2] == socket.PACKET_OUTGOING or b"ESFWL2MARK" not in frame:
+    # ICMP error that quotes the marker). Each frame carries a marker and an
+    # id; a tagged frame can be seen twice (with and without its tag).
+    if address[2] == socket.PACKET_OUTGOING:
         continue
-    kind = {b"\x08\x00": "ipv4", b"\x86\xdd": "ipv6"}.get(frame[12:14])
-    if kind:
-        counts[kind] += 1
-print("ipv4=%d ipv6=%d" % (counts["ipv4"], counts["ipv6"]), flush=True)
+    for marker, kinds in ((b"ESFWL2MARK", {b"\x08\x00": "ipv4", b"\x86\xdd": "ipv6", b"\x08\x06": "arp"}), (b"ESFWL2VLAN", None)):
+        at = frame.find(marker)
+        if at < 0:
+            continue
+        frame_id = frame[at + len(marker):at + len(marker) + 1]
+        kind = "tagged" if kinds is None else kinds.get(frame[12:14])
+        if kind:
+            seen[kind].add(frame_id)
+print("ipv4=%d ipv6=%d tagged=%d arp=%d" % tuple(len(seen[k]) for k in ("ipv4", "ipv6", "tagged", "arp")), flush=True)
 `
 
 // hostFirewallLabL2Sender writes, from eth0 of its namespace, an IPv4/UDP
@@ -1803,9 +1897,30 @@ checksum = ~((total & 0xFFFF) + (total >> 16)) & 0xFFFF
 header = header[:10] + struct.pack(">H", checksum) + header[12:]
 ipv6 = struct.pack(">IHBB16s16s", 6 << 28, len(udp), 17, 64,
                    socket.inet_pton(socket.AF_INET6, "fe80::2"), socket.inet_pton(socket.AF_INET6, "fe80::3"))
-for _ in range(3):
-    s.send(dst_mac + src_mac + b"\x08\x00" + header + udp)
-    s.send(dst_mac + src_mac + b"\x86\xdd" + ipv6 + udp)
+def frames(marker, i):
+    data = marker + bytes([48 + i])
+    u = struct.pack(">HHHH", 40000, 9999, 8 + len(data), 0) + data
+    h = struct.pack(">BBHHHBBH4s4s", 0x45, 0, 20 + len(u), 1, 0, 64, 17, 0, forged, target)
+    t = sum(struct.unpack(">10H", h))
+    t = (t & 0xFFFF) + (t >> 16)
+    h = h[:10] + struct.pack(">H", ~((t & 0xFFFF) + (t >> 16)) & 0xFFFF) + h[12:]
+    v6 = struct.pack(">IHBB16s16s", 6 << 28, len(u), 17, 64,
+                     socket.inet_pton(socket.AF_INET6, "fe80::2"), socket.inet_pton(socket.AF_INET6, "fe80::3"))
+    return h + u, v6 + u
+gateway, own = socket.inet_aton("172.17.0.1"), socket.inet_aton("172.17.0.2")
+for i in range(3):
+    v4, v6 = frames(b"ESFWL2MARK", i)
+    s.send(dst_mac + src_mac + b"\x08\x00" + v4)
+    s.send(dst_mac + src_mac + b"\x86\xdd" + v6)
+    # The same with an 802.1Q priority tag (VLAN 0), which the receiving
+    # kernel strips and delivers like an untagged frame.
+    v4, v6 = frames(b"ESFWL2VLAN", 2 * i)
+    s.send(dst_mac + src_mac + b"\x81\x00\x00\x00\x08\x00" + v4)
+    v4, v6 = frames(b"ESFWL2VLAN", 2 * i + 1)
+    s.send(dst_mac + src_mac + b"\x81\x00\x00\x00\x86\xdd" + v6)
+    # An ARP reply that claims the gateway's address for the sender.
+    arp = struct.pack(">HHBBH6s4s6s4s", 1, 0x0800, 6, 4, 2, src_mac, gateway, dst_mac, target)
+    s.send(dst_mac + src_mac + b"\x08\x06" + arp + b"ESFWL2MARK" + bytes([48 + i]))
 print("sent", flush=True)
 `
 
@@ -1859,8 +1974,8 @@ func TestRemoteAlphaHostFirewallRealKernelBridgeIsolation(t *testing.T) {
 			l.run("ip", "netns", "exec", box, "sysctl", "-qw", "net.bridge."+key+"=0")
 		}
 	}
-	if got := l.l2Probe(); got != "ipv4=3 ipv6=3" {
-		t.Fatalf("without the firewall both frames must arrive (the lab can see them), got %q", got)
+	if got := l.l2Probe(); got != "ipv4=3 ipv6=3 tagged=6 arp=3" {
+		t.Fatalf("without the firewall every frame must arrive (the lab can see them), got %q", got)
 	}
 	ruleset, stderr, code := runHostFirewall(t, hostFirewallBaseEnv(t, ""), "--render")
 	if code != 0 {
@@ -1869,11 +1984,11 @@ func TestRemoteAlphaHostFirewallRealKernelBridgeIsolation(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "ruleset.nft")
 	writeFile(t, path, []byte(ruleset), 0o600)
 	l.run("ip", "netns", "exec", box, "nft", "-f", path)
-	if got := l.l2Probe(); got != "ipv4=0 ipv6=0" {
-		t.Fatalf("with the firewall neither a forged-source IPv4 frame nor an IPv6 frame may pass between containers, got %q", got)
+	if got := l.l2Probe(); got != "ipv4=0 ipv6=0 tagged=0 arp=0" {
+		t.Fatalf("with the firewall no frame may pass between containers (forged-source IPv4, IPv6, VLAN-tagged, ARP), got %q", got)
 	}
-	if got := l.counter("bridge", "container_to_container"); got != "6" {
-		t.Fatalf("the bridge counter must count the six dropped frames, got %s", got)
+	if got := l.counter("bridge", "container_to_container"); got != "15" {
+		t.Fatalf("the bridge counter must count the fifteen dropped frames, got %s", got)
 	}
 	// Containers still reach Vault, DNS and the internet: frames to the
 	// bridge's own address are local delivery, not bridge forwarding.
@@ -2052,15 +2167,18 @@ func TestRemoteAlphaHostFirewallDocsContract(t *testing.T) {
 		"input, default drop, at priority `filter - 10`",
 		"from container interfaces (`CONTAINER_INTERFACES`, default `docker0 br-* nomad`): only `VAULT_ADDRESS:VAULT_PORT` (default `172.17.0.1:8200`)",
 		"no new connection into a container is forwarded, published ports (Docker DNAT) included",
-		"cannot reach each other at layer 2, whatever the `br_netfilter` state and whatever source address a container writes (the IPv4 rule matches the destination only), and no IPv6 frame passes from one bridge port to another.",
+		"containers cannot reach each other at layer 2, whatever the `br_netfilter` state: no frame passes from one bridge port to another (IPv4 whatever its addresses, IPv6, VLAN-tagged frames, ARP)",
 		"`--apply` refuses while a bridge exists that is not a container interface",
+		"whether every bridge is still a container interface and no container interface has a global or unique-local IPv6 address (so a bridge or an IPv6 network added after `--apply` shows up here, not only at the next `--apply`)",
+		"a bridge created after `--apply` that is not a container interface (for example a libvirt bridge) loses every frame between its ports",
+		"the Vault address is on a container interface, every bridge is a container interface",
 		"no container interface has a global or unique-local IPv6 address",
 		"The new connection must come from an address inside `SSH_SOURCES` and not from loopback",
 		"under `/var/lib/es-host-firewall`. They are on disk so that an apply cut short by a reboot (which also ends the timer) stays visible",
 		"`/proc/sys/net/bridge/bridge-nf-call-iptables`, which exists whether it is a module or built in",
 		"a real UDP service on such a port is blocked like any other unlisted listener",
 		"the bound CIDR limits by network, not by workload",
-		"one turns `br_netfilter` off in the lab and sends forged-source IPv4 and raw IPv6 frames between two containers, which must not arrive",
+		"one turns `br_netfilter` off in the lab and sends forged-source IPv4, raw IPv6, VLAN-tagged and ARP frames between two containers, which must not arrive",
 		"chain `host_to_vault_source` (nat, postrouting, priority `srcnat - 10`) applies an identity snat",
 		"the workload role's `token_bound_cidrs` (`172.17.0.0/16`, P0q-R1) refuses the box's own workload-auth check with a plain 403",
 		"an `accept` would not do this. It is the only address rewrite in the ruleset",

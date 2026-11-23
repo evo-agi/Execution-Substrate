@@ -239,12 +239,6 @@ def load_settings():
     settings["container_interfaces"] = parse_ifnames(
         "CONTAINER_INTERFACES", env("CONTAINER_INTERFACES")
     )
-    settings["container_bridge_subnets"] = parse_networks(
-        "CONTAINER_BRIDGE_SUBNETS", env("CONTAINER_BRIDGE_SUBNETS"), True
-    )
-    for network in settings["container_bridge_subnets"]:
-        if network.version != 4:
-            raise SettingsError("CONTAINER_BRIDGE_SUBNETS takes IPv4 networks only")
     raw_dns = env("CONTAINER_DNS_SERVERS").strip()
     if raw_dns == "auto":
         servers, source = auto_dns_servers()
@@ -325,10 +319,6 @@ def render(settings):
     add(f"#   service_callers = {' '.join(map(str, settings['service_callers']))}")
     add(f"#   vault = {settings['vault_address']} tcp/{settings['vault_port']}")
     add(f"#   container_interfaces = {' '.join(settings['container_interfaces'])}")
-    add(
-        "#   container_bridge_subnets = "
-        + " ".join(map(str, settings["container_bridge_subnets"]))
-    )
     add(
         "#   container_dns_servers = "
         + (" ".join(map(str, settings["dns_servers"])) or "(none)")
@@ -442,10 +432,9 @@ def render(settings):
     add("")
     add("# Containers on the same bridge talk at layer 2 and do not pass the inet")
     add("# forward hook unless br_netfilter is active. This table blocks that path")
-    add("# whatever the br_netfilter state: IPv4 by destination only, so a forged")
-    add("# source address does not help, and all IPv6 between bridge ports (the")
-    add("# containers have no IPv6 subnet to key on; --apply refuses while a bridge")
-    add("# that is not a container interface exists, so no other bridge is hit).")
+    add("# whatever the br_netfilter state: it drops every frame from one bridge")
+    add("# port to another (IPv4, IPv6, VLAN-tagged, ARP). --apply refuses while a")
+    add("# bridge that is not a container interface exists, so no other bridge is hit.")
     add("# The bridge forward hook sees only frames from one port to another:")
     add("# traffic to the bridge's own address is local delivery, so Vault, DNS")
     add("# and the internet stay reachable.")
@@ -456,12 +445,11 @@ def render(settings):
         add("")
     add("\tchain forward {")
     add("\t\ttype filter hook forward priority filter - 10; policy accept;")
-    for network in settings["container_bridge_subnets"]:
-        add(
-            f"\t\tether type ip ip daddr {network} "
-            'counter name "container_to_container" drop'
-        )
-    add('\t\tether type ip6 counter name "container_to_container" drop')
+    # Every frame from one bridge port to another: IPv4 whatever its
+    # addresses, IPv6, VLAN-tagged frames (802.1Q priority tags carry IPv4
+    # or IPv6 past an ether type match) and ARP (a forged ARP reply would
+    # redirect a neighbour's traffic to the sender).
+    add('\t\tcounter name "container_to_container" drop')
     add("\t}")
     add("}")
     return "\n".join(lines) + "\n"
@@ -595,10 +583,6 @@ def cmd_describe(_args):
         + f" (from {settings['dns_source']})"
     )
     print(f"container interfaces: {' '.join(settings['container_interfaces'])}")
-    print(
-        "container bridge subnets: "
-        + " ".join(map(str, settings["container_bridge_subnets"]))
-    )
     print(
         "accepted blocked listeners: "
         + (" ".join(settings["accept_blocked_listeners"]) or "(none)")
@@ -1000,10 +984,11 @@ def ifname_matches(name, patterns):
 
 def cmd_bridge_check(_args):
     """Read ``ip -o -4 addr show`` on stdin. Report every interface with an
-    IPv4 address as container side or LAN side, and whether container
-    bridges are isolated at layer 2. Exit 7 unless the interface that holds
-    VAULT_ADDRESS is a container interface whose subnet is listed in
-    CONTAINER_BRIDGE_SUBNETS."""
+    IPv4 address as container side or LAN side. Exit 7 unless the interface
+    that holds VAULT_ADDRESS is a container interface. Every bridge is
+    isolated at layer 2: the bridge table drops every frame from one bridge
+    port to another, and the bridges check refuses a bridge that is not a
+    container interface."""
     settings = load_settings()
     vault = settings["vault_address"]
     vault_ok = False
@@ -1020,19 +1005,14 @@ def cmd_bridge_check(_args):
         if name == "lo":
             continue
         container = ifname_matches(name, settings["container_interfaces"])
-        isolated = interface.network in settings["container_bridge_subnets"]
         holds_vault = interface.ip == vault
         side = "container side" if container else "LAN side (inbound default deny)"
         extra = ""
         if container:
-            extra = (
-                "; containers isolated from each other at layer 2"
-                if isolated
-                else "; NOT isolated at layer 2 (inet forward rule only, needs br_netfilter)"
-            )
+            extra = "; containers isolated from each other at layer 2"
         if holds_vault:
             vault_seen = True
-            vault_ok = container and isolated
+            vault_ok = container
             extra += "; holds the Vault address"
         print(f"  {name:<16} {interface.with_prefixlen:<20} {side}{extra}")
     if not vault_seen:
@@ -1043,7 +1023,7 @@ def cmd_bridge_check(_args):
     if not vault_ok:
         print(
             "  the interface that holds the Vault address must be a container interface "
-            "listed in CONTAINER_INTERFACES with its subnet in CONTAINER_BRIDGE_SUBNETS"
+            "listed in CONTAINER_INTERFACES"
         )
         return 7
     return 0
@@ -1087,9 +1067,8 @@ def cmd_probe_plan(args):
 
 def cmd_bridges(_args):
     """Read ``ip -o link show type bridge`` on stdin. Every bridge must be a
-    container interface: the bridge table drops IPv6 between the ports of
-    every bridge, and IPv4 to the container subnets. Exit 10 when one is
-    not."""
+    container interface: the bridge table drops every frame between the
+    ports of every bridge. Exit 10 when one is not."""
     settings = load_settings()
     others = []
     for line in sys.stdin:
@@ -1105,7 +1084,7 @@ def cmd_bridges(_args):
     if others:
         print(
             "  bridges that are not container interfaces: " + " ".join(others)
-            + ". The bridge table would drop IPv6 between their ports. Add them to"
+            + ". The bridge table would drop every frame between their ports. Add them to"
             " REMOTE_ALPHA_HOST_FIREWALL_CONTAINER_INTERFACES (their traffic is then"
             " treated as container traffic) or remove them."
         )

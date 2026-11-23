@@ -6656,15 +6656,15 @@ Rules (`execution-substrate.remote-alpha.host-firewall.v1`, golden file
   range; no new connection into a container is forwarded, published ports
   (Docker DNAT) included, so a port published later stays closed until this
   rule changes
-- bridge table: containers on the listed bridge subnets
-  (`CONTAINER_BRIDGE_SUBNETS`, default `172.17.0.0/16`) cannot reach each
-  other at layer 2, whatever the `br_netfilter` state and whatever source
-  address a container writes (the IPv4 rule matches the destination only),
-  and no IPv6 frame passes from one bridge port to another. The bridge
-  forward hook sees only port-to-port frames, so this does not touch
-  traffic to the host. The IPv6 rule cannot be keyed on a container subnet
-  (the containers have none), so it covers every bridge; `--apply` refuses
-  while a bridge exists that is not a container interface
+- bridge table: containers cannot reach each other at layer 2, whatever
+  the `br_netfilter` state: no frame passes from one bridge port to another
+  (IPv4 whatever its addresses, IPv6, VLAN-tagged frames, ARP), so a forged
+  source address, an 802.1Q priority tag or a forged ARP reply does not
+  help either. The bridge forward hook sees only port-to-port frames, so
+  this does not touch traffic to the host. The rule cannot be keyed on the
+  container bridges (`meta ibrname` is not supported here), so it covers
+  every bridge; `--apply` refuses while a bridge exists that is not a
+  container interface
 - box's own connections to Vault: chain `host_to_vault_source` (nat,
   postrouting, priority `srcnat - 10`) applies an identity snat to
   connections that leave through `lo` from `VAULT_ADDRESS` to
@@ -6731,8 +6731,8 @@ Modes:
   peers, listening sockets and what the firewall does to each, the ruleset,
   the drop-in, and every check `--apply` makes
 - `--apply`: the checks (the kernel accepts the ruleset with `nft -c`,
-  current SSH peers stay allowed, the container bridge holds the Vault
-  address and is isolated, every bridge is a container interface, no
+  current SSH peers stay allowed, the Vault address is on a container
+  interface, every bridge is a container interface, no
   container interface has a global or unique-local IPv6 address, every
   newly blocked listener is accepted, the sshd checks, no earlier apply
   awaiting confirm or left unconfirmed), then it arms the rollback
@@ -6748,8 +6748,12 @@ Modes:
   new-connection check
 - `--status`: read-only; whether the installed ruleset is loaded and
   unchanged, whether the drop-in matches the settings and `sshd -T` agrees,
-  the unit, a pending rollback, the source Vault sees for the box and the
-  counters. Exit 0 only when installed and unchanged
+  the unit, a pending rollback, whether every bridge is still a container
+  interface and no container interface has a global or unique-local IPv6
+  address (so a bridge or an IPv6 network added after `--apply` shows up
+  here, not only at the next `--apply`), the source Vault sees for the box
+  and the counters. Exit 0 only when installed and unchanged and both host
+  checks pass
 - `--probe`: two short-lived containers from `PROBE_IMAGE` (never pulled);
   Vault, DNS and the internet must work, and the box's LAN services, the LAN
   gateway and the other container must not; Vault must see the box's own
@@ -6785,9 +6789,16 @@ Known limits:
   process that connects to `VAULT_ADDRESS:VAULT_PORT` the bridge address,
   the bound CIDR limits by network, not by workload: a process on the box
   passes it, which the box's own workload-auth check needs
-- container networks with IPv6 are refused (see `--apply`): the forward
-  rules block only private IPv6 ranges for containers, so containers with
-  IPv6 could reach LAN hosts at the LAN's global IPv6 prefix
+- container networks with IPv6 are refused (see `--apply`; `--status`
+  reports one added later): the forward rules block only private IPv6
+  ranges for containers, so containers with IPv6 could reach LAN hosts at
+  the LAN's global IPv6 prefix
+- a bridge created after `--apply` that is not a container interface (for
+  example a libvirt bridge) loses every frame between its ports, because
+  the bridge table cannot be keyed on the bridge name; `--status` reports
+  it. Remove it, or, if it is a container network, list it in
+  `CONTAINER_INTERFACES` (its ports then stay isolated like those of every
+  container bridge) and run `--plan`, `--apply` and `--confirm`
 
 Source check (`host-vault-source`, used by `--plan`, `--status` and
 `--probe`): when `VAULT_ADDRESS` is an address of the host, it opens a TCP
@@ -6806,8 +6817,9 @@ Validation:
 - real-kernel tests in network namespaces load the rendered ruleset and
   check real traffic (LAN, containers, Vault, DNS, a Docker-style published
   port that must stay closed, IPv4 and, where the kernel has it, IPv6); one
-  turns `br_netfilter` off in the lab and sends forged-source IPv4 and raw
-  IPv6 frames between two containers, which must not arrive; they run `--apply`, `--confirm`,
+  turns `br_netfilter` off in the lab and sends forged-source IPv4, raw
+  IPv6, VLAN-tagged and ARP frames between two containers, which must not
+  arrive; they run `--apply`, `--confirm`,
   `--status` and `--rollback`; with Docker's masquerade rule in the lab and
   the LAN interface created before `docker0`, the source check reports
   `REWRITTEN` to the LAN address without the firewall and `kept` with it;

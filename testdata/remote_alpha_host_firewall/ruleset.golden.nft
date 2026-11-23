@@ -11,7 +11,6 @@
 #   service_callers = 192.168.1.23/32
 #   vault = 172.17.0.1 tcp/8200
 #   container_interfaces = docker0 br-* nomad
-#   container_bridge_subnets = 172.17.0.0/16
 #   container_dns_servers = 192.168.1.1 (from REMOTE_ALPHA_HOST_FIREWALL_CONTAINER_DNS_SERVERS)
 
 # Replace both tables in one transaction. The empty declarations make the
@@ -111,10 +110,9 @@ table inet es_host_firewall {
 
 # Containers on the same bridge talk at layer 2 and do not pass the inet
 # forward hook unless br_netfilter is active. This table blocks that path
-# whatever the br_netfilter state: IPv4 by destination only, so a forged
-# source address does not help, and all IPv6 between bridge ports (the
-# containers have no IPv6 subnet to key on; --apply refuses while a bridge
-# that is not a container interface exists, so no other bridge is hit).
+# whatever the br_netfilter state: it drops every frame from one bridge
+# port to another (IPv4, IPv6, VLAN-tagged, ARP). --apply refuses while a
+# bridge that is not a container interface exists, so no other bridge is hit.
 # The bridge forward hook sees only frames from one port to another:
 # traffic to the bridge's own address is local delivery, so Vault, DNS
 # and the internet stay reachable.
@@ -124,7 +122,6 @@ table bridge es_host_firewall {
 
 	chain forward {
 		type filter hook forward priority filter - 10; policy accept;
-		ether type ip ip daddr 172.17.0.0/16 counter name "container_to_container" drop
-		ether type ip6 counter name "container_to_container" drop
+		counter name "container_to_container" drop
 	}
 }
