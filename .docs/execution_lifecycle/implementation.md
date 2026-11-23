@@ -51,8 +51,9 @@ builds the existing opaque binding and fourteen-category witness under an
 explicit synthetic-test key. At PB1 it had no production caller; its only
 selected new non-test caller is the private synthetic composer. It has no
 runtime key source, provider effect or public DTO. Its output is always
-not-effect-ready. The legacy resolver only carries provenance; it does not add
-requested-versus-returned mount artifact refusal to live `Submit`. The private
+not-effect-ready. The resolver carries that provenance, and live `Submit`
+refuses a mount whose discovery record names another artifact than the
+requested source (contracts section 5A). The private
 producer's extra sequential bounded mount-archive parse is an unwired memory
 and work cost, not part of the prior runtime peak bound. The exact format and
 limitations are in `submit_idempotency_correlation_and_recovery.md`.
@@ -249,16 +250,16 @@ What the app layer delegates:
 
 1. Validate the request with `validatePrepareRequest`.
 2. Read the currently loaded runtime-trust policy from memory.
-3. Read the artifact discovery record from ARS and follow it to the aggregate artifact-evidence blob.
+3. Read the artifact discovery record from ARS and follow it to the aggregate artifact-evidence blob, whose bytes must hash to the discovery evidence digest before decoding (`fetchVerifiedARSBlob`, contracts section 5A).
 4. Validate the discovery/evidence relationship, verify the evidence seal over the nested evidence claims, enforce EGS runtime-trust signer and artifact policy, cross-check package identity from `claims.package`, cross-check request derivation inputs from the narrow shared `claims.admission.authorization.derivation` surface, and derive only the remaining shared runtime inputs from `claims.admission.execution`: env allowlist, required capabilities, `target_platform`, and `network_access`.
 5. Read the workload-zone Vault config reference captured from validated ES startup config.
-6. Fetch the workload-zone Vault config blob from ARS using that reference.
+6. Fetch the workload-zone Vault config blob from ARS using that reference, and decode it only after its bytes hash to the reference digest.
 7. Decode and validate the workload-zone Vault blob through `internal/contracts/runtimeconfig/v1`, then resolve the workload-vault auth plan from that typed config plus ES `workload_vault_auth.default_mode`, including optional non-secret Vault CA trust material.
 8. Evaluate ES Admission Policy Layer v0 in the same shared admission helper
    used by `Prepare` and `Submit`. If an enabled policy requires payload
    inspection, read only bounded static-script payload text through the
    explicit payload digest already discovered through ARS and cross-checked
-   against aggregate evidence.
+   against aggregate evidence, from payload bytes that hash to that digest.
 9. Assemble and return `PrepareResult`.
 
 There is no ACS hop in this runtime-config path.
@@ -320,7 +321,8 @@ What `Prepare` reads:
 5. Capture one private immutable submit/config snapshot immediately after
    admission.
 6. Resolve all remaining source-grounded facts before side effects, in this
-   order: submit gates; resources; primary payload bytes; runtime-support bytes
+   order: submit gates; resources; primary payload bytes (verified against the
+   signed payload digest); runtime-support bytes
    and content identity; governed mount discovery/evidence/payload plus one
    bounded gzip/tar traversal; normalized Vault and combined trust bytes;
    platform-state owner; and the complete plan, material, and host context.
@@ -648,7 +650,8 @@ Cancel path:
 - Submit resolution validates mount archives before freeze. For each mount
   artifact it:
   - re-fetches and revalidates aggregate evidence and trust
-  - fetches payload bytes within the smaller of the 8 MiB per-mount transport
+  - fetches payload bytes, which must hash to the mount's signed payload
+    digest, within the smaller of the 8 MiB per-mount transport
     budget and remaining 32 MiB aggregate transport budget
   - performs exactly one gzip/tar traversal through a limiter placed between
     gzip and tar: 16 MiB per mount and 64 MiB aggregate across mounts
