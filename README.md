@@ -17,25 +17,25 @@ flowchart TD
     Caller(["Caller"])
 
     subgraph Host["Linux host or VM that you operate"]
-        AGS["AGS<br/>records signed evidence<br/>about the package"]
-        ARS[("ARS<br/>stores packages<br/>and evidence")]
-        EGS["EGS<br/>says which signers<br/>to trust"]
-        ES["ES<br/>checks, admits<br/>and submits"]
-        Nomad["Nomad<br/>schedules the run"]
-        Task["Docker container<br/>the workload runs here"]
-        SPIRE["SPIRE<br/>workload identity"]
-        Vault["Vault<br/>workload secrets"]
+        AGS["AGS<br/>signs evidence"]
+        ARS[("ARS<br/>stores packages")]
+        EGS["EGS<br/>trusted signers"]
+        ES["ES<br/>admits and submits"]
+        Nomad["Nomad<br/>schedules"]
+        SPIRE["SPIRE<br/>identity"]
+        Vault["Vault<br/>secrets"]
+        Task["Docker container<br/>runs the workload"]
     end
 
     Publisher -->|"1 publish"| AGS
     AGS --> ARS
-    ARS -->|"package and evidence"| ES
+    ARS -->|"package, evidence"| ES
     EGS -->|"signed trust"| ES
     Caller -->|"2 prepare, submit<br/>4 status, logs, result, cancel"| ES
     ES -->|"3 submit job"| Nomad
     Nomad --> Task
     SPIRE -.->|"identity"| Task
-    Task -.->|"logs in itself"| Vault
+    Vault -.->|"secrets, after<br/>the workload logs in"| Task
 ```
 
 1. **Publish.** A publisher sends a workload package to AGS: an archive with
