@@ -255,6 +255,12 @@ func (s *Service) prepareMountArtifact(ctx context.Context, trustModel egsmodel.
 	if err != nil {
 		return preparedArtifact{}, remapMountArtifactPreparationError(err)
 	}
+	// The discovery record is not verified (contracts section 5A). Without
+	// this check ARS could answer for the requested mount with any other
+	// sealed artifact, and ES would stage that artifact's bytes as the mount.
+	if discovery.discovery.Artifact.ArtifactDigest != artifactDigest {
+		return preparedArtifact{}, mountArtifactError(http.StatusConflict, codeMountArtifactInvalid, "artifact digest mismatch between mount source and artifact discovery")
+	}
 
 	artifact, err := s.prepareArtifactFromEvidenceRecord(trustModel, discovery.discovery, discovery.evidence)
 	if err != nil {

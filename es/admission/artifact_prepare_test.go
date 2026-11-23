@@ -1,6 +1,7 @@
 package admission
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"encoding/base64"
@@ -89,18 +90,29 @@ func TestFetchArtifactEvidenceBlobReturnsEvidencePayloadAndMapsFailure(t *testin
 		}
 	})
 
-	t.Run("invalid payload", func(t *testing.T) {
-		service := Service{
-			arsClient: newArtifactRegistryTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				_, _ = w.Write([]byte(`{"claims":`))
-			})),
-		}
+	// Each body is named by its own digest, so the read verifies and the
+	// strict decoder is what refuses it.
+	for _, test := range []struct {
+		name string
+		body []byte
+	}{
+		{name: "invalid payload", body: []byte(`{"claims":`)},
+		{name: "unknown field", body: []byte(`{"unknown_field":true}`)},
+		{name: "trailing document", body: append(servedJSONDocument(t, fixture.evidence), []byte("{}")...)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			service := Service{
+				arsClient: newArtifactRegistryTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					_, _ = w.Write(test.body)
+				})),
+			}
 
-		_, err := service.fetchArtifactEvidenceBlob(context.Background(), fixture.discovery.Artifact.ArtifactDigest, fixture.discovery.Evidence.Digest)
-		if err == nil || err.Code != codeArtifactEvidenceUnavailable || err.Status != http.StatusServiceUnavailable {
-			t.Fatalf("expected artifact evidence unavailable mapping, got %+v", err)
-		}
-	})
+			_, err := service.fetchArtifactEvidenceBlob(context.Background(), fixture.discovery.Artifact.ArtifactDigest, digestBytes(test.body))
+			if err == nil || err.Code != codeArtifactEvidenceUnavailable || err.Status != http.StatusServiceUnavailable || err.Message != "artifact evidence payload was invalid" {
+				t.Fatalf("expected artifact evidence payload invalid mapping, got %+v", err)
+			}
+		})
+	}
 }
 
 func TestPrepareArtifactFromDiscoveryValidatesRequestBindingAndReturnsPreparedArtifact(t *testing.T) {
@@ -236,29 +248,12 @@ func newPreparedArtifactFixture(t *testing.T) preparedArtifactFixture {
 			},
 		},
 	}
-	canonical, err := evidence.CanonicalBytes()
-	if err != nil {
-		t.Fatalf("canonicalize evidence: %v", err)
-	}
 	keyID := "ags-artifact-signer"
-	evidence.Seal = evidencev1.NewSeal(canonical, keyID, "ed25519", base64.StdEncoding.EncodeToString(ed25519.Sign(privateKey, canonical)))
-
-	evidenceBytes, err := json.Marshal(evidence)
-	if err != nil {
-		t.Fatalf("marshal evidence: %v", err)
-	}
-	discovery := validArtifactDiscoveryFixture()
-	discovery.Artifact.ArtifactDigest = artifactIdentity.ArtifactDigest
-	discovery.Artifact.ArtifactType = artifactIdentity.ArtifactType
-	discovery.Artifact.IntentDigest = artifactIdentity.IntentDigest
-	discovery.Evidence.Digest = digestBytes(evidenceBytes)
-	discovery.Payload.Digest = artifactIdentity.PayloadDigest
-
-	return preparedArtifactFixture{
+	fixture := preparedArtifactFixture{
 		publicKey:  publicKey,
 		privateKey: privateKey,
 		keyID:      keyID,
-		discovery:  discovery,
+		discovery:  validArtifactDiscoveryFixture(),
 		evidence:   evidence,
 		trustModel: egsmodel.RuntimeTrustPolicy{
 			SignerPolicy: egsmodel.SignerPolicy{
@@ -266,6 +261,44 @@ func newPreparedArtifactFixture(t *testing.T) preparedArtifactFixture {
 			},
 		},
 	}
+	return fixture.resealed(t)
+}
+
+// withPayload returns a copy of the fixture whose signed evidence names the
+// exact payload bytes a test serves. ES hashes every ARS blob it reads and
+// uses it only when it equals the requested digest, so a fixture that serves
+// a payload must sign that payload's digest. The payload digest, the derived
+// artifact digest, the evidence seal and the discovery record are recomputed
+// with the fixture's own signing key; the key, key ID and trust model stay the
+// same, so a service built from the original fixture still verifies it.
+func (f preparedArtifactFixture) withPayload(t *testing.T, payload []byte) preparedArtifactFixture {
+	t.Helper()
+	identity := f.evidence.Claims.Package.Identity
+	rederived, err := evidencev1.NewArtifactIdentity(digestBytes(payload), identity.ArtifactType, identity.IntentDigest)
+	if err != nil {
+		t.Fatalf("derive artifact identity for served payload: %v", err)
+	}
+	f.evidence.Claims.Package.Identity = rederived
+	return f.resealed(t)
+}
+
+// resealed signs the fixture's evidence claims again and points the discovery
+// record at the exact evidence bytes writeJSONResponse serves.
+func (f preparedArtifactFixture) resealed(t *testing.T) preparedArtifactFixture {
+	t.Helper()
+	canonical, err := f.evidence.CanonicalBytes()
+	if err != nil {
+		t.Fatalf("canonicalize evidence: %v", err)
+	}
+	f.evidence.Seal = evidencev1.NewSeal(canonical, f.keyID, "ed25519", base64.StdEncoding.EncodeToString(ed25519.Sign(f.privateKey, canonical)))
+
+	identity := f.evidence.Claims.Package.Identity
+	f.discovery.Artifact.ArtifactDigest = identity.ArtifactDigest
+	f.discovery.Artifact.ArtifactType = identity.ArtifactType
+	f.discovery.Artifact.IntentDigest = identity.IntentDigest
+	f.discovery.Evidence.Digest = digestBytes(servedJSONDocument(t, f.evidence))
+	f.discovery.Payload.Digest = identity.PayloadDigest
+	return f
 }
 
 func (f preparedArtifactFixture) service() Service {
@@ -332,11 +365,24 @@ func newArtifactRegistryTestClient(t *testing.T, handler http.Handler) *dependen
 func writeJSONResponse(t *testing.T, w http.ResponseWriter, status int, payload any) {
 	t.Helper()
 
+	document := servedJSONDocument(t, payload)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	if err := json.NewEncoder(w).Encode(payload); err != nil {
+	if _, err := w.Write(document); err != nil {
+		t.Fatalf("write json response: %v", err)
+	}
+}
+
+// servedJSONDocument returns the exact bytes writeJSONResponse serves for a
+// payload, so a fixture can name a JSON blob by the digest of those bytes.
+func servedJSONDocument(t *testing.T, payload any) []byte {
+	t.Helper()
+
+	var document bytes.Buffer
+	if err := json.NewEncoder(&document).Encode(payload); err != nil {
 		t.Fatalf("encode json response: %v", err)
 	}
+	return document.Bytes()
 }
 
 func labeledDigest(bytePair string) string {
