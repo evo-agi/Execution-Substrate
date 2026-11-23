@@ -1,11 +1,12 @@
 package admission
 
-// Proposed stress test from the red-team of pull request #20 at eb6eea9
-// (report 14-red-team-pr20.md, finding RT-3). It is not part of that pull
-// request. It shows the race that TestExecutionRootProbeHandsNoDirectoryToAnotherUser
-// pins without a race. It is opt-in, because a race is not a gate: it runs
-// only as root and only when ES_PROBE_SWAP_STRESS_ROUNDS is set, and on
-// eb6eea9 it fails in most runs of 1000 rounds, not in all.
+// Stress test from the red-team of pull request #20 at eb6eea9 (report
+// 14-red-team-pr20.md, finding RT-3), written by the red-team and adopted
+// with the repair. It shows the race that
+// TestExecutionRootProbeHandsNoDirectoryToAnotherUser pins without a race. It
+// is opt-in, because a race is not a gate: it runs only as root and only when
+// ES_PROBE_SWAP_STRESS_ROUNDS is set. On eb6eea9 it failed in most runs of
+// 1000 rounds, not in all.
 //
 // Setup: this process is root, as an ES started as root would be. Both roots
 // belong to an unprivileged user, the attacker. A second unprivileged user,

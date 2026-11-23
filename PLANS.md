@@ -784,6 +784,35 @@ example because the roots inherited a group it is not a member of from a setgid
 parent directory, refuses startup with `nested staging directory ownership is
 unavailable` instead of reporting ready while every submission fails to stage.
 The nested directory is retained with its probe fixture.
+`STARTUP-PROBE-USE-AGREEMENT-01` (bounded slice rule): the configured-Submit
+startup probe and use must agree. Inside the nested directory, startup stages
+one directory for each directory mode staging uses beyond the stable `0750`
+stage mode, and one regular file for each file mode staging uses, and holds
+each to staging's checks: a regular file with one link, on the staging root's
+device, with the roots' owner and the exact mode. The modes come from one list
+in staging custody (`stagedFileModes`, `stagedDirectoryModes`), and staging
+refuses any mode outside it, so a new staging mode cannot skip the probe.
+Inside the natural result directory probe, startup creates one file for each
+mode retention gives its files, holds each to retention's checks, and renames
+the bundle-mode file with the no-replace rename twice: onto a name that exists,
+which must be refused as existing, and onto a free name, which must succeed and
+keep the file. Linux refuses a no-replace rename onto an existing name before
+it asks the file system, so only the second rename proves the primitive.
+Startup therefore refuses an overlay whose layers are on different file
+systems, a file system that does not keep the modes staging or retention needs,
+and a results file system whose rename accepts no flags, instead of reporting
+ready while every submission, or every retention, fails. ES also never changes
+the owning user of a directory it opened by name: the startup probe, the claim
+of a run staging root and `stagingCustody.ensureDirectory` refuse a directory
+whose owning user is not already the roots' owning user, before any owner or
+mode change. Nothing ties such an open to the creation an instant before, so a
+user who may rename entries of the parent could otherwise have a root ES give
+them somebody else's directory. Entries ES creates must therefore already
+belong to the roots' owning user, as retained result directories always
+required; a root ES on roots owned by another user is refused at startup with
+`staging probe directory does not belong to the execution roots' owning user`.
+The probe retains 13 entries per start, 9 under the staging root and 4 under
+the results root, under the same no-uncertain-unlink rule.
 The isolated candidate's AUTH-01 exact-path correction also applies to
 transitive ancestry re-observation: a qualified key parent and descriptor
 presentation are reopened component for component, including whitespace in an

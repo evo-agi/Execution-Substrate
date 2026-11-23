@@ -13554,6 +13554,31 @@ func TestRetainedResultReview04ConsumerEntrypointAndOwnedScopeDocs(t *testing.T)
 	}
 }
 
+func TestStartupProbeUseAgreementDocsContract(t *testing.T) {
+	checks := []struct {
+		path    string
+		phrases []string
+	}{
+		{"PLANS.md", []string{"`STARTUP-PROBE-USE-AGREEMENT-01` (bounded slice rule)", "staging refuses any mode outside it, so a new staging mode cannot skip the probe", "only the second rename proves the primitive", "ES also never changes the owning user of a directory it opened by name", "`staging probe directory does not belong to the execution roots' owning user`", "The probe retains 13 entries per start"}},
+		{".docs/system_overview/capability_probing.md", []string{"Staging refuses any mode the probe does not stage.", "a results file system whose rename accepts no flags refuses startup instead of losing every result", "it never changes an owning user", "prove the results no-replace rename both ways"}},
+		{".docs/execution_lifecycle/implementation.md", []string{"(`probeStagedEntries`)", "(`probeRetainedResultFiles`)", "(`requireOpenedDirectoryOwnedByRootsUser`)", "onto an existing name, which must fail with `EEXIST`"}},
+		{".runbooks/system/v1_bringup.md", []string{"the file system under the roots stores the modes ES gives files and directories, gives regular files the same device as directories, and supports the no-replace rename", "`no-replace rename to a free result name is unavailable`"}},
+		{"es/admission/staging_custody.go", []string{"so a mode cannot reach staging without reaching the startup probe", "is not proved by the startup probe", "gives somebody else's directory to the roots' owner."}},
+	}
+	for _, check := range checks {
+		content := compactText(mustRead(t, check.path))
+		for _, phrase := range check.phrases {
+			if !strings.Contains(content, phrase) {
+				t.Fatalf("%s missing startup probe and use agreement contract %q", check.path, phrase)
+			}
+		}
+	}
+	// The probe description from before the free-name rename must not come back.
+	assertContainsNone(t, "capability_probing.md one-sided no-replace probe", compactText(mustRead(t, ".docs/system_overview/capability_probing.md")),
+		"refuse the results no-replace publication primitive when the destination already exists; and",
+	)
+}
+
 func TestNestedStagingOwnerProbeDocsContract(t *testing.T) {
 	checks := []struct {
 		path    string
@@ -13563,7 +13588,7 @@ func TestNestedStagingOwnerProbeDocsContract(t *testing.T) {
 		{".docs/system_overview/capability_probing.md", []string{"creates a `nested` directory inside its staging probe directory", "as staging does inside each claimed run staging root", "`nested staging directory ownership is unavailable`", "roots that inherit another group from a setgid parent directory refuse startup instead of failing at the first submission"}},
 		{".docs/execution_lifecycle/implementation.md", []string{"(`probeNestedStagingDirectory`)", "`stagingCustody.ensureDirectory` does the same inside each claimed run staging root", "`nested staging directory ownership is unavailable`", "the nested staging probe above refuses them"}},
 		{".runbooks/system/v1_bringup.md", []string{"or inherited from a setgid parent directory; the inherited case is reported as `nested staging directory ownership is unavailable`"}},
-		{"es/admission/execution_roots.go", []string{"roots.probeNestedStagingDirectory(stagingFD, owner)", "nested staging directory ownership is unavailable"}},
+		{"es/admission/execution_roots.go", []string{"roots.probeNestedStagingDirectory(stagingFD, owner)", `nestedStagingProbeName, stableStageDirMode, owner, "nested staging directory")`, `fmt.Errorf("%s ownership is unavailable: %w", label, err)`}},
 	}
 	for _, check := range checks {
 		content := compactText(mustRead(t, check.path))

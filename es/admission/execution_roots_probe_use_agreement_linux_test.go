@@ -1,19 +1,20 @@
 package admission
 
-// Proposed regression tests from the red-team of pull request #20 at eb6eea9
-// (report 14-red-team-pr20.md, findings RT-1, RT-2 and RT-3). They are not
-// part of that pull request. Each one pins a setup in which configured-Submit
-// startup and real use disagree, or in which a refused start changes an
-// owner. On eb6eea9 and on its base f9537a8 every test in this file fails
-// where its fixture can be built, so they belong to the change that repairs
-// the finding, not to trunk as it is.
+// Regression tests from the red-team of pull request #20 at eb6eea9 (report
+// 14-red-team-pr20.md, findings RT-1, RT-2 and RT-3), written by the red-team
+// and adopted with the repair of those findings in the same pull request.
+// Each one pins a setup in which configured-Submit startup and real use
+// disagreed, or in which a refused start changed an owner. On eb6eea9 and on
+// its base f9537a8 every test in this file fails where its fixture can be
+// built.
 //
 // All of them follow the rule the pull request set for its own test: the
 // startup probe and real use must agree, in either direction. A repair may
 // make the probe refuse the setup or make use work in it.
 //
 // The tests need passwordless sudo, or root. Two of them also need bindfs
-// and skip without it, so a runner that is to gate them has to install it.
+// and skip without it, so a runner that is to gate them has to install it;
+// the CI workflow does.
 
 import (
 	"errors"

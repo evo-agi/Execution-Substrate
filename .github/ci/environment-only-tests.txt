@@ -128,6 +128,16 @@ execution-substrate/es/admission/internal/reliablesubmit TestSQLiteV3OldBinaryRe
 # These tests do not run in CI. The way to shorten this part of the list is
 # to give the runner what a test needs, or to port the test.
 
+# es/admission: the opt-in stress test of the directory swap race in the
+# startup probe, and the attacker process it starts (finding RT-3 of the
+# red-team of pull request #20). A race is not a gate: the stress test runs
+# only as root and only when ES_PROBE_SWAP_STRESS_ROUNDS is set, and the
+# attacker runs only in the process the stress test starts. They skip
+# themselves on every host. TestExecutionRootProbeHandsNoDirectoryToAnotherUser
+# gates the same rule without a race.
+skips-itself execution-substrate/es/admission TestExecutionRootProbeDirectorySwapStress
+skips-itself execution-substrate/es/admission TestExecutionRootProbeDirectorySwapStressAttacker
+
 # es/admission/internal/reliablesubmit: helper processes. Another test of the
 # package starts the test binary a second time with a variable set, and only
 # that process runs the body. Run as a test, each of the two has nothing to

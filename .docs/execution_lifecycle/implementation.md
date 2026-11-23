@@ -997,6 +997,21 @@ How Docker appears in the implementation:
   example because the roots inherited a group ES is not a member of from a
   setgid parent, startup refuses with `nested staging directory ownership is
   unavailable`. The nested directory is retained with its probe directory.
+  Inside it, startup stages one directory for each mode in
+  `stagedDirectoryModes` beyond `0750` and one regular file for each mode in
+  `stagedFileModes` (`probeStagedEntries`), with the checks
+  `stagingCustody.writeFileWithHookAndParentMode` and `ensureDirectory` apply,
+  and those two refuse any mode outside the lists. Inside the natural result
+  directory probe, startup creates the `0600` and `0640` files retention
+  creates, with retention's checks, and renames the `0600` file with the
+  no-replace rename onto an existing name, which must fail with `EEXIST`, and
+  onto a free name, which must succeed and keep the same file
+  (`probeRetainedResultFiles`). The probe, the claim of a run staging root and
+  `ensureDirectory` refuse a directory they opened by name unless its owning
+  user already is the roots' owning user
+  (`requireOpenedDirectoryOwnedByRootsUser`), before any owner or mode
+  change, so ES never gives a directory that another user renamed into place
+  to the roots' owner.
   The selected supported-local
   root-service profile provisions only the two fresh configured roots as
   UID:GID `0:0`, exact `0755` directory mode. Its static bring-up check does

@@ -1843,6 +1843,63 @@ func TestAdmissionProductionHasOneResolverAndOneMaterializationPath(t *testing.T
 			want:         map[string]int{"es/admission/execution_roots.go:qualifiedExecutionRoots.probeCapabilities": 1},
 		},
 		{
+			label:        "startup staged directory probe",
+			receiverName: "qualifiedExecutionRoots",
+			functionName: "probeStagedDirectory",
+			want: map[string]int{
+				"es/admission/execution_roots.go:qualifiedExecutionRoots.probeCapabilities":           1,
+				"es/admission/execution_roots.go:qualifiedExecutionRoots.probeNestedStagingDirectory": 1,
+				"es/admission/execution_roots.go:qualifiedExecutionRoots.probeStagedEntries":          1,
+			},
+		},
+		{
+			label:        "startup staged entry probe",
+			receiverName: "qualifiedExecutionRoots",
+			functionName: "probeStagedEntries",
+			want:         map[string]int{"es/admission/execution_roots.go:qualifiedExecutionRoots.probeNestedStagingDirectory": 1},
+		},
+		{
+			label:        "startup staged file probe",
+			functionName: "probeStagedFile",
+			want:         map[string]int{"es/admission/execution_roots.go:qualifiedExecutionRoots.probeStagedEntries": 1},
+		},
+		{
+			label:        "startup retained result file probes",
+			receiverName: "qualifiedExecutionRoots",
+			functionName: "probeRetainedResultFiles",
+			want:         map[string]int{"es/admission/execution_roots.go:qualifiedExecutionRoots.probeNaturalResultDirectory": 1},
+		},
+		{
+			label:        "startup retained result file probe",
+			functionName: "probeRetainedResultFile",
+			want:         map[string]int{"es/admission/execution_roots.go:qualifiedExecutionRoots.probeRetainedResultFiles": 2},
+		},
+		{
+			label:        "owning-user check before an owner change on a directory opened by name",
+			functionName: "requireOpenedDirectoryOwnedByRootsUser",
+			want: map[string]int{
+				"es/admission/execution_roots.go:qualifiedExecutionRoots.probeStagedDirectory": 1,
+				"es/admission/staging_custody.go:claimStagingCustodyFromQualifiedRoot":         1,
+				"es/admission/staging_custody.go:stagingCustody.ensureDirectory":               1,
+			},
+		},
+		{
+			label:        "staged file modes the startup probe proves",
+			functionName: "stagedFileModes",
+			want: map[string]int{
+				"es/admission/execution_roots.go:qualifiedExecutionRoots.probeStagedEntries":    1,
+				"es/admission/staging_custody.go:stagingCustody.writeFileWithHookAndParentMode": 1,
+			},
+		},
+		{
+			label:        "staged directory modes the startup probe proves",
+			functionName: "stagedDirectoryModes",
+			want: map[string]int{
+				"es/admission/execution_roots.go:qualifiedExecutionRoots.probeStagedEntries": 1,
+				"es/admission/staging_custody.go:stagingCustody.ensureDirectory":             1,
+			},
+		},
+		{
 			label:        "configured-root component creator",
 			receiverName: "qualifiedExecutionRoots",
 			functionName: "createNextConfiguredRootComponent",
@@ -1863,10 +1920,10 @@ func TestAdmissionProductionHasOneResolverAndOneMaterializationPath(t *testing.T
 			label:        "platform no-replace publication primitive",
 			functionName: "platformRenameNoReplace",
 			want: map[string]int{
-				"es/admission/execution_roots.go:qualifiedExecutionRoots.probeCapabilities":       1,
-				"es/admission/results.go:retainedResultDirectory.publishTemporaryBundle":          1,
-				"es/admission/result_auth.go:retainedResultDirectory.publishRetainedResultRecord": 1,
-				"es/admission/staging_custody.go:probeStagingCustodyCapabilities":                 1,
+				"es/admission/execution_roots.go:qualifiedExecutionRoots.probeRetainedResultFiles": 2,
+				"es/admission/results.go:retainedResultDirectory.publishTemporaryBundle":           1,
+				"es/admission/result_auth.go:retainedResultDirectory.publishRetainedResultRecord":  1,
+				"es/admission/staging_custody.go:probeStagingCustodyCapabilities":                  1,
 			},
 		},
 		{
@@ -1946,9 +2003,11 @@ func TestAdmissionProductionHasOneResolverAndOneMaterializationPath(t *testing.T
 	})
 	wantReobservations := map[string]int{
 		"es/admission/execution_roots.go:qualifyExecutionRoots":                               1,
-		"es/admission/execution_roots.go:qualifiedExecutionRoots.probeCapabilities":           10,
+		"es/admission/execution_roots.go:qualifiedExecutionRoots.probeCapabilities":           2,
 		"es/admission/execution_roots.go:qualifiedExecutionRoots.probeNaturalResultDirectory": 2,
-		"es/admission/execution_roots.go:qualifiedExecutionRoots.probeNestedStagingDirectory": 3,
+		"es/admission/execution_roots.go:qualifiedExecutionRoots.probeRetainedResultFiles":    1,
+		"es/admission/execution_roots.go:qualifiedExecutionRoots.probeStagedDirectory":        3,
+		"es/admission/execution_roots.go:qualifiedExecutionRoots.probeStagedEntries":          1,
 		"es/admission/results.go:openExistingRetainedResultDirectory":                         1,
 		"es/admission/results.go:openOrCreateRetainedResultDirectory":                         1,
 		"es/admission/service.go:NewService":                                                  1,
@@ -1968,9 +2027,8 @@ func TestAdmissionProductionHasOneResolverAndOneMaterializationPath(t *testing.T
 	creationVocabulary := map[string]map[string]int{
 		"golang.org/x/sys/unix.Mkdirat": {
 			"es/admission/execution_roots.go:qualifiedExecutionRoots.createNextConfiguredRootComponent": 1,
-			"es/admission/execution_roots.go:qualifiedExecutionRoots.probeCapabilities":                 1,
 			"es/admission/execution_roots.go:qualifiedExecutionRoots.probeNaturalResultDirectory":       1,
-			"es/admission/execution_roots.go:qualifiedExecutionRoots.probeNestedStagingDirectory":       1,
+			"es/admission/execution_roots.go:qualifiedExecutionRoots.probeStagedDirectory":              1,
 			"es/admission/results.go:openRetainedResultDirectoryFromQualifiedRoot":                      1,
 			"es/admission/staging_custody.go:claimStagingCustodyFromQualifiedRoot":                      1,
 			"es/admission/staging_custody.go:openQualifiedDirectoryClean":                               1,
@@ -1984,8 +2042,9 @@ func TestAdmissionProductionHasOneResolverAndOneMaterializationPath(t *testing.T
 			"es/admission/staging_custody_linux.go:platformOpenAtNoFollow": 1,
 		},
 		"golang.org/x/sys/unix.Fchown": {
-			"es/admission/execution_roots.go:qualifiedExecutionRoots.probeCapabilities":           2,
-			"es/admission/execution_roots.go:qualifiedExecutionRoots.probeNestedStagingDirectory": 1,
+			"es/admission/execution_roots.go:probeRetainedResultFile":                             1,
+			"es/admission/execution_roots.go:probeStagedFile":                                     1,
+			"es/admission/execution_roots.go:qualifiedExecutionRoots.probeStagedDirectory":        1,
 			"es/admission/result_auth.go:retainedResultDirectory.publishRetainedResultRecord":     1,
 			"es/admission/results.go:retainedResultDirectory.createTempFile":                      1,
 			"es/admission/results.go:retainedResultDirectory.ensureNormalizationEvidenceWithHook": 1,
@@ -1994,8 +2053,9 @@ func TestAdmissionProductionHasOneResolverAndOneMaterializationPath(t *testing.T
 			"es/admission/staging_custody.go:stagingCustody.writeFileWithHookAndParentMode":       1,
 		},
 		"golang.org/x/sys/unix.Fchmod": {
-			"es/admission/execution_roots.go:qualifiedExecutionRoots.probeCapabilities":           2,
-			"es/admission/execution_roots.go:qualifiedExecutionRoots.probeNestedStagingDirectory": 1,
+			"es/admission/execution_roots.go:probeRetainedResultFile":                             1,
+			"es/admission/execution_roots.go:probeStagedFile":                                     1,
+			"es/admission/execution_roots.go:qualifiedExecutionRoots.probeStagedDirectory":        1,
 			"es/admission/result_auth.go:retainedResultDirectory.publishRetainedResultRecord":     1,
 			"es/admission/results.go:retainedResultDirectory.createTempFile":                      1,
 			"es/admission/results.go:retainedResultDirectory.ensureNormalizationEvidenceWithHook": 1,
@@ -2059,6 +2119,7 @@ func TestAdmissionTestOnlyStagingCustodyClaimInventoryIsExact(t *testing.T) {
 		return requirePackageFunction(t, pkg, "claimStagingCustody")
 	})
 	want := map[string]int{
+		"es/admission/execution_roots_owner_check_test.go:TestDirectoriesOpenedByNameNeverChangeOwningUser":            1,
 		"es/admission/executionpackage_test.go:Service.stageExecutionInputs":                                           1,
 		"es/admission/lifecycle_test.go:TestDescriptorCloseRetainsSuccessfulRunRoot":                                   1,
 		"es/admission/resolved_execution_plan_test.go:TestResolvedExecutionMaterialOwnsBytesBeforeHostMaterialization": 1,
@@ -2072,7 +2133,8 @@ func TestAdmissionTestOnlyStagingCustodyClaimInventoryIsExact(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, reference := range references {
-		wantSubtestClosure := reference.site == "es/admission/staging_custody_test.go:TestStagingCustodyRefusesEveryPreExistingObjectWithoutChangingIt"
+		wantSubtestClosure := reference.site == "es/admission/staging_custody_test.go:TestStagingCustodyRefusesEveryPreExistingObjectWithoutChangingIt" ||
+			reference.site == "es/admission/execution_roots_owner_check_test.go:TestDirectoriesOpenedByNameNeverChangeOwningUser"
 		if reference.insideFuncLiteral != wantSubtestClosure {
 			t.Fatalf("test-only path-taking staging-custody claim moved across a closure boundary: %s", reference)
 		}
@@ -3363,8 +3425,12 @@ es/admission/staging_custody.go:pathBase
 es/admission/staging_custody.go:pathDir
 es/admission/staging_custody.go:qualifiedDirectory.close
 es/admission/staging_custody.go:qualifiedDirectory.verifyVisible
+es/admission/staging_custody.go:requireOpenedDirectoryOwnedByRootsUser
 es/admission/staging_custody.go:sameCustodyObject
 es/admission/staging_custody.go:sameCustodyRecordedMode
+es/admission/staging_custody.go:stagedDirectoryModes
+es/admission/staging_custody.go:stagedFileModes
+es/admission/staging_custody.go:stagedModeProbedAtStartup
 es/admission/staging_custody.go:stagingCustody.close
 es/admission/staging_custody.go:stagingCustody.ensureDirectory
 es/admission/staging_custody.go:stagingCustody.openRegisteredDirectoryNode
@@ -3402,12 +3468,12 @@ encoding/json:encoding/json.Marshal 1
 encoding/json:encoding/json.NewDecoder 1
 errors:errors.Is 8
 errors:errors.Join 4
-fmt:fmt.Errorf 112
+fmt:fmt.Errorf 115
 fmt:fmt.Sprintf 3
-golang.org/x/sys/unix:golang.org/x/sys/unix.Close 55
+golang.org/x/sys/unix:golang.org/x/sys/unix.Close 57
 golang.org/x/sys/unix:golang.org/x/sys/unix.Fchmod 3
 golang.org/x/sys/unix:golang.org/x/sys/unix.Fchown 3
-golang.org/x/sys/unix:golang.org/x/sys/unix.Fstat 24
+golang.org/x/sys/unix:golang.org/x/sys/unix.Fstat 25
 golang.org/x/sys/unix:golang.org/x/sys/unix.Fstatat 8
 golang.org/x/sys/unix:golang.org/x/sys/unix.Fstatfs 1
 golang.org/x/sys/unix:golang.org/x/sys/unix.Fsync 1
@@ -3448,7 +3514,7 @@ strings:strings.TrimSpace 8
 `),
 		dynamic: trancheB1InventoryOccurrences(`
 es/admission/mounts.go:materializeValidatedRuntimeMounts-><builtin>:(error).Error 1
-es/admission/staging_custody.go:claimStagingCustodyFromQualifiedRoot->call-through-failAfterCreation 9
+es/admission/staging_custody.go:claimStagingCustodyFromQualifiedRoot->call-through-failAfterCreation 10
 es/admission/staging_custody.go:stagingCustody.ensureDirectory->call-through-beforeStagingChildRegistrationStatForTest 1
 es/admission/staging_custody.go:stagingCustody.ensureDirectory->reviewed-package-global.beforeStagingChildRegistrationStatForTest 2
 es/admission/staging_custody.go:stagingCustody.revalidateBeforeHandoff->call-through-beforeStagingHandoffValidationForTest 1
@@ -3516,12 +3582,12 @@ encoding/json:encoding/json.Marshal 1
 encoding/json:encoding/json.NewDecoder 1
 errors:errors.Is 8
 errors:errors.Join 4
-fmt:fmt.Errorf 136
+fmt:fmt.Errorf 139
 fmt:fmt.Sprintf 4
-golang.org/x/sys/unix:golang.org/x/sys/unix.Close 55
+golang.org/x/sys/unix:golang.org/x/sys/unix.Close 57
 golang.org/x/sys/unix:golang.org/x/sys/unix.Fchmod 3
 golang.org/x/sys/unix:golang.org/x/sys/unix.Fchown 3
-golang.org/x/sys/unix:golang.org/x/sys/unix.Fstat 24
+golang.org/x/sys/unix:golang.org/x/sys/unix.Fstat 25
 golang.org/x/sys/unix:golang.org/x/sys/unix.Fstatat 8
 golang.org/x/sys/unix:golang.org/x/sys/unix.Fsync 1
 golang.org/x/sys/unix:golang.org/x/sys/unix.Major 1
