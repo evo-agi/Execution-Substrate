@@ -601,6 +601,25 @@ func TestReliableSubmitBindingRejectsMismatchedSignedMountArtifact(t *testing.T)
 	}
 }
 
+// TestReliableSubmitBindingRefusesMountBytesThatDoNotHashToTheMountPayloadDigest
+// keeps the binding layer's own mount byte check under test. The resolver now
+// refuses such bytes at the ARS read, so the end-to-end case above no longer
+// reaches the binding layer.
+func TestReliableSubmitBindingRefusesMountBytesThatDoNotHashToTheMountPayloadDigest(t *testing.T) {
+	const target = "/execution/mounts/config"
+	signed := mustRuntimeMountArchiveBytes(t, runtimeMountArchiveEntry{name: "config.txt", body: []byte("signed"), typeflag: '0', mode: 0o644})
+	other := mustRuntimeMountArchiveBytes(t, runtimeMountArchiveEntry{name: "config.txt", body: []byte("other"), typeflag: '0', mode: 0o644})
+
+	control, family, key, _, _ := reliableBindingResolvedFixture(t)
+	reliableBindingAttachMount(t, &control, signed, target, control.plan.artifactDigest)
+	reliableBindingMustBuild(t, control, family, key)
+
+	mismatched, _, _, _, _ := reliableBindingResolvedFixture(t)
+	reliableBindingAttachMount(t, &mismatched, other, target, mismatched.plan.artifactDigest)
+	mismatched.plan.mounts[0].payloadDigest = digestBytes(signed)
+	reliableBindingMustRefuse(t, mismatched, family, key)
+}
+
 func TestReliableSubmitBindingRejectsParsedMountDrift(t *testing.T) {
 	base, family, key, _, _ := reliableBindingResolvedFixture(t)
 	archive := mustRuntimeMountArchiveBytes(t,

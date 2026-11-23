@@ -74,10 +74,14 @@ the code and tests win and this document must be realigned.
   discoverability/index model remains reopened.
 - Descriptor/manifest/index/support tuples are compatibility/support surfaces
   unless explicitly migrated.
-- ES does not trust ARS for byte integrity. Every ES read of an ARS blob by
-  digest hashes the exact bytes received and uses them only when they equal
-  the requested digest; ARS's own read-path check is not relied on. The
-  contract is `.docs/execution_lifecycle/contracts.md` section 5A.
+- ES does not trust ARS for the integrity of the blobs it reads by digest.
+  Every ES read of an ARS blob by digest hashes the exact bytes received and
+  uses them only when they equal the requested digest; ARS's own read-path
+  check is not relied on. The discovery record is read by artifact digest and
+  is not verified: ES cross-checks it against the signed evidence, but ARS
+  still chooses which sealed evidence document applies when more than one
+  exists for the same artifact and derivation inputs. The contract is
+  `.docs/execution_lifecycle/contracts.md` section 5A.
 - ES later consumes designed ARS discovery outputs, explicit
   evidence/payload relationships, and explicit cross-checks. ES must not
   inherit AGS publish DTOs, ARS descriptor/index tuples, or Control Plane

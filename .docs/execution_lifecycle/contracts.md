@@ -518,9 +518,11 @@ Successful response is `200` JSON with these contract fields:
   enabled policy requires payload inspection, `:prepare` may fetch bounded
   payload bytes through the explicit ARS payload digest carried by the
   discovery/evidence relationship already cross-checked by admission.
-- `:prepare` verifies every ARS blob it reads, including the aggregate
-  evidence, the workload-zone Vault config, and any policy payload input,
-  against the requested digest before using it (section 5A).
+- `:prepare` verifies every ARS blob it reads by digest, including the
+  aggregate evidence, the workload-zone Vault config, and any policy payload
+  input, against the requested digest before using it (section 5A). The
+  discovery record is read by artifact digest and is not verified; section 5A
+  states what binds it.
 - The Workstream E E0 decision in
   `.docs/system_overview/runtime_config_ownership.md` classifies this path:
   runtime-config semantics live in `internal/contracts/runtimeconfig/v1`, ARS
@@ -650,16 +652,19 @@ Successful response is `200` JSON with these contract fields:
 
 `Current invariant`
 
-ES does not trust ARS for the integrity of the bytes it reads. ARS still
-re-verifies blobs on its own read path, but ES does not rely on that check.
-Every ES read of an ARS blob by digest verifies the received bytes itself.
+ES does not trust ARS for the integrity of the blobs it reads by digest. ARS
+still re-verifies blobs on its own read path, but ES does not rely on that
+check. Every ES read of an ARS blob by digest verifies the received bytes
+itself. ES still trusts ARS for one choice: which sealed evidence document
+applies to an artifact, through the discovery record (see "Outside this
+contract").
 
 **Covered reads.** These are all of ES's reads of `GET /v1/blobs/{digest}`.
 There is no other:
 
 | Read | View | Digest it is verified against | Where that digest comes from |
 | --- | --- | --- | --- |
-| Aggregate artifact evidence | `:json` | evidence digest | ARS discovery record (evidence authenticity still comes from the evidence seal) |
+| Aggregate artifact evidence | `:json` | evidence digest | ARS discovery record, which ES does not verify (evidence authenticity comes from the evidence seal) |
 | Workload-zone Vault runtime config | `:json` | configured reference digest | ES startup config `runtime_config.workload_zone_vault_config_ref` |
 | Admission-policy payload input | `:bytes` | `payload_digest` | signature-verified aggregate evidence, cross-checked with discovery |
 | Primary payload | `:bytes` | `payload_digest` | signature-verified aggregate evidence, cross-checked with discovery |
@@ -704,6 +709,22 @@ A non-canonical digest maps to the read's existing "unavailable" message.
 protected by the Tranche A staging custody contract, not re-hashed. The
 runtime-support binary is a local file captured with its own digest. The
 runtime-profile container image is not ARS content.
+
+The ARS discovery record (`GET /v1/artifacts/{artifact_digest}/discovery`) is
+not read by digest. ES has no trusted digest for it and does not verify its
+bytes. ES binds what it uses from it: its artifact digest must equal the
+request's, and its payload digest, artifact type and intent digest must equal
+the signature-verified evidence claims. Its evidence digest is used only to
+choose which evidence blob to read. That evidence must carry a valid seal from
+an allowed signer and claim the requested `artifact_digest`,
+`derivation_spec_digest` and `output_id`. ES does not check that it is the only
+such document. `artifact_digest` is not derived from admission claims, so the
+provenance key can seal more than one evidence document for the same artifact
+digest, derivation spec digest and output ID, with different `network_access`,
+`target_platform` or runtime interface claims. When more than one exists, ARS
+chooses which of them ES admits. ARS's index accepts one discovery record per
+artifact digest, so an ARS that follows its own registration contract always
+names the first registered document.
 
 ## 6. Submit contract
 

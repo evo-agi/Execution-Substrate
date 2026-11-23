@@ -70,8 +70,9 @@ func arsBlobMismatchMessages(t *testing.T) map[string]string {
 func TestARSBlobVerificationContractNamesEveryCoveredReadAndRule(t *testing.T) {
 	section := compactText(arsBlobVerificationContractSection(t))
 	for _, required := range []string{
-		"ES does not trust ARS for the integrity of the bytes it reads.",
+		"ES does not trust ARS for the integrity of the blobs it reads by digest.",
 		"but ES does not rely on that check.",
+		"ES still trusts ARS for one choice: which sealed evidence document applies to an artifact, through the discovery record (see \"Outside this contract\").",
 		"These are all of ES's reads of `GET /v1/blobs/{digest}`. There is no other:",
 		"| Aggregate artifact evidence | `:json` | evidence digest |",
 		"| Workload-zone Vault runtime config | `:json` | configured reference digest |",
@@ -91,10 +92,19 @@ func TestARSBlobVerificationContractNamesEveryCoveredReadAndRule(t *testing.T) {
 		"No digest value, byte count, or received byte is exposed.",
 		"| Admission-policy payload input | `403` | `admission_policy_input_unavailable` | the existing fixed admission-policy input message |",
 		"Staged files after the Submit freeze point are protected by the Tranche A staging custody contract, not re-hashed.",
+		"The ARS discovery record (`GET /v1/artifacts/{artifact_digest}/discovery`) is not read by digest. ES has no trusted digest for it and does not verify its bytes.",
+		"its artifact digest must equal the request's, and its payload digest, artifact type and intent digest must equal the signature-verified evidence claims. Its evidence digest is used only to choose which evidence blob to read.",
+		"ES does not check that it is the only such document.",
+		"When more than one exists, ARS chooses which of them ES admits.",
 	} {
 		if !strings.Contains(section, compactText(required)) {
 			t.Errorf("contracts.md section 5A is missing %q", required)
 		}
+	}
+	// The contract must not claim that ES verifies everything it reads from
+	// ARS: the discovery record is read unverified.
+	if strings.Contains(section, compactText("ES does not trust ARS for the integrity of the bytes it reads.")) {
+		t.Errorf("contracts.md section 5A claims ES verifies every ARS read, but the discovery record is not verified")
 	}
 	if rows := strings.Count(section, "| `:json` |") + strings.Count(section, "| `:bytes` |"); rows != 5 {
 		t.Errorf("contracts.md section 5A must list exactly five covered reads, found %d", rows)
@@ -139,23 +149,26 @@ func TestARSBlobVerificationIsStatedWhereDocsDescribeARSReads(t *testing.T) {
 		{
 			path: ".docs/execution_lifecycle/contracts.md",
 			required: []string{
-				"`:prepare` verifies every ARS blob it reads, including the aggregate evidence, the workload-zone Vault config, and any policy payload input, against the requested digest before using it (section 5A).",
+				"`:prepare` verifies every ARS blob it reads by digest, including the aggregate evidence, the workload-zone Vault config, and any policy payload input, against the requested digest before using it (section 5A). The discovery record is read by artifact digest and is not verified; section 5A states what binds it.",
 				"Submit resolves payload bytes through the explicit payload digest carried in aggregate evidence, and uses only bytes that hash to that digest (section 5A).",
 			},
 		},
 		{
 			path: ".docs/system_overview/artifact_publication_storage.md",
 			required: []string{
-				"ES does not trust ARS for byte integrity. Every ES read of an ARS blob by digest hashes the exact bytes received and uses them only when they equal the requested digest; ARS's own read-path check is not relied on.",
+				"ES does not trust ARS for the integrity of the blobs it reads by digest. Every ES read of an ARS blob by digest hashes the exact bytes received and uses them only when they equal the requested digest; ARS's own read-path check is not relied on.",
+				"The discovery record is read by artifact digest and is not verified: ES cross-checks it against the signed evidence, but ARS still chooses which sealed evidence document applies when more than one exists for the same artifact and derivation inputs.",
 				"ES does not rely on the ARS check: it hashes the exact payload bytes it receives and inspects, stages, or runs them only when they equal the signed `payload_digest`.",
 				"ES uses payload bytes only after it has itself verified that they hash to the signed `payload_digest`.",
 			},
+			absent: []string{"ES does not trust ARS for byte integrity."},
 		},
 		{
 			path: ".docs/system_overview/runtime_config_ownership.md",
 			required: []string{
-				"it decodes the workload-zone Vault runtime-config blob only after the received bytes hash to the configured reference digest",
+				"ES does not rely on ARS integrity for this blob: it decodes the workload-zone Vault runtime-config blob only after the received bytes hash to the configured reference digest",
 			},
+			absent: []string{"ES does not rely on ARS integrity for the bytes it reads"},
 		},
 		{
 			path: "PLANS.md",
@@ -163,6 +176,12 @@ func TestARSBlobVerificationIsStatedWhereDocsDescribeARSReads(t *testing.T) {
 				"ES does not rely on ARS for their integrity: every ARS blob read by digest is hashed by ES and used only when it equals the requested digest",
 			},
 			absent: []string{"ARS remains their integrity authority"},
+		},
+		{
+			path: ".docs/execution_lifecycle/design.md",
+			required: []string{
+				"ES verifies the bytes of every blob it reads by digest and does not verify the discovery record (contracts section 5A).",
+			},
 		},
 		{
 			path: ".docs/execution_lifecycle/implementation.md",

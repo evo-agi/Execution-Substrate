@@ -90,18 +90,29 @@ func TestFetchArtifactEvidenceBlobReturnsEvidencePayloadAndMapsFailure(t *testin
 		}
 	})
 
-	t.Run("invalid payload", func(t *testing.T) {
-		service := Service{
-			arsClient: newArtifactRegistryTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				_, _ = w.Write([]byte(`{"claims":`))
-			})),
-		}
+	// Each body is named by its own digest, so the read verifies and the
+	// strict decoder is what refuses it.
+	for _, test := range []struct {
+		name string
+		body []byte
+	}{
+		{name: "invalid payload", body: []byte(`{"claims":`)},
+		{name: "unknown field", body: []byte(`{"unknown_field":true}`)},
+		{name: "trailing document", body: append(servedJSONDocument(t, fixture.evidence), []byte("{}")...)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			service := Service{
+				arsClient: newArtifactRegistryTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					_, _ = w.Write(test.body)
+				})),
+			}
 
-		_, err := service.fetchArtifactEvidenceBlob(context.Background(), fixture.discovery.Artifact.ArtifactDigest, fixture.discovery.Evidence.Digest)
-		if err == nil || err.Code != codeArtifactEvidenceUnavailable || err.Status != http.StatusServiceUnavailable {
-			t.Fatalf("expected artifact evidence unavailable mapping, got %+v", err)
-		}
-	})
+			_, err := service.fetchArtifactEvidenceBlob(context.Background(), fixture.discovery.Artifact.ArtifactDigest, digestBytes(test.body))
+			if err == nil || err.Code != codeArtifactEvidenceUnavailable || err.Status != http.StatusServiceUnavailable || err.Message != "artifact evidence payload was invalid" {
+				t.Fatalf("expected artifact evidence payload invalid mapping, got %+v", err)
+			}
+		})
+	}
 }
 
 func TestPrepareArtifactFromDiscoveryValidatesRequestBindingAndReturnsPreparedArtifact(t *testing.T) {

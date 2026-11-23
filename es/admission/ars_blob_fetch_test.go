@@ -272,6 +272,86 @@ func TestARSBlobDigestMismatchPublicMappings(t *testing.T) {
 	}
 }
 
+// TestARSBlobCallSitesRequestTheDigestExactlyAsGiven passes each covered call
+// site a non-canonical spelling of the digest of the bytes ARS serves. A call
+// site that trimmed or lowercased the digest before the helper would read and
+// accept those bytes; each must instead refuse with its "unavailable" mapping
+// and send no request. Evidence validation accepts uppercase hex, so a sealed
+// uppercase payload_digest reaches the payload reads in this form.
+func TestARSBlobCallSitesRequestTheDigestExactlyAsGiven(t *testing.T) {
+	blob := []byte(validWorkloadZoneVaultConfigBlob)
+	canonical := digestBytes(blob)
+	hex := strings.TrimPrefix(canonical, "sha256:")
+	for _, digest := range []string{
+		"sha256:" + strings.ToUpper(hex),
+		" " + canonical,
+		canonical + "\n",
+	} {
+		t.Run(strconv.Quote(digest), func(t *testing.T) {
+			log := newARSRequestLog()
+			service := newARSBlobTestService(t, log, func(w http.ResponseWriter, r *http.Request) {
+				_, _ = w.Write(blob)
+			})
+			t.Run("primary payload", func(t *testing.T) {
+				got, publicErr := service.fetchPayloadBytes(context.Background(), digest)
+				assertAdmissionError(t, publicErr, http.StatusServiceUnavailable, codePayloadUnavailable)
+				if got != nil || publicErr.Message != "artifact payload is unavailable" {
+					t.Fatalf("primary payload call site did not refuse the digest as given: bytes=%d err=%+v", len(got), publicErr)
+				}
+			})
+			t.Run("mount payload", func(t *testing.T) {
+				got, acquisitionErr, publicErr := service.fetchPayloadBytesWithin(context.Background(), digest, maxRuntimeMountBytes)
+				assertAdmissionError(t, publicErr, http.StatusServiceUnavailable, codePayloadUnavailable)
+				if got != nil || acquisitionErr != nil || publicErr.Message != "artifact payload is unavailable" {
+					t.Fatalf("mount payload call site did not refuse the digest as given: bytes=%d cause=%v err=%+v", len(got), acquisitionErr, publicErr)
+				}
+			})
+			t.Run("admission policy payload", func(t *testing.T) {
+				got, publicErr := service.fetchAdmissionPolicyPayloadBytes(context.Background(), digest)
+				if got != nil || publicErr == nil || *publicErr != *admissionPolicyInputUnavailableError() {
+					t.Fatalf("admission policy call site did not refuse the digest as given: bytes=%d err=%+v", len(got), publicErr)
+				}
+			})
+			t.Run("artifact evidence", func(t *testing.T) {
+				_, publicErr := service.fetchArtifactEvidenceBlob(context.Background(), labeledDigest("aa"), digest)
+				assertAdmissionError(t, publicErr, http.StatusServiceUnavailable, codeArtifactEvidenceUnavailable)
+				if publicErr.Message != "artifact evidence is unavailable" {
+					t.Fatalf("evidence call site did not refuse the digest as given: %q", publicErr.Message)
+				}
+			})
+			t.Run("workload-zone vault blob", func(t *testing.T) {
+				_, publicErr := service.fetchWorkloadZoneVaultConfig(context.Background(), runtimeconfigv1.WorkloadZoneVaultConfigRef{Digest: digest})
+				assertAdmissionError(t, publicErr, http.StatusServiceUnavailable, codeWorkloadZoneVaultUnavailable)
+				if publicErr.Message != "artifact registry workload-zone vault blob is unavailable" {
+					t.Fatalf("vault call site did not refuse the digest as given: %q", publicErr.Message)
+				}
+			})
+			if log.requests() != 0 {
+				t.Fatalf("a call site sent %d ARS requests for a non-canonical digest", log.requests())
+			}
+		})
+	}
+}
+
+// TestWorkloadZoneVaultBlobIsDecodedStrictlyFromVerifiedBytes names each body
+// by its own digest, so the read verifies and the strict decoder refuses it.
+func TestWorkloadZoneVaultBlobIsDecodedStrictlyFromVerifiedBytes(t *testing.T) {
+	for _, body := range []string{
+		`{"vault_config":`,
+		`{"vault_config":{"address":"https://vault.internal:8200","auth_mount":"jwt","auth_role":"execution","jwt_audience":"vault"},"unknown_field":true}`,
+		validWorkloadZoneVaultConfigBlob + `{}`,
+	} {
+		service := newARSBlobTestService(t, newARSRequestLog(), func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte(body))
+		})
+		_, publicErr := service.fetchWorkloadZoneVaultConfig(context.Background(), runtimeconfigv1.WorkloadZoneVaultConfigRef{Digest: digestBytes([]byte(body))})
+		assertAdmissionError(t, publicErr, http.StatusServiceUnavailable, codeWorkloadZoneVaultUnavailable)
+		if publicErr.Message != "artifact registry workload-zone vault blob was invalid" {
+			t.Fatalf("vault blob %q was not refused by the strict decoder: %q", body, publicErr.Message)
+		}
+	}
+}
+
 // signedPayloadHandler serves a primary artifact, and optionally one mount
 // artifact, with every blob except the ones a case overrides.
 type signedPayloadHandler struct {
@@ -608,6 +688,7 @@ func TestFetchVerifiedARSBlobIsTheOnlyARSBlobReadInES(t *testing.T) {
 	}
 	var sites []site
 	var clientUses []site
+	var registryConfigUses []site
 	files := 0
 	walkErr := filepath.WalkDir(esRoot, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
@@ -638,9 +719,27 @@ func TestFetchVerifiedARSBlobIsTheOnlyARSBlobReadInES(t *testing.T) {
 			if fn, ok := decl.(*ast.FuncDecl); ok {
 				name = fn.Name.Name
 			}
+			calledClients := map[*ast.SelectorExpr]string{}
 			ast.Inspect(decl, func(node ast.Node) bool {
+				if call, ok := node.(*ast.CallExpr); ok {
+					if method, ok := call.Fun.(*ast.SelectorExpr); ok {
+						if client, ok := method.X.(*ast.SelectorExpr); ok && client.Sel.Name == "arsClient" {
+							calledClients[client] = method.Sel.Name
+						}
+					}
+				}
+				if selector, ok := node.(*ast.SelectorExpr); ok && selector.Sel.Name == "ArtifactRegistry" {
+					registryConfigUses = append(registryConfigUses, site{file: filepath.ToSlash(relative), fn: name})
+				}
 				if selector, ok := node.(*ast.SelectorExpr); ok && selector.Sel.Name == "arsClient" {
-					clientUses = append(clientUses, site{file: filepath.ToSlash(relative), fn: name})
+					// A use that is not the receiver of a direct method call
+					// (an alias, a method value, an argument) is recorded as
+					// such, so a second read cannot hide behind one selector.
+					method, called := calledClients[selector]
+					if !called {
+						method = "<not a direct call>"
+					}
+					clientUses = append(clientUses, site{file: filepath.ToSlash(relative), fn: name, text: method})
 					return true
 				}
 				literal, ok := node.(*ast.BasicLit)
@@ -671,12 +770,66 @@ func TestFetchVerifiedARSBlobIsTheOnlyARSBlobReadInES(t *testing.T) {
 		t.Fatalf("ARS blob reads in ES production code must go through fetchVerifiedARSBlob; found %+v", sites)
 	}
 	wantClientUses := []site{
-		{file: "admission/ars_blob_fetch.go", fn: "fetchVerifiedARSBlob"},
-		{file: "admission/service.go", fn: "Health"},
-		{file: "admission/service.go", fn: "fetchArtifactDiscoveryRecord"},
+		{file: "admission/ars_blob_fetch.go", fn: "fetchVerifiedARSBlob", text: "get"},
+		{file: "admission/service.go", fn: "Health", text: "checkReady"},
+		{file: "admission/service.go", fn: "fetchArtifactDiscoveryRecord", text: "get"},
 	}
 	slices.SortFunc(clientUses, func(a, b site) int { return strings.Compare(a.file+" "+a.fn, b.file+" "+b.fn) })
 	if !slices.Equal(clientUses, wantClientUses) {
 		t.Fatalf("the ARS client is used outside the verified blob read, the discovery read and the health check: %+v", clientUses)
 	}
+	// The ARS dependency config may build only the one ARS client; a second
+	// client would read ARS without going through arsClient.
+	wantRegistryConfigUses := []site{
+		{file: "admission/service.go", fn: "NewService"},
+		{file: "config/config.go", fn: "Validate"},
+	}
+	slices.SortFunc(registryConfigUses, func(a, b site) int { return strings.Compare(a.file+" "+a.fn, b.file+" "+b.fn) })
+	if !slices.Equal(registryConfigUses, wantRegistryConfigUses) {
+		t.Fatalf("the ARS dependency config is read outside NewService and its validation: %+v", registryConfigUses)
+	}
+}
+
+// TestARSBlobReadsKeepTheirOwnReadLimits serves one byte more than each read's
+// limit with no Content-Length, so the limit and not the header must stop the
+// read. A wider limit would read the body and then answer differently: the
+// evidence, Vault and payload reads with their mismatch message (the digest
+// does not match), the policy read with the bytes (the digest matches).
+func TestARSBlobReadsKeepTheirOwnReadLimits(t *testing.T) {
+	serve := func(t *testing.T, body []byte) *Service {
+		return newARSBlobTestService(t, newARSRequestLog(), func(w http.ResponseWriter, r *http.Request) {
+			w.(http.Flusher).Flush()
+			_, _ = w.Write(body)
+		})
+	}
+	overLimit := func(limit int64) []byte { return bytes.Repeat([]byte{'a'}, int(limit+1)) }
+
+	t.Run("artifact evidence", func(t *testing.T) {
+		_, publicErr := serve(t, overLimit(maxDependencyJSONResponseBytes)).fetchArtifactEvidenceBlob(context.Background(), labeledDigest("aa"), labeledDigest("ab"))
+		assertAdmissionError(t, publicErr, http.StatusServiceUnavailable, codeArtifactEvidenceUnavailable)
+		if publicErr.Message != "artifact evidence payload was invalid" {
+			t.Fatalf("evidence read was not stopped at its limit: %q", publicErr.Message)
+		}
+	})
+	t.Run("workload-zone vault blob", func(t *testing.T) {
+		_, publicErr := serve(t, overLimit(maxDependencyJSONResponseBytes)).fetchWorkloadZoneVaultConfig(context.Background(), runtimeconfigv1.WorkloadZoneVaultConfigRef{Digest: labeledDigest("ac")})
+		assertAdmissionError(t, publicErr, http.StatusServiceUnavailable, codeWorkloadZoneVaultUnavailable)
+		if publicErr.Message != "artifact registry workload-zone vault blob was invalid" {
+			t.Fatalf("vault read was not stopped at its limit: %q", publicErr.Message)
+		}
+	})
+	t.Run("admission policy payload", func(t *testing.T) {
+		body := overLimit(maxAdmissionPolicyPayloadBytes)
+		got, publicErr := serve(t, body).fetchAdmissionPolicyPayloadBytes(context.Background(), digestBytes(body))
+		if got != nil || publicErr == nil || *publicErr != *admissionPolicyInputUnavailableError() {
+			t.Fatalf("policy read was not stopped at its limit: bytes=%d err=%+v", len(got), publicErr)
+		}
+	})
+	t.Run("primary payload", func(t *testing.T) {
+		_, publicErr := serve(t, overLimit(maxPrimaryPayloadBytes)).fetchPayloadBytes(context.Background(), labeledDigest("ad"))
+		assertAdmissionError(t, publicErr, http.StatusServiceUnavailable, codePayloadUnavailable)
+		if publicErr.Message != "artifact payload read failed" {
+			t.Fatalf("primary payload read was not stopped at its limit: %q", publicErr.Message)
+		}
+	})
 }

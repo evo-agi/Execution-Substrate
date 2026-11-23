@@ -237,19 +237,21 @@ const privateReplayClaimRendezvousBound = 8 * time.Second
 // the pre-claim test hook until every one has arrived, then releases them
 // together, so the claim race is real.
 type privateReplayClaimRendezvous struct {
-	want     int
-	arrived  chan struct{}
-	release  chan struct{}
-	returned chan struct{}
-	workers  sync.WaitGroup
+	want         int
+	arrivalBound time.Duration
+	arrived      chan struct{}
+	release      chan struct{}
+	returned     chan struct{}
+	workers      sync.WaitGroup
 }
 
 func newPrivateReplayClaimRendezvous(want int) *privateReplayClaimRendezvous {
 	r := &privateReplayClaimRendezvous{
-		want:     want,
-		arrived:  make(chan struct{}, want),
-		release:  make(chan struct{}),
-		returned: make(chan struct{}, want),
+		want:         want,
+		arrivalBound: privateReplayClaimRendezvousBound,
+		arrived:      make(chan struct{}, want),
+		release:      make(chan struct{}),
+		returned:     make(chan struct{}, want),
 	}
 	beforePrivateReplayClaimForTest = func() { r.arrived <- struct{}{}; <-r.release }
 	return r
@@ -278,7 +280,7 @@ func (r *privateReplayClaimRendezvous) start(work func()) {
 // returned within the bound after the release fail the test at once.
 func (r *privateReplayClaimRendezvous) releaseAndWait(t *testing.T) string {
 	t.Helper()
-	arrivalDeadline := time.NewTimer(privateReplayClaimRendezvousBound)
+	arrivalDeadline := time.NewTimer(r.arrivalBound)
 	defer arrivalDeadline.Stop()
 	reached := 0
 	incomplete := ""
@@ -289,7 +291,7 @@ func (r *privateReplayClaimRendezvous) releaseAndWait(t *testing.T) string {
 		case <-r.returned:
 			incomplete = fmt.Sprintf("a concurrent admission returned before reaching the claim (%d of %d reached)", reached, r.want)
 		case <-arrivalDeadline.C:
-			incomplete = fmt.Sprintf("concurrent admissions did not reach the claim within %s (%d of %d reached)", privateReplayClaimRendezvousBound, reached, r.want)
+			incomplete = fmt.Sprintf("concurrent admissions did not reach the claim within %s (%d of %d reached)", r.arrivalBound, reached, r.want)
 		}
 	}
 	close(r.release)
@@ -321,6 +323,29 @@ func TestPrivateReplayClaimRendezvousReportsAWorkerThatReturnsEarly(t *testing.T
 	}
 	if elapsed := time.Since(started); elapsed >= privateReplayClaimRendezvousBound {
 		t.Fatalf("early worker return was reported only after the bound: %s", elapsed)
+	}
+}
+
+// TestPrivateReplayClaimRendezvousBoundsTheWaitForArrival holds one worker
+// short of the claim hook until the release, so only the arrival bound can end
+// the wait. The rendezvous must report it and release the worker instead of
+// waiting for an arrival that never comes.
+func TestPrivateReplayClaimRendezvousBoundsTheWaitForArrival(t *testing.T) {
+	rendezvous := newPrivateReplayClaimRendezvous(2)
+	defer rendezvous.uninstall()
+	rendezvous.arrivalBound = 50 * time.Millisecond
+	hook := beforePrivateReplayClaimForTest
+	rendezvous.start(func() { hook() })
+	rendezvous.start(func() { <-rendezvous.release })
+	result := make(chan string, 1)
+	go func() { result <- rendezvous.releaseAndWait(t) }()
+	select {
+	case incomplete := <-result:
+		if !strings.Contains(incomplete, "did not reach the claim within 50ms (1 of 2 reached)") {
+			t.Fatalf("missing arrival was not reported: %q", incomplete)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the rendezvous waited past its arrival bound for a worker that never reached the claim")
 	}
 }
 
