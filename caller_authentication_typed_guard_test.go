@@ -32,11 +32,13 @@ import (
 const callerauthImportPath = "execution-substrate/internal/callerauth"
 
 // callerIdentityForbiddenImports may be imported only inside
-// internal/callerauth: go-spiffe's own readers of an X.509 SVID's identity,
-// and the test support that builds caller certificates.
+// internal/callerauth: go-spiffe's reader of an X.509 SVID's identity, and
+// the test support that builds caller certificates. go-spiffe's spiffeid is
+// not on the list: it is an ID type and parser that cannot read a
+// certificate (getting a URI out of one is the URIs read below), and PR 12's
+// private submit handoff uses its ID type.
 var callerIdentityForbiddenImports = []string{
 	"github.com/spiffe/go-spiffe/v2/svid/x509svid",
-	"github.com/spiffe/go-spiffe/v2/spiffeid",
 	callerauthImportPath + "/callerauthtest",
 }
 
@@ -267,7 +269,7 @@ func callerIdentityTypedViolations(t *testing.T, target callerIdentityBuildTarge
 
 // No production package outside internal/callerauth reads the TLS state of
 // a request, an identity or issuer field of a certificate, or imports
-// go-spiffe's X.509 SVID readers or the callerauth test support; and the five
+// go-spiffe's X.509 SVID reader or the callerauth test support; and the five
 // service API packages use nothing from crypto/tls.
 func TestCallerIdentityIsReadOnlyByCallerauthByType(t *testing.T) {
 	for _, target := range callerIdentityBuildTargets {
@@ -385,7 +387,6 @@ var _ = zzCallerIdentityProbe
 	const probe = "internal/zzcalleridentityprobe/probe.go"
 	const api = "ars/api/zz_calleridentityprobe.go"
 	want := []string{
-		probe + ":8: imports github.com/spiffe/go-spiffe/v2/spiffeid",
 		probe + ":9: imports github.com/spiffe/go-spiffe/v2/svid/x509svid",
 		probe + ":13: reads net/http.Request.TLS",
 		probe + ":16: reads net/http.Request.TLS",
