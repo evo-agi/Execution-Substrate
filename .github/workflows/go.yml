@@ -76,13 +76,14 @@ jobs:
       - name: Vet for macOS
         run: GOOS=darwin GOARCH=arm64 go vet ./...
 
-      # Two tests of es/admission show that ES's startup probe refuses file
-      # systems that staging or result retention cannot use. Their fixtures
-      # are bindfs mounts, a FUSE file system that bends one rule of the
-      # file system below it. Without bindfs the two tests skip themselves,
-      # and the step "Test" fails on the skips. The version is pinned: the
-      # retention test skips itself when bindfs supports the no-replace
-      # rename, which a newer bindfs may do.
+      # Three tests of es/admission show that ES's startup probe refuses file
+      # systems that staging or result retention cannot use, and which check
+      # refuses each one. Their fixtures are bindfs mounts, a FUSE file system
+      # that bends one rule of the file system below it. Without bindfs the
+      # three tests skip themselves, and the step "Test" fails on the skips.
+      # The version is pinned because the fixture for a rename that accepts
+      # no flags needs a bindfs without the no-replace rename, which a newer
+      # bindfs may add: then one test skips itself and another fails.
       - name: Install bindfs
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends bindfs=1.14.7-1.1build2
 
