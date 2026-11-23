@@ -657,10 +657,13 @@ func TestSubmitRefusesBeforeRunAssignmentWhenNomadAccessControlFails(t *testing.
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			fixture := newPreparedArtifactFixture(t)
-			service, stagingRoot, _ := newWorkstreamCTestService(t, fixture)
+			// ES verifies every ARS blob against its digest (PR #29), so the
+			// fixture's payload digest must be the served policy payload's.
 			policyPayload := buildAdmissionPolicyStaticScriptArchive(t, map[string][]byte{
 				staticScriptEntrypointName: []byte(benignPolicyFixtureText()),
 			})
+			fixture = fixture.withPayload(t, policyPayload)
+			service, stagingRoot, _ := newWorkstreamCTestService(t, fixture)
 			service.arsClient = newResolvedPlanDependencyClient(t, resolvedPlanArtifactHandler(t, fixture, policyPayload, nil))
 			jobRequests := 0
 			service.nomadClient = newAccessControlScenarioClient(t, tc.scenario, &jobRequests)
