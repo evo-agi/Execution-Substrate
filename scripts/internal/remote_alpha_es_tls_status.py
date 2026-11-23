@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import ctypes
+import errno
 import fcntl
 import hashlib
 import json
@@ -34,6 +35,7 @@ MAX_SUMMARY = 1048576
 MAX_JSON_CONTAINER_DEPTH = 64
 CHILD_TIMEOUT = 10.0
 CHILD_GRACE = 1.0
+PROC_IDENTITY_READS = 4
 CHUNK = 16384
 SIGNALS = (signal.SIGHUP, signal.SIGINT, signal.SIGQUIT, signal.SIGTERM)
 CHILD_ENV = {"LC_ALL": "C", "LANG": "C", "TZ": "UTC", "PATH": "/usr/bin:/bin", "HOME": "/", "OPENSSL_CONF": "/dev/null"}
@@ -813,19 +815,50 @@ def validate_process_capability(backend: ProcessCapabilityBackend | None = None)
 
 
 def read_proc_identity(pid: int) -> tuple[int, int] | None:
-    """Return (PGID, starttime) from one bounded, no-follow proc stat read."""
-    global WITNESS_DISPOSITION_UNPROVED
+    """Return (PGID, starttime) of this process, or None when it is absent.
+
+    Every scan reads the proc stat line of every process on the host. The
+    name between the first "(" and the last ")" is chosen by that process
+    and may hold any byte, so the line is parsed as bytes and the name is
+    never interpreted.
+
+    The stat file never proves absence. While a thread other than the first
+    thread of a live process calls exec, the kernel can answer ENOENT or
+    ESRCH at open, ESRCH at read, or a line with a negative group ID. After
+    such an answer the process is absent only when pidfd_open confirms that
+    no process has this ID. When a process still has it, the file is read
+    again, and an answer that stays unclear is unproved, never absent.
+    """
     if pid <= 0:
         raise Incomplete("process_identity_unproved")
+    for _attempt in range(PROC_IDENTITY_READS):
+        identity = read_proc_stat_identity(pid)
+        if identity is not None:
+            return identity
+        if process_absent(pid):
+            return None
+    raise Incomplete("process_identity_unproved")
+
+
+def read_proc_stat_identity(pid: int) -> tuple[int, int] | None:
+    """One bounded, no-follow proc stat read.
+
+    None means only that this read did not show the process. It is never
+    proof of absence; read_proc_identity decides that.
+    """
+    global WITNESS_DISPOSITION_UNPROVED
     try:
         fd = os.open(f"/proc/{pid}/stat",
                      os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC)
-    except FileNotFoundError:
+    except (FileNotFoundError, ProcessLookupError):
         return None
     except OSError as exc:
         raise Incomplete("process_identity_unproved") from exc
     try:
-        raw = os.read(fd, 4097)
+        try:
+            raw = os.read(fd, 4097)
+        except ProcessLookupError:
+            return None
     finally:
         try:
             os.close(fd)
@@ -835,16 +868,48 @@ def read_proc_identity(pid: int) -> tuple[int, int] | None:
     if len(raw) > 4096:
         raise Incomplete("process_identity_unproved")
     try:
-        text = raw.decode("ascii", "strict")
-        close = text.rfind(")")
-        if close < 0 or not text.startswith(str(pid) + " ("):
+        close = raw.rfind(b")")
+        if close < 0 or not raw.startswith(b"%d (" % pid):
             raise ValueError()
-        fields = text[close + 2:].split()
+        fields = raw[close + 2:].split()
         if len(fields) < 20:
             raise ValueError()
-        return int(fields[2]), int(fields[19])
-    except (UnicodeError, ValueError, IndexError) as exc:
+        pgid, starttime = int(fields[2]), int(fields[19])
+    except (ValueError, IndexError) as exc:
         raise Incomplete("process_identity_unproved") from exc
+    if pgid < 0:
+        # The kernel prints -1 for a task that it released during the read.
+        return None
+    return pgid, starttime
+
+
+def process_absent(pid: int) -> bool:
+    """Return True only when the kernel confirms that no process has this ID.
+
+    pidfd_open looks the ID up without the proc file system. It succeeds for
+    every process that exists, including a zombie and a process in the
+    middle of an exec. It fails with ESRCH when no process has the ID. A
+    kernel that keeps the number only as a group or session ID, or as the
+    ID of a thread that is not the first of its process, may answer EINVAL
+    instead. Every other answer leaves the question unproved.
+    """
+    global WITNESS_DISPOSITION_UNPROVED
+    if not hasattr(os, "pidfd_open"):
+        raise Incomplete("process_capability_unavailable")
+    try:
+        fd = os.pidfd_open(pid, 0)
+    except ProcessLookupError:
+        return True
+    except OSError as exc:
+        if exc.errno == errno.EINVAL:
+            return True
+        raise Incomplete("process_identity_unproved") from exc
+    try:
+        os.close(fd)
+    except BaseException:
+        WITNESS_DISPOSITION_UNPROVED = True
+        raise
+    return False
 
 
 def scan_group_members(pgid: int) -> list[tuple[int, int]]:

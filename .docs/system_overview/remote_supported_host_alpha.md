@@ -3549,6 +3549,33 @@ and no OS-label or direct-child-only fallback. No child
 inherits the same-scope status lock; no unbounded ordinary child wait or
 double reap is allowed. The unresolved-cleanup hold is exceptional.
 
+`Bounded slice rule` for the process-identity read: the capability probe and
+every membership scan read `/proc/<pid>/stat` of every process on the host,
+including processes of other accounts, so a process outside the fixed group
+must not decide the result. The reader parses the stat line as bytes. The
+process name between the first `(` and the last `)` is chosen by its own
+process and may hold any byte, including non-ASCII bytes, `)`, spaces, and
+newlines; it is never decoded, compared, or otherwise interpreted. Only the
+kernel-written fields after the last `)` supply the group ID and the start
+time. The stat file never proves that a process is absent. While a thread
+other than the first thread of a live process calls exec, the kernel can
+answer `ENOENT` or `ESRCH` at open, `ESRCH` at read, or a line with a
+negative group ID, although the process keeps running under the same ID.
+After such an answer a listed process is absent only when `pidfd_open`
+confirms that no process has its ID. `pidfd_open` does not use `/proc`; it
+succeeds for every existing process, including a zombie and a process in the
+middle of an exec, and it fails with `ESRCH`, or with `EINVAL` from a kernel
+that answers so for a number that no process leads, when none has the ID.
+When a process still has the ID, the reader reads the stat file again, four
+times at most, and an answer that stays unclear is unproved, never absent;
+any other `pidfd_open` error is unproved as well. Every other open or read
+error is unproved, never absent, and a missing `<pid> (` prefix, a line over
+4096 bytes, and a missing or non-numeric field remain
+`process_identity_unproved`. The name or the exit of an unrelated process
+therefore neither fails the capability probe nor prolongs the
+unresolved-cleanup hold. This rule adds no time limit to that hold and never
+counts a visible zombie as absent.
+
 The exact client verification argv is `/usr/bin/openssl verify -trusted
 <selected-ca-fd> -purpose sslclient /dev/stdin`. The server argv is
 `/usr/bin/openssl verify -trusted <selected-ca-fd> -purpose sslserver
