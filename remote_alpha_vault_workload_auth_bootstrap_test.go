@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -120,8 +121,9 @@ type fakeBootstrapVaultServer struct {
 }
 
 // fakeGenerateRoot models the parts of Vault that the unseal-key authority
-// uses: sys/generate-root with one key share, auth/token/create-orphan and
-// auth/token/revoke-self.
+// uses: sys/generate-root with one key share, auth/token/create-orphan,
+// auth/token/revoke-self, and the accessor list, lookup and revoke of the
+// standing root token check.
 type fakeGenerateRoot struct {
 	unsealKey  string
 	rootToken  string
@@ -143,10 +145,37 @@ type fakeGenerateRoot struct {
 	// loadedConfigPath, enables it.
 	refuseUnauthenticated bool
 	loadedConfigPath      string
-	// openAtCreateOrphan records whether unauthenticated generate-root was
-	// still enabled when the child token was made.
-	openAtCreateOrphan bool
+	// openAtCreateOrphan, openAtRootRevoke and openAtConfiguration record
+	// whether unauthenticated generate-root was still enabled when the child
+	// token was made, when the root token was revoked, and at the first
+	// configuration request.
+	openAtCreateOrphan  bool
+	openAtRootRevoke    bool
+	openAtConfiguration bool
+	// afterFirstStatus runs once, right after the first GET of
+	// sys/generate-root/attempt (the read-only preflight) is answered, to
+	// model Vault changing between the preflight and generate-root.
+	afterFirstStatus func(g *fakeGenerateRoot)
+	statusReads      int
+	// otherTokens are the tokens, other than the child, that the accessor
+	// list shows, by accessor.
+	otherTokens      map[string]fakeVaultTokenInfo
+	failAccessorList bool
+	// listVanished adds an accessor to the list whose token is gone by the
+	// time it is looked up (Vault answers 400).
+	listVanished      bool
+	revokedAccessors  []string
+	childAccessorSeen bool
 }
+
+// fakeVaultTokenInfo is what auth/token/lookup-accessor reports.
+type fakeVaultTokenInfo struct {
+	policies   []string
+	expireTime string
+	period     int
+}
+
+const fakeChildAccessor = "fakeChildTokenAccessor0000001"
 
 func (g *fakeGenerateRoot) unauthenticatedAllowed() bool {
 	if !g.refuseUnauthenticated {
@@ -158,7 +187,11 @@ func (g *fakeGenerateRoot) unauthenticatedAllowed() bool {
 
 func (g *fakeGenerateRoot) serve(t *testing.T, w http.ResponseWriter, r *http.Request, token string, body map[string]any) bool {
 	t.Helper()
+	if token == g.childToken && r.URL.Path == "/v1/sys/auth" {
+		g.openAtConfiguration = g.refuseUnauthenticated && g.unauthenticatedAllowed()
+	}
 	if strings.HasPrefix(r.URL.Path, "/v1/sys/generate-root/") && !g.unauthenticatedAllowed() {
+		g.afterStatusRead(r)
 		writeJSON(w, http.StatusForbidden, map[string]any{"errors": []string{"permission denied"}})
 		return true
 	}
@@ -169,7 +202,9 @@ func (g *fakeGenerateRoot) serve(t *testing.T, w http.ResponseWriter, r *http.Re
 		}
 		switch r.Method {
 		case http.MethodGet:
-			writeJSON(w, http.StatusOK, map[string]any{"started": g.alreadyStarted || g.started, "progress": 0, "required": g.required, "complete": false})
+			started := g.alreadyStarted || g.started
+			g.afterStatusRead(r)
+			writeJSON(w, http.StatusOK, map[string]any{"started": started, "progress": 0, "required": g.required, "complete": false})
 		case http.MethodPut:
 			g.started = true
 			writeJSON(w, http.StatusOK, map[string]any{"started": true, "nonce": g.nonce, "otp": g.otp, "otp_length": len(g.otp), "progress": 0, "required": g.required, "complete": false})
@@ -207,13 +242,73 @@ func (g *fakeGenerateRoot) serve(t *testing.T, w http.ResponseWriter, r *http.Re
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"errors": []string{"raw Vault output must not be summarized"}})
 			return true
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"auth": map[string]any{"client_token": g.childToken, "policies": []string{"root"}, "lease_duration": 900, "renewable": false}})
+		writeJSON(w, http.StatusOK, map[string]any{"auth": map[string]any{"client_token": g.childToken, "accessor": fakeChildAccessor, "policies": []string{"root"}, "lease_duration": 900, "renewable": false}})
+		return true
+	case r.Method == "LIST" && r.URL.Path == "/v1/auth/token/accessors":
+		if token != g.childToken {
+			t.Errorf("the accessor list must be read with the short-lived token")
+		}
+		if g.failAccessorList {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"errors": []string{"raw Vault output must not be summarized"}})
+			return true
+		}
+		keys := []string{fakeChildAccessor}
+		if g.listVanished {
+			keys = append(keys, "fakeVanishedTokenAccessor001")
+		}
+		for accessor := range g.otherTokens {
+			keys = append(keys, accessor)
+		}
+		sort.Strings(keys)
+		writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"keys": keys}})
+		return true
+	case r.Method == http.MethodPost && r.URL.Path == "/v1/auth/token/lookup-accessor":
+		if token != g.childToken {
+			t.Errorf("lookup-accessor must use the short-lived token")
+		}
+		accessor, _ := body["accessor"].(string)
+		if accessor == fakeChildAccessor {
+			g.childAccessorSeen = true
+			writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"accessor": accessor, "policies": []string{"root"}, "expire_time": "2026-11-23T20:15:00Z", "ttl": 899}})
+			return true
+		}
+		info, ok := g.otherTokens[accessor]
+		if !ok {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"errors": []string{"invalid accessor"}})
+			return true
+		}
+		data := map[string]any{"accessor": accessor, "policies": info.policies, "ttl": 0, "expire_time": nil}
+		if info.expireTime != "" {
+			data["expire_time"] = info.expireTime
+			data["ttl"] = 600
+		}
+		if info.period != 0 {
+			data["period"] = info.period
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"data": data})
+		return true
+	case r.Method == http.MethodPost && r.URL.Path == "/v1/auth/token/revoke-accessor":
+		if token != g.childToken {
+			t.Errorf("revoke-accessor must use the short-lived token")
+		}
+		accessor, _ := body["accessor"].(string)
+		if _, ok := g.otherTokens[accessor]; !ok {
+			t.Errorf("revoke-accessor for an accessor that is not a listed token")
+			writeJSON(w, http.StatusBadRequest, map[string]any{"errors": []string{"invalid accessor"}})
+			return true
+		}
+		delete(g.otherTokens, accessor)
+		g.revokedAccessors = append(g.revokedAccessors, accessor)
+		w.WriteHeader(http.StatusNoContent)
 		return true
 	case r.Method == http.MethodPost && r.URL.Path == "/v1/auth/token/revoke-self":
 		if token != g.rootToken && token != g.childToken {
 			t.Errorf("revoke-self with an unknown token")
 			writeJSON(w, http.StatusForbidden, map[string]any{"errors": []string{"permission denied"}})
 			return true
+		}
+		if token == g.rootToken {
+			g.openAtRootRevoke = g.refuseUnauthenticated && g.unauthenticatedAllowed()
 		}
 		if token == g.failRevokeFor {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"errors": []string{"raw Vault output must not be summarized"}})
@@ -224,6 +319,18 @@ func (g *fakeGenerateRoot) serve(t *testing.T, w http.ResponseWriter, r *http.Re
 		return true
 	}
 	return false
+}
+
+// afterStatusRead runs afterFirstStatus once, after the first GET of
+// sys/generate-root/attempt.
+func (g *fakeGenerateRoot) afterStatusRead(r *http.Request) {
+	if r.Method != http.MethodGet || r.URL.Path != "/v1/sys/generate-root/attempt" {
+		return
+	}
+	g.statusReads++
+	if g.statusReads == 1 && g.afterFirstStatus != nil {
+		g.afterFirstStatus(g)
+	}
 }
 
 func (f *fakeBootstrapVaultServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -1672,13 +1779,16 @@ func TestRemoteAlphaVaultWorkloadAuthBootstrapUnsealKeyAuthorityRevokesGenerated
 	joined := strings.Join(lines, "\n")
 
 	// The order: make the root token, make the short-lived child with it,
-	// revoke the root token, configure with the child only, revoke the child.
+	// revoke the root token at once (the next request), check for standing
+	// root tokens, configure with the child only, revoke the child.
 	order := []string{
 		"GET /v1/sys/generate-root/attempt token=none",
 		"PUT /v1/sys/generate-root/attempt token=none",
 		"PUT /v1/sys/generate-root/update token=none",
 		"POST /v1/auth/token/create-orphan token=root",
 		"POST /v1/auth/token/revoke-self token=root",
+		"LIST /v1/auth/token/accessors token=child",
+		"POST /v1/auth/token/lookup-accessor token=child",
 		"GET /v1/sys/auth token=child",
 		"POST /v1/auth/jwt/role/service_execution token=child",
 		"POST /v1/proof-secrets/data/codex-runtime-profile token=child",
@@ -1696,6 +1806,9 @@ func TestRemoteAlphaVaultWorkloadAuthBootstrapUnsealKeyAuthorityRevokesGenerated
 		t.Fatalf("revoking the short-lived token must be the last request:\n%s", joined)
 	}
 	rootRevoke := indexOfLine(lines, "POST /v1/auth/token/revoke-self token=root")
+	if create := indexOfLine(lines, "POST /v1/auth/token/create-orphan token=root"); rootRevoke != create+1 {
+		t.Fatalf("the root token must be revoked by the request right after the child is made:\n%s", joined)
+	}
 	for i, line := range lines {
 		if strings.HasSuffix(line, "token=root") && i > rootRevoke {
 			t.Fatalf("the generated root token was used after it was revoked:\n%s", joined)
@@ -1743,6 +1856,7 @@ func TestRemoteAlphaVaultWorkloadAuthBootstrapUnsealKeyAuthorityRevokesGenerated
 	assertContainsAll(t, "unseal-key bootstrap output", run.output,
 		"Vault unseal key (input hidden; not logged;",
 		"The root token made from the unseal key was revoked at once; the short-lived token for this run is revoked too.",
+		"Vault holds no root token that never expires.",
 		"overall_status=pass",
 	)
 	assertContainsNone(t, "unseal-key bootstrap output", run.output, "Proof secret value", "WARNING")
@@ -1756,11 +1870,15 @@ func TestRemoteAlphaVaultWorkloadAuthBootstrapUnsealKeyAuthorityRevokesGenerated
 		t.Fatalf("expected pass, got %s", summaryRaw)
 	}
 	operations := summary["operations"].(map[string]any)
-	for _, name := range []string{"bootstrap_choices", "generate_root_token", "short_lived_authority_token", "generated_root_token_revoke", "short_lived_authority_token_revoke"} {
+	for _, name := range []string{"bootstrap_choices", "generate_root_token", "short_lived_authority_token", "generated_root_token_revoke", "standing_root_tokens", "short_lived_authority_token_revoke"} {
 		operation, ok := operations[name].(map[string]any)
 		if !ok || operation["status"] != "pass" {
 			t.Fatalf("expected operation %s pass, got %#v", name, operations[name])
 		}
+	}
+	standing := operations["standing_root_tokens"].(map[string]any)
+	if fmt.Sprintf("%v %v %v", standing["found"], standing["revoked"], standing["action"]) != "0 0 report" {
+		t.Fatalf("expected no standing root token found and none revoked, got %#v", standing)
 	}
 	proofPrompt := operations["prompt_proof_secret"].(map[string]any)
 	if proofPrompt["prompt_source"] != "generated" {
@@ -1843,6 +1961,25 @@ func TestRemoteAlphaVaultWorkloadAuthBootstrapUnsealKeyAuthorityFailures(t *test
 			output:       []string{"WARNING: the root token made from the unseal key could NOT be revoked"},
 		},
 		{
+			// Pins the in-generate check: Vault reports an attempt only after
+			// the preflight read.
+			name:         "attempt_started_after_preflight",
+			setup:        func(g *fakeGenerateRoot) { g.afterFirstStatus = func(g *fakeGenerateRoot) { g.alreadyStarted = true } },
+			phase:        "generate_root_token",
+			failureClass: "generate_root_attempt_in_progress",
+			want:         []string{"GET /v1/sys/generate-root/attempt token=none"},
+			notWant:      []string{"PUT /v1/sys/generate-root/attempt token=none", "DELETE /v1/sys/generate-root/attempt token=none"},
+		},
+		{
+			name:         "standing_root_token_check_fails",
+			setup:        func(g *fakeGenerateRoot) { g.failAccessorList = true },
+			phase:        "standing_root_tokens",
+			failureClass: "vault_api_error",
+			want:         []string{"POST /v1/auth/token/revoke-self token=root", "LIST /v1/auth/token/accessors token=child", "POST /v1/auth/token/revoke-self token=child"},
+			revoked:      func(g *fakeGenerateRoot) []string { return []string{g.rootToken, g.childToken} },
+			output:       []string{"the short-lived token for this run is revoked too"},
+		},
+		{
 			name:         "configuration_fails",
 			failPath:     "/v1/sys/policies/acl/runtime-identity-proof",
 			phase:        "runtime_identity_policy",
@@ -1919,11 +2056,13 @@ func TestRemoteAlphaVaultWorkloadAuthBootstrapRejectsInvalidChoicesBeforePrompts
 		{name: "authority", env: "REMOTE_ALPHA_BOOTSTRAP_AUTHORITY=root", messageClass: "authority_not_root_token_or_unseal_key"},
 		{name: "authority_partial", env: "REMOTE_ALPHA_BOOTSTRAP_AUTHORITY=unseal", messageClass: "authority_not_root_token_or_unseal_key"},
 		{name: "proof_value", env: "REMOTE_ALPHA_BOOTSTRAP_PROOF_VALUE=random", messageClass: "proof_value_not_prompt_or_generate"},
+		{name: "standing_root_tokens", env: "REMOTE_ALPHA_BOOTSTRAP_STANDING_ROOT_TOKENS=delete", messageClass: "standing_root_tokens_not_report_or_revoke"},
+		{name: "standing_root_tokens_revoke_needs_unseal_key", env: "REMOTE_ALPHA_BOOTSTRAP_STANDING_ROOT_TOKENS=revoke REMOTE_ALPHA_BOOTSTRAP_AUTHORITY=root-token", messageClass: "standing_root_tokens_revoke_needs_unseal_key"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			g := newFakeGenerateRoot()
-			run := runUnsealKeyBootstrap(t, g, "", 0, g.unsealKey+"\n", tc.env)
+			run := runUnsealKeyBootstrap(t, g, "", 0, g.unsealKey+"\n", strings.Fields(tc.env)...)
 			if run.err == nil {
 				t.Fatalf("expected an invalid choice to fail:\n%s", run.output)
 			}
@@ -1979,6 +2118,7 @@ case %[2]q in
   fail) exit 1 ;;
   noeffect) exit 0 ;;
   fail-second) [ "$n" -ge 2 ] && exit 1 ;;
+  noeffect-second) [ "$n" -ge 2 ] && exit 0 ;;
 esac
 cp %[3]q %[4]q
 `, f.countPath, reloadMode, f.configPath, f.loadedPath)
@@ -2024,7 +2164,7 @@ func (f temporaryAccessFixture) assertUnchanged(t *testing.T) {
 
 func TestRemoteAlphaVaultWorkloadAuthBootstrapTemporaryGenerateRootAccess(t *testing.T) {
 	const original = "ui = false\nlistener \"tcp\" {\n  address = \"172.17.0.1:8200\"\n}\n"
-	t.Run("enables_generates_and_restores_before_the_child_token", func(t *testing.T) {
+	t.Run("enables_generates_revokes_the_root_token_then_restores", func(t *testing.T) {
 		g := newFakeGenerateRoot()
 		f, env := newTemporaryAccessFixture(t, original, "ok")
 		g.refuseUnauthenticated, g.loadedConfigPath = true, f.loadedPath
@@ -2036,8 +2176,14 @@ func TestRemoteAlphaVaultWorkloadAuthBootstrapTemporaryGenerateRootAccess(t *tes
 		if got := f.reloads(t); got != "2" {
 			t.Fatalf("expected two reloads (enable and restore), got %s", got)
 		}
-		if g.openAtCreateOrphan {
-			t.Fatalf("unauthenticated generate-root must be closed again before the short-lived token is made")
+		// The root token never expires, so it is revoked before the slow
+		// restore (reload and wait); configuration starts only once Vault
+		// refuses generate-root without a token again.
+		if !g.openAtCreateOrphan || !g.openAtRootRevoke {
+			t.Fatalf("the root token must be used and revoked before Vault's configuration is put back")
+		}
+		if g.openAtConfiguration {
+			t.Fatalf("unauthenticated generate-root must be closed again before any configuration request")
 		}
 		if fmt.Sprint(g.revoked) != fmt.Sprint([]string{g.rootToken, g.childToken}) {
 			t.Fatalf("expected the root token and then the child token revoked")
@@ -2066,20 +2212,6 @@ func TestRemoteAlphaVaultWorkloadAuthBootstrapTemporaryGenerateRootAccess(t *tes
 		}
 	})
 
-	t.Run("vault_that_allows_it_is_not_touched", func(t *testing.T) {
-		g := newFakeGenerateRoot()
-		f, env := newTemporaryAccessFixture(t, original, "ok")
-		run := runUnsealKeyBootstrap(t, g, "", 0, g.unsealKey+"\n", append(env, "REMOTE_ALPHA_BOOTSTRAP_GENERATE_ROOT_ACCESS=temporary-config")...)
-		if run.err != nil {
-			t.Fatalf("run failed: %v\n%s", run.err, run.output)
-		}
-		f.assertUnchanged(t)
-		if got := f.reloads(t); got != "0" {
-			t.Fatalf("a Vault that already allows generate-root must not be reloaded, got %s reloads", got)
-		}
-		assertContainsNone(t, "output", run.output, "configuration file is back", "WARNING")
-	})
-
 	failures := []struct {
 		name         string
 		content      string
@@ -2093,20 +2225,45 @@ func TestRemoteAlphaVaultWorkloadAuthBootstrapTemporaryGenerateRootAccess(t *tes
 		reloads      string
 		warning      bool
 		revoked      func(g *fakeGenerateRoot) []string
+		// loadedExtra is appended to the configuration Vault has loaded
+		// (not to the file), for a Vault that allows generate-root in
+		// memory only; afterFirstStatus does it after the preflight read.
+		loadedExtra      string
+		afterFirstStatus bool
+		output           string
 	}{
 		{name: "as_configured_refused", content: original, reloadMode: "ok", access: "as-configured", phase: "generate_root_access_preflight", failureClass: "generate_root_unauthenticated_access_disabled", vaultOps: true, reloads: "0"},
 		{name: "config_already_mentions_the_setting", content: original + "enable_unauthenticated_access = [\"rekey\"]\n", reloadMode: "ok", access: "temporary-config", phase: "vault_config_preflight", failureClass: "config_invalid", reloads: "0"},
 		{name: "needs_unseal_key_authority", content: original, reloadMode: "ok", access: "temporary-config", authority: "root-token", phase: "bootstrap_choices", failureClass: "config_invalid", reloads: "0"},
 		{name: "reload_fails", content: original, reloadMode: "fail", access: "temporary-config", phase: "generate_root_access_enable", failureClass: "vault_reload_failed", prompts: true, vaultOps: true, reloads: "2", warning: true},
 		{name: "reload_has_no_effect", content: original, reloadMode: "noeffect", access: "temporary-config", phase: "generate_root_access_enable", failureClass: "generate_root_access_not_enabled", prompts: true, vaultOps: true, reloads: "2"},
-		{name: "restore_reload_fails", content: original, reloadMode: "fail-second", access: "temporary-config", phase: "generate_root_access_restore", failureClass: "vault_config_restore_failed", prompts: true, vaultOps: true, reloads: "2", warning: true, revoked: func(g *fakeGenerateRoot) []string { return []string{g.rootToken} }},
-		{name: "no_final_newline", content: "ui = false", reloadMode: "fail-second", access: "temporary-config", phase: "generate_root_access_restore", failureClass: "vault_config_restore_failed", prompts: true, vaultOps: true, reloads: "2", warning: true, revoked: func(g *fakeGenerateRoot) []string { return []string{g.rootToken} }},
+		{name: "restore_reload_fails", content: original, reloadMode: "fail-second", access: "temporary-config", phase: "generate_root_access_restore", failureClass: "vault_config_restore_failed", prompts: true, vaultOps: true, reloads: "2", warning: true, revoked: func(g *fakeGenerateRoot) []string { return []string{g.rootToken, g.childToken} }},
+		{name: "no_final_newline", content: "ui = false", reloadMode: "fail-second", access: "temporary-config", phase: "generate_root_access_restore", failureClass: "vault_config_restore_failed", prompts: true, vaultOps: true, reloads: "2", warning: true, revoked: func(g *fakeGenerateRoot) []string { return []string{g.rootToken, g.childToken} }},
+		// The restore reload succeeds but Vault keeps answering: the wait
+		// for the refusal must notice.
+		{name: "restore_reload_has_no_effect", content: original, reloadMode: "noeffect-second", access: "temporary-config", phase: "generate_root_access_restore", failureClass: "vault_config_restore_failed", prompts: true, vaultOps: true, reloads: "2", warning: true, revoked: func(g *fakeGenerateRoot) []string { return []string{g.rootToken, g.childToken} }},
+		// What a run killed during the restore leaves: the file is clean but
+		// Vault still answers generate-root without a token.
+		{name: "vault_open_but_file_clean", content: original, reloadMode: "ok", access: "temporary-config", phase: "generate_root_access_preflight", failureClass: "generate_root_access_open_outside_config_file", vaultOps: true, reloads: "0", loadedExtra: "enable_unauthenticated_access = [\"generate-root\"]\n", output: "Reload Vault ("},
+		{name: "vault_opens_after_preflight", content: original, reloadMode: "ok", access: "temporary-config", phase: "generate_root_token", failureClass: "generate_root_access_open_outside_config_file", prompts: true, vaultOps: true, reloads: "0", loadedExtra: "enable_unauthenticated_access = [\"generate-root\"]\n", afterFirstStatus: true, output: "Reload Vault ("},
 	}
 	for _, tc := range failures {
 		t.Run(tc.name, func(t *testing.T) {
 			g := newFakeGenerateRoot()
 			f, env := newTemporaryAccessFixture(t, tc.content, tc.reloadMode)
 			g.refuseUnauthenticated, g.loadedConfigPath = true, f.loadedPath
+			if tc.loadedExtra != "" {
+				openInMemory := func(*fakeGenerateRoot) {
+					if err := os.WriteFile(f.loadedPath, append(append([]byte{}, f.original...), tc.loadedExtra...), 0o600); err != nil {
+						t.Errorf("write loaded config: %v", err)
+					}
+				}
+				if tc.afterFirstStatus {
+					g.afterFirstStatus = openInMemory
+				} else {
+					openInMemory(g)
+				}
+			}
 			env = append(env, "REMOTE_ALPHA_BOOTSTRAP_GENERATE_ROOT_ACCESS="+tc.access)
 			if tc.authority != "" {
 				env = append(env, "REMOTE_ALPHA_BOOTSTRAP_AUTHORITY="+tc.authority)
@@ -2120,6 +2277,9 @@ func TestRemoteAlphaVaultWorkloadAuthBootstrapTemporaryGenerateRootAccess(t *tes
 				t.Fatalf("expected %s reloads, got %s", tc.reloads, got)
 			}
 			for _, line := range fakeBootstrapRequestLines(run.state.requests, g) {
+				if line == "POST /v1/auth/token/revoke-self token=child" {
+					continue
+				}
 				if strings.Contains(line, "token=child") || strings.Contains(line, "/v1/proof-secrets/") {
 					t.Fatalf("no configuration may follow a failed generate-root access step:\n%s", line)
 				}
@@ -2139,9 +2299,76 @@ func TestRemoteAlphaVaultWorkloadAuthBootstrapTemporaryGenerateRootAccess(t *tes
 			} else {
 				assertContainsNone(t, "output", run.output, "WARNING")
 			}
+			if tc.output != "" {
+				assertContainsAll(t, "output", run.output, tc.output)
+			}
 			secrets := []string{g.unsealKey, g.rootToken, g.childToken, g.otp, g.nonce}
 			assertContainsNone(t, "output", run.output, secrets...)
 			assertBootstrapFailureSummary(t, run.summaryPath, tc.phase, tc.failureClass, tc.prompts, tc.vaultOps, secrets...)
+		})
+	}
+}
+
+func TestRemoteAlphaVaultWorkloadAuthBootstrapStandingRootTokens(t *testing.T) {
+	others := func() map[string]fakeVaultTokenInfo {
+		return map[string]fakeVaultTokenInfo{
+			"fakeStandingRootAccessor0001": {policies: []string{"root"}},
+			"fakePeriodicRootAccessor0001": {policies: []string{"root"}, expireTime: "2026-11-23T21:00:00Z", period: 3600},
+			"fakeExpiringRootAccessor0001": {policies: []string{"root"}, expireTime: "2026-11-23T20:30:00Z"},
+			"fakeWorkloadTokenAccessor001": {policies: []string{"default", "runtime-identity-proof"}},
+		}
+	}
+	accessors := []string{"fakeStandingRootAccessor0001", "fakePeriodicRootAccessor0001", "fakeExpiringRootAccessor0001", "fakeWorkloadTokenAccessor001", "fakeVanishedTokenAccessor001", fakeChildAccessor}
+	cases := []struct {
+		name        string
+		env         []string
+		wantRevoked []string
+		wantOutput  string
+		notOutput   string
+		wantCounts  string
+	}{
+		{name: "report", wantOutput: "WARNING: Vault holds 2 root token(s) that never expire.", notOutput: "Revoked ", wantCounts: "2 0 report"},
+		{
+			name:        "revoke",
+			env:         []string{"REMOTE_ALPHA_BOOTSTRAP_STANDING_ROOT_TOKENS=revoke"},
+			wantRevoked: []string{"fakePeriodicRootAccessor0001", "fakeStandingRootAccessor0001"},
+			wantOutput:  "Revoked 2 root token(s) that never expired, as REMOTE_ALPHA_BOOTSTRAP_STANDING_ROOT_TOKENS=revoke asked.",
+			notOutput:   "WARNING",
+			wantCounts:  "2 2 revoke",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := newFakeGenerateRoot()
+			g.otherTokens = others()
+			g.listVanished = true
+			run := runUnsealKeyBootstrap(t, g, "", 0, g.unsealKey+"\n", tc.env...)
+			if run.err != nil {
+				t.Fatalf("run failed: %v\n%s\nsummary=%s", run.err, run.output, readIfExists(run.summaryPath))
+			}
+			if fmt.Sprint(g.revokedAccessors) != fmt.Sprint(tc.wantRevoked) {
+				t.Fatalf("revoked accessors %v, want %v", g.revokedAccessors, tc.wantRevoked)
+			}
+			lines := fakeBootstrapRequestLines(run.state.requests, g)
+			joined := strings.Join(lines, "\n")
+			lastCheck := -1
+			for i, line := range lines {
+				if strings.Contains(line, "/v1/auth/token/lookup-accessor") || strings.Contains(line, "/v1/auth/token/revoke-accessor") {
+					lastCheck = i
+				}
+			}
+			if config := indexOfLine(lines, "GET /v1/sys/auth token=child"); lastCheck < 0 || config < lastCheck {
+				t.Fatalf("the standing root token check must finish before configuration:\n%s", joined)
+			}
+			assertContainsAll(t, "output", run.output, tc.wantOutput, "overall_status=pass")
+			assertContainsNone(t, "output", run.output, tc.notOutput)
+			summaryRaw := mustRead(t, run.summaryPath)
+			assertContainsNone(t, "output", run.output, accessors...)
+			assertContainsNone(t, "summary", summaryRaw, accessors...)
+			standing := readJSONFile(t, run.summaryPath)["operations"].(map[string]any)["standing_root_tokens"].(map[string]any)
+			if got := fmt.Sprintf("%v %v %v", standing["found"], standing["revoked"], standing["action"]); got != tc.wantCounts {
+				t.Fatalf("expected found, revoked, action %q, got %q", tc.wantCounts, got)
+			}
 		})
 	}
 }
@@ -2155,6 +2382,8 @@ func TestRemoteAlphaVaultWorkloadAuthBootstrapP0qR1Docs(t *testing.T) {
 		"the same tranche refines the P0q workload-auth bootstrap helper (INF-04, INF-05, and the root-token half of INF-06)",
 		"`enable_unauthenticated_access = [\"generate-root\"]`",
 		"one key share; CI installs Vault 2.2.2",
+		"SIGINT, SIGTERM, SIGHUP and SIGQUIT wait until the root token is revoked and Vault's configuration is back",
+		"`REMOTE_ALPHA_BOOTSTRAP_STANDING_ROOT_TOKENS=revoke` revokes them",
 	)
 	section := compactDocSection(t, mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md"), "#### P0q-R1 Bootstrap Token Limits, Proof History And Unseal-Key Authority", "### Historical P0r Mac-Side Runtime Identity Summary — Superseded and Non-Authoritative")
 	assertContainsAll(t, "P0q-R1 docs subsection", section,
@@ -2167,13 +2396,21 @@ func TestRemoteAlphaVaultWorkloadAuthBootstrapP0qR1Docs(t *testing.T) {
 		"`REMOTE_ALPHA_BOOTSTRAP_PROOF_VALUE=generate` writes a random value made in helper memory to both proof paths and never shows it",
 		"`REMOTE_ALPHA_BOOTSTRAP_AUTHORITY=unseal-key` prompts for the single unseal key share instead.",
 		"requires a threshold of exactly one share",
-		"`ttl` and `explicit_max_ttl` `15m` and `renewable=false`, then revokes the root token with `auth/token/revoke-self` before any configuration request.",
+		"`ttl` and `explicit_max_ttl` `15m` and `renewable=false`, then revokes the root token with `auth/token/revoke-self` as the very next request, before Vault's configuration is put back",
+		"SIGINT, SIGTERM, SIGHUP and SIGQUIT are blocked",
+		"the exit code is 128 plus the signal number",
+		"SIGKILL and a power loss cannot be deferred.",
+		"`generate_root_access_open_outside_config_file`",
+		"operation `standing_root_tokens`, before any configuration request.",
+		"`REMOTE_ALPHA_BOOTSTRAP_STANDING_ROOT_TOKENS=revoke` (unseal-key only) revokes them with `auth/token/revoke-accessor`",
+		"The summary records counts, never accessors",
 		"a generate-root attempt that someone else started is refused, not cancelled",
 		"`root_token_revoke_failed`",
 		"phase `generate_root_access_preflight`",
 		"`generate_root_unauthenticated_access_disabled`",
-		"it writes the original bytes back with the same owner and mode, reloads again, and waits until Vault refuses again.",
+		"once the 15-minute token is made and the root token is revoked, it writes the original bytes back with the same owner and mode, reloads again, and waits until Vault refuses again, all before any configuration request.",
 		"`vault_config_restore_failed`",
 		"one test runs the helper against a real local Vault server (not dev mode; raft, TLS, one key share).",
+		"A second real-Vault test sends SIGINT, SIGTERM, SIGHUP and SIGQUIT from inside the enable and the restore reload",
 	)
 }

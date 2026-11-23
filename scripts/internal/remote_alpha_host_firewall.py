@@ -399,15 +399,15 @@ def render(settings):
     add('\t\tcounter name "lan_to_host" drop')
     add("\t}")
     add("")
-    add("\t# Routed traffic. Container egress is checked by destination; new")
-    add("\t# connections into containers are allowed only through Docker's")
-    add("\t# published-port DNAT. Other forwarded traffic is left to Docker.")
+    add("\t# Routed traffic. Container egress is checked by destination; no new")
+    add("\t# connection into a container is forwarded, published ports (Docker")
+    add("\t# DNAT) included. Other forwarded traffic is left to Docker.")
     add("\tchain forward {")
     add("\t\ttype filter hook forward priority filter - 10; policy accept;")
     for match in iif_matches():
         add(f"\t\t{match} goto container_egress")
     for match in oif_matches():
-        add(f'\t\t{match} ct state new ct status != dnat counter name "into_container" drop')
+        add(f'\t\t{match} ct state new counter name "into_container" drop')
     add("\t}")
     add("")
     add("\t# Containers reach the internet, the listed resolvers on port 53, and")
@@ -441,9 +441,14 @@ def render(settings):
     add("}")
     add("")
     add("# Containers on the same bridge talk at layer 2 and do not pass the inet")
-    add("# forward hook unless br_netfilter is loaded. This table blocks that path")
-    add("# whatever the br_netfilter state. Traffic to the bridge's own address")
-    add("# is local delivery, not bridge forwarding, so Vault stays reachable.")
+    add("# forward hook unless br_netfilter is active. This table blocks that path")
+    add("# whatever the br_netfilter state: IPv4 by destination only, so a forged")
+    add("# source address does not help, and all IPv6 between bridge ports (the")
+    add("# containers have no IPv6 subnet to key on; --apply refuses while a bridge")
+    add("# that is not a container interface exists, so no other bridge is hit).")
+    add("# The bridge forward hook sees only frames from one port to another:")
+    add("# traffic to the bridge's own address is local delivery, so Vault, DNS")
+    add("# and the internet stay reachable.")
     add(f"table bridge {TABLE} {{")
     for name in COUNTERS_BRIDGE:
         add(f"\tcounter {name} {{")
@@ -453,9 +458,10 @@ def render(settings):
     add("\t\ttype filter hook forward priority filter - 10; policy accept;")
     for network in settings["container_bridge_subnets"]:
         add(
-            f"\t\tether type ip ip saddr {network} ip daddr {network} "
+            f"\t\tether type ip ip daddr {network} "
             'counter name "container_to_container" drop'
         )
+    add('\t\tether type ip6 counter name "container_to_container" drop')
     add("\t}")
     add("}")
     return "\n".join(lines) + "\n"
@@ -671,7 +677,10 @@ def cmd_listeners(args):
         elif proto == "udp" and port in (68, 546):
             verdict = "DHCP client replies only"
         elif proto == "udp" and port >= ephemeral_low:
-            verdict = "ephemeral client socket (replies only)"
+            # Taken as a client socket, which gets its replies. A service
+            # that listens on a port in this range is BLOCKED like any other
+            # unlisted listener, so the line names the owner to check.
+            verdict = "ephemeral range: taken as a client socket (replies only); a service here would be BLOCKED"
         elif token in settings["accept_blocked_listeners"]:
             verdict = "BLOCKED from LAN and containers (accepted in settings)"
         else:
@@ -748,9 +757,21 @@ def cmd_new_ssh_peer(args):
         _, local_port = parse_ss_address(fields[2])
         if local_port != settings["ssh_port"]:
             continue
-        if fields[3] not in recorded:
-            print(f"  new ssh connection from {fields[3]}")
-            return 0
+        if fields[3] in recorded:
+            continue
+        address, _ = parse_ss_address(fields[3])
+        if not isinstance(address, (ipaddress.IPv4Address, ipaddress.IPv6Address)):
+            continue
+        if address.version == 6 and address.ipv4_mapped is not None:
+            address = address.ipv4_mapped
+        # A loopback connection proves nothing about the firewall, and a
+        # peer outside SSH_SOURCES is not the operator's path.
+        if is_loopback(address) or not any(
+            address in network for network in settings["ssh_sources"] if network.version == address.version
+        ):
+            continue
+        print(f"  new ssh connection from {fields[3]}")
+        return 0
     print("  no SSH connection opened after apply was found")
     return 5
 
@@ -1064,8 +1085,65 @@ def cmd_probe_plan(args):
     return 0
 
 
+def cmd_bridges(_args):
+    """Read ``ip -o link show type bridge`` on stdin. Every bridge must be a
+    container interface: the bridge table drops IPv6 between the ports of
+    every bridge, and IPv4 to the container subnets. Exit 10 when one is
+    not."""
+    settings = load_settings()
+    others = []
+    for line in sys.stdin:
+        fields = line.split()
+        if len(fields) < 2 or not fields[0].endswith(":"):
+            continue
+        name = fields[1].rstrip(":").split("@", 1)[0]
+        if ifname_matches(name, settings["container_interfaces"]):
+            print(f"  bridge {name:<16} container interface")
+        else:
+            print(f"  bridge {name:<16} NOT a container interface")
+            others.append(name)
+    if others:
+        print(
+            "  bridges that are not container interfaces: " + " ".join(others)
+            + ". The bridge table would drop IPv6 between their ports. Add them to"
+            " REMOTE_ALPHA_HOST_FIREWALL_CONTAINER_INTERFACES (their traffic is then"
+            " treated as container traffic) or remove them."
+        )
+        return 10
+    return 0
+
+
+def cmd_container_ipv6(_args):
+    """Read ``ip -o -6 addr show scope global`` on stdin. Exit 11 when a
+    container interface holds a global or unique-local IPv6 address: its
+    containers would then have IPv6, and this ruleset blocks only private
+    IPv6 ranges for them, so they could reach LAN hosts at the LAN's global
+    IPv6 prefix."""
+    settings = load_settings()
+    found = []
+    for line in sys.stdin:
+        fields = line.split()
+        if len(fields) < 4 or fields[2] != "inet6":
+            continue
+        name = fields[1].split("@", 1)[0]
+        if ifname_matches(name, settings["container_interfaces"]):
+            found.append(f"{name} {fields[3]}")
+    for entry in found:
+        print(f"  container interface with IPv6: {entry}")
+    if found:
+        print(
+            "  container networks with IPv6 are not supported by this firewall: their"
+            " containers could reach the LAN's IPv6 hosts. Turn IPv6 off for those"
+            " networks first."
+        )
+        return 11
+    return 0
+
+
 COMMANDS = {
     "bridge-check": cmd_bridge_check,
+    "bridges": cmd_bridges,
+    "container-ipv6": cmd_container_ipv6,
     "probe-plan": cmd_probe_plan,
     "render": cmd_render,
     "render-unit": cmd_render_unit,

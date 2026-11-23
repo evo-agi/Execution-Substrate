@@ -3063,9 +3063,11 @@ Bootstrap authority:
   nonce, and decodes the root token with the one-time password in memory. It
   uses that root token once, for `auth/token/create-orphan` with policy
   `root`, `ttl` and `explicit_max_ttl` `15m` and `renewable=false`, then
-  revokes the root token with `auth/token/revoke-self` before any
-  configuration request. Configuration runs with the 15-minute token, which
-  the helper revokes before it exits, also after a failure.
+  revokes the root token with `auth/token/revoke-self` as the very next
+  request, before Vault's configuration is put back (see "Generate-root
+  access") and before any configuration request. Configuration runs with
+  the 15-minute token, which the helper revokes before it exits, also after
+  a failure.
 - a generate-root attempt that someone else started is refused, not
   cancelled; an attempt the helper started is cancelled when a later step
   fails
@@ -3075,6 +3077,38 @@ Bootstrap authority:
 - the unseal key, the root token, the 15-minute token, the nonce and the
   one-time password are never printed, logged, written or passed on a command
   line; the summary records labels only
+
+Signals and interrupted runs:
+
+- from before generate-root until the root token is revoked and Vault's
+  configuration is back, SIGINT, SIGTERM, SIGHUP and SIGQUIT are blocked;
+  the reload command inherits that, so Ctrl-C does not cut a reload short.
+  A signal that arrives then takes effect right after that section, at the
+  latest after the reload timeout (60 s) and the two waits (20 s each)
+- SIGTERM, SIGHUP and SIGQUIT are turned into the same clean stop as
+  Ctrl-C: no configuration request follows, the 15-minute token is
+  revoked, the summary records `failure_class=interrupted` and
+  `interrupted_by`, the warnings are printed, and the exit code is 128 plus
+  the signal number
+- SIGKILL and a power loss cannot be deferred. Inside the two requests
+  between generate-root's last step and the revoke, they can leave a root
+  token that never expires; its value existed only in the killed process.
+  During the enable or restore reload, they can leave the added line in the
+  file, or Vault answering generate-root without a token from memory while
+  the file is clean. A power loss also reseals Vault
+- the next run finds each of these. With `temporary-config` it refuses a
+  file that mentions `enable_unauthenticated_access` (phase
+  `vault_config_preflight`; remove the marked line, reload) and a Vault
+  that answers generate-root without a token while the file does not say
+  so (phase `generate_root_access_preflight`, class
+  `generate_root_access_open_outside_config_file`; reload Vault). With the
+  15-minute token it counts the root-policy tokens that never expire (no
+  `expire_time`, or periodic) and warns when there are any, operation
+  `standing_root_tokens`, before any configuration request.
+  `REMOTE_ALPHA_BOOTSTRAP_STANDING_ROOT_TOKENS=revoke` (unseal-key only)
+  revokes them with `auth/token/revoke-accessor`, which also revokes the
+  tokens each one made that are not orphans. The summary records counts,
+  never accessors
 
 Generate-root access:
 
@@ -3094,11 +3128,17 @@ Generate-root access:
   the first word of `REMOTE_ALPHA_BOOTSTRAP_VAULT_RELOAD_COMMAND` (default
   `systemctl reload vault.service`) exists. Only when Vault refuses does it
   add a marked comment and that one setting to the file, reload Vault and
-  wait until Vault answers. Right after generate-root, before the 15-minute
-  token is made, it writes the original bytes back with the same owner and
-  mode, reloads again, and waits until Vault refuses again. If that cannot be
-  shown, it revokes the root token, fails with `vault_config_restore_failed`
-  and prints the exact line to remove and the reload command.
+  wait until Vault answers. After generate-root, once the 15-minute token is
+  made and the root token is revoked, it writes the original bytes back with
+  the same owner and mode, reloads again, and waits until Vault refuses
+  again, all before any configuration request. If that cannot be shown, it
+  revokes the 15-minute token, fails with `vault_config_restore_failed` and
+  prints the exact line to remove and the reload command.
+- with `temporary-config`, a Vault that already answers generate-root
+  without a token is refused, before the key prompt and again just before
+  generate-root, because the file was checked not to mention the setting:
+  that state is what a run killed during the restore leaves. If the setting
+  is meant to stay on (set in another file), `as-configured` uses it
 
 Validation:
 
@@ -3108,9 +3148,13 @@ Validation:
   a token until the setting is reloaded, that the token accessor list is the
   same before and after a run, that earlier proof versions are gone, that a
   workload login gets the 900-second TTL, that a login from outside
-  `token_bound_cidrs` is refused, and that a wrong key changes nothing. CI
-  installs Vault 2.2.2, so it runs there. It still runs no live box, SSH or
-  sudo.
+  `token_bound_cidrs` is refused, that a wrong key changes nothing, that the
+  initial root token is reported as a standing root token and that `revoke`
+  revokes it. A second real-Vault test sends SIGINT, SIGTERM, SIGHUP and
+  SIGQUIT from inside the enable and the restore reload and checks that no
+  token stays valid, the file is back, Vault refuses again and no
+  configuration ran. CI installs Vault 2.2.2, so both run there. They still
+  run no live box, SSH or sudo.
 
 ### Historical P0r Mac-Side Runtime Identity Summary — Superseded and Non-Authoritative
 
@@ -6582,8 +6626,13 @@ What it owns, and nothing else:
 - unit `/etc/systemd/system/es-host-firewall.service`, which loads the
   installed ruleset at boot
 - sshd drop-in `/etc/ssh/sshd_config.d/00-execution-substrate-host-access.conf`
-- a transient `es-host-firewall-rollback` timer and its records under
-  `/run/es-host-firewall`
+- a transient `es-host-firewall-rollback` timer and the records of an apply
+  that awaits `--confirm`, under `/var/lib/es-host-firewall`. They are on
+  disk so that an apply cut short by a reboot (which also ends the timer)
+  stays visible: its marker makes `--status` report it and `--plan` and
+  `--apply` refuse until `--rollback` runs. At boot the loaded tables are
+  the installed ruleset (or none), while the unconfirmed sshd drop-in may
+  still be in place
 
 It reloads sshd. It does not touch other sshd files, Vault, Nomad, Docker or
 ES, and reads no secrets.
@@ -6604,11 +6653,18 @@ Rules (`execution-substrate.remote-alpha.host-firewall.v1`, golden file
   unique-local IPv6 addresses take only what an IPv6 source entry allows
 - forward: containers reach the listed resolvers on port 53 and the
   internet, and no private, loopback, link-local, multicast or reserved
-  range; new connections into containers pass only through Docker's
-  published-port DNAT (`ct status dnat`)
+  range; no new connection into a container is forwarded, published ports
+  (Docker DNAT) included, so a port published later stays closed until this
+  rule changes
 - bridge table: containers on the listed bridge subnets
   (`CONTAINER_BRIDGE_SUBNETS`, default `172.17.0.0/16`) cannot reach each
-  other at layer 2, whatever the `br_netfilter` state
+  other at layer 2, whatever the `br_netfilter` state and whatever source
+  address a container writes (the IPv4 rule matches the destination only),
+  and no IPv6 frame passes from one bridge port to another. The bridge
+  forward hook sees only port-to-port frames, so this does not touch
+  traffic to the host. The IPv6 rule cannot be keyed on a container subnet
+  (the containers have none), so it covers every bridge; `--apply` refuses
+  while a bridge exists that is not a container interface
 - box's own connections to Vault: chain `host_to_vault_source` (nat,
   postrouting, priority `srcnat - 10`) applies an identity snat to
   connections that leave through `lo` from `VAULT_ADDRESS` to
@@ -6676,14 +6732,19 @@ Modes:
   the drop-in, and every check `--apply` makes
 - `--apply`: the checks (the kernel accepts the ruleset with `nft -c`,
   current SSH peers stay allowed, the container bridge holds the Vault
-  address and is isolated, every newly blocked listener is accepted, the
-  sshd checks, no earlier apply awaiting confirm), then it arms the rollback
+  address and is isolated, every bridge is a container interface, no
+  container interface has a global or unique-local IPv6 address, every
+  newly blocked listener is accepted, the sshd checks, no earlier apply
+  awaiting confirm or left unconfirmed), then it arms the rollback
   timer (`ROLLBACK_SECONDS`, default 180), loads the ruleset, installs and
   checks the drop-in and reloads sshd. Existing sessions stay
 - `--confirm`: only from an SSH connection opened after `--apply` and with
   the same settings; installs the ruleset and unit, keeps the drop-in and
-  cancels the timer. At the box's console, where no SSH connection can prove
-  anything, `REMOTE_ALPHA_HOST_FIREWALL_CONFIRM_WITHOUT_NEW_SSH=1` skips the
+  cancels the timer. The new connection must come from an address inside
+  `SSH_SOURCES` and not from loopback (IPv4-mapped addresses are compared as
+  IPv4); a loopback connection proves nothing about the operator's path. At
+  the box's console, where no SSH connection can prove anything,
+  `REMOTE_ALPHA_HOST_FIREWALL_CONFIRM_WITHOUT_NEW_SSH=1` skips the
   new-connection check
 - `--status`: read-only; whether the installed ruleset is loaded and
   unchanged, whether the drop-in matches the settings and `sshd -T` agrees,
@@ -6693,7 +6754,8 @@ Modes:
   Vault, DNS and the internet must work, and the box's LAN services, the LAN
   gateway and the other container must not; Vault must see the box's own
   connections from `VAULT_ADDRESS`; the drop counters must move
-- `--rollback`: removes both tables, the unit, the installed files and the
+- `--rollback`: removes both tables, the unit, the installed files, the
+  records of an earlier `--apply` under `/var/lib/es-host-firewall` and the
   drop-in (only when it carries the script's marker) and reloads sshd; the
   settings file stays
 - `--render`: prints the ruleset for the current settings
@@ -6703,6 +6765,29 @@ address changes (for example a lost DHCP reservation), recover at the box's
 console with `sudo bash scripts/remote_alpha_host_firewall.sh --rollback`,
 or by changing `SSH_SOURCES` and running `--apply` and then `--confirm` with
 `REMOTE_ALPHA_HOST_FIREWALL_CONFIRM_WITHOUT_NEW_SSH=1`.
+
+Host facts (`--plan`): interfaces, the default route, nftables.service,
+ufw, iptables, whether `br_netfilter` is active (read from
+`/proc/sys/net/bridge/bridge-nf-call-iptables`, which exists whether it is
+a module or built in), every bridge and whether it is a container
+interface, the tables, the unit, the rollback timer and the source check.
+
+Known limits:
+
+- listener classification treats a UDP socket on a port in the ephemeral
+  range as a client socket that only gets replies; a real UDP service on
+  such a port is blocked like any other unlisted listener, and the
+  classification line names its owner so the operator can check
+- the role's `token_bound_cidrs` (`172.17.0.0/16`) admits only the default
+  bridge. Containers on `br-*` or `nomad` bridges reach Vault through this
+  firewall but their logins are refused with a plain 403 until their
+  subnet is added there. Because the identity snat gives every local
+  process that connects to `VAULT_ADDRESS:VAULT_PORT` the bridge address,
+  the bound CIDR limits by network, not by workload: a process on the box
+  passes it, which the box's own workload-auth check needs
+- container networks with IPv6 are refused (see `--apply`): the forward
+  rules block only private IPv6 ranges for containers, so containers with
+  IPv6 could reach LAN hosts at the LAN's global IPv6 prefix
 
 Source check (`host-vault-source`, used by `--plan`, `--status` and
 `--probe`): when `VAULT_ADDRESS` is an address of the host, it opens a TCP
@@ -6719,8 +6804,10 @@ Validation:
   check against a local listener, and the apply/confirm/rollback order with
   fakes
 - real-kernel tests in network namespaces load the rendered ruleset and
-  check real traffic (LAN, containers, Vault, DNS, published ports, IPv4
-  and, where the kernel has it, IPv6), and run `--apply`, `--confirm`,
+  check real traffic (LAN, containers, Vault, DNS, a Docker-style published
+  port that must stay closed, IPv4 and, where the kernel has it, IPv6); one
+  turns `br_netfilter` off in the lab and sends forged-source IPv4 and raw
+  IPv6 frames between two containers, which must not arrive; they run `--apply`, `--confirm`,
   `--status` and `--rollback`; with Docker's masquerade rule in the lab and
   the LAN interface created before `docker0`, the source check reports
   `REWRITTEN` to the LAN address without the firewall and `kept` with it;

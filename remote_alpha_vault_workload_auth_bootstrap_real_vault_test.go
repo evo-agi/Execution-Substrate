@@ -12,6 +12,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"math/big"
@@ -170,7 +171,8 @@ cluster_addr = "https://127.0.0.1:%d"
 		caPEM:      caPEM,
 		configPath: configPath,
 		pid:        cmd.Process.Pid,
-		client:     &http.Client{Timeout: 10 * time.Second, Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool}}},
+		// sys/init can take more than 10 s on a loaded machine.
+		client: &http.Client{Timeout: 60 * time.Second, Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool}}},
 	}
 	v.waitFor(func() bool {
 		status, _ := v.call("", http.MethodGet, "sys/seal-status", nil)
@@ -228,7 +230,7 @@ func (v *realVault) call(token, method, path string, payload any) (int, map[stri
 	}
 	response, err := v.client.Do(request)
 	if err != nil {
-		return 0, nil
+		return 0, map[string]any{"errors": []string{err.Error()}}
 	}
 	defer response.Body.Close()
 	raw, _ := io.ReadAll(response.Body)
@@ -409,6 +411,8 @@ func TestRemoteAlphaVaultWorkloadAuthBootstrapUnsealKeyWithRealVault(t *testing.
 	assertContainsAll(t, "first run output", output,
 		"Vault's configuration file is back byte for byte, and Vault again refuses generate-root without a token.",
 		"The root token made from the unseal key was revoked at once; the short-lived token for this run is revoked too.",
+		// The initial root token from sys/init never expires.
+		"WARNING: Vault holds 1 root token(s) that never expire.",
 		"overall_status=pass",
 	)
 	checkAfterRun("first run", output, summaryPath)
@@ -457,4 +461,142 @@ func TestRemoteAlphaVaultWorkloadAuthBootstrapUnsealKeyWithRealVault(t *testing.
 	assertContainsAll(t, "wrong key output", output, "failure_phase=generate_root_token", "Vault's configuration file is back byte for byte")
 	assertContainsNone(t, "wrong key output", output, wrongKey)
 	checkAfterRun("wrong key run", output, summaryPath)
+
+	// Run 4, last because it revokes the initial root token this test uses:
+	// REMOTE_ALPHA_BOOTSTRAP_STANDING_ROOT_TOKENS=revoke removes every root
+	// token that never expires.
+	output, summaryPath, err = run("revoke-standing", v.unsealKey+"\n", "REMOTE_ALPHA_BOOTSTRAP_STANDING_ROOT_TOKENS=revoke")
+	if err != nil {
+		t.Fatalf("revoke run failed: %v\n%s\nsummary=%s", err, output, readIfExists(summaryPath))
+	}
+	assertContainsAll(t, "revoke run output", output, "Revoked 1 root token(s) that never expired", "overall_status=pass")
+	assertContainsNone(t, "revoke run output", output, v.unsealKey, v.rootToken, "WARNING")
+	if status, _ := v.call(v.rootToken, http.MethodGet, "auth/token/lookup-self", nil); status != http.StatusForbidden {
+		t.Fatalf("the initial root token must be revoked, lookup-self answered %d", status)
+	}
+	if got := mustRead(t, v.configPath); got != configBefore {
+		t.Fatalf("revoke run: Vault's configuration file is not back byte for byte")
+	}
+	if status, _ := v.call("", http.MethodGet, "sys/generate-root/attempt", nil); status != http.StatusForbidden {
+		t.Fatalf("revoke run: Vault must refuse generate-root without a token again, got %d", status)
+	}
+}
+
+// TestRemoteAlphaVaultWorkloadAuthBootstrapSignalsWithRealVault delivers
+// SIGINT, SIGTERM, SIGHUP and SIGQUIT to the helper from inside its own
+// Vault reload command: during the reload that enables unauthenticated
+// generate-root, and during the reload that puts it back (after generate-root
+// and the short-lived token). The signals must wait until the root token is
+// revoked and the configuration is back; then the run stops before any
+// configuration, revokes the short-lived token and leaves nothing open.
+func TestRemoteAlphaVaultWorkloadAuthBootstrapSignalsWithRealVault(t *testing.T) {
+	vaultBin, err := exec.LookPath("vault")
+	if err != nil {
+		t.Skip("needs the vault binary on PATH (CI installs Vault 2.2.2)")
+	}
+	v := startRealVault(t, vaultBin)
+	configBefore := mustRead(t, v.configPath)
+	signingKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate signing key: %v", err)
+	}
+	bundleKey := fakeSpireJWTValidationKey{
+		N: base64.RawURLEncoding.EncodeToString(signingKey.PublicKey.N.Bytes()),
+		E: base64.RawURLEncoding.EncodeToString(big.NewInt(int64(signingKey.PublicKey.E)).Bytes()),
+	}
+	dir := t.TempDir()
+	fakeBin := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(fakeBin, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	setupFakeBootstrapSpireServerWithBundle(t, fakeBin, fakeSpireJWTValidationBundle(bundleKey))
+	configPath := filepath.Join(dir, "workload-zone-vault-config.json")
+	writeWorkloadZoneConfig(t, configPath, v.address, "jwt", "service_execution", "vault", v.caPEM)
+
+	cases := []struct {
+		name   string
+		reload int // 1 = the enable reload, 2 = the restore reload
+		signal string
+		exit   int
+	}{
+		{"sigint_during_restore_reload", 2, "INT", 130},
+		{"sigterm_during_restore_reload", 2, "TERM", 143},
+		{"sighup_during_restore_reload", 2, "HUP", 129},
+		{"sigquit_during_restore_reload", 2, "QUIT", 131},
+		{"sigint_during_enable_reload", 1, "INT", 130},
+		{"sigterm_during_enable_reload", 1, "TERM", 143},
+		{"sighup_during_enable_reload", 1, "HUP", 129},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			before := v.accessors()
+			caseDir := filepath.Join(dir, tc.name)
+			if err := os.MkdirAll(caseDir, 0o755); err != nil {
+				t.Fatalf("mkdir: %v", err)
+			}
+			// The reload really reloads Vault, then signals the helper (its
+			// parent) and returns success after the helper had time to act.
+			counter := filepath.Join(caseDir, "reload-count")
+			script := fmt.Sprintf(`#!/bin/sh
+n=$(cat %[1]s 2>/dev/null || echo 0); n=$((n+1)); echo "$n" > %[1]s
+kill -HUP %[2]d
+if [ "$n" = "%[3]d" ]; then sleep 1; kill -%[4]s "$PPID"; sleep 2; fi
+exit 0
+`, counter, v.pid, tc.reload, tc.signal)
+			reload := filepath.Join(caseDir, "reload-vault")
+			if err := os.WriteFile(reload, []byte(script), 0o755); err != nil {
+				t.Fatalf("write reload: %v", err)
+			}
+			summaryPath := filepath.Join(caseDir, "run", "summary.json")
+			env := envWithPath(fakeBin,
+				"REMOTE_ALPHA_BOOTSTRAP_WORKLOAD_ZONE_CONFIG_PATH="+configPath,
+				"REMOTE_ALPHA_BOOTSTRAP_SUMMARY_PATH="+summaryPath,
+				"REMOTE_ALPHA_BOOTSTRAP_AUTHORITY=unseal-key",
+				"REMOTE_ALPHA_BOOTSTRAP_PROOF_VALUE=generate",
+				"REMOTE_ALPHA_BOOTSTRAP_GENERATE_ROOT_ACCESS=temporary-config",
+				"REMOTE_ALPHA_BOOTSTRAP_VAULT_CONFIG_PATH="+v.configPath,
+				"REMOTE_ALPHA_BOOTSTRAP_VAULT_RELOAD_COMMAND="+reload,
+			)
+			output, runErr := runRemoteAlphaBootstrapHelperWithPTYInput(t, env, v.unsealKey+"\n")
+			assertContainsNone(t, "output", output, v.unsealKey, v.rootToken)
+			if runErr == nil {
+				t.Fatalf("an interrupted run must not exit 0:\n%s", output)
+			}
+			var exitErr *exec.ExitError
+			if !errors.As(runErr, &exitErr) || exitErr.ExitCode() != tc.exit {
+				t.Fatalf("expected exit %d, got %v:\n%s", tc.exit, runErr, output)
+			}
+			if got := readIfExists(counter); strings.TrimSpace(got) != "2" {
+				t.Fatalf("both reloads (enable and restore) must run, got %q:\n%s", got, output)
+			}
+			if after := v.accessors(); fmt.Sprint(after) != fmt.Sprint(before) {
+				t.Fatalf("a token made by the run is still valid: %d accessors before, %d after:\n%s", len(before), len(after), output)
+			}
+			if got := mustRead(t, v.configPath); got != configBefore {
+				t.Fatalf("Vault's configuration file is not back byte for byte:\n%s", got)
+			}
+			if status, _ := v.call("", http.MethodGet, "sys/generate-root/attempt", nil); status != http.StatusForbidden {
+				t.Fatalf("Vault must refuse generate-root without a token again, got %d", status)
+			}
+			if attempt := v.mustCall(v.rootToken, http.MethodGet, "sys/generate-root/attempt", nil, http.StatusOK); attempt["started"] != false {
+				t.Fatalf("a generate-root attempt was left open")
+			}
+			auths := v.mustCall(v.rootToken, http.MethodGet, "sys/auth", nil, http.StatusOK)
+			if _, ok := auths["jwt/"]; ok {
+				t.Fatalf("no configuration may run after the signal; the jwt auth mount exists")
+			}
+			assertContainsAll(t, "output", output,
+				"Interrupted by SIG"+tc.signal+"; cleanup ran before exit.",
+				"The root token made from the unseal key was revoked at once; the short-lived token for this run is revoked too.",
+				"Vault's configuration file is back byte for byte, and Vault again refuses generate-root without a token.",
+				"overall_status=fail",
+				"failure_class=interrupted",
+			)
+			summary := readJSONFile(t, summaryPath)
+			if summary["interrupted_by"] != "SIG"+tc.signal || summary["failure_class"] != "interrupted" {
+				t.Fatalf("summary must record the interruption, got interrupted_by=%v failure_class=%v", summary["interrupted_by"], summary["failure_class"])
+			}
+			assertContainsNone(t, "summary", mustRead(t, summaryPath), v.unsealKey, v.rootToken)
+		})
+	}
 }

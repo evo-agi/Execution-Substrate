@@ -103,7 +103,10 @@ remote_alpha_host_firewall_defaults() {
   # remote_alpha_host_firewall_load_settings_file.
   : "${REMOTE_ALPHA_HOST_FIREWALL_STATE_DIR:=/etc/execution-substrate/host-firewall}"
   : "${REMOTE_ALPHA_HOST_FIREWALL_UNIT_PATH:=/etc/systemd/system/es-host-firewall.service}"
-  : "${REMOTE_ALPHA_HOST_FIREWALL_RUN_DIR:=/run/es-host-firewall}"
+  # The records of an apply that awaits --confirm. On disk, not under /run,
+  # so that an apply cut short by a reboot (which also ends the rollback
+  # timer) stays visible and blocks the next --apply until --rollback.
+  : "${REMOTE_ALPHA_HOST_FIREWALL_RUN_DIR:=/var/lib/es-host-firewall}"
   : "${REMOTE_ALPHA_HOST_FIREWALL_DOCKER_DAEMON_JSON:=/etc/docker/daemon.json}"
   : "${REMOTE_ALPHA_HOST_FIREWALL_RESOLV_CONF:=/etc/resolv.conf}"
   : "${REMOTE_ALPHA_HOST_FIREWALL_SYSTEMD_RESOLV_CONF:=/run/systemd/resolve/resolv.conf}"
@@ -233,10 +236,15 @@ Modes:
               install the sshd drop-in, check it with sshd -T and reload
               sshd (existing sessions stay). The previous rules and drop-in
               come back after ROLLBACK_SECONDS unless --confirm runs from an
-              SSH connection opened after --apply.
-  --confirm   From a new SSH connection: install the ruleset and the
-              es-host-firewall.service unit so the rules load at every boot,
-              keep the sshd drop-in, then cancel the rollback timer.
+              SSH connection opened after --apply. The checks refuse, among
+              others, an open SSH connection from outside SSH_SOURCES, a
+              bridge that is not a container interface, a container
+              interface with a global or unique-local IPv6 address, and an
+              earlier --apply that was never confirmed or rolled back.
+  --confirm   From a new SSH connection from SSH_SOURCES (loopback does not
+              count): install the ruleset and the es-host-firewall.service
+              unit so the rules load at every boot, keep the sshd drop-in,
+              then cancel the rollback timer.
   --status    Read-only: report whether the installed rules are loaded and
               unchanged, whether the sshd drop-in matches the settings and
               sshd -T agrees, the unit state, a pending rollback, the source
@@ -248,8 +256,9 @@ Modes:
               container are unreachable; check that Vault sees the box's own
               connections from the bridge address. Checks the drop counters
               moved.
-  --rollback  Remove both tables, the unit, the sshd drop-in and the
-              installed files (the settings file stays).
+  --rollback  Remove both tables, the unit, the sshd drop-in, the
+              installed files and the records of an earlier --apply in
+              RUN_DIR (the settings file stays).
   --render    Print the ruleset for the current settings and exit.
 
 Settings:
@@ -269,7 +278,10 @@ Scope:
   /etc/systemd/system/es-host-firewall.service, the sshd drop-in
   /etc/ssh/sshd_config.d/00-execution-substrate-host-access.conf (password
   login only from SSH_PASSWORD_SOURCES, no keyboard-interactive login, no X11
-  forwarding) and a transient es-host-firewall-rollback timer. It reloads
+  forwarding), the records of an --apply in RUN_DIR (/var/lib/es-host-firewall
+  by default; they survive a reboot, so --status and --apply can tell an
+  apply that was never confirmed) and a transient es-host-firewall-rollback
+  timer. It reloads
   sshd and does not touch Docker's, ufw's or any other rules, other sshd
   files, Vault, Nomad or ES. One chain in table inet es_host_firewall keeps
   the source address of the box's own connections to Vault (Docker's
@@ -362,6 +374,19 @@ remote_alpha_host_firewall_rollback_pending() {
   [[ "$(systemctl show -p SubState --value "${remote_alpha_host_firewall_rollback_unit}.timer" 2>/dev/null)" == "waiting" ]]
 }
 
+# --apply writes this marker before it arms the timer; --confirm, rollback.sh
+# (the timer, or a failed apply undoing itself) and --rollback remove it.
+remote_alpha_host_firewall_unconfirmed_marker() {
+  printf '%s/unconfirmed\n' "${REMOTE_ALPHA_HOST_FIREWALL_RUN_DIR}"
+}
+
+# An apply that was neither confirmed nor rolled back and whose timer is
+# gone: a reboot inside the confirm window. The sshd drop-in may then be the
+# unconfirmed one.
+remote_alpha_host_firewall_unconfirmed_leftover() {
+  [[ -f "$(remote_alpha_host_firewall_unconfirmed_marker)" ]] && ! remote_alpha_host_firewall_rollback_pending
+}
+
 remote_alpha_host_firewall_ssh_connections() {
   ss -H -t -n state established 2>/dev/null || true
 }
@@ -389,11 +414,16 @@ remote_alpha_host_firewall_print_host_facts() {
   if command -v iptables >/dev/null 2>&1; then
     printf 'iptables: %s\n' "$(iptables -V 2>/dev/null)"
   fi
-  if [[ -d /sys/module/br_netfilter ]]; then
-    printf 'br_netfilter: loaded\n'
+  # br_netfilter may be a module or built in; its sysctl files exist only
+  # while it is active.
+  if [[ -r /proc/sys/net/bridge/bridge-nf-call-iptables ]]; then
+    printf 'br_netfilter: active (bridged traffic also passes the inet rules: iptables %s, ip6tables %s)\n' \
+      "$(cat /proc/sys/net/bridge/bridge-nf-call-iptables 2>/dev/null)" "$(cat /proc/sys/net/bridge/bridge-nf-call-ip6tables 2>/dev/null)"
   else
-    printf 'br_netfilter: not loaded (the bridge table still isolates the listed bridge subnets)\n'
+    printf 'br_netfilter: not active (the bridge table alone isolates containers at layer 2)\n'
   fi
+  printf 'bridges:\n'
+  ip -o link show type bridge 2>/dev/null | remote_alpha_host_firewall_py bridges || true
   if nft list table inet "${remote_alpha_host_firewall_table}" >/dev/null 2>&1; then
     printf 'table inet %s: loaded\n' "${remote_alpha_host_firewall_table}"
   else
@@ -406,6 +436,8 @@ remote_alpha_host_firewall_print_host_facts() {
   fi
   if remote_alpha_host_firewall_rollback_pending; then
     printf 'rollback timer: PENDING (an earlier --apply awaits --confirm)\n'
+  elif remote_alpha_host_firewall_unconfirmed_leftover; then
+    printf 'rollback timer: GONE, but an earlier --apply was never confirmed or rolled back (a reboot inside the confirm window?)\n'
   else
     printf 'rollback timer: none\n'
   fi
@@ -534,6 +566,22 @@ remote_alpha_host_firewall_checks() {
     failed=1
   fi
 
+  if ip -o link show type bridge 2>/dev/null | remote_alpha_host_firewall_py bridges >/dev/null; then
+    printf 'every bridge is a container interface: pass\n'
+  else
+    printf 'every bridge is a container interface: FAIL (see host facts)\n'
+    failed=1
+  fi
+
+  if ip -o -6 addr show scope global 2>/dev/null | remote_alpha_host_firewall_py container-ipv6 >"${candidate}.ipv6"; then
+    printf 'no container interface has IPv6: pass\n'
+  else
+    printf 'no container interface has IPv6: FAIL\n'
+    cat "${candidate}.ipv6"
+    failed=1
+  fi
+  rm -f "${candidate}.ipv6"
+
   printf 'inbound SSH connections:\n'
   if remote_alpha_host_firewall_ssh_connections | remote_alpha_host_firewall_py ssh-peers; then
     printf 'current SSH peers stay allowed: pass\n'
@@ -558,6 +606,9 @@ remote_alpha_host_firewall_checks() {
 
   if remote_alpha_host_firewall_rollback_pending; then
     printf 'no earlier apply awaiting confirm: FAIL (run --confirm or --rollback first)\n'
+    failed=1
+  elif remote_alpha_host_firewall_unconfirmed_leftover; then
+    printf 'no earlier apply awaiting confirm: FAIL (an earlier --apply was never confirmed and its rollback timer is gone, a reboot inside the confirm window?; its sshd drop-in may still be installed. Run --rollback first, then --apply again)\n'
     failed=1
   else
     printf 'no earlier apply awaiting confirm: pass\n'
@@ -618,6 +669,7 @@ remote_alpha_host_firewall_write_rollback_script() {
       printf "'%s' -f '%s'\n" "${rm_path}" "${drop_in}"
     fi
     printf "if '%s' is-active --quiet '%s'; then '%s' reload '%s'; fi\n" "${systemctl_path}" "${service}" "${systemctl_path}" "${service}"
+    printf "'%s' -f '%s'\n" "${rm_path}" "$(remote_alpha_host_firewall_unconfirmed_marker)"
   } >"${run_dir}/rollback.sh"
   chmod 0700 "${run_dir}/rollback.sh"
 }
@@ -645,7 +697,7 @@ remote_alpha_host_firewall_apply() {
   # Only now, with no apply pending, replace the records of an earlier one.
   install -d -m 0700 -o root -g root "${run_dir}"
   rm -f "${candidate}" "${sshd_candidate}" "${rollback}" "${applied}" "${peers}" \
-    "${run_dir}/rollback.sh" "${run_dir}/sshd-previous.conf"
+    "${run_dir}/rollback.sh" "${run_dir}/sshd-previous.conf" "$(remote_alpha_host_firewall_unconfirmed_marker)"
   mv "${work}/candidate.nft" "${candidate}"
   mv "${work}/candidate-sshd.conf" "${sshd_candidate}"
   rm -rf "${work}"
@@ -669,6 +721,9 @@ remote_alpha_host_firewall_apply() {
 
   remote_alpha_host_firewall_ssh_connections | remote_alpha_host_firewall_py ssh-peer-list >"${peers}"
 
+  # The marker outlives a reboot that also ends the timer (see
+  # remote_alpha_host_firewall_unconfirmed_leftover).
+  date -u +%Y-%m-%dT%H:%M:%SZ >"$(remote_alpha_host_firewall_unconfirmed_marker)"
   # Arm the rollback before loading, so a lockout can never outlive the timer.
   systemctl reset-failed "${remote_alpha_host_firewall_rollback_unit}.service" "${remote_alpha_host_firewall_rollback_unit}.timer" >/dev/null 2>&1 || true
   if ! systemd-run --quiet --collect --unit="${remote_alpha_host_firewall_rollback_unit}" \
@@ -676,16 +731,19 @@ remote_alpha_host_firewall_apply() {
     --on-active="${REMOTE_ALPHA_HOST_FIREWALL_ROLLBACK_SECONDS}s" \
     --timer-property=AccuracySec=1s \
     /bin/sh "${run_dir}/rollback.sh"; then
+    rm -f "$(remote_alpha_host_firewall_unconfirmed_marker)"
     remote_alpha_host_firewall_die "could not arm the rollback timer; nothing was changed"
     return 1
   fi
   if ! remote_alpha_host_firewall_rollback_pending; then
+    rm -f "$(remote_alpha_host_firewall_unconfirmed_marker)"
     remote_alpha_host_firewall_die "the rollback timer is not active after arming it; nothing was changed"
     return 1
   fi
 
   if ! nft -f "${candidate}"; then
     systemctl stop "${remote_alpha_host_firewall_rollback_unit}.timer" >/dev/null 2>&1 || true
+    rm -f "$(remote_alpha_host_firewall_unconfirmed_marker)"
     remote_alpha_host_firewall_die "nft refused the ruleset; the transaction changed nothing"
     return 1
   fi
@@ -827,7 +885,7 @@ remote_alpha_host_firewall_confirm() {
   fi
 
   rm -f "${candidate}" "${sshd_candidate}" "${rollback}" "${applied}" "${peers}" \
-    "${run_dir}/rollback.sh" "${run_dir}/sshd-previous.conf"
+    "${run_dir}/rollback.sh" "${run_dir}/sshd-previous.conf" "$(remote_alpha_host_firewall_unconfirmed_marker)"
   rm -rf "${work}"
   printf 'Installed %s and %s (enabled); the sshd drop-in %s stays. Rollback timer cancelled.\n' \
     "${ruleset_path}" "${REMOTE_ALPHA_HOST_FIREWALL_UNIT_PATH}" "${REMOTE_ALPHA_HOST_FIREWALL_SSHD_DROP_IN}"
@@ -845,6 +903,10 @@ remote_alpha_host_firewall_status() {
   if remote_alpha_host_firewall_rollback_pending; then
     printf 'rollback timer: PENDING (an apply awaits --confirm)\n'
     status=3
+  elif remote_alpha_host_firewall_unconfirmed_leftover; then
+    printf 'unconfirmed apply: an --apply of %s was never confirmed or rolled back and its rollback timer is gone (a reboot inside the confirm window?). Its sshd drop-in may still be installed; run --rollback, then --apply again\n' \
+      "$(cat "$(remote_alpha_host_firewall_unconfirmed_marker)" 2>/dev/null)"
+    status=1
   fi
   if [[ ! -f "${ruleset_path}" || ! -f "${listing_path}" ]]; then
     printf 'installed ruleset: none\n'
@@ -950,7 +1012,7 @@ remote_alpha_host_firewall_rollback() {
     remote_alpha_host_firewall_die "the tables are still loaded after removal"
     return 1
   fi
-  printf 'RESULT: removed (tables, unit, sshd drop-in and installed files; the settings file is kept)\n'
+  printf 'RESULT: removed (tables, unit, sshd drop-in, installed files and apply records; the settings file is kept)\n'
 }
 
 remote_alpha_host_firewall_counter_value() {

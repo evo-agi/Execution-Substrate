@@ -75,15 +75,15 @@ table inet es_host_firewall {
 		counter name "lan_to_host" drop
 	}
 
-	# Routed traffic. Container egress is checked by destination; new
-	# connections into containers are allowed only through Docker's
-	# published-port DNAT. Other forwarded traffic is left to Docker.
+	# Routed traffic. Container egress is checked by destination; no new
+	# connection into a container is forwarded, published ports (Docker
+	# DNAT) included. Other forwarded traffic is left to Docker.
 	chain forward {
 		type filter hook forward priority filter - 10; policy accept;
 		iifname { "docker0", "nomad" } goto container_egress
 		iifname "br-*" goto container_egress
-		oifname { "docker0", "nomad" } ct state new ct status != dnat counter name "into_container" drop
-		oifname "br-*" ct state new ct status != dnat counter name "into_container" drop
+		oifname { "docker0", "nomad" } ct state new counter name "into_container" drop
+		oifname "br-*" ct state new counter name "into_container" drop
 	}
 
 	# Containers reach the internet, the listed resolvers on port 53, and
@@ -110,15 +110,21 @@ table inet es_host_firewall {
 }
 
 # Containers on the same bridge talk at layer 2 and do not pass the inet
-# forward hook unless br_netfilter is loaded. This table blocks that path
-# whatever the br_netfilter state. Traffic to the bridge's own address
-# is local delivery, not bridge forwarding, so Vault stays reachable.
+# forward hook unless br_netfilter is active. This table blocks that path
+# whatever the br_netfilter state: IPv4 by destination only, so a forged
+# source address does not help, and all IPv6 between bridge ports (the
+# containers have no IPv6 subnet to key on; --apply refuses while a bridge
+# that is not a container interface exists, so no other bridge is hit).
+# The bridge forward hook sees only frames from one port to another:
+# traffic to the bridge's own address is local delivery, so Vault, DNS
+# and the internet stay reachable.
 table bridge es_host_firewall {
 	counter container_to_container {
 	}
 
 	chain forward {
 		type filter hook forward priority filter - 10; policy accept;
-		ether type ip ip saddr 172.17.0.0/16 ip daddr 172.17.0.0/16 counter name "container_to_container" drop
+		ether type ip ip daddr 172.17.0.0/16 counter name "container_to_container" drop
+		ether type ip6 counter name "container_to_container" drop
 	}
 }

@@ -3403,13 +3403,19 @@ bootstrap helper (INF-04, INF-05, and the root-token half of INF-06):
   before the new value is written;
 - `REMOTE_ALPHA_BOOTSTRAP_AUTHORITY=unseal-key` replaces a standing root
   token: the helper makes a root token from the single unseal key share,
-  uses it once for a 15-minute orphan token, revokes it at once, and revokes
-  the 15-minute token before it exits;
+  uses it once for a 15-minute orphan token, revokes it with the next
+  request, and revokes the 15-minute token before it exits; SIGINT,
+  SIGTERM, SIGHUP and SIGQUIT wait until the root token is revoked and
+  Vault's configuration is back;
 - `REMOTE_ALPHA_BOOTSTRAP_GENERATE_ROOT_ACCESS=temporary-config` adds
   `enable_unauthenticated_access = ["generate-root"]` to Vault's
   configuration only for the generate-root step and puts the file back byte
   for byte through a reload (Vault 2.x refuses unauthenticated generate-root
-  by default);
+  by default), after the root token is revoked; it refuses a Vault that
+  allows generate-root without the file saying so;
+- with the 15-minute token, the helper counts root tokens that never
+  expire, and `REMOTE_ALPHA_BOOTSTRAP_STANDING_ROOT_TOKENS=revoke` revokes
+  them, which is how a run killed by SIGKILL or a power loss is cleaned up;
 - `REMOTE_ALPHA_BOOTSTRAP_PROOF_VALUE=generate` writes a random value nobody
   sees, which discards the Codex key.
 

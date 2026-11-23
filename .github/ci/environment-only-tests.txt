@@ -162,4 +162,5 @@ skips-itself execution-substrate/es/admission/internal/reliablesubmit TestSQLite
 # same file run in the gate without root.
 skips-itself execution-substrate TestRemoteAlphaHostFirewallRealKernelTraffic
 skips-itself execution-substrate TestRemoteAlphaHostFirewallRealKernelApplyConfirmRollback
+skips-itself execution-substrate TestRemoteAlphaHostFirewallRealKernelBridgeIsolation
 skips-itself execution-substrate TestRemoteAlphaHostFirewallSSHDDropInWithRealSSHD

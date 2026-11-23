@@ -32,6 +32,12 @@ remote_alpha_vault_workload_auth_bootstrap_defaults() {
   REMOTE_ALPHA_BOOTSTRAP_GENERATE_ROOT_ACCESS="${REMOTE_ALPHA_BOOTSTRAP_GENERATE_ROOT_ACCESS:-as-configured}"
   REMOTE_ALPHA_BOOTSTRAP_VAULT_CONFIG_PATH="${REMOTE_ALPHA_BOOTSTRAP_VAULT_CONFIG_PATH:-/etc/vault.d/vault.hcl}"
   REMOTE_ALPHA_BOOTSTRAP_VAULT_RELOAD_COMMAND="${REMOTE_ALPHA_BOOTSTRAP_VAULT_RELOAD_COMMAND:-systemctl reload vault.service}"
+  # With unseal-key, what to do about root-policy tokens that never expire
+  # (other than this run's own 15-minute token):
+  #   report  count them and warn when there are any;
+  #   revoke  revoke them by accessor (also the tokens each one made that
+  #           are not orphans).
+  REMOTE_ALPHA_BOOTSTRAP_STANDING_ROOT_TOKENS="${REMOTE_ALPHA_BOOTSTRAP_STANDING_ROOT_TOKENS:-report}"
 }
 
 remote_alpha_vault_workload_auth_bootstrap_usage() {
@@ -66,10 +72,23 @@ Secret posture:
       REMOTE_ALPHA_BOOTSTRAP_VAULT_CONFIG_PATH (default /etc/vault.d/vault.hcl),
       runs REMOTE_ALPHA_BOOTSTRAP_VAULT_RELOAD_COMMAND (default
       "systemctl reload vault.service": a reload, not a restart, so Vault
-      stays unsealed), makes the root token, and then writes the file back
+      stays unsealed), makes the root token, makes the short-lived token
+      with it and revokes the root token, and only then writes the file back
       byte for byte, reloads again and checks that Vault refuses again. It
       refuses a configuration file that already mentions
-      enable_unauthenticated_access.
+      enable_unauthenticated_access, and a Vault that answers generate-root
+      without a token although the file does not say so (what a run killed
+      while it put the file back leaves; reload Vault first).
+    REMOTE_ALPHA_BOOTSTRAP_STANDING_ROOT_TOKENS=report (default) or revoke,
+      for unseal-key only. With the short-lived token, the helper counts the
+      root-policy tokens that never expire and warns when there are any;
+      revoke also revokes them by accessor (with the tokens each one made
+      that are not orphans). Accessors are not recorded.
+  Signals: from before generate-root until the root token is revoked and
+  Vault's configuration is back, SIGINT, SIGTERM, SIGHUP and SIGQUIT wait;
+  they take effect right after, and the short-lived token is still revoked.
+  SIGKILL or a power loss cannot wait; the two checks above find what they
+  leave behind on the next run.
   Root tokens, Vault tokens, proof secret values, JWT-SVID payloads, API keys,
   private keys, passwords, and secret payloads are never accepted through CLI
   args, environment variables, files, logs, summaries, reports, .out, support
@@ -211,7 +230,8 @@ remote_alpha_vault_workload_auth_bootstrap_execute() {
     "${REMOTE_ALPHA_BOOTSTRAP_PROOF_VALUE}" \
     "${REMOTE_ALPHA_BOOTSTRAP_GENERATE_ROOT_ACCESS}" \
     "${REMOTE_ALPHA_BOOTSTRAP_VAULT_CONFIG_PATH}" \
-    "${REMOTE_ALPHA_BOOTSTRAP_VAULT_RELOAD_COMMAND}" <<'PY'
+    "${REMOTE_ALPHA_BOOTSTRAP_VAULT_RELOAD_COMMAND}" \
+    "${REMOTE_ALPHA_BOOTSTRAP_STANDING_ROOT_TOKENS}" <<'PY'
 import base64
 import datetime as dt
 import getpass
@@ -223,6 +243,7 @@ import pathlib
 import re
 import shlex
 import shutil
+import signal
 import ssl
 import stat
 import subprocess
@@ -248,6 +269,7 @@ PROOF_VALUE_SOURCE = sys.argv[11]
 GENERATE_ROOT_ACCESS = sys.argv[12]
 VAULT_CONFIG_PATH = pathlib.Path(sys.argv[13])
 VAULT_RELOAD_COMMAND_TEXT = sys.argv[14]
+STANDING_ROOT_TOKENS = sys.argv[15]
 # The one setting temporary-config adds, and how long to wait for a reload.
 UNAUTHENTICATED_GENERATE_ROOT_SETTING = 'enable_unauthenticated_access = ["generate-root"]'
 UNAUTHENTICATED_ACCESS_KEYWORD = "enable_unauthenticated_access"
@@ -311,6 +333,7 @@ summary = {
         "authority_source": AUTHORITY_SOURCE,
         "proof_value_source": PROOF_VALUE_SOURCE,
         "generate_root_access": GENERATE_ROOT_ACCESS,
+        "standing_root_tokens": STANDING_ROOT_TOKENS,
     },
     "operations": {},
     "secret_prompts_started": False,
@@ -352,6 +375,29 @@ class BootstrapFailure(Exception):
         self.failure_class = failure_class
         self.message_class = message_class
         self.exit_code = exit_code
+
+
+class BootstrapInterrupted(BaseException):
+    """SIGTERM, SIGHUP or SIGQUIT arrived. Raised from the signal handler so
+    that cleanup (revokes, the summary, the warnings) runs as it does for
+    Ctrl-C (KeyboardInterrupt)."""
+
+    def __init__(self, signum):
+        super().__init__(signum)
+        self.signum = signum
+
+
+def raise_interrupted(signum, _frame):
+    raise BootstrapInterrupted(signum)
+
+
+# From before generate-root until the generated root token is revoked and
+# Vault's configuration is put back, these signals stay blocked; a signal
+# that arrives then is acted on as soon as that section ends. SIGKILL and a
+# power loss cannot be deferred: see check_standing_root_tokens and
+# refuse_open_generate_root_access for how a later run finds what they
+# leave behind.
+DEFERRED_SIGNALS = {signal.SIGINT, signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT}
 
 
 class VaultAPIError(Exception):
@@ -544,12 +590,17 @@ def validate_choices():
         raise_failure(phase, "config_invalid", message_class="generate_root_access_not_as_configured_or_temporary_config")
     if GENERATE_ROOT_ACCESS == "temporary-config" and AUTHORITY_SOURCE != "unseal-key":
         raise_failure(phase, "config_invalid", message_class="generate_root_access_needs_unseal_key")
+    if STANDING_ROOT_TOKENS not in ("report", "revoke"):
+        raise_failure(phase, "config_invalid", message_class="standing_root_tokens_not_report_or_revoke")
+    if STANDING_ROOT_TOKENS == "revoke" and AUTHORITY_SOURCE != "unseal-key":
+        raise_failure(phase, "config_invalid", message_class="standing_root_tokens_revoke_needs_unseal_key")
     set_status(
         phase,
         "pass",
         authority_source=AUTHORITY_SOURCE,
         proof_value_source=PROOF_VALUE_SOURCE,
         generate_root_access=GENERATE_ROOT_ACCESS,
+        standing_root_tokens=STANDING_ROOT_TOKENS,
     )
 
 
@@ -616,9 +667,24 @@ def preflight_generate_root_access(opener, address):
         fail_from_exception(phase, exc)
     if not allowed and GENERATE_ROOT_ACCESS != "temporary-config":
         raise_failure(phase, "generate_root_unauthenticated_access_disabled", message_class="vault_refuses_generate_root_without_token")
+    if allowed and GENERATE_ROOT_ACCESS == "temporary-config":
+        refuse_open_generate_root_access(phase)
     if allowed and current.get("started"):
         raise_failure(phase, "generate_root_attempt_in_progress", message_class="another_attempt_is_running")
     set_status(phase, "pass", vault_allows_generate_root_without_token=allowed, generate_root_access=GENERATE_ROOT_ACCESS)
+
+
+def refuse_open_generate_root_access(phase):
+    """With temporary-config the configuration file was just checked not to
+    mention enable_unauthenticated_access, so a Vault that still answers
+    generate-root without a token has it in memory only: exactly what a run
+    killed while it put the file back leaves behind. Refuse rather than use
+    it and leave it open."""
+    raise_failure(
+        phase,
+        "generate_root_access_open_outside_config_file",
+        message_class="vault_allows_generate_root_without_token_but_config_file_does_not_mention_it",
+    )
 
 
 class TemporaryGenerateRootAccess:
@@ -754,25 +820,11 @@ def cancel_generate_root(opener, address):
         return False
 
 
-def generate_root_token(opener, address, unseal_key):
+def generate_root_token_with_access(opener, address, unseal_key, access):
     """Make a root token from one unseal key share. The token, the nonce and
     the one-time password stay in memory and are never recorded. With
-    temporary-config, Vault's configuration is put back before this returns;
-    if that fails, the token is revoked and the run fails."""
-    access = TemporaryGenerateRootAccess()
-    try:
-        token = generate_root_token_with_access(opener, address, unseal_key, access)
-    except BaseException:
-        access.restore(opener, address)
-        raise
-    if not access.restore(opener, address):
-        if not revoke_token(opener, address, token, "generated_root_token_revoke"):
-            fail_root_token_revoke()
-        raise_failure("generate_root_access_restore", "vault_config_restore_failed", message_class="vault_config_or_reload_not_restored")
-    return token
-
-
-def generate_root_token_with_access(opener, address, unseal_key, access):
+    temporary-config, access.enable opens generate-root first if Vault
+    refuses it; the caller puts it back."""
     phase = "generate_root_token"
     set_next_operation(phase)
     started = False
@@ -782,6 +834,8 @@ def generate_root_token_with_access(opener, address, unseal_key, access):
             "status": "pass",
             "vault_allows_generate_root_without_token": allowed,
         }
+        if allowed and GENERATE_ROOT_ACCESS == "temporary-config":
+            refuse_open_generate_root_access(phase)
         if not allowed:
             if GENERATE_ROOT_ACCESS != "temporary-config":
                 raise_failure(phase, "generate_root_unauthenticated_access_disabled", message_class="vault_refuses_generate_root_without_token")
@@ -824,6 +878,10 @@ def generate_root_token_with_access(opener, address, unseal_key, access):
         if started:
             cancel_generate_root(opener, address)
         fail_from_exception(phase, exc)
+    except BaseException:
+        if started:
+            cancel_generate_root(opener, address)
+        raise
 
 
 def revoke_token(opener, address, token, phase):
@@ -855,17 +913,12 @@ def fail_root_token_revoke():
 SHORT_LIVED_AUTHORITY_TTL = "15m"
 
 
-def make_short_lived_authority(opener, address, unseal_key):
-    """From the unseal key: generate a root token, use it once to create an
-    orphan, non-renewable root-policy token that expires after
-    SHORT_LIVED_AUTHORITY_TTL, and revoke the generated root token at once.
-    Returns (short-lived token, every token value made, for the redaction
-    scan). Even if the final revoke fails, nothing outlives the TTL."""
-    root = generate_root_token(opener, address, unseal_key)
-    made = [root]
+def create_short_lived_token(opener, address, root):
+    """Use the generated root token once, for an orphan, non-renewable
+    root-policy token that expires after SHORT_LIVED_AUTHORITY_TTL. On any
+    failure the root token is revoked before the failure is raised."""
     phase = "short_lived_authority_token"
     set_next_operation(phase)
-    child = None
     try:
         created = vault_request(
             opener,
@@ -885,22 +938,93 @@ def make_short_lived_authority(opener, address, unseal_key):
         child = (created.get("auth") or {}).get("client_token")
         if not isinstance(child, str) or not child:
             raise VaultAPIError("invalid_response", "token_create_without_client_token")
-    except Exception as exc:
+    except BaseException as exc:
         failure_class, message_class = classify_exception(exc)
-        if not isinstance(exc, BootstrapFailure):
+        if isinstance(exc, Exception) and not isinstance(exc, BootstrapFailure):
             record_failure(phase, failure_class, message_class=message_class)
         if not revoke_token(opener, address, root, "generated_root_token_revoke"):
             # The worse outcome wins: a root token that may still be valid.
             fail_root_token_revoke()
-        if isinstance(exc, BootstrapFailure):
+        if not isinstance(exc, Exception) or isinstance(exc, BootstrapFailure):
             raise
         raise BootstrapFailure(phase, failure_class, message_class=message_class) from None
-    made.append(child)
     set_status(phase, "pass", ttl=SHORT_LIVED_AUTHORITY_TTL, orphan=True, renewable=False, value_recorded=False)
-    if not revoke_token(opener, address, root, "generated_root_token_revoke"):
+    return child
+
+
+def make_short_lived_authority(opener, address, unseal_key, made):
+    """From the unseal key: generate a root token, use it once to create the
+    short-lived token, and revoke the root token at once. Only then, with
+    temporary-config, is Vault's configuration put back, so the root token,
+    which has no expiry, lives for two requests and not for the reload and
+    its wait. Every token value made is appended to made (for the summary
+    redaction scan) as soon as it exists. Returns the short-lived token;
+    even if its final revoke fails, it expires after the TTL. The caller
+    keeps SIGINT, SIGTERM, SIGHUP and SIGQUIT blocked while this runs."""
+    access = TemporaryGenerateRootAccess()
+    try:
+        root = generate_root_token_with_access(opener, address, unseal_key, access)
+        made.append(root)
+        child = create_short_lived_token(opener, address, root)
+        made.append(child)
+        if not revoke_token(opener, address, root, "generated_root_token_revoke"):
+            revoke_token(opener, address, child, "short_lived_authority_token_revoke")
+            fail_root_token_revoke()
+    except BaseException:
+        access.restore(opener, address)
+        raise
+    if not access.restore(opener, address):
         revoke_token(opener, address, child, "short_lived_authority_token_revoke")
-        fail_root_token_revoke()
-    return child, made
+        raise_failure("generate_root_access_restore", "vault_config_restore_failed", message_class="vault_config_or_reload_not_restored")
+    return child
+
+
+def check_standing_root_tokens(opener, token, address):
+    """With unseal-key: count the root-policy tokens that never expire (no
+    expire_time, or periodic). This run's own token expires, so it never
+    counts. A run that was killed with SIGKILL, or lost power, between
+    generate-root and the revoke of the root token leaves one behind; this
+    is how it is found. With STANDING_ROOT_TOKENS=revoke they are revoked by
+    accessor. The summary records counts only."""
+    phase = "standing_root_tokens"
+    set_next_operation(phase)
+    standing = 0
+    revoked = 0
+    try:
+        listed = vault_request(opener, token, "LIST", address, "auth/token/accessors", allowed_statuses=(200, 404))
+        accessors = (listed.get("data") or {}).get("keys") or []
+        if not isinstance(accessors, list):
+            raise VaultAPIError("invalid_response", "accessor_list_not_a_list")
+        for accessor in accessors:
+            if not isinstance(accessor, str) or not accessor:
+                raise VaultAPIError("invalid_response", "accessor_not_a_string")
+            try:
+                found = vault_request(
+                    opener, token, "POST", address, "auth/token/lookup-accessor", payload={"accessor": accessor}, allowed_statuses=(200,)
+                )
+            except VaultAPIError as exc:
+                if exc.message_class == "http_400":
+                    # Expired or revoked since the list was read.
+                    continue
+                raise
+            data = found.get("data") or {}
+            policies = data.get("policies") or []
+            if not isinstance(policies, list):
+                raise VaultAPIError("invalid_response", "token_policies_not_a_list")
+            if "root" not in policies or (data.get("expire_time") and not data.get("period")):
+                continue
+            standing += 1
+            if STANDING_ROOT_TOKENS == "revoke":
+                vault_request(
+                    opener, token, "POST", address, "auth/token/revoke-accessor", payload={"accessor": accessor}, allowed_statuses=(200, 204)
+                )
+                revoked += 1
+    except Exception as exc:
+        failure_class, message_class = classify_exception(exc)
+        record_failure(phase, failure_class, message_class=message_class)
+        summary["operations"][phase].update(action=STANDING_ROOT_TOKENS, found_before_failure=standing, revoked_before_failure=revoked)
+        raise BootstrapFailure(phase, failure_class, message_class=message_class) from None
+    set_status(phase, "pass", action=STANDING_ROOT_TOKENS, found=standing, revoked=revoked, accessors_recorded=False)
 
 
 def preflight_config_readable():
@@ -1367,6 +1491,8 @@ def main():
     short_lived = False
     exit_code = 0
     secret_values_for_scan = []
+    for signum in (signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT):
+        signal.signal(signum, raise_interrupted)
     try:
         preflight_summary_writable()
     except SummaryPreflightError as exc:
@@ -1440,9 +1566,19 @@ def main():
         if opener is None:
             opener = make_opener(ca_bundle_pem)
         if AUTHORITY_SOURCE == "unseal-key":
-            root_token, made = make_short_lived_authority(opener, address, authority_secret)
-            short_lived = True
-            secret_values_for_scan.extend(made)
+            # No signal may end the run while a generated root token exists
+            # or Vault's configuration is changed. A signal that arrives then
+            # takes effect after this block, when the finally below can
+            # still revoke the short-lived token. The reload command
+            # inherits the mask, so Ctrl-C does not cut a reload short.
+            previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, DEFERRED_SIGNALS)
+            try:
+                root_token = make_short_lived_authority(opener, address, authority_secret, secret_values_for_scan)
+                short_lived = True
+                set_next_operation("standing_root_tokens")
+            finally:
+                signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+            check_standing_root_tokens(opener, root_token, address)
         else:
             root_token = authority_secret
         ensure_auth_mount(opener, root_token, address)
@@ -1456,6 +1592,14 @@ def main():
     except BootstrapFailure as exc:
         summary["overall_status"] = "fail"
         exit_code = exc.exit_code
+    except (KeyboardInterrupt, BootstrapInterrupted) as exc:
+        signum = exc.signum if isinstance(exc, BootstrapInterrupted) else signal.SIGINT
+        if "failure_phase" not in summary:
+            phase = summary.get("next_operation") or "unexpected"
+            record_failure(phase, "interrupted", message_class=signal.Signals(signum).name.lower())
+        summary["interrupted_by"] = signal.Signals(signum).name
+        summary["overall_status"] = "fail"
+        exit_code = 128 + int(signum)
     except SystemExit as exc:
         if "failure_phase" not in summary:
             phase = summary.get("next_operation") or "unexpected"
@@ -1483,12 +1627,39 @@ def main():
         validation_pubkey = None
         secret_values_for_scan = None
 
-    if short_lived_revoked is True:
-        print("The root token made from the unseal key was revoked at once; the short-lived token for this run is revoked too.")
-    elif short_lived_revoked is False:
-        print(f"WARNING: the short-lived token for this run could not be revoked; it expires by itself {SHORT_LIVED_AUTHORITY_TTL} after it was made. The root token made from the unseal key was already revoked.")
-    elif summary.get("failure_class") == "root_token_revoke_failed":
+    operations = summary["operations"]
+    root_revoke = (operations.get("generated_root_token_revoke") or {}).get("status")
+    child_revoke = (operations.get("short_lived_authority_token_revoke") or {}).get("status")
+    if short_lived_revoked is not None:
+        child_revoke = "pass" if short_lived_revoked else "fail"
+    if summary.get("failure_class") == "root_token_revoke_failed":
         print("WARNING: the root token made from the unseal key could NOT be revoked and may still be valid. Do not ignore this: tell the person who runs this box.")
+    elif root_revoke == "pass" and child_revoke == "pass":
+        print("The root token made from the unseal key was revoked at once; the short-lived token for this run is revoked too.")
+    elif root_revoke == "pass" and child_revoke == "fail":
+        print(f"WARNING: the short-lived token for this run could not be revoked; it expires by itself {SHORT_LIVED_AUTHORITY_TTL} after it was made. The root token made from the unseal key was already revoked.")
+    elif root_revoke == "pass":
+        print("The root token made from the unseal key was revoked at once.")
+    standing = operations.get("standing_root_tokens") or {}
+    if standing.get("status") == "pass" and standing.get("revoked"):
+        print(f"Revoked {standing['revoked']} root token(s) that never expired, as REMOTE_ALPHA_BOOTSTRAP_STANDING_ROOT_TOKENS=revoke asked.")
+    elif standing.get("status") == "pass" and standing.get("found"):
+        print(
+            f"WARNING: Vault holds {standing['found']} root token(s) that never expire. If nobody should hold one "
+            "(for example after a run of this helper was killed with SIGKILL or lost power), run it again with "
+            "REMOTE_ALPHA_BOOTSTRAP_STANDING_ROOT_TOKENS=revoke."
+        )
+    elif standing.get("status") == "pass":
+        print("Vault holds no root token that never expires.")
+    if summary.get("failure_class") == "generate_root_access_open_outside_config_file":
+        print(
+            f"Vault already answers generate-root without a token, but {VAULT_CONFIG_PATH} does not mention "
+            f"{UNAUTHENTICATED_ACCESS_KEYWORD}. A run that was killed while it put the file back leaves exactly this. "
+            f"Reload Vault ({VAULT_RELOAD_COMMAND_TEXT}) and run again. If the setting is meant to stay on (set in "
+            "another file), use REMOTE_ALPHA_BOOTSTRAP_GENERATE_ROOT_ACCESS=as-configured instead."
+        )
+    if summary.get("interrupted_by"):
+        print(f"Interrupted by {summary['interrupted_by']}; cleanup ran before exit.")
     restore_operation = summary["operations"].get("generate_root_access_restore")
     if restore_operation and restore_operation.get("status") != "pass":
         print(

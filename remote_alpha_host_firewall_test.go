@@ -67,6 +67,8 @@ func hostFirewallBaseEnv(t *testing.T, fakeBin string, extra ...string) []string
 // hostFirewallSSHDFixture writes a small sshd configuration tree shaped like
 // Ubuntu's (sshd_config includes sshd_config.d/*.conf first, and a later
 // drop-in turns passwords on) and returns the settings that point at it.
+// sshd_config itself turns keyboard-interactive login and X11 forwarding on,
+// so every check sees the drop-in's own values win.
 func hostFirewallSSHDFixture(t *testing.T, dir string) map[string]string {
 	t.Helper()
 	sshdDir := filepath.Join(dir, "ssh")
@@ -75,7 +77,7 @@ func hostFirewallSSHDFixture(t *testing.T, dir string) map[string]string {
 		t.Fatal(err)
 	}
 	config := filepath.Join(sshdDir, "sshd_config")
-	writeFile(t, config, []byte("Include "+dropInDir+"/*.conf\nKbdInteractiveAuthentication no\nX11Forwarding yes\nUsePAM yes\n"), 0o644)
+	writeFile(t, config, []byte("Include "+dropInDir+"/*.conf\nKbdInteractiveAuthentication yes\nX11Forwarding yes\nUsePAM yes\n"), 0o644)
 	writeFile(t, filepath.Join(dropInDir, "50-cloud-init.conf"), []byte("PasswordAuthentication yes\n"), 0o644)
 	return map[string]string{
 		"REMOTE_ALPHA_HOST_FIREWALL_SSHD_CONFIG":  config,
@@ -225,8 +227,15 @@ func TestRemoteAlphaHostFirewallRulesetInvariants(t *testing.T) {
 		// Private destinations are dropped for container egress.
 		"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16", "100.64.0.0/10",
 		"fc00::/7", "fe80::/10",
-		// Layer-2 isolation of the Vault bridge.
-		"ether type ip ip saddr 172.17.0.0/16 ip daddr 172.17.0.0/16 counter name \"container_to_container\" drop",
+		// Invalid packets are dropped before anything is accepted, and echo
+		// requests are rate-limited.
+		"ct state invalid counter name \"invalid_in\" drop",
+		"icmp type echo-request limit rate 10/second accept",
+		// Layer-2 isolation of the Vault bridge: IPv4 by destination only
+		// (a forged source does not help), and no IPv6 between bridge ports.
+		"ether type ip ip daddr 172.17.0.0/16 counter name \"container_to_container\" drop\n\t\tether type ip6 counter name \"container_to_container\" drop\n",
+		// Nothing new is forwarded into a container, published ports included.
+		"oifname { \"docker0\", \"nomad\" } ct state new counter name \"into_container\" drop",
 		// The box's own connections to Vault keep the bridge address as their
 		// source: an identity snat, before Docker's masquerade (srcnat), as
 		// the last chain of the inet table.
@@ -237,7 +246,14 @@ func TestRemoteAlphaHostFirewallRulesetInvariants(t *testing.T) {
 		"flush ruleset",
 		"ip6 saddr { fe80::/10 } tcp dport 22",
 		"policy drop;\n\t\tiifname \"docker0\"",
+		"ip saddr 172.17.0.0/16 ip daddr 172.17.0.0/16",
+		"ct status",
 	)
+	// The invalid-state drop comes before replies are accepted.
+	input := stdout[strings.Index(stdout, "type filter hook input"):]
+	if invalid, accept := strings.Index(input, "ct state invalid"), strings.Index(input, "ct state { established, related } accept"); invalid < 0 || accept < 0 || invalid > accept {
+		t.Fatalf("the invalid-state drop must precede the reply accept: invalid=%d accept=%d", invalid, accept)
+	}
 	// The only address rewrite is the identity snat for the box's own
 	// connections to Vault.
 	var rules []string
@@ -687,7 +703,7 @@ func TestRemoteAlphaHostFirewallListenerClassification(t *testing.T) {
 		"192.168.1.156:8445", "LAN: from 192.168.1.23/32; containers: blocked",
 		"LAN: from 192.168.1.0/24 fe80::/10; containers: blocked",
 		"DHCP client replies only",
-		"ephemeral client socket (replies only)",
+		"ephemeral range: taken as a client socket (replies only); a service here would be BLOCKED",
 		"BLOCKED from LAN and containers (NOT accepted)",
 		"not accepted: tcp/5900 udp/5353",
 	)
@@ -735,6 +751,27 @@ func TestRemoteAlphaHostFirewallSSHPeerChecks(t *testing.T) {
 	if code != 0 || !strings.Contains(output, "192.168.1.23:50010") {
 		t.Fatalf("a connection opened after --apply must count as new, got %d\n%s", code, output)
 	}
+	// A new loopback connection, or one from outside SSH_SOURCES, proves
+	// nothing about the operator's path through the firewall.
+	for _, line := range []string{"0 0 127.0.0.1:22 127.0.0.1:41000\n", "0 0 [::1]:22 [::1]:41001\n", "0 0 192.168.1.156:22 10.20.30.40:41002\n"} {
+		output, code = runHostFirewallPython(t, env, "0 0 192.168.1.156:22 192.168.1.23:50000\n"+line, "new-ssh-peer", recorded)
+		if code != 5 {
+			t.Fatalf("%q must not count as a new SSH connection, got %d\n%s", line, code, output)
+		}
+	}
+	// Loopback stays out even when SSH_SOURCES names it: the settings
+	// accept a loopback network, and the loopback check is its own rule.
+	withLoopback := hostFirewallBaseEnv(t, "", "REMOTE_ALPHA_HOST_FIREWALL_SSH_SOURCES=192.168.1.0/24 127.0.0.0/8 ::1/128")
+	output, code = runHostFirewallPython(t, withLoopback, "0 0 192.168.1.156:22 192.168.1.23:50000\n0 0 192.168.1.156:22 192.168.1.23:50011\n", "new-ssh-peer", recorded)
+	if code != 0 || !strings.Contains(output, "192.168.1.23:50011") {
+		t.Fatalf("with loopback in SSH_SOURCES, a LAN connection opened after --apply must still count, got %d\n%s", code, output)
+	}
+	for _, line := range []string{"0 0 127.0.0.1:22 127.0.0.1:41000\n", "0 0 [::1]:22 [::1]:41001\n", "0 0 [::ffff:127.0.0.1]:22 [::ffff:127.0.0.1]:41003\n"} {
+		output, code = runHostFirewallPython(t, withLoopback, "0 0 192.168.1.156:22 192.168.1.23:50000\n"+line, "new-ssh-peer", recorded)
+		if code != 5 {
+			t.Fatalf("%q must not count as a new SSH connection even with loopback in SSH_SOURCES, got %d\n%s", line, code, output)
+		}
+	}
 }
 
 func TestRemoteAlphaHostFirewallBridgeCheck(t *testing.T) {
@@ -759,6 +796,35 @@ func TestRemoteAlphaHostFirewallBridgeCheck(t *testing.T) {
 	}
 }
 
+func TestRemoteAlphaHostFirewallBridgesAndContainerIPv6(t *testing.T) {
+	env := hostFirewallBaseEnv(t, "")
+	links := "3: docker0: <NO-CARRIER,BROADCAST,MULTICAST,UP> mtu 1500 qdisc noqueue state DOWN mode DEFAULT group default \\    link/ether 02:42:ac:11:00:01 brd ff:ff:ff:ff:ff:ff\n" +
+		"9: br-abc123: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP mode DEFAULT group default \\    link/ether 02:42:ac:12:00:01 brd ff:ff:ff:ff:ff:ff\n"
+	output, code := runHostFirewallPython(t, env, links, "bridges")
+	if code != 0 || !strings.Contains(output, "bridge docker0") || !strings.Contains(output, "bridge br-abc123") {
+		t.Fatalf("container bridges must pass, got %d\n%s", code, output)
+	}
+	output, code = runHostFirewallPython(t, env, links+"12: virbr0: <BROADCAST,MULTICAST,UP> mtu 1500 qdisc noqueue state DOWN mode DEFAULT \\    link/ether 52:54:00:00:00:01 brd ff:ff:ff:ff:ff:ff\n", "bridges")
+	if code != 10 || !strings.Contains(output, "bridge virbr0") || !strings.Contains(output, "NOT a container interface") {
+		t.Fatalf("a bridge that is not a container interface must be refused, got %d\n%s", code, output)
+	}
+
+	global := "2: wlp2s0    inet6 2001:db8:1::156/64 scope global dynamic mngtmpaddr \\       valid_lft 86000sec preferred_lft 14000sec\n"
+	output, code = runHostFirewallPython(t, env, global, "container-ipv6")
+	if code != 0 {
+		t.Fatalf("IPv6 on the LAN interface is fine, got %d\n%s", code, output)
+	}
+	for _, line := range []string{
+		"3: docker0    inet6 fd00:dead:beef::1/64 scope global \\       valid_lft forever preferred_lft forever\n",
+		"9: br-abc123    inet6 2001:db8:2::1/64 scope global \\       valid_lft forever preferred_lft forever\n",
+	} {
+		output, code = runHostFirewallPython(t, env, global+line, "container-ipv6")
+		if code != 11 || !strings.Contains(output, "container interface with IPv6") {
+			t.Fatalf("a container interface with IPv6 must be refused (%q), got %d\n%s", line, code, output)
+		}
+	}
+}
+
 func TestRemoteAlphaHostFirewallArgumentsAndRoot(t *testing.T) {
 	stdout, _, code := runHostFirewall(t, hostFirewallBaseEnv(t, ""), "--help")
 	if code != 0 {
@@ -768,6 +834,13 @@ func TestRemoteAlphaHostFirewallArgumentsAndRoot(t *testing.T) {
 		"--plan", "--apply", "--confirm", "--status", "--probe", "--rollback", "--render",
 		"SERVICE_CALLERS has no", "default and must be set",
 		"Changes only the nftables tables inet and bridge es_host_firewall",
+		"an open SSH connection from outside SSH_SOURCES",
+		"bridge that is not a container interface",
+		"container\n              interface with a global or unique-local IPv6 address",
+		"never confirmed or rolled back",
+		"From a new SSH connection from SSH_SOURCES (loopback does not",
+		"records of an earlier --apply in\n              RUN_DIR",
+		"(/var/lib/es-host-firewall\n  by default",
 		"Not egress lanes",
 	)
 	if _, stderr, code := runHostFirewall(t, hostFirewallBaseEnv(t, ""), "--apply", "--confirm"); code != 2 || !strings.Contains(stderr, "at most one mode") {
@@ -844,7 +917,16 @@ echo "ss $*" >>%q
 if [[ "$*" == *"state established"* ]]; then cat %q 2>/dev/null; exit 0; fi
 printf 'tcp LISTEN 0 128 0.0.0.0:22 0.0.0.0:* users:(("sshd",pid=5,fd=3))\n'
 `, log, filepath.Join(state, "established")))
-	writeExecutable(t, fakeBin, "ip", "#!/bin/bash\nif [[ \"$*\" == *\"addr show\"* ]]; then printf '3: docker0    inet 172.17.0.1/16 brd 172.17.255.255 scope global docker0\\n'; fi\nexit 0\n")
+	// The fake ip: one docker0 bridge with the Vault address; FAKE_IP_BRIDGES
+	// and FAKE_IP_V6 add lines to the bridge list and the IPv6 address list.
+	writeExecutable(t, fakeBin, "ip", `#!/bin/bash
+case "$*" in
+  *"link show type bridge"*) printf '3: docker0: <BROADCAST,MULTICAST,UP> mtu 1500 qdisc noqueue state UP mode DEFAULT\n'; [[ -n "${FAKE_IP_BRIDGES:-}" ]] && printf '%s\n' "$FAKE_IP_BRIDGES" ;;
+  *"-6 addr show"*) [[ -n "${FAKE_IP_V6:-}" ]] && printf '%s\n' "$FAKE_IP_V6" ;;
+  *"addr show"*) printf '3: docker0    inet 172.17.0.1/16 brd 172.17.255.255 scope global docker0\n' ;;
+esac
+exit 0
+`)
 	writeFile(t, filepath.Join(state, "established"), []byte(ssEstablished), 0o644)
 	return fakeBin, state
 }
@@ -1078,6 +1160,160 @@ func TestRemoteAlphaHostFirewallApplyConfirmRollbackOrderWithFakes(t *testing.T)
 	assertContainsNone(t, "self-undone apply", readCalls(t, state), "systemctl reload ssh.service\nsystemctl reload")
 }
 
+// TestRemoteAlphaHostFirewallApplyRefusesSSHPeerOutsideSources: an SSH
+// connection from outside SSH_SOURCES would be cut by the new rules, so
+// --plan and --apply refuse before any effect.
+func TestRemoteAlphaHostFirewallApplyRefusesSSHPeerOutsideSources(t *testing.T) {
+	fakeBin, state := hostFirewallFakes(t, "0 0 192.168.1.156:22 10.9.9.9:50000\n")
+	root := t.TempDir()
+	env := hostFirewallBaseEnv(t, fakeBin,
+		"REMOTE_ALPHA_HOST_FIREWALL_STATE_DIR="+filepath.Join(root, "state"),
+		"REMOTE_ALPHA_HOST_FIREWALL_RUN_DIR="+filepath.Join(root, "run"),
+		"REMOTE_ALPHA_HOST_FIREWALL_UNIT_PATH="+filepath.Join(root, "es-host-firewall.service"),
+	)
+	for _, mode := range []string{"--plan", "--apply"} {
+		stdout, _, code := runHostFirewall(t, env, mode)
+		if code != 1 || !strings.Contains(stdout, "current SSH peers stay allowed: FAIL") || !strings.Contains(stdout, "10.9.9.9") {
+			t.Fatalf("%s with an SSH peer outside SSH_SOURCES: exit %d\n%s", mode, code, stdout)
+		}
+	}
+	assertContainsNone(t, "calls", readCalls(t, state), "nft -f", "systemd-run", "systemctl reload")
+}
+
+// TestRemoteAlphaHostFirewallApplyRefusesOtherBridgesAndContainerIPv6: the
+// bridge table's IPv6 rule covers every bridge, and container IPv6 would
+// reach the LAN's IPv6 prefix, so --plan and --apply refuse both.
+func TestRemoteAlphaHostFirewallApplyRefusesOtherBridgesAndContainerIPv6(t *testing.T) {
+	fakeBin, state := hostFirewallFakes(t, "0 0 192.168.1.156:22 192.168.1.23:50000\n")
+	root := t.TempDir()
+	base := hostFirewallBaseEnv(t, fakeBin,
+		"REMOTE_ALPHA_HOST_FIREWALL_STATE_DIR="+filepath.Join(root, "state"),
+		"REMOTE_ALPHA_HOST_FIREWALL_RUN_DIR="+filepath.Join(root, "run"),
+		"REMOTE_ALPHA_HOST_FIREWALL_UNIT_PATH="+filepath.Join(root, "es-host-firewall.service"),
+	)
+	stdout, _, code := runHostFirewall(t, base, "--plan")
+	if code != 0 || !strings.Contains(stdout, "every bridge is a container interface: pass") || !strings.Contains(stdout, "no container interface has IPv6: pass") {
+		t.Fatalf("plan with only docker0: exit %d\n%s", code, stdout)
+	}
+	// br_netfilter is read from its sysctl file, which exists whether it is
+	// a module or built in.
+	want := "br_netfilter: not active"
+	if _, err := os.Stat("/proc/sys/net/bridge/bridge-nf-call-iptables"); err == nil {
+		want = "br_netfilter: active (bridged traffic also passes the inet rules: iptables "
+	}
+	if !strings.Contains(stdout, want) {
+		t.Fatalf("plan must report br_netfilter from /proc/sys/net/bridge (want %q):\n%s", want, stdout)
+	}
+	cases := []struct{ name, env, fail string }{
+		{"other_bridge", "FAKE_IP_BRIDGES=12: virbr0: <BROADCAST,MULTICAST,UP> mtu 1500 qdisc noqueue state DOWN mode DEFAULT", "every bridge is a container interface: FAIL"},
+		{"container_ipv6", "FAKE_IP_V6=3: docker0    inet6 fd00:dead:beef::1/64 scope global", "no container interface has IPv6: FAIL"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := append(append([]string{}, base...), tc.env)
+			for _, mode := range []string{"--plan", "--apply"} {
+				stdout, _, code := runHostFirewall(t, env, mode)
+				if code != 1 || !strings.Contains(stdout, tc.fail) {
+					t.Fatalf("%s: exit %d\n%s", mode, code, stdout)
+				}
+			}
+			assertContainsNone(t, "calls", readCalls(t, state), "nft -f", "systemd-run", "systemctl reload")
+		})
+	}
+}
+
+// TestRemoteAlphaHostFirewallUnconfirmedApplyRecords: rollback.sh (what the
+// timer runs) puts back a drop-in that existed before --apply and clears the
+// unconfirmed marker; an apply whose timer vanished (a reboot inside the
+// confirm window) leaves the marker, which --status reports and --plan and
+// --apply refuse until --rollback.
+func TestRemoteAlphaHostFirewallUnconfirmedApplyRecords(t *testing.T) {
+	fakeBin, state := hostFirewallFakes(t, "0 0 192.168.1.156:22 192.168.1.23:50000\n")
+	root := t.TempDir()
+	unitPath := filepath.Join(root, "systemd", "es-host-firewall.service")
+	runDir := filepath.Join(root, "run")
+	for _, dir := range []string{filepath.Dir(unitPath), filepath.Join(root, "state"), runDir} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	env := hostFirewallBaseEnv(t, fakeBin,
+		"REMOTE_ALPHA_HOST_FIREWALL_STATE_DIR="+filepath.Join(root, "state"),
+		"REMOTE_ALPHA_HOST_FIREWALL_RUN_DIR="+runDir,
+		"REMOTE_ALPHA_HOST_FIREWALL_UNIT_PATH="+unitPath,
+		"FAKE_UNIT_PATH="+unitPath,
+	)
+	var dropIn string
+	for _, entry := range env {
+		if k, v, _ := strings.Cut(entry, "="); k == "REMOTE_ALPHA_HOST_FIREWALL_SSHD_DROP_IN" {
+			dropIn = v
+		}
+	}
+	// A drop-in from an earlier confirmed apply (other settings).
+	previous := "# Managed by Execution-Substrate scripts/remote_alpha_host_firewall.sh.\n# earlier settings\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nX11Forwarding no\n"
+	writeFile(t, dropIn, []byte(previous), 0o644)
+	marker := filepath.Join(runDir, "unconfirmed")
+
+	stdout, stderr, code := runHostFirewall(t, env, "--apply")
+	if code != 0 {
+		t.Fatalf("apply: exit %d\n%s\n%s", code, stdout, stderr)
+	}
+	if mustRead(t, dropIn) == previous {
+		t.Fatal("apply must install the new drop-in")
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("apply must leave the unconfirmed marker: %v", err)
+	}
+	rollbackScript := mustRead(t, filepath.Join(runDir, "rollback.sh"))
+	assertContainsAll(t, "rollback script", rollbackScript, "-p '"+filepath.Join(runDir, "sshd-previous.conf")+"' '"+dropIn+"'", "-f '"+marker+"'")
+
+	// The timer fires: the previous drop-in is back and the marker is gone.
+	if output, err := exec.Command("/bin/sh", filepath.Join(runDir, "rollback.sh")).CombinedOutput(); err != nil {
+		t.Fatalf("rollback.sh: %v\n%s", err, output)
+	}
+	writeFile(t, filepath.Join(state, "timer"), []byte("dead\n"), 0o644)
+	if got := mustRead(t, dropIn); got != previous {
+		t.Fatalf("rollback.sh must put the previous drop-in back, got:\n%s", got)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("rollback.sh must remove the unconfirmed marker, stat err=%v", err)
+	}
+	if stdout, _, code := runHostFirewall(t, env, "--plan"); code != 0 || !strings.Contains(stdout, "no earlier apply awaiting confirm: pass") {
+		t.Fatalf("plan after a rollback: exit %d\n%s", code, stdout)
+	}
+
+	// Apply again, then the timer vanishes without running (a reboot).
+	if stdout, stderr, code := runHostFirewall(t, env, "--apply"); code != 0 {
+		t.Fatalf("second apply: exit %d\n%s\n%s", code, stdout, stderr)
+	}
+	writeFile(t, filepath.Join(state, "timer"), []byte("dead\n"), 0o644)
+	stdout, _, code = runHostFirewall(t, env, "--status")
+	if code != 1 || !strings.Contains(stdout, "unconfirmed apply: an --apply of ") || !strings.Contains(stdout, "run --rollback, then --apply again") {
+		t.Fatalf("status with an unconfirmed apply left behind: exit %d\n%s", code, stdout)
+	}
+	for _, mode := range []string{"--plan", "--apply"} {
+		stdout, _, code := runHostFirewall(t, env, mode)
+		if code != 1 || !strings.Contains(stdout, "no earlier apply awaiting confirm: FAIL (an earlier --apply was never confirmed and its rollback timer is gone") {
+			t.Fatalf("%s with an unconfirmed apply left behind: exit %d\n%s", mode, code, stdout)
+		}
+	}
+	if _, stderr, code := runHostFirewall(t, env, "--confirm"); code != 1 || !strings.Contains(stderr, "no apply is awaiting confirm") {
+		t.Fatalf("confirm after the timer vanished: exit %d: %s", code, stderr)
+	}
+	if stdout, stderr, code := runHostFirewall(t, env, "--rollback"); code != 0 {
+		t.Fatalf("rollback: exit %d\n%s\n%s", code, stdout, stderr)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("--rollback must remove the unconfirmed marker, stat err=%v", err)
+	}
+	if err := os.MkdirAll(runDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if stdout, _, code := runHostFirewall(t, env, "--plan"); code != 0 {
+		t.Fatalf("plan after --rollback: exit %d\n%s", code, stdout)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Real-kernel tests. They need root, iproute2 and nft, build a small network
 // of namespaces (a "box" with a docker0 bridge and two containers, a LAN with
@@ -1101,6 +1337,9 @@ func requireHostFirewallLab(t *testing.T) {
 	if os.Geteuid() != 0 {
 		t.Skip("needs root to create network namespaces")
 	}
+	// A root CI step may run with PATH=/usr/bin:/bin; nft and ip live in
+	// /usr/sbin. Add the sbin directories for the test and the scripts.
+	t.Setenv("PATH", os.Getenv("PATH")+string(os.PathListSeparator)+"/usr/sbin"+string(os.PathListSeparator)+"/sbin")
 	for _, tool := range []string{"ip", "nft", "python3"} {
 		if _, err := exec.LookPath(tool); err != nil {
 			t.Fatalf("running as root but %s is missing: install it to run this real-kernel test", tool)
@@ -1468,6 +1707,18 @@ func TestRemoteAlphaHostFirewallRealKernelTraffic(t *testing.T) {
 		{"box", "tcp", "192.168.1.156", 8445, "", "connected"},
 		{"box", "tcp", "172.17.0.1", 8200, "", "connected"},
 	})
+	// A published port (Docker-style DNAT to a container) is not reachable
+	// from the LAN or from a public source: no new connection into a
+	// container is forwarded.
+	dnat := filepath.Join(t.TempDir(), "dnat.nft")
+	writeFile(t, dnat, []byte("table ip docker_like_dnat {\n\tchain prerouting {\n\t\ttype nat hook prerouting priority dstnat; policy accept;\n"+
+		"\t\tiifname \"wlp2s0\" tcp dport 18080 dnat to 172.17.0.3:8080\n\t}\n}\n"), 0o600)
+	l.run("ip", "netns", "exec", l.ns("box"), "nft", "-f", dnat)
+	l.expectAll("published port", []hostFirewallExpectation{
+		{"lan", "tcp", "192.168.1.156", 18080, "192.168.1.23", "timeout"},
+		{"wan", "tcp", "192.168.1.156", 18080, "198.51.100.10", "timeout"},
+	})
+
 	// IPv6: the global address (which may be reachable from the internet)
 	// takes no new connections, SSH included; SSH over link-local stays
 	// open; neighbour discovery and replies to the box's own connections
@@ -1504,6 +1755,134 @@ func TestRemoteAlphaHostFirewallRealKernelTraffic(t *testing.T) {
 		{"c1", "tcp", "192.168.1.1", 80, "", "timeout"},
 		{"lan", "tcp", "192.168.1.156", 8445, "192.168.1.50", "timeout"},
 		{"c1", "tcp", "172.17.0.1", 8200, "", "connected"},
+	})
+}
+
+// hostFirewallLabL2Receiver counts, on eth0 of its namespace, raw frames
+// that carry a marker: IPv4 (0x0800) and IPv6 (0x86dd) separately. It works
+// below the namespace's IP stack, so it needs no IPv6 in the kernel.
+const hostFirewallLabL2Receiver = `
+import socket, sys, time
+s = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(0x0003))
+s.bind(("eth0", 0))
+s.settimeout(0.2)
+print("ready", flush=True)
+counts = {"ipv4": 0, "ipv6": 0}
+deadline = time.monotonic() + float(sys.argv[1])
+while time.monotonic() < deadline:
+    try:
+        frame, address = s.recvfrom(2048)
+    except socket.timeout:
+        continue
+    # Count arriving frames only, not what this namespace sends (such as an
+    # ICMP error that quotes the marker).
+    if address[2] == socket.PACKET_OUTGOING or b"ESFWL2MARK" not in frame:
+        continue
+    kind = {b"\x08\x00": "ipv4", b"\x86\xdd": "ipv6"}.get(frame[12:14])
+    if kind:
+        counts[kind] += 1
+print("ipv4=%d ipv6=%d" % (counts["ipv4"], counts["ipv6"]), flush=True)
+`
+
+// hostFirewallLabL2Sender writes, from eth0 of its namespace, an IPv4/UDP
+// frame with a forged source address and an IPv6/UDP frame between
+// link-local addresses, both to the destination MAC address given.
+const hostFirewallLabL2Sender = `
+import socket, struct, sys
+dst_mac = bytes.fromhex(sys.argv[1].replace(":", ""))
+forged, target = socket.inet_aton(sys.argv[2]), socket.inet_aton(sys.argv[3])
+s = socket.socket(socket.AF_PACKET, socket.SOCK_RAW)
+s.bind(("eth0", 0))
+src_mac = s.getsockname()[4]
+payload = b"ESFWL2MARK"
+udp = struct.pack(">HHHH", 40000, 9999, 8 + len(payload), 0) + payload
+header = struct.pack(">BBHHHBBH4s4s", 0x45, 0, 20 + len(udp), 1, 0, 64, 17, 0, forged, target)
+total = sum(struct.unpack(">10H", header))
+total = (total & 0xFFFF) + (total >> 16)
+checksum = ~((total & 0xFFFF) + (total >> 16)) & 0xFFFF
+header = header[:10] + struct.pack(">H", checksum) + header[12:]
+ipv6 = struct.pack(">IHBB16s16s", 6 << 28, len(udp), 17, 64,
+                   socket.inet_pton(socket.AF_INET6, "fe80::2"), socket.inet_pton(socket.AF_INET6, "fe80::3"))
+for _ in range(3):
+    s.send(dst_mac + src_mac + b"\x08\x00" + header + udp)
+    s.send(dst_mac + src_mac + b"\x86\xdd" + ipv6 + udp)
+print("sent", flush=True)
+`
+
+// l2Probe sends the two raw frames from c1 to c2 and returns what c2 saw.
+func (l *hostFirewallLab) l2Probe() string {
+	l.t.Helper()
+	link := l.run("ip", "-n", l.ns("c2"), "-o", "link", "show", "eth0")
+	fields := strings.Fields(link)
+	mac := ""
+	for i, field := range fields {
+		if field == "link/ether" && i+1 < len(fields) {
+			mac = fields[i+1]
+		}
+	}
+	if mac == "" {
+		l.t.Fatalf("no MAC address for c2 eth0:\n%s", link)
+	}
+	receiver := exec.Command("ip", "netns", "exec", l.ns("c2"), "python3", "-I", "-c", hostFirewallLabL2Receiver, "2.5")
+	stdout, err := receiver.StdoutPipe()
+	if err != nil {
+		l.t.Fatal(err)
+	}
+	receiver.Stderr = os.Stderr
+	if err := receiver.Start(); err != nil {
+		l.t.Fatal(err)
+	}
+	reader := bufio.NewReader(stdout)
+	if line, err := reader.ReadString('\n'); err != nil || strings.TrimSpace(line) != "ready" {
+		_ = receiver.Process.Kill()
+		_ = receiver.Wait()
+		l.t.Fatalf("layer-2 receiver did not start: %q %v", line, err)
+	}
+	l.run("ip", "netns", "exec", l.ns("c1"), "python3", "-I", "-c", hostFirewallLabL2Sender, mac, "203.0.113.99", "172.17.0.3")
+	result, _ := reader.ReadString('\n')
+	if err := receiver.Wait(); err != nil {
+		l.t.Fatalf("layer-2 receiver: %v", err)
+	}
+	return strings.TrimSpace(result)
+}
+
+// TestRemoteAlphaHostFirewallRealKernelBridgeIsolation turns br_netfilter's
+// bridge calls off in the box namespace, so the inet rules never see frames
+// between two containers on docker0 and only the bridge table stands between
+// them, then sends a forged-source IPv4 frame and an IPv6 frame from one
+// container to the other.
+func TestRemoteAlphaHostFirewallRealKernelBridgeIsolation(t *testing.T) {
+	l := newHostFirewallLab(t)
+	box := l.ns("box")
+	if _, err := os.Stat("/proc/sys/net/bridge/bridge-nf-call-iptables"); err == nil {
+		for _, key := range []string{"bridge-nf-call-iptables", "bridge-nf-call-ip6tables", "bridge-nf-call-arptables"} {
+			l.run("ip", "netns", "exec", box, "sysctl", "-qw", "net.bridge."+key+"=0")
+		}
+	}
+	if got := l.l2Probe(); got != "ipv4=3 ipv6=3" {
+		t.Fatalf("without the firewall both frames must arrive (the lab can see them), got %q", got)
+	}
+	ruleset, stderr, code := runHostFirewall(t, hostFirewallBaseEnv(t, ""), "--render")
+	if code != 0 {
+		t.Fatalf("render: %d %s", code, stderr)
+	}
+	path := filepath.Join(t.TempDir(), "ruleset.nft")
+	writeFile(t, path, []byte(ruleset), 0o600)
+	l.run("ip", "netns", "exec", box, "nft", "-f", path)
+	if got := l.l2Probe(); got != "ipv4=0 ipv6=0" {
+		t.Fatalf("with the firewall neither a forged-source IPv4 frame nor an IPv6 frame may pass between containers, got %q", got)
+	}
+	if got := l.counter("bridge", "container_to_container"); got != "6" {
+		t.Fatalf("the bridge counter must count the six dropped frames, got %s", got)
+	}
+	// Containers still reach Vault, DNS and the internet: frames to the
+	// bridge's own address are local delivery, not bridge forwarding.
+	l.startLabServers()
+	l.expectAll("bridge isolation, br_netfilter calls off", []hostFirewallExpectation{
+		{"c1", "tcp", "172.17.0.1", 8200, "", "connected"},
+		{"c1", "udp", "192.168.1.1", 53, "", "answer"},
+		{"c1", "tcp", "203.0.113.10", 443, "", "connected"},
+		{"c1", "tcp", "172.17.0.3", 9, "", "timeout"},
 	})
 }
 
@@ -1672,8 +2051,16 @@ func TestRemoteAlphaHostFirewallDocsContract(t *testing.T) {
 		"`testdata/remote_alpha_host_firewall/ruleset.golden.nft`",
 		"input, default drop, at priority `filter - 10`",
 		"from container interfaces (`CONTAINER_INTERFACES`, default `docker0 br-* nomad`): only `VAULT_ADDRESS:VAULT_PORT` (default `172.17.0.1:8200`)",
-		"new connections into containers pass only through Docker's published-port DNAT (`ct status dnat`)",
-		"cannot reach each other at layer 2, whatever the `br_netfilter` state",
+		"no new connection into a container is forwarded, published ports (Docker DNAT) included",
+		"cannot reach each other at layer 2, whatever the `br_netfilter` state and whatever source address a container writes (the IPv4 rule matches the destination only), and no IPv6 frame passes from one bridge port to another.",
+		"`--apply` refuses while a bridge exists that is not a container interface",
+		"no container interface has a global or unique-local IPv6 address",
+		"The new connection must come from an address inside `SSH_SOURCES` and not from loopback",
+		"under `/var/lib/es-host-firewall`. They are on disk so that an apply cut short by a reboot (which also ends the timer) stays visible",
+		"`/proc/sys/net/bridge/bridge-nf-call-iptables`, which exists whether it is a module or built in",
+		"a real UDP service on such a port is blocked like any other unlisted listener",
+		"the bound CIDR limits by network, not by workload",
+		"one turns `br_netfilter` off in the lab and sends forged-source IPv4 and raw IPv6 frames between two containers, which must not arrive",
 		"chain `host_to_vault_source` (nat, postrouting, priority `srcnat - 10`) applies an identity snat",
 		"the workload role's `token_bound_cidrs` (`172.17.0.0/16`, P0q-R1) refuses the box's own workload-auth check with a plain 403",
 		"an `accept` would not do this. It is the only address rewrite in the ruleset",
