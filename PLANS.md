@@ -21,9 +21,13 @@ rule matches nothing. ARS, AGS, and ES refuse such a prefix at startup. The
 package owns no allowlist content and no route: which prefixes each service
 configures, and which routes they open, stay service-local. EGS's fixed
 caller list and CGS `id.conf` are unchanged. Every repo-owned configuration
-already uses canonical two-segment prefixes. In the same change, the
-operator healthcheck TLS status tools read the operator certificate's URI SANs
-from its DER encoding instead of OpenSSL's printed text.
+already uses canonical two-segment prefixes. In the same change, the root
+guard that keeps caller identity reading inside `internal/callerauth` also
+type-checks every production package for Linux and macOS, so a read of a
+request's TLS state or of a certificate's URI SANs, issuer, or raw extensions
+is caught through a variable, alias, or embedded struct too; and the operator
+healthcheck TLS status tools read the operator certificate's URI SANs from its
+DER encoding instead of OpenSSL's printed text.
 
 ### One caller authentication rule for the five services (2026-11-23)
 

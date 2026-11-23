@@ -14,7 +14,10 @@ import (
 // No production code outside internal/callerauth reads a certificate's URI
 // SANs or issuer common name, and the five service API packages do not
 // touch the TLS connection state at all. A sixth copy of the identity rule
-// fails here.
+// fails here. This half matches names in every production file, whatever
+// its build constraints; TestCallerIdentityIsReadOnlyByCallerauthByType
+// (caller_authentication_typed_guard_test.go) is the typed half, which also
+// catches reads through a variable, an alias or an embedded struct.
 func TestCallerIdentityIsReadOnlyByCallerauth(t *testing.T) {
 	apiPackages := []string{"ars/api", "ags/api", "egs/api", "cgs/api", "es/api"}
 	seenAPI := map[string]bool{}
