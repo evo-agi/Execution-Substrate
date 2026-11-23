@@ -89,6 +89,7 @@ The current supported Linux host profile requires all of the following.
 
 - `nomad.service` active and enabled
 - `GET /v1/agent/self` reports `config.DevMode=false`
+- access control (ACLs) enforced: `acl { enabled = true }`, bootstrapped, and no anonymous policy; ES's least-privilege token and the read-only observer token provisioned by `sudo scripts/nomad_acl_setup.sh` (see [configuration.md](configuration.md#nomad-access-control))
 - at least one ready client node
 - that ready node exposes positive natural `cpu.totalcompute`
 - that ready node reports Docker driver `Healthy`
@@ -229,10 +230,17 @@ systemctl is-active nomad
 systemctl status nomad --no-pager --full | sed -n '1,80p'
 ps -eo pid,user,args | grep '[n]omad' || true
 ss -ltnp '( sport = :4646 )' || true
-curl --fail-with-body --silent --show-error http://127.0.0.1:4646/v1/agent/self
-curl --fail-with-body --silent --show-error http://127.0.0.1:4646/v1/status/leader
-curl --fail-with-body --silent --show-error http://127.0.0.1:4646/v1/nodes
+sudo scripts/nomad_acl_setup.sh check
+export NOMAD_TOKEN_FILE=/etc/execution-substrate/nomad-acl/observer-token
+source scripts/internal/nomad_acl.sh
+NOMAD_ADDR=http://127.0.0.1:4646 nomad_acl_state_check
+NOMAD_ADDR=http://127.0.0.1:4646 nomad_api_get /v1/agent/self /dev/stdout
+NOMAD_ADDR=http://127.0.0.1:4646 nomad_api_get /v1/status/leader /dev/stdout
+NOMAD_ADDR=http://127.0.0.1:4646 nomad_api_get /v1/nodes /dev/stdout
 ```
+
+The observer token is read from its file and passed to curl through a file
+descriptor, never on a command line.
 
 Pass only if all of the following hold:
 
@@ -240,6 +248,7 @@ Pass only if all of the following hold:
 - the service is pre-managed rather than a user-started foreground agent
 - `DevMode=false`
 - leader is present
+- the ACL check passes: ACLs enforced, no anonymous policy, ES's token is the `es-submit-v1` client token, and an anonymous plan, ES's token outside its namespace and the observer token's plan are all refused
 
 Fail immediately if:
 

@@ -2,6 +2,26 @@
 
 ## Status
 
+### Nomad access control lock (2026-11-23)
+
+ES now submits only to a Nomad that enforces access control (ACLs). ES reads
+a least-privilege client token from `nomad.token_file` at startup (submit,
+read and logs in namespace `es-submit-v1` only), sends it on every Nomad
+request, and before every submit refuses with `503
+execution_runtime_unavailable` unless its token resolves as a client token,
+ACLs are enabled and no anonymous policy exists. Nomad's bootstrap management
+token stays in a root-only file and never reaches ES. Provisioning is
+`scripts/nomad_acl_setup.sh` (namespace, policies, ES and read-only observer
+tokens, `check`, `rotate`); the supported Linux host setup, full-profile
+bring-up, supported-local setup and proof capture, readiness checks and CI's
+real Nomad all run with ACLs on. CI proves a real ACL Nomad refuses a job
+without ES's token and ES refuses a Nomad without the lock. Known limits:
+Nomad's API is plain HTTP on loopback (Nomad HTTPS with a pinned server key
+is the next part), the lock does not cover the Docker socket, and ES's token
+still expresses job shape (mounts, task user). PR 12's reliable-submit
+operational provider is not yet covered: its change list is in the Nomad ACL
+report.
+
 ### Private replay-progress pre-COMMIT and owner inventory refinement (2026-11-19)
 
 The latest independent audit rejected manifest
@@ -3492,6 +3512,7 @@ The following are useful current implementation facts and should remain visible 
 - The repository currently implements five primary service boundaries: ARS, AGS, EGS, CGS, and ES.
 - The current publication flow is `AGS -> ARS`.
 - The current admission and execution flow is `request -> ES -> EGS / ARS -> Nomad -> Docker`.
+- ES submits to Nomad only with its own least-privilege ACL token in namespace `es-submit-v1`, and only while Nomad enforces ACLs with no anonymous policy; Nomad's management token never reaches ES.
 - ES currently composes startup-owned runtime-config references, ARS, and EGS in its hot path. CGS exists but is not in the current ES hot path.
 - The current primary artifact model crossing AGS, ARS, and ES is aggregate evidence plus payload, with manifest retained as supporting publication data.
 - The repository now also carries a first parallel shared evidence kernel in `internal/contracts/evidence/v1` for the primary `AGS -> ARS -> ES` artifact path, and ES now requires that aggregate evidence on its first-class admission path.

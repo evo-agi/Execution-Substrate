@@ -255,7 +255,7 @@ For a minimal active system, `runtime_trust.signer_policy.allowed_signers` must 
 - `verification.derivation_attestation.*`
 - `verification.workload_identity_binding.*`
 - `workload_vault_auth.default_mode`
-- `nomad.base_url`, `nomad.datacenter`, `nomad.timeout_seconds` when submit is enabled
+- `nomad.base_url`, `nomad.datacenter`, `nomad.timeout_seconds`, `nomad.token_file` when submit is enabled
 - `execution.staging_root_dir`, `execution.results_root_dir`, `execution.base_image` when submit is enabled
 - `execution.runtime_profiles.control_plane_normal_shell.*` only when the bounded Control Plane normal-shell runtime profile is enabled
 
@@ -329,6 +329,7 @@ For a minimal active system, `runtime_trust.signer_policy.allowed_signers` must 
 - for full end-to-end execution verification, include:
   - `nomad.base_url`
   - `nomad.datacenter`
+  - `nomad.token_file`
   - `execution.staging_root_dir`
   - `execution.results_root_dir`
   - `execution.retained_result_auth.store_id`, `key_id`, and `key_file`
@@ -492,7 +493,7 @@ they were not passed or waived.
 - The primary bring-up/check path distinguishes:
   - service health: ARS, EGS, AGS, and ES public health surfaces
   - prepare-ready: service health plus successful workload-zone Vault runtime-config blob verification through ARS, including structural validation of any supplied Vault CA bundle
-  - submit-ready: prepare-ready plus ES submit config present, Docker available, required enabled runtime-profile images present, Nomad leader present, and at least one ready Nomad client node that exposes positive `cpu.totalcompute` and a healthy Docker driver
+  - submit-ready: prepare-ready plus ES submit config present (including a `nomad.token_file` that is a regular 0400/0600 file), Docker available, required enabled runtime-profile images present, Nomad leader present, Nomad enforcing ACLs with no anonymous policy (read with the observer token named by `NOMAD_TOKEN_FILE`), and at least one ready Nomad client node that exposes positive `cpu.totalcompute` and a healthy Docker driver
 
 Minimal vault-auth example:
 
@@ -588,9 +589,85 @@ The current host-qualification boundary for the supported Linux environment is d
 - for the supported Linux environment story in this slice, Nomad should already be running as a pre-managed non-dev service on the host/VM before `scripts/01_bringup.sh up`; the local script-managed Nomad startup path remains bounded fallback/troubleshooting scaffolding
 - the operator readiness path now inspects `GET /v1/agent/self` and rejects `config.DevMode=true`; `nomad agent -dev` is unsupported for the slice-0 supported-environment claim even if it reports healthy Docker and positive compute
 - when Nomad uses the Docker driver on Linux, HashiCorp's Docker driver guidance treats root-managed Nomad as the compatible mode for CPU-core / NUMA-aware behavior; user-managed Nomad startup may still be useful for bounded proof and troubleshooting, but it is not the supported-environment baseline
+- access control (ACLs) enabled with `acl { enabled = true }` and bootstrapped, with no anonymous policy; see [Nomad access control](#nomad-access-control) below
 - if a Linux proof host exposes `cpu.totalcompute=0` because Nomad CPU fingerprinting fails, the bounded slice-0 operator path can provide `NOMAD_CLIENT_CPU_TOTAL_COMPUTE` as a temporary client override for that host; this is deployment troubleshooting, not a new cross-service contract
   - when this override is active, the operator path must surface that host as `submit-ready-mode: bounded-override (...)` rather than implying natural schedulability
   - if the override is absent and the host remains at `cpu.totalcompute=0`, the current bring-up path now fails explicitly instead of claiming submit-ready
+
+### Nomad access control
+
+Without ACLs any local process that reaches Nomad's API can register a job and
+bypass ES admission. ES therefore submits only to a Nomad that enforces them.
+
+- **Nomad config**: `acl { enabled = true }`. `scripts/70_linux_setup.sh`
+  writes it into the managed `/etc/nomad.d/nomad.hcl`, restarts Nomad when
+  the config changed, and bootstraps the ACL system.
+- **Management token**: Nomad's bootstrap token. `scripts/70_linux_setup.sh`
+  generates its secret, writes it root-only (0600) to
+  `/etc/execution-substrate/nomad-acl/management-token` before the bootstrap
+  call, and reuses it on later runs. Only that script and
+  `scripts/nomad_acl_setup.sh` (as root) read it. It is never given to ES or
+  to an operator check. If Nomad is already bootstrapped and the file is
+  lost, both scripts refuse; recovery is Nomad's ACL bootstrap reset
+  procedure, done by hand.
+- **ES token** (`nomad.token_file`): a client token with only policy
+  `es-submit-v1` (`submit-job`, `read-job`, `read-logs` in namespace
+  `es-submit-v1`). It cannot read nodes or the agent, write policies or
+  tokens, or act in any other namespace. ES reads the file once at startup,
+  before it provisions any execution root, and refuses to start unless it is
+  a regular file (not a symbolic link, one hard link) owned by ES's user,
+  mode 0400 or 0600, in a directory owned by ES's user or root that is not
+  group- or world-writable, holding one canonical lower-case Nomad token with
+  an optional trailing newline. No error names the path or the token. ES
+  sends the token only in the `X-Nomad-Token` header.
+- **Per-submit check**: before every submit ES confirms that its token is a
+  client token, that ACLs are enabled and that no anonymous policy exists;
+  otherwise it refuses with `503 execution_runtime_unavailable` ("execution
+  runtime access control check failed").
+- **Observer token**: a read-only client token (policy `es-observer-v1`:
+  agent and node read, `read-job` and `read-logs` in `es-submit-v1`) for
+  readiness and evidence checks. Operator scripts read it from the file named
+  by `NOMAD_TOKEN_FILE` and pass it to curl through a configuration on a file
+  descriptor, to Python by file, and to the nomad CLI through its
+  environment, never on a command line. The observer token cannot submit.
+- **Provisioning**: `sudo scripts/nomad_acl_setup.sh` creates the namespace,
+  both policies and both token files in
+  `/etc/execution-substrate/nomad-acl/` (`es-token` 0400 owned by `ES_USER`,
+  default root; `observer-token` 0400 owned by `OBSERVER_USER`, default the
+  sudo caller), then runs the lock check. It is idempotent: a working token
+  is kept. `check` verifies the lock (an anonymous plan in `es-submit-v1`,
+  ES's token in `default` or on `/v1/nodes`, and the observer token planning
+  are all refused), and `rotate` issues new ES and observer tokens and
+  deletes the old ones. It refuses when another policy could grant the
+  namespace, when an anonymous policy exists, or when ACLs are off. The tool
+  behind it is `scripts/internal/nomad_acl.py`; it talks only to a loopback
+  Nomad address, with no proxy and no redirects.
+- **Rotation needs an ES restart**: ES reads its token only at startup, and a
+  container bind mount keeps the old file, so restart ES after `rotate`.
+- **Bring-up and proof paths**: `BRINGUP_PROFILE=full scripts/01_bringup.sh
+  up` starts its own Nomad with ACLs, provisions it before ES starts (ES needs
+  its token at startup), and exports the observer token for its checks.
+  `scripts/72_supported_local_setup.sh` refuses before any effect unless the
+  host's Nomad enforces ACLs, then runs `scripts/nomad_acl_setup.sh` through
+  `sudo -n` (ES token owned by root, because ES runs as root in the
+  `service-root-v1` profile), writes `nomad.token_file` into `es.json`, and
+  exports `NOMAD_TOKEN_FILE` in `env.sh`. The directory is
+  `SUPPORTED_LOCAL_NOMAD_ACL_DIR`, which must lie outside the proof, staging
+  and results directories.
+
+Known limits of this lock:
+
+- Nomad's HTTP API is plain HTTP on loopback. A local process that binds
+  `127.0.0.1:4646` while Nomad is down could receive ES's token from ES's
+  next request. Nomad HTTPS with a server key ES pins is the follow-up that
+  closes this.
+- The lock governs Nomad's API, not Docker. Root and members of the `docker`
+  group can start containers directly and are outside it.
+- ES's submit token still controls job shape: with Docker volumes enabled, a
+  stolen ES token can mount host paths into a container. ES's own admission
+  decides job shape; limiting what the token can express (driver allowlist,
+  Docker plugin limits, a stricter design for mounts and task user) is
+  tracked separately.
 
 ### Docker requirements
 
