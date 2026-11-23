@@ -525,6 +525,11 @@ Successful response is `200` JSON with these contract fields:
   enabled policy requires payload inspection, `:prepare` may fetch bounded
   payload bytes through the explicit ARS payload digest carried by the
   discovery/evidence relationship already cross-checked by admission.
+- `:prepare` verifies every ARS blob it reads by digest, including the
+  aggregate evidence, the workload-zone Vault config, and any policy payload
+  input, against the requested digest before using it (section 5A). The
+  discovery record is read by artifact digest and is not verified; section 5A
+  states what binds it.
 - The Workstream E E0 decision in
   `.docs/system_overview/runtime_config_ownership.md` classifies this path:
   runtime-config semantics live in `internal/contracts/runtimeconfig/v1`, ARS
@@ -650,6 +655,93 @@ Successful response is `200` JSON with these contract fields:
 - The long-term shape of the preparation result
 - The extent to which preflight success should remain part of a public execution contract
 
+## 5A. ARS blob byte verification contract
+
+`Current invariant`
+
+ES does not trust ARS for the integrity of the blobs it reads by digest. ARS
+still re-verifies blobs on its own read path, but ES does not rely on that
+check. Every ES read of an ARS blob by digest verifies the received bytes
+itself. ES still trusts ARS for one choice: which sealed evidence document
+applies to an artifact, through the discovery record (see "Outside this
+contract").
+
+**Covered reads.** These are all of ES's reads of `GET /v1/blobs/{digest}`.
+There is no other:
+
+| Read | View | Digest it is verified against | Where that digest comes from |
+| --- | --- | --- | --- |
+| Aggregate artifact evidence | `:json` | evidence digest | ARS discovery record, which ES does not verify (evidence authenticity comes from the evidence seal) |
+| Workload-zone Vault runtime config | `:json` | configured reference digest | ES startup config `runtime_config.workload_zone_vault_config_ref` |
+| Admission-policy payload input | `:bytes` | `payload_digest` | signature-verified aggregate evidence, cross-checked with discovery |
+| Primary payload | `:bytes` | `payload_digest` | signature-verified aggregate evidence, cross-checked with discovery |
+| Governed mount payload | `:bytes` | mount `payload_digest` | that mount's signature-verified aggregate evidence, cross-checked with its discovery |
+
+**Rules.**
+
+- The requested digest must be exactly `sha256:` followed by 64 lowercase hex
+  digits. Any other value is refused before a request is sent. The string that
+  is requested is the string that is verified; it is not trimmed or
+  normalized in between.
+- ES reads the bounded response body into one in-memory buffer, using the
+  existing per-read size limits, and computes SHA-256 over exactly that buffer.
+  ES returns the buffer only when `sha256:<hex>` of it equals the requested
+  digest. A mismatched buffer is dropped.
+- The verified buffer is the only copy ES uses. Strict JSON decoding, Vault
+  configuration resolution, admission-policy inspection, mount archive
+  parsing, and primary payload staging all consume that buffer. ES makes no
+  second read of the same blob for use. When the admission policy already read
+  the payload, Submit stages that same verified buffer as the primary payload.
+- A mismatch fails closed. Every covered read happens before the Submit freeze
+  point, so a mismatch leaves no run ID, staging directory, file write,
+  ownership change, or Nomad registration behind.
+- `HEAD /v1/blobs/{digest}`, the ARS `Content-Digest` header, and ARS
+  read-path verification are not used as evidence of byte integrity.
+- ES's ARS and EGS clients do not follow redirects. A `3xx` answer is the
+  dependency's final answer: ES refuses it like any other unexpected status
+  and sends no request to the address it names, on the dependency or
+  elsewhere.
+
+**Public mapping.** A mismatch keeps each read's existing HTTP status and code.
+Only the message names the cause. No digest value, byte count, or received
+byte is exposed.
+
+| Read | HTTP | Code | Exact public message on mismatch |
+| --- | --- | --- | --- |
+| Aggregate artifact evidence | `503` | `artifact_evidence_unavailable` | `artifact evidence blob does not match its discovery digest` |
+| Workload-zone Vault runtime config | `503` | `workload_zone_vault_unavailable` | `artifact registry workload-zone vault blob does not match its configured digest` |
+| Admission-policy payload input | `403` | `admission_policy_input_unavailable` | the existing fixed admission-policy input message |
+| Primary payload | `503` | `payload_unavailable` | `artifact payload bytes do not match the signed payload digest` |
+| Governed mount payload | `503` | `payload_unavailable` | `artifact payload bytes do not match the signed payload digest` |
+
+A non-canonical digest maps to the read's existing "unavailable" message.
+
+**Outside this contract.** Staged files after the Submit freeze point are
+protected by the Tranche A staging custody contract, not re-hashed. The
+runtime-support binary is a local file captured with its own digest. The
+runtime-profile container image is not ARS content.
+
+The ARS discovery record (`GET /v1/artifacts/{artifact_digest}/discovery`) is
+not read by digest. ES has no trusted digest for it and does not verify its
+bytes. ES binds what it uses from it: its artifact digest must equal the
+requested one (the invocation's `artifact_digest`, or a governed mount's source
+`artifact_digest`), and its payload digest, artifact type and intent digest
+must equal the signature-verified evidence claims. Its evidence digest is used
+only to choose which evidence blob to read. That evidence must carry a valid
+seal from an allowed signer and claim the requested `artifact_digest`; for the
+primary artifact it must also claim the requested `derivation_spec_digest` and
+`output_id`. ES does not check that it is the only such document.
+`artifact_digest` is not derived from admission claims, so the provenance key
+can seal more than one evidence document that passes these checks, with
+different `network_access`, `target_platform` or runtime interface claims: for
+the primary artifact, with the same artifact digest, derivation spec digest and
+output ID; for a governed mount, with the same artifact digest. When more than
+one exists, ARS chooses which of them ES admits. For a mount this changes no
+staged byte, because the artifact digest fixes the payload digest; for the
+primary artifact it decides which execution claims apply. ARS's index accepts
+one discovery record per artifact digest, so an ARS that follows its own
+registration contract always names the first registered document.
+
 ## 6. Submit contract
 
 ### Purpose
@@ -693,7 +785,7 @@ bounded receipt, and Nomad submission through ES.
   - configured workload-vault secret path and field metadata for Codex credential material
 - In the repo-owned supported-local runtime surface, submit-readiness for that enabled profile also requires the configured image to be present and Nomad Docker image cleanup to be disabled through `docker.cleanup.image=false`, so repeated client runs from the same prepared environment are not invalidated merely by Nomad's stopped-task image cleanup.
 - Runtime mounts, when present, must satisfy both the prepare-time mount request rules and submit-time reserved-path checks.
-- Submit resolves payload bytes through the explicit payload digest carried in aggregate evidence.
+- Submit resolves payload bytes through the explicit payload digest carried in aggregate evidence, and uses only bytes that hash to that digest (section 5A).
 - Submit reuses the same ES Admission Policy Layer v0 path as `:prepare` and
   cannot bypass a policy that `:prepare` would deny.
 - Policy denial happens before payload staging, mount staging, run ID creation,
