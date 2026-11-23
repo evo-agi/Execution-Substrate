@@ -14387,7 +14387,11 @@ func operationalV2AssuranceOwnerRule(owner string) bool {
 		strings.Contains(owner, "a source inventory\ncannot show that no other road exists") &&
 		strings.Contains(owner, "aggregate HEAD ceiling for PR #12 plus its repairs was 52 files") &&
 		strings.Contains(owner, "It adds exactly one more path, a test file:\nA/workstream_a_guardrails_test.go") &&
-		strings.Contains(owner, "HEAD ceiling for PR #12 plus its repairs is 53 files") &&
+		strings.Contains(owner, "HEAD ceiling for PR #12 plus its repairs was 53 files") &&
+		strings.Contains(owner, "HEAD ceiling for PR #12 plus its repairs is 56 files") &&
+		strings.Contains(owner, "It adds exactly three more paths, two test files and the CI's list:\nA/internal/admissionstate/testtmpdir_main_test.go (new)") &&
+		strings.Contains(owner, "remote_alpha_es_service_tls_status_local_boundary_test.go, whose two\nposition reads now ignore line directives") &&
+		strings.Contains(owner, ".github/ci/environment-only-tests.txt, which gains two lines") &&
 		strings.Contains(owner, "Every exported\nfunction and method of the package has an exact list of the functions that\nreference it") &&
 		strings.Contains(owner, "and the inspection method and the question whether a handle names a view,\nwhich exist for tests, nowhere") &&
 		strings.Contains(owner, "The exported\nsurface of the package is a closed list") &&
@@ -14527,8 +14531,12 @@ func TestOperationalSubmitHandoffCurrentAdmissionV2Contract(t *testing.T) {
 		"Range-clause `=` key and value whole-field targets", "Taking a field's address is an `address` access",
 		"is a `write-through` access", "ceiling for PR #12 plus its repairs was 48 files",
 		"ceiling for PR #12 plus its repairs was 52 files",
-		"HEAD ceiling for PR #12 plus its repairs is 53 files",
+		"HEAD ceiling for PR #12 plus its repairs was 53 files",
+		"HEAD ceiling for PR #12 plus its repairs is 56 files",
 		"It adds exactly one more path, a test file:\nA/workstream_a_guardrails_test.go",
+		"It adds exactly three more paths, two test files and the CI's list:\nA/internal/admissionstate/testtmpdir_main_test.go (new)",
+		"remote_alpha_es_service_tls_status_local_boundary_test.go, whose two\nposition reads now ignore line directives",
+		".github/ci/environment-only-tests.txt, which gains two lines",
 		"A/reliable_submit_operational_admission_redteam2_test.go (new),\nA/reliable_submit_operational_admission_redteam2_crash_test.go (new),\nA/reliable_submit_operational_admission_redteam2_guard_test.go (new) and\nA/reliable_submit_operational_admission_limits_test.go (new)",
 		"A/internal/admissionstate/state.go (new) and\nA/internal/admissionstate/state_test.go (new)",
 		"A retry after a changed configured literal policy, artifact revocation or", "a denial does not")
@@ -14543,9 +14551,16 @@ func TestOperationalSubmitHandoffCurrentAdmissionV2Contract(t *testing.T) {
 		"PR #12 durable admission: a limit named after the fifth audit",
 		"PR #12 durable admission: repairs after the red-team",
 		"PR #12 durable admission: line directives after the sixth audit",
+		"PR #12 durable admission: taking up trunk_dev after its PRs #23 and #22",
+		"The admission state package of PR #12 is a new test package, so it\ngets that file",
+		"CI's list, so the path ceiling of PR #12 plus its repairs is 56 files",
+		"This entry adds one test file, changes another, changes the CI's list of\nenvironment-only tests and changes documents.",
+		"The CI's list of environment-only tests gains two lines for tests\nof the handoff",
+		"The list's check refuses both lines on `trunk_dev`\nalone, so they come with PR #12.",
+		"PR #22 added a root test file with two reads of an adjusted\nposition",
 		"The rule\nand every other guard now read the real position of the code",
 		"Every non-test Go file of the repository is refused such a\ndirective as well",
-		"so the path ceiling of PR #12 plus its repairs is 53 files",
+		"so the path ceiling of PR #12 plus its repairs became 53 files",
 		"This entry changes guard tests and documents only.",
 		"two more roads of the same class\nwere measured",
 		"A new raw pointer rule refuses\nsuch a value in a file that does not import `unsafe`",
@@ -14791,7 +14806,11 @@ func TestOperationalSubmitHandoffCurrentAdmissionV2RejectsUnsafeMutants(t *testi
 		{"MissingTypeParameterCannotConvert", "it cannot become a typed pointer there\nwithout a constraint that spells the type"},
 		{"MissingUnknownRoadsNotExcluded", "a source inventory\ncannot show that no other road exists"},
 		{"MissingAdoptedTestsCeiling", "aggregate HEAD ceiling for PR #12 plus its repairs was 52 files"},
-		{"MissingSixthAuditCeiling", "HEAD ceiling for PR #12 plus its repairs is 53 files"},
+		{"MissingSixthAuditCeiling", "HEAD ceiling for PR #12 plus its repairs was 53 files"},
+		{"MissingTrunkDevCeiling", "HEAD ceiling for PR #12 plus its repairs is 56 files"},
+		{"MissingTrunkDevStartupPath", "It adds exactly three more paths, two test files and the CI's list:\nA/internal/admissionstate/testtmpdir_main_test.go (new)"},
+		{"MissingTrunkDevPositionReadsPath", "remote_alpha_es_service_tls_status_local_boundary_test.go, whose two\nposition reads now ignore line directives"},
+		{"MissingTrunkDevCIListPath", ".github/ci/environment-only-tests.txt, which gains two lines"},
 		{"MissingSixthAuditPath", "It adds exactly one more path, a test file:\nA/workstream_a_guardrails_test.go"},
 		{"MissingSyscallsInTheLimit", "Raw system calls through `syscall` and `golang.org/x/sys/unix` are part of\nthat limit"},
 		{"MissingCallSiteInventory", "has an exact list of the functions that\nreference it"},
@@ -14895,7 +14914,11 @@ func TestOperationalSubmitHandoffCurrentAdmissionV2RejectsUnsafeMutants(t *testi
 		{"TypeParameterConverts", "it cannot become a typed pointer there\nwithout a constraint that spells the type", "it can become a typed pointer there\nwithout a constraint that spells the type"},
 		{"NoOtherRoadClaimed", "a source inventory\ncannot show that no other road exists", "no other road\nexists"},
 		{"CeilingNotRaisedForAdoptedTests", "aggregate HEAD ceiling for PR #12 plus its repairs was 52 files", "aggregate HEAD ceiling for PR #12 plus its repairs was 48 files"},
-		{"CeilingNotRaisedForSixthAudit", "HEAD ceiling for PR #12 plus its repairs is 53 files", "HEAD ceiling for PR #12 plus its repairs is 52 files"},
+		{"CeilingNotRaisedForSixthAudit", "HEAD ceiling for PR #12 plus its repairs was 53 files", "HEAD ceiling for PR #12 plus its repairs was 52 files"},
+		{"CeilingNotRaisedForTrunkDev", "HEAD ceiling for PR #12 plus its repairs is 56 files", "HEAD ceiling for PR #12 plus its repairs is 55 files"},
+		{"TrunkDevStartupPathUnnamed", "It adds exactly three more paths, two test files and the CI's list:\nA/internal/admissionstate/testtmpdir_main_test.go (new)", "It adds no path"},
+		{"TrunkDevPositionReadsPathUnnamed", "remote_alpha_es_service_tls_status_local_boundary_test.go, whose two\nposition reads now ignore line directives", "and no other file"},
+		{"TrunkDevCIListPathUnnamed", ".github/ci/environment-only-tests.txt, which gains two lines", "the CI's list is unchanged"},
 		{"SixthAuditPathUnnamed", "It adds exactly one more path, a test file:\nA/workstream_a_guardrails_test.go", "It adds no path"},
 		{"SyscallsHeldByTheInventory", "Raw system calls through `syscall` and `golang.org/x/sys/unix` are part of\nthat limit", "Raw system calls through `syscall` and `golang.org/x/sys/unix` are held by\nthe import inventory"},
 		{"InspectionUsedInProduction", "which exist for tests, nowhere", "in production diagnostics"},

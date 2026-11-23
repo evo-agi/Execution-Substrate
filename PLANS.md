@@ -2,6 +2,25 @@
 
 ## Status
 
+### PR #12 durable admission: taking up trunk_dev after its PRs #23 and #22 (2026-11-23)
+
+Since PR #23, every test package of `trunk_dev` runs its tests under a
+temporary directory whose path holds no symbolic link, through a one-line
+`TestMain` in a file of its own, and a test fails for a package without
+one. The admission state package of PR #12 is a new test package, so it
+gets that file. PR #22 added a root test file with two reads of an adjusted
+position, which PR #12's position-read test refuses; they now read the real
+position. The CI's list of environment-only tests gains two lines for tests
+of the handoff: one fails on the runner without its probe binary, and one
+skips itself there. The list's check refuses both lines on `trunk_dev`
+alone, so they come with PR #12. These are two more test files and the
+CI's list, so the path ceiling of PR #12 plus its repairs is 56 files.
+
+This entry adds one test file, changes another, changes the CI's list of
+environment-only tests and changes documents. It changes no behaviour, no
+stored format and no public contract. The precise wording is owned by
+[the operational handoff contract](.docs/execution_lifecycle/reliable_submit_operational_handoff.md).
+
 ### PR #12 durable admission: line directives after the sixth audit (2026-11-23)
 
 The sixth audit, of the repairs after the red-team, found that the raw
@@ -15,7 +34,7 @@ directive as well; none held one. New subtests hold the rule in a package
 with a sibling file that imports `unsafe`, with and without a directive,
 and show that a directive moves no site of a guard inventory. The guard of
 Workstream A's source terms reads real lines as well; it is one more test
-file, so the path ceiling of PR #12 plus its repairs is 53 files.
+file, so the path ceiling of PR #12 plus its repairs became 53 files.
 
 This entry changes guard tests and documents only. It changes no
 behaviour, no stored format and no public contract. The precise wording is

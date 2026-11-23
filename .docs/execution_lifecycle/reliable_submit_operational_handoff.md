@@ -1660,7 +1660,26 @@ The correction after the sixth audit is a further owner reconciliation at
 this gate. It adds exactly one more path, a test file:
 A/workstream_a_guardrails_test.go, whose source-term guard now reads the
 real line of each occurrence, as every guard does. With it the aggregate
-HEAD ceiling for PR #12 plus its repairs is 53 files. Any further file again
+HEAD ceiling for PR #12 plus its repairs was 53 files.
+
+Taking up `trunk_dev` after its PRs #23 and #22 is a further owner
+reconciliation at this gate. Since PR #23, every test package of `trunk_dev`
+runs its tests under a temporary directory whose path holds no symbolic
+link, and a test fails for a package without the file that arranges it; the
+admission state package is a new test package. PR #22 added a root test file
+with two reads of an adjusted position, which the position-read test of this
+document refuses. The CI's list of environment-only tests must name the
+tests of this handoff that fail or skip themselves on the runner by design,
+and its check refuses a line for a test that `trunk_dev` alone does not
+define. It adds exactly three more paths, two test files and the CI's list:
+A/internal/admissionstate/testtmpdir_main_test.go (new), which holds only
+the package's `TestMain`,
+remote_alpha_es_service_tls_status_local_boundary_test.go, whose two
+position reads now ignore line directives, and
+.github/ci/environment-only-tests.txt, which gains two lines: one for a test
+that fails on the runner without its probe binary, and one for a test that
+skips itself there. With them the aggregate
+HEAD ceiling for PR #12 plus its repairs is 56 files. Any further file again
 requires separate owner reconciliation.
 
 The seal-permit guard follows the shared reservation writer
