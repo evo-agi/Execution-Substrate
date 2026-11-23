@@ -21,6 +21,51 @@ func remoteAlphaESServiceTLSStatusCollectorPath() string {
 	return filepath.Join(executionSubstrateRepoRoot, "scripts", "internal", "remote_alpha_es_tls_status.py")
 }
 
+// The standard local boundary of the collector's process cleanup, as Python
+// lines for a fixture that has loaded the collector as "module" and imported
+// os.
+//
+// The cleanup reaches the target's process table through three functions:
+// scan_group_members lists /proc, signal_same_group_members uses pidfd_open
+// and pidfd_send_signal, and read_proc_identity reads /proc/<pid>/stat and
+// confirms absence with pidfd_open. A local fixture replaces all three
+// together with the probe that would have proved them. Replacing only some of
+// them leaves the rest reading the real host: beside invented identities
+// where /proc exists, and without an end where neither /proc nor pidfd_open
+// exists, because a listed process can then never be confirmed absent.
+//
+// With the stand-in scan, the only caller of read_proc_identity is the
+// absence check after the reap, where the true answer is that no listed
+// process is still present.
+//
+// Two further lines make a broken fixture fail instead of misleading or
+// hanging. The two readers below read_proc_identity are target-only and
+// unreachable here; a fixture that reaches one ends itself with status 97. A
+// fixture that is still running after LOCAL_FIXTURE_BOUND seconds, 120 unless
+// the fixture set the name before these lines, prints the stack of every
+// thread and ends itself with status 98. The bound uses the real-time timer
+// and SIGALRM, which the collector does not use, and no thread.
+//
+// TestRemoteAlphaESServiceTLSStatusLocalBoundary... hold these properties.
+const remoteAlphaESStatusLocalProcessBoundary = `# Local generated fixtures inject the target-only process capability boundary.
+module.validate_process_capability=lambda: None
+module.PROCESS_CAPABILITY_READY=True
+module.scan_group_members=lambda pgid: [(pgid,0)]
+module.signal_same_group_members=lambda pgid,signum: os.kill(pgid,signum)
+module.read_proc_identity=lambda pid: None
+def _target_only(name):
+    def reached(*_args,**_kwargs):
+        os.write(2,("local fixture reached the target-only host path: "+name+"\n").encode());os._exit(97)
+    return reached
+module.read_proc_stat_identity=_target_only("read_proc_stat_identity")
+module.process_absent=_target_only("process_absent")
+import faulthandler as _faulthandler,signal as _signal
+def _fixture_overdue(_signum,_frame):
+    os.write(2,b"local fixture exceeded its bound\n");_faulthandler.dump_traceback(all_threads=True);os._exit(98)
+_signal.signal(_signal.SIGALRM,_fixture_overdue)
+_signal.setitimer(_signal.ITIMER_REAL,globals().get("LOCAL_FIXTURE_BOUND",120.0))
+`
+
 // This helper runs only a non-main parser fixture in a local Python child.
 // It never invokes the collector entry point or a real OpenSSL child.
 func runRemoteAlphaESServiceTLSStatusX509TextFixture(t *testing.T, probe string, stdin []byte, paths ...string) map[string]bool {
@@ -87,12 +132,7 @@ import importlib.util,json,os,pathlib,stat,sys
 source,path,kind,previous=sys.argv[1:]
 spec=importlib.util.spec_from_file_location("status_fifo",source)
 module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
-# Local generated fixtures inject the target-only process capability boundary.
-module.validate_process_capability=lambda: None
-module.PROCESS_CAPABILITY_READY=True
-module.scan_group_members=lambda pgid: [(pgid,0)]
-module.signal_same_group_members=lambda pgid,signum: os.kill(pgid,signum)
-module.check_extended=lambda _fd: None
+` + remoteAlphaESStatusLocalProcessBoundary + `module.check_extended=lambda _fd: None
 module.check_input_ancestor=lambda info: None if stat.S_ISDIR(info.st_mode) else (_ for _ in ()).throw(module.Incomplete("ancestor"))
 module.run_fixed=lambda *_a,**_k: (_ for _ in ()).throw(AssertionError("child started for FIFO"))
 prior=pathlib.Path(previous).read_bytes()
@@ -180,12 +220,7 @@ import importlib.util,json,os,pathlib,stat,sys
 source,path=sys.argv[1:]
 spec=importlib.util.spec_from_file_location("status_fifo_swap",source)
 module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
-# Local generated fixtures inject the target-only process capability boundary.
-module.validate_process_capability=lambda: None
-module.PROCESS_CAPABILITY_READY=True
-module.scan_group_members=lambda pgid: [(pgid,0)]
-module.signal_same_group_members=lambda pgid,signum: os.kill(pgid,signum)
-module.check_extended=lambda _fd: None
+` + remoteAlphaESStatusLocalProcessBoundary + `module.check_extended=lambda _fd: None
 module.check_input_ancestor=lambda info: None if stat.S_ISDIR(info.st_mode) else (_ for _ in ()).throw(module.Incomplete("ancestor"))
 path=pathlib.Path(path);original=path.read_bytes();real_open=os.open;swapped=[False]
 def swap_before_open(name,flags,*args,**kwargs):
@@ -239,12 +274,7 @@ source, root, scope, previous = sys.argv[1:]
 spec = importlib.util.spec_from_file_location("status_fixture", source)
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
-# Local generated fixtures inject the target-only process capability boundary.
-module.validate_process_capability=lambda: None
-module.PROCESS_CAPABILITY_READY=True
-module.scan_group_members=lambda pgid: [(pgid,0)]
-module.signal_same_group_members=lambda pgid,signum: os.kill(pgid,signum)
-root = pathlib.Path(root).resolve()
+` + remoteAlphaESStatusLocalProcessBoundary + `root = pathlib.Path(root).resolve()
 fixed = {
     "/etc/execution-substrate/ars-tls": str(root / "etc/execution-substrate/ars-tls"),
     "/etc/execution-substrate/egs-tls": str(root / "etc/execution-substrate/egs-tls"),
@@ -545,12 +575,7 @@ func validateRemoteAlphaESTLSStatusDocument(t *testing.T, record map[string]any,
 import importlib.util, json, sys
 spec=importlib.util.spec_from_file_location("status_reader", sys.argv[1])
 module=importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
-# Local generated fixtures inject the target-only process capability boundary.
-module.validate_process_capability=lambda: None
-module.PROCESS_CAPABILITY_READY=True
-module.scan_group_members=lambda pgid: [(pgid,0)]
-module.signal_same_group_members=lambda pgid,signum: os.kill(pgid,signum)
-root=sys.argv[4]
+` + remoteAlphaESStatusLocalProcessBoundary + `root=sys.argv[4]
 prefix="/etc/execution-substrate/"
 def relocate(value):
     if isinstance(value,str) and value.startswith(prefix): return root+"/etc/execution-substrate/"+value[len(prefix):]
@@ -791,12 +816,7 @@ import importlib.util, json, os, pathlib, signal, sys, threading
 source, root = sys.argv[1:]
 spec=importlib.util.spec_from_file_location("status_runner", source)
 module=importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
-# Local generated fixtures inject the target-only process capability boundary.
-module.validate_process_capability=lambda: None
-module.PROCESS_CAPABILITY_READY=True
-module.scan_group_members=lambda pgid: [(pgid,0)]
-module.signal_same_group_members=lambda pgid,signum: os.kill(pgid,signum)
-root=pathlib.Path(root)
+` + remoteAlphaESStatusLocalProcessBoundary + `root=pathlib.Path(root)
 child=root/"fake_openssl"
 child.write_text('''#!/usr/bin/python3
 import os, sys, time
@@ -882,12 +902,7 @@ import importlib.util, json, os, pathlib, sys
 source, root = sys.argv[1:]
 spec=importlib.util.spec_from_file_location("status_grammar", source)
 module=importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
-# Local generated fixtures inject the target-only process capability boundary.
-module.validate_process_capability=lambda: None
-module.PROCESS_CAPABILITY_READY=True
-module.scan_group_members=lambda pgid: [(pgid,0)]
-module.signal_same_group_members=lambda pgid,signum: os.kill(pgid,signum)
-root=pathlib.Path(root)
+` + remoteAlphaESStatusLocalProcessBoundary + `root=pathlib.Path(root)
 cert=root/"bad-cert.pem"; cert.write_bytes(b"bad cert")
 key=root/"bad-key.pem"; key.write_bytes(b"bad key")
 module.open_fixed_regular=lambda path,limit,read_content=True: pathlib.Path(path).read_bytes() if read_content else None
@@ -1198,12 +1213,7 @@ import importlib.util,json,os,pathlib,sys
 source,root,mode=sys.argv[1:]
 spec=importlib.util.spec_from_file_location("status_setup",source)
 module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
-# Local generated fixtures inject the target-only process capability boundary.
-module.validate_process_capability=lambda: None
-module.PROCESS_CAPABILITY_READY=True
-module.scan_group_members=lambda pgid: [(pgid,0)]
-module.signal_same_group_members=lambda pgid,signum: os.kill(pgid,signum)
-root=pathlib.Path(root)
+` + remoteAlphaESStatusLocalProcessBoundary + `root=pathlib.Path(root)
 child=root/"fixture-openssl"
 child.write_text('#!/usr/bin/python3\nimport time\ntime.sleep(10)\n')
 child.chmod(0o700)
@@ -1353,12 +1363,7 @@ import importlib.util, os, pathlib, stat, sys
 source, root, scope = sys.argv[1:]
 spec=importlib.util.spec_from_file_location("related_config",source)
 module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
-# Local generated fixtures inject the target-only process capability boundary.
-module.validate_process_capability=lambda: None
-module.PROCESS_CAPABILITY_READY=True
-module.scan_group_members=lambda pgid: [(pgid,0)]
-module.signal_same_group_members=lambda pgid,signum: os.kill(pgid,signum)
-module.CONFIG={name:str(pathlib.Path(root)/"etc/execution-substrate"/(name+".json")) for name in module.CONFIG}
+` + remoteAlphaESStatusLocalProcessBoundary + `module.CONFIG={name:str(pathlib.Path(root)/"etc/execution-substrate"/(name+".json")) for name in module.CONFIG}
 def fixture_read(path,limit,read_content=True):
     fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW)
     try:
@@ -1387,12 +1392,7 @@ import importlib.util, os, pathlib, signal, stat, sys
 source, root, mode = sys.argv[1:]
 spec=importlib.util.spec_from_file_location("status_publish", source)
 module=importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
-# Local generated fixtures inject the target-only process capability boundary.
-module.validate_process_capability=lambda: None
-module.PROCESS_CAPABILITY_READY=True
-module.scan_group_members=lambda pgid: [(pgid,0)]
-module.signal_same_group_members=lambda pgid,signum: os.kill(pgid,signum)
-root=pathlib.Path(root); canonical=root/"es-service-tls-status-summary.json"
+` + remoteAlphaESStatusLocalProcessBoundary + `root=pathlib.Path(root); canonical=root/"es-service-tls-status-summary.json"
 canonical.write_bytes(b"old_generation\n"); canonical.chmod(0o644)
 module.check_extended=lambda _fd: None  # macOS test Python lacks os.listxattr(fd)
 def root_meta(info):
@@ -1484,12 +1484,7 @@ import importlib.util,json,os,pathlib,stat,sys
 source,root,mode=sys.argv[1:]
 spec=importlib.util.spec_from_file_location("status_publish_setup",source)
 module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
-# Local generated fixtures inject the target-only process capability boundary.
-module.validate_process_capability=lambda: None
-module.PROCESS_CAPABILITY_READY=True
-module.scan_group_members=lambda pgid: [(pgid,0)]
-module.signal_same_group_members=lambda pgid,signum: os.kill(pgid,signum)
-root=pathlib.Path(root);canonical=root/"es-service-tls-status-summary.json"
+` + remoteAlphaESStatusLocalProcessBoundary + `root=pathlib.Path(root);canonical=root/"es-service-tls-status-summary.json"
 canonical.write_bytes(b"old_generation\n");canonical.chmod(0o644)
 module.check_extended=lambda _fd:None
 real_fstat=os.fstat
@@ -1758,12 +1753,7 @@ import importlib.util, json, os, pathlib, stat, sys
 source, root = sys.argv[1:]
 spec=importlib.util.spec_from_file_location("status_custody", source)
 module=importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
-# Local generated fixtures inject the target-only process capability boundary.
-module.validate_process_capability=lambda: None
-module.PROCESS_CAPABILITY_READY=True
-module.scan_group_members=lambda pgid: [(pgid,0)]
-module.signal_same_group_members=lambda pgid,signum: os.kill(pgid,signum)
-root=pathlib.Path(root); status=root/"status"; status.mkdir(mode=0o755); status.chmod(0o755)
+` + remoteAlphaESStatusLocalProcessBoundary + `root=pathlib.Path(root); status=root/"status"; status.mkdir(mode=0o755); status.chmod(0o755)
 module.check_extended=lambda _fd: None  # descriptor xattr API absent on test macOS
 real_fstat=os.fstat
 wrong_owner_fd=os.open(status,os.O_RDONLY|os.O_DIRECTORY)
@@ -2036,12 +2026,7 @@ import importlib.util,json,os,pathlib,stat,sys
 source,root,fixture=sys.argv[1:]
 spec=importlib.util.spec_from_file_location("status_reader_file",source)
 module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
-# Local generated fixtures inject the target-only process capability boundary.
-module.validate_process_capability=lambda: None
-module.PROCESS_CAPABILITY_READY=True
-module.scan_group_members=lambda pgid: [(pgid,0)]
-module.signal_same_group_members=lambda pgid,signum: os.kill(pgid,signum)
-prefix="/etc/execution-substrate/"
+` + remoteAlphaESStatusLocalProcessBoundary + `prefix="/etc/execution-substrate/"
 def relocate(value):
     if isinstance(value,str) and value.startswith(prefix): return fixture+"/etc/execution-substrate/"+value[len(prefix):]
     if isinstance(value,tuple): return tuple(relocate(item) for item in value)
@@ -2129,12 +2114,7 @@ import importlib.util,json,os,pathlib,stat,sys
 source,root,scope,required,optional=sys.argv[1:]
 spec=importlib.util.spec_from_file_location("status_strict",source)
 module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
-# Local generated fixtures inject the target-only process capability boundary.
-module.validate_process_capability=lambda: None
-module.PROCESS_CAPABILITY_READY=True
-module.scan_group_members=lambda pgid: [(pgid,0)]
-module.signal_same_group_members=lambda pgid,signum: os.kill(pgid,signum)
-root=pathlib.Path(root)
+` + remoteAlphaESStatusLocalProcessBoundary + `root=pathlib.Path(root)
 module.CONFIG={name:str(root/"etc/execution-substrate"/(name+".json")) for name in module.CONFIG}
 module.check_extended=lambda _fd: None
 module.check_input_ancestor=lambda info: None if stat.S_ISDIR(info.st_mode) else (_ for _ in ()).throw(module.Incomplete("ancestor"))
@@ -2621,12 +2601,7 @@ import importlib.util,json,os,pathlib,stat,sys
 source,root=sys.argv[1:]
 spec=importlib.util.spec_from_file_location("status_ancestry",source)
 module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
-# Local generated fixtures inject the target-only process capability boundary.
-module.validate_process_capability=lambda: None
-module.PROCESS_CAPABILITY_READY=True
-module.scan_group_members=lambda pgid: [(pgid,0)]
-module.signal_same_group_members=lambda pgid,signum: os.kill(pgid,signum)
-root=pathlib.Path(root);safe=root/"safe";safe.mkdir();(safe/"good.pem").write_bytes(b"fixture")
+` + remoteAlphaESStatusLocalProcessBoundary + `root=pathlib.Path(root);safe=root/"safe";safe.mkdir();(safe/"good.pem").write_bytes(b"fixture")
 module.check_extended=lambda _fd: None
 module.check_input_ancestor=lambda info: None if stat.S_ISDIR(info.st_mode) else (_ for _ in ()).throw(module.Incomplete("ancestor"))
 def result(path):
@@ -2677,12 +2652,7 @@ import importlib.util,json,os,pathlib,sys
 source,root=sys.argv[1:]
 spec=importlib.util.spec_from_file_location("status_exact_verify",source)
 module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
-# Local generated fixtures inject the target-only process capability boundary.
-module.validate_process_capability=lambda: None
-module.PROCESS_CAPABILITY_READY=True
-module.scan_group_members=lambda pgid: [(pgid,0)]
-module.signal_same_group_members=lambda pgid,signum: os.kill(pgid,signum)
-root=pathlib.Path(root);child=root/"fake-openssl";log=root/"child.json"
+` + remoteAlphaESStatusLocalProcessBoundary + `root=pathlib.Path(root);child=root/"fake-openssl";log=root/"child.json"
 child.write_text('''#!/usr/bin/python3
 import json,os,sys
 argv=sys.argv[1:]
@@ -2745,12 +2715,7 @@ import hashlib,importlib.util,json,os,pathlib,stat,sys
 source,root=sys.argv[1:]
 spec=importlib.util.spec_from_file_location("status_binding",source)
 module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
-# Local generated fixtures inject the target-only process capability boundary.
-module.validate_process_capability=lambda: None
-module.PROCESS_CAPABILITY_READY=True
-module.scan_group_members=lambda pgid: [(pgid,0)]
-module.signal_same_group_members=lambda pgid,signum: os.kill(pgid,signum)
-root=pathlib.Path(root);ars=root/"etc/execution-substrate/ars-tls";ags=root/"etc/execution-substrate/tls"
+` + remoteAlphaESStatusLocalProcessBoundary + `root=pathlib.Path(root);ars=root/"etc/execution-substrate/ars-tls";ags=root/"etc/execution-substrate/tls"
 module.check_extended=lambda _fd: None
 cert=ars/"ars-server-cert.pem";key=ars/"ars-server-key.pem"
 old_cert=cert.read_bytes();new_cert=(ags/"ags-client-cert.pem").read_bytes()
@@ -3247,12 +3212,7 @@ import importlib.util,json,os,pathlib,signal,subprocess,sys
 source,root,mode=sys.argv[1:]
 spec=importlib.util.spec_from_file_location("status_signaling",source)
 module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
-# Local generated fixtures inject the target-only process capability boundary.
-module.validate_process_capability=lambda: None
-module.PROCESS_CAPABILITY_READY=True
-module.scan_group_members=lambda pgid: [(pgid,0)]
-module.signal_same_group_members=lambda pgid,signum: os.kill(pgid,signum)
-root=pathlib.Path(root);child=root/"sleep-openssl";canonical=root/"canonical.json"
+` + remoteAlphaESStatusLocalProcessBoundary + `root=pathlib.Path(root);child=root/"sleep-openssl";canonical=root/"canonical.json"
 canonical.write_bytes(b"old generation\n")
 child.write_text('#!/usr/bin/python3\nimport signal,time\nsignal.signal(signal.SIGTERM, signal.SIG_IGN)\ntime.sleep(10)\n')
 child.chmod(0o700);module.OPENSSL=str(child);module.CHILD_TIMEOUT=0.2;module.CHILD_GRACE=0.2
@@ -3433,12 +3393,7 @@ import importlib.util,json,os,pathlib,signal,sys
 source,root=sys.argv[1:]
 spec=importlib.util.spec_from_file_location("status_zombie_group",source)
 module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
-# Local generated fixtures inject the target-only process capability boundary.
-module.validate_process_capability=lambda: None
-module.PROCESS_CAPABILITY_READY=True
-module.scan_group_members=lambda pgid: [(pgid,0)]
-module.signal_same_group_members=lambda pgid,signum: os.kill(pgid,signum)
-child=pathlib.Path(root)/"fake-openssl"
+` + remoteAlphaESStatusLocalProcessBoundary + `child=pathlib.Path(root)/"fake-openssl"
 child.write_text('#!/usr/bin/python3\nimport sys\nsys.stdout.write("fixed output")\n')
 child.chmod(0o700);module.OPENSSL=str(child);module.CHILD_GRACE=.2
 spawned=[];signals=[];original_popen=module.subprocess.Popen;original_killpg=module.os.killpg
@@ -3495,12 +3450,7 @@ import importlib.util,json,os,pathlib,sys
 source,root,wrong=sys.argv[1:]
 spec=importlib.util.spec_from_file_location("status_trust",source)
 module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
-# Local generated fixtures inject the target-only process capability boundary.
-module.validate_process_capability=lambda: None
-module.PROCESS_CAPABILITY_READY=True
-module.scan_group_members=lambda pgid: [(pgid,0)]
-module.signal_same_group_members=lambda pgid,signum: os.kill(pgid,signum)
-root=pathlib.Path(root)
+` + remoteAlphaESStatusLocalProcessBoundary + `root=pathlib.Path(root)
 correct=(root/"etc/execution-substrate/ars-tls/runtime-ca.pem").read_bytes()
 client=(root/"etc/execution-substrate/tls/ags-client-cert.pem").read_bytes()
 wrong=pathlib.Path(wrong).read_bytes()
@@ -3542,12 +3492,7 @@ import importlib.util,json,os,pathlib,stat,sys
 source,selected,wrong,key,leaf=sys.argv[1:]
 spec=importlib.util.spec_from_file_location("status_single_anchor",source)
 module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
-# Local generated fixtures inject the target-only process capability boundary.
-module.validate_process_capability=lambda: None
-module.PROCESS_CAPABILITY_READY=True
-module.scan_group_members=lambda pgid: [(pgid,0)]
-module.signal_same_group_members=lambda pgid,signum: os.kill(pgid,signum)
-module.check_extended=lambda _fd: None
+` + remoteAlphaESStatusLocalProcessBoundary + `module.check_extended=lambda _fd: None
 module.check_input_ancestor=lambda info: None if stat.S_ISDIR(info.st_mode) else (_ for _ in ()).throw(module.Incomplete("ancestor"))
 selected=pathlib.Path(selected);correct=selected.read_bytes();wrong=pathlib.Path(wrong).read_bytes();key=pathlib.Path(key).read_bytes()
 cases={"single":correct,"surrounding_whitespace":b" \t\r\n"+correct+b"\v\f ",
