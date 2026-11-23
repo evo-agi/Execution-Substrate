@@ -417,13 +417,14 @@ func TestResolvedExecutionMaterialOwnsBytesBeforeHostMaterialization(t *testing.
 func TestResolvedExecutionPrepareAdmissionRetainsExactVaultReferenceAndAdmittedRequest(t *testing.T) {
 	fixture := newPreparedArtifactFixture(t)
 	service, _, _ := newWorkstreamCTestService(t, fixture)
+	policyPayload := buildAdmissionPolicyStaticScriptArchive(t, map[string][]byte{
+		staticScriptEntrypointName: []byte(benignPolicyFixtureText()),
+	})
+	fixture = fixture.withPayload(t, policyPayload)
 	request := fixture.prepareRequest()
 	request.SchemaVersion = ""
 	request.Invocation.SchemaVersion = ""
 	request.Invocation.Argv = []string{"first"}
-	policyPayload := buildAdmissionPolicyStaticScriptArchive(t, map[string][]byte{
-		staticScriptEntrypointName: []byte(benignPolicyFixtureText()),
-	})
 	originalRef := service.workloadZoneVaultConfigRef
 	mutatedDigest := labeledDigest("99")
 
@@ -465,12 +466,13 @@ func TestResolvedExecutionPrepareAdmissionRetainsExactVaultReferenceAndAdmittedR
 
 func TestSubmitStopsBeforeFreezeWithoutRunOrFilesystemEffects(t *testing.T) {
 	fixture := newPreparedArtifactFixture(t)
-	service, stagingRoot, resultsRoot := newWorkstreamCTestService(t, fixture)
-	request := fixture.prepareRequest()
-	request.Mode = ExecutionModeAsync
 	policyPayload := buildAdmissionPolicyStaticScriptArchive(t, map[string][]byte{
 		staticScriptEntrypointName: []byte(benignPolicyFixtureText()),
 	})
+	fixture = fixture.withPayload(t, policyPayload)
+	service, stagingRoot, resultsRoot := newWorkstreamCTestService(t, fixture)
+	request := fixture.prepareRequest()
+	request.Mode = ExecutionModeAsync
 	service.cfg.Execution.RuntimeSupportBinary = filepath.Join(physicalTestTempDir(t), "missing-runtime-support")
 	service.arsClient = newResolvedPlanDependencyClient(t, resolvedPlanArtifactHandler(t, fixture, policyPayload, nil))
 	nomadCalls := 0
@@ -491,6 +493,10 @@ func TestSubmitStopsBeforeFreezeWithoutRunOrFilesystemEffects(t *testing.T) {
 
 func TestSubmitAmbiguousNomadFailurePreservesPrimaryErrorAndRetainsRoot(t *testing.T) {
 	fixture := newPreparedArtifactFixture(t)
+	policyPayload := buildAdmissionPolicyStaticScriptArchive(t, map[string][]byte{
+		staticScriptEntrypointName: []byte(benignPolicyFixtureText()),
+	})
+	fixture = fixture.withPayload(t, policyPayload)
 	service, stagingRoot, resultsRoot := newWorkstreamCTestService(t, fixture)
 	for _, root := range []string{stagingRoot, resultsRoot} {
 		if err := os.Chown(root, os.Getuid(), os.Getgid()); err != nil {
@@ -499,9 +505,6 @@ func TestSubmitAmbiguousNomadFailurePreservesPrimaryErrorAndRetainsRoot(t *testi
 	}
 	request := fixture.prepareRequest()
 	request.Mode = ExecutionModeAsync
-	policyPayload := buildAdmissionPolicyStaticScriptArchive(t, map[string][]byte{
-		staticScriptEntrypointName: []byte(benignPolicyFixtureText()),
-	})
 	service.arsClient = newResolvedPlanDependencyClient(t, resolvedPlanArtifactHandler(t, fixture, policyPayload, nil))
 	var runID string
 	service.nomadClient = newResolvedPlanNomadClient(t, http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
@@ -538,14 +541,15 @@ func TestSubmitAmbiguousNomadFailurePreservesPrimaryErrorAndRetainsRoot(t *testi
 
 func TestResolvedSubmitLegacyEquivalenceOneNomadRegistrationAndAuthorityRecovery(t *testing.T) {
 	fixture := newPreparedArtifactFixture(t)
+	policyPayload := buildAdmissionPolicyStaticScriptArchive(t, map[string][]byte{
+		staticScriptEntrypointName: []byte(benignPolicyFixtureText()),
+	})
+	fixture = fixture.withPayload(t, policyPayload)
 	service, _, _ := newWorkstreamCTestService(t, fixture)
 	request := fixture.prepareRequest()
 	request.TimeoutSeconds = 17
 	request.Resources = nil
 	request.Invocation.Argv = []string{"--flag"}
-	policyPayload := buildAdmissionPolicyStaticScriptArchive(t, map[string][]byte{
-		staticScriptEntrypointName: []byte(benignPolicyFixtureText()),
-	})
 	originalVaultRef := service.workloadZoneVaultConfigRef
 	service.arsClient = newResolvedPlanDependencyClient(t, resolvedPlanArtifactHandler(t, fixture, policyPayload, func() {
 		service.workloadZoneVaultConfigRef.Digest = labeledDigest("99")
@@ -840,6 +844,7 @@ func TestTrancheB1QualifiedHostCaptureNormalizesEquivalentConfiguration(t *testi
 	policyPayload := buildAdmissionPolicyStaticScriptArchive(t, map[string][]byte{
 		staticScriptEntrypointName: []byte(benignPolicyFixtureText()),
 	})
+	fixture = fixture.withPayload(t, policyPayload)
 	service.arsClient = newResolvedPlanDependencyClient(t, resolvedPlanArtifactHandler(t, fixture, policyPayload, nil))
 	service.nomadClient = newResolvedPlanNomadClient(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 
@@ -903,11 +908,12 @@ func TestTrancheB1QualifiedHostCaptureRejectsEmptyOrRelativeFacts(t *testing.T) 
 
 func TestTrancheB1PayloadDigestLineageIsDistinctPrivateAndPreEffect(t *testing.T) {
 	fixture := newPreparedArtifactFixture(t)
-	service, stagingRoot, resultsRoot := newWorkstreamCTestService(t, fixture)
-	request := fixture.prepareRequest()
 	policyPayload := buildAdmissionPolicyStaticScriptArchive(t, map[string][]byte{
 		staticScriptEntrypointName: []byte(benignPolicyFixtureText()),
 	})
+	fixture = fixture.withPayload(t, policyPayload)
+	service, stagingRoot, resultsRoot := newWorkstreamCTestService(t, fixture)
+	request := fixture.prepareRequest()
 	service.arsClient = newResolvedPlanDependencyClient(t, resolvedPlanArtifactHandler(t, fixture, policyPayload, nil))
 	service.nomadClient = newResolvedPlanNomadClient(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		t.Fatal("plan resolution must not register a Nomad job")
@@ -1101,15 +1107,16 @@ func TestTrancheB1PayloadDigestIsAbsentFromEveryCurrentProfileProjection(t *test
 
 func TestTrancheB1AdmissionOwnedCopyIsolatesPostCopyCallerMutation(t *testing.T) {
 	fixture := newPreparedArtifactFixture(t)
+	policyPayload := buildAdmissionPolicyStaticScriptArchive(t, map[string][]byte{
+		staticScriptEntrypointName: []byte(benignPolicyFixtureText()),
+	})
+	fixture = fixture.withPayload(t, policyPayload)
 	service, _, _ := newWorkstreamCTestService(t, fixture)
 	request := fixture.prepareRequest()
 	request.SchemaVersion = ""
 	request.Invocation.SchemaVersion = ""
 	request.Invocation.Argv = []string{"first"}
 	request.Invocation.Env = map[string]string{"APP_MODE": "test"}
-	policyPayload := buildAdmissionPolicyStaticScriptArchive(t, map[string][]byte{
-		staticScriptEntrypointName: []byte(benignPolicyFixtureText()),
-	})
 	service.arsClient = newResolvedPlanDependencyClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/artifacts/"+fixture.discovery.Artifact.ArtifactDigest+"/discovery" {
 			request.Invocation.Argv[0] = "mutated-after-owned-copy"
@@ -1221,6 +1228,7 @@ func TestTrancheB2PreSubmissionOperationalCausesUseFixedPublicMessages(t *testin
 	policyPayload := buildAdmissionPolicyStaticScriptArchive(t, map[string][]byte{
 		staticScriptEntrypointName: []byte(benignPolicyFixtureText()),
 	})
+	fixture = fixture.withPayload(t, policyPayload)
 	var captured bytes.Buffer
 	previousWriter := log.Writer()
 	previousFlags := log.Flags()
@@ -1270,13 +1278,18 @@ func TestTrancheB2PreSubmissionOperationalCausesUseFixedPublicMessages(t *testin
 			t.Fatal(err)
 		}
 		t.Setenv("SSL_CERT_FILE", filepath.Join(physicalTestTempDir(t), marker, "missing-ca.pem"))
+		// ES verifies the Vault blob against its configured digest, so the
+		// configuration names the digest of the blob this case serves.
+		vaultBlobDigest := digestBytes(vaultBlob)
+		service.cfg.RuntimeConfig.WorkloadZoneVaultConfigRef.Digest = vaultBlobDigest
+		service.workloadZoneVaultConfigRef = service.cfg.RuntimeConfig.WorkloadZoneVaultConfigRef
 		service.arsClient = newResolvedPlanDependencyClient(t, http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 			switch request.URL.Path {
 			case "/v1/artifacts/" + fixture.discovery.Artifact.ArtifactDigest + "/discovery":
 				writeJSONResponse(t, w, http.StatusOK, fixture.discovery)
 			case "/v1/blobs/" + fixture.discovery.Evidence.Digest + ":json":
 				writeJSONResponse(t, w, http.StatusOK, fixture.evidence)
-			case "/v1/blobs/" + testWorkloadZoneVaultConfigDigest + ":json":
+			case "/v1/blobs/" + vaultBlobDigest + ":json":
 				_, _ = w.Write(vaultBlob)
 			case "/v1/blobs/" + fixture.discovery.Payload.Digest + ":bytes":
 				_, _ = w.Write(policyPayload)
@@ -1331,6 +1344,10 @@ func trancheB2AssertFixedPublicError(t *testing.T, publicErr *Error, status int,
 
 func TestTrancheB1DefaultProfileLiteralNomadJobAndAuthorityHandoff(t *testing.T) {
 	fixture := newPreparedArtifactFixture(t)
+	policyPayload := buildAdmissionPolicyStaticScriptArchive(t, map[string][]byte{
+		staticScriptEntrypointName: []byte(benignPolicyFixtureText()),
+	})
+	fixture = fixture.withPayload(t, policyPayload)
 	fixture.evidence.Claims.Admission.Execution.Access.NetworkAccess = false
 	resignPreparedArtifactFixture(t, &fixture)
 	service, stagingRoot, _ := newWorkstreamCTestService(t, fixture)
@@ -1342,9 +1359,6 @@ func TestTrancheB1DefaultProfileLiteralNomadJobAndAuthorityHandoff(t *testing.T)
 	request.Invocation.Env = map[string]string{}
 	request.Invocation.Mounts = []RuntimeMount{}
 	request.Invocation.Annotations = map[string]string{}
-	policyPayload := buildAdmissionPolicyStaticScriptArchive(t, map[string][]byte{
-		staticScriptEntrypointName: []byte(benignPolicyFixtureText()),
-	})
 	service.arsClient = newResolvedPlanDependencyClient(t, resolvedPlanArtifactHandler(t, fixture, policyPayload, nil))
 	registrationCalls := 0
 	var submittedBody []byte
@@ -1423,6 +1437,10 @@ func TestTrancheB2ControlPlaneNormalShellLiteralNomadJobAndAuthorityHandoff(t *t
 		t.Fatal("control-plane golden token occurrence inventory changed")
 	}
 	fixture := newPreparedArtifactFixture(t)
+	policyPayload := buildAdmissionPolicyStaticScriptArchive(t, map[string][]byte{
+		staticScriptEntrypointName: []byte(benignPolicyFixtureText()),
+	})
+	fixture = fixture.withPayload(t, policyPayload)
 	service, stagingRoot, _ := newWorkstreamCTestService(t, fixture)
 	profileConfig := controlPlaneNormalShellProfileExecutionConfig()
 	service.cfg.Execution.RuntimeProfiles = profileConfig.RuntimeProfiles
@@ -1438,9 +1456,6 @@ func TestTrancheB2ControlPlaneNormalShellLiteralNomadJobAndAuthorityHandoff(t *t
 		TargetPath: "/execution/mounts/config",
 		ReadOnly:   true,
 	}}
-	policyPayload := buildAdmissionPolicyStaticScriptArchive(t, map[string][]byte{
-		staticScriptEntrypointName: []byte(benignPolicyFixtureText()),
-	})
 	service.arsClient = newResolvedPlanDependencyClient(t, resolvedPlanArtifactHandler(t, fixture, policyPayload, nil))
 
 	registrationCalls := 0
@@ -2174,11 +2189,7 @@ func resignPreparedArtifactFixture(t *testing.T, fixture *preparedArtifactFixtur
 		t.Fatal(err)
 	}
 	fixture.evidence.Seal = evidencev1.NewSeal(canonical, fixture.keyID, "ed25519", base64.StdEncoding.EncodeToString(ed25519.Sign(fixture.privateKey, canonical)))
-	evidenceBytes, err := json.Marshal(fixture.evidence)
-	if err != nil {
-		t.Fatal(err)
-	}
-	fixture.discovery.Evidence.Digest = digestBytes(evidenceBytes)
+	fixture.discovery.Evidence.Digest = digestBytes(servedJSONDocument(t, fixture.evidence))
 }
 
 const trancheB1DefaultNomadJobGolden = `{
@@ -2190,7 +2201,7 @@ const trancheB1DefaultNomadJobGolden = `{
     "Meta": {
       "execution_substrate.authority_handoff.runtime_profile": "static-script/default",
       "execution_substrate.authority_handoff.schema": "v1",
-      "execution_substrate.authority_handoff.workload_zone_vault_config_digest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "execution_substrate.authority_handoff.workload_zone_vault_config_digest": "sha256:5b095c7783ea05fa76caada31d6d2cb1206319b8e25df18da447e455a98c0ff4",
       "run_id": "<RUN_ID>"
     },
     "Name": "<JOB_ID>",
@@ -2266,7 +2277,7 @@ const trancheB1DefaultNomadJobGolden = `{
             },
             "Driver": "docker",
             "Env": {
-              "EXEC_ARTIFACT_DIGEST": "sha256:2d18fec2eaba5507f4d265b7b3615e31d72fcb835196109c2eea042e93603613",
+              "EXEC_ARTIFACT_DIGEST": "sha256:610d149e389852da358c03e15f12babbbcba5177558d3fac1bb87d79198fa770",
               "EXEC_PLATFORM_STATE_OWNER_GID": "<GID>",
               "EXEC_PLATFORM_STATE_OWNER_SCHEMA": "v1",
               "EXEC_PLATFORM_STATE_OWNER_UID": "<UID>",
@@ -2281,7 +2292,7 @@ const trancheB1DefaultNomadJobGolden = `{
               "VAULT_ADDR": "https://vault.internal:8200"
             },
             "Meta": {
-              "artifact_digest": "sha256:2d18fec2eaba5507f4d265b7b3615e31d72fcb835196109c2eea042e93603613",
+              "artifact_digest": "sha256:610d149e389852da358c03e15f12babbbcba5177558d3fac1bb87d79198fa770",
               "derivation_spec_digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
               "output_id": "runtime",
               "run_id": "<RUN_ID>"
@@ -2317,7 +2328,7 @@ const trancheB1DefaultAuthorityHandoffGolden = `{
   },
   "runtime_config_refs": {
     "workload_zone_vault_config": {
-      "digest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+      "digest": "sha256:5b095c7783ea05fa76caada31d6d2cb1206319b8e25df18da447e455a98c0ff4"
     }
   },
   "runtime_profile": {
@@ -2341,7 +2352,7 @@ const trancheB2ControlPlaneNormalShellNomadJobGolden = `{
     "Meta": {
       "execution_substrate.authority_handoff.runtime_profile": "control-plane-normal-shell/v1",
       "execution_substrate.authority_handoff.schema": "v1",
-      "execution_substrate.authority_handoff.workload_zone_vault_config_digest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "execution_substrate.authority_handoff.workload_zone_vault_config_digest": "sha256:5b095c7783ea05fa76caada31d6d2cb1206319b8e25df18da447e455a98c0ff4",
       "run_id": "<RUN_ID>"
     },
     "Name": "<JOB_ID>",
@@ -2426,7 +2437,7 @@ const trancheB2ControlPlaneNormalShellNomadJobGolden = `{
             "Driver": "docker",
             "Env": {
               "APP_MODE": "control-plane",
-              "EXEC_ARTIFACT_DIGEST": "sha256:2d18fec2eaba5507f4d265b7b3615e31d72fcb835196109c2eea042e93603613",
+              "EXEC_ARTIFACT_DIGEST": "sha256:610d149e389852da358c03e15f12babbbcba5177558d3fac1bb87d79198fa770",
               "EXEC_CODEX_CLI_PATH": "/usr/local/bin/codex",
               "EXEC_CODEX_CREDENTIAL_SOURCE": "workload_vault",
               "EXEC_CODEX_CREDENTIAL_VAULT_SECRET_FIELD": "api_key",
@@ -2445,7 +2456,7 @@ const trancheB2ControlPlaneNormalShellNomadJobGolden = `{
               "VAULT_ADDR": "https://vault.internal:8200"
             },
             "Meta": {
-              "artifact_digest": "sha256:2d18fec2eaba5507f4d265b7b3615e31d72fcb835196109c2eea042e93603613",
+              "artifact_digest": "sha256:610d149e389852da358c03e15f12babbbcba5177558d3fac1bb87d79198fa770",
               "derivation_spec_digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
               "output_id": "runtime",
               "run_id": "<RUN_ID>"
@@ -2488,7 +2499,7 @@ const trancheB2ControlPlaneNormalShellAuthorityHandoffGolden = `{
   },
   "runtime_config_refs": {
     "workload_zone_vault_config": {
-      "digest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+      "digest": "sha256:5b095c7783ea05fa76caada31d6d2cb1206319b8e25df18da447e455a98c0ff4"
     }
   },
   "runtime_profile": {
@@ -2627,11 +2638,12 @@ type resolvedNomadFixture struct {
 
 func TestSubmitUsesSingleCapturedPlacementSnapshot(t *testing.T) {
 	fixture := newPreparedArtifactFixture(t)
-	service, stagingRoot, resultsRoot := newWorkstreamCTestService(t, fixture)
-	request := fixture.prepareRequest()
 	policyPayload := buildAdmissionPolicyStaticScriptArchive(t, map[string][]byte{
 		staticScriptEntrypointName: []byte(benignPolicyFixtureText()),
 	})
+	fixture = fixture.withPayload(t, policyPayload)
+	service, stagingRoot, resultsRoot := newWorkstreamCTestService(t, fixture)
+	request := fixture.prepareRequest()
 	// The successful Vault read occurs before the resolver's configuration
 	// snapshot. An independent Submit results-root read sees the earlier value.
 	service.cfg.Execution.ResultsRootDir = "relative/pre-capture-results-root"
@@ -2668,7 +2680,7 @@ func TestSubmitArtifactAndProfileErrorsPrecedePlacementValidation(t *testing.T) 
 		staticScriptEntrypointName: []byte(benignPolicyFixtureText()),
 	})
 	t.Run("artifact capability", func(t *testing.T) {
-		fixture := newPreparedArtifactFixture(t)
+		fixture := newPreparedArtifactFixture(t).withPayload(t, policyPayload)
 		fixture.evidence.Claims.Admission.Execution.Runtime.RequiredCapabilities = []string{"unsupported-device"}
 		resignPreparedArtifactFixture(t, &fixture)
 		service, stagingRoot, resultsRoot := newWorkstreamCTestService(t, fixture)
@@ -2685,7 +2697,7 @@ func TestSubmitArtifactAndProfileErrorsPrecedePlacementValidation(t *testing.T) 
 		assertDirectoryEmpty(t, resultsRoot)
 	})
 	t.Run("profile", func(t *testing.T) {
-		fixture := newPreparedArtifactFixture(t)
+		fixture := newPreparedArtifactFixture(t).withPayload(t, policyPayload)
 		service, stagingRoot, resultsRoot := newWorkstreamCTestService(t, fixture)
 		service.cfg.Execution.ResultsRootDir = "relative/invalid-results-root"
 		service.arsClient = newResolvedPlanDependencyClient(t, resolvedPlanArtifactHandler(t, fixture, policyPayload, nil))
@@ -2709,6 +2721,7 @@ func TestSubmitPreservesExplicitNonblankLegacySchemasWithoutReliableEnablement(t
 	policyPayload := buildAdmissionPolicyStaticScriptArchive(t, map[string][]byte{
 		staticScriptEntrypointName: []byte(benignPolicyFixtureText()),
 	})
+	fixture = fixture.withPayload(t, policyPayload)
 	service.arsClient = newResolvedPlanDependencyClient(t, resolvedPlanArtifactHandler(t, fixture, policyPayload, nil))
 	calls := 0
 	service.nomadClient = newResolvedPlanNomadClient(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

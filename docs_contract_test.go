@@ -3108,7 +3108,7 @@ func TestReliableSubmitBindingProducerDocsContract(t *testing.T) {
 		"Only the named private synthetic same-delivery composer calls",
 		"requested/verified signed artifact equality",
 		"existing governed mount parser",
-		"residual current-path limitation",
+		"The live resolver refuses a mount whose discovery record names another artifact than the requested source",
 		"HMAC-SHA-256",
 		"exactly 32 bytes",
 		"[A-Za-z0-9][A-Za-z0-9._-]{0,63}",
