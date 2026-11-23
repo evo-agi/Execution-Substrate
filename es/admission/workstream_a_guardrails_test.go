@@ -352,6 +352,24 @@ func (*zzJSONOwnPointerWriter) MarshalJSON() ([]byte, error) {
 	return []byte(`{"written":{"by":"code"}}`), nil
 }
 
+type zzJSONOwnMap map[string]string
+
+func (zzJSONOwnMap) MarshalJSON() ([]byte, error) {
+	return []byte(`{"written":{"by":"code"}}`), nil
+}
+
+type zzJSONOwnBytes []byte
+
+func (zzJSONOwnBytes) MarshalJSON() ([]byte, error) {
+	return []byte(`{"written":{"by":"code"}}`), nil
+}
+
+type zzJSONOwnString string
+
+func (zzJSONOwnString) MarshalJSON() ([]byte, error) {
+	return []byte(`{"written":{"by":"code"}}`), nil
+}
+
 // zzJSONGuardRecorder stands in for the testing.T of a guard helper, so that a
 // test can see what the helper reports.
 type zzJSONGuardRecorder struct {
@@ -402,6 +420,15 @@ func TestWorkstreamAJSONFieldNamesRefuseOwnCodecs(t *testing.T) {
 			Map  map[string]zzJSONOwnReader
 		}{}, []string{"admission.zzJSONOwnReader", "admission.zzJSONOwnWriter"}},
 		{"promoted from an embedded type", zzJSONEmbedsOwnWriter{}, []string{"admission.zzJSONEmbedsOwnWriter"}},
+		{"a named map type with its own MarshalJSON", struct {
+			Labels zzJSONOwnMap `json:"labels"`
+		}{}, []string{"admission.zzJSONOwnMap"}},
+		{"a named []byte type with its own MarshalJSON", struct {
+			Blob zzJSONOwnBytes `json:"blob"`
+		}{}, []string{"admission.zzJSONOwnBytes"}},
+		{"a named string type with its own MarshalJSON", struct {
+			Name zzJSONOwnString `json:"name"`
+		}{}, []string{"admission.zzJSONOwnString"}},
 		{"a json.RawMessage carries data and has no keys of its own", struct {
 			Raw json.RawMessage `json:"raw"`
 		}{}, nil},
@@ -556,6 +583,26 @@ func TestWorkstreamAJSONKeyPathsAreWhatEncodingJSONWrites(t *testing.T) {
 				t.Fatalf("written key paths %q, want %q", got, want)
 			}
 		})
+	}
+
+	// A key that holds ".", "[", "]" or "*" would let one path name two
+	// places: a top-level key "governed_execution.contract" would pass for the
+	// key "contract" inside "governed_execution". The paths refuse it.
+	for _, value := range []any{
+		struct {
+			Moved string `json:"governed_execution.contract"`
+		}{},
+		struct {
+			Moved string `json:"runtime_profiles[].name"`
+		}{},
+		struct {
+			Star string `json:"*"`
+		}{},
+	} {
+		refused := zzJSONGuardReports(t, func(t testing.TB) { workstreamAJSONWrittenKeyPaths(t, value) })
+		if !strings.Contains(refused.fatal, "cannot name unambiguously") {
+			t.Fatalf("key paths were built from %T's keys: %q", value, refused.fatal)
+		}
 	}
 
 	// Only the exact key at the exact place counts, and
@@ -948,7 +995,8 @@ func missingJSONKeyPaths(t testing.TB, root any, paths ...string) []string {
 // written through a pointer, so a path counts only if encoding/json writes it
 // both through a pointer and from the value itself. A path joins the keys from
 // the top with ".". "[]" after a key stands for the elements of the array it
-// holds, and a map holds its one entry under the key "*".
+// holds, and "*" for the one entry of a map. A key that holds ".", "[", "]"
+// or "*" would let one path name two places, so it fails the test instead.
 func workstreamAJSONWrittenKeyPaths(t testing.TB, root any) map[string]bool {
 	t.Helper()
 
@@ -964,8 +1012,11 @@ func workstreamAJSONWrittenKeyPaths(t testing.TB, root any) map[string]bool {
 		if err := json.Unmarshal(encoded, &decoded); err != nil {
 			t.Fatalf("encoding/json wrote %s for %T, which does not decode: %v", encoded, written, err)
 		}
-		paths := map[string]bool{}
-		workstreamAJSONObjectKeyPaths("", decoded, paths)
+		paths, ambiguous := map[string]bool{}, map[string]bool{}
+		workstreamAJSONObjectKeyPaths("", decoded, paths, ambiguous)
+		if len(ambiguous) > 0 {
+			t.Fatalf("encoding/json writes keys %q for %T, which a key path cannot name unambiguously", slices.Sorted(maps.Keys(ambiguous)), written)
+		}
 		if both == nil {
 			both = paths
 			continue
@@ -979,7 +1030,7 @@ func workstreamAJSONWrittenKeyPaths(t testing.TB, root any) map[string]bool {
 // holds, so that json.Marshal writes every key it would ever write for
 // value's type: the string "x", the number 1, true, a pointer to a filled
 // value, one filled element in a slice, filled elements in an array, one
-// filled entry under the key "*" in a map with string keys, null in a
+// filled entry under the empty key in a map with string keys, null in a
 // json.RawMessage, and every exported field of a struct and of the structs it
 // embeds. A struct type that is already being filled is left empty where it
 // recurs, and a pointer to it stays nil, so a type that holds itself ends. An
@@ -1031,7 +1082,7 @@ func workstreamAFillJSONValue(value reflect.Value, filling map[reflect.Type]bool
 		entry := reflect.New(typ.Elem()).Elem()
 		workstreamAFillJSONValue(entry, filling)
 		filled := reflect.MakeMapWithSize(typ, 1)
-		filled.SetMapIndex(reflect.ValueOf("*").Convert(typ.Key()), entry)
+		filled.SetMapIndex(reflect.ValueOf("").Convert(typ.Key()), entry)
 		value.Set(filled)
 	case reflect.String:
 		value.SetString("x")
@@ -1047,21 +1098,31 @@ func workstreamAFillJSONValue(value reflect.Value, filling map[reflect.Type]bool
 }
 
 // workstreamAJSONObjectKeyPaths records the path of every object key in a
-// decoded JSON value, below prefix.
-func workstreamAJSONObjectKeyPaths(prefix string, value any, paths map[string]bool) {
+// decoded JSON value, below prefix. The empty key, which only a map entry
+// from workstreamAFillJSONValue has, is named "*". A key that holds ".", "[",
+// "]" or "*" goes into ambiguous instead of a path.
+func workstreamAJSONObjectKeyPaths(prefix string, value any, paths, ambiguous map[string]bool) {
 	switch value := value.(type) {
 	case map[string]any:
 		for key, nested := range value {
-			path := key
+			segment := key
+			switch {
+			case key == "":
+				segment = "*"
+			case strings.ContainsAny(key, ".[]*"):
+				ambiguous[key] = true
+				continue
+			}
+			path := segment
 			if prefix != "" {
-				path = prefix + "." + key
+				path = prefix + "." + segment
 			}
 			paths[path] = true
-			workstreamAJSONObjectKeyPaths(path, nested, paths)
+			workstreamAJSONObjectKeyPaths(path, nested, paths, ambiguous)
 		}
 	case []any:
 		for _, nested := range value {
-			workstreamAJSONObjectKeyPaths(prefix+"[]", nested, paths)
+			workstreamAJSONObjectKeyPaths(prefix+"[]", nested, paths, ambiguous)
 		}
 	}
 }
