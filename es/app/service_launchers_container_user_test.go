@@ -1453,9 +1453,10 @@ exec "$ROOT_REAL_PYTHON" "$@"
 // within 30 s. ARS's readiness wait no longer includes the check
 // (TestBringupUpStartsARSReadinessWaitWhenItsLauncherCheckedStorage), so the
 // bound pins the walk's own cost, which bring-up pays twice before ARS starts.
-// The walk starts no process per directory, which keeps it at about 9 s in the
-// cloud test container; a walk that started one process per directory took
-// about 50 s there, and the earlier one with three took 112 s in audit 20.
+// The walk starts no process per directory, which keeps it at 10 to 20 s in
+// the cloud test container, varying from run to run; a walk that started one
+// process per directory took about 50 s there, and the earlier one with three
+// took 112 s in audit 20.
 func TestARSStorageCheckScalesToARSFullFanOut(t *testing.T) {
 	docker := requireTestStorageCheckDocker(t)
 	repo := executionPlatformRepoRoot(t)
