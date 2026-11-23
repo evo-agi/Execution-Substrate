@@ -120,7 +120,7 @@ func TestWorkstreamBAdmissionPublicGrammarExcludesARSSupportTuplesAndCPProofFiel
 		"checkpoint",
 		"finalization",
 	} {
-		if _, ok := fieldNames[forbidden]; ok {
+		if fieldNames.accepts(forbidden) {
 			t.Fatalf("ES public admission/lifecycle DTOs must not expose Workstream B support or CP proof grammar field %q", forbidden)
 		}
 	}

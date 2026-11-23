@@ -6023,7 +6023,7 @@ func TestWorkstreamC2PublicSubmitAndLifecycleDTOsExcludeCPRunControlGrammar(t *t
 		"write_precondition",
 		"retained_result_id",
 	} {
-		if _, ok := fieldNames[forbidden]; ok {
+		if fieldNames.accepts(forbidden) {
 			t.Fatalf("C2 submit/lifecycle public DTOs must not expose CP run-control or scheduler-authority field %q", forbidden)
 		}
 	}
@@ -6093,20 +6093,19 @@ func TestWorkstreamC3PublicResultAuthorityAndOutcomeDTOsExcludeRunControlAndLive
 		"secret_material",
 		"secret_value",
 	} {
-		if _, ok := fieldNames[forbidden]; ok {
+		if fieldNames.accepts(forbidden) {
 			t.Fatalf("C3 public result/authority/outcome DTOs must not expose run-control or live-authority field %q", forbidden)
 		}
 	}
 
-	for _, compatibilityField := range []string{
-		"codex_credential_location",
-		"credential_source",
-		"vault_secret_path",
-		"vault_secret_field",
-	} {
-		if _, ok := fieldNames[compatibilityField]; !ok {
-			t.Fatalf("expected current control-plane normal-shell credential-location compatibility field %q to remain present", compatibilityField)
-		}
+	for _, result := range []any{SubmitResult{}, ExecutionStatusResult{}} {
+		assertJSONKeyPathsWritten(t, result, "current control-plane normal-shell credential-location compatibility field",
+			"authority_handoff.codex_credential_location",
+			"authority_handoff.codex_credential_location.credential_source",
+			"authority_handoff.codex_credential_location.vault_secret_path",
+			"authority_handoff.codex_credential_location.vault_secret_field",
+			"authority_handoff.evidence.codex_credential_location",
+		)
 	}
 }
 
@@ -6133,24 +6132,25 @@ func TestWorkstreamC4RuntimeIdentityVaultPublicDTOsExcludeCredentialLeaseAndRawS
 	)
 
 	for _, forbidden := range workstreamC4ForbiddenCredentialFieldNames() {
-		if _, ok := fieldNames[forbidden]; ok {
+		if fieldNames.accepts(forbidden) {
 			t.Fatalf("C4 public DTOs must not expose runtime credential, Vault lease, or raw SPIRE field %q", forbidden)
 		}
 	}
 
-	for _, compatibilityField := range []string{
-		"endpoint_env",
-		"endpoint_uri",
-		"jwt_svid_target",
-		"workload_vault",
-		"runtime_config_refs",
-		"codex_credential_location",
-		"vault_secret_path",
-		"vault_secret_field",
-	} {
-		if _, ok := fieldNames[compatibilityField]; !ok {
-			t.Fatalf("expected non-secret C4 compatibility metadata field %q to remain present", compatibilityField)
-		}
+	for _, result := range []any{SubmitResult{}, ExecutionStatusResult{}} {
+		assertJSONKeyPathsWritten(t, result, "non-secret C4 compatibility metadata field",
+			"authority_handoff.identity_handoff.endpoint_env",
+			"authority_handoff.identity_handoff.endpoint_uri",
+			"authority_handoff.identity_handoff.jwt_svid_target",
+			"authority_handoff.workload_vault",
+			"authority_handoff.runtime_config_refs",
+			"authority_handoff.codex_credential_location",
+			"authority_handoff.codex_credential_location.vault_secret_path",
+			"authority_handoff.codex_credential_location.vault_secret_field",
+			"authority_handoff.evidence.workload_vault",
+			"authority_handoff.evidence.runtime_config_refs",
+			"authority_handoff.evidence.codex_credential_location",
+		)
 	}
 }
 
@@ -6677,31 +6677,40 @@ func TestWorkstreamC5LifecycleCompatibilityDTOsAndEvidenceStayNonAuthority(t *te
 		"lease_id",
 		"lease_duration",
 	} {
-		if _, ok := fieldNames[forbidden]; ok {
+		if fieldNames.accepts(forbidden) {
 			t.Fatalf("C5 status/cancel envelopes and evidence DTOs must not expose authority field %q", forbidden)
 		}
 	}
 
-	for _, compatibilityField := range []string{
-		"success",
-		"run_id",
-		"status",
-		"lifecycle_projection",
-		"source",
-		"revision",
-		"outcome_evidence",
-		"provider_terminal_observed",
-		"access_class",
-		"authority_handoff",
-		"runtime_profile",
-		"workload_vault",
-		"runtime_config_refs",
-		"codex_credential_location",
-	} {
-		if _, ok := fieldNames[compatibilityField]; !ok {
-			t.Fatalf("expected C5 compatibility field %q to remain present", compatibilityField)
-		}
+	for _, envelope := range []any{ExecutionStatusResult{}, ExecutionCancelResult{}} {
+		assertJSONKeyPathsWritten(t, envelope, "C5 compatibility field",
+			"success",
+			"run_id",
+			"status",
+			"outcome_evidence",
+			"outcome_evidence.source",
+			"outcome_evidence.access_class",
+			"outcome_evidence.provider_terminal_observed",
+			"outcome_evidence.lifecycle_projection",
+			"outcome_evidence.lifecycle_projection.source",
+			"outcome_evidence.lifecycle_projection.revision",
+		)
 	}
+	assertJSONKeyPathsWritten(t, ExecutionStatusResult{}, "C5 compatibility field",
+		"lifecycle_projection",
+		"lifecycle_projection.source",
+		"lifecycle_projection.revision",
+		"authority_handoff",
+		"authority_handoff.runtime_profile",
+		"authority_handoff.workload_vault",
+		"authority_handoff.runtime_config_refs",
+		"authority_handoff.codex_credential_location",
+		"authority_handoff.evidence.source",
+		"authority_handoff.evidence.runtime_profile",
+		"authority_handoff.evidence.workload_vault",
+		"authority_handoff.evidence.runtime_config_refs",
+		"authority_handoff.evidence.codex_credential_location",
+	)
 
 	if runtimeProfileAnnotationKey != "execution_substrate.runtime_profile" {
 		t.Fatalf("runtime profile annotation compatibility key changed to %q", runtimeProfileAnnotationKey)
@@ -6791,7 +6800,7 @@ func TestWorkstreamCLifecycleProjectionAuthorityLabelsStayNomadReadModelOnly(t *
 	)
 
 	for _, forbidden := range workstreamCLifecycleProjectionAuthorityForbiddenFields() {
-		if _, ok := fieldNames[forbidden]; ok {
+		if fieldNames.accepts(forbidden) {
 			t.Fatalf("lifecycle/status projection DTOs must not expose authority field %q", forbidden)
 		}
 	}
