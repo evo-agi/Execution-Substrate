@@ -394,6 +394,34 @@ behavior and static resources, not OS labels or fallback identity.
 
 This is test hygiene only. It does not change ES public contracts, readiness semantics, startup validation, runtime identity ownership, or runtime failure semantics. Tests that cover prepare-only behavior, caller authorization, static submit/job-spec shape, or submit-time validation without requiring helper socket reachability do not use this gate.
 
+Every test binary of the module runs its tests under a temporary directory
+whose path holds no symbolic link. ES refuses a symbolic link in any component
+of its configured staging and results roots, key files, runtime support binary
+and reliable-submit store roots, and the Remote Alpha TLS status collector and
+the supported-local execution-root helper refuse one in the paths they check.
+The default temporary directory of macOS lies below `/var/folders/`, behind the
+symbolic link `/var` -> `private/var`, and `/tmp` is the symbolic link `/tmp`
+-> `private/tmp`. A test that hands ES a path below that directory tests the
+refusal instead of what it is named for: a test that expects success fails,
+and a test that expects a refusal can pass for the wrong reason.
+
+Each package that has tests therefore declares a `TestMain` whose only
+statement is `os.Exit(testtmpdir.Main(m))`, from `internal/testtmpdir`, in a
+file without a build constraint. Before any test runs, `testtmpdir.Main`
+resolves the temporary directory and, when its path goes through a symbolic
+link, sets `TMPDIR` to the physical path of the same directory, so that
+`t.TempDir()` and every process the tests start use that path. It changes
+nothing where the temporary directory is already physical, as on the Linux CI
+runner, an unset `TMPDIR` included. When the directory cannot be resolved, the
+test binary runs no test and exits with status 2. A guard test applies the
+rule to every package of the module that has test files. The package's own
+tests run a test binary under a temporary directory behind a symbolic link and
+check what its tests and the processes they start see.
+
+Tests that exercise a refusal of a symbolic link create the link themselves.
+This is test hygiene only. It does not weaken any refusal of a symbolic link
+and changes no ES contract, startup validation, or capability probe.
+
 `es/admission` unit tests that intentionally exercise chmod-backed filesystem denial use test-local behavior probes before asserting permission-sensitive fail-closed behavior.
 
 The probe must create or mark a temporary fixture with the restrictive mode needed by the test, attempt the same class of operation the assertion depends on, and continue only when the current process receives a permission-denied error. If the current process can bypass the fixture permissions, the test skips with a specific `skipping permission-denied fixture: ...` reason.
