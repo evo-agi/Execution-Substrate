@@ -87,18 +87,48 @@ func TestRetainedResultAuthRequiredStartupFailsWithoutKeyAndPrepareOnlySkipsIt(t
 	workspace := physicalTestTempDir(t)
 	stage := filepath.Join(workspace, "stage")
 	results := filepath.Join(workspace, "results")
+	// The staging root exists and the results root does not, so a configured
+	// startup that gets past the key starts and provisions the results root.
+	// The absent key is the only refusal this fixture can reach; the control
+	// below proves it.
+	if err := os.Mkdir(stage, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	cfg := newExecutionRootStartupTestConfig(t, stage, results)
 	keyPath := cfg.Execution.RetainedResultAuth.KeyFile
+	keyBytes, err := os.ReadFile(keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.Remove(keyPath); err != nil {
 		t.Fatal(err)
 	}
-	if service, err := NewService(cfg); err == nil || service != nil || strings.Contains(err.Error(), keyPath) {
+	if service, err := NewService(cfg); err == nil || service != nil ||
+		!strings.Contains(err.Error(), "retained result authentication key is unavailable") ||
+		strings.Contains(err.Error(), keyPath) {
 		t.Fatalf("configured Submit did not fail safely for absent key: service=%v err=%v", service != nil, err)
 	}
-	for _, path := range []string{stage, results} {
-		if _, err := os.Lstat(path); !os.IsNotExist(err) {
-			t.Fatalf("key prerequisite failure provisioned %s: %v", path, err)
-		}
+	if _, err := os.Lstat(results); !os.IsNotExist(err) {
+		t.Fatalf("key prerequisite failure provisioned %s: %v", results, err)
+	}
+	if entries, err := os.ReadDir(stage); err != nil || len(entries) != 0 {
+		t.Fatalf("key prerequisite failure left staging effects: entries=%v err=%v", entries, err)
+	}
+
+	// Control: the same configuration with the same key bytes back in place
+	// starts and provisions the results root.
+	if err := os.WriteFile(keyPath, keyBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if service, err := NewService(cfg); err != nil || service == nil || service.resultAuth == nil {
+		t.Fatalf("configured Submit with its key did not start: service=%v err=%v", service != nil, err)
+	}
+	if info, err := os.Lstat(results); err != nil || !info.IsDir() {
+		t.Fatalf("configured Submit with its key did not provision %s: %v", results, err)
+	}
+
+	if err := os.Remove(keyPath); err != nil {
+		t.Fatal(err)
 	}
 	cfg.Nomad = esconfig.NomadConfig{}
 	cfg.Execution = esconfig.ExecutionConfig{}

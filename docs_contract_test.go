@@ -4192,7 +4192,7 @@ func TestReliableSubmitPersistenceAndConcurrencyADRDocsContract(t *testing.T) {
 	if err != nil {
 		t.Fatalf("glob reliable-submit package files: %v", err)
 	}
-	if got, want := len(reliableSubmitFiles), 33; got != want {
+	if got, want := len(reliableSubmitFiles), 34; got != want {
 		t.Fatalf("reliable-submit package should contain the exact model, persistence and fixture custody inventory; got %d files: %v", got, reliableSubmitFiles)
 	}
 	assertContainsAll(t, "reliable-submit package current file set", strings.Join(reliableSubmitFiles, " "),
@@ -4229,6 +4229,7 @@ func TestReliableSubmitPersistenceAndConcurrencyADRDocsContract(t *testing.T) {
 		"es/admission/internal/reliablesubmit/sqlite_replay_schema_test.go",
 		"es/admission/internal/reliablesubmit/sqlite_replay_shape.go",
 		"es/admission/internal/reliablesubmit/sqlite_replay_shape_test.go",
+		"es/admission/internal/reliablesubmit/testtmpdir_main_test.go",
 	)
 
 	submitSource := mustRead(t, "es/admission/submit.go")
