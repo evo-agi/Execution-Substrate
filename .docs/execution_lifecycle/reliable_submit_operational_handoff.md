@@ -594,6 +594,35 @@ rely on it against code of lower trust in the same process. A control
 against such code would have to come from the operating system, and none is
 claimed here.
 
+The other ways to that memory are system calls. A raw system call through
+`syscall` or `golang.org/x/sys/unix`, a write to `/proc/self/mem` through
+`os`, `ptrace`, `process_vm_writev`, a mapping or a shared memory segment
+placed over memory in use, and a process started for the purpose all reach
+the memory of the process through the kernel, and all belong to this limit.
+The fifth audit measured the write to `/proc/self/mem`; the others are named
+by reasoning. The import inventory below does not list the files that import
+`syscall` or `golang.org/x/sys/unix`: on Linux `os` alone reaches the same
+memory, so such a list would hold less than this limit already says.
+
+Two kinds of road do go through the language without a `reflect`, `unsafe`
+or `C` import, and the guard holds both. First, a value whose type has the
+underlying type `unsafe.Pointer` converts to a pointer of any type in every
+file; the import of `unsafe` is needed only to spell the type. The standard
+library hands out such values, for example `reflect.Value.UnsafePointer`
+through the exported `reflect.Type` field of the error type
+`json.UnmarshalTypeError`, and so does the dependency function
+`golang.org/x/sys/unix.MmapPtr`. From one such value an index into a large
+array type reaches any address above it. After the red-team, both were
+measured on linux/amd64 to clear the two latches of a struct on the heap
+from a file that imports neither `reflect`, `unsafe` nor `C`, with `go vet`
+silent. So a raw pointer value may appear only in a file that imports
+`unsafe`, which the import inventory holds by its hash. Second, some
+dependencies export raw memory access as ordinary Go functions that take an
+address as an integer: `modernc.org/libc`, which the SQLite driver uses,
+exports the C library's `memset` and `memcpy`, and the red-team reopened a
+withdrawn Service with them. So an import of a dependency package outside a
+reviewed list puts its file into the import inventory as well.
+
 #### Typed inventories and guard limits
 
 Maintained typed production inventories enforce zero non-test references to
@@ -765,19 +794,33 @@ was itself obtained at an inventoried site; the bodies of called functions
 and methods beyond Go's implicit address-of, which is a limit of dataflow
 and no longer one of generics, because a generic is listed at its
 declaration or at its instantiation by the rules above;
-reflection; `unsafe`; and cgo. For the last three an exact import inventory
-covers every non-test source file of the module, so
-a new `reflect`, `unsafe` or `C` import in any production package fails a
-test. It reads every non-test Go file in every directory of the repository
+reflection; `unsafe`; cgo; code loaded at run time; and dependencies that
+export raw memory access. For these an exact import inventory
+covers every non-test source file of the module, so a new `reflect`,
+`unsafe`, `C` or `plugin` import in any production package fails a test,
+and so does an import of a dependency package outside the reviewed list.
+It reads every non-test Go file in every directory of the repository
 except `.git`, whatever the directory is called. The inventory
 holds each file that has such an import by the SHA-256 of its content, so
-every change to such a file fails a test until the inventory is updated. The
-import names which files can write storage past the typed inventories, and
-the hash shows that such a file is the one that was reviewed; neither reads
-what the file does. A `//go:linkname` directive, which reaches an unexported
-function of another package without naming it in Go syntax, is accepted by
-the compiler only in a file that imports `unsafe`, so it is held by the same
-inventory. Reflection inside a called library function, on a pointer or container
+every change to such a file fails a test until the inventory is updated.
+The reviewed list names every dependency package that a production file
+imports, with the module and version whose exported API was reviewed for
+raw access to memory. A test compares the list in both directions with the
+imports of the production files, and with what the go command reports for
+all three build targets, so a new dependency import, a further package of a
+listed module, a new version and a replacement each fail until the list is
+updated. The raw pointer rule reads every expression and every declared or
+used name of every production package for the same three targets, and a
+value whose type has the underlying type `unsafe.Pointer` in a file that
+does not import `unsafe` fails it. With that rule the import names the
+files that can write storage past the typed inventories by every road
+through the language known here, a data race aside; a source inventory
+cannot show that no other road exists. The hash shows that such a file is
+the one that was reviewed; neither reads what the file does. A
+`//go:linkname` directive, which reaches an unexported function of another
+package without naming it in Go syntax, is accepted by the compiler only in
+a file that imports `unsafe`, so it is held by the same inventory.
+Reflection inside a called library function, on a pointer or container
 passed to it as an interface value, is such a called body: it cannot set an
 unexported field by itself, and it can move or overwrite a whole value. The
 typed inventories
@@ -806,6 +849,8 @@ One limit has no inventory at all: a write to the memory of the process that
 does not go through the language, which the section on the admission state
 package describes. It needs no `reflect`, `unsafe` or `C` import, so the
 import inventory does not see it, and no inventory reads what such code does.
+Raw system calls through `syscall` and `golang.org/x/sys/unix` are part of
+that limit, and the files that import those two packages are not listed.
 The maintained guarantee is exact syntactic
 occurrence, function site and access kind, not a general proof of aliases or
 runtime safety. `Service.mu` owns the mutable Service state and the lock of
@@ -1591,8 +1636,16 @@ ceiling for PR #12 plus both repairs was 46 files.
 The admission state package is a further owner reconciliation at this gate.
 It adds exactly two more paths: A/internal/admissionstate/state.go (new) and
 A/internal/admissionstate/state_test.go (new). With them the aggregate HEAD
-ceiling for PR #12 plus its repairs is 48 files. Any
-further file again requires separate owner reconciliation.
+ceiling for PR #12 plus its repairs was 48 files.
+
+The tests adopted from the red-team of the combined PR #12 are a further
+owner reconciliation at this gate. They add exactly four more paths, all test
+files: A/reliable_submit_operational_admission_redteam2_test.go (new),
+A/reliable_submit_operational_admission_redteam2_crash_test.go (new),
+A/reliable_submit_operational_admission_redteam2_guard_test.go (new) and
+A/reliable_submit_operational_admission_limits_test.go (new). With them the
+aggregate HEAD ceiling for PR #12 plus its repairs is 52 files. Any further
+file again requires separate owner reconciliation.
 
 The seal-permit guard follows the shared reservation writer
 `reserveReplaySealUseWithScope`, the sole constructor after confirmed COMMIT.

@@ -14169,6 +14169,19 @@ func operationalV2AssuranceOwnerRule(owner string) bool {
 		strings.Contains(owner, "The boundary is one of the language, not of the process") &&
 		strings.Contains(owner, "nothing may\nrely on it against code of lower trust in the same process") &&
 		strings.Contains(owner, "One limit has no inventory at all") &&
+		strings.Contains(owner, "The other ways to that memory are system calls") &&
+		strings.Contains(owner, "The import inventory below does not list the files that import\n`syscall` or `golang.org/x/sys/unix`") &&
+		strings.Contains(owner, "Two kinds of road do go through the language without a `reflect`, `unsafe`\nor `C` import, and the guard holds both") &&
+		strings.Contains(owner, "converts to a pointer of any type in every\nfile; the import of `unsafe` is needed only to spell the type") &&
+		strings.Contains(owner, "So a raw pointer value may appear only in a file that imports\n`unsafe`") &&
+		strings.Contains(owner, "So an import of a dependency package outside a\nreviewed list puts its file into the import inventory as well") &&
+		strings.Contains(owner, "`unsafe`, `C` or `plugin` import in any production package fails a test") &&
+		strings.Contains(owner, "and so does an import of a dependency package outside the reviewed list") &&
+		strings.Contains(owner, "a new dependency import, a further package of a\nlisted module, a new version and a replacement each fail until the list is\nupdated") &&
+		strings.Contains(owner, "value whose type has the underlying type `unsafe.Pointer` in a file that\ndoes not import `unsafe` fails it") &&
+		strings.Contains(owner, "Raw system calls through `syscall` and `golang.org/x/sys/unix` are part of\nthat limit") &&
+		strings.Contains(owner, "a source inventory\ncannot show that no other road exists") &&
+		strings.Contains(owner, "aggregate HEAD ceiling for PR #12 plus its repairs is 52 files") &&
 		strings.Contains(owner, "Every exported\nfunction and method of the package has an exact list of the functions that\nreference it") &&
 		strings.Contains(owner, "and the inspection method and the question whether a handle names a view,\nwhich exist for tests, nowhere") &&
 		strings.Contains(owner, "The exported\nsurface of the package is a closed list") &&
@@ -14306,7 +14319,9 @@ func TestOperationalSubmitHandoffCurrentAdmissionV2Contract(t *testing.T) {
 		"Transparent parentheses enclosing a resolved field", "parenthesized reads",
 		"targets remain assignments", "targets remain read-writes", "not a general proof of aliases or",
 		"Range-clause `=` key and value whole-field targets", "Taking a field's address is an `address` access",
-		"is a `write-through` access", "ceiling for PR #12 plus its repairs is 48 files",
+		"is a `write-through` access", "ceiling for PR #12 plus its repairs was 48 files",
+		"ceiling for PR #12 plus its repairs is 52 files",
+		"A/reliable_submit_operational_admission_redteam2_test.go (new),\nA/reliable_submit_operational_admission_redteam2_crash_test.go (new),\nA/reliable_submit_operational_admission_redteam2_guard_test.go (new) and\nA/reliable_submit_operational_admission_limits_test.go (new)",
 		"A/internal/admissionstate/state.go (new) and\nA/internal/admissionstate/state_test.go (new)",
 		"A retry after a changed configured literal policy, artifact revocation or", "a denial does not")
 	assertContainsAll(t, "selected plan", plans,
@@ -14318,6 +14333,12 @@ func TestOperationalSubmitHandoffCurrentAdmissionV2Contract(t *testing.T) {
 		"PR #12 durable admission: corrections after the fourth audit",
 		"PR #12 durable admission: the admission state package",
 		"PR #12 durable admission: a limit named after the fifth audit",
+		"PR #12 durable admission: repairs after the red-team",
+		"two more roads of the same class\nwere measured",
+		"A new raw pointer rule refuses\nsuch a value in a file that does not import `unsafe`",
+		"Raw system calls stay\noutside every inventory",
+		"The red-team's tests are adopted as permanent tests",
+		"It changes no behaviour, no stored format and no public\ncontract. The precise wording is owned by",
 		"code that writes the memory of\nits own process through the operating system",
 		"so this entry adds no guard rule",
 		"is inside the trust boundary of the admission state, and nothing may rely on\nthe package boundary against code of lower trust",
@@ -14540,6 +14561,19 @@ func TestOperationalSubmitHandoffCurrentAdmissionV2RejectsUnsafeMutants(t *testi
 		{"MissingBoundaryOfTheLanguage", "The boundary is one of the language, not of the process"},
 		{"MissingLowerTrustRule", "nothing may\nrely on it against code of lower trust in the same process"},
 		{"MissingOwnMemoryInTheLimits", "One limit has no inventory at all"},
+		{"MissingOSRoadNamed", "The other ways to that memory are system calls"},
+		{"MissingSyscallImportersNotListed", "The import inventory below does not list the files that import\n`syscall` or `golang.org/x/sys/unix`"},
+		{"MissingLanguageRoadsHeld", "Two kinds of road do go through the language without a `reflect`, `unsafe`\nor `C` import, and the guard holds both"},
+		{"MissingRawPointerConverts", "converts to a pointer of any type in every\nfile; the import of `unsafe` is needed only to spell the type"},
+		{"MissingRawPointerNeedsUnsafe", "So a raw pointer value may appear only in a file that imports\n`unsafe`"},
+		{"MissingUnreviewedDependencyInventoried", "So an import of a dependency package outside a\nreviewed list puts its file into the import inventory as well"},
+		{"MissingPluginInventoried", "`unsafe`, `C` or `plugin` import in any production package fails a test"},
+		{"MissingUnreviewedDependencyFails", "and so does an import of a dependency package outside the reviewed list"},
+		{"MissingReviewedVersionPin", "a new dependency import, a further package of a\nlisted module, a new version and a replacement each fail until the list is\nupdated"},
+		{"MissingRawPointerRule", "value whose type has the underlying type `unsafe.Pointer` in a file that\ndoes not import `unsafe` fails it"},
+		{"MissingUnknownRoadsNotExcluded", "a source inventory\ncannot show that no other road exists"},
+		{"MissingAdoptedTestsCeiling", "aggregate HEAD ceiling for PR #12 plus its repairs is 52 files"},
+		{"MissingSyscallsInTheLimit", "Raw system calls through `syscall` and `golang.org/x/sys/unix` are part of\nthat limit"},
 		{"MissingCallSiteInventory", "has an exact list of the functions that\nreference it"},
 		{"MissingInspectionInventory", "which exist for tests, nowhere"},
 		{"MissingClosedSurface", "surface of the package is a closed list"},
@@ -14625,6 +14659,18 @@ func TestOperationalSubmitHandoffCurrentAdmissionV2RejectsUnsafeMutants(t *testi
 		{"BoundaryOfTheProcess", "The boundary is one of the language, not of the process", "The boundary is one of the process"},
 		{"LowerTrustCodeMayRelyOnIt", "nothing may\nrely on it against code of lower trust in the same process", "code of lower trust in the same process may\nbe held by it"},
 		{"EveryLimitInventoried", "One limit has no inventory at all", "Every limit has an inventory"},
+		{"OSRoadInventoried", "The other ways to that memory are system calls", "The other ways to that memory are held by the import inventory"},
+		{"SyscallImportersListed", "The import inventory below does not list the files that import\n`syscall` or `golang.org/x/sys/unix`", "The import inventory below lists every file that imports\n`syscall` or `golang.org/x/sys/unix`"},
+		{"LanguageRoadsUnheld", "or `C` import, and the guard holds both", "or `C` import, and no guard holds them"},
+		{"RawPointerNeedsTheImportToConvert", "converts to a pointer of any type in every\nfile; the import of `unsafe` is needed only to spell the type", "converts to a pointer only in a file that imports `unsafe`"},
+		{"RawPointerAnywhere", "So a raw pointer value may appear only in a file that imports\n`unsafe`", "So a raw pointer value may appear in any file"},
+		{"UnreviewedDependencyFree", "reviewed list puts its file into the import inventory as well", "reviewed list needs no inventory"},
+		{"PluginNotInventoried", "`unsafe`, `C` or `plugin` import in any production package fails a test", "`unsafe` or `C` import in any production package fails a test"},
+		{"NewVersionPasses", "a new version and a replacement each fail until the list is\nupdated", "a new version and a replacement pass without a change of the\nlist"},
+		{"RawPointerWithoutUnsafePasses", "does not import `unsafe` fails it", "does not import `unsafe` passes it"},
+		{"NoOtherRoadClaimed", "a source inventory\ncannot show that no other road exists", "no other road\nexists"},
+		{"CeilingNotRaisedForAdoptedTests", "aggregate HEAD ceiling for PR #12 plus its repairs is 52 files", "aggregate HEAD ceiling for PR #12 plus its repairs is 48 files"},
+		{"SyscallsHeldByTheInventory", "Raw system calls through `syscall` and `golang.org/x/sys/unix` are part of\nthat limit", "Raw system calls through `syscall` and `golang.org/x/sys/unix` are held by\nthe import inventory"},
 		{"InspectionUsedInProduction", "which exist for tests, nowhere", "in production diagnostics"},
 		{"SurfaceOpen", "surface of the package is a closed list", "surface of the package is open"},
 		{"StateFileHeldByNameOnly", "package is pinned by the SHA-256 hash of its bytes", "package is held by its name"},

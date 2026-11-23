@@ -2,6 +2,39 @@
 
 ## Status
 
+### PR #12 durable admission: repairs after the red-team (2026-11-23)
+
+The red-team of the combined PR #12 at
+`bff8dda37dbf5484afb3b264d4eca38cf6abf118` found that the behaviour holds
+and left one low finding, RT2-1: a production file can import
+`modernc.org/libc`, which the SQLite driver brings into the build, and clear
+the latches of the admission state with its `memset`, with no `reflect`,
+`unsafe` or `C` import. While closing it, two more roads of the same class
+were measured: a value whose type has the underlying type `unsafe.Pointer`
+converts to a pointer of any type in every file, and both
+`golang.org/x/sys/unix.MmapPtr` and the standard library alone, through the
+exported `reflect.Type` of `encoding/json`'s error type, hand one out. The
+guard now holds all three. The import inventory also counts `plugin` and
+every dependency package outside a reviewed list, whose entries are pinned
+to the module and version that was reviewed. A new raw pointer rule refuses
+such a value in a file that does not import `unsafe`. Raw system calls stay
+outside every inventory and are named as part of the limit of the
+operating system.
+
+The red-team's tests are adopted as permanent tests: its eleven behaviour
+tests, its test of a second process killed at random instants, its guard
+test of RT2-1, and its three tests of documented limits, which now fail when
+a limit closes or moves without the documents. They are four new test
+files, so the path ceiling of PR #12 plus its repairs is 52 files. A comment
+in the admission state file says that only an untyped nil owner gets the
+closed handle, and the hash pin of that file follows it.
+
+This entry changes guard tests, adopted tests, one comment of production
+code and documents. It changes no behaviour, no stored format and no public
+contract. The precise wording is owned by
+[the operational handoff contract](.docs/execution_lifecycle/reliable_submit_operational_handoff.md).
+The bytes of this entry need their own audit before PR #12's merge gate.
+
 ### PR #12 durable admission: a limit named after the fifth audit (2026-11-23)
 
 A fresh independent audit of the fourth repair
