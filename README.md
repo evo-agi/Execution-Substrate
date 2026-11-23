@@ -12,7 +12,7 @@ what works today.
 ## How it works
 
 ```mermaid
-flowchart TD
+flowchart LR
     Publisher(["Publisher"])
     Caller(["Caller"])
 
@@ -29,7 +29,7 @@ flowchart TD
 
     Publisher -->|"1 publish"| AGS
     AGS -->|"store"| ARS
-    Caller -->|"2 prepare, submit<br/>4 status, logs, result, cancel"| ES
+    Caller -->|"2 prepare, submit<br/>4 status, logs,<br/>result, cancel"| ES
     ES -->|"read package<br/>and evidence"| ARS
     ES -->|"read trust"| EGS
     ES -->|"3 submit job"| Nomad
