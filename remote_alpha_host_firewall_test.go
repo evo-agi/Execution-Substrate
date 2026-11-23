@@ -33,6 +33,7 @@ func hostFirewallBaseEnv(t *testing.T, fakeBin string, extra ...string) []string
 		"REMOTE_ALPHA_HOST_FIREWALL_RESOLV_CONF":           filepath.Join(dir, "absent-resolv.conf"),
 		"REMOTE_ALPHA_HOST_FIREWALL_SYSTEMD_RESOLV_CONF":   filepath.Join(dir, "absent-systemd-resolv.conf"),
 		"REMOTE_ALPHA_HOST_FIREWALL_NFTABLES_CONF":         filepath.Join(dir, "absent-nftables.conf"),
+		"REMOTE_ALPHA_HOST_FIREWALL_SETTINGS_FILE":         filepath.Join(dir, "absent-settings.env"),
 	}
 	for _, entry := range extra {
 		key, value, ok := strings.Cut(entry, "=")
@@ -195,6 +196,106 @@ func TestRemoteAlphaHostFirewallRejectsInvalidSettings(t *testing.T) {
 				t.Fatalf("a refused render must print no ruleset, got %q", stdout)
 			}
 		})
+	}
+}
+
+func TestRemoteAlphaHostFirewallSettingsFile(t *testing.T) {
+	dir := t.TempDir()
+	settingsFile := filepath.Join(dir, "settings.env")
+	// Base env without SERVICE_CALLERS, so the file has to supply it.
+	env := func(extra ...string) []string {
+		all := hostFirewallBaseEnv(t, "", "REMOTE_ALPHA_HOST_FIREWALL_SETTINGS_FILE="+settingsFile)
+		kept := all[:0]
+		for _, entry := range all {
+			if !strings.HasPrefix(entry, "REMOTE_ALPHA_HOST_FIREWALL_SERVICE_CALLERS=") {
+				kept = append(kept, entry)
+			}
+		}
+		return append(kept, extra...)
+	}
+
+	// Without the file and without the variable, SERVICE_CALLERS is missing.
+	if _, stderr, code := runHostFirewall(t, env(), "--render"); code != 2 || !strings.Contains(stderr, "SERVICE_CALLERS") {
+		t.Fatalf("expected refusal without SERVICE_CALLERS, got exit %d: %s", code, stderr)
+	}
+
+	// The file supplies the host's values; comments, blank lines, quoted and
+	// unquoted values are accepted.
+	writeFile(t, settingsFile, []byte("# Devices that may reach ES and AGS.\nSERVICE_CALLERS=\"192.168.1.210/32 192.168.1.211\"\n\n  # indented comment\nSERVICE_PORTS=8444 8445\n"), 0o644)
+	stdout, stderr, code := runHostFirewall(t, env(), "--render")
+	if code != 0 {
+		t.Fatalf("render with settings file: exit %d: %s", code, stderr)
+	}
+	assertContainsAll(t, "settings file values", stdout,
+		"ip saddr { 192.168.1.210/32, 192.168.1.211/32 } tcp dport { 8444, 8445 } accept",
+	)
+
+	// A non-empty environment variable wins over the file.
+	stdout, _, code = runHostFirewall(t, env("REMOTE_ALPHA_HOST_FIREWALL_SERVICE_CALLERS=192.168.1.99/32"), "--render")
+	if code != 0 || !strings.Contains(stdout, "ip saddr { 192.168.1.99/32 } tcp dport") || strings.Contains(stdout, "192.168.1.210") {
+		t.Fatalf("expected the environment to win over the file, got exit %d\n%s", code, stdout)
+	}
+
+	// Refusals: the file is parsed, never sourced.
+	marker := filepath.Join(dir, "sourced-marker")
+	for _, tc := range []struct {
+		name, content, want string
+	}{
+		{"unknown name", "SERVICE_CALLERS=192.168.1.210/32\nSTATE_DIR=/tmp\n", "unknown setting STATE_DIR"},
+		{"set twice", "SERVICE_CALLERS=192.168.1.210/32\nSERVICE_CALLERS=192.168.1.0/24\n", "SERVICE_CALLERS is set twice"},
+		{"not an assignment", "SERVICE_CALLERS 192.168.1.210/32\n", "expected NAME="},
+		{"command substitution", "SERVICE_CALLERS=\"$(touch " + marker + ")\"\n", "not allowed"},
+		{"backquote", "SERVICE_CALLERS=`touch " + marker + "`\n", "not allowed"},
+		{"inner quote", "SERVICE_CALLERS=\"192.168.1.210/32\" \"x\"\n", "not allowed"},
+		{"single quotes", "SERVICE_CALLERS='192.168.1.210/32'\n", "not allowed"},
+		{"backslash", "SERVICE_CALLERS=192.168.1.210/32\\\n", "not allowed"},
+		{"lower case name", "service_callers=192.168.1.210/32\n", "expected NAME="},
+	} {
+		writeFile(t, settingsFile, []byte(tc.content), 0o644)
+		_, stderr, code := runHostFirewall(t, env(), "--render")
+		if code != 2 || !strings.Contains(stderr, tc.want) {
+			t.Errorf("%s: expected exit 2 with %q, got exit %d: %s", tc.name, tc.want, code, stderr)
+		}
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatalf("a settings file value was executed")
+	}
+
+	// A symlink is refused.
+	target := filepath.Join(dir, "target.env")
+	writeFile(t, target, []byte("SERVICE_CALLERS=192.168.1.210/32\n"), 0o644)
+	if err := os.Remove(settingsFile); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, settingsFile); err != nil {
+		t.Fatal(err)
+	}
+	if _, stderr, code := runHostFirewall(t, env(), "--render"); code != 2 || !strings.Contains(stderr, "not a regular file") {
+		t.Fatalf("expected symlink refusal, got exit %d: %s", code, stderr)
+	}
+	if err := os.Remove(settingsFile); err != nil {
+		t.Fatal(err)
+	}
+
+	// Run as root, the file must belong to root and not be group or world
+	// writable.
+	if os.Geteuid() == 0 {
+		writeFile(t, settingsFile, []byte("SERVICE_CALLERS=192.168.1.210/32\n"), 0o664)
+		if err := os.Chmod(settingsFile, 0o664); err != nil {
+			t.Fatal(err)
+		}
+		if _, stderr, code := runHostFirewall(t, env(), "--render"); code != 2 || !strings.Contains(stderr, "must belong to root and not be writable") {
+			t.Fatalf("expected refusal of a group-writable settings file, got exit %d: %s", code, stderr)
+		}
+		if err := os.Chmod(settingsFile, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chown(settingsFile, 65534, 65534); err != nil {
+			t.Fatal(err)
+		}
+		if _, stderr, code := runHostFirewall(t, env(), "--render"); code != 2 || !strings.Contains(stderr, "must belong to root") {
+			t.Fatalf("expected refusal of a settings file owned by another user, got exit %d: %s", code, stderr)
+		}
 	}
 }
 

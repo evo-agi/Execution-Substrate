@@ -20,12 +20,24 @@
 remote_alpha_host_firewall_schema_version="execution-substrate.remote-alpha.host-firewall.v1"
 
 # ===========================================================================
-# Editable settings
+# Settings
 #
-# Each value can be edited here or given in the environment of the same
-# name. Addresses and networks are separated by spaces. The script refuses
-# a value it cannot validate; it never guesses one.
+# The values below are the built-in defaults. On a host, set its own values
+# in the settings file (default /etc/execution-substrate/host-firewall/
+# settings.env), one NAME="value" line per setting, with the names below
+# without the REMOTE_ALPHA_HOST_FIREWALL_ prefix, for example:
+#
+#   SERVICE_CALLERS="192.168.1.210/32"
+#
+# A non-empty environment variable of the full name wins over the file, and
+# the file wins over the defaults. Addresses and networks are separated by
+# spaces. The script refuses a value it cannot validate; it never guesses
+# one. The script reads the settings file and never writes it.
 # ===========================================================================
+
+# Names the settings file may set. Paths stay environment-only (tests).
+remote_alpha_host_firewall_file_settings="SSH_SOURCES SSH_PORT SERVICE_CALLERS SERVICE_PORTS VAULT_ADDRESS VAULT_PORT CONTAINER_DNS_SERVERS CONTAINER_INTERFACES CONTAINER_BRIDGE_SUBNETS ACCEPT_BLOCKED_LISTENERS ROLLBACK_SECONDS PROBE_IMAGE PROBE_LAN_ADDRESS PROBE_LAN_GATEWAY PROBE_DNS_NAME PROBE_INTERNET_PORT"
+
 remote_alpha_host_firewall_defaults() {
   # Who may open SSH to the box. The whole home LAN by default, so that a new
   # DHCP address on the Mac never locks the box out. sshd's own key-only
@@ -34,9 +46,10 @@ remote_alpha_host_firewall_defaults() {
   : "${REMOTE_ALPHA_HOST_FIREWALL_SSH_PORT:=22}"
 
   # Who may reach the ES (8445) and AGS (8444) listeners from the LAN. No
-  # default: set it to the operator Mac's address, for example
-  # 192.168.1.23/32. Setting the whole LAN subnet is the explicit
-  # "mTLS only" fallback.
+  # default: set it in the settings file to the operator Mac's address (a
+  # DHCP reservation keeps it fixed), for example 192.168.1.210/32; add a
+  # device by adding its address. Setting the whole LAN subnet is the
+  # explicit "mTLS only" fallback.
   : "${REMOTE_ALPHA_HOST_FIREWALL_SERVICE_CALLERS:=}"
   : "${REMOTE_ALPHA_HOST_FIREWALL_SERVICE_PORTS:=8444 8445}"
 
@@ -77,7 +90,8 @@ remote_alpha_host_firewall_defaults() {
   : "${REMOTE_ALPHA_HOST_FIREWALL_PROBE_DNS_NAME:=github.com}"
   : "${REMOTE_ALPHA_HOST_FIREWALL_PROBE_INTERNET_PORT:=443}"
 
-  # Paths. Changing them is for tests.
+  # Paths. Changing them is for tests. SETTINGS_FILE is resolved earlier, in
+  # remote_alpha_host_firewall_load_settings_file.
   : "${REMOTE_ALPHA_HOST_FIREWALL_STATE_DIR:=/etc/execution-substrate/host-firewall}"
   : "${REMOTE_ALPHA_HOST_FIREWALL_UNIT_PATH:=/etc/systemd/system/es-host-firewall.service}"
   : "${REMOTE_ALPHA_HOST_FIREWALL_RUN_DIR:=/run/es-host-firewall}"
@@ -99,8 +113,86 @@ remote_alpha_host_firewall_defaults() {
 }
 
 # ===========================================================================
-# End of editable settings
+# End of settings
 # ===========================================================================
+
+remote_alpha_host_firewall_settings_file_state="not read"
+
+# Read the settings file into REMOTE_ALPHA_HOST_FIREWALL_* variables, unless
+# the environment already holds a non-empty value. The file is parsed, never
+# sourced: only known names, one NAME=value or NAME="value" per line, no
+# quotes, $, backquotes or backslashes inside values. Run as root, the file
+# must belong to root and not be writable by group or others.
+remote_alpha_host_firewall_load_settings_file() {
+  local path line name value var lineno=0 count=0 overridden="" seen=" " owner_mode
+  : "${REMOTE_ALPHA_HOST_FIREWALL_SETTINGS_FILE:=${REMOTE_ALPHA_HOST_FIREWALL_STATE_DIR:-/etc/execution-substrate/host-firewall}/settings.env}"
+  export REMOTE_ALPHA_HOST_FIREWALL_SETTINGS_FILE
+  path="${REMOTE_ALPHA_HOST_FIREWALL_SETTINGS_FILE}"
+  if [[ ! "${path}" =~ ^/[A-Za-z0-9_./-]+$ || "${path}" == *"/../"* || "${path}" == */.. ]]; then
+    remote_alpha_host_firewall_die "${path} is not a plain absolute path"
+    return 1
+  fi
+  if [[ ! -e "${path}" && ! -L "${path}" ]]; then
+    remote_alpha_host_firewall_settings_file_state="${path} (absent: built-in defaults and environment only)"
+    return 0
+  fi
+  if [[ -L "${path}" || ! -f "${path}" ]]; then
+    remote_alpha_host_firewall_die "settings file ${path} is not a regular file"
+    return 1
+  fi
+  if [[ "$(id -u)" == "0" ]]; then
+    owner_mode=$(stat -c '%u %a' "${path}") || return 1
+    if [[ "${owner_mode%% *}" != "0" ]] || (( 8#${owner_mode##* } & 8#022 )); then
+      remote_alpha_host_firewall_die "settings file ${path} must belong to root and not be writable by group or others (sudo chown root:root and chmod 0644 it)"
+      return 1
+    fi
+  fi
+  if [[ ! -r "${path}" ]]; then
+    remote_alpha_host_firewall_die "settings file ${path} is not readable"
+    return 1
+  fi
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    lineno=$((lineno + 1))
+    if [[ "${line}" =~ ^[[:space:]]*(#.*)?$ ]]; then
+      continue
+    fi
+    if [[ ! "${line}" =~ ^([A-Z_]+)=(.*)$ ]]; then
+      remote_alpha_host_firewall_die "${path}:${lineno}: expected NAME=\"value\""
+      return 1
+    fi
+    name="${BASH_REMATCH[1]}"
+    value="${BASH_REMATCH[2]}"
+    if [[ "${value}" =~ ^\"([^\"]*)\"$ ]]; then
+      value="${BASH_REMATCH[1]}"
+    fi
+    if [[ "${value}" == *[\"\'\$\`\\]* || "${value}" == *$'\r'* ]]; then
+      remote_alpha_host_firewall_die "${path}:${lineno}: ${name}: quotes inside the value, \$, backquotes and backslashes are not allowed"
+      return 1
+    fi
+    if [[ " ${remote_alpha_host_firewall_file_settings} " != *" ${name} "* ]]; then
+      remote_alpha_host_firewall_die "${path}:${lineno}: unknown setting ${name} (allowed: ${remote_alpha_host_firewall_file_settings})"
+      return 1
+    fi
+    if [[ "${seen}" == *" ${name} "* ]]; then
+      remote_alpha_host_firewall_die "${path}:${lineno}: ${name} is set twice"
+      return 1
+    fi
+    seen+="${name} "
+    count=$((count + 1))
+    var="REMOTE_ALPHA_HOST_FIREWALL_${name}"
+    if [[ -n "${!var:-}" ]]; then
+      overridden+=" ${name}"
+      continue
+    fi
+    printf -v "${var}" '%s' "${value}"
+    export "${var?}"
+  done <"${path}"
+  remote_alpha_host_firewall_settings_file_state="${path} (${count} settings"
+  if [[ -n "${overridden}" ]]; then
+    remote_alpha_host_firewall_settings_file_state+="; overridden by the environment:${overridden}"
+  fi
+  remote_alpha_host_firewall_settings_file_state+=")"
+}
 
 remote_alpha_host_firewall_table="es_host_firewall"
 remote_alpha_host_firewall_unit="es-host-firewall.service"
@@ -139,14 +231,19 @@ Modes:
   --render    Print the ruleset for the current settings and exit.
 
 Settings:
-  The editable settings block at the top of
-  scripts/internal/remote_alpha_host_firewall.sh, or environment variables of
-  the same names (REMOTE_ALPHA_HOST_FIREWALL_*). SERVICE_CALLERS has no
-  default and must be set.
+  The host's settings file, /etc/execution-substrate/host-firewall/settings.env
+  by default, one NAME="value" line per setting (names as in the settings
+  block of scripts/internal/remote_alpha_host_firewall.sh, without the
+  REMOTE_ALPHA_HOST_FIREWALL_ prefix). A non-empty environment variable
+  REMOTE_ALPHA_HOST_FIREWALL_<NAME> wins over the file; the file wins over
+  the built-in defaults. SERVICE_CALLERS has no default and must be set.
+  To let another device reach ES and AGS, add its address to
+  SERVICE_CALLERS in the file, then run --plan, --apply and --confirm.
 
 Scope:
   Changes only the nftables tables inet and bridge es_host_firewall, the
-  files under /etc/execution-substrate/host-firewall, the unit
+  files it installs under /etc/execution-substrate/host-firewall (it reads
+  the settings file there and never writes it), the unit
   /etc/systemd/system/es-host-firewall.service and a transient
   es-host-firewall-rollback timer. It does not touch Docker's, ufw's or any
   other rules, sshd, Vault, Nomad or ES. It reads no secrets.
@@ -339,6 +436,7 @@ remote_alpha_host_firewall_plan() {
 
   printf 'Remote Alpha host firewall: plan (read-only; nothing is changed)\n'
   printf '== settings ==\n'
+  printf 'settings file: %s\n' "${remote_alpha_host_firewall_settings_file_state}"
   remote_alpha_host_firewall_py describe || { rm -rf "${work}"; return 2; }
   remote_alpha_host_firewall_print_host_facts
   remote_alpha_host_firewall_checks "${candidate}" || status=1
@@ -529,6 +627,7 @@ remote_alpha_host_firewall_status() {
   ruleset_path=$(remote_alpha_host_firewall_ruleset_path)
   listing_path=$(remote_alpha_host_firewall_listing_path)
   printf 'Remote Alpha host firewall: status (read-only)\n'
+  printf 'settings file: %s\n' "${remote_alpha_host_firewall_settings_file_state}"
   if remote_alpha_host_firewall_rollback_pending; then
     printf 'rollback timer: PENDING (an apply awaits --confirm)\n'
     status=3
@@ -606,7 +705,7 @@ remote_alpha_host_firewall_rollback() {
     remote_alpha_host_firewall_die "the tables are still loaded after removal"
     return 1
   fi
-  printf 'RESULT: removed (tables, unit and installed files)\n'
+  printf 'RESULT: removed (tables, unit and installed files; the settings file is kept)\n'
 }
 
 remote_alpha_host_firewall_counter_value() {
@@ -723,6 +822,7 @@ remote_alpha_host_firewall_main() {
       return 2
       ;;
   esac
+  remote_alpha_host_firewall_load_settings_file || return 2
   remote_alpha_host_firewall_defaults
   remote_alpha_host_firewall_validate_numbers || return 2
   remote_alpha_host_firewall_require_commands python3 || return 1
