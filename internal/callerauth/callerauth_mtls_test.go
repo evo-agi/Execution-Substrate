@@ -148,11 +148,12 @@ func TestAuthenticateReadsTheLeafOfAClientChainWithAnIntermediate(t *testing.T) 
 	}, newTestKey(t), &root)
 	leafKey := newTestKey(t)
 	leaf := issue(t, &x509.Certificate{
-		SerialNumber: big.NewInt(3),
-		Subject:      pkix.Name{CommonName: "callerauth-mtls-leaf"},
-		KeyUsage:     x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
-		URIs:         []*url.URL{mustURL(t, "spiffe://execution.internal/operator/local")},
+		SerialNumber:          big.NewInt(3),
+		Subject:               pkix.Name{CommonName: "callerauth-mtls-leaf"},
+		BasicConstraintsValid: true,
+		KeyUsage:              x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+		URIs:                  []*url.URL{mustURL(t, "spiffe://execution.internal/operator/local")},
 	}, leafKey, &intermediate)
 
 	status, body := serveMutualTLS(t, root, [][]byte{leaf.der, intermediate.der}, leafKey)

@@ -67,6 +67,10 @@ func CertificateDER(issuerCommonName string, uris ...string) ([]byte, error) {
 // that Certificate uses: no basic constraints and the digitalSignature key
 // usage.
 type LeafProfile struct {
+	// BasicConstraints writes a basic constraints extension; it says CA:FALSE
+	// unless IsCA is set. SPIRE and the repository's scripts issue client
+	// leaves with CA:FALSE.
+	BasicConstraints bool
 	// IsCA writes basic constraints that mark the leaf as a CA.
 	IsCA bool
 	// KeyUsage replaces the digitalSignature key usage when it is not zero.
@@ -130,9 +134,9 @@ func certificateDER(issuerCommonName string, profile LeafProfile, uris []string)
 	if profile.KeyUsage != 0 {
 		leafTemplate.KeyUsage = profile.KeyUsage
 	}
-	if profile.IsCA {
+	if profile.BasicConstraints || profile.IsCA {
 		leafTemplate.BasicConstraintsValid = true
-		leafTemplate.IsCA = true
+		leafTemplate.IsCA = profile.IsCA
 	}
 	return x509.CreateCertificate(rand.Reader, leafTemplate, ca, leafPublic, caPrivate)
 }
@@ -305,7 +309,7 @@ func Serve(t testing.TB, handler http.Handler, method, target, body string, stat
 //
 //   - A caller with one URI SAN, the SPIFFE ID of route.AllowedPath, from
 //     RuntimeIssuer is neither refused with 401 nor with 403, and reaches
-//     the service.
+//     the service, with and without an explicit CA:FALSE basic constraint.
 //   - The same identity from bootstrapIssuer gets 403 BootstrapIssuerBody.
 //   - Every RefusedCallers credential gets 401 UnauthenticatedBody.
 //
@@ -313,17 +317,22 @@ func Serve(t testing.TB, handler http.Handler, method, target, body string, stat
 func CheckRoute(t *testing.T, handler http.Handler, route Route, bootstrapIssuer string, reached func() int) {
 	t.Helper()
 	t.Run(route.Name, func(t *testing.T) {
-		t.Run("allowed_caller", func(t *testing.T) {
-			before := reached()
-			state := State(Certificate(t, RuntimeIssuer, SPIFFEID(route.AllowedPath)))
-			response := Serve(t, handler, route.Method, route.Target, route.Body, state)
-			if response.Code == http.StatusUnauthorized || response.Code == http.StatusForbidden {
-				t.Fatalf("allowed caller refused: %d %q", response.Code, response.Body.String())
-			}
-			if reached() == before {
-				t.Fatalf("allowed caller did not reach the service: %d %q", response.Code, response.Body.String())
-			}
-		})
+		for name, profile := range map[string]LeafProfile{
+			"allowed_caller":          {},
+			"allowed_caller_CA_false": {BasicConstraints: true, KeyUsage: x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment},
+		} {
+			t.Run(name, func(t *testing.T) {
+				before := reached()
+				state := State(CertificateWithProfile(t, RuntimeIssuer, profile, SPIFFEID(route.AllowedPath)))
+				response := Serve(t, handler, route.Method, route.Target, route.Body, state)
+				if response.Code == http.StatusUnauthorized || response.Code == http.StatusForbidden {
+					t.Fatalf("allowed caller refused: %d %q", response.Code, response.Body.String())
+				}
+				if reached() == before {
+					t.Fatalf("allowed caller did not reach the service: %d %q", response.Code, response.Body.String())
+				}
+			})
+		}
 		t.Run("bootstrap_issuer", func(t *testing.T) {
 			before := reached()
 			state := State(Certificate(t, bootstrapIssuer, SPIFFEID(route.AllowedPath)))

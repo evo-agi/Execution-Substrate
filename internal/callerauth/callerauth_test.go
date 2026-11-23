@@ -251,6 +251,24 @@ func TestCallerFromConnectionStateAcceptsOneConformingURISAN(t *testing.T) {
 // x509svid.IDFromCert reads a certificate the same way. If a Go release
 // changes either behaviour, this test fails and the contract text in
 // .docs/system_overview/contracts.md section 3A has to be revisited.
+// SPIRE SVIDs and the repository's client leaves carry an explicit CA:FALSE
+// basic constraint and may use keyEncipherment; the end-entity rule accepts
+// them. digitalSignature is an issuer rule (X.509-SVID section 4.3) that
+// validators, go-spiffe included, do not check, so a leaf without it is
+// accepted too.
+func TestCallerFromConnectionStateAcceptsAnEndEntityLeafWithCAFalse(t *testing.T) {
+	for _, usage := range []x509.KeyUsage{x509.KeyUsageDigitalSignature, x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment, x509.KeyUsageKeyEncipherment} {
+		cert := callerauthtest.CertificateWithProfile(t, callerauthtest.RuntimeIssuer, callerauthtest.LeafProfile{BasicConstraints: true, KeyUsage: usage}, "spiffe://execution.internal/operator/local")
+		if !cert.BasicConstraintsValid || cert.IsCA {
+			t.Fatalf("fixture: basic constraints valid %v, CA %v", cert.BasicConstraintsValid, cert.IsCA)
+		}
+		caller, err := callerauth.CallerFromConnectionState(callerauthtest.State(cert))
+		if err != nil || caller.ID().Path() != "operator/local" {
+			t.Fatalf("key usage %b: caller %q, error %v", cert.KeyUsage, caller.ID(), err)
+		}
+	}
+}
+
 func TestCallerFromConnectionStateReadsTheURIAsTheCertificateParserHandsItOver(t *testing.T) {
 	for _, raw := range []string{
 		"SPIFFE://execution.internal/operator/local",
