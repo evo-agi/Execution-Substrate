@@ -6529,10 +6529,10 @@ valid SVID and an unbanned server record. In this order it:
    refuses while its own reading still has `insecure_bootstrap`), and
    restores the original when either refuses or a stop signal arrives. Any
    other bootstrap shape (a second key, a key in another letter case, a
-   quoted key, a heredoc, a comment naming a key, a block comment,
-   `trust_bundle_url`, another bundle path) is refused for a hand edit, and
-   a file the scan calls pinned is refused when SPIRE's check above does not
-   confirm it.
+   quoted key anywhere, a non-ASCII character, a heredoc, a comment naming a
+   key, a block comment, `trust_bundle_url`, another bundle path) is refused
+   for a hand edit, and a file the scan calls pinned is refused when SPIRE's
+   check above does not confirm it.
 4. Only when it edited `agent.conf`, restarts `spire-agent.service`, which
    restarts `es.service` through `Requires=`. It then requires within fixed
    timeouts: a healthy agent, the same agent ID as before (no

@@ -679,7 +679,8 @@ def analyze_agent_config(text: str, bundle_path: str) -> dict:
               trust_bundle_unix_socket, and trust_bundle_format absent or
               "pem".
     Anything else is unrecognized. A key named anywhere outside such a line
-    (a comment, a one-line block) makes the file unrecognized.
+    (a comment, a one-line block), a quoted key anywhere, a heredoc or a
+    non-ASCII character makes the file unrecognized.
     """
     def unrecognized(reason: str) -> dict:
         return {"state": "unrecognized", "reason": reason}
@@ -690,7 +691,11 @@ def analyze_agent_config(text: str, bundle_path: str) -> dict:
         return unrecognized("a block comment")
     if "<<" in text:
         return unrecognized("a heredoc")
-    if re.search(r'(?m)^\s*"[^"\n]*"\s*=', text):
+    # HCL matches keys with Go's Unicode case folding (U+017F folds to "s")
+    # and decodes escapes in quoted keys, wherever they stand on a line.
+    if not text.isascii():
+        return unrecognized("a non-ASCII character")
+    if re.search(r'"\s*=', text):
         return unrecognized("a quoted key")
     lines = text.split("\n")
     opens = [i for i, line in enumerate(lines) if re.fullmatch(r"agent\s*\{\s*", line)]
@@ -761,8 +766,10 @@ def spire_confirms_pinned(r: Runner) -> tuple[bool, str]:
     (say, a trust_bundle_path line swallowed by a heredoc). With -trustBundle
     on the command line, validate refuses a config that SPIRE reads as
     insecure ("only one of insecure_bootstrap or trust_bundle_path ...").
-    The scan allows no other bundle source, so a config that passes both is
-    read by SPIRE with the one trust_bundle_path line the scan saw."""
+    The scan allows no other bundle source and no second spelling of the key
+    (no quoted key, heredoc or non-ASCII character, and key names counted
+    without regard to case), so a config that passes both is read by SPIRE
+    with the one trust_bundle_path line the scan saw."""
     L = r.L
     for label, extra in (("plain", []),
                          ("with -trustBundle", ["-trustBundle", L.bundle_path, "-trustBundleFormat", "pem"])):

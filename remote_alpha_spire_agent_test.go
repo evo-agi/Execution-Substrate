@@ -73,6 +73,9 @@ spec.loader.exec_module(mod)
 if sys.argv[2] == "--dump-layout":
     print(json.dumps(dataclasses.asdict(mod.Layout()), sort_keys=True))
     sys.exit(0)
+if sys.argv[2] == "--group-members":
+    print(json.dumps(sorted(mod.group_members(sys.argv[3]))))
+    sys.exit(0)
 if sys.argv[2] == "--analyze-config":
     print(json.dumps(mod.analyze_agent_config(open(sys.argv[3], newline="").read(), sys.argv[4]), sort_keys=True))
     sys.exit(0)
@@ -112,7 +115,9 @@ sys.exit(mod.main(sys.argv[3:], mod.Layout(**overrides)))
 // a socket waits up to 5 s for it and sets mode 0600, like the box units'
 // ExecStartPost, and fails when it does not appear. A file
 // <unit>.fail-next-start in the state directory makes the next start of
-// that unit fail once.
+// that unit fail once. While a file hold-restart exists there, a restart
+// stops the unit, adds a line to held-restarts and waits before it starts
+// the unit again, so a test can signal the helper inside a restart.
 const spireAgentHelperFakeSystemctl = `import json, os, signal, stat, subprocess, sys, time
 STATE = %q
 cfg = json.load(open(os.path.join(STATE, "units.json")))
@@ -213,6 +218,12 @@ if cmd == "stop":
 if cmd == "restart":
     deps = active_dependents(unit)
     stop(unit)
+    hold = os.path.join(STATE, "hold-restart")
+    if os.path.exists(hold):
+        with open(os.path.join(STATE, "held-restarts"), "a") as fh:
+            fh.write(unit + "\n")
+        while os.path.exists(hold):
+            time.sleep(0.05)
     rc = start(unit)
     for d in deps:
         rc = rc or start(d)
@@ -243,7 +254,7 @@ os.execve(args[5], args[5:], {"PATH": "/usr/local/bin:/bin:/usr/bin", "HOME": "/
 // markers hold an attesting run or a "validate" at its start, so a test can
 // signal the helper at that point.
 const spireAgentHelperShim = `import json, os, sys, time
-LOG, REAL, FAIL_VALIDATE, FAIL_ATTEST, HOLD_ATTEST, HOLD_VALIDATE = %q, %q, %q, %q, %q, %q
+LOG, REAL, FAIL_VALIDATE, FAIL_ATTEST, HOLD_ATTEST, HOLD_VALIDATE, LINGER, LINGERING = %q, %q, %q, %q, %q, %q, %q, %q
 args = sys.argv[1:]
 entry = {"tool": os.path.basename(REAL), "argv": args}
 if "-joinTokenFile" in args:
@@ -258,6 +269,17 @@ if "-joinTokenFile" in args:
     entry["stop_signals_blocked"] = [s for s in (1, 2, 15) if blocked >> (s - 1) & 1]
 with open(LOG, "a") as fh:
     fh.write(json.dumps(entry) + "\n")
+if LINGER and args[:1] == ["run"] and ("-joinTokenFile" in args or "-joinToken" in args) and os.path.exists(LINGER):
+    # An attesting agent that takes its time to exit on SIGTERM: it says
+    # so in LINGERING and stays until the LINGER marker is gone.
+    import signal
+    def linger(signum, frame):
+        open(LINGERING, "w").close()
+        deadline = time.time() + 30
+        while os.path.exists(LINGER) and time.time() < deadline:
+            time.sleep(0.05)
+        sys.exit(0)
+    signal.signal(signal.SIGTERM, linger)
 while HOLD_ATTEST and args[:1] == ["run"] and ("-joinTokenFile" in args or "-joinToken" in args) and os.path.exists(HOLD_ATTEST):
     time.sleep(0.05)
 while HOLD_VALIDATE and args[:1] == ["validate"] and os.path.exists(HOLD_VALIDATE):
@@ -294,6 +316,8 @@ type spireAgentHelperBox struct {
 	failAttest  string
 	holdAttest  string
 	holdValid   string
+	linger      string
+	lingering   string
 	port        int
 	serverConf  string
 	agentConf   string
@@ -510,6 +534,8 @@ func newSPIREAgentHelperBox(t *testing.T, svidTTL string) *spireAgentHelperBox {
 	b.failAttest = filepath.Join(root, "fail-attest")
 	b.holdAttest = filepath.Join(root, "hold-attest")
 	b.holdValid = filepath.Join(root, "hold-validate")
+	b.linger = filepath.Join(root, "linger-attest")
+	b.lingering = filepath.Join(root, "lingering")
 	b.port = spireAgentHelperFreePort(t)
 	b.serverSock = filepath.Join(root, "run/spire/server/private/api.sock")
 	b.agentSock = filepath.Join(root, "run/spire/sockets/agent.sock")
@@ -538,8 +564,8 @@ func newSPIREAgentHelperBox(t *testing.T, svidTTL string) *spireAgentHelperBox {
 	b.write(setpriv, "#!"+python+"\n"+fmt.Sprintf(spireAgentHelperFakeSetpriv, b.shimLog, b.user, b.group), 0o755)
 	shimServer := filepath.Join(root, "bin", "spire-server")
 	shimAgent := filepath.Join(root, "bin", "spire-agent")
-	b.write(shimServer, "#!"+python+"\n"+fmt.Sprintf(spireAgentHelperShim, b.shimLog, b.realServer, "", "", "", ""), 0o755)
-	b.write(shimAgent, "#!"+python+"\n"+fmt.Sprintf(spireAgentHelperShim, b.shimLog, b.realAgent, b.failMarker, b.failAttest, b.holdAttest, b.holdValid), 0o755)
+	b.write(shimServer, "#!"+python+"\n"+fmt.Sprintf(spireAgentHelperShim, b.shimLog, b.realServer, "", "", "", "", "", ""), 0o755)
+	b.write(shimAgent, "#!"+python+"\n"+fmt.Sprintf(spireAgentHelperShim, b.shimLog, b.realAgent, b.failMarker, b.failAttest, b.holdAttest, b.holdValid, b.linger, b.lingering), 0o755)
 	openssl, _ := exec.LookPath("openssl")
 
 	layout := map[string]any{
@@ -1211,6 +1237,60 @@ func TestRemoteAlphaSPIREAgentPinAgainstRealSPIRE(t *testing.T) {
 	}
 	time.Sleep(1100 * time.Millisecond)
 
+	// Two stop signals (an SSH hangup, then a kill, say): the first while
+	// pin's restart is held after its stop, the second while the rollback's
+	// restart is held. The first starts the rollback and makes the helper
+	// ignore further stop signals, so the rollback finishes: the original
+	// config is back and the agent and es.service run with the old identity.
+	holdRestart := filepath.Join(b.stateDir, "hold-restart")
+	heldRestarts := filepath.Join(b.stateDir, "held-restarts")
+	held := func() int {
+		data, err := os.ReadFile(heldRestarts)
+		if err != nil {
+			return 0
+		}
+		return strings.Count(string(data), "\n")
+	}
+	b.write(holdRestart, "", 0o644)
+	twoSig, twoSigOut := b.startHelper("pin", "--apply")
+	b.waitFor("pin's held restart", 60*time.Second, func() bool { return held() == 1 })
+	_ = twoSig.Process.Signal(syscall.SIGTERM)
+	b.waitFor("the rollback's held restart", 60*time.Second, func() bool { return held() == 2 })
+	_ = twoSig.Process.Signal(syscall.SIGTERM)
+	time.Sleep(500 * time.Millisecond)
+	if err := os.Remove(holdRestart); err != nil {
+		t.Fatal(err)
+	}
+	_ = twoSig.Wait()
+	if err := os.Remove(heldRestarts); err != nil {
+		t.Fatal(err)
+	}
+	var twoSigReport map[string]any
+	if err := json.Unmarshal(twoSigOut.Bytes(), &twoSigReport); err != nil || twoSigReport["result"] != "failed" ||
+		!strings.Contains(fmt.Sprint(twoSigReport["message"]), "rolled back: stopped by SIGTERM") || strings.Contains(fmt.Sprint(twoSigReport["message"]), "rollback failed") {
+		t.Fatalf("two SIGTERMs during pin's restart and its rollback did not end in a finished rollback (%v): %s", err, twoSigOut.String())
+	}
+	if !bytes.Equal(spireAgentHelperRead(t, b.agentConf), original) || b.pid("spire-agent.service") == 0 || b.pid("es.service") == 0 {
+		t.Fatalf("after two SIGTERMs the original config is not back, or the agent or es.service is down: %s", twoSigOut.String())
+	}
+	if id, _ := b.localAgentID(b.dataDir); id != agentID {
+		t.Fatalf("agent identity changed across the interrupted rollback")
+	}
+	for _, path := range []string{b.bundlePath, filepath.Join(b.tmpfilesDir, "etc/tmpfiles.d/spire.conf")} {
+		if err := os.Remove(path); err != nil {
+			t.Fatalf("the twice-interrupted run should have written %s before the config: %v", path, err)
+		}
+	}
+	backups = spireAgentHelperGlob(t, b.agentConf+".bak-*")
+	if len(backups) != 1 || !bytes.Equal(spireAgentHelperRead(t, backups[0]), original) {
+		t.Fatalf("expected one backup with the original bytes after the twice-interrupted run, got %v", backups)
+	}
+	if err := os.Rename(backups[0], filepath.Join(b.root, "twice-interrupted-backup")); err != nil {
+		t.Fatal(err)
+	}
+	agentPid, esPid = b.pid("spire-agent.service"), b.pid("es.service")
+	time.Sleep(1100 * time.Millisecond)
+
 	pinned := b.helper("pin", "--apply")
 	pinned.expect(t, 0, "ok")
 	after := spireAgentHelperRead(t, b.agentConf)
@@ -1589,6 +1669,52 @@ func TestRemoteAlphaSPIREAgentRecoverAgainstRealSPIRE(t *testing.T) {
 	}
 	time.Sleep(1100 * time.Millisecond)
 
+	// A first stop signal while the helper cleans up after an ordinary
+	// failure is held until the cleanup ends. Here attestation times out (the
+	// shim holds the run, and this layout allows 2 s), and the attesting
+	// agent takes its time to exit on the helper's SIGTERM. The test signals
+	// the helper while it waits for that agent.
+	var short map[string]any
+	if err := json.Unmarshal(spireAgentHelperRead(t, b.layoutPath), &short); err != nil {
+		t.Fatal(err)
+	}
+	short["attestation_timeout_seconds"] = 2
+	shortLayout := filepath.Join(b.root, "layout-short-attest.json")
+	b.writeJSON(shortLayout, short)
+	b.write(b.holdAttest, "", 0o644)
+	b.write(b.linger, "", 0o644)
+	cleanCmd := exec.Command(b.python, "-I", "-B", driver, spireAgentHelperModule, shortLayout, "recover", "--apply", "--json")
+	cleanCmd.Env = []string{"PATH=/usr/bin:/bin", "LC_ALL=C"}
+	var cleanOut bytes.Buffer
+	cleanCmd.Stdout = &cleanOut
+	if err := cleanCmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	b.waitFor("the attesting agent's SIGTERM from the helper's cleanup", 60*time.Second, func() bool {
+		_, err := os.Stat(b.lingering)
+		return err == nil
+	})
+	_ = cleanCmd.Process.Signal(syscall.SIGTERM)
+	time.Sleep(500 * time.Millisecond)
+	for _, p := range []string{b.linger, b.holdAttest} {
+		if err := os.Remove(p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = cleanCmd.Wait()
+	_ = os.Remove(b.lingering)
+	var cleanReport map[string]any
+	if err := json.Unmarshal(cleanOut.Bytes(), &cleanReport); err != nil || cleanReport["result"] != "failed" {
+		t.Fatalf("a SIGTERM during cleanup gave no failure report (%v): %s", err, cleanOut.String())
+	}
+	if left := spireAgentHelperGlob(t, filepath.Join(b.scratch, "*")); len(left) != 0 {
+		t.Fatalf("a SIGTERM during cleanup cut it short: scratch entries left: %v", left)
+	}
+	if !bytes.Equal(spireAgentHelperRead(t, filepath.Join(b.dataDir, "agent-data.json")), oldData) || len(spireAgentHelperGlob(t, b.dataDir+".recover-*")) != 0 {
+		t.Fatalf("a SIGTERM during cleanup did not put the old data directory back")
+	}
+	time.Sleep(1100 * time.Millisecond)
+
 	entriesBefore := len(b.entries())
 	watch := startSPIREAgentHelperProcWatch()
 	recovered := b.helper("recover", "--apply")
@@ -1617,8 +1743,8 @@ func TestRemoteAlphaSPIREAgentRecoverAgainstRealSPIRE(t *testing.T) {
 			t.Fatalf("the join token appeared in a process command line: %q", strings.ReplaceAll(line, "\x00", " "))
 		}
 	}
-	// Three runs had a join token file: the injected crash, the SIGTERM
-	// step and the recovery.
+	// Four runs had a join token file: the injected crash, the SIGTERM
+	// step, the SIGTERM-during-cleanup step and the recovery.
 	var tokenFiles []map[string]any
 	sc := bufio.NewScanner(strings.NewReader(b.commandLog()))
 	for sc.Scan() {
@@ -1627,8 +1753,8 @@ func TestRemoteAlphaSPIREAgentRecoverAgainstRealSPIRE(t *testing.T) {
 			tokenFiles = append(tokenFiles, entry["token_file"].(map[string]any))
 		}
 	}
-	if len(tokenFiles) != 3 {
-		t.Fatalf("expected 3 runs with a join token file (crash, SIGTERM, recovery), got %d", len(tokenFiles))
+	if len(tokenFiles) != 4 {
+		t.Fatalf("expected 4 runs with a join token file (crash, SIGTERM, SIGTERM during cleanup, recovery), got %d", len(tokenFiles))
 	}
 	var attestRuns, setprivTokens, setprivRuns int
 	sc = bufio.NewScanner(strings.NewReader(b.commandLog()))
@@ -1660,8 +1786,8 @@ func TestRemoteAlphaSPIREAgentRecoverAgainstRealSPIRE(t *testing.T) {
 			setprivRuns++
 		}
 	}
-	if attestRuns != 3 || setprivTokens != 3 || setprivRuns != 3 {
-		t.Fatalf("attesting runs %d, token generations as the SPIRE account with -ttl 120: %d, attesting runs as the SPIRE account: %d; want 3 each", attestRuns, setprivTokens, setprivRuns)
+	if attestRuns != 4 || setprivTokens != 4 || setprivRuns != 4 {
+		t.Fatalf("attesting runs %d, token generations as the SPIRE account with -ttl 120: %d, attesting runs as the SPIRE account: %d; want 4 each", attestRuns, setprivTokens, setprivRuns)
 	}
 	for _, tf := range tokenFiles {
 		if tf["mode"] != "0o600" || tf["dir_mode"] != "0o700" || int(tf["uid"].(float64)) != b.uid || !strings.HasPrefix(tf["path"].(string), b.scratch+"/") {
@@ -1823,10 +1949,39 @@ func TestRemoteAlphaSPIREAgentLayoutPinsBoxValues(t *testing.T) {
 	}
 }
 
+// The admin socket check counts an account whose primary group is the SPIRE
+// group as a member of it, though /etc/group lists only the others. The
+// test's own account has its primary group and is usually not listed there.
+func TestRemoteAlphaSPIREAgentGroupMembersCountPrimaryGroup(t *testing.T) {
+	cur, err := user.Current()
+	if err != nil {
+		t.Fatal(err)
+	}
+	g, err := user.LookupGroupId(cur.Gid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, out, stderr := spireAgentHelperDriverRun(t, "--group-members", g.Name)
+	if code != 0 {
+		t.Fatalf("group members: %d %s", code, stderr)
+	}
+	var members []string
+	if err := json.Unmarshal([]byte(out), &members); err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range members {
+		if m == cur.Username {
+			return
+		}
+	}
+	t.Fatalf("members of %s %v leave out %s, whose primary group it is", g.Name, members, cur.Username)
+}
+
 func TestRemoteAlphaSPIREAgentConfigAnalysis(t *testing.T) {
 	bundle := "/etc/spire/agent/bootstrap-bundle.pem"
 	box := spireAgentHelperAgentConf("/var/lib/spire/agent", "/run/spire/sockets/agent.sock", 8081)
 	pinned := strings.Replace(box, "insecure_bootstrap = true", `trust_bundle_path = "`+bundle+`"`, 1)
+	pinLine := `    trust_bundle_path = "` + bundle + "\"\n"
 	cases := []struct {
 		name, conf, state string
 	}{
@@ -1853,6 +2008,13 @@ func TestRemoteAlphaSPIREAgentConfigAnalysis(t *testing.T) {
 		// SPIRE 1.14.4 reads no trust_bundle_path here: the heredoc is the
 		// join_token value. Only the heredoc rule tells the scan.
 		{"heredoc_swallows_path", strings.Replace(box, "    insecure_bootstrap = true\n", "    join_token = <<EOT\n    trust_bundle_path = \""+bundle+"\"\nEOT\n", 1), "unrecognized"},
+		// SPIRE 1.14.4 reads trust_bundle_path = "/tmp/other.pem" in each of
+		// these (a later key wins, and a second agent block merges into the
+		// first), and spire-agent validate accepts them plain and with
+		// -trustBundle, so only the scan can tell.
+		{"pinned_plus_second_block_escaped_path", pinned + "agent { \"trust\\u005fbundle\\u005fpath\" = \"/tmp/other.pem\" }\n", "unrecognized"},
+		{"pinned_plus_same_line_escaped_path", strings.Replace(pinned, pinLine, pinLine+"    log_level = \"INFO\", \"trust\\u005fbundle\\u005fpath\" = \"/tmp/other.pem\"\n", 1), "unrecognized"},
+		{"pinned_plus_long_s_path", strings.Replace(pinned, pinLine, pinLine+"    tru\u017ft_bundle_path = \"/tmp/other.pem\"\n", 1), "unrecognized"},
 	}
 	dir := t.TempDir()
 	for _, tc := range cases {
