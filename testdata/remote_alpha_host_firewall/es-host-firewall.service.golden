@@ -1,0 +1,21 @@
+# Managed by Execution-Substrate scripts/remote_alpha_host_firewall.sh.
+# Schema: execution-substrate.remote-alpha.host-firewall.v1
+[Unit]
+Description=Execution Substrate Remote Alpha host firewall (nftables tables inet and bridge es_host_firewall)
+Documentation=https://github.com/evo-agi/Execution-Substrate/blob/trunk_dev/.docs/system_overview/remote_supported_host_alpha.md
+DefaultDependencies=no
+Wants=network-pre.target
+Before=network-pre.target docker.service nomad.service shutdown.target
+After=nftables.service
+Conflicts=shutdown.target
+RequiresMountsFor=/etc/execution-substrate/host-firewall
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+StandardInput=null
+ExecStart=/usr/sbin/nft -f /etc/execution-substrate/host-firewall/es-host-firewall.nft
+ExecReload=/usr/sbin/nft -f /etc/execution-substrate/host-firewall/es-host-firewall.nft
+
+[Install]
+WantedBy=sysinit.target

@@ -159,6 +159,11 @@ func (f *fakeBootstrapVaultServer) ServeHTTP(w http.ResponseWriter, r *http.Requ
 		w.WriteHeader(http.StatusNoContent)
 	case r.Method == http.MethodPost && r.URL.Path == "/v1/proof-secrets/data/codex-runtime-profile":
 		w.WriteHeader(http.StatusNoContent)
+	case r.Method == http.MethodDelete && r.URL.Path == "/v1/proof-secrets/metadata/runtime-identity-vault-login":
+		w.WriteHeader(http.StatusNoContent)
+	case r.Method == http.MethodDelete && r.URL.Path == "/v1/proof-secrets/metadata/codex-runtime-profile":
+		// Vault answers 404 for a path that never existed; the helper accepts it.
+		writeJSON(w, http.StatusNotFound, map[string]any{"errors": []string{}})
 	default:
 		writeJSON(w, http.StatusNotFound, map[string]any{"errors": []string{"unexpected path"}})
 	}
@@ -457,6 +462,66 @@ func TestRemoteAlphaVaultWorkloadAuthBootstrapPreflightFailsBeforePromptsAndVaul
 	}
 }
 
+func TestRemoteAlphaVaultWorkloadAuthBootstrapRejectsInvalidRoleTokenLimitsBeforePromptsAndVaultWrites(t *testing.T) {
+	cases := []struct {
+		name         string
+		env          []string
+		messageClass string
+	}{
+		{name: "ttl_not_duration", env: []string{"REMOTE_ALPHA_BOOTSTRAP_TOKEN_TTL=forever"}, messageClass: "token_ttl_not_a_duration"},
+		{name: "ttl_zero", env: []string{"REMOTE_ALPHA_BOOTSTRAP_TOKEN_TTL=0m"}, messageClass: "token_ttl_not_a_duration"},
+		{name: "max_ttl_not_duration", env: []string{"REMOTE_ALPHA_BOOTSTRAP_TOKEN_MAX_TTL=1d"}, messageClass: "token_ttl_not_a_duration"},
+		{name: "ttl_above_max", env: []string{"REMOTE_ALPHA_BOOTSTRAP_TOKEN_TTL=45m"}, messageClass: "token_ttl_out_of_range"},
+		{name: "max_ttl_above_ceiling", env: []string{"REMOTE_ALPHA_BOOTSTRAP_TOKEN_MAX_TTL=25h"}, messageClass: "token_ttl_out_of_range"},
+		{name: "cidr_invalid", env: []string{"REMOTE_ALPHA_BOOTSTRAP_TOKEN_BOUND_CIDRS=172.17.0.1/16"}, messageClass: "token_bound_cidr_invalid"},
+		{name: "cidr_everything", env: []string{"REMOTE_ALPHA_BOOTSTRAP_TOKEN_BOUND_CIDRS=0.0.0.0/0"}, messageClass: "token_bound_cidr_matches_everything"},
+		{name: "cidr_empty", env: []string{"REMOTE_ALPHA_BOOTSTRAP_TOKEN_BOUND_CIDRS= "}, messageClass: "token_bound_cidrs_empty"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			fakeBin := filepath.Join(tmpDir, "bin")
+			if err := os.MkdirAll(fakeBin, 0o755); err != nil {
+				t.Fatalf("mkdir fake bin: %v", err)
+			}
+			setupFakeBootstrapSpireServer(t, fakeBin)
+
+			rootToken := "hvs.fakeRootTokenForTokenLimits1234567890"
+			proofSecret := "sk-fakeProofSecretForTokenLimits1234567890"
+			server, state, caBundle := startFakeBootstrapVault(t, rootToken)
+			configPath := filepath.Join(tmpDir, "workload-zone-vault-config.json")
+			summaryPath := filepath.Join(tmpDir, "summary", "vault-workload-auth-bootstrap-summary.json")
+			writeWorkloadZoneConfig(t, configPath, server.URL, "jwt", "service_execution", "vault", caBundle)
+
+			env := append([]string{
+				"REMOTE_ALPHA_BOOTSTRAP_WORKLOAD_ZONE_CONFIG_PATH=" + configPath,
+				"REMOTE_ALPHA_BOOTSTRAP_SUMMARY_PATH=" + summaryPath,
+			}, tc.env...)
+			output, err := runRemoteAlphaBootstrapHelperWithPTYInput(t,
+				envWithPath(fakeBin, env...),
+				rootToken+"\n"+proofSecret+"\n",
+			)
+			if err == nil {
+				t.Fatalf("expected invalid role token limits to fail:\n%s", output)
+			}
+			assertContainsNone(t, "invalid role token limits output", output,
+				"Vault bootstrap authority token",
+				"Proof secret value",
+				rootToken,
+				proofSecret,
+				"Traceback",
+			)
+			if got := len(state.requests); got != 0 {
+				t.Fatalf("invalid role token limits must not call Vault, got %d requests", got)
+			}
+			summary := assertBootstrapFailureSummary(t, summaryPath, "role_token_limits", "config_invalid", false, false, rootToken, proofSecret)
+			if got := summary["failure_message_class"]; got != tc.messageClass {
+				t.Fatalf("expected failure_message_class=%s, got %#v\nsummary=%s", tc.messageClass, got, mustRead(t, summaryPath))
+			}
+		})
+	}
+}
+
 func TestRemoteAlphaVaultWorkloadAuthBootstrapConfigLoadFailureWritesSafeSummaryBeforePrompts(t *testing.T) {
 	tmpDir := t.TempDir()
 	fakeBin := filepath.Join(tmpDir, "bin")
@@ -704,6 +769,7 @@ func TestRemoteAlphaVaultWorkloadAuthBootstrapVaultAPIFailuresWriteSafePhaseSumm
 		{name: "runtime_identity_policy", failPath: "/v1/sys/policies/acl/runtime-identity-proof", failStatus: http.StatusForbidden, phase: "runtime_identity_policy", failureClass: "vault_permission_denied"},
 		{name: "jwt_auth_config", failPath: "/v1/auth/jwt/config", failStatus: http.StatusInternalServerError, phase: "jwt_auth_config", failureClass: "vault_api_error"},
 		{name: "service_execution_role", failPath: "/v1/auth/jwt/role/service_execution", failStatus: http.StatusForbidden, phase: "service_execution_role", failureClass: "vault_permission_denied"},
+		{name: "proof_secret_prior_versions", failPath: "/v1/proof-secrets/metadata/runtime-identity-vault-login", failStatus: http.StatusForbidden, phase: "proof_secret_prior_versions", failureClass: "vault_permission_denied"},
 		{name: "proof_secret_runtime_identity_vault_login", failPath: "/v1/proof-secrets/data/runtime-identity-vault-login", failStatus: http.StatusForbidden, phase: "proof_secret_runtime_identity_vault_login", failureClass: "vault_permission_denied"},
 		{name: "proof_secret_codex_runtime_profile", failPath: "/v1/proof-secrets/data/codex-runtime-profile", failStatus: http.StatusInternalServerError, phase: "proof_secret_codex_runtime_profile", failureClass: "vault_api_error"},
 	}
@@ -911,9 +977,19 @@ func TestRemoteAlphaVaultWorkloadAuthBootstrapFakeVaultWritesExpectedObjectsAndS
 		"PUT /v1/sys/policies/acl/runtime-identity-proof",
 		"POST /v1/auth/jwt/config",
 		"POST /v1/auth/jwt/role/service_execution",
+		"DELETE /v1/proof-secrets/metadata/runtime-identity-vault-login",
+		"DELETE /v1/proof-secrets/metadata/codex-runtime-profile",
 		"POST /v1/proof-secrets/data/runtime-identity-vault-login",
 		"POST /v1/proof-secrets/data/codex-runtime-profile",
 	)
+	// Earlier versions go before the new value is written, never after.
+	for _, path := range []string{"runtime-identity-vault-login", "codex-runtime-profile"} {
+		deleteIndex := strings.Index(joined, "DELETE /v1/proof-secrets/metadata/"+path)
+		writeIndex := strings.Index(joined, "POST /v1/proof-secrets/data/"+path)
+		if deleteIndex < 0 || writeIndex < 0 || deleteIndex > writeIndex {
+			t.Fatalf("metadata of %s must be deleted before the new value is written:\n%s", path, joined)
+		}
+	}
 	assertContainsNone(t, "fake bootstrap Vault requests forbidden live checks", joined,
 		"/auth/jwt/login",
 		"/auth/token/lookup-self",
@@ -955,6 +1031,15 @@ func TestRemoteAlphaVaultWorkloadAuthBootstrapFakeVaultWritesExpectedObjectsAndS
 	}
 	if got := fmt.Sprint(roleRequest.Body["bound_subject"]); got != "spiffe://execution.internal/workload" {
 		t.Fatalf("unexpected bound_subject %q", got)
+	}
+	if got := roleRequest.Body["token_ttl"]; got != "15m" {
+		t.Fatalf("expected token_ttl 15m, got %#v", got)
+	}
+	if got := roleRequest.Body["token_max_ttl"]; got != "30m" {
+		t.Fatalf("expected token_max_ttl 30m, got %#v", got)
+	}
+	if got := fmt.Sprint(roleRequest.Body["token_bound_cidrs"]); got != "[172.17.0.0/16]" {
+		t.Fatalf("expected token_bound_cidrs [172.17.0.0/16], got %s", got)
 	}
 
 	proofRequest := findFakeBootstrapRequest(t, state.requests, "POST", "/v1/proof-secrets/data/codex-runtime-profile")
@@ -1024,6 +1109,10 @@ func TestRemoteAlphaVaultWorkloadAuthBootstrapFakeVaultWritesExpectedObjectsAndS
 		`"role": "service_execution"`,
 		`"policy": "runtime-identity-proof"`,
 		`"proof_runtime_secret_field_label": "api_key"`,
+		`"proof_path_history": "all_earlier_versions_and_metadata_deleted_before_write"`,
+		`"token_ttl": "15m"`,
+		`"token_max_ttl": "30m"`,
+		`"proof_secret_prior_versions": {`,
 		`"workload_auth_success"`,
 		`"not_es_vault_token_brokerage"`,
 	)

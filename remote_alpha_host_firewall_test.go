@@ -1,0 +1,1118 @@
+package executionsubstrate_test
+
+import (
+	"bufio"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+)
+
+// Tests for scripts/remote_alpha_host_firewall.sh and its internal files.
+// The contract is .docs/system_overview/remote_supported_host_alpha.md,
+// section "Remote Alpha Host Firewall".
+
+func remoteAlphaHostFirewallScript() string {
+	return filepath.Join(executionSubstrateRepoRoot, "scripts", "remote_alpha_host_firewall.sh")
+}
+
+// hostFirewallBaseEnv returns the process environment without any
+// REMOTE_ALPHA_HOST_FIREWALL_* value, with fakeBin (when set) first on PATH,
+// plus the fixed test settings and then extra.
+func hostFirewallBaseEnv(t *testing.T, fakeBin string, extra ...string) []string {
+	t.Helper()
+	dir := t.TempDir()
+	settings := map[string]string{
+		"REMOTE_ALPHA_HOST_FIREWALL_SERVICE_CALLERS":       "192.168.1.23/32",
+		"REMOTE_ALPHA_HOST_FIREWALL_CONTAINER_DNS_SERVERS": "192.168.1.1",
+		"REMOTE_ALPHA_HOST_FIREWALL_DOCKER_DAEMON_JSON":    filepath.Join(dir, "absent-daemon.json"),
+		"REMOTE_ALPHA_HOST_FIREWALL_RESOLV_CONF":           filepath.Join(dir, "absent-resolv.conf"),
+		"REMOTE_ALPHA_HOST_FIREWALL_SYSTEMD_RESOLV_CONF":   filepath.Join(dir, "absent-systemd-resolv.conf"),
+		"REMOTE_ALPHA_HOST_FIREWALL_NFTABLES_CONF":         filepath.Join(dir, "absent-nftables.conf"),
+	}
+	for _, entry := range extra {
+		key, value, ok := strings.Cut(entry, "=")
+		if !ok {
+			t.Fatalf("bad env entry %q", entry)
+		}
+		settings[key] = value
+	}
+	var env []string
+	for _, entry := range os.Environ() {
+		key, value, _ := strings.Cut(entry, "=")
+		if strings.HasPrefix(key, "REMOTE_ALPHA_HOST_FIREWALL_") {
+			continue
+		}
+		if key == "PATH" && fakeBin != "" {
+			value = fakeBin + string(os.PathListSeparator) + value
+		}
+		env = append(env, key+"="+value)
+	}
+	for key, value := range settings {
+		env = append(env, key+"="+value)
+	}
+	return env
+}
+
+func runHostFirewall(t *testing.T, env []string, args ...string) (string, string, int) {
+	t.Helper()
+	cmd := exec.Command("/bin/bash", append([]string{remoteAlphaHostFirewallScript()}, args...)...)
+	cmd.Dir = executionSubstrateRepoRoot
+	cmd.Env = env
+	var stdout, stderr strings.Builder
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	code := 0
+	if err != nil {
+		exitErr, ok := err.(*exec.ExitError)
+		if !ok {
+			t.Fatalf("run host firewall %v: %v", args, err)
+		}
+		code = exitErr.ExitCode()
+	}
+	return stdout.String(), stderr.String(), code
+}
+
+func runHostFirewallPython(t *testing.T, env []string, stdin string, args ...string) (string, int) {
+	t.Helper()
+	// Through the shell file, so the Python sees the same settings defaults
+	// as the script does.
+	internal := filepath.Join(executionSubstrateRepoRoot, "scripts", "internal", "remote_alpha_host_firewall.sh")
+	script := fmt.Sprintf("set -euo pipefail\nsource %q\nremote_alpha_host_firewall_defaults\nremote_alpha_host_firewall_py \"$@\"\n", internal)
+	cmd := exec.Command("/bin/bash", append([]string{"-c", script, "host-firewall-py"}, args...)...)
+	cmd.Dir = executionSubstrateRepoRoot
+	cmd.Env = env
+	cmd.Stdin = strings.NewReader(stdin)
+	output, err := cmd.CombinedOutput()
+	code := 0
+	if err != nil {
+		exitErr, ok := err.(*exec.ExitError)
+		if !ok {
+			t.Fatalf("run host firewall python %v: %v", args, err)
+		}
+		code = exitErr.ExitCode()
+	}
+	return string(output), code
+}
+
+func TestRemoteAlphaHostFirewallRenderMatchesGolden(t *testing.T) {
+	stdout, stderr, code := runHostFirewall(t, hostFirewallBaseEnv(t, ""), "--render")
+	if code != 0 {
+		t.Fatalf("render exit %d\nstderr=%s", code, stderr)
+	}
+	golden := mustRead(t, filepath.Join(executionSubstrateRepoRoot, "testdata", "remote_alpha_host_firewall", "ruleset.golden.nft"))
+	if stdout != golden {
+		t.Fatalf("rendered ruleset differs from testdata/remote_alpha_host_firewall/ruleset.golden.nft\n--- got ---\n%s", stdout)
+	}
+
+	unit, code := runHostFirewallPython(t, hostFirewallBaseEnv(t, ""), "", "render-unit", "/etc/execution-substrate/host-firewall/es-host-firewall.nft", "/usr/sbin/nft")
+	if code != 0 {
+		t.Fatalf("render-unit exit %d: %s", code, unit)
+	}
+	goldenUnit := mustRead(t, filepath.Join(executionSubstrateRepoRoot, "testdata", "remote_alpha_host_firewall", "es-host-firewall.service.golden"))
+	if unit != goldenUnit {
+		t.Fatalf("rendered unit differs from testdata/remote_alpha_host_firewall/es-host-firewall.service.golden\n--- got ---\n%s", unit)
+	}
+}
+
+func TestRemoteAlphaHostFirewallRulesetInvariants(t *testing.T) {
+	stdout, stderr, code := runHostFirewall(t, hostFirewallBaseEnv(t, "",
+		"REMOTE_ALPHA_HOST_FIREWALL_SERVICE_CALLERS=192.168.1.23 2001:db8::23",
+		"REMOTE_ALPHA_HOST_FIREWALL_SSH_SOURCES=192.168.1.0/24",
+	), "--render")
+	if code != 0 {
+		t.Fatalf("render exit %d\nstderr=%s", code, stderr)
+	}
+	assertContainsAll(t, "ruleset", stdout,
+		// Only our two tables are replaced, in one transaction.
+		"table inet es_host_firewall\ndelete table inet es_host_firewall\ntable bridge es_host_firewall\ndelete table bridge es_host_firewall\n",
+		// Inbound default deny, loopback first.
+		"type filter hook input priority filter - 10; policy drop;\n\t\tiifname \"lo\" accept",
+		// Containers reach only Vault on the box.
+		"ip daddr 172.17.0.1 tcp dport 8200 accept\n\t\tcounter name \"container_to_host\" drop",
+		// LAN callers: IPv4 and IPv6 forms of the setting, exact host addresses.
+		"ip saddr { 192.168.1.23/32 } tcp dport { 8444, 8445 } accept",
+		"ip6 saddr { 2001:db8::23/128 } tcp dport { 8444, 8445 } accept",
+		"ip saddr { 192.168.1.0/24 } tcp dport 22 accept",
+		// Private destinations are dropped for container egress.
+		"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16", "100.64.0.0/10",
+		"fc00::/7", "fe80::/10",
+		// Layer-2 isolation of the Vault bridge.
+		"ether type ip ip saddr 172.17.0.0/16 ip daddr 172.17.0.0/16 counter name \"container_to_container\" drop",
+	)
+	assertContainsNone(t, "ruleset", stdout,
+		"flush ruleset",
+		"ip6 saddr { fe80::/10 } tcp dport 22",
+		"policy drop;\n\t\tiifname \"docker0\"",
+	)
+	// The DNS exception comes before the private-range drop.
+	dnsIndex := strings.Index(stdout, "ip daddr { 192.168.1.1 } udp dport 53 accept")
+	dropIndex := strings.Index(stdout, "counter name \"container_to_private\" drop")
+	if dnsIndex < 0 || dropIndex < 0 || dnsIndex > dropIndex {
+		t.Fatalf("DNS exception must precede the private-range drop: dns=%d drop=%d", dnsIndex, dropIndex)
+	}
+}
+
+func TestRemoteAlphaHostFirewallRejectsInvalidSettings(t *testing.T) {
+	cases := []struct {
+		name  string
+		env   []string
+		error string
+	}{
+		{"callers unset", []string{"REMOTE_ALPHA_HOST_FIREWALL_SERVICE_CALLERS="}, "SERVICE_CALLERS must name at least one"},
+		{"callers whole internet", []string{"REMOTE_ALPHA_HOST_FIREWALL_SERVICE_CALLERS=0.0.0.0/0"}, "would match every address"},
+		{"callers injection", []string{"REMOTE_ALPHA_HOST_FIREWALL_SERVICE_CALLERS=192.168.1.23;flush"}, "is not an address or network"},
+		{"callers host bits", []string{"REMOTE_ALPHA_HOST_FIREWALL_SERVICE_CALLERS=192.168.1.23/24"}, "host bits zero"},
+		{"ssh sources empty", []string{"REMOTE_ALPHA_HOST_FIREWALL_SSH_SOURCES= "}, "SSH_SOURCES must name at least one"},
+		{"service port is ssh", []string{"REMOTE_ALPHA_HOST_FIREWALL_SERVICE_PORTS=22 8445"}, "must not contain SSH_PORT"},
+		{"port out of range", []string{"REMOTE_ALPHA_HOST_FIREWALL_VAULT_PORT=70000"}, "outside 1-65535"},
+		{"interface with quote", []string{"REMOTE_ALPHA_HOST_FIREWALL_CONTAINER_INTERFACES=docker0 eth\"0"}, "is not an interface name"},
+		{"interface too long", []string{"REMOTE_ALPHA_HOST_FIREWALL_CONTAINER_INTERFACES=abcdefghijklmnop"}, "is not an interface name"},
+		{"interface star inside", []string{"REMOTE_ALPHA_HOST_FIREWALL_CONTAINER_INTERFACES=br*x"}, "is not an interface name"},
+		{"bridge subnet ipv6", []string{"REMOTE_ALPHA_HOST_FIREWALL_CONTAINER_BRIDGE_SUBNETS=fd00::/64"}, "IPv4 networks only"},
+		{"dns loopback", []string{"REMOTE_ALPHA_HOST_FIREWALL_CONTAINER_DNS_SERVERS=127.0.0.53"}, "loopback resolver"},
+		{"vault network", []string{"REMOTE_ALPHA_HOST_FIREWALL_VAULT_ADDRESS=172.17.0.1/16"}, "is not an IP address"},
+		{"accept token", []string{"REMOTE_ALPHA_HOST_FIREWALL_ACCEPT_BLOCKED_LISTENERS=tcp:5353"}, "tcp/PORT or udp/PORT"},
+		{"rollback too short", []string{"REMOTE_ALPHA_HOST_FIREWALL_ROLLBACK_SECONDS=5"}, "ROLLBACK_SECONDS must be 60 to 1800"},
+		{"state dir relative", []string{"REMOTE_ALPHA_HOST_FIREWALL_STATE_DIR=etc/x"}, "is not a plain absolute path"},
+		{"state dir dotdot", []string{"REMOTE_ALPHA_HOST_FIREWALL_STATE_DIR=/etc/../tmp"}, "is not a plain absolute path"},
+	}
+	for _, tc := range cases {
+		t.Run(strings.ReplaceAll(tc.name, " ", "_"), func(t *testing.T) {
+			stdout, stderr, code := runHostFirewall(t, hostFirewallBaseEnv(t, "", tc.env...), "--render")
+			if code != 2 {
+				t.Fatalf("expected exit 2, got %d\nstdout=%s\nstderr=%s", code, stdout, stderr)
+			}
+			if !strings.Contains(stderr, tc.error) {
+				t.Fatalf("expected error containing %q, got %q", tc.error, stderr)
+			}
+			if strings.TrimSpace(stdout) != "" {
+				t.Fatalf("a refused render must print no ruleset, got %q", stdout)
+			}
+		})
+	}
+}
+
+func TestRemoteAlphaHostFirewallAutoDNSFollowsDockerResolverChoice(t *testing.T) {
+	dir := t.TempDir()
+	daemonJSON := filepath.Join(dir, "daemon.json")
+	resolvConf := filepath.Join(dir, "resolv.conf")
+	systemdConf := filepath.Join(dir, "systemd-resolv.conf")
+	writeFile(t, resolvConf, []byte("nameserver 127.0.0.53\noptions edns0 trust-ad\n"), 0o644)
+	writeFile(t, systemdConf, []byte("nameserver 192.168.1.1\nnameserver fe80::1%wlp2s0\n"), 0o644)
+	base := []string{
+		"REMOTE_ALPHA_HOST_FIREWALL_CONTAINER_DNS_SERVERS=auto",
+		"REMOTE_ALPHA_HOST_FIREWALL_RESOLV_CONF=" + resolvConf,
+		"REMOTE_ALPHA_HOST_FIREWALL_SYSTEMD_RESOLV_CONF=" + systemdConf,
+		"REMOTE_ALPHA_HOST_FIREWALL_DOCKER_DAEMON_JSON=" + daemonJSON,
+	}
+
+	// systemd-resolved stub only in resolv.conf: the upstream list is used,
+	// without its IPv6 resolvers because the default bridge has no IPv6.
+	stdout, stderr, code := runHostFirewall(t, hostFirewallBaseEnv(t, "", base...), "--render")
+	if code != 0 {
+		t.Fatalf("render exit %d: %s", code, stderr)
+	}
+	assertContainsAll(t, "systemd upstream", stdout,
+		"ip daddr { 192.168.1.1 } udp dport 53 accept",
+		"(from "+systemdConf+", IPv6 resolvers dropped as Docker does without IPv6)",
+	)
+	if strings.Contains(stdout, "fe80::1 }") {
+		t.Fatalf("IPv6 resolver must be dropped without Docker IPv6:\n%s", stdout)
+	}
+
+	// With IPv6 enabled in daemon.json, Docker keeps IPv6 resolvers.
+	writeFile(t, daemonJSON, []byte(`{"ipv6": true}`), 0o644)
+	stdout, _, code = runHostFirewall(t, hostFirewallBaseEnv(t, "", base...), "--render")
+	if code != 0 || !strings.Contains(stdout, "ip6 daddr { fe80::1 } udp dport 53 accept") {
+		t.Fatalf("expected IPv6 resolver with Docker IPv6, got exit %d\n%s", code, stdout)
+	}
+	if err := os.Remove(daemonJSON); err != nil {
+		t.Fatal(err)
+	}
+
+	// Docker switches to systemd-resolved's list only when 127.0.0.53 is the
+	// sole resolver. Another loopback resolver leaves nothing usable.
+	writeFile(t, resolvConf, []byte("nameserver 127.0.0.1\n"), 0o644)
+	stdout, _, code = runHostFirewall(t, hostFirewallBaseEnv(t, "", base...), "--render")
+	if code != 0 || strings.Contains(stdout, "dport 53") || !strings.Contains(stdout, "container_dns_servers = (none)") {
+		t.Fatalf("expected no DNS exception for a loopback-only resolv.conf, got exit %d\n%s", code, stdout)
+	}
+
+	// A non-loopback resolver in resolv.conf wins over systemd-resolved.
+	writeFile(t, resolvConf, []byte("nameserver 127.0.0.53\nnameserver 192.168.1.2\n"), 0o644)
+	stdout, _, code = runHostFirewall(t, hostFirewallBaseEnv(t, "", base...), "--render")
+	if code != 0 || !strings.Contains(stdout, "ip daddr { 192.168.1.2 } udp dport 53 accept") || strings.Contains(stdout, "192.168.1.1 }") {
+		t.Fatalf("expected resolv.conf resolver only, got exit %d\n%s", code, stdout)
+	}
+
+	// daemon.json "dns" wins over both.
+	writeFile(t, daemonJSON, []byte(`{"dns": ["10.0.0.53"]}`), 0o644)
+	stdout, _, code = runHostFirewall(t, hostFirewallBaseEnv(t, "", base...), "--render")
+	if code != 0 || !strings.Contains(stdout, "ip daddr { 10.0.0.53 } udp dport 53 accept") {
+		t.Fatalf("expected daemon.json resolver, got exit %d\n%s", code, stdout)
+	}
+
+	// Nothing usable: no DNS exception at all (Docker uses public resolvers).
+	if err := os.Remove(daemonJSON); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, resolvConf, []byte("nameserver 127.0.0.53\n"), 0o644)
+	if err := os.Remove(systemdConf); err != nil {
+		t.Fatal(err)
+	}
+	stdout, _, code = runHostFirewall(t, hostFirewallBaseEnv(t, "", base...), "--render")
+	if code != 0 || strings.Contains(stdout, "dport 53") || !strings.Contains(stdout, "container_dns_servers = (none)") {
+		t.Fatalf("expected no DNS exception, got exit %d\n%s", code, stdout)
+	}
+
+	// A broken daemon.json is refused, not ignored.
+	writeFile(t, daemonJSON, []byte(`{"dns": `), 0o644)
+	_, stderr, code = runHostFirewall(t, hostFirewallBaseEnv(t, "", base...), "--render")
+	if code != 2 || !strings.Contains(stderr, "cannot read") {
+		t.Fatalf("expected refusal of unreadable daemon.json, got exit %d: %s", code, stderr)
+	}
+}
+
+const hostFirewallSampleListeners = `tcp LISTEN 0 4096 127.0.0.1:4646 0.0.0.0:* users:(("nomad",pid=1,fd=22))
+tcp LISTEN 0 4096 172.17.0.1:8200 0.0.0.0:* users:(("vault",pid=2,fd=10))
+tcp LISTEN 0 4096 192.168.1.156:8444 0.0.0.0:* users:(("ags",pid=3,fd=3))
+tcp LISTEN 0 4096 192.168.1.156:8445 0.0.0.0:* users:(("es",pid=4,fd=6))
+tcp LISTEN 0 128 0.0.0.0:22 0.0.0.0:* users:(("sshd",pid=5,fd=3))
+tcp LISTEN 0 128 [::]:22 [::]:* users:(("sshd",pid=5,fd=4))
+tcp LISTEN 0 4096 127.0.0.53%lo:53 0.0.0.0:* users:(("systemd-resolve",pid=6,fd=15))
+tcp LISTEN 0 5 0.0.0.0:5900 0.0.0.0:* users:(("vnc",pid=7,fd=3))
+udp UNCONN 0 0 0.0.0.0:5353 0.0.0.0:* users:(("avahi-daemon",pid=8,fd=12))
+udp UNCONN 0 0 192.168.1.156%wlp2s0:68 0.0.0.0:* users:(("NetworkManager",pid=9,fd=24))
+udp UNCONN 0 0 0.0.0.0:41641 0.0.0.0:* users:(("chronyd",pid=10,fd=5))
+tcp ESTAB 0 0 192.168.1.156:22 192.168.1.23:50000 users:(("sshd",pid=11,fd=4))
+`
+
+func TestRemoteAlphaHostFirewallListenerClassification(t *testing.T) {
+	output, code := runHostFirewallPython(t, hostFirewallBaseEnv(t, ""), hostFirewallSampleListeners, "listeners", "32768")
+	if code != 3 {
+		t.Fatalf("expected exit 3 for unaccepted listeners, got %d\n%s", code, output)
+	}
+	assertContainsAll(t, "listener classes", output,
+		"127.0.0.1:4646", "loopback only (unchanged)",
+		"containers only (Vault); LAN: blocked",
+		"192.168.1.156:8445", "LAN: from 192.168.1.23/32; containers: blocked",
+		"LAN: from 192.168.1.0/24 fe80::/10; containers: blocked",
+		"DHCP client replies only",
+		"ephemeral client socket (replies only)",
+		"BLOCKED from LAN and containers (NOT accepted)",
+		"not accepted: tcp/5900 udp/5353",
+	)
+	if strings.Contains(output, "50000") {
+		t.Fatalf("an established connection is not a listener:\n%s", output)
+	}
+
+	output, code = runHostFirewallPython(t, hostFirewallBaseEnv(t, "", "REMOTE_ALPHA_HOST_FIREWALL_ACCEPT_BLOCKED_LISTENERS=tcp/5900 udp/5353"), hostFirewallSampleListeners, "listeners", "32768")
+	if code != 0 {
+		t.Fatalf("expected exit 0 once accepted, got %d\n%s", code, output)
+	}
+	assertContainsAll(t, "accepted listeners", output, "BLOCKED from LAN and containers (accepted in settings)")
+}
+
+func TestRemoteAlphaHostFirewallSSHPeerChecks(t *testing.T) {
+	env := hostFirewallBaseEnv(t, "")
+	inside := "0 0 192.168.1.156:22 192.168.1.23:50000\n0 0 192.168.1.156:8445 10.9.9.9:40000\n0 0 [::ffff:192.168.1.156]:22 [::ffff:192.168.1.40]:50001\n0 0 127.0.0.1:22 127.0.0.1:50002\n"
+	output, code := runHostFirewallPython(t, env, inside, "ssh-peers")
+	if code != 0 {
+		t.Fatalf("expected peers inside SSH_SOURCES to pass, got %d\n%s", code, output)
+	}
+	assertContainsAll(t, "ssh peers", output, "ssh peer 192.168.1.23:50000", "ssh peer 192.168.1.40:50001")
+	if strings.Contains(output, "10.9.9.9") {
+		t.Fatalf("a connection to another port is not an SSH peer:\n%s", output)
+	}
+
+	outside := inside + "0 0 192.168.1.156:22 10.20.30.40:50003\n"
+	output, code = runHostFirewallPython(t, env, outside, "ssh-peers")
+	if code != 4 || !strings.Contains(output, "outside REMOTE_ALPHA_HOST_FIREWALL_SSH_SOURCES") || !strings.Contains(output, "10.20.30.40") {
+		t.Fatalf("expected refusal for a peer outside SSH_SOURCES, got %d\n%s", code, output)
+	}
+
+	output, code = runHostFirewallPython(t, env, "", "ssh-peers")
+	if code != 0 || !strings.Contains(output, "not run over SSH") {
+		t.Fatalf("expected pass without SSH connections, got %d\n%s", code, output)
+	}
+
+	recorded := filepath.Join(t.TempDir(), "peers")
+	writeFile(t, recorded, []byte("192.168.1.23:50000\n"), 0o600)
+	output, code = runHostFirewallPython(t, env, "0 0 192.168.1.156:22 192.168.1.23:50000\n", "new-ssh-peer", recorded)
+	if code != 5 {
+		t.Fatalf("the connection that ran --apply must not count as new, got %d\n%s", code, output)
+	}
+	output, code = runHostFirewallPython(t, env, "0 0 192.168.1.156:22 192.168.1.23:50000\n0 0 192.168.1.156:22 192.168.1.23:50010\n", "new-ssh-peer", recorded)
+	if code != 0 || !strings.Contains(output, "192.168.1.23:50010") {
+		t.Fatalf("a connection opened after --apply must count as new, got %d\n%s", code, output)
+	}
+}
+
+func TestRemoteAlphaHostFirewallBridgeCheck(t *testing.T) {
+	env := hostFirewallBaseEnv(t, "")
+	addrs := "1: lo    inet 127.0.0.1/8 scope host lo\n2: wlp2s0    inet 192.168.1.156/24 brd 192.168.1.255 scope global wlp2s0\n3: docker0    inet 172.17.0.1/16 brd 172.17.255.255 scope global docker0\n9: br-abc123    inet 172.18.0.1/16 brd 172.18.255.255 scope global br-abc123\n"
+	output, code := runHostFirewallPython(t, env, addrs, "bridge-check")
+	if code != 0 {
+		t.Fatalf("expected pass, got %d\n%s", code, output)
+	}
+	assertContainsAll(t, "bridge check", output,
+		"wlp2s0", "LAN side (inbound default deny)",
+		"docker0", "containers isolated from each other at layer 2; holds the Vault address",
+		"br-abc123", "NOT isolated at layer 2",
+	)
+	output, code = runHostFirewallPython(t, hostFirewallBaseEnv(t, "", "REMOTE_ALPHA_HOST_FIREWALL_CONTAINER_BRIDGE_SUBNETS=172.18.0.0/16"), addrs, "bridge-check")
+	if code != 7 {
+		t.Fatalf("expected refusal when the Vault bridge is not isolated, got %d\n%s", code, output)
+	}
+	output, code = runHostFirewallPython(t, env, "2: wlp2s0    inet 192.168.1.156/24 scope global wlp2s0\n", "bridge-check")
+	if code != 7 || !strings.Contains(output, "no interface holds the Vault address") {
+		t.Fatalf("expected refusal without the Vault address, got %d\n%s", code, output)
+	}
+}
+
+func TestRemoteAlphaHostFirewallArgumentsAndRoot(t *testing.T) {
+	stdout, _, code := runHostFirewall(t, hostFirewallBaseEnv(t, ""), "--help")
+	if code != 0 {
+		t.Fatalf("--help exit %d", code)
+	}
+	assertContainsAll(t, "usage", stdout,
+		"--plan", "--apply", "--confirm", "--status", "--probe", "--rollback", "--render",
+		"SERVICE_CALLERS has no", "default and must be set",
+		"Changes only the nftables tables inet and bridge es_host_firewall",
+		"Not egress lanes",
+	)
+	if _, stderr, code := runHostFirewall(t, hostFirewallBaseEnv(t, ""), "--apply", "--confirm"); code != 2 || !strings.Contains(stderr, "at most one mode") {
+		t.Fatalf("two modes must be refused, got %d: %s", code, stderr)
+	}
+	if _, stderr, code := runHostFirewall(t, hostFirewallBaseEnv(t, ""), "--service-callers=1.2.3.4"); code != 2 || !strings.Contains(stderr, "unknown argument") {
+		t.Fatalf("unknown argument must be refused, got %d: %s", code, stderr)
+	}
+
+	fakeBin := t.TempDir()
+	writeExecutable(t, fakeBin, "id", "#!/bin/sh\nif [ \"$1\" = \"-u\" ]; then echo 1000; exit 0; fi\nexec /usr/bin/id \"$@\"\n")
+	for _, mode := range []string{"--plan", "--apply", "--confirm", "--status", "--probe", "--rollback"} {
+		_, stderr, code := runHostFirewall(t, hostFirewallBaseEnv(t, fakeBin), mode)
+		if code != 1 || !strings.Contains(stderr, "must run as root") {
+			t.Fatalf("%s without root: expected exit 1 and a root error, got %d: %s", mode, code, stderr)
+		}
+	}
+	if _, stderr, code := runHostFirewall(t, hostFirewallBaseEnv(t, fakeBin), "--render"); code != 0 {
+		t.Fatalf("--render must work without root, got %d: %s", code, stderr)
+	}
+}
+
+// hostFirewallFakes installs fake root-only commands that record every call.
+// The fake nft keeps a "loaded" copy of the last ruleset it loaded and lists
+// it in place of the kernel; the fake systemd-run records the rollback
+// command; the fake systemctl keeps the timer and unit state in files.
+func hostFirewallFakes(t *testing.T, ssEstablished string) (string, string) {
+	t.Helper()
+	fakeBin := t.TempDir()
+	state := t.TempDir()
+	log := filepath.Join(state, "calls.log")
+	writeExecutable(t, fakeBin, "id", "#!/bin/sh\nif [ \"$1\" = \"-u\" ]; then echo 0; exit 0; fi\nexec /usr/bin/id \"$@\"\n")
+	writeExecutable(t, fakeBin, "install", fmt.Sprintf("#!/bin/sh\necho \"install $*\" >>%q\nexit 0\n", log))
+	writeExecutable(t, fakeBin, "chown", "#!/bin/sh\nexit 0\n")
+	writeExecutable(t, fakeBin, "nft", fmt.Sprintf(`#!/bin/bash
+state=%q
+echo "nft $*" >>%q
+if [[ "$1" == "-c" ]]; then [[ -n "${FAKE_NFT_CHECK_FAIL:-}" ]] && { echo "check failed" >&2; exit 1; }; exit 0; fi
+if [[ "$1" == "-f" ]]; then
+  if grep -q "^table inet es_host_firewall {" "$2"; then cp "$2" "$state/loaded"; else rm -f "$state/loaded"; fi
+  exit 0
+fi
+if [[ "$1" == "list" && "$2" == "table" ]]; then [[ -f "$state/loaded" ]]; exit; fi
+if [[ "$1" == "-s" && "$2" == "list" ]]; then
+  [[ -f "$state/loaded" ]] || exit 1
+  if [[ "$4" == "inet" ]]; then sed -n '/^table inet es_host_firewall {/,/^}/p' "$state/loaded"; else sed -n '/^table bridge es_host_firewall {/,/^}/p' "$state/loaded"; fi
+  exit 0
+fi
+exit 0
+`, state, log))
+	writeExecutable(t, fakeBin, "systemd-run", fmt.Sprintf(`#!/bin/bash
+echo "systemd-run $*" >>%q
+cmd=()
+for arg in "$@"; do case "$arg" in --*) ;; *) cmd+=("$arg") ;; esac; done
+printf '%%q ' "${cmd[@]}" >%q/rollback-command
+echo waiting >%q/timer
+`, log, state, state))
+	writeExecutable(t, fakeBin, "systemctl", fmt.Sprintf(`#!/bin/bash
+state=%q
+echo "systemctl $*" >>%q
+case "$1" in
+  show) cat "$state/timer" 2>/dev/null || echo dead ;;
+  stop) echo dead >"$state/timer" ;;
+  is-enabled) [[ "$*" == *es-host-firewall.service* && -f "$state/enabled" ]] ;;
+  enable) touch "$state/enabled" ;;
+  disable) rm -f "$state/enabled" ;;
+  restart) nft -f "$(sed -n 's/^ExecStart=[^ ]* -f //p' "$FAKE_UNIT_PATH")" ;;
+  *) exit 0 ;;
+esac
+`, state, log))
+	writeExecutable(t, fakeBin, "ss", fmt.Sprintf(`#!/bin/bash
+echo "ss $*" >>%q
+if [[ "$*" == *"state established"* ]]; then cat %q 2>/dev/null; exit 0; fi
+printf 'tcp LISTEN 0 128 0.0.0.0:22 0.0.0.0:* users:(("sshd",pid=5,fd=3))\n'
+`, log, filepath.Join(state, "established")))
+	writeExecutable(t, fakeBin, "ip", "#!/bin/bash\nif [[ \"$*\" == *\"addr show\"* ]]; then printf '3: docker0    inet 172.17.0.1/16 brd 172.17.255.255 scope global docker0\\n'; fi\nexit 0\n")
+	writeFile(t, filepath.Join(state, "established"), []byte(ssEstablished), 0o644)
+	return fakeBin, state
+}
+
+func readCalls(t *testing.T, state string) string {
+	t.Helper()
+	return readIfExists(filepath.Join(state, "calls.log"))
+}
+
+func TestRemoteAlphaHostFirewallApplyConfirmRollbackOrderWithFakes(t *testing.T) {
+	fakeBin, state := hostFirewallFakes(t, "0 0 192.168.1.156:22 192.168.1.23:50000\n")
+	root := t.TempDir()
+	unitPath := filepath.Join(root, "systemd", "es-host-firewall.service")
+	if err := os.MkdirAll(filepath.Dir(unitPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	env := hostFirewallBaseEnv(t, fakeBin,
+		"REMOTE_ALPHA_HOST_FIREWALL_STATE_DIR="+filepath.Join(root, "state"),
+		"REMOTE_ALPHA_HOST_FIREWALL_RUN_DIR="+filepath.Join(root, "run"),
+		"REMOTE_ALPHA_HOST_FIREWALL_UNIT_PATH="+unitPath,
+		"FAKE_UNIT_PATH="+unitPath,
+	)
+	for _, dir := range []string{filepath.Join(root, "state"), filepath.Join(root, "run")} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Plan changes nothing.
+	stdout, stderr, code := runHostFirewall(t, env, "--plan")
+	if code != 0 || !strings.Contains(stdout, "RESULT: ready to apply") {
+		t.Fatalf("plan: exit %d\n%s\n%s", code, stdout, stderr)
+	}
+	calls := readCalls(t, state)
+	assertContainsNone(t, "plan calls", calls, "nft -f", "systemd-run", "systemctl stop", "systemctl enable", "systemctl restart", "install ")
+
+	// A failing kernel check stops apply before any effect.
+	failEnv := append(append([]string{}, env...), "FAKE_NFT_CHECK_FAIL=1")
+	stdout, _, code = runHostFirewall(t, failEnv, "--apply")
+	if code != 1 || !strings.Contains(stdout, "RESULT: not applied; nothing was changed") {
+		t.Fatalf("apply with failing check: exit %d\n%s", code, stdout)
+	}
+	assertContainsNone(t, "failed apply calls", readCalls(t, state), "nft -f", "systemd-run")
+
+	// Confirm without an apply is refused.
+	if _, stderr, code := runHostFirewall(t, env, "--confirm"); code != 1 || !strings.Contains(stderr, "no apply is awaiting confirm") {
+		t.Fatalf("confirm without apply: exit %d: %s", code, stderr)
+	}
+
+	// Apply arms the rollback before it loads the ruleset.
+	if err := os.WriteFile(filepath.Join(state, "calls.log"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr, code = runHostFirewall(t, env, "--apply")
+	if code != 0 || !strings.Contains(stdout, "RESULT: applied, awaiting confirm") {
+		t.Fatalf("apply: exit %d\n%s\n%s", code, stdout, stderr)
+	}
+	calls = readCalls(t, state)
+	runIndex := strings.Index(calls, "systemd-run")
+	loadIndex := strings.Index(calls, "nft -f "+filepath.Join(root, "run", "candidate.nft"))
+	if runIndex < 0 || loadIndex < 0 || runIndex > loadIndex {
+		t.Fatalf("the rollback timer must be armed before the ruleset loads:\n%s", calls)
+	}
+	assertContainsAll(t, "apply timer", calls, "--on-active=180s", "--collect", "--unit=es-host-firewall-rollback")
+	rollbackCommand := readIfExists(filepath.Join(state, "rollback-command"))
+	if !strings.Contains(rollbackCommand, filepath.Join(root, "run", "rollback.nft")) {
+		t.Fatalf("rollback command must load the rollback file, got %q", rollbackCommand)
+	}
+	rollbackFile := mustRead(t, filepath.Join(root, "run", "rollback.nft"))
+	if rollbackFile != "table inet es_host_firewall\ndelete table inet es_host_firewall\ntable bridge es_host_firewall\ndelete table bridge es_host_firewall\n" {
+		t.Fatalf("with no earlier tables the rollback file must only remove ours, got:\n%s", rollbackFile)
+	}
+
+	// A second apply while one awaits confirm is refused.
+	if stdout, _, code := runHostFirewall(t, env, "--apply"); code != 1 || !strings.Contains(stdout, "no earlier apply awaiting confirm: FAIL") {
+		t.Fatalf("second apply: exit %d\n%s", code, stdout)
+	}
+
+	// Confirm from the connection that applied is refused.
+	if _, stderr, code := runHostFirewall(t, env, "--confirm"); code != 1 || !strings.Contains(stderr, "SSH connection opened after --apply") {
+		t.Fatalf("confirm without a new SSH connection: exit %d: %s", code, stderr)
+	}
+	// Confirm with different settings is refused.
+	otherEnv := append(append([]string{}, env...), "REMOTE_ALPHA_HOST_FIREWALL_SERVICE_CALLERS=192.168.1.24/32")
+	if _, stderr, code := runHostFirewall(t, otherEnv, "--confirm"); code != 1 || !strings.Contains(stderr, "do not render the applied ruleset") {
+		t.Fatalf("confirm with other settings: exit %d: %s", code, stderr)
+	}
+
+	// A new SSH connection allows confirm, which stops the timer before it
+	// installs the files.
+	writeFile(t, filepath.Join(state, "established"), []byte("0 0 192.168.1.156:22 192.168.1.23:50000\n0 0 192.168.1.156:22 192.168.1.23:50010\n"), 0o644)
+	if err := os.WriteFile(filepath.Join(state, "calls.log"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr, code = runHostFirewall(t, env, "--confirm")
+	if code != 0 || !strings.Contains(stdout, "RESULT: confirmed") {
+		t.Fatalf("confirm: exit %d\n%s\n%s", code, stdout, stderr)
+	}
+	calls = readCalls(t, state)
+	stopIndex := strings.Index(calls, "systemctl stop es-host-firewall-rollback.timer")
+	enableIndex := strings.Index(calls, "systemctl enable --quiet es-host-firewall.service")
+	if stopIndex < 0 || enableIndex < 0 || stopIndex > enableIndex {
+		t.Fatalf("confirm must stop the timer before installing:\n%s", calls)
+	}
+	installed := mustRead(t, filepath.Join(root, "state", "es-host-firewall.nft"))
+	rendered, _, _ := runHostFirewall(t, env, "--render")
+	if installed != rendered {
+		t.Fatal("the installed ruleset must be the rendered one")
+	}
+	unit := mustRead(t, unitPath)
+	assertContainsAll(t, "unit", unit, "ExecStart=", "-f "+filepath.Join(root, "state", "es-host-firewall.nft"), "WantedBy=sysinit.target", "Before=network-pre.target docker.service nomad.service")
+	for _, path := range []string{"candidate.nft", "rollback.nft", "applied.listing"} {
+		if _, err := os.Stat(filepath.Join(root, "run", path)); !os.IsNotExist(err) {
+			t.Fatalf("confirm must remove %s, stat err=%v", path, err)
+		}
+	}
+
+	// Status: installed and unchanged.
+	stdout, _, code = runHostFirewall(t, env, "--status")
+	if code != 0 || !strings.Contains(stdout, "RESULT: installed and unchanged") {
+		t.Fatalf("status: exit %d\n%s", code, stdout)
+	}
+	// Drift: the loaded tables change behind the script's back.
+	loaded := filepath.Join(state, "loaded")
+	writeFile(t, loaded, []byte(strings.Replace(mustRead(t, loaded), "tcp dport 8200 accept", "tcp dport 8201 accept", 1)), 0o644)
+	stdout, _, code = runHostFirewall(t, env, "--status")
+	if code != 1 || !strings.Contains(stdout, "loaded tables: DIFFER") {
+		t.Fatalf("status after drift: exit %d\n%s", code, stdout)
+	}
+
+	// Rollback removes tables, unit and files.
+	stdout, stderr, code = runHostFirewall(t, env, "--rollback")
+	if code != 0 || !strings.Contains(stdout, "RESULT: removed") {
+		t.Fatalf("rollback: exit %d\n%s\n%s", code, stdout, stderr)
+	}
+	for _, path := range []string{unitPath, filepath.Join(root, "state", "es-host-firewall.nft"), loaded} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("rollback must remove %s, stat err=%v", path, err)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Real-kernel tests. They need root, iproute2 and nft, build a small network
+// of namespaces (a "box" with a docker0 bridge and two containers, a LAN with
+// a router, the operator Mac and another device, and an "internet" host),
+// load the rendered ruleset into the box namespace, and check real traffic.
+// They skip themselves without root; .github/ci/environment-only-tests.txt
+// lists them.
+// ---------------------------------------------------------------------------
+
+type hostFirewallLab struct {
+	t      *testing.T
+	prefix string
+	names  map[string]string
+	// ipv6 is true when the kernel has IPv6 (some sandboxes boot with
+	// ipv6.disable=1); the IPv6 checks run only then, as a visible subtest.
+	ipv6 bool
+}
+
+func requireHostFirewallLab(t *testing.T) {
+	t.Helper()
+	if os.Geteuid() != 0 {
+		t.Skip("needs root to create network namespaces")
+	}
+	for _, tool := range []string{"ip", "nft", "python3"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Fatalf("running as root but %s is missing: install it to run this real-kernel test", tool)
+		}
+	}
+}
+
+func (l *hostFirewallLab) run(args ...string) string {
+	l.t.Helper()
+	output, err := exec.Command(args[0], args[1:]...).CombinedOutput()
+	if err != nil {
+		l.t.Fatalf("%s: %v\n%s", strings.Join(args, " "), err, output)
+	}
+	return string(output)
+}
+
+func (l *hostFirewallLab) ns(name string) string { return l.names[name] }
+
+func newHostFirewallLab(t *testing.T) *hostFirewallLab {
+	t.Helper()
+	requireHostFirewallLab(t)
+	l := &hostFirewallLab{t: t, prefix: fmt.Sprintf("esfw%d", os.Getpid()%100000), names: map[string]string{}}
+	if _, err := os.Stat("/proc/sys/net/ipv6"); err == nil {
+		l.ipv6 = true
+	}
+	for _, name := range []string{"box", "c1", "c2", "lan", "wan"} {
+		l.names[name] = l.prefix + name
+	}
+	t.Cleanup(func() {
+		for _, ns := range l.names {
+			_ = exec.Command("ip", "netns", "del", ns).Run()
+		}
+	})
+	for _, name := range []string{"box", "c1", "c2", "lan", "wan"} {
+		l.run("ip", "netns", "add", l.ns(name))
+		l.run("ip", "-n", l.ns(name), "link", "set", "lo", "up")
+	}
+	box := l.ns("box")
+	l.run("ip", "-n", box, "link", "add", "docker0", "type", "bridge")
+	l.run("ip", "-n", box, "addr", "add", "172.17.0.1/16", "dev", "docker0")
+	l.run("ip", "-n", box, "link", "set", "docker0", "up")
+	for i, c := range []string{"c1", "c2"} {
+		ns := l.ns(c)
+		hostSide := fmt.Sprintf("veth%d", i+1)
+		l.run("ip", "link", "add", "eth0", "netns", ns, "type", "veth", "peer", "name", hostSide, "netns", box)
+		l.run("ip", "-n", box, "link", "set", hostSide, "master", "docker0", "up")
+		l.run("ip", "-n", ns, "addr", "add", fmt.Sprintf("172.17.0.%d/16", i+2), "dev", "eth0")
+		l.run("ip", "-n", ns, "link", "set", "eth0", "up")
+		l.run("ip", "-n", ns, "route", "add", "default", "via", "172.17.0.1")
+	}
+	lan := l.ns("lan")
+	l.run("ip", "link", "add", "wlp2s0", "netns", box, "type", "veth", "peer", "name", "lan0", "netns", lan)
+	l.run("ip", "-n", box, "addr", "add", "192.168.1.156/24", "dev", "wlp2s0")
+	l.run("ip", "-n", box, "link", "set", "wlp2s0", "up")
+	for _, addr := range []string{"192.168.1.1/24", "192.168.1.23/24", "192.168.1.50/24"} {
+		l.run("ip", "-n", lan, "addr", "add", addr, "dev", "lan0")
+	}
+	l.run("ip", "-n", lan, "link", "set", "lan0", "up")
+	// IPv6 on the LAN link, as on the box: a global prefix (the ISP's, which
+	// may be reachable from the internet) and link-local addresses. nodad
+	// makes the addresses usable at once.
+	if l.ipv6 {
+		for _, addr := range []string{"2001:db8:1::156/64", "fe80::156/64"} {
+			l.run("ip", "-n", box, "addr", "add", addr, "dev", "wlp2s0", "nodad")
+		}
+		for _, addr := range []string{"2001:db8:1::1/64", "2001:db8:1::23/64", "2001:db8:1::50/64", "fe80::23/64"} {
+			l.run("ip", "-n", lan, "addr", "add", addr, "dev", "lan0", "nodad")
+		}
+	}
+	l.run("ip", "-n", box, "route", "add", "default", "via", "192.168.1.1")
+	l.run("ip", "netns", "exec", box, "sysctl", "-qw", "net.ipv4.ip_forward=1")
+	wan := l.ns("wan")
+	l.run("ip", "link", "add", "wan0", "netns", lan, "type", "veth", "peer", "name", "wan1", "netns", wan)
+	l.run("ip", "-n", lan, "addr", "add", "198.51.100.1/24", "dev", "wan0")
+	l.run("ip", "-n", lan, "link", "set", "wan0", "up")
+	l.run("ip", "-n", wan, "addr", "add", "198.51.100.10/24", "dev", "wan1")
+	l.run("ip", "-n", wan, "addr", "add", "203.0.113.10/24", "dev", "wan1")
+	l.run("ip", "-n", wan, "link", "set", "wan1", "up")
+	l.run("ip", "-n", wan, "route", "add", "default", "via", "198.51.100.1")
+	l.run("ip", "-n", lan, "route", "add", "203.0.113.0/24", "via", "198.51.100.10")
+	l.run("ip", "-n", lan, "route", "add", "172.17.0.0/16", "via", "192.168.1.156")
+	l.run("ip", "netns", "exec", lan, "sysctl", "-qw", "net.ipv4.ip_forward=1")
+	return l
+}
+
+// hostFirewallLabServer is a python helper that listens on TCP (keeping
+// connections open until the peer closes) and answers DNS A queries on UDP.
+const hostFirewallLabServer = `
+import socket, sys, threading
+def hold(conn):
+    try:
+        while conn.recv(1024):
+            pass
+    except OSError:
+        pass
+    conn.close()
+for spec in sys.argv[1:]:
+    proto, host, port = spec.split(",")
+    if proto == "tcp":
+        s = socket.socket(socket.AF_INET6 if ":" in host else socket.AF_INET)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        if ":" in host:
+            s.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+        s.bind((host, int(port)))
+        s.listen(16)
+        def accept(s=s):
+            while True:
+                conn, _ = s.accept()
+                threading.Thread(target=hold, args=(conn,), daemon=True).start()
+        threading.Thread(target=accept, daemon=True).start()
+    else:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.bind((host, int(port)))
+        def answer(s=s):
+            while True:
+                data, peer = s.recvfrom(4096)
+                end = 12
+                while data[end] != 0:
+                    end += data[end] + 1
+                end += 5
+                s.sendto(data[:2] + b"\x81\x80" + data[4:6] + b"\x00\x01\x00\x00\x00\x00" + data[12:end]
+                         + b"\xc0\x0c\x00\x01\x00\x01\x00\x00\x00\x3c\x00\x04" + bytes([203, 0, 113, 10]), peer)
+        threading.Thread(target=answer, daemon=True).start()
+print("ready", flush=True)
+sys.stdin.read()
+`
+
+func (l *hostFirewallLab) serve(name string, specs ...string) {
+	l.t.Helper()
+	cmd := exec.Command("ip", append([]string{"netns", "exec", l.ns(name), "python3", "-I", "-c", hostFirewallLabServer}, specs...)...)
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		l.t.Fatal(err)
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		l.t.Fatal(err)
+	}
+	cmd.Stderr = os.Stderr
+	if err := cmd.Start(); err != nil {
+		l.t.Fatal(err)
+	}
+	l.t.Cleanup(func() {
+		_ = stdin.Close()
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	})
+	line, err := bufio.NewReader(stdout).ReadString('\n')
+	if err != nil || strings.TrimSpace(line) != "ready" {
+		l.t.Fatalf("lab server in %s did not start: %q %v", name, line, err)
+	}
+	go func() { _, _ = io.Copy(io.Discard, stdout) }()
+}
+
+const hostFirewallLabProbe = `
+import socket, struct, sys
+kind, host, port = sys.argv[1], sys.argv[2], int(sys.argv[3])
+src = sys.argv[4] if len(sys.argv) > 4 else None
+if kind == "tcp":
+    family, _, _, _, target = socket.getaddrinfo(host, port, 0, socket.SOCK_STREAM)[0]
+    s = socket.socket(family, socket.SOCK_STREAM)
+    s.settimeout(1.5)
+    if src:
+        s.bind(socket.getaddrinfo(src, 0, family, socket.SOCK_STREAM)[0][4])
+    try:
+        s.connect(target); print("connected")
+    except socket.timeout:
+        print("timeout")
+    except ConnectionRefusedError:
+        print("refused")
+    except OSError as exc:
+        print("error", exc.errno)
+else:
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.settimeout(1.5)
+    s.sendto(struct.pack(">HHHHHH", 7, 0x100, 1, 0, 0, 0) + b"\x06github\x03com\x00" + struct.pack(">HH", 1, 1), (host, port))
+    try:
+        s.recvfrom(512); print("answer")
+    except socket.timeout:
+        print("timeout")
+`
+
+func (l *hostFirewallLab) probe(name, kind, host string, port int, src string) string {
+	l.t.Helper()
+	args := []string{"netns", "exec", l.ns(name), "python3", "-I", "-c", hostFirewallLabProbe, kind, host, fmt.Sprint(port)}
+	if src != "" {
+		args = append(args, src)
+	}
+	output, err := exec.Command("ip", args...).CombinedOutput()
+	if err != nil {
+		l.t.Fatalf("probe %s %s %s:%d: %v\n%s", name, kind, host, port, err, output)
+	}
+	return strings.TrimSpace(string(output))
+}
+
+func (l *hostFirewallLab) counter(family, name string) string {
+	l.t.Helper()
+	output := l.run("ip", "netns", "exec", l.ns("box"), "nft", "list", "counter", family, "es_host_firewall", name)
+	fields := strings.Fields(output)
+	for i, field := range fields {
+		if field == "packets" && i+1 < len(fields) {
+			return fields[i+1]
+		}
+	}
+	l.t.Fatalf("no packets field in counter %s %s:\n%s", family, name, output)
+	return ""
+}
+
+func (l *hostFirewallLab) startLabServers() {
+	if l.ipv6 {
+		// sshd and the unlisted service listen on both families, as on the box.
+		l.serve("box", "tcp,192.168.1.156,8445", "tcp,192.168.1.156,8444", "tcp,2001:db8:1::156,8445", "tcp,::,22", "tcp,172.17.0.1,8200", "tcp,::,5900")
+		l.serve("lan", "tcp,192.168.1.1,80", "udp,192.168.1.1,53", "tcp,192.168.1.1,53", "tcp,2001:db8:1::1,80")
+	} else {
+		l.serve("box", "tcp,192.168.1.156,8445", "tcp,192.168.1.156,8444", "tcp,0.0.0.0,22", "tcp,172.17.0.1,8200", "tcp,0.0.0.0,5900")
+		l.serve("lan", "tcp,192.168.1.1,80", "udp,192.168.1.1,53", "tcp,192.168.1.1,53")
+	}
+	l.serve("wan", "tcp,203.0.113.10,443")
+	l.serve("c2", "tcp,0.0.0.0,9", "tcp,0.0.0.0,8080")
+}
+
+type hostFirewallExpectation struct {
+	from, kind, host string
+	port             int
+	src, want        string
+}
+
+func (l *hostFirewallLab) expectAll(label string, expectations []hostFirewallExpectation) {
+	l.t.Helper()
+	for _, e := range expectations {
+		if got := l.probe(e.from, e.kind, e.host, e.port, e.src); got != e.want {
+			l.t.Errorf("%s: %s %s %s:%d src=%q: want %s, got %s", label, e.from, e.kind, e.host, e.port, e.src, e.want, got)
+		}
+	}
+}
+
+// expectIPv6 runs IPv6 expectations as a subtest that is skipped, visibly,
+// when the kernel has no IPv6.
+func (l *hostFirewallLab) expectIPv6(label string, expectations []hostFirewallExpectation) {
+	l.t.Helper()
+	parent := l.t
+	parent.Run("ipv6 "+label, func(t *testing.T) {
+		if !l.ipv6 {
+			t.Skip("kernel without IPv6 (/proc/sys/net/ipv6 missing): IPv6 traffic not exercised here")
+		}
+		l.t = t
+		defer func() { l.t = parent }()
+		l.expectAll(label, expectations)
+	})
+}
+
+func TestRemoteAlphaHostFirewallRealKernelTraffic(t *testing.T) {
+	l := newHostFirewallLab(t)
+	l.startLabServers()
+
+	// Without the firewall every path is open: the finding this closes.
+	l.expectAll("without firewall", []hostFirewallExpectation{
+		{"c1", "tcp", "192.168.1.1", 80, "", "connected"},
+		{"c1", "tcp", "192.168.1.156", 8445, "", "connected"},
+		{"c1", "tcp", "172.17.0.3", 9, "", "connected"},
+		{"lan", "tcp", "192.168.1.156", 8445, "192.168.1.50", "connected"},
+		{"lan", "tcp", "172.17.0.1", 8200, "192.168.1.50", "connected"},
+	})
+	l.expectIPv6("without firewall", []hostFirewallExpectation{
+		{"lan", "tcp", "2001:db8:1::156", 22, "2001:db8:1::50", "connected"},
+		{"lan", "tcp", "2001:db8:1::156", 8445, "2001:db8:1::50", "connected"},
+	})
+
+	ruleset, stderr, code := runHostFirewall(t, hostFirewallBaseEnv(t, ""), "--render")
+	if code != 0 {
+		t.Fatalf("render: %d %s", code, stderr)
+	}
+	path := filepath.Join(t.TempDir(), "ruleset.nft")
+	writeFile(t, path, []byte(ruleset), 0o600)
+	l.run("ip", "netns", "exec", l.ns("box"), "nft", "-c", "-f", path)
+	l.run("ip", "netns", "exec", l.ns("box"), "nft", "-f", path)
+	// Loading twice is an atomic replace, not an error.
+	l.run("ip", "netns", "exec", l.ns("box"), "nft", "-f", path)
+
+	l.expectAll("with firewall", []hostFirewallExpectation{
+		// From a container: Vault, the resolver and the internet work.
+		{"c1", "tcp", "172.17.0.1", 8200, "", "connected"},
+		{"c1", "udp", "192.168.1.1", 53, "", "answer"},
+		{"c1", "tcp", "192.168.1.1", 53, "", "connected"},
+		{"c1", "tcp", "203.0.113.10", 443, "", "connected"},
+		// The box's LAN services, SSH and other ports are unreachable.
+		{"c1", "tcp", "192.168.1.156", 8445, "", "timeout"},
+		{"c1", "tcp", "192.168.1.156", 8444, "", "timeout"},
+		{"c1", "tcp", "192.168.1.156", 22, "", "timeout"},
+		{"c1", "tcp", "172.17.0.1", 22, "", "timeout"},
+		{"c1", "tcp", "172.17.0.1", 5900, "", "timeout"},
+		// The LAN (router admin page) and the other container are unreachable.
+		{"c1", "tcp", "192.168.1.1", 80, "", "timeout"},
+		{"c1", "tcp", "172.17.0.3", 9, "", "timeout"},
+		{"c1", "tcp", "172.17.0.3", 8080, "", "timeout"},
+		// From the LAN: the Mac reaches ES and AGS; another device does not.
+		{"lan", "tcp", "192.168.1.156", 8445, "192.168.1.23", "connected"},
+		{"lan", "tcp", "192.168.1.156", 8444, "192.168.1.23", "connected"},
+		{"lan", "tcp", "192.168.1.156", 8445, "192.168.1.50", "timeout"},
+		{"lan", "tcp", "192.168.1.156", 8444, "192.168.1.50", "timeout"},
+		// SSH stays open to the LAN; an unlisted service is closed.
+		{"lan", "tcp", "192.168.1.156", 22, "192.168.1.50", "connected"},
+		{"lan", "tcp", "192.168.1.156", 22, "192.168.1.23", "connected"},
+		{"lan", "tcp", "192.168.1.156", 5900, "192.168.1.23", "timeout"},
+		// Vault and containers are not reachable from the LAN, even through
+		// a route to the bridge subnet.
+		{"lan", "tcp", "172.17.0.1", 8200, "192.168.1.23", "timeout"},
+		{"lan", "tcp", "172.17.0.3", 8080, "192.168.1.50", "timeout"},
+		// The box itself still reaches its own services.
+		{"box", "tcp", "192.168.1.156", 8445, "", "connected"},
+		{"box", "tcp", "172.17.0.1", 8200, "", "connected"},
+	})
+	// IPv6: the global address (which may be reachable from the internet)
+	// takes no new connections, SSH included; SSH over link-local stays
+	// open; neighbour discovery and replies to the box's own connections
+	// still work.
+	l.expectIPv6("with firewall", []hostFirewallExpectation{
+		{"lan", "tcp", "2001:db8:1::156", 22, "2001:db8:1::50", "timeout"},
+		{"lan", "tcp", "2001:db8:1::156", 22, "2001:db8:1::23", "timeout"},
+		{"lan", "tcp", "2001:db8:1::156", 8445, "2001:db8:1::23", "timeout"},
+		{"lan", "tcp", "2001:db8:1::156", 5900, "2001:db8:1::23", "timeout"},
+		{"lan", "tcp", "fe80::156%lan0", 22, "fe80::23%lan0", "connected"},
+		{"lan", "tcp", "fe80::156%lan0", 5900, "fe80::23%lan0", "timeout"},
+		{"box", "tcp", "2001:db8:1::1", 80, "", "connected"},
+	})
+
+	for _, c := range []struct{ family, name string }{
+		{"inet", "container_to_private"},
+		{"inet", "container_to_host"},
+		{"inet", "into_container"},
+		{"inet", "lan_to_host"},
+		{"bridge", "container_to_container"},
+	} {
+		if got := l.counter(c.family, c.name); got == "0" {
+			t.Errorf("counter %s %s did not move", c.family, c.name)
+		}
+	}
+
+	// The rendered rules must survive an unrelated table with an accept-all
+	// policy: a drop in our table is final.
+	other := filepath.Join(t.TempDir(), "other.nft")
+	writeFile(t, other, []byte("table inet other {\n\tchain input {\n\t\ttype filter hook input priority filter; policy accept;\n\t\taccept\n\t}\n\tchain forward {\n\t\ttype filter hook forward priority filter; policy accept;\n\t\taccept\n\t}\n}\n"), 0o600)
+	l.run("ip", "netns", "exec", l.ns("box"), "nft", "-f", other)
+	l.expectAll("with an accept-all table beside it", []hostFirewallExpectation{
+		{"c1", "tcp", "192.168.1.1", 80, "", "timeout"},
+		{"lan", "tcp", "192.168.1.156", 8445, "192.168.1.50", "timeout"},
+		{"c1", "tcp", "172.17.0.1", 8200, "", "connected"},
+	})
+}
+
+func TestRemoteAlphaHostFirewallRealKernelApplyConfirmRollback(t *testing.T) {
+	l := newHostFirewallLab(t)
+	l.startLabServers()
+	box := l.ns("box")
+
+	// Real nft, ss and ip in the box namespace; fake systemctl and
+	// systemd-run that keep state in files, so no host unit is touched.
+	fakeBin := t.TempDir()
+	state := t.TempDir()
+	root := t.TempDir()
+	unitPath := filepath.Join(root, "es-host-firewall.service")
+	writeExecutable(t, fakeBin, "systemd-run", fmt.Sprintf(`#!/bin/bash
+cmd=()
+for arg in "$@"; do case "$arg" in --*) ;; *) cmd+=("$arg") ;; esac; done
+printf '%%q ' "${cmd[@]}" >%q/rollback-command
+echo waiting >%q/timer
+`, state, state))
+	writeExecutable(t, fakeBin, "systemctl", fmt.Sprintf(`#!/bin/bash
+state=%q
+case "$1" in
+  show) cat "$state/timer" 2>/dev/null || echo dead ;;
+  stop) echo dead >"$state/timer" ;;
+  is-enabled) [[ "$*" == *es-host-firewall.service* && -f "$state/enabled" ]] ;;
+  enable) touch "$state/enabled" ;;
+  disable) rm -f "$state/enabled" ;;
+  restart) nft -f "$(sed -n 's/^ExecStart=[^ ]* -f //p' %q)" ;;
+  *) exit 0 ;;
+esac
+`, state, unitPath))
+	env := hostFirewallBaseEnv(t, fakeBin,
+		"REMOTE_ALPHA_HOST_FIREWALL_STATE_DIR="+filepath.Join(root, "state"),
+		"REMOTE_ALPHA_HOST_FIREWALL_RUN_DIR="+filepath.Join(root, "run"),
+		"REMOTE_ALPHA_HOST_FIREWALL_UNIT_PATH="+unitPath,
+	)
+	inBox := func(env []string, args ...string) (string, string, int) {
+		t.Helper()
+		cmd := exec.Command("ip", append([]string{"netns", "exec", box, "/bin/bash", remoteAlphaHostFirewallScript()}, args...)...)
+		cmd.Env = env
+		var stdout, stderr strings.Builder
+		cmd.Stdout, cmd.Stderr = &stdout, &stderr
+		err := cmd.Run()
+		code := 0
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			code = exitErr.ExitCode()
+		} else if err != nil {
+			t.Fatal(err)
+		}
+		return stdout.String(), stderr.String(), code
+	}
+
+	// The lab's VNC-like listener on 5900 would become unreachable: plan and
+	// apply refuse until it is accepted.
+	stdout, _, code := inBox(env, "--plan")
+	if code != 1 || !strings.Contains(stdout, "not accepted: tcp/5900") {
+		t.Fatalf("plan must refuse an unaccepted listener: %d\n%s", code, stdout)
+	}
+	if stdout, _, code := inBox(env, "--apply"); code != 1 || !strings.Contains(stdout, "nothing was changed") {
+		t.Fatalf("apply must refuse an unaccepted listener: %d\n%s", code, stdout)
+	}
+	if got := l.probe("c1", "tcp", "192.168.1.1", 80, ""); got != "connected" {
+		t.Fatalf("a refused apply must change nothing, got %s", got)
+	}
+
+	env = append(env, "REMOTE_ALPHA_HOST_FIREWALL_ACCEPT_BLOCKED_LISTENERS=tcp/5900")
+	stdout, stderr, code := inBox(env, "--plan")
+	if code != 0 || !strings.Contains(stdout, "nft -c (kernel accepts the ruleset): pass") {
+		t.Fatalf("plan: %d\n%s\n%s", code, stdout, stderr)
+	}
+
+	// Apply, then let the "timer" fire: the box returns to no tables.
+	stdout, stderr, code = inBox(env, "--apply")
+	if code != 0 {
+		t.Fatalf("apply: %d\n%s\n%s", code, stdout, stderr)
+	}
+	if got := l.probe("c1", "tcp", "192.168.1.1", 80, ""); got != "timeout" {
+		t.Fatalf("applied rules must block the LAN, got %s", got)
+	}
+	rollbackCommand := strings.TrimSpace(readIfExists(filepath.Join(state, "rollback-command")))
+	l.run("ip", "netns", "exec", box, "/bin/bash", "-c", rollbackCommand)
+	writeFile(t, filepath.Join(state, "timer"), []byte("dead\n"), 0o644)
+	if got := l.probe("c1", "tcp", "192.168.1.1", 80, ""); got != "connected" {
+		t.Fatalf("the rollback must restore the state before apply, got %s", got)
+	}
+	if out := l.run("ip", "netns", "exec", box, "nft", "list", "tables"); strings.Contains(out, "es_host_firewall") {
+		t.Fatalf("the rollback must remove our tables:\n%s", out)
+	}
+	if _, stderr, code := inBox(env, "--confirm"); code != 1 || !strings.Contains(stderr, "no apply is awaiting confirm") {
+		t.Fatalf("confirm after the rollback fired: %d %s", code, stderr)
+	}
+
+	// Apply again, hold an SSH-like connection opened after apply, confirm.
+	if stdout, stderr, code := inBox(env, "--apply"); code != 0 {
+		t.Fatalf("second apply: %d\n%s\n%s", code, stdout, stderr)
+	}
+	if _, stderr, code := inBox(env, "--confirm"); code != 1 || !strings.Contains(stderr, "SSH connection opened after --apply") {
+		t.Fatalf("confirm without a new SSH connection: %d %s", code, stderr)
+	}
+	holder := exec.Command("ip", "netns", "exec", l.ns("lan"), "python3", "-I", "-c",
+		"import socket,sys\ns=socket.create_connection(('192.168.1.156',22),source_address=('192.168.1.23',0))\nprint('up',flush=True)\nsys.stdin.read()")
+	holderIn, _ := holder.StdinPipe()
+	holderOut, _ := holder.StdoutPipe()
+	if err := holder.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = holderIn.Close(); _ = holder.Wait() }()
+	if line, _ := bufio.NewReader(holderOut).ReadString('\n'); strings.TrimSpace(line) != "up" {
+		t.Fatalf("SSH-like connection from the Mac failed after apply: %q", line)
+	}
+	time.Sleep(200 * time.Millisecond)
+	stdout, stderr, code = inBox(env, "--confirm")
+	if code != 0 || !strings.Contains(stdout, "RESULT: confirmed") {
+		t.Fatalf("confirm: %d\n%s\n%s", code, stdout, stderr)
+	}
+	stdout, _, code = inBox(env, "--status")
+	if code != 0 || !strings.Contains(stdout, "RESULT: installed and unchanged") || !strings.Contains(stdout, "lan_to_host") {
+		t.Fatalf("status: %d\n%s", code, stdout)
+	}
+
+	// Drift: a rule added behind the script's back is reported.
+	l.run("ip", "netns", "exec", box, "nft", "insert", "rule", "inet", "es_host_firewall", "input", "accept")
+	if stdout, _, code := inBox(env, "--status"); code != 1 || !strings.Contains(stdout, "DIFFER") {
+		t.Fatalf("status after drift: %d\n%s", code, stdout)
+	}
+	// Reloading the installed file (what the unit does at boot) repairs it.
+	l.run("ip", "netns", "exec", box, "nft", "-f", filepath.Join(root, "state", "es-host-firewall.nft"))
+	if stdout, _, code := inBox(env, "--status"); code != 0 {
+		t.Fatalf("status after reload: %d\n%s", code, stdout)
+	}
+
+	// Rollback removes everything; traffic is as before the firewall.
+	if stdout, stderr, code := inBox(env, "--rollback"); code != 0 {
+		t.Fatalf("rollback: %d\n%s\n%s", code, stdout, stderr)
+	}
+	if got := l.probe("c1", "tcp", "192.168.1.1", 80, ""); got != "connected" {
+		t.Fatalf("after rollback the LAN is reachable again, got %s", got)
+	}
+	if _, err := os.Stat(unitPath); !os.IsNotExist(err) {
+		t.Fatalf("rollback must remove the unit, stat err=%v", err)
+	}
+}

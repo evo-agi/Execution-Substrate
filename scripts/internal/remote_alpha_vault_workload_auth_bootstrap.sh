@@ -6,6 +6,11 @@ remote_alpha_vault_workload_auth_bootstrap_defaults() {
   REMOTE_ALPHA_BOOTSTRAP_SPIRE_SERVER_SOCKET_PATH="${REMOTE_ALPHA_BOOTSTRAP_SPIRE_SERVER_SOCKET_PATH:-/run/spire/server/private/api.sock}"
   REMOTE_ALPHA_BOOTSTRAP_SPIRE_SERVER_COMMAND="${REMOTE_ALPHA_BOOTSTRAP_SPIRE_SERVER_COMMAND:-spire-server}"
   REMOTE_ALPHA_BOOTSTRAP_BOUND_ISSUER="${REMOTE_ALPHA_BOOTSTRAP_BOUND_ISSUER:-spiffe://execution.internal}"
+  # Lifetime and source limits for the Vault tokens that workload logins
+  # through role service_execution receive. Non-secret.
+  REMOTE_ALPHA_BOOTSTRAP_TOKEN_TTL="${REMOTE_ALPHA_BOOTSTRAP_TOKEN_TTL:-15m}"
+  REMOTE_ALPHA_BOOTSTRAP_TOKEN_MAX_TTL="${REMOTE_ALPHA_BOOTSTRAP_TOKEN_MAX_TTL:-30m}"
+  REMOTE_ALPHA_BOOTSTRAP_TOKEN_BOUND_CIDRS="${REMOTE_ALPHA_BOOTSTRAP_TOKEN_BOUND_CIDRS:-172.17.0.0/16}"
 }
 
 remote_alpha_vault_workload_auth_bootstrap_usage() {
@@ -35,11 +40,17 @@ Vault API strategy:
 Configured objects:
   auth mount jwt
   auth/jwt/config with all selected SPIRE JWT validation public keys and bound issuer
-  role service_execution
+  role service_execution, with token_ttl, token_max_ttl and token_bound_cidrs
+  (defaults 15m, 30m and 172.17.0.0/16; non-secret environment
+  REMOTE_ALPHA_BOOTSTRAP_TOKEN_TTL, REMOTE_ALPHA_BOOTSTRAP_TOKEN_MAX_TTL,
+  REMOTE_ALPHA_BOOTSTRAP_TOKEN_BOUND_CIDRS)
   policy runtime-identity-proof
   KV v2 proof paths proof-secrets/data/runtime-identity-vault-login and
   proof-secrets/data/codex-runtime-profile
   proof runtime field api_key present and non-empty, value never printed
+  before writing, all earlier versions and the metadata of both proof paths
+  are deleted permanently, so no earlier value (for example an API key
+  written there by hand) stays readable
   workload-zone config alignment at
   /etc/execution-substrate/vault/workload-zone-vault-config.json
 
@@ -148,11 +159,15 @@ remote_alpha_vault_workload_auth_bootstrap_execute() {
     "${REMOTE_ALPHA_BOOTSTRAP_SPIRE_SERVER_SOCKET_PATH}" \
     "${REMOTE_ALPHA_BOOTSTRAP_SPIRE_SERVER_COMMAND}" \
     "${REMOTE_ALPHA_BOOTSTRAP_BOUND_ISSUER}" \
-    "${remote_alpha_vault_workload_auth_bootstrap_schema_version}" <<'PY'
+    "${remote_alpha_vault_workload_auth_bootstrap_schema_version}" \
+    "${REMOTE_ALPHA_BOOTSTRAP_TOKEN_TTL}" \
+    "${REMOTE_ALPHA_BOOTSTRAP_TOKEN_MAX_TTL}" \
+    "${REMOTE_ALPHA_BOOTSTRAP_TOKEN_BOUND_CIDRS}" <<'PY'
 import base64
 import datetime as dt
 import getpass
 import hashlib
+import ipaddress
 import json
 import os
 import pathlib
@@ -171,6 +186,12 @@ SPIRE_SOCKET = sys.argv[3]
 SPIRE_COMMAND = sys.argv[4]
 BOUND_ISSUER = sys.argv[5]
 SCHEMA_VERSION = sys.argv[6]
+TOKEN_TTL_TEXT = sys.argv[7]
+TOKEN_MAX_TTL_TEXT = sys.argv[8]
+TOKEN_BOUND_CIDRS_TEXT = sys.argv[9]
+# Upper bound for both token lifetimes: a workload login is short-lived by
+# design and logs in again with a fresh JWT-SVID from the runtime helper.
+TOKEN_TTL_CEILING_SECONDS = 24 * 3600
 
 AUTH_MOUNT = "jwt"
 ROLE = "service_execution"
@@ -218,6 +239,12 @@ summary = {
         "bound_subject": WORKLOAD_SUBJECT,
         "validation_trust_domain": WORKLOAD_TRUST_DOMAIN,
         "bound_audiences": [AUDIENCE],
+        "role_token_limits": {
+            "token_ttl": TOKEN_TTL_TEXT,
+            "token_max_ttl": TOKEN_MAX_TTL_TEXT,
+            "token_bound_cidrs": TOKEN_BOUND_CIDRS_TEXT.split(),
+        },
+        "proof_path_history": "all_earlier_versions_and_metadata_deleted_before_write",
     },
     "operations": {},
     "secret_prompts_started": False,
@@ -399,6 +426,45 @@ def report_summary_preflight_failure(reason):
     print(f"summary_path={SUMMARY_PATH}")
     print(f"summary_parent={SUMMARY_PATH.parent}")
     print("No Vault bootstrap prompts were read and no Vault writes were attempted.")
+
+
+def parse_duration_seconds(text):
+    match = re.fullmatch(r"([1-9][0-9]{0,5})([smh])", text or "")
+    if not match:
+        return None
+    return int(match.group(1)) * {"s": 1, "m": 60, "h": 3600}[match.group(2)]
+
+
+def validate_role_token_limits():
+    """Validate the non-secret role token limits before any prompt or Vault
+    write. Returns (ttl_text, max_ttl_text, cidr_list)."""
+    phase = "role_token_limits"
+    set_next_operation(phase)
+    ttl = parse_duration_seconds(TOKEN_TTL_TEXT)
+    max_ttl = parse_duration_seconds(TOKEN_MAX_TTL_TEXT)
+    if ttl is None or max_ttl is None:
+        raise_failure(phase, "config_invalid", message_class="token_ttl_not_a_duration")
+    if ttl > max_ttl or max_ttl > TOKEN_TTL_CEILING_SECONDS:
+        raise_failure(phase, "config_invalid", message_class="token_ttl_out_of_range")
+    cidrs = []
+    for item in TOKEN_BOUND_CIDRS_TEXT.split():
+        try:
+            network = ipaddress.ip_network(item, strict=True)
+        except ValueError:
+            raise_failure(phase, "config_invalid", message_class="token_bound_cidr_invalid")
+        if network.prefixlen == 0:
+            raise_failure(phase, "config_invalid", message_class="token_bound_cidr_matches_everything")
+        cidrs.append(str(network))
+    if not cidrs:
+        raise_failure(phase, "config_invalid", message_class="token_bound_cidrs_empty")
+    set_status(
+        phase,
+        "pass",
+        token_ttl=TOKEN_TTL_TEXT,
+        token_max_ttl=TOKEN_MAX_TTL_TEXT,
+        token_bound_cidrs=cidrs,
+    )
+    return TOKEN_TTL_TEXT, TOKEN_MAX_TTL_TEXT, cidrs
 
 
 def preflight_config_readable():
@@ -712,9 +778,10 @@ def configure_jwt(opener, token, address, validation_pubkeys):
         fail_from_exception(phase, exc)
 
 
-def configure_role(opener, token, address):
+def configure_role(opener, token, address, token_limits):
     phase = "service_execution_role"
     set_next_operation(phase)
+    token_ttl, token_max_ttl, token_bound_cidrs = token_limits
     try:
         vault_request(
             opener,
@@ -728,10 +795,48 @@ def configure_role(opener, token, address):
                 "bound_audiences": [AUDIENCE],
                 "bound_subject": WORKLOAD_SUBJECT,
                 "token_policies": [POLICY_NAME],
+                "token_ttl": token_ttl,
+                "token_max_ttl": token_max_ttl,
+                "token_bound_cidrs": token_bound_cidrs,
             },
             allowed_statuses=(200, 204),
         )
-        set_status(phase, "pass", role=ROLE, role_type="jwt", user_claim="sub")
+        set_status(
+            phase,
+            "pass",
+            role=ROLE,
+            role_type="jwt",
+            user_claim="sub",
+            token_ttl=token_ttl,
+            token_max_ttl=token_max_ttl,
+            token_bound_cidrs=token_bound_cidrs,
+        )
+    except Exception as exc:
+        fail_from_exception(phase, exc)
+
+
+def metadata_path_from_kv_path(path):
+    marker = "/data/"
+    if marker not in path:
+        raise ValueError("path_not_kv_v2_data_path")
+    mount, rest = path.split(marker, 1)
+    return f"{mount}/metadata/{rest}"
+
+
+def delete_prior_proof_versions(opener, token, address):
+    """Permanently delete every earlier version and the metadata of both
+    proof paths before the new value is written, so that no earlier value
+    stays readable through ?version=N. A path that does not exist yet is
+    fine."""
+    phase = "proof_secret_prior_versions"
+    set_next_operation(phase)
+    deleted = []
+    try:
+        for path in (PROOF_READ_PATH, PROOF_RUNTIME_SECRET_PATH):
+            metadata_path = metadata_path_from_kv_path(path)
+            vault_request(opener, token, "DELETE", address, metadata_path, allowed_statuses=(200, 204, 404))
+            deleted.append(metadata_path)
+        set_status(phase, "pass", metadata_paths_deleted=deleted, values_recorded=False)
     except Exception as exc:
         fail_from_exception(phase, exc)
 
@@ -831,6 +936,7 @@ def main():
         return 1
 
     try:
+        token_limits = validate_role_token_limits()
         preflight_config_readable()
         address, ca_bundle_pem = load_config()
         validation_pubkeys = preflight_spire_bundle_read()
@@ -872,7 +978,8 @@ def main():
         ensure_kv_mount(opener, root_token, address)
         configure_policy(opener, root_token, address)
         configure_jwt(opener, root_token, address, validation_pubkeys)
-        configure_role(opener, root_token, address)
+        configure_role(opener, root_token, address, token_limits)
+        delete_prior_proof_versions(opener, root_token, address)
         write_proof_secrets(opener, root_token, address, proof_secret)
         summary["overall_status"] = "pass"
     except BootstrapFailure as exc:

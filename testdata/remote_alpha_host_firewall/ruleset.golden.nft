@@ -1,0 +1,108 @@
+#!/usr/sbin/nft -f
+# Managed by Execution-Substrate scripts/remote_alpha_host_firewall.sh.
+# Schema: execution-substrate.remote-alpha.host-firewall.v1
+# Do not edit by hand. Change the settings and run the script again;
+# --status reports any difference between this file and the kernel.
+#
+# Settings:
+#   ssh_port = 22
+#   ssh_sources = 192.168.1.0/24 fe80::/10
+#   service_ports = 8444 8445
+#   service_callers = 192.168.1.23/32
+#   vault = 172.17.0.1 tcp/8200
+#   container_interfaces = docker0 br-* nomad
+#   container_bridge_subnets = 172.17.0.0/16
+#   container_dns_servers = 192.168.1.1 (from REMOTE_ALPHA_HOST_FIREWALL_CONTAINER_DNS_SERVERS)
+
+# Replace both tables in one transaction. The empty declarations make the
+# deletes succeed when a table does not exist yet. Nothing outside these
+# two tables is touched: Docker's and any other rules stay as they are.
+table inet es_host_firewall
+delete table inet es_host_firewall
+table bridge es_host_firewall
+delete table bridge es_host_firewall
+
+table inet es_host_firewall {
+	counter container_to_private {
+	}
+
+	counter container_to_host {
+	}
+
+	counter into_container {
+	}
+
+	counter lan_to_host {
+	}
+
+	counter invalid_in {
+	}
+
+	# Inbound to the box. Default deny: only loopback, replies, the listed
+	# LAN services and Vault for containers are accepted. A drop here is
+	# final even when another table accepts the packet.
+	chain input {
+		type filter hook input priority filter - 10; policy drop;
+		iifname "lo" accept
+		ct state invalid counter name "invalid_in" drop
+		ct state { established, related } accept
+		iifname { "docker0", "nomad" } goto container_to_host
+		iifname "br-*" goto container_to_host
+		goto lan_to_host
+	}
+
+	# Containers may reach exactly one service on the box: Vault.
+	chain container_to_host {
+		ip daddr 172.17.0.1 tcp dport 8200 accept
+		counter name "container_to_host" drop
+	}
+
+	# Everything else that arrives: the home LAN.
+	chain lan_to_host {
+		icmp type { destination-unreachable, time-exceeded, parameter-problem } accept
+		icmp type echo-request limit rate 10/second accept
+		icmpv6 type { destination-unreachable, packet-too-big, time-exceeded, parameter-problem, nd-router-advert, nd-neighbor-solicit, nd-neighbor-advert, mld-listener-query } accept
+		icmpv6 type echo-request limit rate 10/second accept
+		udp sport 67 udp dport 68 accept
+		ip6 saddr fe80::/10 udp sport 547 udp dport 546 accept
+		ip saddr { 192.168.1.0/24 } tcp dport 22 accept
+		ip6 saddr { fe80::/10 } tcp dport 22 accept
+		ip saddr { 192.168.1.23/32 } tcp dport { 8444, 8445 } accept
+		limit rate 6/minute log prefix "es-host-firewall lan drop: "
+		counter name "lan_to_host" drop
+	}
+
+	# Routed traffic. Container egress is checked by destination; new
+	# connections into containers are allowed only through Docker's
+	# published-port DNAT. Other forwarded traffic is left to Docker.
+	chain forward {
+		type filter hook forward priority filter - 10; policy accept;
+		iifname { "docker0", "nomad" } goto container_egress
+		iifname "br-*" goto container_egress
+		oifname { "docker0", "nomad" } ct state new ct status != dnat counter name "into_container" drop
+		oifname "br-*" ct state new ct status != dnat counter name "into_container" drop
+	}
+
+	# Containers reach the internet, the listed resolvers on port 53, and
+	# nothing private: not the home LAN, not other containers.
+	chain container_egress {
+		ip daddr { 192.168.1.1 } udp dport 53 accept
+		ip daddr { 192.168.1.1 } tcp dport 53 accept
+		ip daddr { 0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.0.0.0/24, 192.168.0.0/16, 198.18.0.0/15, 224.0.0.0/4, 240.0.0.0/4 } counter name "container_to_private" drop
+		ip6 daddr { ::1/128, ::ffff:0:0/96, fc00::/7, fe80::/10, ff00::/8 } counter name "container_to_private" drop
+	}
+}
+
+# Containers on the same bridge talk at layer 2 and do not pass the inet
+# forward hook unless br_netfilter is loaded. This table blocks that path
+# whatever the br_netfilter state. Traffic to the bridge's own address
+# is local delivery, not bridge forwarding, so Vault stays reachable.
+table bridge es_host_firewall {
+	counter container_to_container {
+	}
+
+	chain forward {
+		type filter hook forward priority filter - 10; policy accept;
+		ether type ip ip saddr 172.17.0.0/16 ip daddr 172.17.0.0/16 counter name "container_to_container" drop
+	}
+}
