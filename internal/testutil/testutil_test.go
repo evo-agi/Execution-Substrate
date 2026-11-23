@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -48,6 +49,90 @@ func TestOnlyTestFilesImportTestutil(t *testing.T) {
 		}
 		_ = dir
 	}
+}
+
+// rootTestFiles are the test files that the repository root keeps besides
+// its docs tests, which are named *_docs_contract_test.go.
+var rootTestFiles = []string{"artifact_hygiene_test.go", "docs_contract_test.go", "testtmpdir_main_test.go"}
+
+// TestRootKeepsOnlyItsDocsTests holds the layout of the repository root's
+// tests: the root keeps the tests that check the repository's docs, named
+// by what they check, and the tests of the scripts live in scripts/, next
+// to the scripts. A script test added at the root would compile and pass
+// there, so nothing else would notice it.
+func TestRootKeepsOnlyItsDocsTests(t *testing.T) {
+	entries, err := os.ReadDir(testutil.Root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, entry := range entries {
+		if strings.HasSuffix(entry.Name(), ".go") {
+			names = append(names, entry.Name())
+		}
+	}
+	for _, problem := range rootLayoutProblems(names) {
+		t.Error(problem)
+	}
+}
+
+// TestRootLayoutCheckFindsEachKindOfProblem shows that the check above
+// refuses a script test, a test named otherwise, and a non-test file at the
+// root, and notices a missing file.
+func TestRootLayoutCheckFindsEachKindOfProblem(t *testing.T) {
+	good := []string{
+		"ars_blob_verification_docs_contract_test.go",
+		"artifact_hygiene_test.go",
+		"caller_authentication_docs_contract_test.go",
+		"codex_agent_configs_docs_contract_test.go",
+		"docs_contract_test.go",
+		"host_access_docs_contract_test.go",
+		"outside_observer_docs_contract_test.go",
+		"testtmpdir_main_test.go",
+	}
+	if problems := rootLayoutProblems(good); len(problems) != 0 {
+		t.Errorf("problems in the agreed layout, want none:\n%s", strings.Join(problems, "\n"))
+	}
+	bad := []string{
+		"artifact_hygiene_test.go",
+		"docs_contract_test.go",
+		"remote_alpha_spire_agent_test.go",
+		"remote_alpha_firewall_docs_contract_test.go",
+		"hygiene_test.go",
+		"helpers.go",
+	}
+	want := []string{
+		"remote_alpha_spire_agent_test.go: " + rootLayoutRule,
+		"remote_alpha_firewall_docs_contract_test.go: " + rootLayoutRule,
+		"hygiene_test.go: " + rootLayoutRule,
+		"helpers.go: " + rootLayoutRule,
+		"testtmpdir_main_test.go is missing from the repository root",
+	}
+	if problems := rootLayoutProblems(bad); strings.Join(problems, "\n") != strings.Join(want, "\n") {
+		t.Errorf("problems:\n%s\nwant:\n%s", strings.Join(problems, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+const rootLayoutRule = "the repository root keeps only the tests of its docs, named *_docs_contract_test.go " +
+	"and without remote_alpha in the name, and artifact_hygiene_test.go, docs_contract_test.go and testtmpdir_main_test.go; " +
+	"a test of a script belongs in scripts/, next to the script"
+
+// rootLayoutProblems checks the names of the Go files at the repository
+// root against the agreed layout.
+func rootLayoutProblems(names []string) []string {
+	var problems []string
+	for _, name := range names {
+		docsTest := strings.HasSuffix(name, "_docs_contract_test.go") && !strings.Contains(name, "remote_alpha")
+		if !docsTest && !slices.Contains(rootTestFiles, name) {
+			problems = append(problems, name+": "+rootLayoutRule)
+		}
+	}
+	for _, name := range rootTestFiles {
+		if !slices.Contains(names, name) {
+			problems = append(problems, name+" is missing from the repository root")
+		}
+	}
+	return problems
 }
 
 // TestImportersNameRepositoryPathsFromTheRoot holds the rule in the package

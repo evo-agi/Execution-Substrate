@@ -9,7 +9,8 @@
 // of directory made while a test binary starts, so after a file changed it
 // could replay a stale result. The tests of this package check that the
 // packages which import it name no repository path relative to their own
-// directory.
+// directory, and that the repository root keeps only its docs tests: the
+// tests of the scripts live in scripts/.
 package testutil
 
 import (
