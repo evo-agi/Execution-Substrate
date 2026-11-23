@@ -109,6 +109,10 @@ only on macOS and runs no test.
 Before the tests, the workflow installs Nomad 2.1.1, Vault 2.2.2 and
 SPIRE 1.14.4 from release downloads that it checks against reviewed SHA-256
 values, and pulls the container images that the tests run by reviewed digest.
+It reads the SPIRE value from `scripts/internal/spire_release.sha256`, the pin
+file that `scripts/72_supported_local_setup.sh` and
+`scripts/73_supported_local_proof.sh` check SPIRE against, so CI and those
+scripts accept the same SPIRE file.
 So the `es/app` integration tests that start a Nomad agent with the Docker
 driver, and the supported-local setup test that runs Vault and SPIRE, run on
 that runner. The job sets `AWS_EC2_METADATA_DISABLED=true`: the runner's EC2

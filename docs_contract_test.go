@@ -964,6 +964,7 @@ func TestGo1265ToolchainBaselineDocsAndBuildContract(t *testing.T) {
 		"One more step runs `GOOS=darwin GOARCH=arm64 go vet ./...`",
 		"It type-checks the files that build only on macOS and runs no test",
 		"Before the tests, the workflow installs Nomad 2.1.1, Vault 2.2.2 and SPIRE 1.14.4 from release downloads that it checks against reviewed SHA-256 values, and pulls the container images that the tests run by reviewed digest",
+		"It reads the SPIRE value from `scripts/internal/spire_release.sha256`, the pin file that `scripts/72_supported_local_setup.sh` and `scripts/73_supported_local_proof.sh` check SPIRE against, so CI and those scripts accept the same SPIRE file",
 		"So the `es/app` integration tests that start a Nomad agent with the Docker driver, and the supported-local setup test that runs Vault and SPIRE, run on that runner",
 		"The job sets `AWS_EC2_METADATA_DISABLED=true`: the runner's EC2 metadata endpoint does not answer, and Nomad's AWS fingerprinter would otherwise fail the client of a test agent",
 		"`.github/ci/environment-only-tests.txt` is the single statement of what the test step excludes and of which tests exclude themselves on that runner",
@@ -1017,7 +1018,7 @@ func TestGo1265ToolchainBaselineDocsAndBuildContract(t *testing.T) {
 		"AWS_EC2_METADATA_DISABLED: \"true\"",
 		"fetch https://releases.hashicorp.com/nomad/2.1.1/nomad_2.1.1_linux_amd64.zip nomad.zip 073084f7690fdaea756ff1eff8b669b25c3a6c17778f19ae0c47606973ed3f39",
 		"fetch https://releases.hashicorp.com/vault/2.2.2/vault_2.2.2_linux_amd64.zip vault.zip 5700edf139113609962fe371af7d2a53de8ecb720d545dc39b43de204515d3c4",
-		"fetch https://github.com/spiffe/spire/releases/download/v1.14.4/spire-1.14.4-linux-amd64-musl.tar.gz spire.tar.gz 4482db434af8a3d2f4c5aeaef8912b21311411a175ce7daeb49ea17b776bcbf5",
+		"source scripts/internal/spire_release.sh\n          spire_sha256=\"$(spire_release_pinned_sha256 spire-1.14.4-linux-amd64-musl.tar.gz)\"\n          fetch https://github.com/spiffe/spire/releases/download/v1.14.4/spire-1.14.4-linux-amd64-musl.tar.gz spire.tar.gz \"$spire_sha256\"\n",
 		"echo \"$3  $tools/download/$2\" | sha256sum --check --strict",
 		"run: nomad version && vault version",
 		"run: go mod download",
@@ -1029,6 +1030,15 @@ func TestGo1265ToolchainBaselineDocsAndBuildContract(t *testing.T) {
 		"run: python3 -I -B .github/ci/go_test_gate.py gate \"$ENVIRONMENT_ONLY_TESTS\"",
 		"run: python3 -I -B .github/ci/go_test_gate.py still-failing \"$ENVIRONMENT_ONLY_TESTS\"",
 	)
+	// The SPIRE release files that CI and the supported-local scripts accept.
+	// Each line is the line of the release's own checksum file, checked by
+	// downloading the file and hashing it. A change of a pin, or a new version
+	// or architecture, has to come to this test as well.
+	const spireReleasePins = "4482db434af8a3d2f4c5aeaef8912b21311411a175ce7daeb49ea17b776bcbf5  spire-1.14.4-linux-amd64-musl.tar.gz\n" +
+		"05dd598f80b39499fd2b1660ee419cbb2d204290abe9fa0a87256177836ce7f0  spire-1.14.4-linux-arm64-musl.tar.gz\n"
+	if got := mustRead(t, "scripts/internal/spire_release.sha256"); got != spireReleasePins {
+		t.Fatalf("scripts/internal/spire_release.sha256 changed; review each line against its release checksum file, then update this test: got %q", got)
+	}
 	// The CI self-check holds the workflow file by its SHA-256. This test
 	// requires that value to be the hash of the file as it is, so an edit of
 	// the workflow is also caught by go test on any host, and not only by the
