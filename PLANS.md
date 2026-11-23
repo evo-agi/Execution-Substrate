@@ -2,6 +2,35 @@
 
 ## Status
 
+### PR #12 durable admission: a limit named after the fifth audit (2026-11-23)
+
+A fresh independent audit of the fourth repair
+`bff8dda37dbf5484afb3b264d4eca38cf6abf118` accepted the candidate with one
+low finding in the documents. The entry below says what stays possible
+outside the admission state package, and the owner document lists the limits
+of the guard by name. Neither named one road: code that writes the memory of
+its own process through the operating system. The audit cleared the
+withdrawal latch of a withdrawn Service that way on linux/amd64, and the
+Service's check of current admission answered true again. The function it
+used has no `reflect`, `unsafe` or `C` import and names no protected field,
+and in one form it changes the result of no test. The road is older than the
+package, and no source inventory can hold it in general, because the path
+can be put together at run time, so this entry adds no guard rule. It names
+the limit instead: every production file of the module and every dependency
+is inside the trust boundary of the admission state, and nothing may rely on
+the package boundary against code of lower trust in the same process.
+
+The same audit observed that the forms which must not compile outside the
+package are judged by the type checker of the standard library and not by
+the compiler itself. The owner document now says so.
+
+This entry changes documents and the docs contract test only. It selects
+nothing new and changes no production code and no guard. The precise wording
+is owned by
+[the operational handoff contract](.docs/execution_lifecycle/reliable_submit_operational_handoff.md).
+The bytes of this entry need their own audit, and the red-team review of the
+combined PR #12 is still required.
+
 ### PR #12 durable admission: the admission state package (2026-11-22)
 
 The fourth audit left one question open: the typed guard keeps the admission

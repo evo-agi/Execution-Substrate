@@ -14156,11 +14156,19 @@ func operationalV2AssuranceOwnerRule(owner string) bool {
 		strings.Contains(owner, "A Service built any other way holds the zero handle, which is closed") &&
 		strings.Contains(owner, "It is copied on the way in and on every way out") &&
 		strings.Contains(owner, "Outside the package the following do not compile") &&
-		strings.Contains(owner, "compiling each form against the real packages for all three build targets") &&
+		strings.Contains(owner, "type-checking each form against the real packages for all three build\ntargets") &&
+		strings.Contains(owner, "it does not run the compiler itself") &&
 		strings.Contains(owner, "Two things remain possible outside the package, and the guard below holds\nboth by exact inventories") &&
 		strings.Contains(owner, "A call cannot clear a latch, move the\nconfirmation time back or install a second view") &&
 		strings.Contains(owner, "A\nhandle saved earlier names the same state and restores nothing") &&
 		strings.Contains(owner, "The package boundary does not hold against reflection or `unsafe`") &&
+		strings.Contains(owner, "Neither the package boundary nor any inventory below holds against code that\nwrites the memory of its own process without going through the language") &&
+		strings.Contains(owner, "The function imports neither\n`reflect`, `unsafe` nor `C`, names no protected field") &&
+		strings.Contains(owner, "No source inventory can hold that\nroad in general") &&
+		strings.Contains(owner, "dependency is therefore inside the trust boundary of the admission\nstate") &&
+		strings.Contains(owner, "The boundary is one of the language, not of the process") &&
+		strings.Contains(owner, "nothing may\nrely on it against code of lower trust in the same process") &&
+		strings.Contains(owner, "One limit has no inventory at all") &&
 		strings.Contains(owner, "Every exported\nfunction and method of the package has an exact list of the functions that\nreference it") &&
 		strings.Contains(owner, "and the inspection method and the question whether a handle names a view,\nwhich exist for tests, nowhere") &&
 		strings.Contains(owner, "The exported\nsurface of the package is a closed list") &&
@@ -14309,6 +14317,11 @@ func TestOperationalSubmitHandoffCurrentAdmissionV2Contract(t *testing.T) {
 		"PR #12 durable admission: corrections after the third audit",
 		"PR #12 durable admission: corrections after the fourth audit",
 		"PR #12 durable admission: the admission state package",
+		"PR #12 durable admission: a limit named after the fifth audit",
+		"code that writes the memory of\nits own process through the operating system",
+		"so this entry adds no guard rule",
+		"is inside the trust boundary of the admission state, and nothing may rely on\nthe package boundary against code of lower trust",
+		"This entry changes documents and the docs contract test only",
 		"It is not added to\nthe commissioning gate as a seventh prerequisite",
 		"It changes no behaviour, no stored format and no public\ncontract",
 		"a\nnew package, `es/admission/internal/admissionstate`, under that package's\nown lock",
@@ -14514,11 +14527,19 @@ func TestOperationalSubmitHandoffCurrentAdmissionV2RejectsUnsafeMutants(t *testi
 		{"MissingClosedZeroHandle", "holds the zero handle, which is closed"},
 		{"MissingContentCopyRule", "It is copied on the way in and on every way out"},
 		{"MissingCompileRefusalList", "Outside the package the following do not compile"},
-		{"MissingCompileRefusalTest", "compiling each form against the real packages for all three build targets"},
+		{"MissingCompileRefusalTest", "type-checking each form against the real packages for all three build\ntargets"},
+		{"MissingTypeCheckerNotCompiler", "it does not run the compiler itself"},
 		{"MissingRemainingRoads", "Two things remain possible outside the package"},
 		{"MissingCallLimits", "A call cannot clear a latch, move the\nconfirmation time back or install a second view"},
 		{"MissingSavedHandleRule", "names the same state and restores nothing"},
 		{"MissingReflectionLimitOfThePackage", "The package boundary does not hold against reflection or `unsafe`"},
+		{"MissingOwnMemoryLimitOfThePackage", "holds against code that\nwrites the memory of its own process without going through the language"},
+		{"MissingOwnMemoryNeedsNoPinnedImport", "The function imports neither\n`reflect`, `unsafe` nor `C`, names no protected field"},
+		{"MissingOwnMemoryHasNoGeneralGuard", "No source inventory can hold that\nroad in general"},
+		{"MissingTrustBoundaryOfTheState", "dependency is therefore inside the trust boundary of the admission\nstate"},
+		{"MissingBoundaryOfTheLanguage", "The boundary is one of the language, not of the process"},
+		{"MissingLowerTrustRule", "nothing may\nrely on it against code of lower trust in the same process"},
+		{"MissingOwnMemoryInTheLimits", "One limit has no inventory at all"},
 		{"MissingCallSiteInventory", "has an exact list of the functions that\nreference it"},
 		{"MissingInspectionInventory", "which exist for tests, nowhere"},
 		{"MissingClosedSurface", "surface of the package is a closed list"},
@@ -14591,11 +14612,19 @@ func TestOperationalSubmitHandoffCurrentAdmissionV2RejectsUnsafeMutants(t *testi
 		{"HandleFieldExported", "whose only field is an unexported pointer\nto an unexported struct", "whose only field is an exported pointer\nto an unexported struct"},
 		{"ZeroHandleOpen", "holds the zero handle, which is closed", "holds the zero handle, which is commissioned on first use"},
 		{"ContentSharedWithTheCaller", "It is copied on the way in and on every way out", "It is shared with the caller on the way in"},
-		{"CompileRefusalsUntested", "compiling each form against the real packages for all three build targets", "reading the Go specification"},
+		{"CompileRefusalsUntested", "type-checking each form against the real packages for all three build\ntargets", "reading the Go specification"},
+		{"FormsSaidToRunTheCompiler", "it does not run the compiler itself", "it runs the compiler itself"},
 		{"CallsNotInventoried", "the guard below holds\nboth by exact inventories", "review holds\nboth"},
 		{"CallClearsALatch", "A call cannot clear a latch, move the\nconfirmation time back or install a second view", "A call can clear a latch"},
 		{"SavedHandleRestores", "names the same state and restores nothing", "restores the latches it held"},
 		{"PackageBoundaryHoldsReflection", "The package boundary does not hold against reflection or `unsafe`", "The package boundary holds against reflection and `unsafe`"},
+		{"PackageBoundaryHoldsOwnMemoryWrites", "Neither the package boundary nor any inventory below holds against code that\nwrites the memory of its own process", "The package boundary and the inventories below hold against code that\nwrites the memory of its own process"},
+		{"OwnMemoryWriteNeedsAPinnedImport", "The function imports neither\n`reflect`, `unsafe` nor `C`, names no protected field", "The function imports\n`unsafe` and names a protected field"},
+		{"OwnMemoryHeldByAnInventory", "No source inventory can hold that\nroad in general", "The import inventory holds that\nroad"},
+		{"DependenciesOutsideTheTrustBoundary", "dependency is therefore inside the trust boundary of the admission\nstate", "dependency is nevertheless outside the trust boundary of the admission\nstate"},
+		{"BoundaryOfTheProcess", "The boundary is one of the language, not of the process", "The boundary is one of the process"},
+		{"LowerTrustCodeMayRelyOnIt", "nothing may\nrely on it against code of lower trust in the same process", "code of lower trust in the same process may\nbe held by it"},
+		{"EveryLimitInventoried", "One limit has no inventory at all", "Every limit has an inventory"},
 		{"InspectionUsedInProduction", "which exist for tests, nowhere", "in production diagnostics"},
 		{"SurfaceOpen", "surface of the package is a closed list", "surface of the package is open"},
 		{"StateFileHeldByNameOnly", "package is pinned by the SHA-256 hash of its bytes", "package is held by its name"},

@@ -536,8 +536,10 @@ evaluation, so what is evaluated is what the digest names. A policy the
 mapping does not know refuses in both directions.
 
 Outside the package the following do not compile. A test holds that by
-compiling each form against the real packages for all three build targets,
-beside controls that do compile:
+type-checking each form against the real packages for all three build
+targets, beside controls that pass. It uses the type checker of the standard
+library (`go/types`), which follows the same language rules as the compiler;
+it does not run the compiler itself. The forms:
 
 - a selection of a field of the state, of a view or of either handle;
 - the name of either struct type, in a declaration, a literal, a conversion
@@ -572,6 +574,25 @@ The package boundary does not hold against reflection or `unsafe`. A
 `reflect` value reached from a handle can be made settable without an
 `unsafe` import, and the red-team tests rewrite a view that way. Those
 roads stay with the import inventory below.
+
+Neither the package boundary nor any inventory below holds against code that
+writes the memory of its own process without going through the language. The
+compiler and the inventories read Go source, and such code needs none of the
+forms they look for. The fifth audit showed it on linux/amd64 with one
+production function that opens `/proc/self/mem` and writes at the address of
+the state: the withdrawal latch of a withdrawn Service was cleared, and its
+check of current admission answered true again. The function imports neither
+`reflect`, `unsafe` nor `C`, names no protected field, and in its form with
+`syscall` changes the result of no test. No source inventory can hold that
+road in general, because the path can be put together at run time and the
+operating system offers other ways to the same memory. By reasoning, not by
+measurement, the same is true of a data race that breaks Go's memory safety
+and of code loaded at run time. Every production file of the module and
+every dependency is therefore inside the trust boundary of the admission
+state. The boundary is one of the language, not of the process: nothing may
+rely on it against code of lower trust in the same process. A control
+against such code would have to come from the operating system, and none is
+claimed here.
 
 #### Typed inventories and guard limits
 
@@ -780,7 +801,12 @@ published one. Code
 outside the module, the
 standard library and third-party dependencies, is not read. The table-writer inventory
 reads SQL statement literals; a statement assembled at run time is not seen
-by it, and the triggers of §2, not that inventory, are the barrier. The maintained guarantee is exact syntactic
+by it, and the triggers of §2, not that inventory, are the barrier.
+One limit has no inventory at all: a write to the memory of the process that
+does not go through the language, which the section on the admission state
+package describes. It needs no `reflect`, `unsafe` or `C` import, so the
+import inventory does not see it, and no inventory reads what such code does.
+The maintained guarantee is exact syntactic
 occurrence, function site and access kind, not a general proof of aliases or
 runtime safety. `Service.mu` owns the mutable Service state and the lock of
 the admission state owns the latches and the confirmation time, while
