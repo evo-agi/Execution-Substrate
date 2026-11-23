@@ -679,6 +679,17 @@ func TestOperationalAdmissionCommissioning(t *testing.T) {
 		copiedOther := new(Service)
 		reflect.ValueOf(copiedOther).Elem().Set(reflect.ValueOf(other).Elem())
 		refused(t, f, copiedOther, "copied Service with content of its own")
+		// A copy that was given an admission state of its own owns that state,
+		// so the state does not refuse it. It is still not the Service that
+		// loaded and verified the trust model it carries, and that is checked
+		// before the store write.
+		copiedWithState := new(Service)
+		reflect.ValueOf(copiedWithState).Elem().Set(reflect.ValueOf(other).Elem())
+		copiedWithState.operational = admissionstate.New(copiedWithState)
+		if !copiedWithState.operational.Installable(copiedWithState) || copiedWithState.trustModelOwner != other {
+			t.Fatal("control: the copy does not own an open state, or owns its trust model")
+		}
+		refused(t, f, copiedWithState, "copied Service with content and an admission state of its own")
 		oversized, _ := operationalUncommissionedService(t, f, func(s *Service) {
 			for i := 0; i < 3600; i++ {
 				s.trustModel.ArtifactPolicy.RevokedArtifacts = append(s.trustModel.ArtifactPolicy.RevokedArtifacts,
