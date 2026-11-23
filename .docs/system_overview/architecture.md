@@ -92,6 +92,7 @@ Top-level interaction notes:
   startup blob-fetch guarantee.
 - `internal/httpx` is cross-cutting transport support for strict JSON request decoding and consistent HTTP response writing.
 - `internal/observability` is cross-cutting support, not a system boundary.
+- `internal/callerauth` is cross-cutting caller authentication shared by all five services; authorization stays in each service.
 
 ## 5. Primary system flows
 
