@@ -2733,8 +2733,8 @@ Summary-path preparation:
 - If the parent is missing, preparation creates it. If the parent exists but is
   not writable/executable by the helper user, preparation uses only an explicit
   operator-authorized OS sudo prompt through the visible SSH TTY to make that
-  parent helper-user/group owned (`chown -h`, which never follows a link) with
-  mode `0750`. The preparation command must
+  parent helper-user/group owned with mode `0750` (through `chown -h`, which
+  never follows a link). The preparation command must
   keep SSH stdin attached to the visible terminal instead of feeding the remote
   script over SSH stdin, so sudo controls password echo suppression. If the
   bootstrap summary file already exists as a regular file but is not writable by

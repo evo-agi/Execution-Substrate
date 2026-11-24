@@ -1008,7 +1008,10 @@ remote_alpha_deploy_es_binaries_host_main() {
   remote_alpha_deploy_es_binaries_require_root || return 1
   remote_alpha_deploy_es_binaries_require_command python3 || return 1
   remote_alpha_prepare_output_dir "$(dirname "${REMOTE_ALPHA_SUMMARY_PATH}")" || return 1
-  remote_alpha_prepare_output_dir "${remote_alpha_deploy_es_binaries_backup_root_dir}" || return 1
+  # Only apply writes backups; check-only must leave the backup root alone.
+  if [[ "${REMOTE_ALPHA_OPERATION_MODE}" == "apply" ]]; then
+    remote_alpha_prepare_output_dir "${remote_alpha_deploy_es_binaries_backup_root_dir}" || return 1
+  fi
   remote_alpha_deploy_es_binaries_python
 }
 

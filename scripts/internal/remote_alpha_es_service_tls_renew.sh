@@ -1348,7 +1348,10 @@ remote_alpha_es_service_tls_renew_main() {
   remote_alpha_es_service_tls_renew_require_root || return 1
   remote_alpha_es_service_tls_renew_require_command python3 || return 1
   remote_alpha_prepare_output_dir "$(dirname "${REMOTE_ALPHA_SUMMARY_PATH}")" || return 1
-  remote_alpha_prepare_output_dir "${REMOTE_ALPHA_BACKUP_ROOT}" || return 1
+  # Only a renewal writes backups; status must leave the backup root alone.
+  if [[ "${REMOTE_ALPHA_OPERATION_MODE}" == "execute_renew" ]]; then
+    remote_alpha_prepare_output_dir "${REMOTE_ALPHA_BACKUP_ROOT}" || return 1
+  fi
   remote_alpha_es_service_tls_renew_require_command openssl || return 1
 
   tmpdir="$(mktemp -d)"
