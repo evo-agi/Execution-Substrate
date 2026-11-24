@@ -250,6 +250,13 @@ explicit classification, reason, scope, and removal condition:
 - unclassified `.out/*` files
 
 The tracked artifact hygiene test enforces this rule with the allowlist above.
+It reads the tracked files from git, so it runs in every git checkout, CI
+included. In a source tree without `.git`, such as one exported with
+`git archive`, nothing records which files are tracked, and the byproducts
+above are what local tools leave in a tree, so the test skips there and says
+why. The docs tests that read every repository file (relative Markdown links
+and `.runbooks/` path mentions) still run in such a tree: they read every file
+in it except these byproducts, unless the allowlist above names them.
 
 ## 5. Removal conditions
 
