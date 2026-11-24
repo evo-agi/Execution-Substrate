@@ -7358,12 +7358,21 @@ its output then goes to the journal, and its summary to the backup folder.
    `nomad_acl_setup.sh check` passes. The summary goes to `summary.json` in
    the backup folder.
 
-If any step after the backup fails, or `apply` gets `SIGTERM`, `SIGHUP` or
-`SIGINT`, it ignores further signals, stops ES and Nomad, puts every backed-up
-file, owner and mode back, starts Nomad and ES, and records `rolled_back`
-(or `rolled_back_unhealthy` when the endpoints do not answer 200 within 60
-seconds, or `rollback_failed`) with the failure. `rollback` does the same
-from a backup folder. Both leave the key, the token files and the backup in
+Every command runs in a process group of its own. When a command times out
+or a signal interrupts it, its whole group is ended and drained before
+anything else happens, so no child of it keeps changing the host. If any step
+after the backup fails, or `apply` gets `SIGTERM`, `SIGHUP` or `SIGINT`, it
+ignores further signals and rolls back: it stops ES and Nomad and confirms
+that both are stopped (if either will not stop, nothing is put back and the
+result is `rollback_failed`), puts every backed-up file, owner and mode back,
+starts Nomad and ES, and requires Nomad to name a leader within 90 seconds,
+because ES's `/health` does not ask Nomad. It records `rolled_back`,
+`rolled_back_unhealthy` when the endpoints do not answer 200 within 60
+seconds, or `rollback_failed`, with the failure. `rollback` does the same
+from a backup folder and exits 1 on any of those failures. Under
+`systemd-run`, give the unit `KillMode=mixed` and a long `TimeoutStopSec`, so
+that stopping the unit signals `apply` alone and leaves it time to roll
+back. Both leave the key, the token files and the backup in
 place: the old config names none of them, Nomad keeps its ACL bootstrap in
 its state, and a later `apply` reuses all three. Nothing prints a key or a
 token.

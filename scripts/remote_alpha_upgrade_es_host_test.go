@@ -132,11 +132,23 @@ case "$1" in
     printf 'ExecStart={ path=/usr/local/lib/execution-substrate/bin/es ; argv[]=%s ; ignore_errors=no }\n' \
       "$(cat "$s/es-argv" 2>/dev/null || echo '/usr/local/lib/execution-substrate/bin/es -config /etc/execution-substrate/es.json')" ;;
   stop)
+    # fail-stop-<unit> holds how many stops still succeed; after those, the
+    # stop fails and the unit keeps running.
+    if [[ -e "$s/fail-stop-$2" ]]; then
+      n="$(cat "$s/fail-stop-$2")"
+      if (( n <= 0 )); then echo "Failed to stop $2.service" >&2; exit 1; fi
+      echo $((n - 1)) > "$s/fail-stop-$2"
+    fi
     touch "$s/inactive-$2" ;;
   start)
     if [[ -e "$s/fail-start-$2-once" ]]; then rm -f "$s/fail-start-$2-once"; echo "Job for $2.service failed" >&2; exit 1; fi
     if [[ "$2" == nomad ]]; then
       if grep -q '^acl {' "$FAKE_HOST_ROOT/etc/nomad.d/nomad.hcl"; then touch "$s/locked"; else rm -f "$s/locked"; fi
+      # leader-starts holds how many Nomad starts still elect a leader.
+      if [[ -e "$s/leader-starts" ]]; then
+        n="$(cat "$s/leader-starts")"
+        if (( n <= 0 )); then touch "$s/no-leader"; else echo $((n - 1)) > "$s/leader-starts"; rm -f "$s/no-leader"; fi
+      fi
     fi
     rm -f "$s/inactive-$2" ;;
   *)
@@ -157,7 +169,7 @@ refuse() { echo "curl: (7) Failed to connect" >&2; exit 7; }
 case "$url" in
   */v1/status/leader)
     [[ -e "$s/inactive-nomad" ]] && refuse
-    body='"127.0.0.1:4647"' ;;
+    if [[ -e "$s/no-leader" ]]; then code=500; body='No cluster leader'; else body='"127.0.0.1:4647"'; fi ;;
   */v1/jobs\?namespace=\*)
     [[ -e "$s/inactive-nomad" ]] && refuse
     if [[ -e "$s/locked" ]]; then code=403; body='Permission denied'; else body="$(cat "$s/jobs.json" 2>/dev/null || echo '[]')"; fi ;;
@@ -191,6 +203,12 @@ echo "acl-setup $1 ES_USER=$ES_USER OBSERVER_USER=$OBSERVER_USER NOMAD_USER=$NOM
 [[ -e "$s/locked" ]] || { echo "nomad acl setup: Nomad does not enforce ACLs" >&2; exit 1; }
 case "$1" in
   provision)
+    if [[ -e "$s/slow-acl" ]]; then
+      # A grandchild that would write after its parent is gone.
+      ( sleep 2; touch "$s/grandchild-wrote" ) &
+      touch "$s/acl-running"
+      sleep 20
+    fi
     mkdir -p "$NOMAD_ACL_DIR"
     chmod 0755 "$NOMAD_ACL_DIR"
     if [[ ! -e "$NOMAD_ACL_DIR/es-token" ]]; then
@@ -337,6 +355,7 @@ func (h *upgradeHost) command(args ...string) *exec.Cmd {
 		"FAKE_STATE="+h.state,
 		"FAKE_HOST_ROOT="+h.root,
 		"ES_UPGRADE_TEST_ACL_SETUP="+filepath.Join(h.bin, "acl-setup"),
+		"ES_UPGRADE_TEST_WAIT_SECONDS=1",
 	)
 	return cmd
 }
@@ -807,40 +826,110 @@ func TestRemoteAlphaUpgradeESApplyRollsBackOnFailure(t *testing.T) {
 	}
 }
 
+// An interruption while a command runs ends that command's whole process
+// group, grandchildren included, before the rollback starts.
 func TestRemoteAlphaUpgradeESApplyRollsBackWhenInterrupted(t *testing.T) {
-	h := newUpgradeHost(t, buildESConfigCheck(t))
-	before := h.snapshot()
-	h.mark("slow-validate", "")
-	cmd := h.command("apply", "--payload", h.payload, "--commit", upgradeTestCommit)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
+	helper := buildESConfigCheck(t)
+	cases := []struct {
+		name, slow, reached string
+	}{
+		{"during the Nomad config validation", "slow-validate", "validating"},
+		{"during the ACL setup", "slow-acl", "acl-running"},
 	}
-	deadline := time.Now().Add(30 * time.Second)
-	for !h.marked("validating") {
-		if time.Now().After(deadline) {
-			_ = cmd.Process.Kill()
-			t.Fatalf("apply never reached the Nomad validation\n%s\n%s", stdout.String(), stderr.String())
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newUpgradeHost(t, helper)
+			before := h.snapshot()
+			h.mark(tc.slow, "")
+			cmd := h.command("apply", "--payload", h.payload, "--commit", upgradeTestCommit)
+			var stdout, stderr bytes.Buffer
+			cmd.Stdout, cmd.Stderr = &stdout, &stderr
+			if err := cmd.Start(); err != nil {
+				t.Fatal(err)
+			}
+			deadline := time.Now().Add(30 * time.Second)
+			for !h.marked(tc.reached) {
+				if time.Now().After(deadline) {
+					_ = cmd.Process.Kill()
+					t.Fatalf("apply never reached %s\n%s\n%s", tc.reached, stdout.String(), stderr.String())
+				}
+				time.Sleep(50 * time.Millisecond)
+			}
+			if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+				t.Fatal(err)
+			}
+			err := cmd.Wait()
+			exitErr, ok := err.(*exec.ExitError)
+			if !ok || exitErr.ExitCode() != 1 || !strings.Contains(stderr.String(), "result rolled_back") {
+				t.Fatalf("interrupted apply: %v\nstdout %s\nstderr %s", err, stdout.String(), stderr.String())
+			}
+			assertRestored(t, before, h.snapshot())
+			_, summary := readSummary(t, h)
+			if summary["result"] != "rolled_back" || !strings.Contains(fmt.Sprint(summary["failure"]), "Interrupted") {
+				t.Fatalf("summary result %v, failure %v", summary["result"], summary["failure"])
+			}
+			if h.marked("inactive-es") || h.marked("inactive-nomad") {
+				t.Fatalf("ES or Nomad left stopped")
+			}
+			time.Sleep(3 * time.Second)
+			if h.marked("grandchild-wrote") {
+				t.Fatalf("a grandchild of the interrupted command kept running after the rollback")
+			}
+		})
+	}
+}
+
+func TestRemoteAlphaUpgradeESRollbackFailuresAreReported(t *testing.T) {
+	helper := buildESConfigCheck(t)
+
+	t.Run("nothing is restored under an ES that will not stop", func(t *testing.T) {
+		h := newUpgradeHost(t, helper)
+		h.mark("acl-check-fails", "")
+		h.mark("fail-stop-es", "1") // apply's own stop works; the rollback's fails
+		_, stderr, code := h.apply()
+		if code != 1 || !strings.Contains(stderr, "result rollback_failed") {
+			t.Fatalf("apply exited %d: %s", code, stderr)
 		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
-		t.Fatal(err)
-	}
-	err := cmd.Wait()
-	exitErr, ok := err.(*exec.ExitError)
-	if !ok || exitErr.ExitCode() != 1 || !strings.Contains(stderr.String(), "result rolled_back") {
-		t.Fatalf("interrupted apply: %v\nstdout %s\nstderr %s", err, stdout.String(), stderr.String())
-	}
-	assertRestored(t, before, h.snapshot())
-	_, summary := readSummary(t, h)
-	if summary["result"] != "rolled_back" || !strings.Contains(fmt.Sprint(summary["failure"]), "Interrupted") {
-		t.Fatalf("summary result %v, failure %v", summary["result"], summary["failure"])
-	}
-	if h.marked("inactive-es") || h.marked("inactive-nomad") {
-		t.Fatalf("ES or Nomad left stopped")
-	}
+		_, summary := readSummary(t, h)
+		if !strings.Contains(fmt.Sprint(summary["rollback_failure"]), "Failed to stop es") {
+			t.Fatalf("rollback_failure %v", summary["rollback_failure"])
+		}
+		if got := mustRead(t, h.path("usr/local/lib/execution-substrate/bin/es")); got != "new es build\n" {
+			t.Fatalf("files were restored under a running ES: es binary %q", got)
+		}
+	})
+
+	t.Run("a Nomad without a leader after the restore fails it", func(t *testing.T) {
+		h := newUpgradeHost(t, helper)
+		before := h.snapshot()
+		h.mark("acl-check-fails", "")
+		h.mark("leader-starts", "1") // the lock's start elects a leader; the restore's does not
+		_, stderr, code := h.apply()
+		if code != 1 || !strings.Contains(stderr, "result rollback_failed") {
+			t.Fatalf("apply exited %d: %s", code, stderr)
+		}
+		_, summary := readSummary(t, h)
+		if !strings.Contains(fmt.Sprint(summary["rollback_failure"]), "named no leader") {
+			t.Fatalf("rollback_failure %v", summary["rollback_failure"])
+		}
+		assertRestored(t, before, h.snapshot())
+		if h.marked("inactive-es") || h.marked("inactive-nomad") {
+			t.Fatalf("the failed restore left ES or Nomad stopped")
+		}
+	})
+
+	t.Run("rollback exits 1 when Nomad names no leader", func(t *testing.T) {
+		h := newUpgradeHost(t, helper)
+		if _, stderr, code := h.apply(); code != 0 {
+			t.Fatalf("apply exited %d: %s", code, stderr)
+		}
+		backupDir, _ := readSummary(t, h)
+		h.mark("leader-starts", "0")
+		_, stderr, code := h.run("rollback", "--backup-dir", backupDir)
+		if code != 1 || !strings.Contains(stderr, "named no leader") {
+			t.Fatalf("rollback exited %d: %s", code, stderr)
+		}
+	})
 }
 
 func TestRemoteAlphaUpgradeESBuildRefusals(t *testing.T) {

@@ -597,11 +597,67 @@ def group_id(name):
         raise Refusal(f"group {name} does not exist")
 
 
-def run(args, env=None, timeout=120, check=False):
-    proc = subprocess.run(args, capture_output=True, text=True, env=env, timeout=timeout)
+def group_alive(pgid):
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def stop_process_group(proc):
+    """End every process of a command's own process group and wait until
+    none is left: SIGTERM, then SIGKILL after five seconds."""
+    for signum in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(proc.pid, signum)
+        except ProcessLookupError:
+            pass
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            proc.poll()
+            if proc.returncode is not None and not group_alive(proc.pid):
+                return
+            time.sleep(0.05)
+    proc.poll()
+    if proc.returncode is None or group_alive(proc.pid):
+        raise Refusal(f"{proc.args[0]} and its children did not stop")
+
+
+class Completed:
+    def __init__(self, args, returncode, stdout, stderr):
+        self.args, self.returncode, self.stdout, self.stderr = args, returncode, stdout, stderr
+
+
+def run(args, env=None, timeout=120, check=False, cwd=None):
+    """Run a command in a process group of its own. When it times out, or a
+    signal interrupts the wait, the whole group is ended and drained before
+    the exception goes on, so no descendant keeps changing the host during
+    a rollback. Descendants left after a normal exit are ended too."""
+    proc = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True, env=env, cwd=cwd, start_new_session=True)
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except BaseException as exc:
+        stop_process_group(proc)
+        if isinstance(exc, subprocess.TimeoutExpired):
+            raise Refusal(f"{' '.join(args[:3])} did not finish within {timeout} s") from None
+        raise
+    if group_alive(proc.pid):
+        stop_process_group(proc)
     if check and proc.returncode != 0:
-        raise Refusal(f"{' '.join(args[:3])} failed: {(proc.stderr or proc.stdout).strip()[:400]}")
-    return proc
+        raise Refusal(f"{' '.join(args[:3])} failed: {(stderr or stdout).strip()[:400]}")
+    return Completed(args, proc.returncode, stdout, stderr)
+
+
+def stop_service(name):
+    """systemctl stop, then proof that the unit is no longer running."""
+    run(["systemctl", "stop", name], timeout=120, check=True)
+    state = run(["systemctl", "is-active", name]).stdout.strip()
+    if state not in ("inactive", "failed"):
+        raise Refusal(f"{name} is {state!r} after systemctl stop")
 
 
 def write_new_file(path, text):
@@ -739,7 +795,16 @@ def es_unit_problems():
     return problems
 
 
+def wait_seconds(seconds):
+    """The host's wait, or a short one the tests set under a test host root."""
+    if test_mode() and os.environ.get("ES_UPGRADE_TEST_WAIT_SECONDS"):
+        return int(os.environ["ES_UPGRADE_TEST_WAIT_SECONDS"])
+    return seconds
+
+
 def wait_for(predicate, seconds, step=2):
+    seconds = wait_seconds(seconds)
+    step = min(step, max(seconds, 0.1))
     deadline = time.monotonic() + seconds
     while True:
         result = predicate()
@@ -955,7 +1020,7 @@ def apply_nomad_lock(backup_dir, log):
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
     log("locked nomad.hcl validated")
-    run(["systemctl", "stop", "nomad"], timeout=120, check=True)
+    stop_service("nomad")
     log("nomad stopped")
     ruid, rgid = root_ids()
     data_dir = host(NOMAD_DATA_DIR)
@@ -1010,8 +1075,10 @@ def verify_after(log):
 
 def restore_host(backup_dir, log):
     """Put back every file and owner the backup holds, then start Nomad and ES."""
-    run(["systemctl", "stop", "es"], timeout=120)
-    run(["systemctl", "stop", "nomad"], timeout=120)
+    # Nothing is put back under a running service: if either will not stop,
+    # the restore stops here and reports it.
+    stop_service("es")
+    stop_service("nomad")
     log("es and nomad stopped for the restore")
     result = restore_files(backup_dir)
     ownership = os.path.join(backup_dir, "ownership.json")
@@ -1031,9 +1098,14 @@ def restore_host(backup_dir, log):
         os.chmod(host(record["path"]), int(record["mode"], 8))
     log("files, owners and modes restored from " + backup_dir)
     run(["systemctl", "start", "nomad"], timeout=120, check=True)
-    result["nomad_leader"] = bool(wait_for(nomad_leader_named, LEADER_WAIT_SECONDS))
+    leader = bool(wait_for(nomad_leader_named, LEADER_WAIT_SECONDS))
     run(["systemctl", "start", "es"], timeout=120, check=True)
     log("nomad and es started")
+    # ES's /health does not ask Nomad, so a Nomad without a leader fails
+    # the restore here rather than passing unseen.
+    if not leader:
+        raise Refusal(f"Nomad named no leader within {LEADER_WAIT_SECONDS} s of the restore")
+    log("nomad has a named leader")
     return result
 
 
@@ -1089,7 +1161,7 @@ def cmd_apply(args):
     for signum in (signal.SIGTERM, signal.SIGHUP):
         signal.signal(signum, raise_interrupted)
     try:
-        run(["systemctl", "stop", "es"], timeout=120, check=True)
+        stop_service("es")
         log("es stopped")
         apply_nomad_lock(backup_dir, log)
         install_es(stage_dir, migrated, log)
@@ -1150,8 +1222,7 @@ def cmd_build(args):
     for name, pkg in (("es", "./cmd/es"), ("es-runtime-support", "./cmd/es-runtime-support"),
                       ("esconfigcheck", "./scripts/internal/esconfigcheck")):
         out = os.path.join(out_dir, name)
-        proc = subprocess.run([go, "build", "-buildvcs=true", "-o", out, pkg], cwd=repo, env=env,
-                              capture_output=True, text=True, timeout=900)
+        proc = run([go, "build", "-buildvcs=true", "-o", out, pkg], cwd=repo, env=env, timeout=900)
         if proc.returncode != 0:
             raise Refusal(f"go build {pkg} failed: {proc.stderr.strip()[:400]}")
         info = run([go, "version", "-m", out], env=env, check=True).stdout
