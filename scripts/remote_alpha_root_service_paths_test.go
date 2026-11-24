@@ -870,7 +870,7 @@ var byPathOwnershipChangeAllowance = map[string]int{
 	"scripts/internal/remote_alpha_vault_workload_auth_bootstrap.sh":  1,
 	"scripts/internal/remote_alpha_vault_workload_auth_check.sh":      2,
 	"scripts/nomad_acl_setup.sh":                                      1,
-	"scripts/remote_alpha_operator.sh":                                14,
+	"scripts/remote_alpha_operator.sh":                                10,
 	"scripts/remote_alpha_runtime_identity_helper_summary.sh":         2,
 }
 
