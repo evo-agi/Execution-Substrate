@@ -1,4 +1,4 @@
-package executionsubstrate_test
+package scripts_test
 
 // Tests for scripts/remote_alpha_spire_agent.sh and its Python core
 // scripts/internal/remote_alpha_spire_agent.py.
@@ -627,7 +627,9 @@ func (b *spireAgentHelperBox) writeJSON(path string, v any) {
 
 func (b *spireAgentHelperBox) ctl(args ...string) {
 	b.t.Helper()
-	out, err := exec.Command(b.systemctl, args...).CombinedOutput()
+	cmd := exec.Command(b.systemctl, args...)
+	cmd.Dir = executionSubstrateRepoRoot
+	out, err := cmd.CombinedOutput()
 	if err != nil {
 		b.t.Fatalf("fake systemctl %v: %v %s", args, err, out)
 	}
@@ -647,7 +649,9 @@ func (b *spireAgentHelperBox) pid(unit string) int {
 }
 
 func (b *spireAgentHelperBox) stopAll() {
-	_ = exec.Command(b.systemctl, "stop", "spire-server.service").Run()
+	stop := exec.Command(b.systemctl, "stop", "spire-server.service")
+	stop.Dir = executionSubstrateRepoRoot
+	_ = stop.Run()
 	entries, _ := os.ReadDir(b.stateDir)
 	for _, e := range entries {
 		if strings.HasSuffix(e.Name(), ".pid") {
@@ -664,7 +668,9 @@ func (b *spireAgentHelperBox) stopAll() {
 func (b *spireAgentHelperBox) server(args ...string) []byte {
 	b.t.Helper()
 	full := append(append([]string{}, args...), "-socketPath", b.serverSock)
-	out, err := exec.Command(b.realServer, full...).CombinedOutput()
+	cmd := exec.Command(b.realServer, full...)
+	cmd.Dir = executionSubstrateRepoRoot
+	out, err := cmd.CombinedOutput()
 	if err != nil {
 		b.t.Fatalf("spire-server %v: %v %s", args, err, out)
 	}
@@ -785,6 +791,7 @@ func (b *spireAgentHelperBox) bootstrapLikeTheBox() {
 	tokFile := filepath.Join(b.root, "bootstrap-token")
 	b.write(tokFile, tok.Value, 0o600)
 	cmd := exec.Command(b.realAgent, "run", "-config", b.agentConf, "-joinTokenFile", tokFile)
+	cmd.Dir = executionSubstrateRepoRoot
 	logf, err := os.Create(filepath.Join(b.logsDir, "bootstrap-agent.log"))
 	if err != nil {
 		b.t.Fatalf("create log: %v", err)
@@ -823,6 +830,7 @@ func (b *spireAgentHelperBox) helper(args ...string) spireAgentHelperRun {
 	full := append([]string{"-I", "-B", driver, spireAgentHelperModule, b.layoutPath}, args...)
 	full = append(full, "--json")
 	cmd := exec.Command(b.python, full...)
+	cmd.Dir = executionSubstrateRepoRoot
 	cmd.Env = []string{"PATH=/usr/bin:/bin", "LC_ALL=C"}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
@@ -847,6 +855,7 @@ func (b *spireAgentHelperBox) startHelper(args ...string) (*exec.Cmd, *bytes.Buf
 		b.write(driver, spireAgentHelperDriver, 0o644)
 	}
 	cmd := exec.Command(b.python, append([]string{"-I", "-B", driver, spireAgentHelperModule, b.layoutPath}, append(args, "--json")...)...)
+	cmd.Dir = executionSubstrateRepoRoot
 	cmd.Env = []string{"PATH=/usr/bin:/bin", "LC_ALL=C"}
 	var out bytes.Buffer
 	cmd.Stdout = &out
@@ -1029,6 +1038,7 @@ func (b *spireAgentHelperBox) runFreshAgent(name, conf, sock, token string, wait
 		b.t.Fatalf("create %s: %v", logPath, err)
 	}
 	cmd := exec.Command(b.realAgent, "run", "-config", confPath, "-joinTokenFile", tokFile)
+	cmd.Dir = executionSubstrateRepoRoot
 	cmd.Stdout, cmd.Stderr = logf, logf
 	if err := cmd.Start(); err != nil {
 		b.t.Fatalf("start %s: %v", name, err)
@@ -1322,7 +1332,9 @@ func TestRemoteAlphaSPIREAgentPinAgainstRealSPIRE(t *testing.T) {
 	}
 	ruleCopy := filepath.Join(b.root, "rule-copy.conf")
 	b.write(ruleCopy, rule, 0o644)
-	if out, err := exec.Command("systemd-tmpfiles", "--root="+sandbox, "--create", ruleCopy).CombinedOutput(); err != nil {
+	tmpfiles := exec.Command("systemd-tmpfiles", "--root="+sandbox, "--create", ruleCopy)
+	tmpfiles.Dir = executionSubstrateRepoRoot
+	if out, err := tmpfiles.CombinedOutput(); err != nil {
 		t.Fatalf("systemd-tmpfiles refused the written rule: %v %s", err, out)
 	}
 	for _, d := range []string{"run/spire", "run/spire/server", "run/spire/server/private", "run/spire/sockets"} {
@@ -1414,6 +1426,7 @@ func TestRemoteAlphaSPIREAgentPinAgainstRealSPIRE(t *testing.T) {
 	impConf := filepath.Join(impDir, "server.conf")
 	b.write(impConf, spireAgentHelperServerConf(impDir, impSock, b.port, "60s"), 0o644)
 	imp := exec.Command(b.realServer, "run", "-config", impConf)
+	imp.Dir = executionSubstrateRepoRoot
 	impLog, _ := os.Create(filepath.Join(b.logsDir, "impostor.log"))
 	imp.Stdout, imp.Stderr = impLog, impLog
 	if err := imp.Start(); err != nil {
@@ -1425,7 +1438,9 @@ func TestRemoteAlphaSPIREAgentPinAgainstRealSPIRE(t *testing.T) {
 		var tok struct {
 			Value string `json:"value"`
 		}
-		out, err := exec.Command(b.realServer, "token", "generate", "-socketPath", impSock, "-spiffeID", spireAgentHelperAlias, "-output", "json").CombinedOutput()
+		gen := exec.Command(b.realServer, "token", "generate", "-socketPath", impSock, "-spiffeID", spireAgentHelperAlias, "-output", "json")
+		gen.Dir = executionSubstrateRepoRoot
+		out, err := gen.CombinedOutput()
 		if err != nil || json.Unmarshal(out, &tok) != nil || tok.Value == "" {
 			t.Fatalf("impostor token: %v %s", err, out)
 		}
@@ -1637,6 +1652,7 @@ func TestRemoteAlphaSPIREAgentRecoverAgainstRealSPIRE(t *testing.T) {
 	b.write(b.holdAttest, "", 0o644)
 	driver := filepath.Join(b.root, "driver.py")
 	sigCmd := exec.Command(b.python, "-I", "-B", driver, spireAgentHelperModule, b.layoutPath, "recover", "--apply", "--json")
+	sigCmd.Dir = executionSubstrateRepoRoot
 	sigCmd.Env = []string{"PATH=/usr/bin:/bin", "LC_ALL=C"}
 	var sigOut bytes.Buffer
 	sigCmd.Stdout = &sigOut
@@ -1684,6 +1700,7 @@ func TestRemoteAlphaSPIREAgentRecoverAgainstRealSPIRE(t *testing.T) {
 	b.write(b.holdAttest, "", 0o644)
 	b.write(b.linger, "", 0o644)
 	cleanCmd := exec.Command(b.python, "-I", "-B", driver, spireAgentHelperModule, shortLayout, "recover", "--apply", "--json")
+	cleanCmd.Dir = executionSubstrateRepoRoot
 	cleanCmd.Env = []string{"PATH=/usr/bin:/bin", "LC_ALL=C"}
 	var cleanOut bytes.Buffer
 	cleanCmd.Stdout = &cleanOut
@@ -1870,6 +1887,7 @@ func spireAgentHelperDriverRun(t *testing.T, args ...string) (int, string, strin
 		t.Fatal(err)
 	}
 	cmd := exec.Command(python, append([]string{"-I", "-B", driver, spireAgentHelperModule}, args...)...)
+	cmd.Dir = executionSubstrateRepoRoot
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err = cmd.Run()
@@ -2166,6 +2184,7 @@ func TestRemoteAlphaSPIREAgentUsageAndRootRefusal(t *testing.T) {
 		}
 	}
 	cmd := exec.Command(filepath.Join(executionSubstrateRepoRoot, "scripts", "remote_alpha_spire_agent.sh"), "--help")
+	cmd.Dir = executionSubstrateRepoRoot
 	out2, err := cmd.CombinedOutput()
 	if err != nil || !strings.Contains(string(out2), "{status,pin,recover}") {
 		t.Fatalf("wrapper --help: %v %s", err, out2)
