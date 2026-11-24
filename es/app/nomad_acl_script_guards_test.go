@@ -251,6 +251,10 @@ func TestLinuxSetupChecksNomadsListenerBeforeEveryTokenSend(t *testing.T) {
 		if m := function.FindStringSubmatch(line); m != nil {
 			current = m[1]
 		}
+		where := current
+		if where == "" {
+			where = "main body"
+		}
 		if !strings.HasPrefix(strings.TrimSpace(line), "#") {
 			if location := send.FindStringIndex(line); location != nil {
 				start := i
@@ -258,13 +262,16 @@ func TestLinuxSetupChecksNomadsListenerBeforeEveryTokenSend(t *testing.T) {
 					start--
 				}
 				if !checked(start, i, location[0]) {
-					t.Errorf("70_linux_setup.sh:%d (%s) sends a token without checking Nomad's listener just before: %s", i+1, current, strings.TrimSpace(line))
+					t.Errorf("70_linux_setup.sh:%d (%s) sends a token without checking Nomad's listener just before: %s", i+1, where, strings.TrimSpace(line))
 				}
 				inFunctions[current] = true
 			}
 		}
 		if m := heredoc.FindStringSubmatch(line); m != nil {
 			terminator = m[1]
+		}
+		if line == "}" {
+			current = "" // a function ends at a closing brace in column 0
 		}
 	}
 	// The sends this test must at least find, so it cannot pass by finding none.
