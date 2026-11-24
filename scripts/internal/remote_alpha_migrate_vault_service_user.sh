@@ -424,6 +424,151 @@ def stat_path(path_value):
     }
 
 
+# Root changes owners and modes in directories the vault account may own
+# (red-team RT-3). So the plan treats a path as usable only when no part of it
+# is a symbolic link, and only directories dedicated to Vault may change: owned
+# by the Vault account or group, and never a shared system directory. The apply
+# step acts through descriptors opened without following links, so a name
+# swapped after the plan cannot point it anywhere else.
+DIR_OPEN_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+FILE_OPEN_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
+STORAGE_MAX_DEPTH = 64
+SHARED_SYSTEM_DIRECTORIES = frozenset(
+    {
+        "/", "/bin", "/boot", "/dev", "/etc", "/etc/ssl", "/etc/ssl/certs", "/etc/ssl/private",
+        "/etc/systemd", "/etc/systemd/system", "/home", "/lib", "/lib64", "/opt", "/proc",
+        "/root", "/run", "/sbin", "/srv", "/sys", "/tmp", "/usr", "/usr/bin", "/usr/lib",
+        "/usr/local", "/usr/local/bin", "/usr/sbin", "/var", "/var/lib", "/var/log", "/var/tmp",
+    }
+)
+
+
+class PathRefusal(RuntimeError):
+    pass
+
+
+def path_parts(path_value):
+    if not isinstance(path_value, str) or not path_value.startswith("/"):
+        return None
+    parts = [part for part in path_value.split("/") if part not in ("", ".")]
+    if ".." in parts:
+        return None
+    return parts
+
+
+def clean_path(path_value):
+    parts = path_parts(path_value)
+    return None if parts is None else "/" + "/".join(parts)
+
+
+def path_shape_problem(path_value):
+    parts = path_parts(path_value)
+    if parts is None:
+        return f"{path_value} must be an absolute path without '..'"
+    current = ""
+    for part in parts:
+        current = f"{current}/{part}"
+        try:
+            info = os.lstat(current)
+        except OSError:
+            # Missing or not a directory: the checks that follow report it.
+            return ""
+        if statmod.S_ISLNK(info.st_mode):
+            return f"{path_value} goes through the symbolic link {current}; give Vault the real path"
+    return ""
+
+
+def dedicated_directory_problem(path_value, uid, gid, account, writable_mode=None):
+    # writable_mode is the directory's mode when this step gives vault write
+    # access to the directory or to what it holds (log and audit parents, the
+    # storage directory, and a storage parent that must stand in for it). Such
+    # a directory must be one vault can write already, so that a directory
+    # vault can only read never becomes writable by it (audit 03 of PR #49,
+    # A03-2).
+    shown = clean_path(path_value)
+    if shown is None:
+        return f"{path_value} must be an absolute path without '..'"
+    if shown in SHARED_SYSTEM_DIRECTORIES:
+        return f"{shown} is a shared system directory, not one dedicated to Vault"
+    if uid != account["uid"] and gid != account["gid"]:
+        return (
+            f"{shown} is not dedicated to Vault: it belongs to {uid}:{gid}, "
+            f"not to the {SERVICE_USER} account or the {SERVICE_GROUP} group; "
+            f"if it holds only Vault files, give it to the {SERVICE_GROUP} group first"
+        )
+    if writable_mode is not None and uid != account["uid"] and not writable_mode & 0o020:
+        return (
+            f"{shown} is not writable by {SERVICE_USER} now (it belongs to {uid}:{gid} with mode {writable_mode:04o}), "
+            f"and this step would give {SERVICE_USER} write access to it or to what it holds; "
+            f"if it holds only Vault files, give it to {SERVICE_USER} first"
+        )
+    return ""
+
+
+def vault_runs_as_service_user(service_meta, account):
+    # Once the unit runs as the Vault user, a process of that account may have
+    # moved or renamed entries in the directories it owns, so files there that
+    # root keeps from it must stay that way (red-team re-check 06 of PR #49,
+    # RC-1). While the unit still runs as root, the files Vault needs are
+    # root's by design and the apply hands them over.
+    user = (service_meta or {}).get("effective_user", "")
+    return user == SERVICE_USER or (account.get("uid") is not None and user == str(account["uid"]))
+
+
+def vault_can_read(uid, gid, mode, account):
+    return bool(
+        (uid == account["uid"] and mode & 0o400)
+        or (gid == account["gid"] and mode & 0o040)
+        or mode & 0o004
+    )
+
+
+def unreadable_by_vault_problem(shown, uid, gid, mode):
+    return (
+        f"{shown} is not readable by {SERVICE_USER} now (it belongs to {uid}:{gid} with mode {mode:04o}), "
+        f"although Vault already runs as {SERVICE_USER}, so this step will not open it up; "
+        f"if Vault needs it, give it to root:{SERVICE_GROUP} with mode 0640 first"
+    )
+
+
+def not_vault_owned_problem(shown, uid):
+    return (
+        f"{shown} belongs to uid {uid}, not to {SERVICE_USER}, although Vault already runs as {SERVICE_USER}, "
+        f"so this step will not give it to {SERVICE_USER}; if it is Vault's, give it to {SERVICE_USER} first"
+    )
+
+
+def planned_directory_conflicts(config_access, tls_items, storage_access, log_access, audit_access):
+    def usable_path(item):
+        if not item or item.get("classification") == "blocker":
+            return ""
+        return clean_path(item.get("path") or "") or ""
+
+    read_paths = [path for path in [usable_path(config_access)] + [usable_path(item) for item in tls_items] if path]
+    write_paths = [path for path in (usable_path(log_access), usable_path(audit_access)) if path]
+    storage_path = usable_path(storage_access)
+    planned = {}
+    for path in read_paths:
+        planned.setdefault(os.path.dirname(path), set()).add(f"root:{SERVICE_GROUP}")
+    for path in write_paths:
+        planned.setdefault(os.path.dirname(path), set()).add(f"{SERVICE_USER}:{SERVICE_GROUP}")
+    if storage_path:
+        planned.setdefault(storage_path, set()).add(f"{SERVICE_USER}:{SERVICE_GROUP}")
+    problems = [
+        f"{directory} would have to belong to both {' and '.join(sorted(owners))}"
+        for directory, owners in sorted(planned.items())
+        if len(owners) > 1
+    ]
+    if storage_path:
+        for path in read_paths:
+            if os.path.commonpath([path, storage_path]) == storage_path:
+                problems.append(
+                    f"{path} is inside the storage directory {storage_path}, "
+                    f"which becomes {SERVICE_USER}:{SERVICE_GROUP} throughout"
+                )
+    return problems
+
+
 def read_json_file(path):
     try:
         return json.loads(path.read_text(encoding="utf-8")), ""
@@ -842,7 +987,7 @@ def ensure_parent_exists(path_value):
     return True, ""
 
 
-def plan_file_access(path_value, label, target_gid):
+def plan_file_access(path_value, label, target_gid, keep_unreadable=False):
     info = stat_path(path_value)
     parent_info = stat_path(pathlib.Path(path_value).parent)
     desired = {
@@ -859,6 +1004,11 @@ def plan_file_access(path_value, label, target_gid):
         "planned_parent_mode": "0750",
         "apply_adjustment_required": False,
     }
+    shape_problem = path_shape_problem(path_value)
+    if shape_problem:
+        desired["classification"] = "blocker"
+        desired["summary"] = f"{label} path {shape_problem}"
+        return desired
     if not info["exists"] or info["file_type"] != "regular file":
         desired["classification"] = "blocker"
         desired["summary"] = f"{label} path is missing or not a regular file"
@@ -866,6 +1016,17 @@ def plan_file_access(path_value, label, target_gid):
     if not parent_info["exists"] or parent_info["file_type"] != "directory":
         desired["classification"] = "blocker"
         desired["summary"] = f"{label} parent directory is missing"
+        return desired
+    parent_problem = dedicated_directory_problem(
+        str(pathlib.Path(path_value).parent), parent_info["uid"], parent_info["gid"], account_status
+    )
+    if parent_problem:
+        desired["classification"] = "blocker"
+        desired["summary"] = f"{label} parent directory {parent_problem}"
+        return desired
+    if keep_unreadable and not vault_can_read(info["uid"], info["gid"], int(info["mode"], 8), account_status):
+        desired["classification"] = "blocker"
+        desired["summary"] = f"{label} path " + unreadable_by_vault_problem(path_value, info["uid"], info["gid"], int(info["mode"], 8))
         return desired
     if info["uid"] != 0 or info["gid"] != target_gid or info["mode"] != "0640":
         desired["apply_adjustment_required"] = True
@@ -887,6 +1048,27 @@ def plan_directory_access(path_value, label):
         "planned_mode": "0750",
         "apply_adjustment_required": False,
     }
+    shape_problem = path_shape_problem(path_value)
+    if shape_problem:
+        desired["classification"] = "blocker"
+        desired["summary"] = f"{label} path {shape_problem}"
+        return desired
+    if clean_path(path_value) in SHARED_SYSTEM_DIRECTORIES:
+        desired["classification"] = "blocker"
+        desired["summary"] = f"{label} path {clean_path(path_value)} is a shared system directory, not one dedicated to Vault"
+        return desired
+    parent_value = str(pathlib.Path(path_value).parent)
+    parent_info = stat_path(parent_value)
+    # The parent only receives a new storage directory, so it must be
+    # dedicated to Vault; to stand in for a storage directory that is not,
+    # vault must be able to write it already.
+    parent_problem = "is missing"
+    parent_stand_in_problem = "is missing"
+    if parent_info["exists"]:
+        parent_problem = dedicated_directory_problem(parent_value, parent_info["uid"], parent_info["gid"], account_status)
+        parent_stand_in_problem = dedicated_directory_problem(
+            parent_value, parent_info["uid"], parent_info["gid"], account_status, int(parent_info["mode"], 8)
+        )
     if info["exists"]:
         if info["file_type"] != "directory":
             desired["classification"] = "blocker"
@@ -894,11 +1076,21 @@ def plan_directory_access(path_value, label):
             return desired
         if info["uid"] != account_status["uid"] or info["gid"] != account_status["gid"] or info["mode"] != "0750":
             desired["apply_adjustment_required"] = True
+            own_problem = dedicated_directory_problem(
+                path_value, info["uid"], info["gid"], account_status, int(info["mode"], 8)
+            )
+            if own_problem and parent_stand_in_problem:
+                desired["classification"] = "blocker"
+                desired["summary"] = f"{label} directory {own_problem}, and its parent {parent_stand_in_problem}"
         return desired
     ok, error = ensure_parent_exists(path_value)
     if not ok:
         desired["classification"] = "blocker"
         desired["summary"] = error
+        return desired
+    if parent_problem:
+        desired["classification"] = "blocker"
+        desired["summary"] = f"{label} directory cannot be created because its parent {parent_problem}"
         return desired
     desired["apply_adjustment_required"] = True
     desired["summary"] = f"{label} path does not exist yet but can be created during apply"
@@ -920,6 +1112,11 @@ def plan_file_or_parent_write_access(path_value, label):
         "planned_parent_mode": "0750",
         "apply_adjustment_required": False,
     }
+    shape_problem = path_shape_problem(path_value)
+    if shape_problem:
+        desired["classification"] = "blocker"
+        desired["summary"] = f"{label} path {shape_problem}"
+        return desired
     if info["exists"] and info["file_type"] != "regular file":
         desired["classification"] = "blocker"
         desired["summary"] = f"{label} path exists but is not a regular file"
@@ -931,6 +1128,14 @@ def plan_file_or_parent_write_access(path_value, label):
         return desired
     parent_info = stat_path(pathlib.Path(path_value).parent)
     desired["parent"] = parent_info
+    parent_problem = dedicated_directory_problem(
+        str(pathlib.Path(path_value).parent), parent_info["uid"], parent_info["gid"], account_status,
+        int(parent_info["mode"], 8),
+    )
+    if parent_problem:
+        desired["classification"] = "blocker"
+        desired["summary"] = f"{label} parent directory {parent_problem}; the apply step would make it writable by {SERVICE_USER}"
+        return desired
     if not info["exists"]:
         desired["apply_adjustment_required"] = True
         desired["summary"] = f"{label} file is absent but its parent can be prepared for Vault-managed creation"
@@ -1169,7 +1374,8 @@ def plan_summary():
     if vault_config is None:
         blockers.append({"name": "vault_config", "summary": vault_config_error})
     elif account_status["classification"] != "blocker":
-        config_access = plan_file_access(vault_config["config_path"], "Vault config", account_status["gid"])
+        keep_unreadable = vault_runs_as_service_user(service_meta, account_status)
+        config_access = plan_file_access(vault_config["config_path"], "Vault config", account_status["gid"], keep_unreadable)
         if config_access["classification"] == "blocker":
             blockers.append({"name": "config_access", "summary": config_access["summary"]})
         elif config_access.get("apply_adjustment_required"):
@@ -1203,7 +1409,7 @@ def plan_summary():
 
         tls_items = []
         for tls_path in vault_config["tls_read_paths"]:
-            item = plan_file_access(tls_path, "Vault listener TLS path", account_status["gid"])
+            item = plan_file_access(tls_path, "Vault listener TLS path", account_status["gid"], keep_unreadable)
             tls_items.append(item)
             if item["classification"] == "blocker":
                 blockers.append({"name": "tls_read_paths", "summary": item["summary"]})
@@ -1216,6 +1422,8 @@ def plan_summary():
                 "summary": "Vault listener TLS paths were inspected",
                 "items": tls_items,
             }
+        for conflict in planned_directory_conflicts(config_access, tls_items, storage_access, log_access, audit_access):
+            blockers.append({"name": "path_ownership_conflict", "summary": conflict})
 
     if health_env is None:
         blockers.append({"name": "healthcheck_env", "summary": health_env_error})
@@ -1363,45 +1571,259 @@ def run_simple_command(args, error_summary):
         raise RuntimeError(proc.stderr.strip() or proc.stdout.strip() or error_summary)
 
 
+def split_parent(path_value, label):
+    parts = path_parts(path_value)
+    if not parts:
+        raise PathRefusal(f"{label} {path_value} must be an absolute path without '..' below /")
+    return "/" + "/".join(parts[:-1]), parts[-1]
+
+
+def open_directory_path(path_value, label):
+    parts = path_parts(path_value)
+    if parts is None:
+        raise PathRefusal(f"{label} {path_value} must be an absolute path without '..'")
+    fd = os.open("/", DIR_OPEN_FLAGS)
+    for index, part in enumerate(parts):
+        try:
+            next_fd = os.open(part, DIR_OPEN_FLAGS, dir_fd=fd)
+        except OSError as exc:
+            os.close(fd)
+            shown = "/" + "/".join(parts[: index + 1])
+            raise PathRefusal(f"{label}: {shown} is missing, is not a directory or is a symbolic link ({exc.strerror})") from None
+        os.close(fd)
+        fd = next_fd
+    return fd
+
+
+def open_regular_file(dir_fd, name, label, shown, missing_ok=False):
+    try:
+        fd = os.open(name, FILE_OPEN_FLAGS, dir_fd=dir_fd)
+    except FileNotFoundError:
+        if missing_ok:
+            return None
+        raise PathRefusal(f"{label}: {shown} is missing") from None
+    except OSError as exc:
+        raise PathRefusal(f"{label}: {shown} is not a regular file or is a symbolic link ({exc.strerror})") from None
+    info = os.fstat(fd)
+    if not statmod.S_ISREG(info.st_mode) or info.st_nlink != 1:
+        os.close(fd)
+        raise PathRefusal(f"{label}: {shown} must be a regular file with one link")
+    return fd
+
+
+def require_dedicated_directory(dir_fd, path_value, label, account, becomes_vault_writable=False):
+    info = os.fstat(dir_fd)
+    writable_mode = statmod.S_IMODE(info.st_mode) if becomes_vault_writable else None
+    problem = dedicated_directory_problem(path_value, info.st_uid, info.st_gid, account, writable_mode)
+    if problem:
+        raise PathRefusal(f"{label}: {problem}")
+
+
+def change_read_file(path_value, label, account, root_uid, apply, keep_unreadable):
+    # Config and TLS files: the parent goes to root first, so the vault account
+    # can no longer swap names in it, then the file itself. Once Vault runs as
+    # vault, a file vault cannot read now is refused rather than opened up.
+    parent_value, name = split_parent(path_value, label)
+    parent_fd = open_directory_path(parent_value, f"{label} parent directory")
+    try:
+        require_dedicated_directory(parent_fd, parent_value, f"{label} parent directory", account)
+        if apply:
+            os.fchown(parent_fd, root_uid, account["gid"])
+            os.fchmod(parent_fd, 0o750)
+        file_fd = open_regular_file(parent_fd, name, label, path_value)
+        try:
+            file_info = os.fstat(file_fd)
+            file_mode = statmod.S_IMODE(file_info.st_mode)
+            if keep_unreadable and not vault_can_read(file_info.st_uid, file_info.st_gid, file_mode, account):
+                raise PathRefusal(f"{label}: " + unreadable_by_vault_problem(path_value, file_info.st_uid, file_info.st_gid, file_mode))
+            if apply:
+                os.fchown(file_fd, root_uid, account["gid"])
+                os.fchmod(file_fd, 0o640)
+        finally:
+            os.close(file_fd)
+    finally:
+        os.close(parent_fd)
+
+
+def change_write_file(path_value, label, account, apply):
+    # Log and audit files: the parent goes to vault, so it must be a directory
+    # dedicated to Vault that vault can write already; the file, when present,
+    # goes to vault.
+    parent_value, name = split_parent(path_value, label)
+    parent_fd = open_directory_path(parent_value, f"{label} parent directory")
+    try:
+        require_dedicated_directory(parent_fd, parent_value, f"{label} parent directory", account, True)
+        if apply:
+            os.fchown(parent_fd, account["uid"], account["gid"])
+            os.fchmod(parent_fd, 0o750)
+        file_fd = open_regular_file(parent_fd, name, label, path_value, missing_ok=True)
+        if file_fd is not None:
+            try:
+                if apply:
+                    os.fchown(file_fd, account["uid"], account["gid"])
+                    os.fchmod(file_fd, 0o640)
+            finally:
+                os.close(file_fd)
+    finally:
+        os.close(parent_fd)
+
+
+def own_storage_tree(dir_fd, shown, label, account, depth, apply, keep_foreign):
+    # keep_foreign: once Vault runs as vault, everything in its storage is
+    # vault's already, so an entry of another owner is refused rather than
+    # given to vault (the account may have moved it in from a directory it owns).
+    if depth > STORAGE_MAX_DEPTH:
+        raise PathRefusal(f"{label}: {shown} is more than {STORAGE_MAX_DEPTH} directories below the storage directory")
+    if keep_foreign:
+        dir_uid = os.fstat(dir_fd).st_uid
+        if dir_uid != account["uid"]:
+            raise PathRefusal(f"{label}: " + not_vault_owned_problem(shown, dir_uid))
+    if apply:
+        os.fchown(dir_fd, account["uid"], account["gid"])
+    for entry in sorted(os.listdir(dir_fd)):
+        where = f"{shown}/{entry}"
+        try:
+            info = os.stat(entry, dir_fd=dir_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            # Vault keeps running during this step and may remove its own
+            # temporary files; a vanished entry needs no change.
+            continue
+        if statmod.S_ISDIR(info.st_mode):
+            try:
+                child_fd = os.open(entry, DIR_OPEN_FLAGS, dir_fd=dir_fd)
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                raise PathRefusal(f"{label}: {where} is not a directory or is a symbolic link ({exc.strerror})") from None
+            try:
+                own_storage_tree(child_fd, where, label, account, depth + 1, apply, keep_foreign)
+            finally:
+                os.close(child_fd)
+        elif statmod.S_ISREG(info.st_mode):
+            file_fd = open_regular_file(dir_fd, entry, label, where, missing_ok=True)
+            if file_fd is None:
+                continue
+            try:
+                if keep_foreign:
+                    file_uid = os.fstat(file_fd).st_uid
+                    if file_uid != account["uid"]:
+                        raise PathRefusal(f"{label}: " + not_vault_owned_problem(where, file_uid))
+                if apply:
+                    os.fchown(file_fd, account["uid"], account["gid"])
+            finally:
+                os.close(file_fd)
+        else:
+            raise PathRefusal(f"{label}: {where} is not a directory or a regular file")
+
+
+def change_storage(path_value, label, account, apply, keep_foreign):
+    # The storage directory and everything in it go to vault. It must be a
+    # directory dedicated to Vault that vault can write already, or sit
+    # directly in one; a missing one is created only in a directory dedicated
+    # to Vault.
+    shown = clean_path(path_value)
+    if shown in SHARED_SYSTEM_DIRECTORIES:
+        raise PathRefusal(f"{label}: {shown} is a shared system directory, not one dedicated to Vault")
+    parent_value, name = split_parent(path_value, label)
+    parent_fd = open_directory_path(parent_value, f"{label} parent directory")
+    try:
+        parent_info = os.fstat(parent_fd)
+        parent_problem = dedicated_directory_problem(parent_value, parent_info.st_uid, parent_info.st_gid, account)
+        parent_stand_in_problem = dedicated_directory_problem(
+            parent_value, parent_info.st_uid, parent_info.st_gid, account, statmod.S_IMODE(parent_info.st_mode)
+        )
+        created = False
+        try:
+            storage_fd = os.open(name, DIR_OPEN_FLAGS, dir_fd=parent_fd)
+        except FileNotFoundError:
+            if parent_problem:
+                raise PathRefusal(f"{label}: will not create {shown} because its parent {parent_problem}") from None
+            if not apply:
+                return
+            try:
+                os.mkdir(name, 0o750, dir_fd=parent_fd)
+            except FileExistsError:
+                raise PathRefusal(f"{label}: {shown} appeared while this step ran") from None
+            storage_fd = os.open(name, DIR_OPEN_FLAGS, dir_fd=parent_fd)
+            created = True
+        except OSError as exc:
+            raise PathRefusal(f"{label}: {shown} is not a directory or is a symbolic link ({exc.strerror})") from None
+        try:
+            info = os.fstat(storage_fd)
+            # A directory this step just created is root's and empty, and its
+            # parent passed the rule for creating one.
+            if not created:
+                own_problem = dedicated_directory_problem(
+                    path_value, info.st_uid, info.st_gid, account, statmod.S_IMODE(info.st_mode)
+                )
+                if own_problem and parent_stand_in_problem:
+                    raise PathRefusal(f"{label}: {own_problem}, and its parent {parent_stand_in_problem}")
+            # A directory this step just created is root's and empty.
+            own_storage_tree(storage_fd, shown, label, account, 0, apply, keep_foreign and not created)
+            if apply:
+                os.fchmod(storage_fd, 0o750)
+        finally:
+            os.close(storage_fd)
+    finally:
+        os.close(parent_fd)
+
+
 def apply_path_changes(preflight_summary):
     validation = preflight_summary.get("validation") or {}
     config_access = validation.get("config_access") or {}
+    tls_items = (validation.get("tls_read_paths") or {}).get("items") or []
+    storage_access = validation.get("storage_access") or {}
+    log_access = validation.get("log_access") or {}
+    audit_access = validation.get("audit_access") or {}
+
+    targets = []
     if config_access.get("apply_adjustment_required"):
-        config_parent = str(pathlib.Path(config_access["path"]).parent)
-        run_simple_command(["chown", f"root:{SERVICE_GROUP}", config_parent], "failed to chown Vault config parent")
-        run_simple_command(["chmod", "0750", config_parent], "failed to chmod Vault config parent")
-        run_simple_command(["chown", f"root:{SERVICE_GROUP}", config_access["path"]], "failed to chown Vault config")
-        run_simple_command(["chmod", "0640", config_access["path"]], "failed to chmod Vault config")
+        targets.append(("read", config_access["path"], "Vault config"))
+    for item in tls_items:
+        if item.get("apply_adjustment_required"):
+            targets.append(("read", item["path"], "Vault listener TLS path"))
+    for kind, item, label in (
+        ("storage", storage_access, "Vault storage"),
+        ("write", log_access, "Vault log file"),
+        ("write", audit_access, "Vault audit file"),
+    ):
+        if item.get("classification") == "blocker" or not item.get("apply_adjustment_required") or not item.get("path"):
+            continue
+        targets.append((kind, item["path"], label))
+    if not targets:
+        return
 
-    tls_access = (validation.get("tls_read_paths") or {}).get("items") or []
-    for item in tls_access:
-        if not item.get("apply_adjustment_required"):
-            continue
-        tls_parent = str(pathlib.Path(item["path"]).parent)
-        run_simple_command(["chown", f"root:{SERVICE_GROUP}", tls_parent], "failed to chown Vault TLS parent")
-        run_simple_command(["chmod", "0750", tls_parent], "failed to chmod Vault TLS parent")
-        run_simple_command(["chown", f"root:{SERVICE_GROUP}", item["path"]], "failed to chown Vault TLS file")
-        run_simple_command(["chmod", "0640", item["path"]], "failed to chmod Vault TLS file")
+    account = load_service_account()
+    if account["classification"] != "pass":
+        raise PathRefusal(f"the Vault service account is not ready: {account['summary']}; no path was changed")
+    conflicts = planned_directory_conflicts(config_access, tls_items, storage_access, log_access, audit_access)
+    if conflicts:
+        raise PathRefusal("; ".join(conflicts) + "; no path was changed")
+    service_meta, service_error = service_show(SERVICE_NAME)
+    if service_meta is None:
+        raise PathRefusal(f"{service_error}, so this step cannot tell which user Vault runs as; no path was changed")
+    keep_existing = vault_runs_as_service_user(service_meta, account)
+    # Root in production (the apply step requires it); the test user in tests.
+    root_uid = os.geteuid()
 
-    for key in ("storage_access", "log_access", "audit_access"):
-        item = validation.get(key) or {}
-        if item.get("classification") == "blocker" or not item.get("apply_adjustment_required"):
-            continue
-        path_value = item.get("path", "")
-        if not path_value:
-            continue
-        path_obj = pathlib.Path(path_value)
-        if key == "storage_access":
-            if not path_obj.exists():
-                run_simple_command(["install", "-d", "-m", "0750", path_value], f"failed to create {path_value}")
-            run_simple_command(["chown", "-R", f"{SERVICE_USER}:{SERVICE_GROUP}", path_value], f"failed to chown {path_value}")
-            run_simple_command(["chmod", "0750", path_value], f"failed to chmod {path_value}")
-        else:
-            run_simple_command(["chown", f"{SERVICE_USER}:{SERVICE_GROUP}", str(path_obj.parent)], f"failed to chown {path_obj.parent}")
-            run_simple_command(["chmod", "0750", str(path_obj.parent)], f"failed to chmod {path_obj.parent}")
-            if path_obj.exists():
-                run_simple_command(["chown", f"{SERVICE_USER}:{SERVICE_GROUP}", path_value], f"failed to chown {path_value}")
-                run_simple_command(["chmod", "0640", path_value], f"failed to chmod {path_value}")
+    # The first pass opens and checks every path and changes nothing, so a
+    # refusal there leaves the host as it was. The second pass checks each
+    # path again as it changes it.
+    for apply in (False, True):
+        try:
+            for kind, path_value, label in targets:
+                if kind == "read":
+                    change_read_file(path_value, label, account, root_uid, apply, keep_existing)
+                elif kind == "write":
+                    change_write_file(path_value, label, account, apply)
+                else:
+                    change_storage(path_value, label, account, apply, keep_existing)
+        except (PathRefusal, OSError) as exc:
+            if apply:
+                raise PathRefusal(
+                    f"{exc}; some Vault paths may already have changed, compare them with snapshot-manifest.json in the backup"
+                ) from None
+            raise PathRefusal(f"{exc}; no path was changed") from None
 
 
 def build_apply_summary(result_status, ok, preflight_summary, backup, changes, post_apply_checks, skipped_checks, summary_text):
@@ -1510,8 +1932,10 @@ try:
 
             apply_error = ""
             try:
-                run_install_dropin((preflight_summary.get("service") or {}).get("service_dropin_path"))
+                # Paths first: a refusal there leaves the unit as it was, and
+                # the new user takes effect only at the restart below.
                 apply_path_changes(preflight_summary)
+                run_install_dropin((preflight_summary.get("service") or {}).get("service_dropin_path"))
                 run_simple_command(["systemctl", "daemon-reload"], "failed to reload systemd")
                 run_simple_command(["systemctl", "restart", f"{SERVICE_NAME}.service"], "failed to restart Vault service")
             except Exception as exc:  # noqa: BLE001

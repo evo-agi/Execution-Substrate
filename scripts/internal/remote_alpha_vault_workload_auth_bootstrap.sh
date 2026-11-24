@@ -238,6 +238,7 @@ remote_alpha_vault_workload_auth_bootstrap_execute() {
 import base64
 import ctypes
 import datetime as dt
+import errno
 import getpass
 import hashlib
 import ipaddress
@@ -529,6 +530,39 @@ def cleanup_path(path):
         pass
 
 
+class NotARegularFile(Exception):
+    pass
+
+
+def read_regular_file_no_follow(path):
+    """Read a file without following a link at its name, and return its
+    bytes with the stat of what was read. The Vault account may own the
+    folder of Vault's configuration file, so the name can be swapped for a
+    link at any moment; checking first and reading by name after would read
+    wherever the link points. Raises NotARegularFile for a link or anything
+    but a regular file; other errors (a missing file, no permission) pass
+    through."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise NotARegularFile(str(path)) from None
+        raise
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise NotARegularFile(str(path))
+        chunks = []
+        while True:
+            chunk = os.read(fd, 1 << 16)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        return b"".join(chunks), info
+    finally:
+        os.close(fd)
+
+
 def preflight_summary_writable():
     parent = SUMMARY_PATH.parent
     preflight_temp = parent / f".{SUMMARY_PATH.name}.preflight.{os.getpid()}.tmp"
@@ -661,7 +695,9 @@ def preflight_temporary_generate_root_access():
     if path.is_symlink() or not path.is_file():
         raise_failure(phase, "config_invalid", message_class="vault_config_not_a_regular_file")
     try:
-        raw = path.read_bytes()
+        raw, _ = read_regular_file_no_follow(path)
+    except NotARegularFile:
+        raise_failure(phase, "config_invalid", message_class="vault_config_not_a_regular_file")
     except OSError:
         raise_failure(phase, "config_unreadable", message_class="vault_config_unreadable")
     if UNAUTHENTICATED_ACCESS_KEYWORD.encode("ascii") in raw:
@@ -745,12 +781,15 @@ class TemporaryGenerateRootAccess:
         fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
         temp_path = pathlib.Path(temp_name)
         try:
+            # The Vault account may own this folder and could swap the new
+            # file's name for a link, so its owner and mode are set through
+            # the descriptor mkstemp opened, never by name.
             with os.fdopen(fd, "wb") as handle:
                 handle.write(data)
                 handle.flush()
+                os.fchown(handle.fileno(), self.file_stat.st_uid, self.file_stat.st_gid)
+                os.fchmod(handle.fileno(), stat.S_IMODE(self.file_stat.st_mode))
                 os.fsync(handle.fileno())
-            os.chown(temp_path, self.file_stat.st_uid, self.file_stat.st_gid)
-            os.chmod(temp_path, stat.S_IMODE(self.file_stat.st_mode))
             os.replace(temp_path, path)
         except BaseException:
             cleanup_path(temp_path)
@@ -782,10 +821,10 @@ class TemporaryGenerateRootAccess:
         set_next_operation(phase)
         path = VAULT_CONFIG_PATH
         try:
-            self.file_stat = os.lstat(path)
-            if not stat.S_ISREG(self.file_stat.st_mode):
+            try:
+                self.original, self.file_stat = read_regular_file_no_follow(path)
+            except NotARegularFile:
                 raise_failure(phase, "config_invalid", message_class="vault_config_not_a_regular_file")
-            self.original = path.read_bytes()
             if UNAUTHENTICATED_ACCESS_KEYWORD.encode("ascii") in self.original:
                 raise_failure(phase, "config_invalid", message_class="vault_config_already_mentions_enable_unauthenticated_access")
             separator = b"" if not self.original or self.original.endswith(b"\n") else b"\n"
@@ -812,7 +851,7 @@ class TemporaryGenerateRootAccess:
         file_restored = reloaded = refuses_again = False
         try:
             self._write(self.original)
-            file_restored = VAULT_CONFIG_PATH.read_bytes() == self.original
+            file_restored = read_regular_file_no_follow(VAULT_CONFIG_PATH)[0] == self.original
         except Exception:
             file_restored = False
         if file_restored:

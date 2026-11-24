@@ -2055,6 +2055,17 @@ Stop conditions for P0m:
 - any request to pass secrets as CLI args, environment values, environment
   files, local files, remote files, logs, artifacts, or Codex output
 - reset helper broad raft path guard triggers
+- the raft path is a symbolic link or does not belong to the Vault service user
+- a process still runs as the Vault service user after the unit stops; the
+  helper moves nothing and Vault stays stopped (whole-trunk red-team RT-2,
+  2026-11-24)
+- a directory on the raft path is a symbolic link when the helper moves the
+  raft directory, or the raft directory is no longer the Vault service user's;
+  the helper reaches the raft directory's parent from `/` without following a
+  link, moves the old directory and creates the new one inside that parent,
+  and hands the new one over through its own descriptor, so a link the Vault
+  account plants anywhere on the path cannot point root at another directory
+  (audit 03 of PR #49, 2026-11-24)
 - exact phrase mismatch
 - request to run post-unseal check, workload-auth check, Infrastructure Manager
   refresh, support-bundle collection, CP proof, governed smoke, runtime identity
@@ -3140,7 +3151,10 @@ Generate-root access:
   wait until Vault answers. After generate-root, once the 15-minute token is
   made and the root token is revoked, it writes the original bytes back with
   the same owner and mode, reloads again, and waits until Vault refuses
-  again, all before any configuration request. If that cannot be shown, it
+  again, all before any configuration request. The Vault account may own
+  the folder of that file, so the helper reads the file without following
+  a link at its name and sets the new file's owner and mode through the
+  descriptor it created it with, never by name. If that cannot be shown, it
   revokes the 15-minute token, fails with `vault_config_restore_failed` and
   prints the exact line to remove and the reload command.
 - with `temporary-config`, a Vault that already answers generate-root
@@ -5122,6 +5136,14 @@ The active repo-derived ARS service inputs for that ARS step remain:
 - systemd drop-in dir `/etc/systemd/system/ars.service.d`
 - systemd drop-in path `/etc/systemd/system/ars.service.d/10-account.conf`
 
+`Current invariant`: after the first run the ars account owns its state tree,
+so a rerun must not follow names in it (whole-trunk red-team RT-1,
+2026-11-24). The state step opens every directory and file without following
+links, refuses a link, a file with more than one link, anything that is not a
+directory or regular file, and a tree more than 16 directories deep, checks
+the whole tree before it changes anything, and requires the state root's
+parent to belong to root and not be writable by group or others.
+
 ### EGS De-root Step
 
 The EGS step in this tranche is already landed. It remains documented because
@@ -6483,6 +6505,27 @@ mutation it must create backup evidence and rollback notes. The mutation scope
 must stay limited to the dedicated Vault service account posture, the Vault
 systemd drop-in, and the minimum config or storage or log or audit or TLS
 ownership or readability changes needed for Vault.
+
+`Current invariant`: the vault account may own the directories this helper
+changes, so root must never change a path by name there (whole-trunk red-team
+RT-3, 2026-11-24). The check-only plan blocks a path that goes through a
+symbolic link, any directory the apply would change that is not dedicated to
+Vault (owned by the Vault account or group, and never a shared system directory
+such as `/etc` or `/var/log`), a log, audit or storage directory that vault can
+only read now and the apply would make writable by it, a storage directory that
+is not Vault's own or inside one, and a directory the plan would give two
+owners. Apply opens every
+path without following links, checks all of them before changing any, changes
+the path owners before it installs the drop-in, takes a config or TLS file's
+directory to `root:<vault group>` before the file, changes only regular files
+with one link, and refuses anything else with a summary that says whether a
+path had already changed. Once the unit already runs as the Vault user, a
+process of that account may have moved or renamed entries in the directories
+it owns, so the plan and the apply also refuse a config or TLS file that vault
+cannot read now, and the apply refuses a storage entry vault does not own,
+instead of opening either up to vault (red-team re-check 06 of PR #49, RC-1).
+While the unit still runs as root, those files are root's by design and the
+apply hands them over.
 
 The apply summary must record changed paths, backups, rollback path,
 post-apply checks, skipped checks, redaction status, and explicit non-claims.

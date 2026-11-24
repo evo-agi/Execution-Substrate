@@ -28,8 +28,9 @@ if [ "$1" = "-u" ] && [ $# -eq 1 ]; then
   exit 0
 fi
 if [ "$1" = "-u" ] && [ "$2" = "ars" ]; then
-  echo 992
-  exit 0
+  # The state step sets owners for real, through descriptors, so the test's
+  # ARS account is the user running the test.
+  exec /usr/bin/id -u
 fi
 if [ "$1" = "-gn" ] && [ "$2" = "ars" ]; then
   echo ars
@@ -51,7 +52,7 @@ exec /usr/bin/id "$@"
 `)
 	writeExecutable(t, dir, "getent", `#!/bin/sh
 if [ "$1" = "group" ] && [ "$2" = "ars" ]; then
-  echo "ars:x:992:"
+  echo "ars:x:$(/usr/bin/id -g):"
   exit 0
 fi
 exit 2
