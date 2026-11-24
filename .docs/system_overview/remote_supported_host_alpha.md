@@ -3151,7 +3151,10 @@ Generate-root access:
   wait until Vault answers. After generate-root, once the 15-minute token is
   made and the root token is revoked, it writes the original bytes back with
   the same owner and mode, reloads again, and waits until Vault refuses
-  again, all before any configuration request. If that cannot be shown, it
+  again, all before any configuration request. The Vault account may own
+  the folder of that file, so the helper reads the file without following
+  a link at its name and sets the new file's owner and mode through the
+  descriptor it created it with, never by name. If that cannot be shown, it
   revokes the 15-minute token, fails with `vault_config_restore_failed` and
   prints the exact line to remove and the reload command.
 - with `temporary-config`, a Vault that already answers generate-root

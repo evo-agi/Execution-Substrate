@@ -845,6 +845,11 @@ func byPathOwnershipChangeLines(source string) []string {
 // remote_alpha_harden_ars_service.sh or
 // remote_alpha_migrate_vault_service_user.sh) or show the whole path is
 // root's, and then raise the count here. When a count falls, lower it.
+//
+// remote_alpha_host_firewall.sh came with #35 and was checked at the #49
+// sync: it runs as root only, in /etc/execution-substrate/host-firewall,
+// /var/lib/es-host-firewall and /etc/systemd/system, which only root can
+// change, and one of its seven lines is the text of a refusal.
 var byPathOwnershipChangeAllowance = map[string]int{
 	"scripts/01_bringup.sh":                                           1,
 	"scripts/70_linux_setup.sh":                                       8,
@@ -857,6 +862,7 @@ var byPathOwnershipChangeAllowance = map[string]int{
 	"scripts/internal/remote_alpha_harden_ags_service.sh":             10,
 	"scripts/internal/remote_alpha_harden_ars_service.sh":             10,
 	"scripts/internal/remote_alpha_harden_egs_service.sh":             10,
+	"scripts/internal/remote_alpha_host_firewall.sh":                  7,
 	"scripts/internal/remote_alpha_migrate_vault_service_user.sh":     2,
 	"scripts/internal/remote_alpha_operator_healthcheck_tls_renew.sh": 1,
 	"scripts/internal/remote_alpha_prepare_es_config_tls.sh":          9,
@@ -940,6 +946,23 @@ func TestRedTeamFixedStepsChangeOwnersOnlyThroughDescriptors(t *testing.T) {
 	}
 	assertContainsAll(t, "Vault migration apply step", applyStep, "DIR_OPEN_FLAGS", "os.fchown(", "os.fchmod(", "for apply in (False, True):")
 	assertContainsNone(t, "Vault migration helper", migrate, `["chown"`, `["chmod"`, `"-R"`)
+
+	// #35, converted at the #49 sync: the bootstrap's temporary-config step
+	// rewrites Vault's configuration file in a folder the Vault account may
+	// own. It reads the file without following a link and sets the new
+	// file's owner and mode through mkstemp's descriptor.
+	bootstrap := read("internal", "remote_alpha_vault_workload_auth_bootstrap.sh")
+	temporary := docSection(t, bootstrap, "class TemporaryGenerateRootAccess:", "\ndef decode_generated_root_token(")
+	if lines := byPathOwnershipChangeLines(temporary); len(lines) > 0 {
+		t.Errorf("the bootstrap's temporary-config step changes owners or modes by name: %q", lines)
+	}
+	assertContainsAll(t, "bootstrap temporary-config step", temporary, "os.fchown(handle.fileno()", "os.fchmod(handle.fileno()", "read_regular_file_no_follow(path)", "read_regular_file_no_follow(VAULT_CONFIG_PATH)")
+	assertContainsNone(t, "bootstrap temporary-config step", temporary, "read_bytes(", "os.lstat(", "os.stat(")
+	readStep := docSection(t, bootstrap, "def read_regular_file_no_follow(path):", "\n\n\n")
+	assertContainsAll(t, "bootstrap no-follow read", readStep, "os.O_NOFOLLOW", "os.fstat(fd)", "stat.S_ISREG(info.st_mode)", "os.read(fd,")
+	preflight := docSection(t, bootstrap, "def preflight_temporary_generate_root_access():", "\n\n\n")
+	assertContainsAll(t, "bootstrap temporary-config preflight", preflight, "read_regular_file_no_follow(path)")
+	assertContainsNone(t, "bootstrap temporary-config preflight", preflight, "read_bytes(")
 }
 
 // Audit 03 of PR #49 (2026-11-24) added the four tests below.
