@@ -367,6 +367,11 @@ func TestRemoteAlphaResetDisposableVaultNeverHandsOverAPlantedRaftLink(t *testin
 			if err == nil || !strings.Contains(output, "something created "+f.raft+" after the move") {
 				t.Fatalf("trial %d: the reset did not stop at the planted link: %v\n%s", i, err, output)
 			}
+			// The old directory has moved by then, so the reset must say where
+			// it is, not that nothing was moved.
+			if !strings.Contains(output, "was not recreated after the move; the old data is in "+f.backup) || strings.Contains(output, "nothing was moved") {
+				t.Fatalf("trial %d: the reset did not report that the old raft directory moved to the backup:\n%s", i, output)
+			}
 			continue
 		}
 		if err != nil {
@@ -397,6 +402,23 @@ func TestRemoteAlphaResetDisposableVaultRefusesUnsafeRaftStates(t *testing.T) {
 			t.Fatalf("the reset went on with a surviving process: %v\n%s", err, output)
 		}
 		if got := rootPathStat(t, f.raft); got.symlink || got.mode != 0o700 {
+			t.Fatalf("the raft directory changed: %+v", got)
+		}
+		if _, statErr := os.Lstat(f.backup); !os.IsNotExist(statErr) {
+			t.Fatalf("a backup exists although nothing should have moved: %v", statErr)
+		}
+	})
+
+	t.Run("raft directory of another owner when the move starts", func(t *testing.T) {
+		t.Parallel()
+		f := newVaultRaftFixture(t)
+		// The step checks the owner again on the descriptor it moves from,
+		// whatever the check before the confirmation saw.
+		output, err := vaultResetShell(t, false, fmt.Sprintf("VAULT_RAFT_PATH=%q\nreplace_raft_directory %d %d %q", f.raft, f.owner.uid+1, f.owner.gid, f.backup))
+		if err == nil || !strings.Contains(output, "is no longer a directory of the Vault service user") || !strings.Contains(output, "nothing was moved") {
+			t.Fatalf("the reset moved a raft directory of another owner: %v\n%s", err, output)
+		}
+		if got := rootPathStat(t, f.raft); got.symlink || got.uid != f.owner.uid || got.mode != 0o700 {
 			t.Fatalf("the raft directory changed: %+v", got)
 		}
 		if _, statErr := os.Lstat(f.backup); !os.IsNotExist(statErr) {
