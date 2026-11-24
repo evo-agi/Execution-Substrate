@@ -48,12 +48,65 @@ func TestCallerAuthenticationContractIsDocumentedOnce(t *testing.T) {
 	status := compactText(mustRead(t, ".docs/remote_alpha_operator_healthcheck_noninteractive_status.md"))
 	assertContainsAll(t, "operator healthcheck TLS status identity rule", status,
 		"The identity passes only when the certificate carries exactly one URI SAN and that URI is `spiffe://execution.internal/operator/local`, because the caller authentication contract (`.docs/system_overview/contracts.md` section 3A) refuses a certificate with more than one URI SAN.",
-		"Expected operator/local identity mismatch, legacy-only identity, or more than one URI SAN: `identity_mismatch`.",
+		"Expected operator/local identity mismatch, legacy-only identity, more than one URI SAN, a leaf that is not an end-entity certificate, or a leaf whose extended key usage does not allow client authentication: `identity_mismatch`.",
+		// Audit 11, A11-4: the tools refuse what ES refuses as a client certificate.
+		"`identity_not_end_entity` when its basic constraints mark it as a CA or its key usage includes keyCertSign or cRLSign (section 3A), and `identity_not_for_client_auth` when it has an extended key usage that allows neither clientAuth nor anyExtendedKeyUsage, which Go's TLS server refuses.",
+		// Red-team N1 and re-audit O7-1: OpenSSL's printed SAN text is ambiguous.
+		"The collector reads the URI SAN entries from the certificate's own DER encoding, through the fixed `openssl x509 -outform DER` read of the public certificate, and never from OpenSSL's printed SAN text,",
+		"The host-local renew helper's `--status` mode carries the same decoder, and a test keeps the two copies identical.",
+		// Re-audit 13, N13-2: where the decoder stops mirroring Go.
+		"The decoder reads only the subjectAltName, basicConstraints, keyUsage and extKeyUsage extensions, so a certificate that Go refuses for another malformed extension, such as certificatePolicies or authorityInfoAccess, can still show identity pass, and ES refuses it at the handshake.",
+		"(including the fixed DER encoding of the public operator certificate, from which the URI SAN entries are decoded)",
 	)
 
 	boundaries := compactDocSection(t, mustRead(t, ".docs/system_overview/boundaries.md"), "## 11. Cross-cutting packages that are not service boundaries", "## 12. Boundary leaks and pressure points")
 	assertContainsAll(t, "cross-cutting package table", boundaries,
 		"| `internal/callerauth` |",
 		"Authentication only; every allowlist, route, and policy decision (authorization) stays service-local.",
+	)
+}
+
+// The allowlist-prefix rule that ARS, AGS, and ES share is written once, in
+// contracts.md section 3A, owned by internal/callerallowlist, and the
+// service sections, configuration reference, boundaries, architecture, and
+// PLANS.md refer to it (PR 27 red-team R6).
+func TestCallerAllowlistPrefixRuleIsDocumentedOnce(t *testing.T) {
+	contractsRaw := mustRead(t, ".docs/system_overview/contracts.md")
+	section := compactDocSection(t, contractsRaw, "## 3A. Caller Authentication Contract", "## 4. Workload-Zone Vault Runtime-Config Contract")
+	assertContainsAll(t, "allowlist-prefix rule", section,
+		"ARS, AGS, and ES check and match their path-prefix allowlists with the one shared package `internal/callerallowlist`.",
+		"A configured prefix must be the path of a SPIFFE ID that this section accepts, without its leading slash, and must have at least two segments.",
+		"Each of those services refuses any other prefix at startup",
+		"so `operator/local` matches `operator/local/a` but not `operator/local-evil`. A prefix that fails the rule matches nothing.",
+		"`internal/callerallowlist` owns only the shape of a valid path prefix and the prefix match that ARS, AGS, and ES share. It owns no allowlist content and no route",
+	)
+
+	contracts := compactText(contractsRaw)
+	assertContainsAll(t, "service allowlist references", contracts,
+		"AGS authorizes publish callers by configured SPIFFE path prefixes from `authorization.allowed_spiffe_path_prefixes`, checked at startup and matched under the allowlist-prefix rule in section 3A.",
+		"ARS checks those prefixes at startup and matches them under the allowlist-prefix rule in section 3A.",
+		"ES startup config validation rejects broad or malformed prefixes under the allowlist-prefix rule in section 3A, which ARS and AGS share.",
+	)
+	assertContainsAll(t, "lifecycle allowlist reference", compactText(mustRead(t, ".docs/execution_lifecycle/contracts.md")),
+		"under the allowlist-prefix rule in `.docs/system_overview/contracts.md` section 3A.",
+	)
+	assertContainsAll(t, "configuration reference", compactText(mustRead(t, ".docs/system_overview/configuration.md")),
+		"ARS validates each allowed SPIFFE path prefix at startup with the same rule as AGS and ES",
+		"AGS validates each allowed SPIFFE path prefix at startup with the same rule as ARS and ES",
+		"ARS, AGS, and ES share this rule through `internal/callerallowlist`.",
+	)
+	assertContainsAll(t, "cross-cutting package table", compactText(mustRead(t, ".docs/system_overview/boundaries.md")),
+		"| `internal/callerallowlist` |",
+		"Shape of a valid prefix and the match only; which prefixes each service configures and which routes they open stay service-local",
+	)
+	assertContainsAll(t, "architecture", compactText(mustRead(t, ".docs/system_overview/architecture.md")),
+		"`internal/callerallowlist` is the cross-cutting path-prefix allowlist rule shared by ARS, AGS, and ES",
+	)
+	assertContainsAll(t, "PLANS.md", compactText(mustRead(t, "PLANS.md")),
+		"### One allowlist-prefix rule for ARS, AGS, and ES (2026-11-23)",
+		"ARS, AGS, and ES check their configured path-prefix allowlists at startup and match callers against them through the one shared package `internal/callerallowlist`",
+	)
+	assertContainsAll(t, "bring-up runbook", compactText(mustRead(t, ".runbooks/system/v1_bringup.md")),
+		"The current repo-owned AGS and ES configs keep `authorization.allowed_spiffe_path_prefixes=[\"operator/local\"]`",
 	)
 }

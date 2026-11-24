@@ -17,6 +17,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"execution-substrate/internal/callerallowlist"
 	runtimeconfigv1 "execution-substrate/internal/contracts/runtimeconfig/v1"
 )
 
@@ -306,39 +307,7 @@ func (c Config) Validate() error {
 }
 
 func (c AuthorizationConfig) Validate(field string) error {
-	prefixField := field + ".allowed_spiffe_path_prefixes"
-	if len(c.AllowedSPIFFEPathPrefixes) == 0 {
-		return fmt.Errorf("%s is required", prefixField)
-	}
-	for _, prefix := range c.AllowedSPIFFEPathPrefixes {
-		if err := validateAllowedSPIFFEPathPrefix(prefixField, prefix); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func validateAllowedSPIFFEPathPrefix(field string, prefix string) error {
-	if strings.TrimSpace(prefix) == "" {
-		return fmt.Errorf("%s cannot contain empty values", field)
-	}
-	if prefix != strings.TrimSpace(prefix) {
-		return fmt.Errorf("%s values must not contain leading or trailing whitespace", field)
-	}
-
-	segments := strings.Split(prefix, "/")
-	for _, segment := range segments {
-		switch segment {
-		case "":
-			return fmt.Errorf("%s values must not contain empty path segments", field)
-		case ".", "..":
-			return fmt.Errorf("%s values must not contain . or .. path segments", field)
-		}
-	}
-	if len(segments) < 2 {
-		return fmt.Errorf("%s values must contain at least two path segments", field)
-	}
-	return nil
+	return callerallowlist.ValidatePrefixes(field+".allowed_spiffe_path_prefixes", c.AllowedSPIFFEPathPrefixes)
 }
 
 func (c RuntimeConfigConfig) Validate() error {
