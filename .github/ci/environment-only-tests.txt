@@ -63,7 +63,7 @@
 # The way to shorten this list is to port a test so that it passes on a Linux
 # runner without weakening it.
 
-# Remote Alpha operator-host tests in the root package.
+# Remote Alpha operator-host tests in the scripts package.
 
 # The test process must run as the account named "ds". The second test also
 # needs the macOS /private/tmp path for one subtest.
@@ -73,27 +73,27 @@
 # is not "ds" at its first identity check, so a subtest that expects a
 # refusal passes there without reaching the custody check it is named for.
 # Keeping those subtests in the gate would claim a check that does not happen.
-execution-substrate TestRemoteAlphaESServiceTLSStatusFailureWitnessBootstrapOwnedTerminal
-execution-substrate TestRemoteAlphaESServiceTLSStatusRootLoadedStageCustody
-execution-substrate TestRemoteAlphaESServiceTLSStatusStageFIFOSubstitution
-execution-substrate TestRemoteAlphaOperatorRecoverySessionESTLSStatusStageFIFORefusal
+execution-substrate/scripts TestRemoteAlphaESServiceTLSStatusFailureWitnessBootstrapOwnedTerminal
+execution-substrate/scripts TestRemoteAlphaESServiceTLSStatusRootLoadedStageCustody
+execution-substrate/scripts TestRemoteAlphaESServiceTLSStatusStageFIFOSubstitution
+execution-substrate/scripts TestRemoteAlphaOperatorRecoverySessionESTLSStatusStageFIFORefusal
 
 # The test stages under the macOS /private/tmp path.
-execution-substrate TestRemoteAlphaOperatorRecoverySessionESTLSStatusRemoteWrapperTrap
+execution-substrate/scripts TestRemoteAlphaOperatorRecoverySessionESTLSStatusRemoteWrapperTrap
 
 # The host needs an account named "ds" and the macOS /private/tmp path.
-execution-substrate TestRemoteAlphaP0tGrammarDiagnosticBootstrapLifecycleComposition
-execution-substrate TestRemoteAlphaP0tGrammarDiagnosticPriorReaderCloseSuppression
-execution-substrate TestRemoteAlphaP0tGrammarDiagnosticV2VersionedBootstrap
+execution-substrate/scripts TestRemoteAlphaP0tGrammarDiagnosticBootstrapLifecycleComposition
+execution-substrate/scripts TestRemoteAlphaP0tGrammarDiagnosticPriorReaderCloseSuppression
+execution-substrate/scripts TestRemoteAlphaP0tGrammarDiagnosticV2VersionedBootstrap
 
 # The checker reads the host's real modprobe configuration, which the fixture
 # cannot replace. A host that already blocks algif_aead reports
 # mitigated_not_fixed.
-execution-substrate TestRemoteAlphaRuntimeSecurityBoundaryCVE31431UnprovedMitigationStaysVulnerable
-execution-substrate TestRemoteAlphaRuntimeSecurityBoundaryCVE31431VulnerableWithoutMitigationBlocks
+execution-substrate/scripts TestRemoteAlphaRuntimeSecurityBoundaryCVE31431UnprovedMitigationStaysVulnerable
+execution-substrate/scripts TestRemoteAlphaRuntimeSecurityBoundaryCVE31431VulnerableWithoutMitigationBlocks
 
 # The test assumes that /usr/bin and /bin hold no working systemctl.
-execution-substrate TestRemoteAlphaRuntimeSecurityBoundaryCheckMissingToolsStayHonest
+execution-substrate/scripts TestRemoteAlphaRuntimeSecurityBoundaryCheckMissingToolsStayHonest
 
 # es/app: a go command in the system directories of the harness PATH defeats
 # the missing-Go fixture of this one subtest in each test. The runner image
@@ -135,22 +135,22 @@ execution-substrate/es/admission/internal/reliablesubmit TestSQLiteV3OldBinaryRe
 # These tests do not run in the step "Test". The way to shorten this part of
 # the list is to give the runner what a test needs, or to port the test.
 #
-# The lines of the root package are different. The step "Listed root-package
-# tests pass as root" runs every test that this part names for the package
-# execution-substrate once more through sudo, and fails unless each passes
-# there. So a test of the root package belongs here only when it skips itself
-# for want of root. .github/ci/go_test_as_root.py gives the rules.
+# The lines of the package execution-substrate/scripts are different. The
+# step "Listed tests pass as root" runs every test that this part names for
+# that package once more through sudo, and fails unless each passes there.
+# So a test of that package belongs here only when it skips itself for want
+# of root. .github/ci/go_test_as_root.py gives the rules.
 
-# Root package: real-kernel tests of the PID-namespace containment of the
+# scripts: real-kernel tests of the PID-namespace containment of the
 # Remote Alpha TLS status collector. Creating a PID namespace needs root on
 # Linux. Each test asks the kernel by an attempt in a child of its own and
 # skips itself when the kernel refuses. These five run as root in the step
 # named above.
-skips-itself execution-substrate TestRemoteAlphaESServiceTLSStatusChildNamespaceRealCollectorDeath
-skips-itself execution-substrate TestRemoteAlphaESServiceTLSStatusChildNamespaceRealDeafAnchor
-skips-itself execution-substrate TestRemoteAlphaESServiceTLSStatusChildNamespaceRealDescendants
-skips-itself execution-substrate TestRemoteAlphaESServiceTLSStatusChildNamespaceRealKernel
-skips-itself execution-substrate TestRemoteAlphaESServiceTLSStatusChildNamespaceRealSiblings
+skips-itself execution-substrate/scripts TestRemoteAlphaESServiceTLSStatusChildNamespaceRealCollectorDeath
+skips-itself execution-substrate/scripts TestRemoteAlphaESServiceTLSStatusChildNamespaceRealDeafAnchor
+skips-itself execution-substrate/scripts TestRemoteAlphaESServiceTLSStatusChildNamespaceRealDescendants
+skips-itself execution-substrate/scripts TestRemoteAlphaESServiceTLSStatusChildNamespaceRealKernel
+skips-itself execution-substrate/scripts TestRemoteAlphaESServiceTLSStatusChildNamespaceRealSiblings
 
 # es/admission: the opt-in stress test of the directory swap race in the
 # startup probe, and the attacker process it starts (finding RT-3 of the

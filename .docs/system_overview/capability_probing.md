@@ -430,7 +430,7 @@ This is also test hygiene only. It does not change ES public contracts,
 retained-staging semantics, retained-result semantics, readiness boundaries, or
 production capability probing placement.
 
-Root-package tests of the Remote Alpha TLS status collector use two kinds of
+Tests of the Remote Alpha TLS status collector in `scripts/` use two kinds of
 fixture, and never a mixture. A live fixture uses the collector's real
 process-table reads and pidfd operations on real processes. It first attempts
 to read its own entry of the process table and skips with an explicit reason
@@ -485,7 +485,7 @@ criterion, hold, signal, reap, lock, or publication rule.
 The noninteractive remote TLS status collector proves its descendant
 containment the same way: a descendant capability probe at its one validation
 boundary, before any status input is read, sets the capability flag that every
-fixed command requires. Root-package tests that call its command runner
+fixed command requires. Tests in `scripts/` that call its command runner
 directly replace the flag and the descendant drain together, by one shared
 stand-in that proves only that the test process has no child left, and a
 guard test refuses a script that replaces one of the two without the other.

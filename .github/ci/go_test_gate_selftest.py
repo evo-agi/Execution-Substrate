@@ -31,7 +31,7 @@ entry for a subtest fail, and the output says why.
     the go command downloaded itself lies there.
 
 One group checks go_test_as_root.py, the step that runs as root the tests
-of the root package that skip themselves without root. It runs that program
+of one package that skip themselves without root. It runs that program
 in a throwaway module exactly as the workflow runs it. A stand-in for sudo
 comes first on PATH there; it writes down its arguments and runs the command
 as the current user, so the checks need no privilege and prove none.
@@ -58,7 +58,7 @@ ROOT_STEP = os.path.join(HERE, "go_test_as_root.py")
 WORKFLOW = os.path.join(HERE, os.pardir, "workflows", "go.yml")
 # SHA-256 of that file as it was last reviewed. See
 # test_the_workflow_file_is_the_text_that_was_reviewed.
-WORKFLOW_SHA256 = "7e00164598e093879dde4bf4611aa422ac1e5d1781ac7b6cc6add2042d3514c0"
+WORKFLOW_SHA256 = "fa3d88b7af2ed16a159a6ebfcebb79ecc31436e65c2ec25a40a25e917b4c9d29"
 
 PASS = "pass"
 FAIL = "fail"
@@ -4027,7 +4027,7 @@ class WorkflowKeepsWhatTheGateDependsOn(unittest.TestCase):
 
     def test_the_tests_as_root_are_the_last_command_and_no_test_step_calls_sudo(self):
         commands = [line[len("run: "):] for line in self.lines if line.startswith("run: ")]
-        as_root = 'python3 -I -B .github/ci/go_test_as_root.py "$ENVIRONMENT_ONLY_TESTS" execution-substrate'
+        as_root = 'python3 -I -B .github/ci/go_test_as_root.py "$ENVIRONMENT_ONLY_TESTS" execution-substrate/scripts'
         self.assertEqual([command for command in commands if "go_test_as_root" in command], [as_root])
         self.assertEqual(commands[-1], as_root)
         # go_test_as_root.py calls sudo for one command. The only step that
