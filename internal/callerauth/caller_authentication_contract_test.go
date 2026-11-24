@@ -16,7 +16,10 @@ import (
 
 // callerIdentityAPIDirs are the five service API packages, by directory from
 // the repository root. Both halves of the caller identity guard use this one
-// list: these packages may not touch the TLS connection state at all.
+// list: these packages may not touch the TLS connection state at all. The
+// name-based half fails when a production package in a directory named api
+// is missing from it, so an entry cannot be dropped, nor a new service API
+// package left out, without a failure.
 var callerIdentityAPIDirs = []string{"ars/api", "ags/api", "egs/api", "cgs/api", "es/api"}
 
 // No production code outside internal/callerauth reads a certificate's URI
@@ -29,6 +32,7 @@ var callerIdentityAPIDirs = []string{"ars/api", "ags/api", "egs/api", "cgs/api",
 // catches reads through a variable, an alias or an embedded struct.
 func TestCallerIdentityIsReadOnlyByCallerauth(t *testing.T) {
 	seenAPI := map[string]bool{}
+	unlistedAPI := map[string]bool{}
 	files := 0
 
 	err := filepath.WalkDir(testutil.Root, func(absolute string, entry fs.DirEntry, err error) error {
@@ -66,6 +70,8 @@ func TestCallerIdentityIsReadOnlyByCallerauth(t *testing.T) {
 		inAPI := slices.Contains(callerIdentityAPIDirs, dir)
 		if inAPI {
 			seenAPI[dir] = true
+		} else if filepath.Base(dir) == "api" {
+			unlistedAPI[dir] = true
 		}
 		ast.Inspect(file, func(node ast.Node) bool {
 			selector, ok := node.(*ast.SelectorExpr)
@@ -106,5 +112,8 @@ func TestCallerIdentityIsReadOnlyByCallerauth(t *testing.T) {
 		if !seenAPI[dir] {
 			t.Errorf("walk did not reach %s", dir)
 		}
+	}
+	for dir := range unlistedAPI {
+		t.Errorf("%s holds a service API package that callerIdentityAPIDirs does not list", dir)
 	}
 }
