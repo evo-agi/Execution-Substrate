@@ -2050,7 +2050,7 @@ func TestOperationalHandoffOpaqueAuthorityBoundaries(t *testing.T) {
 					if err == nil {
 						t.Fatal("non-test admission authority reference passed zero-reference rule")
 					}
-					if len(operationalCommissioningPrerequisites) != 6 {
+					if len(operationalCommissioningPrerequisites) != 7 {
 						t.Fatalf("commissioning prerequisites: %v", operationalCommissioningPrerequisites)
 					}
 					for _, prerequisite := range operationalCommissioningPrerequisites {
