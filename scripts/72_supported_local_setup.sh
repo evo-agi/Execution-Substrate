@@ -52,6 +52,9 @@ RETAINED_RESULT_AUTH_KEY_FILE="${SUPPORTED_LOCAL_RETAINED_RESULT_AUTH_KEY_FILE:-
 SUPPORTED_LOCAL_NOMAD_PORT="${SUPPORTED_LOCAL_NOMAD_PORT:-4646}"
 SUPPORTED_LOCAL_NOMAD_ADDR="http://127.0.0.1:${SUPPORTED_LOCAL_NOMAD_PORT}"
 NOMAD_ACL_DIR="${SUPPORTED_LOCAL_NOMAD_ACL_DIR:-/etc/execution-substrate/nomad-acl}"
+# The user Nomad runs as (root for nomad.service): tokens go only to a
+# listener that user owns.
+NOMAD_USER="${SUPPORTED_LOCAL_NOMAD_USER:-root}"
 GO_REQUIRED_VERSION="go1.26.5"
 
 ARS_PORT=$((PORT_BASE + 2))
@@ -125,6 +128,7 @@ Optional environment variables:
   SUPPORTED_LOCAL_RETAINED_RESULT_AUTH_KEY_FILE=/external/private/keys/key
   SUPPORTED_LOCAL_NOMAD_ACL_DIR=/etc/execution-substrate/nomad-acl
   SUPPORTED_LOCAL_NOMAD_PORT=4646   Nomad HTTP port on 127.0.0.1
+  SUPPORTED_LOCAL_NOMAD_USER=root   user Nomad runs as
   SUPPORTED_LOCAL_ES_ROOTS_PROFILE=service-root-v1   only accepted profile
 
 Nomad must enforce access control (ACLs): scripts/70_linux_setup.sh enables
@@ -269,6 +273,7 @@ provision_supported_local_nomad_acl() {
     env
     "NOMAD_ADDR=${SUPPORTED_LOCAL_NOMAD_ADDR}"
     "NOMAD_ACL_DIR=${NOMAD_ACL_DIR}"
+    "NOMAD_USER=${NOMAD_USER}"
     "ES_USER=root"
     "OBSERVER_USER=${observer_user}"
     bash "${SCRIPT_DIR}/nomad_acl_setup.sh" provision
