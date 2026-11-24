@@ -166,7 +166,7 @@ func TestRunbookPathMentionsExist(t *testing.T) {
 	files := trackedTextFiles(t)
 	names := make([]string, 0, len(files))
 	for name := range files {
-		if name != "runbook_paths_contract_test.go" {
+		if name != "runbook_paths_docs_contract_test.go" {
 			names = append(names, name)
 		}
 	}
