@@ -200,8 +200,10 @@ func TestNomadRuntimePostureCheckRefusesLoosenedDockerLimits(t *testing.T) {
 // get a privileged container, an extra capability or another driver. Those
 // three are all the limits refuse. Host bind mounts as container root, host
 // networking, host devices, security_opt (seccomp=unconfined) and, on Nomad
-// 2.0.0, the host PID namespace still run (audit INF-02); the configuration
-// docs record them.
+// 2.0.0, the host PID, IPC and user namespaces still run (audit INF-02);
+// the configuration docs record them. Nomad 2.1.1 (the CI pin) refuses the
+// three host-namespace modes. The host-namespace rows below pin whichever
+// side the running Nomad is on.
 func TestRealNomadOffersOnlyTheLimitedDockerDriver(t *testing.T) {
 	harness := startACLTestNomad(t, nomadHarnessOptions{})
 	// startACLTestNomad waits only for a leader; the drivers are read from
@@ -222,11 +224,20 @@ func TestRealNomadOffersOnlyTheLimitedDockerDriver(t *testing.T) {
 	var agentSelf struct {
 		Config struct {
 			Plugins []map[string]any `json:"Plugins"`
+			Version struct {
+				Version string `json:"Version"`
+			} `json:"Version"`
 		} `json:"config"`
 	}
 	if err := json.Unmarshal([]byte(body), &agentSelf); err != nil {
 		t.Fatalf("decode agent self: %v", err)
 	}
+	if agentSelf.Config.Version.Version == "" {
+		t.Fatalf("real agent reports no version: %s", body)
+	}
+	// Nomad 2.0 runs the host PID, IPC and user namespace modes that
+	// Nomad 2.1 refuses.
+	hostNamespacesOpen := strings.HasPrefix(agentSelf.Config.Version.Version, "2.0.")
 	var realDocker map[string]any
 	for _, plugin := range agentSelf.Config.Plugins {
 		if plugin["Name"] == "docker" {
@@ -298,17 +309,33 @@ func TestRealNomadOffersOnlyTheLimitedDockerDriver(t *testing.T) {
 			}},
 		}})
 	}
-	refusals := []struct {
+	type dockerLimitCase struct {
 		id, driver string
 		config     map[string]any
 		taskEvent  string
-	}{
+	}
+	refusals := []dockerLimitCase{
 		{"limit-privileged", "docker", map[string]any{"image": "alpine:3.20", "command": "/bin/true", "privileged": true}, "Docker privileged mode is disabled on this Nomad agent"},
 		{"limit-capability", "docker", map[string]any{"image": "alpine:3.20", "command": "/bin/true", "cap_add": []string{"sys_admin"}}, "driver does not allow the following capabilities: sys_admin"},
 		{"limit-exec", "exec", map[string]any{"command": "/bin/true"}, ""},
 		{"limit-raw-exec", "raw_exec", map[string]any{"command": "/bin/true"}, ""},
 	}
-	for _, refusal := range refusals {
+	// The host-namespace modes: refused on Nomad 2.1, run on Nomad 2.0, as
+	// the configuration docs say.
+	var hostNamespaceRuns []dockerLimitCase
+	for _, mode := range []string{"pid_mode", "ipc_mode", "userns_mode"} {
+		hostMode := dockerLimitCase{
+			id: "host-" + strings.TrimSuffix(mode, "_mode"), driver: "docker",
+			config:    map[string]any{"image": "alpine:3.20", "command": "/bin/true", mode: "host"},
+			taskEvent: `cannot apply "` + mode + `" configuration`,
+		}
+		if hostNamespacesOpen {
+			hostNamespaceRuns = append(hostNamespaceRuns, hostMode)
+		} else {
+			refusals = append(refusals, hostMode)
+		}
+	}
+	for _, refusal := range append(append([]dockerLimitCase{}, refusals...), hostNamespaceRuns...) {
 		status, body := nomadRawRequest(t, http.MethodPost, harness.addr+"/v1/jobs?namespace="+nomadACLNamespace, esToken, job(refusal.id, refusal.driver, refusal.config))
 		if status != http.StatusOK {
 			t.Fatalf("register %s: HTTP %d %s", refusal.id, status, body)
@@ -366,6 +393,30 @@ func TestRealNomadOffersOnlyTheLimitedDockerDriver(t *testing.T) {
 			}
 			if time.Now().After(deadline) {
 				t.Fatalf("%s was not refused by the Docker limits within 30s", refusal.id)
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+	}
+	for _, run := range hostNamespaceRuns {
+		deadline := time.Now().Add(60 * time.Second)
+		for {
+			_, body := nomadRawRequest(t, http.MethodGet, harness.addr+"/v1/job/"+run.id+"/allocations?namespace="+nomadACLNamespace, esToken, nil)
+			var allocations []struct {
+				ClientStatus string `json:"ClientStatus"`
+			}
+			_ = json.Unmarshal([]byte(body), &allocations)
+			ran := false
+			for _, allocation := range allocations {
+				if allocation.ClientStatus == "failed" {
+					t.Fatalf("%s failed on Nomad %s, which the configuration docs say runs it: %s", run.id, agentSelf.Config.Version.Version, body)
+				}
+				ran = ran || allocation.ClientStatus == "complete"
+			}
+			if ran {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("%s did not run on Nomad %s within 60s: %s", run.id, agentSelf.Config.Version.Version, body)
 			}
 			time.Sleep(200 * time.Millisecond)
 		}

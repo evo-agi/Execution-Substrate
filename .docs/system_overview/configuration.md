@@ -711,7 +711,9 @@ Known limits of this lock:
     including loopback services such as Nomad's API);
   - `devices` (host device nodes mapped into the container);
   - `security_opt`, for example `seccomp=unconfined`;
-  - on Nomad 2.0.0 only, `pid_mode = "host"` (2.1.1 refuses it).
+  - on Nomad 2.0.0 only, `pid_mode = "host"`, `ipc_mode = "host"` (the
+    container joins the host IPC namespace) and `userns_mode = "host"`
+    (Nomad 2.1.1 refuses all three).
 
   Nomad's Docker plugin has no setting that refuses these options. ES's own
   admission decides job shape; a stricter design for job shape and the task
