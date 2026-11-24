@@ -27,8 +27,11 @@ func TestRemoteAlphaResetDisposableVaultStaticSafety(t *testing.T) {
 		"--unseal-only",
 		"--post-unseal-check",
 		`backup_path="${VAULT_RAFT_PATH}.remote-alpha-reset-backup-${timestamp}"`,
-		`sudo mv -- "${VAULT_RAFT_PATH}" "${backup_path}"`,
-		`sudo install -d -o "${vault_user}" -g "${vault_group}" -m 0700 -- "${VAULT_RAFT_PATH}"`,
+		`sudo mv -T -- "${VAULT_RAFT_PATH}" "${backup_path}"`,
+		`sudo mkdir -m 0700 -- "${VAULT_RAFT_PATH}"`,
+		`sudo chown -h -- "${vault_user}:${vault_group}" "${VAULT_RAFT_PATH}"`,
+		`pgrep -u "${vault_user}"`,
+		`require_vault_owned_raft_dir "${VAULT_RAFT_PATH}" "${vault_user}"`,
 		`""|"/"|"/var"|"/var/lib"|"/opt"|"/home"|"/etc"|"/usr"|"/tmp")`,
 		`remote_alpha_vault_workload_auth_check.sh`,
 		`sudo "${checker}"`,
@@ -49,6 +52,9 @@ func TestRemoteAlphaResetDisposableVaultStaticSafety(t *testing.T) {
 
 	assertContainsNone(t, "reset helper source", source,
 		`rm -rf -- "${VAULT_RAFT_PATH}"`,
+		// RT-2: install -d changes the owner and mode of whatever a planted
+		// link points at.
+		"install -d",
 		"vault auth enable",
 		"vault secrets enable",
 		"vault policy write",
@@ -117,7 +123,7 @@ func TestRemoteAlphaResetDisposableVaultHelpDocumentsSafeModes(t *testing.T) {
 func TestRemoteAlphaResetDisposableVaultPrintsMacRefreshCommandOnly(t *testing.T) {
 	scriptPath := filepath.Join(executionSubstrateRepoRoot, "scripts", "remote_alpha_reset_disposable_vault.sh")
 	source := mustRead(t, scriptPath)
-	section := docSection(t, source, "print_mac_refresh_command() {", "\n}\n\nwhile [[ $# -gt 0 ]]; do")
+	section := docSection(t, source, "print_mac_refresh_command() {", "\n}\n\nmain() {")
 
 	assertContainsAll(t, "reset helper Mac refresh printer", section,
 		"cat <<'EOF'",

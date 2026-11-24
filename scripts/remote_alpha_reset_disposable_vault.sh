@@ -337,6 +337,53 @@ validate_raft_path() {
   esac
 }
 
+# The Vault account may write the directory that holds the raft directory
+# (it owns /opt/vault on the box), and it may be able to replace the config
+# that names the raft path. So the reset only moves a raft directory that is
+# a real directory already belonging to the Vault account: moving and
+# recreating it then gives that account nothing it did not own before.
+require_vault_owned_raft_dir() {
+  local path=$1
+  local vault_user=$2
+  local owner=""
+
+  if sudo test -L "${path}"; then
+    die "Vault raft path is a symbolic link: ${path}"
+  fi
+  sudo test -d "${path}" || die "Vault raft path is not an existing directory: ${path}"
+  owner="$(sudo stat -c '%U' -- "${path}")"
+  [[ "${owner}" == "${vault_user}" ]] || die "Vault raft path ${path} belongs to ${owner}, not to the Vault service user ${vault_user}; refusing to move it"
+}
+
+# Stops Vault, moves the raft directory aside and creates an empty one for the
+# Vault account. Root never acts on the raft path by a name the Vault account
+# could have changed in between: mv -T renames exactly that entry, mkdir
+# refuses a name that exists (a link planted after the move included), and
+# chown -h never follows a link. A process that still runs as the Vault
+# account after the stop could plant such a name, so the reset refuses to
+# continue while one does.
+replace_raft_directory() {
+  local vault_user=$1
+  local vault_group=$2
+  local backup_path=$3
+
+  info "Stopping $(unit_name)"
+  sudo systemctl stop "$(unit_name)"
+  if [[ "${vault_user}" != "root" ]] && pgrep -u "${vault_user}" >/dev/null 2>&1; then
+    die "processes still run as ${vault_user} after $(unit_name) stopped; nothing was moved and Vault stays stopped. List them with: pgrep -a -u ${vault_user}"
+  fi
+  info "Moving ${VAULT_RAFT_PATH} to ${backup_path}"
+  sudo mv -T -- "${VAULT_RAFT_PATH}" "${backup_path}"
+  info "Recreating ${VAULT_RAFT_PATH} for ${vault_user}:${vault_group}"
+  if ! sudo mkdir -m 0700 -- "${VAULT_RAFT_PATH}"; then
+    die "something created ${VAULT_RAFT_PATH} after the move; the old data is in ${backup_path} and Vault stays stopped"
+  fi
+  sudo chown -h -- "${vault_user}:${vault_group}" "${VAULT_RAFT_PATH}"
+  if sudo test -L "${VAULT_RAFT_PATH}" || ! sudo test -d "${VAULT_RAFT_PATH}"; then
+    die "${VAULT_RAFT_PATH} was replaced during the reset; the old data is in ${backup_path} and Vault stays stopped"
+  fi
+}
+
 detect_workload_auth_checker() {
   if [[ -n "${WORKLOAD_AUTH_CHECKER}" ]]; then
     printf '%s' "${WORKLOAD_AUTH_CHECKER}"
@@ -576,6 +623,7 @@ run_execute_reset() {
   require_command vault
   require_command python3
   require_command sudo
+  require_command pgrep
 
   ensure_config_path
   [[ -n "${VAULT_CONFIG_PATH}" ]] || die "could not detect Vault config path from systemd; supply --vault-config-path"
@@ -587,6 +635,7 @@ run_execute_reset() {
   [[ -n "${raft_path}" ]] || die "could not detect Vault raft path; supply --vault-raft-path"
   validate_raft_path "${raft_path}"
   VAULT_RAFT_PATH="${raft_path}"
+  require_vault_owned_raft_dir "${VAULT_RAFT_PATH}" "${vault_user}"
 
   addr="$(detect_vault_addr yes)"
   cacert="$(detect_vault_cacert yes || true)"
@@ -607,12 +656,7 @@ run_execute_reset() {
   backup_path="${VAULT_RAFT_PATH}.remote-alpha-reset-backup-${timestamp}"
   [[ ! -e "${backup_path}" ]] || die "backup path already exists: ${backup_path}"
 
-  info "Stopping $(unit_name)"
-  sudo systemctl stop "$(unit_name)"
-  info "Moving ${VAULT_RAFT_PATH} to ${backup_path}"
-  sudo mv -- "${VAULT_RAFT_PATH}" "${backup_path}"
-  info "Recreating ${VAULT_RAFT_PATH} for ${vault_user}:${vault_group}"
-  sudo install -d -o "${vault_user}" -g "${vault_group}" -m 0700 -- "${VAULT_RAFT_PATH}"
+  replace_raft_directory "${vault_user}" "${vault_group}" "${backup_path}"
   info "Starting $(unit_name)"
   sudo systemctl start "$(unit_name)"
   wait_for_vault_status
@@ -657,70 +701,78 @@ PYTHONPATH=src python3 -m infra_manager.cli remote-alpha-live-refresh \
 EOF
 }
 
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --dry-run)
-      MODE="dry-run"
-      shift
+main() {
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --dry-run)
+        MODE="dry-run"
+        shift
+        ;;
+      --execute-reset)
+        MODE="execute-reset"
+        shift
+        ;;
+      --unseal-only)
+        MODE="unseal-only"
+        shift
+        ;;
+      --post-unseal-check)
+        POST_UNSEAL_CHECK="true"
+        shift
+        ;;
+      --service-name)
+        SERVICE_NAME="$2"
+        shift 2
+        ;;
+      --vault-config-path)
+        VAULT_CONFIG_PATH="$2"
+        shift 2
+        ;;
+      --vault-raft-path)
+        VAULT_RAFT_PATH="$2"
+        shift 2
+        ;;
+      --vault-addr)
+        VAULT_ADDR_OVERRIDE="$2"
+        shift 2
+        ;;
+      --vault-cacert)
+        VAULT_CACERT_OVERRIDE="$2"
+        shift 2
+        ;;
+      --workload-auth-checker)
+        WORKLOAD_AUTH_CHECKER="$2"
+        shift 2
+        ;;
+      --help|-h)
+        usage
+        exit 0
+        ;;
+      *)
+        usage >&2
+        die "unknown argument: $1"
+        ;;
+    esac
+  done
+
+  case "${MODE}" in
+    dry-run)
+      dry_run
       ;;
-    --execute-reset)
-      MODE="execute-reset"
-      shift
+    unseal-only)
+      run_unseal_only
       ;;
-    --unseal-only)
-      MODE="unseal-only"
-      shift
-      ;;
-    --post-unseal-check)
-      POST_UNSEAL_CHECK="true"
-      shift
-      ;;
-    --service-name)
-      SERVICE_NAME="$2"
-      shift 2
-      ;;
-    --vault-config-path)
-      VAULT_CONFIG_PATH="$2"
-      shift 2
-      ;;
-    --vault-raft-path)
-      VAULT_RAFT_PATH="$2"
-      shift 2
-      ;;
-    --vault-addr)
-      VAULT_ADDR_OVERRIDE="$2"
-      shift 2
-      ;;
-    --vault-cacert)
-      VAULT_CACERT_OVERRIDE="$2"
-      shift 2
-      ;;
-    --workload-auth-checker)
-      WORKLOAD_AUTH_CHECKER="$2"
-      shift 2
-      ;;
-    --help|-h)
-      usage
-      exit 0
+    execute-reset)
+      run_execute_reset
       ;;
     *)
-      usage >&2
-      die "unknown argument: $1"
+      die "unknown mode: ${MODE}"
       ;;
   esac
-done
+}
 
-case "${MODE}" in
-  dry-run)
-    dry_run
-    ;;
-  unseal-only)
-    run_unseal_only
-    ;;
-  execute-reset)
-    run_execute_reset
-    ;;
-  *)
-    die "unknown mode: ${MODE}"
-    ;;
-esac
+# The tests source this file to call its functions. Run as a file, or read
+# from standard input, it runs main.
+if [[ "${BASH_SOURCE[0]:-$0}" == "$0" ]]; then
+  main "$@"
+fi
