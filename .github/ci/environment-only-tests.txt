@@ -63,7 +63,7 @@
 # The way to shorten this list is to port a test so that it passes on a Linux
 # runner without weakening it.
 
-# Remote Alpha operator-host tests in the root package.
+# Remote Alpha operator-host tests in the scripts package.
 
 # The test process must run as the account named "ds". The second test also
 # needs the macOS /private/tmp path for one subtest.
@@ -73,27 +73,27 @@
 # is not "ds" at its first identity check, so a subtest that expects a
 # refusal passes there without reaching the custody check it is named for.
 # Keeping those subtests in the gate would claim a check that does not happen.
-execution-substrate TestRemoteAlphaESServiceTLSStatusFailureWitnessBootstrapOwnedTerminal
-execution-substrate TestRemoteAlphaESServiceTLSStatusRootLoadedStageCustody
-execution-substrate TestRemoteAlphaESServiceTLSStatusStageFIFOSubstitution
-execution-substrate TestRemoteAlphaOperatorRecoverySessionESTLSStatusStageFIFORefusal
+execution-substrate/scripts TestRemoteAlphaESServiceTLSStatusFailureWitnessBootstrapOwnedTerminal
+execution-substrate/scripts TestRemoteAlphaESServiceTLSStatusRootLoadedStageCustody
+execution-substrate/scripts TestRemoteAlphaESServiceTLSStatusStageFIFOSubstitution
+execution-substrate/scripts TestRemoteAlphaOperatorRecoverySessionESTLSStatusStageFIFORefusal
 
 # The test stages under the macOS /private/tmp path.
-execution-substrate TestRemoteAlphaOperatorRecoverySessionESTLSStatusRemoteWrapperTrap
+execution-substrate/scripts TestRemoteAlphaOperatorRecoverySessionESTLSStatusRemoteWrapperTrap
 
 # The host needs an account named "ds" and the macOS /private/tmp path.
-execution-substrate TestRemoteAlphaP0tGrammarDiagnosticBootstrapLifecycleComposition
-execution-substrate TestRemoteAlphaP0tGrammarDiagnosticPriorReaderCloseSuppression
-execution-substrate TestRemoteAlphaP0tGrammarDiagnosticV2VersionedBootstrap
+execution-substrate/scripts TestRemoteAlphaP0tGrammarDiagnosticBootstrapLifecycleComposition
+execution-substrate/scripts TestRemoteAlphaP0tGrammarDiagnosticPriorReaderCloseSuppression
+execution-substrate/scripts TestRemoteAlphaP0tGrammarDiagnosticV2VersionedBootstrap
 
 # The checker reads the host's real modprobe configuration, which the fixture
 # cannot replace. A host that already blocks algif_aead reports
 # mitigated_not_fixed.
-execution-substrate TestRemoteAlphaRuntimeSecurityBoundaryCVE31431UnprovedMitigationStaysVulnerable
-execution-substrate TestRemoteAlphaRuntimeSecurityBoundaryCVE31431VulnerableWithoutMitigationBlocks
+execution-substrate/scripts TestRemoteAlphaRuntimeSecurityBoundaryCVE31431UnprovedMitigationStaysVulnerable
+execution-substrate/scripts TestRemoteAlphaRuntimeSecurityBoundaryCVE31431VulnerableWithoutMitigationBlocks
 
 # The test assumes that /usr/bin and /bin hold no working systemctl.
-execution-substrate TestRemoteAlphaRuntimeSecurityBoundaryCheckMissingToolsStayHonest
+execution-substrate/scripts TestRemoteAlphaRuntimeSecurityBoundaryCheckMissingToolsStayHonest
 
 # es/app: a go command in the system directories of the harness PATH defeats
 # the missing-Go fixture of this one subtest in each test. The runner image
