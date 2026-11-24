@@ -31,7 +31,10 @@ import (
 // for, and matches what a selector refers to, so a read through a variable, a
 // type alias or an embedded struct is caught too.
 
-const callerauthImportPath = "execution-substrate/internal/callerauth"
+// callerIdentityModule is the module path of this repository.
+const callerIdentityModule = "execution-substrate"
+
+const callerauthImportPath = callerIdentityModule + "/internal/callerauth"
 
 // callerIdentityForbiddenImports may be imported only inside
 // internal/callerauth: the test support that builds caller certificates.
@@ -77,13 +80,15 @@ func callerIdentityImportForbidden(path string) bool {
 // its raw encoding, and the raw extensions (which hold the subjectAltName).
 var callerIdentityCertificateFields = []string{"URIs", "Issuer", "RawIssuer", "Extensions"}
 
-var callerIdentityAPIPackages = []string{
-	"execution-substrate/ars/api",
-	"execution-substrate/ags/api",
-	"execution-substrate/egs/api",
-	"execution-substrate/cgs/api",
-	"execution-substrate/es/api",
-}
+// callerIdentityAPIPackages are the import paths of callerIdentityAPIDirs,
+// the list the name-based half uses too.
+var callerIdentityAPIPackages = func() []string {
+	paths := make([]string, 0, len(callerIdentityAPIDirs))
+	for _, dir := range callerIdentityAPIDirs {
+		paths = append(paths, callerIdentityModule+"/"+dir)
+	}
+	return paths
+}()
 
 type callerIdentityBuildTarget struct {
 	goos   string
