@@ -116,7 +116,7 @@ func TestNomadTokenRequestBuildersSetTheToken(t *testing.T) {
 			}
 			ast.Inspect(function, func(node ast.Node) bool {
 				if call, ok := node.(*ast.CallExpr); ok && isHeaderCall(call, "Del") && len(call.Args) == 1 && isIdent(call.Args[0], "nomadTokenHeader") {
-					t.Errorf("%s: %s deletes the Nomad token header", fileSet.Position(call.Pos()), function.Name.Name)
+					t.Errorf("%s: %s deletes the Nomad token header", guardPosition(fileSet, call.Pos()), function.Name.Name)
 				}
 				return true
 			})
@@ -215,7 +215,7 @@ func nomadRequestGuardViolations(name string, source []byte) ([]string, error) {
 				}
 			}
 			if function.Name.Name != "newJobRequest" && function.Name.Name != "verifyAccessControl" && buildsHTTPRequest(call) {
-				violations = append(violations, fmt.Sprintf("%s: nomadClient.%s builds an HTTP request by hand instead of with newJobRequest", fileSet.Position(call.Pos()), function.Name.Name))
+				violations = append(violations, fmt.Sprintf("%s: nomadClient.%s builds an HTTP request by hand instead of with newJobRequest", guardPosition(fileSet, call.Pos()), function.Name.Name))
 			}
 			return true
 		})
@@ -227,7 +227,7 @@ func nomadRequestGuardViolations(name string, source []byte) ([]string, error) {
 		}
 		value, err := strconv.Unquote(literal.Value)
 		if err == nil && namesNomadAPIPath(value) {
-			violations = append(violations, fmt.Sprintf("%s: %q names a Nomad API path outside a token-setting builder", fileSet.Position(literal.Pos()), value))
+			violations = append(violations, fmt.Sprintf("%s: %q names a Nomad API path outside a token-setting builder", guardPosition(fileSet, literal.Pos()), value))
 		}
 		return true
 	})
