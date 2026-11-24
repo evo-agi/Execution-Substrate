@@ -2961,6 +2961,108 @@ an unrelated process therefore neither fails the capability probe nor prolongs
 the unresolved-cleanup hold. This refinement adds no time limit to that hold,
 never counts a visible zombie as absent, and changes no signal, reap, lock,
 publication, or retry authority.
+`Bounded slice rule` fixed-child containment refinement: the process-group
+disposition above reaches only a process that stays in the fixed child's
+process group and that one identity scan observes. A descendant that leaves
+the group with `setsid` or `setpgid`, or that ignores TERM and replaces
+itself with a new process between two scans, is outside both. Each fixed
+OpenSSL command therefore runs in a PID namespace of its own, and the kernel,
+not a scan, accounts for its processes. Immediately before the spawn the
+collector proves from `/proc/self/ns/pid_for_children` that its children are
+created in its own PID namespace, opens a new one with
+`unshare(CLONE_NEWPID)`, and forks exactly one fixed internal anchor, which
+becomes the first process of that namespace. The anchor first asks the
+kernel with `prctl(PR_SET_PDEATHSIG)` to kill it when the collector's thread
+that forked it ends. It then closes every inherited descriptor except its
+standard streams, the read end of one control pipe, and the write end of one
+ready pipe, including the status lock, and ends itself with a nonzero status
+when one stays open. Only then does it write one byte to the ready pipe, and
+the collector spawns nothing before it has read that byte, so no fixed child
+exists while a death of the collector could leave the anchor alive. The
+anchor reaps the orphans of the namespace, without which an orphan that ends
+as a zombie in the fixed child's process group would stay visible to the
+unchanged absence scan and hold it, and it ends with status zero when the
+control pipe reports end of input. The fixed child is spawned exactly as
+before, as the second process of the namespace and a direct child of the
+collector. Directly after the spawn attempt, successful or not, the collector
+sets its child namespace back with `setns` and proves the reset by the same
+`pid_for_children` check. The cleanup owner, process-group disposition,
+unresolved-cleanup hold, direct-child reap, and post-reap absence scan then
+run unchanged, and on every path after the spawn the collector closes the
+control pipe before the cleanup owner runs and sends the anchor, its own
+unreaped child, one KILL, so that the namespace ends whatever a process of
+the namespace does to the pipe or to the anchor. A descendant that left the
+group can keep a child of its own in the fixed child's group and leave it
+unreaped. Once that child has ended, it is a zombie that is not an orphan, so
+the anchor cannot reap it, and no group signal can end it; the unchanged
+cleanup would wait until the descendant ends by itself, which may be never.
+With the namespace ended first, the kernel kills that descendant, the zombie
+goes to the anchor, which reaps it, and the cleanup finds the fixed child
+alone. The fixed command can also make a process whose parent is the
+collector, with `clone` and `CLONE_PARENT`. Only the collector can reap such
+a stray, and its zombie would hold the cleanup or the anchor. Before the
+cleanup owner runs, the collector therefore waits without a time limit until
+the fixed child is terminal and then reaps every stray: each child of the
+collector, as `/proc/self/task/<tid>/children` lists them, that is outside
+the collector's own PID namespace and is neither the anchor nor the fixed
+child. It waits for a stray once it has ended and never signals it, and it
+goes on until one list of its children holds no stray. Only the fixed child
+and a stray can make a stray, so a list that holds none, read after the
+fixed child was seen terminal, is final. A fixed child that still runs at a
+timeout, an interruption, an output overflow, or a failed step after the
+spawn, and any process that outlived the fixed child, is therefore killed by
+the kernel without the grace period of TERM before KILL; on those paths the
+command is incomplete, and after a normal end the result is already
+complete, so nothing such a process could still write counts. When the
+anchor ends, the kernel kills every process that is still in the namespace,
+admits no new one, and lets the anchor become terminal only when no other
+process of the namespace is left, an unreaped child of the collector
+included. The collector waits for that with a nonblocking `waitpid` on the
+anchor, reaping every ended stray in the same loop, sends the anchor one
+KILL when it has not had one and is not terminal after the grace period or
+when the pipe close failed, and reaps it exactly once. No fixed command
+returns, with a result or incomplete, before its anchor is reaped. An anchor
+that does not become terminal holds the invocation with lifecycle ownership
+and the status lock retained, as the unresolved-cleanup hold does, and that
+hold has no time limit. A collector that is killed takes its anchor with it
+through the parent-death signal, so its fixed child and every descendant in
+the namespace die with it.
+No namespace, no anchor, or no ready byte means no spawn and an incomplete
+command. An unproved reset, a failed control-pipe close, a failed KILL of the
+anchor, a failed list of the collector's children or wait for a stray, an
+anchor that ends in any way other than status zero or the collector's own
+KILL, and an unproved anchor reap are incomplete after the complete cleanup,
+through the private `child_namespace_unproved` literal, which maps to the
+existing `openssl_child_unproved` collection witness reason. While the reset
+stays unproved every later command refuses at its first check. No command
+falls back to process-group disposition alone.
+The invocation-boundary process-capability probe gains a second part, after
+its first part succeeded and still before any status input is read: one probe
+namespace with its anchor and one fixed internal member that never ends by
+itself. After the control pipe closes, the member must become terminal by
+the kernel's KILL, the anchor must not be terminal while the member is
+unreaped, the ended member must be listed among the collector's children
+outside its own PID namespace, as a stray is found, and the anchor must end
+with status zero after the member's reap, without a KILL from the collector.
+Both are reaped and every probe descriptor is closed on every path. A Python
+without `os.unshare` or `os.setns`, a refused namespace, and any other
+outcome are the existing `process_capability_unproved` reason, before any
+status input is read and before any OpenSSL spawn. The decision is by
+behavior, never by an OS label, a kernel version, or the caller's user ID.
+Limits that this refinement states and does not remove: the fixed child still
+runs as root, so a hostile child could ask a host service to start a process
+outside its namespace, or write any root-writable file, and a root process of
+the namespace that may trace the anchor could undo the anchor's parent-death
+signal, so that a killed collector leaves that namespace alive; a process
+that cannot die keeps the anchor or a stray from becoming terminal, and the
+invocation holds; inside the namespace the fixed child has process ID 2 and
+parent ID 0 while `/proc` stays the host's; and the namespace setting belongs
+to the calling thread, which a kernel may refuse to a process with several
+threads, so the collector keeps exactly one thread. Local and unprivileged
+tests replace the namespace steps with a stand-in and prove nothing about the
+kernel path; only a run as root on Linux does. This refinement changes no
+process-group signal, hold, direct-child reap, lock, publication, public
+code, schema, reader, or retry authority.
 
 The facade uses one fixed remote Python stage-creation helper. It opens the
 fixed `/tmp` parent, refuses an existing generated name, creates only that
@@ -3153,6 +3255,9 @@ A successful probe grants invocation-local capability state reused by every
 fixed OpenSSL command. Each child command refuses without that state and never
 forks another probe. A failed probe reads no status input, spawns no OpenSSL
 child, publishes no generation, and leaves no probe descriptor or process.
+In a second part the same probe proves the PID-namespace containment of the
+fixed-child containment refinement with two further fixed internal fork
+children, a probe anchor and one probe member, under the same rules.
 On group signal failure it enumerates only members of the reserved
 leader PGID, acquires pidfds, revalidates identity and membership, signals
 members through pidfds, and repeats bounded scans until nonleader members are
@@ -3164,7 +3269,8 @@ acquisition, identity revalidation, signaling, polling, waiting, or
 cleanup-state reporting is contained in the unresolved-cleanup hold. A
 one-shot runtime fault is retried; a persistent fault retains the invocation
 and status lock with bounded backoff. No outer retry may return or publish
-until group absence and exactly one direct-child reap are proved. No
+until group absence and exactly one direct-child reap are proved, and no
+fixed command returns before the anchor of its PID namespace is reaped. No
 unrelated process is signaled. Group TERM and KILL
 occur while the child remains unreaped and its PID reserved; cleanup never
 signals a process group after reaping, when that PID could already have been
@@ -3665,6 +3771,38 @@ validator, and one emitter. Final-emitter invariant failures emit fixed stderr
 and no route JSON because no fallback document is permitted. P0v v1 emits
 `provenance.source_revision=null` and does not execute Git at runtime. There is
 no shell fallback JSON assembly.
+
+`Bounded slice rule` P0v descendant containment refinement: the remote
+collector's process-group signals reach only a descendant that stays in the
+fixed child's group, and only while the fixed child itself still runs at a
+timeout, overflow, or error. A descendant that outlives a normal completion,
+holds the output after the fixed child ended, or leaves the group was reached
+by nothing. The remote collector therefore makes itself a child subreaper
+before any status input is read, proves by a descendant capability probe that
+an orphaned grandchild becomes its child and is killed and reaped until
+`waitid` reports no child, and after every fixed command kills and reaps its
+own children until the kernel reports none, within a two-second descendant
+drain bound. An unproved drain is a runtime failure of that command, mapped
+to the existing `remote_status_unavailable`, and refuses every later fixed
+command of the invocation before its spawn; a failed probe emits the existing
+`remote_status_unavailable` document before any fixed command. The decision is
+by behavior, never by an OS label. Between its fork and its exec the fixed
+child asks for `prctl(PR_SET_PDEATHSIG)`, proves that the collector is still
+its parent, and sets its own `RLIMIT_NPROC` to `(0, 0)`, so that an
+unprivileged fixed child can start no process or thread and dies with a
+killed collector unless its program undoes that request itself. Stated
+limits: root is not bound by that limit, and the exec of `sudo` clears the
+parent-death request, so the root command of the fixed `sudo -n` path, and
+every command when the SSH target is root, depend on the drain alone; a
+changed binary can undo its own parent-death request and then outlives a
+killed collector, as one process that the process limit still keeps from
+starting any other; an unprivileged collector detects but cannot end a root
+descendant of the fixed `sudo -n` path; descendants that only wait, such as a
+long chain or a herd with a long children list, can outlast the drain's
+bounded per-process kills, which then report a runtime failure and clear the
+flag; and no root-side runner is added, because it would need a host sudo
+grant for a general process launcher. The route schema, failure vocabulary, internal
+protocol, sudo allowlist, and privilege posture do not change.
 
 P0v's implemented status schema is
 `execution-substrate.remote-alpha.operator-healthcheck-tls-status-noninteractive.v1`.

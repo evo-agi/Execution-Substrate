@@ -1034,6 +1034,11 @@ def run_case(mode):
         actual_capability = namespace["validate_process_capability"]
         namespace["validate_process_capability"] = lambda: actual_capability(backend)
         namespace["waitid_terminal"] = lambda pid: True
+        # The PID namespace of a fixed command needs root on the target and
+        # has its own tests; this composition models the child itself.
+        namespace["ChildNamespace"] = type("LocalChildNamespace", (), {
+            "open": lambda self: None, "restore": lambda self: None, "close": lambda self: False})
+        namespace["validate_child_namespace"] = lambda: None
         namespace["scan_group_members"] = members
         namespace["read_proc_identity"] = lambda pid: (pid if pid in processes else pid-1, 1 if pid in processes else 2)
 

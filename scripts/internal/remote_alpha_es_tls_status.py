@@ -13,6 +13,7 @@ import os
 import posixpath
 import re
 import secrets
+import select
 import selectors
 import signal
 import stat
@@ -192,6 +193,7 @@ _FAILURE_REASON_LITERALS = {
         "child_spawn_unproved": "openssl_child_unproved",
         "child_run_unproved": "openssl_child_unproved",
         "child_resource_unproved": "openssl_child_unproved",
+        "child_namespace_unproved": "openssl_child_unproved",
         "child_waitid_indeterminate": "openssl_child_unproved",
         "child_waitid_unavailable": "openssl_child_unproved",
         "process_identity_unproved": "openssl_child_unproved",
@@ -812,6 +814,8 @@ def validate_process_capability(backend: ProcessCapabilityBackend | None = None)
         WITNESS_DISPOSITION_UNPROVED = True
     if failure is not None or not reaped:
         raise Incomplete("process_capability_unavailable") from failure
+    # Second part of the same probe: PID-namespace containment.
+    validate_child_namespace()
 
 
 def read_proc_identity(pid: int) -> tuple[int, int] | None:
@@ -1087,11 +1091,491 @@ def own_child_until_proved(proc: subprocess.Popen[bytes]) -> bool:
             backoff.wait(0.05)
 
 
+CHILD_NAMESPACE_POLL = 0.02
+PR_SET_PDEATHSIG = 1
+
+
+def _close_inherited_descriptors(*keep: int) -> None:
+    """Close every descriptor above the standard streams except the kept ones, and prove it."""
+    for name in os.listdir("/proc/self/fd"):
+        fd = int(name)
+        if fd > 2 and fd not in keep:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+    for name in os.listdir("/proc/self/fd"):
+        fd = int(name)
+        if fd > 2 and fd not in keep:
+            try:
+                os.fstat(fd)
+            except OSError:
+                # The descriptor of this listing itself; it is closed again.
+                continue
+            raise OSError(errno.EBADF, "inherited descriptor left open")
+
+
+def _child_namespace_anchor(control_read: int, ready_write: int) -> None:
+    """Fixed code of the first process of a child PID namespace; never returns.
+
+    It first asks the kernel to kill it when the collector's thread that
+    forked it ends, then keeps no inherited descriptor but its standard
+    streams, the control pipe and the ready pipe, and only then writes one
+    byte to the ready pipe, which the collector waits for before it spawns a
+    fixed child. It reaps the orphans of the namespace and ends with status
+    zero when the control pipe reports end of input. The collector normally
+    ends it with a KILL instead. When this process ends, the kernel kills
+    every process that is still in the namespace.
+    """
+    code = 1
+    try:
+        prctl = ctypes.CDLL(None, use_errno=True).prctl
+        if prctl(ctypes.c_int(PR_SET_PDEATHSIG), ctypes.c_ulong(signal.SIGKILL), ctypes.c_ulong(0),
+                 ctypes.c_ulong(0), ctypes.c_ulong(0)) != 0:
+            raise OSError(ctypes.get_errno(), "prctl")
+        _close_inherited_descriptors(control_read, ready_write)
+        if os.write(ready_write, b"r") != 1:
+            raise OSError(errno.EIO, "ready")
+        os.close(ready_write)
+        while True:
+            ready, _write, _error = select.select([control_read], [], [], CHILD_NAMESPACE_POLL)
+            try:
+                while os.waitpid(-1, os.WNOHANG)[0] > 0:
+                    pass
+            except ChildProcessError:
+                pass
+            if ready:
+                if os.read(control_read, 1) == b"":
+                    code = 0
+                break
+    except BaseException:
+        pass
+    os._exit(code)
+
+
+def _child_namespace_probe_member(hold_read: int) -> None:
+    """Fixed code of the probe's namespace member; it never ends by itself."""
+    try:
+        _close_inherited_descriptors(hold_read)
+        os.read(hold_read, 1)
+    except BaseException:
+        pass
+    os._exit(1)
+
+
+def own_children() -> list[int]:
+    """Every child of this process, from the children list of each of its threads."""
+    children: list[int] = []
+    for task in os.listdir("/proc/self/task"):
+        with open("/proc/self/task/%s/children" % task, "rb") as handle:
+            children.extend(int(word) for word in handle.read().split())
+    return children
+
+
+def pid_namespace(pid: int) -> tuple[int, int]:
+    """The identity of a process's PID namespace."""
+    info = os.stat("/proc/%d/ns/pid" % pid)
+    return info.st_dev, info.st_ino
+
+
+class ChildNamespaceBackend:
+    """Fixed kernel operations; tests inject a deterministic behavior backend."""
+
+    def __init__(self) -> None:
+        self.unshare = getattr(os, "unshare", None)
+        self.setns = getattr(os, "setns", None)
+        self.clone_newpid = getattr(os, "CLONE_NEWPID", None)
+        self.fork = getattr(os, "fork", None)
+        self.open = os.open
+        self.stat = os.stat
+        self.fstat = os.fstat
+        self.pipe = os.pipe
+        self.read = os.read
+        self.close = os.close
+        self.terminal = waitid_terminal
+        self.waitpid = os.waitpid
+        self.kill = os.kill
+        self.children = own_children
+        self.pid_namespace = pid_namespace
+
+
+class ChildNamespace:
+    """The PID namespace of one fixed child, held open by one anchor.
+
+    The process-group disposition reaches only a process that stays in the
+    fixed child's group and that one scan observes. Here the kernel accounts
+    for every process instead. open() makes the next fork of this thread the
+    second process of a new PID namespace whose first process is the anchor,
+    and returns only after the anchor reported ready. restore() makes later
+    forks ordinary children again. end() ends the namespace before the
+    cleanup of a spawned fixed child. close() closes the control pipe and
+    returns only after the anchor is reaped: when the anchor ends, the kernel
+    kills every process that is still in the namespace, admits no new one,
+    and lets the anchor become terminal only when no other process of the
+    namespace is left.
+
+    One object serves one fixed command. Nothing here signals a process group
+    or scans the process table; it signals only the anchor, and it reaps only
+    children of this process outside its own PID namespace.
+    """
+
+    def __init__(self, backend: ChildNamespaceBackend | None = None) -> None:
+        self.backend = ChildNamespaceBackend() if backend is None else backend
+        self.own_fd = -1
+        self.control_read = -1
+        self.control_write = -1
+        self.ready_read = -1
+        self.ready_write = -1
+        self.home_ns: tuple[int, int] | None = None
+        self.anchor = -1
+        self.opened = False
+        self.entered = False
+        self.reaped = False
+        self.killed = False
+        self.release_failed = False
+        self.unproved = False
+
+    def _children_at_home(self) -> bool:
+        """Static check: this process creates children in its own PID namespace."""
+        own = self.backend.fstat(self.own_fd)
+        self.home_ns = (own.st_dev, own.st_ino)
+        children = self.backend.stat("/proc/self/ns/pid_for_children")
+        return (own.st_dev, own.st_ino) == (children.st_dev, children.st_ino)
+
+    def open(self) -> None:
+        """Open the namespace and fork its anchor, or raise before any child exists."""
+        backend = self.backend
+        if any(getattr(backend, name, None) is None
+               for name in ("unshare", "setns", "clone_newpid", "fork")):
+            raise Incomplete("process_capability_unavailable")
+        if self.opened:
+            raise Incomplete("child_namespace_unproved")
+        self.opened = True
+        self.own_fd = backend.open("/proc/self/ns/pid", os.O_RDONLY | os.O_CLOEXEC)
+        if not self._children_at_home():
+            raise Incomplete("child_namespace_unproved")
+        self.control_read, self.control_write = backend.pipe()
+        self.ready_read, self.ready_write = backend.pipe()
+        backend.unshare(backend.clone_newpid)
+        self.entered = True
+        pid = backend.fork()
+        if pid == 0:
+            _child_namespace_anchor(self.control_read, self.ready_write)
+        if pid < 0:
+            raise Incomplete("child_namespace_unproved")
+        self.anchor = pid
+        for name in ("control_read", "ready_write"):
+            closing_fd = getattr(self, name)
+            setattr(self, name, -1)
+            try:
+                backend.close(closing_fd)
+            except BaseException:
+                self.unproved = True
+                raise
+        # The anchor writes its byte only after the kernel accepted its
+        # parent-death signal, so no fixed child exists while a death of this
+        # process could leave the anchor alive.
+        word = backend.read(self.ready_read, 1)
+        closing_fd, self.ready_read = self.ready_read, -1
+        try:
+            backend.close(closing_fd)
+        except BaseException:
+            self.unproved = True
+            raise
+        if word != b"r":
+            raise Incomplete("child_namespace_unproved")
+
+    def restore(self) -> None:
+        """Set the child namespace back and prove it; close() reports a failure."""
+        if not self.entered:
+            return
+        try:
+            self.backend.setns(self.own_fd, self.backend.clone_newpid)
+            if self._children_at_home():
+                self.entered = False
+                return
+        except Exception:
+            pass
+        self.unproved = True
+
+    def release(self) -> bool:
+        """Close the control pipe, which ends the anchor.
+
+        False when a close failed, in this call or in an earlier one: the
+        anchor may then not have seen the end of its input.
+        """
+        for name in ("control_read", "control_write"):
+            closing_fd = getattr(self, name)
+            if closing_fd >= 0:
+                setattr(self, name, -1)
+                try:
+                    self.backend.close(closing_fd)
+                except Exception:
+                    self.release_failed = True
+                    self.unproved = True
+        return not self.release_failed
+
+    def _reap_strays(self, *kept: int) -> int:
+        """Reap every ended child of this process in another PID namespace; return how many were listed.
+
+        Besides the anchor and the fixed child, a child of this process outside
+        its own PID namespace is one that a fixed command made with clone and
+        CLONE_PARENT, in this namespace or in one nested in it, or one that
+        Popen left behind after its fork. Nothing else reaps it, and while it
+        is unreaped the anchor cannot become terminal. It is waited for and
+        never signalled; the kernel kills it with the namespace. The kept
+        children are skipped.
+        """
+        backend = self.backend
+        listed = 0
+        for pid in backend.children():
+            if pid in kept:
+                continue
+            if backend.pid_namespace(pid) == self.home_ns:
+                continue
+            listed += 1
+            backend.waitpid(pid, os.WNOHANG)
+        return listed
+
+    def end(self, fixed_child: int) -> bool:
+        """End the namespace before the cleanup of the fixed child; False when the release failed.
+
+        The control pipe closes, and the anchor, this process's unreaped child,
+        gets one KILL, so the namespace ends whatever its processes do to the
+        anchor or to the pipe. The kernel then kills every process that is
+        still in the namespace and admits no new one. This waits, without a
+        time limit, until the fixed child is terminal and then until one list
+        of this process's children holds no child outside its own PID
+        namespace but the anchor and the fixed child. The fixed child stays
+        for the cleanup owner.
+        """
+        released = self.release()
+        if self.anchor <= 0 or self.reaped:
+            return released
+        backend = self.backend
+        if not self.killed:
+            try:
+                # The anchor is this process's unreaped child, so its numeric
+                # PID is still reserved for it.
+                backend.kill(self.anchor, signal.SIGKILL)
+                self.killed = True
+            except Exception:
+                self.unproved = True
+                return released
+        backoff = threading.Event()
+        pause = 0.0005
+        while True:
+            try:
+                # Only the fixed child and the children it made with
+                # CLONE_PARENT can make a child of this process inside the
+                # namespace; the anchor is refused. The list is read after
+                # the fixed child was seen terminal, so a list that holds
+                # none of them is final.
+                if backend.terminal(fixed_child) and self._reap_strays(self.anchor, fixed_child) == 0:
+                    return released
+            except Exception:
+                self.unproved = True
+            backoff.wait(pause)
+            pause = min(pause * 2, 0.05)
+
+    def close(self) -> bool:
+        """End the namespace; return only after its anchor is reaped.
+
+        True means that something stayed unproved. An anchor that does not
+        become terminal holds the caller here, with every lock it holds.
+        """
+        backend = self.backend
+        self.restore()
+        released = self.release()
+        for name in ("ready_read", "ready_write"):
+            closing_fd = getattr(self, name)
+            if closing_fd >= 0:
+                setattr(self, name, -1)
+                try:
+                    backend.close(closing_fd)
+                except Exception:
+                    self.unproved = True
+        if self.anchor > 0 and not self.reaped:
+            deadline = time.monotonic() + CHILD_GRACE
+            backoff = threading.Event()
+            pause = 0.0005
+            status: int | None = None
+            while True:
+                try:
+                    self._reap_strays(self.anchor)
+                except Exception:
+                    self.unproved = True
+                try:
+                    waited, status = backend.waitpid(self.anchor, os.WNOHANG)
+                    if waited == self.anchor:
+                        self.reaped = True
+                        break
+                    status = None
+                    if not self.killed and (not released or time.monotonic() > deadline):
+                        # The anchor is this process's unreaped child, so its
+                        # numeric PID is still reserved for it.
+                        backend.kill(self.anchor, signal.SIGKILL)
+                        self.killed = True
+                except ChildProcessError:
+                    # Nothing is left to wait for, and nothing was proved.
+                    self.unproved = True
+                    break
+                except Exception:
+                    self.unproved = True
+                backoff.wait(pause)
+                pause = min(pause * 2, 0.05)
+            if status is None or not self.reaped:
+                self.unproved = True
+            elif os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0:
+                pass
+            elif self.killed and os.WIFSIGNALED(status) and os.WTERMSIG(status) == signal.SIGKILL:
+                pass
+            else:
+                self.unproved = True
+        if self.own_fd >= 0:
+            closing_fd, self.own_fd = self.own_fd, -1
+            try:
+                backend.close(closing_fd)
+            except Exception:
+                self.unproved = True
+        return self.unproved
+
+
+def validate_child_namespace(backend: ChildNamespaceBackend | None = None) -> None:
+    """Prove by behavior that ending the anchor empties its PID namespace.
+
+    One probe namespace holds its anchor and one fixed member that never ends
+    by itself. After the control pipe closes, the member must become terminal
+    by the kernel's KILL, the anchor must not be terminal while the member is
+    unreaped, the ended member must be listed among this process's children
+    outside its own PID namespace, as end() and close() find a stray, and the
+    anchor must then end with status zero without a KILL from this process.
+    """
+    global WITNESS_DISPOSITION_UNPROVED
+    namespace = ChildNamespace(backend)
+    backend = namespace.backend
+    hold_read = -1
+    hold_write = -1
+    member = -1
+    reaped = False
+    waitable = True
+    closeout_uncertain = False
+    failure: Exception | None = None
+    try:
+        hold_read, hold_write = backend.pipe()
+        namespace.open()
+        try:
+            member = backend.fork()
+            if member == 0:
+                _child_namespace_probe_member(hold_read)
+        finally:
+            namespace.restore()
+        if member < 0 or namespace.unproved:
+            raise Incomplete("process_capability_unavailable")
+        closing_fd, hold_read = hold_read, -1
+        try:
+            backend.close(closing_fd)
+        except BaseException:
+            WITNESS_DISPOSITION_UNPROVED = True
+            raise
+        if backend.terminal(member):
+            raise Incomplete("process_capability_unavailable")
+        if not namespace.release():
+            raise Incomplete("process_capability_unavailable")
+        deadline = time.monotonic() + CHILD_GRACE
+        while not backend.terminal(member):
+            if time.monotonic() > deadline:
+                raise Incomplete("process_capability_unavailable")
+            time.sleep(0.01)
+        if backend.terminal(namespace.anchor):
+            raise Incomplete("process_capability_unavailable")
+        # The ended member is listed as a child of this process outside its
+        # own PID namespace, which is how end() and close() find a process
+        # that a fixed command made a child of this process.
+        if member not in backend.children() or backend.pid_namespace(member) == namespace.home_ns:
+            raise Incomplete("process_capability_unavailable")
+        waited, status = backend.waitpid(member, os.WNOHANG)
+        if waited != member:
+            raise Incomplete("process_capability_unavailable")
+        reaped = True
+        if not os.WIFSIGNALED(status) or os.WTERMSIG(status) != signal.SIGKILL:
+            raise Incomplete("process_capability_unavailable")
+    except ChildProcessError as exc:
+        # A broken WNOWAIT may already have released the PID.
+        waitable = False
+        failure = exc
+    except Exception as exc:
+        failure = exc
+    finally:
+        if member > 0 and not reaped and waitable:
+            try:
+                # The member is still waitable, so its numeric PID remains
+                # reserved by this parent.
+                backend.kill(member, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            except Exception as exc:
+                closeout_uncertain = True
+                failure = exc
+            while True:
+                try:
+                    waited, _status = backend.waitpid(member, os.WNOHANG)
+                    if waited == member:
+                        reaped = True
+                        break
+                except ChildProcessError:
+                    failure = Incomplete("process_capability_unavailable")
+                    waitable = False
+                    closeout_uncertain = True
+                    break
+                except Exception as exc:
+                    closeout_uncertain = True
+                    failure = exc
+                time.sleep(0.01)
+        pending_read, pending_write = hold_read, hold_write
+        hold_read = hold_write = -1
+        for fd in (pending_read, pending_write):
+            if fd >= 0:
+                try:
+                    backend.close(fd)
+                except Exception as exc:
+                    closeout_uncertain = True
+                    failure = exc
+        if namespace.close():
+            closeout_uncertain = True
+    if closeout_uncertain or (member > 0 and not reaped):
+        WITNESS_DISPOSITION_UNPROVED = True
+    if failure is not None or closeout_uncertain or not reaped or namespace.killed:
+        raise Incomplete("process_capability_unavailable") from failure
+
+
 PROCESS_CAPABILITY_READY = False
 
 
 def run_fixed(argv: tuple[str, ...], input_bytes: bytes | None = None,
               anchor_bytes: bytes | None = None) -> tuple[int, bytes, bytes]:
+    """Run one fixed command in a PID namespace of its own.
+
+    Return a result or raise only after the anchor of that namespace is
+    reaped, which is the kernel's word that no process of the command is left.
+    """
+    global WITNESS_DISPOSITION_UNPROVED
+    namespace = ChildNamespace()
+    try:
+        result = _run_fixed_in_namespace(namespace, argv, input_bytes, anchor_bytes)
+    except BaseException:
+        if namespace.close():
+            WITNESS_DISPOSITION_UNPROVED = True
+        raise
+    if namespace.close():
+        WITNESS_DISPOSITION_UNPROVED = True
+        raise Incomplete("child_namespace_unproved")
+    return result
+
+
+def _run_fixed_in_namespace(namespace: ChildNamespace, argv: tuple[str, ...],
+                            input_bytes: bytes | None = None,
+                            anchor_bytes: bytes | None = None) -> tuple[int, bytes, bytes]:
     global WITNESS_DISPOSITION_UNPROVED
     check_signal()
     if not argv or argv[0] != OPENSSL or (input_bytes is not None and len(input_bytes) > MAX_INPUT):
@@ -1138,10 +1622,15 @@ def run_fixed(argv: tuple[str, ...], input_bytes: bytes | None = None,
         raise Incomplete("child_resource_unproved")
 
     try:
-        proc = subprocess.Popen(argv, stdin=subprocess.PIPE if input_bytes is not None else subprocess.DEVNULL,
-                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=False,
-                                close_fds=True, pass_fds=(anchor_read,) if anchor_read >= 0 else (),
-                                start_new_session=True, env=CHILD_ENV)
+        # The fixed child becomes the second process of its own PID namespace.
+        namespace.open()
+        try:
+            proc = subprocess.Popen(argv, stdin=subprocess.PIPE if input_bytes is not None else subprocess.DEVNULL,
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=False,
+                                    close_fds=True, pass_fds=(anchor_read,) if anchor_read >= 0 else (),
+                                    start_new_session=True, env=CHILD_ENV)
+        finally:
+            namespace.restore()
         pending_streams = [stream for stream in (proc.stdin, proc.stdout, proc.stderr) if stream is not None]
         # From here through reap, this function is the sole cleanup owner.
         try:
@@ -1208,12 +1697,26 @@ def run_fixed(argv: tuple[str, ...], input_bytes: bytes | None = None,
                         target.extend(chunk)
                         if len(target) > (MAX_OUTPUT if label == "out" else MAX_ERROR):
                             raise Incomplete("child_output_overflow")
+            # The fixed child has ended and its output is complete. On this
+            # path as on every other path after the spawn, the namespace ends
+            # before the cleanup owner runs: the kernel then kills every other
+            # process of the namespace, so that a zombie which a living
+            # descendant left unreaped in the fixed child's group, and which
+            # no group signal can end, cannot hold the cleanup, and end()
+            # reaps what the fixed command made a child of this process. What
+            # end() leaves unproved is reported by close().
+            namespace.end(proc.pid)
             cleanup_uncertain = own_child_until_proved(proc)
             code = proc.returncode
             check_signal()
             result = code, bytes(out), bytes(err)
         except BaseException as exc:
             failure = exc
+            # The command is incomplete. A fixed child that still runs is
+            # killed by the kernel with the rest of its namespace before the
+            # cleanup owner runs, so it gets no TERM; nothing it could still
+            # write counts.
+            namespace.end(proc.pid)
             cleanup_uncertain = own_child_until_proved(proc) or cleanup_uncertain
         finally:
             if selector is not None:
@@ -1234,6 +1737,7 @@ def run_fixed(argv: tuple[str, ...], input_bytes: bytes | None = None,
         else:
             failure = Incomplete("child_run_unproved")
             failure.__cause__ = exc
+            namespace.end(proc.pid)
             cleanup_uncertain = own_child_until_proved(proc) or cleanup_uncertain
     finally:
         pending_read, pending_write = anchor_read, anchor_write

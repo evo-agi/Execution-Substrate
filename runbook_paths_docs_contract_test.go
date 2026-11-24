@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"net/url"
 	"os"
-	"os/exec"
 	"path"
 	"regexp"
 	"sort"
@@ -59,48 +58,44 @@ func markdownLinkTargets(markdown string) []string {
 	return targets
 }
 
-// trackedTextFiles returns the tracked files that exist in the worktree and
-// contain no NUL byte, with their contents.
-func trackedTextFiles(t *testing.T) map[string][]byte {
+// repositoryTextFiles returns the files of the repository (see
+// repositoryFiles) that exist in the tree as regular files and contain no
+// NUL byte, with their contents.
+func repositoryTextFiles(t *testing.T) map[string][]byte {
 	t.Helper()
-	output, err := exec.Command("git", "ls-files", "-z").Output()
-	if err != nil {
-		t.Fatalf("git ls-files inventory failed: %v", err)
-	}
+	paths, tracked := repositoryFiles(t)
 	files := map[string][]byte{}
-	for _, trackedPath := range strings.Split(strings.TrimSuffix(string(output), "\x00"), "\x00") {
-		if trackedPath == "" {
-			continue
-		}
-		info, err := os.Lstat(trackedPath)
+	for _, filePath := range paths {
+		info, err := os.Lstat(filePath)
 		if os.IsNotExist(err) {
 			continue
 		} else if err != nil {
-			t.Fatalf("stat tracked path %s: %v", trackedPath, err)
+			t.Fatalf("stat repository path %s: %v", filePath, err)
 		}
 		if !info.Mode().IsRegular() {
 			continue
 		}
-		data, err := os.ReadFile(trackedPath)
+		data, err := os.ReadFile(filePath)
 		if err != nil {
-			t.Fatalf("read tracked path %s: %v", trackedPath, err)
+			t.Fatalf("read repository path %s: %v", filePath, err)
 		}
 		if bytes.IndexByte(data, 0) >= 0 {
 			continue
 		}
-		files[trackedPath] = data
+		files[filePath] = data
 	}
 	if len(files) == 0 {
-		t.Fatal("git ls-files listed no readable tracked files")
+		t.Fatalf("the repository's file list (tracked by git: %v) has no readable text file", tracked)
 	}
 	return files
 }
 
-// TestMarkdownRelativeLinksResolve requires every relative link in a tracked
-// Markdown file (in any form markdownLinkTargets reads) to name a file or
-// directory in this repository, apart from the named external targets above.
+// TestMarkdownRelativeLinksResolve requires every relative link in a
+// Markdown file of the repository (in any form markdownLinkTargets reads) to
+// name a file or directory in this repository, apart from the named external
+// targets above.
 func TestMarkdownRelativeLinksResolve(t *testing.T) {
-	files := trackedTextFiles(t)
+	files := repositoryTextFiles(t)
 	names := make([]string, 0, len(files))
 	for name := range files {
 		if strings.HasSuffix(name, ".md") {
@@ -158,12 +153,12 @@ func TestMarkdownRelativeLinksResolve(t *testing.T) {
 }
 
 // TestRunbookPathMentionsExist requires every .runbooks/…/*.md path written
-// in a tracked file (scripts, Go code, docs) to exist, so that a rename or a
-// careless merge cannot leave a script printing a runbook path that is gone.
-// A mention must sit on one line: a path wrapped across two lines, or built
-// from parts at run time, is not seen.
+// in a file of the repository (scripts, Go code, docs) to exist, so that a
+// rename or a careless merge cannot leave a script printing a runbook path
+// that is gone. A mention must sit on one line: a path wrapped across two
+// lines, or built from parts at run time, is not seen.
 func TestRunbookPathMentionsExist(t *testing.T) {
-	files := trackedTextFiles(t)
+	files := repositoryTextFiles(t)
 	names := make([]string, 0, len(files))
 	for name := range files {
 		if name != "runbook_paths_docs_contract_test.go" {
@@ -190,7 +185,7 @@ func TestRunbookPathMentionsExist(t *testing.T) {
 		t.Fatalf("found %d runbook path mentions, %d in scripts/; the path pattern no longer matches", mentions, scriptMentions)
 	}
 	if len(missing) > 0 {
-		t.Fatalf("runbook paths named in tracked files that do not exist:\n%s", strings.Join(missing, "\n"))
+		t.Fatalf("runbook paths named in repository files that do not exist:\n%s", strings.Join(missing, "\n"))
 	}
 }
 
