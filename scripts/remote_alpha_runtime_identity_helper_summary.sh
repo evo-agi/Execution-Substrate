@@ -6,6 +6,62 @@ umask 077
 remote_alpha_runtime_identity_helper_schema="execution-substrate.remote-runtime-identity-helper-summary.v1alpha1"
 remote_alpha_runtime_identity_helper_default_output="/var/tmp/execution-substrate-remote-alpha/runtime-identity-helper-summary.json"
 
+# Copy of remote_alpha_prepare_output_dir from scripts/internal/remote_alpha_output_dir.sh,
+# which explains it; TestRemoteAlphaOutputDirCopiesMatch keeps the two identical.
+remote_alpha_prepare_output_dir() {
+  python3 -I - "$1" <<'REMOTE_ALPHA_OUTPUT_DIR_PY'
+import os
+import stat
+import sys
+
+if not sys.argv[1]:
+    sys.exit("remote alpha output folder: no folder given")
+if ".." in sys.argv[1].split("/"):
+    sys.exit(f"remote alpha output folder: {sys.argv[1]} has a '..' component; refusing to check a path that is not canonical")
+# The path is checked as given, never normalized: dropping "link/.." would
+# check another folder than the one a later write through the link reaches.
+parts = [part for part in os.path.join(os.getcwd(), sys.argv[1]).split("/") if part not in ("", ".")]
+trusted = {0, os.geteuid()}
+if os.environ.get("SUDO_UID", "").isdigit():
+    trusted.add(int(os.environ["SUDO_UID"]))
+# O_PATH reads a folder's owner and mode without read permission on it, so a
+# folder that root keeps private still passes and sudo can hand it over.
+flags = getattr(os, "O_PATH", os.O_RDONLY) | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+shown = "/"
+fd = os.open("/", flags)
+try:
+    for index in range(len(parts) + 1):
+        info = os.fstat(fd)
+        last = index == len(parts)
+        if info.st_uid not in trusted:
+            sys.exit(
+                f"remote alpha output folder: {shown} belongs to uid {info.st_uid}, not to root, "
+                "the user running this step or the user who ran sudo; refusing to write under it"
+            )
+        if info.st_mode & (stat.S_IWGRP | stat.S_IWOTH) and (
+            last or info.st_uid != 0 or not info.st_mode & stat.S_ISVTX
+        ):
+            sys.exit(f"remote alpha output folder: {shown} can be written by its group or others; refusing to write under it")
+        if last:
+            break
+        shown = "/" + "/".join(parts[: index + 1])
+        try:
+            next_fd = os.open(parts[index], flags, dir_fd=fd)
+        except FileNotFoundError:
+            try:
+                os.mkdir(parts[index], 0o755, dir_fd=fd)
+            except FileExistsError:
+                pass
+            next_fd = os.open(parts[index], flags, dir_fd=fd)
+        os.close(fd)
+        fd = next_fd
+except OSError as exc:
+    sys.exit(f"remote alpha output folder: {shown} is not a directory or is a symbolic link ({exc.strerror})")
+finally:
+    os.close(fd)
+REMOTE_ALPHA_OUTPUT_DIR_PY
+}
+
 remote_alpha_runtime_identity_helper_usage() {
   cat <<'EOF'
 Usage:
@@ -93,6 +149,9 @@ remote_alpha_runtime_identity_helper_main() {
   if ! command -v python3 >/dev/null 2>&1; then
     echo "python3 is required" >&2
     return 1
+  fi
+  if [[ "${dry_run}" != "1" ]]; then
+    remote_alpha_prepare_output_dir "$(dirname "${output_path}")" || return 1
   fi
 
   REMOTE_ALPHA_RUNTIME_IDENTITY_HELPER_SCHEMA="${remote_alpha_runtime_identity_helper_schema}" \
