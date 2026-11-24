@@ -205,6 +205,7 @@ Read these in order:
 
 Supporting references:
 
+- [.docs/history/plans-record.md](.docs/history/plans-record.md) for the closed dated record that moved out of `PLANS.md` on 2026-11-24 (status entries and selection history); read it only when a change touches a surface it names
 - [.docs/system_overview/configuration.md](.docs/system_overview/configuration.md) for current config requirements
 - [.docs/system_overview/observability.md](.docs/system_overview/observability.md) for observability rules
 - [.docs/system_overview/capability_probing.md](.docs/system_overview/capability_probing.md) for capability-sensitive validation rules

@@ -3059,7 +3059,7 @@ func TestReliableSubmitContractAdapterFoundationDocsAndSourceContract(t *testing
 }
 
 func TestReliableSubmitBindingProducerDocsContract(t *testing.T) {
-	plansRaw := mustRead(t, "PLANS.md")
+	plansRaw := mustRead(t, plansRecordPath)
 	plans := compactDocSection(t, plansRaw,
 		"## Historical current-remote-base PB1 binding selection (2026-11-17)",
 		"## Historical current-remote-base H/C/T foundation selection (2026-11-17)")
@@ -6408,7 +6408,7 @@ func TestWorkstreamDPolicyAuthorizationBoundaryClarificationIsDocumented(t *test
 	lifecycleContracts := compactText(lifecycleContractsRaw)
 	workstreamD := compactDocSection(t, plansRaw, "### Workstream D - Policy And Authorization Reset", "### Workstream E - Lookup And Config Indirection Reset")
 	workstreamE := compactDocSection(t, plansRaw, "### Workstream E - Lookup And Config Indirection Reset", "### Workstream F - Runtime Identity Handoff Reset")
-	workstreamF := compactDocSection(t, plansRaw, "### Workstream F - Runtime Identity Handoff Reset", "## Ordered Execution Plan")
+	workstreamF := compactDocSection(t, plansRaw, "### Workstream F - Runtime Identity Handoff Reset", "## Remote Alpha Hardening History and Current Retirement")
 
 	egsContractSection := compactDocSection(t, contractsRaw, "## 8. EGS Policy Contract", "## 9. CGS Authorization Contract")
 	cgsContractSection := compactDocSection(t, contractsRaw, "## 9. CGS Authorization Contract", "## 10. Runtime Identity Handoff Contract")
@@ -6965,7 +6965,7 @@ func TestWorkstreamERuntimeConfigOwnershipDecisionIsDocumented(t *testing.T) {
 
 	workstreamD := compactDocSection(t, plansRaw, "### Workstream D - Policy And Authorization Reset", "### Workstream E - Lookup And Config Indirection Reset")
 	workstreamE := compactDocSection(t, plansRaw, "### Workstream E - Lookup And Config Indirection Reset", "### Workstream F - Runtime Identity Handoff Reset")
-	workstreamF := compactDocSection(t, plansRaw, "### Workstream F - Runtime Identity Handoff Reset", "## Ordered Execution Plan")
+	workstreamF := compactDocSection(t, plansRaw, "### Workstream F - Runtime Identity Handoff Reset", "## Remote Alpha Hardening History and Current Retirement")
 	runtimeConfigContract := compactDocSection(t, contractsRaw, "## 4. Workload-Zone Vault Runtime-Config Contract", "## 5. AGS Publication Contract")
 	runtimeConfigBoundary := compactDocSection(t, boundariesRaw, "## 5. Workload-zone Vault runtime-config surface", "## 6. ARS boundary")
 	esBoundary := compactDocSection(t, boundariesRaw, "## 8. ES boundary", "## 9. EGS boundary")
@@ -7195,7 +7195,7 @@ func TestWorkstreamFRuntimeIdentityHandoffOwnershipDecisionIsDocumented(t *testi
 	architecture := compactText(architectureRaw)
 	configuration := compactText(configurationRaw)
 	admissionModel := compactText(admissionModelRaw)
-	workstreamF := compactDocSection(t, plansRaw, "### Workstream F - Runtime Identity Handoff Reset", "## Ordered Execution Plan")
+	workstreamF := compactDocSection(t, plansRaw, "### Workstream F - Runtime Identity Handoff Reset", "## Remote Alpha Hardening History and Current Retirement")
 	runtimeIdentityContract := compactDocSection(t, contractsRaw, "## 10. Runtime Identity Handoff Contract", "## 11. Temporary Compatibility Edges")
 	esBoundary := compactDocSection(t, boundariesRaw, "## 8. ES boundary", "## 9. EGS boundary")
 	lifecycleRuntimeIdentity := compactDocSection(t, lifecycleContractsRaw, "## 14. Runtime identity and lifecycle edge", "## 15. Bounded slice rules")
@@ -9045,7 +9045,7 @@ func TestRemoteAlphaOperatorP0mDocsMacSideResetExecuteImplementationBoundary(t *
 }
 
 func TestRemoteAlphaOperatorP0nDocsAreSupersededHistory(t *testing.T) {
-	plans := compactText(mustRead(t, "PLANS.md"))
+	plans := compactText(mustRead(t, plansRecordPath))
 	remoteRaw := mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md")
 	history := compactDocSection(t, remoteRaw,
 		"### Historical P0n Mac-Side Vault Workload-Auth Check — Superseded and Non-Authoritative",
@@ -9128,6 +9128,10 @@ func TestRemoteAlphaOperatorP0oDocsVaultWorkloadAuthBootstrapPlanningBoundary(t 
 		"Proof secret values must never be printed, copied, summarized, logged, or persisted by the operator facade.",
 		"Bootstrap must only configure expected Vault objects; it must not claim workload-auth success",
 		"Workload-auth check remains a separate post-bootstrap command.",
+	)
+	// This phrase stood in the superseded P0n route's record, which moved to
+	// PLANS.md's closed record on 2026-11-24.
+	assertContainsAll(t, "Remote Alpha operator P0o PLANS record boundary", compactText(mustRead(t, plansRecordPath)),
 		"not ES Vault token brokerage",
 	)
 
@@ -9532,7 +9536,7 @@ func TestRemoteAlphaOperatorP0qDocsVaultWorkloadAuthBootstrapExecutionRoute(t *t
 }
 
 func TestRemoteAlphaOperatorP0rDocsAreSupersededHistory(t *testing.T) {
-	plans := compactText(mustRead(t, "PLANS.md"))
+	plans := compactText(mustRead(t, plansRecordPath))
 	remoteRaw := mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md")
 	history := compactDocSection(t, remoteRaw,
 		"### Historical P0r Mac-Side Runtime Identity Summary — Superseded and Non-Authoritative",
@@ -12820,7 +12824,7 @@ func checkPrivateReplayProgressSynchronizationInventory(section string, want map
 }
 
 func TestPrivateOriginalReplayProgressContractSelection(t *testing.T) {
-	plans := mustRead(t, "PLANS.md")
+	plans := mustRead(t, plansRecordPath)
 	adr := mustRead(t, ".docs/execution_lifecycle/reliable_submit_persistence_and_concurrency.md")
 	submit := mustRead(t, ".docs/execution_lifecycle/submit_idempotency_correlation_and_recovery.md")
 	admission := mustRead(t, ".docs/execution_lifecycle/es_execution_admission_model.md")
@@ -13044,6 +13048,7 @@ func TestPrivateOriginalReplayProgressContractSelection(t *testing.T) {
 
 func TestIntegratedAcceptanceGateDocumentationIsConsistent(t *testing.T) {
 	plans := mustRead(t, "PLANS.md")
+	record := mustRead(t, plansRecordPath)
 	contracts := mustRead(t, ".docs/execution_lifecycle/contracts.md")
 	design := mustRead(t, ".docs/execution_lifecycle/design.md")
 	implementation := mustRead(t, ".docs/execution_lifecycle/implementation.md")
@@ -13051,7 +13056,7 @@ func TestIntegratedAcceptanceGateDocumentationIsConsistent(t *testing.T) {
 	remoteAlpha := mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md")
 	linuxQualification := mustRead(t, ".docs/system_overview/supported_linux_host_qualification.md")
 
-	currentStatus := compactDocSection(t, plans, "## Post-PR #10 source publication and private replay progress contract candidate (2026-11-18)", "## Post-PR #9 source publication and A1 read cleanup selection (2026-11-18)")
+	currentStatus := compactDocSection(t, record, "## Post-PR #10 source publication and private replay progress contract candidate (2026-11-18)", "## Post-PR #9 source publication and A1 read cleanup selection (2026-11-18)")
 	assertContainsAll(t, "integration status", currentStatus,
 		"PR #10 completed A1 source publication",
 		"f1aa8b934cc26c16a966a110c7b408abdaeadce7",
@@ -13059,7 +13064,7 @@ func TestIntegratedAcceptanceGateDocumentationIsConsistent(t *testing.T) {
 		"public reliable-submit authority",
 		"K1 owner contract was selected for bounded implementation",
 	)
-	priorStatus := compactDocSection(t, plans, "## Post-PR #9 source publication and A1 read cleanup selection (2026-11-18)", "## Historical current-remote-base private synthetic replay custody selection (2026-11-17)")
+	priorStatus := compactDocSection(t, record, "## Post-PR #9 source publication and A1 read cleanup selection (2026-11-18)", "## Historical current-remote-base private synthetic replay custody selection (2026-11-17)")
 	assertContainsAll(t, "prior integration status", priorStatus,
 		"2478a24a18852f1abd7d474c0525c46bd2c05e5e",
 		"e7defd3a0df278ad70762f17f0f2a5b1c14a795b",
@@ -13072,7 +13077,7 @@ func TestIntegratedAcceptanceGateDocumentationIsConsistent(t *testing.T) {
 		"does not qualify operational behavior",
 		"does not itself supply independent acceptance or runtime qualification",
 	)
-	historicalStatus := compactDocSection(t, plans, "## Historical current-remote-base private synthetic replay custody selection (2026-11-17)", "This document is the authoritative planning document")
+	historicalStatus := compactDocSection(t, record, "## Historical current-remote-base private synthetic replay custody selection (2026-11-17)", "## Superseded Remote Alpha Operator Facade Routes")
 	assertContainsAll(t, "historical integration selection", historicalStatus,
 		"effect-free existing-host route retirements",
 		"At that point, development acceptance, a later commit, operational rollout, and publication were distinct decisions",
@@ -13226,6 +13231,7 @@ func TestIntegratedAcceptanceGateDocumentationIsConsistent(t *testing.T) {
 
 func TestIntegratedCandidateStatusSeparatesCAndT(t *testing.T) {
 	plans := mustRead(t, "PLANS.md")
+	record := mustRead(t, plansRecordPath)
 	contracts := mustRead(t, ".docs/execution_lifecycle/contracts.md")
 	section := func(body, heading string) string {
 		t.Helper()
@@ -13239,7 +13245,7 @@ func TestIntegratedCandidateStatusSeparatesCAndT(t *testing.T) {
 		}
 		return body
 	}
-	current := section(plans, "## Historical current-remote-base H/C/T foundation selection (2026-11-17)")
+	current := section(record, "## Historical current-remote-base H/C/T foundation selection (2026-11-17)")
 	contract := section(contracts, "## H/C/T integration candidate status and exact boundary")
 	for _, required := range []string{
 		"reviewed H/C/T foundation tree", "preservation-only T commit",
@@ -14067,8 +14073,8 @@ func TestOperationalSubmitHandoffContractSelection(t *testing.T) {
 		}
 	}
 
-	plans := mustRead(t, "PLANS.md")
-	selection := compactDocSection(t, plans, "### Post-PR #11 operational handoff owner-contract candidate", "### Private replay-progress pre-COMMIT")
+	record := mustRead(t, plansRecordPath)
+	selection := compactDocSection(t, record, "### Post-PR #11 operational handoff owner-contract candidate", "### Private replay-progress pre-COMMIT")
 	assertContainsAll(t, "published base and selected status", selection,
 		"ae326b0ddc30ec6b35883ee32945c622405b68b6", "e066cd4afa77fcb665f31b69bf00465989f9744e",
 		"Current production source is schema 4", "the private progress path is fixture-only",
@@ -14538,7 +14544,7 @@ func TestNomadEvaluatedRequestStringsContract(t *testing.T) {
 
 func TestOperationalSubmitHandoffCurrentAdmissionV2Contract(t *testing.T) {
 	owner := mustRead(t, operationalHandoffOwnerDoc)
-	plans := mustRead(t, "PLANS.md")
+	record := mustRead(t, plansRecordPath)
 	admission := mustRead(t, ".docs/execution_lifecycle/es_execution_admission_model.md")
 	persistence := mustRead(t, ".docs/execution_lifecycle/reliable_submit_persistence_and_concurrency.md")
 	recovery := mustRead(t, ".docs/execution_lifecycle/submit_idempotency_correlation_and_recovery.md")
@@ -14596,7 +14602,7 @@ func TestOperationalSubmitHandoffCurrentAdmissionV2Contract(t *testing.T) {
 		"A/reliable_submit_operational_admission_redteam2_test.go (new),\nA/reliable_submit_operational_admission_redteam2_crash_test.go (new),\nA/reliable_submit_operational_admission_redteam2_guard_test.go (new) and\nA/reliable_submit_operational_admission_limits_test.go (new)",
 		"A/internal/admissionstate/state.go (new) and\nA/internal/admissionstate/state_test.go (new)",
 		"A retry after a changed configured literal policy, artifact revocation or", "a denial does not")
-	assertContainsAll(t, "selected plan", plans,
+	assertContainsAll(t, "selected plan", record,
 		"PR #12 retained-current-admission v2 repair", "fresh independent audit",
 		"PR #12 v2 field-access guard completion", "red-team review of its",
 		"PR #12 durable admission generation, freshness and v1 removal",
