@@ -8,7 +8,7 @@ supported_local_validate_retained_result_auth() {
   local key_file=$3
   shift 3
 
-  python3 - "${store_id}" "${key_id}" "${key_file}" "$@" <<'PY'
+  python3 -I - "${store_id}" "${key_id}" "${key_file}" "$@" <<'PY'
 import posixpath
 import re
 import sys

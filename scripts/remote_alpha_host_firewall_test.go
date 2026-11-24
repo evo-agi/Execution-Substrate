@@ -1771,6 +1771,19 @@ func newHostFirewallLab(t *testing.T) *hostFirewallLab {
 		l.run("ip", "netns", "add", l.ns(name))
 		l.run("ip", "-n", l.ns(name), "link", "set", "lo", "up")
 	}
+	// The two containers have IPv6 off before their eth0 exists. With IPv6
+	// on, each container sends router solicitations and MLD reports on its
+	// own schedule. Those cross docker0 from one port to the other, so the
+	// bridge counter would count them along with the probe's frames. A CI
+	// runner with IPv6 counted 16 where the probe sent 15. No lab check sends
+	// IPv6 from a container, and the layer-2 probe writes its IPv6 frames raw.
+	if l.ipv6 {
+		for _, c := range []string{"c1", "c2"} {
+			for _, scope := range []string{"all", "default"} {
+				l.run("ip", "netns", "exec", l.ns(c), "sysctl", "-qw", "net.ipv6.conf."+scope+".disable_ipv6=1")
+			}
+		}
+	}
 	box := l.ns("box")
 	lan := l.ns("lan")
 	// The LAN interface comes first, as on the box (Docker creates docker0
@@ -2524,7 +2537,7 @@ func TestRemoteAlphaHostFirewallDocsContract(t *testing.T) {
 		"`--apply` arms an automatic rollback that only `--confirm` from an SSH connection opened after `--apply` cancels.",
 	)
 
-	section := compactDocSection(t, mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md"), "## Remote Alpha Host Firewall", "## Non-Goals")
+	section := compactDocSection(t, mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md"), "## Remote Alpha Host Firewall", "## Python In The Scripts")
 	assertContainsAll(t, "host firewall docs section", section,
 		"`execution-substrate.remote-alpha.host-firewall.v1`",
 		"`testdata/remote_alpha_host_firewall/ruleset.golden.nft`",

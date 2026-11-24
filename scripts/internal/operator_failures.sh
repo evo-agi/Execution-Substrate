@@ -163,7 +163,7 @@ operator_next_step_for_category() {
 
 operator_trimmed_file() {
   local path=$1
-  python3 - <<'PY' "$path"
+  python3 -I - <<'PY' "$path"
 import pathlib
 import sys
 
@@ -178,7 +178,7 @@ PY
 
 operator_response_error_code() {
   local path=$1
-  python3 - <<'PY' "$path"
+  python3 -I - <<'PY' "$path"
 import json
 import pathlib
 import sys
@@ -201,7 +201,7 @@ PY
 
 operator_response_error_message() {
   local path=$1
-  python3 - <<'PY' "$path"
+  python3 -I - <<'PY' "$path"
 import json
 import pathlib
 import sys
@@ -230,7 +230,7 @@ operator_print_payload() {
     return 0
   fi
 
-  if python3 -m json.tool "${path}" 2>/dev/null; then
+  if python3 -I -m json.tool "${path}" 2>/dev/null; then
     return 0
   fi
   cat "${path}"
@@ -493,7 +493,7 @@ operator_require_json_file_or_die() {
 
   operator_require_readable_file_or_die "${phase}" "${label}" "${path}"
 
-  if ! python3 - <<'PY' "${path}"
+  if ! python3 -I - <<'PY' "${path}"
 import json
 import pathlib
 import sys

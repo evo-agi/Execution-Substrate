@@ -216,7 +216,7 @@ remote_alpha_ars_hardening_json_field() {
   local json_path=$1
   local dotted_path=$2
 
-  python3 - "${json_path}" "${dotted_path}" <<'PY'
+  python3 -I - "${json_path}" "${dotted_path}" <<'PY'
 import json
 import sys
 
@@ -295,7 +295,7 @@ remote_alpha_ars_hardening_ds_not_in_docker_group() {
 }
 
 remote_alpha_ars_hardening_runtime_meta() {
-  python3 - "${REMOTE_ALPHA_CONFIG_PATH}" "${REMOTE_ALPHA_BINARY_PATH}" <<'PY'
+  python3 -I - "${REMOTE_ALPHA_CONFIG_PATH}" "${REMOTE_ALPHA_BINARY_PATH}" <<'PY'
 import json
 import os
 import ssl
@@ -470,7 +470,7 @@ remote_alpha_ars_hardening_assert_runtime_shape() {
 }
 
 remote_alpha_ars_hardening_ags_runtime_meta() {
-  python3 - "${REMOTE_ALPHA_AGS_CONFIG_PATH}" <<'PY'
+  python3 -I - "${REMOTE_ALPHA_AGS_CONFIG_PATH}" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -513,7 +513,7 @@ PY
 }
 
 remote_alpha_ars_hardening_health_env_meta() {
-  python3 - "${REMOTE_ALPHA_HEALTHCHECK_ENV_PATH}" <<'PY'
+  python3 -I - "${REMOTE_ALPHA_HEALTHCHECK_ENV_PATH}" <<'PY'
 import json
 import pathlib
 import sys
@@ -670,7 +670,7 @@ remote_alpha_ars_hardening_prepare_tls_material() {
   key_source="$(remote_alpha_ars_hardening_json_field "${runtime_meta_path}" "tls.key_file")"
   ca_source="$(remote_alpha_ars_hardening_json_field "${runtime_meta_path}" "tls.client_ca_file")"
 
-  python3 - "${cert_source}" "${REMOTE_ALPHA_TLS_CERT_PATH}" "${key_source}" "${REMOTE_ALPHA_TLS_KEY_PATH}" "${ca_source}" "${REMOTE_ALPHA_TLS_CLIENT_CA_PATH}" <<'PY'
+  python3 -I - "${cert_source}" "${REMOTE_ALPHA_TLS_CERT_PATH}" "${key_source}" "${REMOTE_ALPHA_TLS_KEY_PATH}" "${ca_source}" "${REMOTE_ALPHA_TLS_CLIENT_CA_PATH}" <<'PY'
 from pathlib import Path
 import sys
 
@@ -698,7 +698,7 @@ PY
 }
 
 remote_alpha_ars_hardening_rewrite_config() {
-  python3 - "${REMOTE_ALPHA_CONFIG_PATH}" "${REMOTE_ALPHA_TLS_CERT_PATH}" "${REMOTE_ALPHA_TLS_KEY_PATH}" "${REMOTE_ALPHA_TLS_CLIENT_CA_PATH}" <<'PY'
+  python3 -I - "${REMOTE_ALPHA_CONFIG_PATH}" "${REMOTE_ALPHA_TLS_CERT_PATH}" "${REMOTE_ALPHA_TLS_KEY_PATH}" "${REMOTE_ALPHA_TLS_CLIENT_CA_PATH}" <<'PY'
 import json
 import os
 import sys
@@ -884,7 +884,7 @@ remote_alpha_ars_hardening_service_meta() {
     unit_name="${unit_name}.service"
   fi
 
-  python3 - "${service_name}" \
+  python3 -I - "${service_name}" \
     "$(systemctl show "${unit_name}" -p User -p Group -p ExecStart -p FragmentPath -p ActiveState -p SubState 2>/dev/null || true)" \
     "$(remote_alpha_ars_hardening_systemctl_state is-enabled "${unit_name}")" <<'PY'
 import json
@@ -961,7 +961,7 @@ remote_alpha_ars_hardening_health_probe_meta() {
       --key "${operator_key}" \
       "${curl_args[@]}" \
       "${url}" >"${response_path}" 2>"${error_path}"; then
-      python3 - "${url}" "${error_path}" <<'PY'
+      python3 -I - "${url}" "${error_path}" <<'PY'
 import json
 import pathlib
 import sys
@@ -979,7 +979,7 @@ PY
     --cert "${operator_cert}" \
     --key "${operator_key}" \
     "${url}" >"${response_path}" 2>"${error_path}"; then
-    python3 - "${url}" "${error_path}" <<'PY'
+    python3 -I - "${url}" "${error_path}" <<'PY'
 import json
 import pathlib
 import sys
@@ -993,7 +993,7 @@ PY
     return 1
   fi
 
-  python3 - "${url}" "${response_path}" "${expected_service}" "${dependency_field}" <<'PY'
+  python3 -I - "${url}" "${response_path}" "${expected_service}" "${dependency_field}" <<'PY'
 import json
 import pathlib
 import sys
@@ -1017,7 +1017,7 @@ PY
 remote_alpha_ars_hardening_write_publish_request() {
   local request_path=$1
 
-  python3 - "${request_path}" <<'PY'
+  python3 -I - "${request_path}" <<'PY'
 import base64
 import hashlib
 import json
@@ -1100,7 +1100,7 @@ remote_alpha_ars_hardening_publish_probe_meta() {
     --header "content-type: application/json" \
     --data "@${request_path}" \
     "${url}" >"${response_path}" 2>"${error_path}"; then
-    python3 - "${url}" "${response_path}" <<'PY'
+    python3 -I - "${url}" "${response_path}" <<'PY'
 import json
 import pathlib
 import sys
@@ -1118,7 +1118,7 @@ PY
     return 0
   fi
 
-  python3 - "${url}" "${error_path}" <<'PY'
+  python3 -I - "${url}" "${error_path}" <<'PY'
 import json
 import pathlib
 import sys
@@ -1141,7 +1141,7 @@ remote_alpha_ars_hardening_state_ownership_meta() {
   index_file="$(remote_alpha_ars_hardening_json_field "${runtime_meta_path}" "storage.index_file")"
   state_root="$(remote_alpha_ars_hardening_json_field "${runtime_meta_path}" "storage.state_root_dir")"
 
-  python3 - \
+  python3 -I - \
     "${config_path}" "root:${REMOTE_ALPHA_SERVICE_GROUP}" "0640" "$(stat -c '%U:%G %a %n' "${config_path}" 2>/dev/null || true)" \
     "${tls_dir}" "root:${REMOTE_ALPHA_SERVICE_GROUP}" "0710" "$(stat -c '%U:%G %a %n' "${tls_dir}" 2>/dev/null || true)" \
     "${REMOTE_ALPHA_TLS_CERT_PATH}" "root:${REMOTE_ALPHA_SERVICE_GROUP}" "0640" "$(stat -c '%U:%G %a %n' "${REMOTE_ALPHA_TLS_CERT_PATH}" 2>/dev/null || true)" \
@@ -1207,7 +1207,7 @@ remote_alpha_ars_hardening_write_summary() {
   local ds_not_in_docker_group=${11}
   local passwordless_sudo_for_ds=${12}
 
-  python3 - "${summary_path}" \
+  python3 -I - "${summary_path}" \
     "${runtime_meta_path}" \
     "${ars_meta_path}" \
     "${ags_meta_path}" \

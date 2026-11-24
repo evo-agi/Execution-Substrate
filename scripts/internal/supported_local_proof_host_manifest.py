@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S python3 -I
 """Complete, fail-closed manifest for retained host proof evidence."""
 
 from __future__ import annotations

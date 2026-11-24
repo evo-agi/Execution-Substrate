@@ -169,7 +169,7 @@ capture_runtime_config_ref() {
 
   output_path="$(bundle_path "checks/runtime-config-ref.txt")"
   set +e
-  python3 - <<'PY' "${ES_CONFIG:-}" >"${output_path}" 2>&1
+  python3 -I - <<'PY' "${ES_CONFIG:-}" >"${output_path}" 2>&1
 import json
 import pathlib
 import sys
@@ -360,7 +360,7 @@ capture_run_staging() {
   tree_path="$(bundle_path "run/staging-tree.txt")"
 
   set +e
-  python3 - <<'PY' "${ES_CONFIG:-}" "${RUN_ID}" "${summary_path}" "${tree_path}"
+  python3 -I - <<'PY' "${ES_CONFIG:-}" "${RUN_ID}" "${summary_path}" "${tree_path}"
 import json
 import pathlib
 import sys
@@ -487,7 +487,7 @@ collect_run_bundle() {
 }
 
 write_bundle_json() {
-  python3 - <<'PY' \
+  python3 -I - <<'PY' \
     "${BUNDLE_JSON_PATH}" \
     "${SUMMARY_PATH}" \
     "${COMPONENTS_PATH}" \
@@ -607,7 +607,7 @@ if [[ -n "${RUN_ID}" ]]; then
   collect_run_bundle
 fi
 
-python3 - <<'PY' "${SUMMARY_PATH}" "${BUNDLE_STATUS}"
+python3 -I - <<'PY' "${SUMMARY_PATH}" "${BUNDLE_STATUS}"
 import pathlib
 import sys
 

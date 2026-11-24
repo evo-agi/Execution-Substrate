@@ -297,6 +297,7 @@ func TestRemoteAlphaVaultWorkloadAuthBootstrapUnsealKeyWithRealVault(t *testing.
 	if err != nil {
 		t.Skip("needs the vault binary on PATH (CI installs Vault 2.2.2)")
 	}
+	requireBootstrapNotDumpableCapability(t)
 	v := startRealVault(t, vaultBin)
 
 	// Vault 2.x default: no generate-root without a token.
@@ -495,6 +496,7 @@ func TestRemoteAlphaVaultWorkloadAuthBootstrapSignalsWithRealVault(t *testing.T)
 	if err != nil {
 		t.Skip("needs the vault binary on PATH (CI installs Vault 2.2.2)")
 	}
+	requireBootstrapNotDumpableCapability(t)
 	v := startRealVault(t, vaultBin)
 	configBefore := mustRead(t, v.configPath)
 	signingKey, err := rsa.GenerateKey(rand.Reader, 2048)

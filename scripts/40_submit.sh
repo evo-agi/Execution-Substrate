@@ -59,7 +59,7 @@ echo "submit: accepted"
 operator_print_payload "${tmp_response}"
 printf '\n'
 
-python3 - <<'PY' "${tmp_response}"
+python3 -I - <<'PY' "${tmp_response}"
 import json, pathlib, sys
 payload = json.loads(pathlib.Path(sys.argv[1]).read_text())
 for key in ("run_id", "status"):

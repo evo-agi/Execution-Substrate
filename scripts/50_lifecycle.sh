@@ -64,7 +64,7 @@ print_status_json() {
 }
 
 status_terminal() {
-  python3 - <<'PY' "${status_path}"
+  python3 -I - <<'PY' "${status_path}"
 import json
 import pathlib
 import sys
@@ -75,7 +75,7 @@ PY
 }
 
 parse_status_snapshot() {
-  python3 - <<'PY' "${status_path}"
+  python3 -I - <<'PY' "${status_path}"
 import json
 import pathlib
 import sys
@@ -107,7 +107,7 @@ if [[ "${WAIT_FOR_TERMINAL}" == "1" ]]; then
     if status_terminal; then
       break
     fi
-    parsed_status="$(python3 - <<'PY' "${status_path}"
+    parsed_status="$(python3 -I - <<'PY' "${status_path}"
 import json
 import pathlib
 import sys

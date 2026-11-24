@@ -205,6 +205,42 @@ no process has its ID; otherwise the reader reads again, and an answer that
 stays unclear is unproved, never absent. The name or the exit of an unrelated
 process therefore neither fails the capability probe nor prolongs the
 unresolved-cleanup hold; the hold gains no time limit.
+Process-group disposition reaches only a process that stays in the fixed
+child's group and that one scan observes, so each fixed OpenSSL command also
+runs in a PID namespace of its own. Before the spawn the collector proves
+from `/proc/self/ns/pid_for_children` that its children are created in its
+own PID namespace, opens a new one with `unshare(CLONE_NEWPID)`, and forks one
+fixed internal anchor as its first process. The anchor asks the kernel with
+`prctl(PR_SET_PDEATHSIG)` to kill it when the collector's thread ends, keeps
+only its standard streams, one control pipe and one ready pipe, reports ready
+with one byte that the collector reads before the spawn, reaps the
+namespace's orphans, and ends with status zero when the control pipe closes.
+The fixed child is spawned as before, as the second process of the namespace
+and a direct child of the collector, and directly after the spawn attempt the
+collector sets its child namespace back with `setns` and proves the reset.
+The process-group cleanup runs unchanged, and on every path after the spawn
+the collector closes the control pipe before the cleanup owner runs and sends
+the anchor one KILL, so that an ended child which a descendant outside the
+group left unreaped in the group, and which no group signal can end, cannot
+hold it, whatever a process of the namespace does to the pipe or the anchor;
+a fixed child that still runs at a failure is then killed by the kernel
+without the grace period of TERM before KILL. The collector then waits
+without a time limit until the fixed child is terminal and reaps, without a
+signal, every stray: a child of its own outside its own PID namespace, other
+than the anchor and the fixed child, which the fixed command made with
+`clone` and `CLONE_PARENT`. When the anchor ends, the kernel kills every
+process still in the namespace, admits no new one, and lets the anchor become
+terminal only when the namespace is otherwise empty. No fixed command returns
+before its anchor is reaped exactly once; an anchor that does not become
+terminal holds the invocation with the status lock retained and without a
+time limit, and a killed collector takes its anchor, its fixed child and
+every descendant in the namespace with it. No namespace, no anchor, or no
+ready byte means no spawn; an unproved reset, pipe close, anchor KILL, stray
+reap, anchor end, or anchor reap is incomplete after the complete cleanup
+under the existing `openssl_child_unproved` reason; no command falls back to
+process-group disposition alone. The fixed child still runs as root, so this
+contains its processes and not what root may ask the host to do; a process
+that cannot die holds the invocation.
 After bootstrap stage removal and status-lock acquisition, before status
 config, certificate, key, trust-anchor, or prior-summary reads and before any
 OpenSSL spawn, exactly one process-capability probe uses one fixed internal fork
@@ -215,7 +251,11 @@ release and is reaped on every path. One successful invocation-local
 capability state is reused by every fixed OpenSSL command; no command forks
 another probe. Failed or indeterminate preflight reads no status input, spawns
 no OpenSSL child, publishes no generation, and leaves no probe descriptor or
-process. Unavailable target capability is incomplete before spawn, and
+process. In a second part the same probe proves PID-namespace containment by
+behavior with two further fixed internal fork children: after the control
+pipe of a probe namespace closes, its member must be terminal by the kernel's
+KILL, its anchor must not be terminal while the member is unreaped, and the
+anchor must then end with status zero. Unavailable target capability is incomplete before spawn, and
 any incomplete status attempt preserves the previous generation. Canonical
 summary publication checks, generation snapshots, and protected reader reads
 share a type-first `O_RDONLY|O_NOFOLLOW|O_CLOEXEC|O_NONBLOCK` regular-leaf

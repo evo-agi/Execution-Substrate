@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S python3 -I
 """Private proof bootstrap scratch and deterministic Git-bound source snapshot."""
 
 from __future__ import annotations

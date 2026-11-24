@@ -417,7 +417,7 @@ bootstrap_nomad_acl() {
   if sudo test -e "${NOMAD_ACL_MANAGEMENT_TOKEN_FILE}"; then
     secret="$(sudo cat "${NOMAD_ACL_MANAGEMENT_TOKEN_FILE}")"
   else
-    secret="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+    secret="$(python3 -I -c 'import uuid; print(uuid.uuid4())')"
     printf '%s\n' "${secret}" | sudo sh -c 'umask 077 && cat > "$1"' sh "${NOMAD_ACL_MANAGEMENT_TOKEN_FILE}"
     created=1
   fi
@@ -503,7 +503,7 @@ report_nomad_cpu_visibility_diagnostics() {
   local proc_cpu_mhz
   local dmi_current_speed="unavailable"
 
-  if ! require_nomad_listener || ! NOMAD_TOKEN="${NOMAD_QUALIFY_TOKEN}" python3 - <<'PY' "${NOMAD_HTTP_ADDR}" >/dev/null 2>&1
+  if ! require_nomad_listener || ! NOMAD_TOKEN="${NOMAD_QUALIFY_TOKEN}" python3 -I - <<'PY' "${NOMAD_HTTP_ADDR}" >/dev/null 2>&1
 import json
 import os
 import sys
@@ -633,7 +633,7 @@ qualify_supported_substrate() {
     cleanup_tempfiles "${leader_path}" "${agent_path}" "${nodes_path}"
     return 1
   fi
-  if ! NOMAD_TOKEN="${NOMAD_QUALIFY_TOKEN}" python3 - <<'PY' "${NOMAD_HTTP_ADDR}" "${leader_path}" "${agent_path}" "${nodes_path}"
+  if ! NOMAD_TOKEN="${NOMAD_QUALIFY_TOKEN}" python3 -I - <<'PY' "${NOMAD_HTTP_ADDR}" "${leader_path}" "${agent_path}" "${nodes_path}"
 import json
 import os
 import pathlib
@@ -809,7 +809,7 @@ fi
 echo "==> Verifying required tools"
 printf 'git: '; git --version
 printf 'ssh: '; ssh -V 2>&1 | head -n 1
-printf 'python3: '; python3 --version
+printf 'python3: '; python3 -I --version
 printf 'openssl: '; openssl version
 printf 'curl: '; curl --version | head -n 1
 printf 'go: '; env GOTOOLCHAIN=local go version

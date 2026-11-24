@@ -185,7 +185,7 @@ remote_alpha_operator_healthcheck_tls_collect_status() {
   local install_meta_path=${5:-}
   local restart_meta_path=${6:-}
 
-  python3 - \
+  python3 -I - \
     "${mode}" \
     "${summary_path}" \
     "${probe_meta_path}" \
@@ -923,7 +923,7 @@ remote_alpha_operator_healthcheck_tls_create_backup() {
     cp -p -- "${path}" "${target}"
   done
 
-  python3 - "${backup_meta_path}" "${backup_dir}" "${material_dir}" "$@" <<'PY'
+  python3 -I - "${backup_meta_path}" "${backup_dir}" "${material_dir}" "$@" <<'PY'
 import hashlib
 import json
 import pathlib
@@ -968,7 +968,7 @@ PY
 }
 
 remote_alpha_operator_healthcheck_tls_es_client_ca_path() {
-  python3 - "${REMOTE_ALPHA_ES_CONFIG_PATH}" "${REMOTE_ALPHA_HEALTHCHECK_ENV_PATH}" <<'PY'
+  python3 -I - "${REMOTE_ALPHA_ES_CONFIG_PATH}" "${REMOTE_ALPHA_HEALTHCHECK_ENV_PATH}" <<'PY'
 import json
 import pathlib
 import sys
@@ -995,7 +995,7 @@ PY
 
 remote_alpha_operator_healthcheck_tls_file_policy() {
   local cert_meta_path=$1
-  python3 - "${cert_meta_path}" "${REMOTE_ALPHA_OPERATOR_CERT_PATH}" "${REMOTE_ALPHA_OPERATOR_KEY_PATH}" <<'PY'
+  python3 -I - "${cert_meta_path}" "${REMOTE_ALPHA_OPERATOR_CERT_PATH}" "${REMOTE_ALPHA_OPERATOR_KEY_PATH}" <<'PY'
 import json
 import pathlib
 import sys
@@ -1023,17 +1023,17 @@ remote_alpha_operator_healthcheck_tls_install_material() {
   local cert_uid cert_gid cert_mode key_uid key_gid key_mode
 
   remote_alpha_operator_healthcheck_tls_file_policy "${policy_path}"
-  cert_uid="$(python3 -c 'import json,sys; p=json.load(open(sys.argv[1])); print(p["items"][0]["uid"])' "${policy_path}")"
-  cert_gid="$(python3 -c 'import json,sys; p=json.load(open(sys.argv[1])); print(p["items"][0]["gid"])' "${policy_path}")"
-  cert_mode="$(python3 -c 'import json,sys; p=json.load(open(sys.argv[1])); print(p["items"][0]["mode"])' "${policy_path}")"
-  key_uid="$(python3 -c 'import json,sys; p=json.load(open(sys.argv[1])); print(p["items"][1]["uid"])' "${policy_path}")"
-  key_gid="$(python3 -c 'import json,sys; p=json.load(open(sys.argv[1])); print(p["items"][1]["gid"])' "${policy_path}")"
-  key_mode="$(python3 -c 'import json,sys; p=json.load(open(sys.argv[1])); print(p["items"][1]["mode"])' "${policy_path}")"
+  cert_uid="$(python3 -I -c 'import json,sys; p=json.load(open(sys.argv[1])); print(p["items"][0]["uid"])' "${policy_path}")"
+  cert_gid="$(python3 -I -c 'import json,sys; p=json.load(open(sys.argv[1])); print(p["items"][0]["gid"])' "${policy_path}")"
+  cert_mode="$(python3 -I -c 'import json,sys; p=json.load(open(sys.argv[1])); print(p["items"][0]["mode"])' "${policy_path}")"
+  key_uid="$(python3 -I -c 'import json,sys; p=json.load(open(sys.argv[1])); print(p["items"][1]["uid"])' "${policy_path}")"
+  key_gid="$(python3 -I -c 'import json,sys; p=json.load(open(sys.argv[1])); print(p["items"][1]["gid"])' "${policy_path}")"
+  key_mode="$(python3 -I -c 'import json,sys; p=json.load(open(sys.argv[1])); print(p["items"][1]["mode"])' "${policy_path}")"
 
   install -o "${cert_uid}" -g "${cert_gid}" -m "${cert_mode}" "${work_dir}/operator-client-cert.pem" "${REMOTE_ALPHA_OPERATOR_CERT_PATH}"
   install -o "${key_uid}" -g "${key_gid}" -m "${key_mode}" "${work_dir}/operator-client-key.pem" "${REMOTE_ALPHA_OPERATOR_KEY_PATH}"
 
-  python3 - "${install_meta_path}" "${policy_path}" <<'PY'
+  python3 -I - "${install_meta_path}" "${policy_path}" <<'PY'
 import json
 import pathlib
 import sys
@@ -1050,7 +1050,7 @@ PY
 
 remote_alpha_operator_healthcheck_tls_restart_meta() {
   local restart_meta_path=$1
-  python3 - "${restart_meta_path}" <<'PY'
+  python3 -I - "${restart_meta_path}" <<'PY'
 import json
 import pathlib
 import sys
@@ -1066,7 +1066,7 @@ PY
 }
 
 remote_alpha_operator_healthcheck_tls_probe_urls() {
-  python3 - "${REMOTE_ALPHA_HEALTHCHECK_ENV_PATH}" <<'PY'
+  python3 -I - "${REMOTE_ALPHA_HEALTHCHECK_ENV_PATH}" <<'PY'
 import pathlib
 import sys
 from urllib.parse import urlparse
@@ -1107,7 +1107,7 @@ remote_alpha_operator_healthcheck_tls_run_probes() {
   local -a records=()
 
   if [[ -n "${REMOTE_ALPHA_TEST_SKIP_OPERATOR_HEALTHCHECK_TLS_PROBES:-}" ]]; then
-    python3 - "${probe_meta_path}" <<'PY'
+    python3 -I - "${probe_meta_path}" <<'PY'
 import json
 import pathlib
 import sys
@@ -1118,7 +1118,7 @@ PY
   fi
 
   if ! command -v curl >/dev/null 2>&1; then
-    python3 - "${probe_meta_path}" <<'PY'
+    python3 -I - "${probe_meta_path}" <<'PY'
 import json
 import pathlib
 import sys
@@ -1153,7 +1153,7 @@ PY
     fi
   done
 
-  python3 - "${probe_meta_path}" "${overall}" "${REMOTE_ALPHA_OPERATOR_CERT_PATH}" "${REMOTE_ALPHA_OPERATOR_KEY_PATH}" "${records[@]}" <<'PY'
+  python3 -I - "${probe_meta_path}" "${overall}" "${REMOTE_ALPHA_OPERATOR_CERT_PATH}" "${REMOTE_ALPHA_OPERATOR_KEY_PATH}" "${records[@]}" <<'PY'
 import json
 import pathlib
 import sys

@@ -756,7 +756,8 @@ selected=[node for node in tree.body if
 assert len(selected)==3
 spec=importlib.util.spec_from_file_location("resource_closeout_collector",source)
 m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
-m.ES_TLS_STATUS_BOOTSTRAP_VERIFIED=True;m.ES_TLS_STATUS_BOOTSTRAP_INTERRUPTED=[False]
+module=m
+` + remoteAlphaESStatusLocalChildNamespace + `m.ES_TLS_STATUS_BOOTSTRAP_VERIFIED=True;m.ES_TLS_STATUS_BOOTSTRAP_INTERRUPTED=[False]
 m.SIGNALS=();m.LATCHED_SIGNAL=None
 class Hostile:
  def __str__(self):raise AssertionError("hostile close payload rendered")
@@ -1248,7 +1249,8 @@ import ast,importlib.util,json,os,pathlib,re,selectors,signal,sys,types
 source,shell,root_arg,scope=sys.argv[1:]
 root=pathlib.Path(root_arg);prior=root/'prior-summary';prior.write_bytes(b'prior generation retained')
 spec=importlib.util.spec_from_file_location('pending_f3_owner',source);m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
-text=pathlib.Path(shell).read_text();mark="IFS= read -r -d '' bootstrap <<'REMOTE_ALPHA_ES_TLS_STATUS_BOOTSTRAP' || true\n"
+module=m
+` + remoteAlphaESStatusLocalChildNamespace + `text=pathlib.Path(shell).read_text();mark="IFS= read -r -d '' bootstrap <<'REMOTE_ALPHA_ES_TLS_STATUS_BOOTSTRAP' || true\n"
 start=text.index(mark)+len(mark);end=text.index('\nREMOTE_ALPHA_ES_TLS_STATUS_BOOTSTRAP\n',start)
 tree=ast.parse(text[start:end]);nodes=[n for n in tree.body if (isinstance(n,ast.Assign) and any(isinstance(t,ast.Name) and t.id=='_FAILURE_WITNESS_COUPLINGS' for t in n.targets)) or (isinstance(n,ast.FunctionDef) and n.name in ('format_failure_witness','emit_failure_witness'))]
 assert len(nodes)==3

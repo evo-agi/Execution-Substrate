@@ -84,7 +84,7 @@ control_plane_binary_path() {
 
 control_plane_container_name() {
   local service=$1
-  python3 - <<'PY' "${service}" "${BRINGUP_DIR:-$(bringup_repo_root)/.tmp/bringup}"
+  python3 -I - <<'PY' "${service}" "${BRINGUP_DIR:-$(bringup_repo_root)/.tmp/bringup}"
 import hashlib
 import re
 import sys
@@ -233,7 +233,7 @@ verify_ars_storage_for_operator() {
     mount_specs+=("${spec}")
   done < <(control_plane_mount_specs ars "${config_path}")
 
-  python3 - "${config_path}" "${container_user}" "$(control_plane_image_ref)" "$(control_plane_container_name ars)" "${mount_specs[@]}" <<'PY'
+  python3 -I - "${config_path}" "${container_user}" "$(control_plane_image_ref)" "$(control_plane_container_name ars)" "${mount_specs[@]}" <<'PY'
 import json
 import os
 import pathlib
@@ -568,7 +568,7 @@ control_plane_mount_specs() {
   local service=$1
   local config_path=$2
 
-  python3 - <<'PY' "${service}" "${config_path}"
+  python3 -I - <<'PY' "${service}" "${config_path}"
 import json
 import os
 import pathlib
@@ -673,7 +673,7 @@ verify_supported_local_es_root_profile() {
   fi
 
   roots_helper="$(bringup_repo_root)/scripts/internal/supported_local_execution_roots.py"
-  if ! python3 "${roots_helper}" check "${proof_dir}" "${SUPPORTED_LOCAL_PROOF_ID}" "${config_path}" >/dev/null 2>&1; then
+  if ! python3 -I "${roots_helper}" check "${proof_dir}" "${SUPPORTED_LOCAL_PROOF_ID}" "${config_path}" >/dev/null 2>&1; then
     echo "${error_prefix}: supported-local root owner, mode, or identity is invalid" >&2
     return 1
   fi
@@ -727,7 +727,7 @@ verify_es_staging_invariant() {
       ;;
   esac
 
-  if ! roots_output="$(python3 - "${config_path}" 2>/dev/null <<'PY'
+  if ! roots_output="$(python3 -I - "${config_path}" 2>/dev/null <<'PY'
 import json
 import pathlib
 import sys
@@ -766,7 +766,7 @@ PY
     echo "ES staging invariant failed: execution.results_root_dir must be absolute: ${results_root}" >&2
     return 1
   fi
-  if python3 - <<'PY' "${staging_root}" "${results_root}"
+  if python3 -I - <<'PY' "${staging_root}" "${results_root}"
 import os
 import sys
 
@@ -827,7 +827,7 @@ PY
 
   proof_path="${BRINGUP_DIR}/staging-invariant.json"
   mkdir -p "$(dirname "${proof_path}")"
-  python3 - <<'PY' "${proof_path}" "${staging_root}" "${results_root}" "${roots_profile}"
+  python3 -I - <<'PY' "${proof_path}" "${staging_root}" "${results_root}" "${roots_profile}"
 import json
 import pathlib
 import sys
@@ -876,7 +876,7 @@ probe_control_plane_host_loopback() {
   printf 'slice0-host-loopback-ok\n' >"${probe_path}"
   image="$(control_plane_image_ref)"
 
-  port="$(python3 - <<'PY'
+  port="$(python3 -I - <<'PY'
 import socket
 
 sock = socket.socket()
@@ -886,7 +886,7 @@ sock.close()
 PY
 )"
 
-  python3 -m http.server "${port}" --bind 127.0.0.1 --directory "${temp_dir}" >/dev/null 2>&1 &
+  python3 -I -m http.server "${port}" --bind 127.0.0.1 --directory "${temp_dir}" >/dev/null 2>&1 &
   server_pid=$!
   trap cleanup_probe_control_plane_host_loopback RETURN
   sleep 1

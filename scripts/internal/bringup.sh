@@ -88,7 +88,7 @@ nomad_cpu_total_compute_override_value() {
   override_path="$(nomad_client_override_path)"
 
   if [[ -r "${override_path}" ]]; then
-    python3 - <<'PY' "${override_path}"
+    python3 -I - <<'PY' "${override_path}"
 import pathlib
 import re
 import sys
@@ -214,7 +214,7 @@ resolve_health_check_credentials() {
 service_health_summary() {
   local payload_path=$1
   local fallback_service=$2
-  python3 - <<'PY' "$payload_path" "$fallback_service"
+  python3 -I - <<'PY' "$payload_path" "$fallback_service"
 import json
 import pathlib
 import sys
@@ -250,7 +250,7 @@ check_service_ready_once() {
     status=1
   elif ! summary="$(service_health_summary "${response_path}" "${fallback_service}")"; then
     echo "${summary}" >&2
-    python3 -m json.tool "${response_path}" >&2 || cat "${response_path}" >&2
+    python3 -I -m json.tool "${response_path}" >&2 || cat "${response_path}" >&2
     status=1
   else
     echo "${summary}"
@@ -304,7 +304,7 @@ check_nomad_ready_once() {
   elif ! nomad_api_get "/v1/nodes" "${nodes_path}"; then
     echo "nomad: node request failed for ${NOMAD_ADDR}/v1/nodes" >&2
     status=1
-  elif ! summary="$(python3 - <<'PY' "${NOMAD_ADDR}" "${leader_path}" "${nodes_path}" "${agent_path}" "${NOMAD_TOKEN_FILE}"
+  elif ! summary="$(python3 -I - <<'PY' "${NOMAD_ADDR}" "${leader_path}" "${nodes_path}" "${agent_path}" "${NOMAD_TOKEN_FILE}"
 import glob
 import json
 import os
@@ -505,7 +505,7 @@ check_docker_ready() {
 
 runtime_profile_images_from_es_config() {
   local config_path=$1
-  python3 - <<'PY' "$config_path"
+  python3 -I - <<'PY' "$config_path"
 import json
 import pathlib
 import sys
@@ -568,7 +568,7 @@ check_runtime_profile_image_gc_policy_once() {
   if ! nomad_api_get "/v1/agent/self" "${response_path}"; then
     echo "runtime profile image durability: nomad agent self request failed for ${NOMAD_ADDR}/v1/agent/self" >&2
     status=1
-  elif ! summary="$(python3 - <<'PY' "${response_path}" "${images}"
+  elif ! summary="$(python3 -I - <<'PY' "${response_path}" "${images}"
 import json
 import pathlib
 import sys
@@ -608,7 +608,7 @@ PY
 
 verify_es_submit_config_enabled() {
   local config_path=$1
-  python3 - <<'PY' "$config_path"
+  python3 -I - <<'PY' "$config_path"
 import json
 import os
 import pathlib
@@ -657,7 +657,7 @@ check_es_submit_config_once() {
       ;;
   esac
 
-  if ! summary="$(python3 - <<'PY' "$config_path" "$roots_profile"
+  if ! summary="$(python3 -I - <<'PY' "$config_path" "$roots_profile"
 import json
 import os
 import pathlib
@@ -782,7 +782,7 @@ check_workload_zone_vault_blob() {
   cert="$(printf '%s\n' "${cert_key}" | sed -n '1p')"
   key="$(printf '%s\n' "${cert_key}" | sed -n '2p')"
 
-  digest="$(python3 - <<'PY' "$config_path"
+  digest="$(python3 -I - <<'PY' "$config_path"
 import json
 import pathlib
 import sys
@@ -802,7 +802,7 @@ PY
   if ! curl_tls_get_to_file "${response_path}" "${ARS_URL}/v1/blobs/${digest}:json" "${resolve}" --cert "${cert}" --key "${key}"; then
     echo "workload-zone vault blob read failed for digest ${digest}" >&2
     status=1
-  elif ! summary="$(python3 - <<'PY' "${response_path}" "${digest}"
+  elif ! summary="$(python3 -I - <<'PY' "${response_path}" "${digest}"
 import json
 import pathlib
 import ssl

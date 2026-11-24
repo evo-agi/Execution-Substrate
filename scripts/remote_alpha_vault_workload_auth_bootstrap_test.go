@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"math/big"
 	"net/http"
@@ -17,6 +18,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 )
@@ -37,7 +39,63 @@ func runRemoteAlphaBootstrapHelperWithEnv(env []string, args ...string) (string,
 	return string(output), err
 }
 
+// bootstrapNotDumpableProbe records whether this host can do what the helper
+// requires before it reads anything: make the process not dumpable with
+// prctl(PR_SET_DUMPABLE, 0) and read that back. It makes the same ctypes calls
+// as the helper, in a python3 of its own, so it tests the capability and not
+// the operating system's name (AGENTS.md section 12).
+var bootstrapNotDumpableProbe struct {
+	once   sync.Once
+	reason string
+}
+
+const bootstrapNotDumpableProbeScript = `
+import ctypes
+try:
+    prctl = ctypes.CDLL(None, use_errno=True).prctl
+except (OSError, AttributeError) as exc:
+    raise SystemExit("prctl is not available (%s)" % type(exc).__name__)
+zero = ctypes.c_ulong(0)
+if prctl(ctypes.c_int(4), zero, zero, zero, zero) != 0:
+    raise SystemExit("prctl(PR_SET_DUMPABLE, 0) failed")
+if prctl(ctypes.c_int(3), zero, zero, zero, zero) != 0:
+    raise SystemExit("the process is still dumpable after prctl(PR_SET_DUMPABLE, 0)")
+`
+
+// requireBootstrapNotDumpableCapability skips a test that runs the helper past
+// its core dump step on a host where the helper refuses to run at that step.
+// TestRemoteAlphaVaultWorkloadAuthBootstrapRefusesWhenTheProcessStaysDumpable
+// tests that refusal on every host.
+func requireBootstrapNotDumpableCapability(t *testing.T) {
+	t.Helper()
+	bootstrapNotDumpableProbe.once.Do(func() {
+		probe := exec.Command("python3", "-I", "-c", bootstrapNotDumpableProbeScript)
+		probe.Dir = executionSubstrateRepoRoot
+		output, err := probe.CombinedOutput()
+		if err != nil {
+			bootstrapNotDumpableProbe.reason = strings.TrimSpace(string(output))
+			if bootstrapNotDumpableProbe.reason == "" {
+				bootstrapNotDumpableProbe.reason = err.Error()
+			}
+		}
+	})
+	if bootstrapNotDumpableProbe.reason != "" {
+		t.Skipf("the helper stops before it reads anything on a host that cannot make a process not dumpable, and this host cannot: %s", bootstrapNotDumpableProbe.reason)
+	}
+}
+
+// runRemoteAlphaBootstrapHelperWithPTYInput runs the helper with a terminal,
+// answering its prompts with input. Every such run passes the helper's core
+// dump step, so it first checks that this host lets the helper pass it.
 func runRemoteAlphaBootstrapHelperWithPTYInput(t *testing.T, env []string, input string, args ...string) (string, error) {
+	t.Helper()
+	requireBootstrapNotDumpableCapability(t)
+	return runRemoteAlphaBootstrapHelperWithPTYInputOnAnyHost(t, env, input, args...)
+}
+
+// runRemoteAlphaBootstrapHelperWithPTYInputOnAnyHost is the same run without
+// that check, for a test that expects the helper to stop at the core dump step.
+func runRemoteAlphaBootstrapHelperWithPTYInputOnAnyHost(t *testing.T, env []string, input string, args ...string) (string, error) {
 	t.Helper()
 	python := `
 import os
@@ -595,7 +653,7 @@ func TestRemoteAlphaVaultWorkloadAuthBootstrapHelpDocumentsSecretPosture(t *test
 		"does not run workload-auth checks, reset, unseal, IM refresh",
 		"does not claim workload-auth success",
 		"Ctrl-Z (SIGTSTP, SIGTTIN, SIGTTOU) waits the same way.",
-		"Core dumps: off (core file limit 0 and, on Linux, not dumpable) before\n  anything is read, so a crash writes no secret to disk.",
+		"Core dumps: off (core file limit 0, and not dumpable through prctl)\n  before anything is read, so a crash writes no secret to disk. Where\n  either cannot be done (a host without prctl, such as macOS), the helper\n  stops before it reads anything.",
 	)
 }
 
@@ -759,6 +817,7 @@ func TestRemoteAlphaVaultWorkloadAuthBootstrapRejectsInvalidRoleTokenLimitsBefor
 }
 
 func TestRemoteAlphaVaultWorkloadAuthBootstrapConfigLoadFailureWritesSafeSummaryBeforePrompts(t *testing.T) {
+	requireBootstrapNotDumpableCapability(t)
 	tmpDir := t.TempDir()
 	fakeBin := filepath.Join(tmpDir, "bin")
 	if err := os.MkdirAll(fakeBin, 0o755); err != nil {
@@ -956,6 +1015,7 @@ exit 17
 }
 
 func TestRemoteAlphaVaultWorkloadAuthBootstrapPromptUnavailableWritesSafeSummaryWithoutSecretValues(t *testing.T) {
+	requireBootstrapNotDumpableCapability(t)
 	tmpDir := t.TempDir()
 	fakeBin := filepath.Join(tmpDir, "bin")
 	if err := os.MkdirAll(fakeBin, 0o755); err != nil {
@@ -1060,6 +1120,7 @@ func TestRemoteAlphaVaultWorkloadAuthBootstrapVaultAPIFailuresWriteSafePhaseSumm
 }
 
 func TestRemoteAlphaVaultWorkloadAuthBootstrapUnexpectedExceptionAfterPreflightWritesSafeSummary(t *testing.T) {
+	requireBootstrapNotDumpableCapability(t)
 	tmpDir := t.TempDir()
 	fakeBin := filepath.Join(tmpDir, "bin")
 	if err := os.MkdirAll(fakeBin, 0o755); err != nil {
@@ -1380,9 +1441,10 @@ func TestRemoteAlphaVaultWorkloadAuthBootstrapFakeVaultWritesExpectedObjectsAndS
 
 // assertBootstrapCoreDumpsOff checks, through a command the helper started
 // before its first prompt (the SPIRE server), that core dumps were off by
-// then: the inherited core file limit is 0, and on Linux, when the test
-// does not run as root, the helper's /proc/<pid>/status belongs to root,
-// which is what a process that is not dumpable looks like. (RT07-2)
+// then: the inherited core file limit is 0, and, where the helper's
+// /proc/<pid>/status exists and the test does not run as root, that file
+// belongs to root, which is what a process that is not dumpable looks like.
+// The summary must record both. (RT07-2)
 func assertBootstrapCoreDumpsOff(t *testing.T, spireLog string, summary map[string]any) {
 	t.Helper()
 	if !strings.Contains(spireLog, "core_limit=0/0\n") {
@@ -1394,8 +1456,8 @@ func assertBootstrapCoreDumpsOff(t *testing.T, spireLog string, summary map[stri
 		}
 	}
 	operation, ok := summary["operations"].(map[string]any)["disable_core_dumps"].(map[string]any)
-	if !ok || operation["status"] != "pass" || operation["rlimit_core"] != float64(0) {
-		t.Fatalf("the summary must record disable_core_dumps pass with rlimit_core 0, got %#v", summary["operations"])
+	if !ok || operation["status"] != "pass" || operation["rlimit_core"] != float64(0) || operation["dumpable"] != false {
+		t.Fatalf("the summary must record disable_core_dumps pass with rlimit_core 0 and dumpable false, got %#v", summary["operations"])
 	}
 }
 
@@ -1733,6 +1795,208 @@ func TestRemoteAlphaVaultWorkloadAuthBootstrapDisablesCoreDumpsBeforeSecrets(t *
 	firstPrompt := strings.Index(source, `summary["secret_prompts_started"] = True`)
 	if firstPrompt >= 0 && firstDisabler > firstPrompt {
 		t.Errorf("RT07-2: core dumps are disabled only after secret prompts start (disabler at %d, prompts start at %d)", firstDisabler, firstPrompt)
+	}
+}
+
+// bootstrapPrctlHook is the body of a hook module that changes ctypes.CDLL in
+// the helper's python3. ES_TEST_PRCTL picks what the helper's prctl lookup
+// and calls then see. Each lookup first appends a line to the file named by
+// _MARKER, which writeBootstrapPythonHook defines, so a test can tell that
+// the helper's lookup went through the hook. PR_SET_DUMPABLE is 4 and
+// PR_GET_DUMPABLE is 3.
+const bootstrapPrctlHook = `import ctypes
+import os
+
+_mode = os.environ.get("ES_TEST_PRCTL", "")
+_RealCDLL = ctypes.CDLL
+
+
+def _option(value):
+    return getattr(value, "value", value)
+
+
+class _TestCDLL(_RealCDLL):
+    def __init__(self, *args, **kwargs):
+        with open(_MARKER, "a") as ran:
+            ran.write("CDLL\n")
+        if _mode == "no_c_library":
+            raise OSError("test: the C library cannot be opened")
+        super().__init__(*args, **kwargs)
+
+    def __getattr__(self, name):
+        if name == "prctl" and _mode == "no_prctl":
+            raise AttributeError(name)
+        if name == "prctl" and _mode == "set_fails":
+            return lambda option, *rest: -1 if _option(option) == 4 else 0
+        if name == "prctl" and _mode == "still_dumpable":
+            return lambda option, *rest: 0 if _option(option) == 4 else 1
+        return super().__getattr__(name)
+
+
+ctypes.CDLL = _TestCDLL
+`
+
+// writeBootstrapPythonHook puts a python3 in bin that loads body as a hook
+// module at startup, and returns the marker file that body may write. The
+// helper runs python3 -I, which ignores PYTHONPATH (so a sitecustomize there)
+// and the user's site-packages, but still reads a virtual environment's own
+// site-packages. So bin/python3 is the real interpreter inside a minimal
+// virtual environment (pyvenv.cfg in bin's parent), whose site-packages hold
+// a .pth file that imports the module. The interpreter is the one that
+// python3 on PATH reports as sys.executable, so that a python3 that is a
+// wrapper or a stub (a pyenv or asdf shim, for example) still leads to the
+// binary itself, which is what a virtual environment needs.
+func writeBootstrapPythonHook(t *testing.T, bin, body string) string {
+	t.Helper()
+	found, err := exec.LookPath("python3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	probe := exec.Command(found, "-I", "-c", `import sys; print(sys.executable); print("%d.%d" % sys.version_info[:2])`)
+	probe.Dir = executionSubstrateRepoRoot
+	probed, err := probe.Output()
+	if err != nil {
+		t.Fatalf("python3 executable and version: %v", err)
+	}
+	fields := strings.Split(strings.TrimSpace(string(probed)), "\n")
+	if len(fields) != 2 || !filepath.IsAbs(fields[0]) {
+		t.Fatalf("python3 reported %q, want its absolute sys.executable and its version", probed)
+	}
+	realPython, err := filepath.EvalSymlinks(fields[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	envDir := filepath.Dir(bin)
+	site := filepath.Join(envDir, "lib", "python"+fields[1], "site-packages")
+	if err := os.MkdirAll(site, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(envDir, "python-hook-ran")
+	files := map[string]string{
+		filepath.Join(envDir, "pyvenv.cfg"):            "home = " + filepath.Dir(realPython) + "\ninclude-system-site-packages = false\n",
+		filepath.Join(site, "es_test_python_hook.py"):  "_MARKER = " + strconv.Quote(marker) + "\n" + body,
+		filepath.Join(site, "es_test_python_hook.pth"): "import es_test_python_hook\n",
+	}
+	for path, content := range files {
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(realPython, filepath.Join(bin, "python3")); err != nil {
+		t.Fatal(err)
+	}
+	return marker
+}
+
+// requireBootstrapPythonHookRan fails unless the hook's ctypes.CDLL was
+// called, which in the helper only its prctl lookup does.
+func requireBootstrapPythonHookRan(t *testing.T, marker string) {
+	t.Helper()
+	data, err := os.ReadFile(marker)
+	if err != nil || !strings.Contains(string(data), "CDLL\n") {
+		t.Fatalf("the helper's prctl lookup did not go through the test's ctypes hook (marker %s: %q, %v)", marker, data, err)
+	}
+}
+
+// TestRemoteAlphaVaultWorkloadAuthBootstrapRefusesWhenTheProcessStaysDumpable
+// runs the helper with a python3 whose ctypes cannot make the process not
+// dumpable, in each way that can happen: the C library cannot be opened, it
+// has no prctl (macOS, for example), prctl(PR_SET_DUMPABLE, 0) fails, or the
+// process is still dumpable when read back. The helper must stop at phase
+// disable_core_dumps before any prompt, SPIRE command or Vault request, and
+// must not fall back to running without it. The same setup with the module
+// in place but nothing changed runs to the end, so it is the change that
+// stops the helper. The refusals do not need prctl on this host and run on
+// every host. (Codex review of PR #35: no operating system branch.)
+func TestRemoteAlphaVaultWorkloadAuthBootstrapRefusesWhenTheProcessStaysDumpable(t *testing.T) {
+	for _, mode := range []string{"no_c_library", "no_prctl", "set_fails", "still_dumpable", "unchanged"} {
+		t.Run(mode, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			fakeBin := filepath.Join(tmpDir, "bin")
+			if err := os.MkdirAll(fakeBin, 0o755); err != nil {
+				t.Fatalf("mkdir fake bin: %v", err)
+			}
+			spireLog := setupFakeBootstrapSpireServer(t, fakeBin)
+			marker := writeBootstrapPythonHook(t, fakeBin, bootstrapPrctlHook)
+
+			rootToken := "hvs.fakeRootTokenForDumpableRefusal1234567890"
+			proofSecret := "sk-fakeProofSecretForDumpableRefusal1234567890"
+			server, state, caBundle := startFakeBootstrapVault(t, rootToken)
+			configPath := filepath.Join(tmpDir, "workload-zone-vault-config.json")
+			summaryPath := filepath.Join(tmpDir, "summary", "vault-workload-auth-bootstrap-summary.json")
+			writeWorkloadZoneConfig(t, configPath, server.URL, "jwt", "service_execution", "vault", caBundle)
+			env := envWithPath(fakeBin,
+				"REMOTE_ALPHA_BOOTSTRAP_WORKLOAD_ZONE_CONFIG_PATH="+configPath,
+				"REMOTE_ALPHA_BOOTSTRAP_SUMMARY_PATH="+summaryPath,
+				"ES_TEST_PRCTL="+mode,
+			)
+			input := rootToken + "\n" + proofSecret + "\n"
+
+			if mode == "unchanged" {
+				output, err := runRemoteAlphaBootstrapHelperWithPTYInput(t, env, input)
+				if err != nil {
+					t.Fatalf("with the module in place and nothing changed, the helper must run to the end: %v\noutput=%s", err, output)
+				}
+				requireBootstrapPythonHookRan(t, marker)
+				if len(state.requests) == 0 {
+					t.Fatalf("with nothing changed, the helper must reach Vault:\n%s", output)
+				}
+				assertBootstrapCoreDumpsOff(t, mustRead(t, spireLog), readJSONFile(t, summaryPath))
+				return
+			}
+
+			output, err := runRemoteAlphaBootstrapHelperWithPTYInputOnAnyHost(t, env, input)
+			var exitErr *exec.ExitError
+			if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+				t.Fatalf("a helper that cannot make itself not dumpable must exit 1, got %v\noutput=%s", err, output)
+			}
+			requireBootstrapPythonHookRan(t, marker)
+			assertContainsAll(t, "dumpable refusal output", output,
+				"failure_phase=disable_core_dumps failure_class=core_dumps_not_disabled",
+			)
+			assertContainsNone(t, "dumpable refusal output", output,
+				"Vault bootstrap authority token",
+				"Proof secret value",
+				rootToken,
+				proofSecret,
+				"Traceback",
+			)
+			if got := len(state.requests); got != 0 {
+				t.Fatalf("a helper that cannot make itself not dumpable must not call Vault, got %d requests", got)
+			}
+			if _, statErr := os.Stat(spireLog); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("a helper that cannot make itself not dumpable must not start the SPIRE server command (log: %v)", statErr)
+			}
+			summary := assertBootstrapFailureSummary(t, summaryPath, "disable_core_dumps", "core_dumps_not_disabled", false, false, rootToken, proofSecret)
+			if got := summary["failure_message_class"]; got != "process_still_dumpable" {
+				t.Fatalf("expected failure_message_class=process_still_dumpable, got %#v", got)
+			}
+			if got := summary["last_completed_operation"]; got == "disable_core_dumps" {
+				t.Fatalf("the core dump step must not be recorded as completed, got %#v", got)
+			}
+		})
+	}
+}
+
+// TestRemoteAlphaVaultWorkloadAuthBootstrapDoesNotBranchOnTheOperatingSystem
+// pins AGENTS.md section 12 for this helper: it requires both core dump
+// settings on every host and finds a host that cannot make the process not
+// dumpable by trying, not by the operating system's name. On Linux, an
+// operating system branch behaves the same as no branch, so only the source
+// can show it.
+func TestRemoteAlphaVaultWorkloadAuthBootstrapDoesNotBranchOnTheOperatingSystem(t *testing.T) {
+	for _, path := range []string{remoteAlphaVaultWorkloadAuthBootstrapScriptPath(), remoteAlphaVaultWorkloadAuthBootstrapInternalPath()} {
+		assertContainsNone(t, filepath.Base(filepath.Dir(path))+"/"+filepath.Base(path)+" operating system checks", mustRead(t, path),
+			"sys.platform",
+			"platform.system",
+			"platform.platform",
+			"import platform",
+			"os.uname",
+			"uname",
+			"OSTYPE",
+			"darwin",
+			"Darwin",
+		)
 	}
 }
 
@@ -2505,7 +2769,8 @@ func TestRemoteAlphaVaultWorkloadAuthBootstrapP0qR1Docs(t *testing.T) {
 		"requires a threshold of exactly one share",
 		"`ttl` and `explicit_max_ttl` `15m` and `renewable=false`, then revokes the root token with `auth/token/revoke-self` as the very next request, before Vault's configuration is put back",
 		"SIGINT, SIGTERM, SIGHUP and SIGQUIT are blocked",
-		"before it reads anything, the helper turns core dumps off (`RLIMIT_CORE` 0, which the commands it starts inherit, and, on Linux, `PR_SET_DUMPABLE` 0, which also stops a `core_pattern` pipe such as systemd-coredump), and it stops (phase `disable_core_dumps`) if either does not hold.",
+		"before it reads anything, the helper turns core dumps off (`RLIMIT_CORE` 0, which the commands it starts inherit, and `PR_SET_DUMPABLE` 0 through `prctl`, which also stops a `core_pattern` pipe such as systemd-coredump), and it stops (phase `disable_core_dumps`) if either does not hold.",
+		"It reads both back and does not look at the operating system's name: on a host without `prctl`, such as macOS, it stops there with `core_dumps_not_disabled` (message class `process_still_dumpable`), and there is no fallback.",
 		"The terminal's stop signals (SIGTSTP from Ctrl-Z, SIGTTIN, SIGTTOU) are held over the same section, so the run stops only after it; SIGSTOP cannot be held",
 		"the exit code is 128 plus the signal number",
 		"SIGKILL and a power loss cannot be deferred.",
