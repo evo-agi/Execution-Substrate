@@ -1842,25 +1842,32 @@ ctypes.CDLL = _TestCDLL
 // and the user's site-packages, but still reads a virtual environment's own
 // site-packages. So bin/python3 is the real interpreter inside a minimal
 // virtual environment (pyvenv.cfg in bin's parent), whose site-packages hold
-// a .pth file that imports the module.
+// a .pth file that imports the module. The interpreter is the one that
+// python3 on PATH reports as sys.executable, so that a python3 that is a
+// wrapper or a stub (a pyenv or asdf shim, for example) still leads to the
+// binary itself, which is what a virtual environment needs.
 func writeBootstrapPythonHook(t *testing.T, bin, body string) string {
 	t.Helper()
 	found, err := exec.LookPath("python3")
 	if err != nil {
 		t.Fatal(err)
 	}
-	realPython, err := filepath.EvalSymlinks(found)
+	probe := exec.Command(found, "-I", "-c", `import sys; print(sys.executable); print("%d.%d" % sys.version_info[:2])`)
+	probe.Dir = executionSubstrateRepoRoot
+	probed, err := probe.Output()
+	if err != nil {
+		t.Fatalf("python3 executable and version: %v", err)
+	}
+	fields := strings.Split(strings.TrimSpace(string(probed)), "\n")
+	if len(fields) != 2 || !filepath.IsAbs(fields[0]) {
+		t.Fatalf("python3 reported %q, want its absolute sys.executable and its version", probed)
+	}
+	realPython, err := filepath.EvalSymlinks(fields[0])
 	if err != nil {
 		t.Fatal(err)
 	}
-	versionCmd := exec.Command(realPython, "-I", "-c", `import sys; print("%d.%d" % sys.version_info[:2])`)
-	versionCmd.Dir = executionSubstrateRepoRoot
-	version, err := versionCmd.Output()
-	if err != nil {
-		t.Fatalf("python3 version: %v", err)
-	}
 	envDir := filepath.Dir(bin)
-	site := filepath.Join(envDir, "lib", "python"+strings.TrimSpace(string(version)), "site-packages")
+	site := filepath.Join(envDir, "lib", "python"+fields[1], "site-packages")
 	if err := os.MkdirAll(site, 0o755); err != nil {
 		t.Fatal(err)
 	}

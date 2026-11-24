@@ -2193,16 +2193,24 @@ func writeTestPythonHook(t *testing.T, bin, hook string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	realPython, err := filepath.EvalSymlinks(found)
+	// The interpreter is the one python3 reports as sys.executable, so that a
+	// python3 that is a wrapper or a stub (a pyenv or asdf shim, for example)
+	// still leads to the binary itself, which is what a virtual environment
+	// needs.
+	probed, err := exec.Command(found, "-I", "-c", `import sys; print(sys.executable); print("%d.%d" % sys.version_info[:2])`).Output()
+	if err != nil {
+		t.Fatalf("python3 executable and version: %v", err)
+	}
+	fields := strings.Split(strings.TrimSpace(string(probed)), "\n")
+	if len(fields) != 2 || !filepath.IsAbs(fields[0]) {
+		t.Fatalf("python3 reported %q, want its absolute sys.executable and its version", probed)
+	}
+	realPython, err := filepath.EvalSymlinks(fields[0])
 	if err != nil {
 		t.Fatal(err)
 	}
-	version, err := exec.Command(realPython, "-I", "-c", `import sys; print("%d.%d" % sys.version_info[:2])`).Output()
-	if err != nil {
-		t.Fatalf("python3 version: %v", err)
-	}
 	envDir := filepath.Dir(bin)
-	site := filepath.Join(envDir, "lib", "python"+strings.TrimSpace(string(version)), "site-packages")
+	site := filepath.Join(envDir, "lib", "python"+fields[1], "site-packages")
 	if err := os.MkdirAll(site, 0o700); err != nil {
 		t.Fatal(err)
 	}
