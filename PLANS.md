@@ -19,7 +19,7 @@ commissioning gate's prerequisites. The gate gains a seventh prerequisite,
 operational namespace, the access-control check before registration, what
 a refused registration means for the claim, and one Nomad identity in ES's
 configuration for both clients. Taking up `trunk_dev` after its PRs #43,
-#42, #34 and #31 brings PR #31's guard test, whose three position reads
+#42, #34, #31 and #38 brings PR #31's guard test, whose three position reads
 PR #12's position-read test refused; they now read the real position. That
 test file is one more path, so the path ceiling of PR #12 plus its repairs
 is 70 files. A driver string that is not valid UTF-8, which no caller can

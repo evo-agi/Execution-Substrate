@@ -14377,7 +14377,7 @@ func operationalV2AssuranceOwnerRule(owner string) bool {
 		strings.Contains(owner, "HEAD ceiling for PR #12 plus its repairs was 66 files") &&
 		strings.Contains(owner, "HEAD ceiling for PR #12 plus its repairs was 69 files") &&
 		strings.Contains(owner, "HEAD ceiling for PR #12 plus its repairs is 70 files") &&
-		strings.Contains(owner, "`trunk_dev` after its\nPRs #43, #42, #34 and #31, are a further owner reconciliation at this gate.") &&
+		strings.Contains(owner, "`trunk_dev` after its\nPRs #43, #42, #34, #31 and #38, are a further owner reconciliation at this gate.") &&
 		strings.Contains(owner, "It adds exactly one more path, a test file:\nA/nomad_request_guard_test.go, PR #31's token guard, which now covers the\nprovider and reads unadjusted positions.") &&
 		strings.Contains(owner, "A/reliable_submit_operational_handoff.go, A/service.go and their tests,\nwhich are already counted.") &&
 		strings.Contains(owner, "gains the prerequisite `CP-NOMAD-ACL`.") &&
@@ -14572,7 +14572,7 @@ func TestOperationalSubmitHandoffCurrentAdmissionV2Contract(t *testing.T) {
 		"HEAD ceiling for PR #12 plus its repairs was 66 files",
 		"HEAD ceiling for PR #12 plus its repairs was 69 files",
 		"HEAD ceiling for PR #12 plus its repairs is 70 files",
-		"`trunk_dev` after its\nPRs #43, #42, #34 and #31, are a further owner reconciliation at this gate.",
+		"`trunk_dev` after its\nPRs #43, #42, #34, #31 and #38, are a further owner reconciliation at this gate.",
 		"It adds exactly one more path, a test file:\nA/nomad_request_guard_test.go, PR #31's token guard, which now covers the\nprovider and reads unadjusted positions.",
 		"A/reliable_submit_operational_handoff.go, A/service.go and their tests,\nwhich are already counted.",
 		"gains the prerequisite `CP-NOMAD-ACL`.",
@@ -14884,7 +14884,7 @@ func TestOperationalSubmitHandoffCurrentAdmissionV2RejectsUnsafeMutants(t *testi
 		{"MissingThirdRedTeamCeiling", "HEAD ceiling for PR #12 plus its repairs was 66 files"},
 		{"MissingRedTeamRecheckCeiling", "HEAD ceiling for PR #12 plus its repairs was 69 files"},
 		{"MissingNomadTokenCeiling", "HEAD ceiling for PR #12 plus its repairs is 70 files"},
-		{"MissingNomadTokenTrunkDevPRs", "`trunk_dev` after its\nPRs #43, #42, #34 and #31, are a further owner reconciliation at this gate."},
+		{"MissingNomadTokenTrunkDevPRs", "`trunk_dev` after its\nPRs #43, #42, #34, #31 and #38, are a further owner reconciliation at this gate."},
 		{"MissingNomadTokenGuardPath", "It adds exactly one more path, a test file:\nA/nomad_request_guard_test.go, PR #31's token guard, which now covers the\nprovider and reads unadjusted positions."},
 		{"MissingNomadTokenCountedPaths", "A/reliable_submit_operational_handoff.go, A/service.go and their tests,\nwhich are already counted."},
 		{"MissingNomadTokenHeader", "carries ES's Nomad\nACL client token in one `X-Nomad-Token` header and never in the URL."},

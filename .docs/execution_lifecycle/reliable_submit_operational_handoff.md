@@ -1759,7 +1759,7 @@ three position reads now ignore line directives. With them the
 aggregate HEAD ceiling for PR #12 plus its repairs was 69 files.
 
 The repairs after PR #31 locked Nomad, with taking up `trunk_dev` after its
-PRs #43, #42, #34 and #31, are a further owner reconciliation at this gate.
+PRs #43, #42, #34, #31 and #38, are a further owner reconciliation at this gate.
 The operational provider now sends ES's Nomad token on its three requests,
 prepares the registration with its own builder, and the commissioning gate
 gains the prerequisite `CP-NOMAD-ACL`. A driver string must also be valid
