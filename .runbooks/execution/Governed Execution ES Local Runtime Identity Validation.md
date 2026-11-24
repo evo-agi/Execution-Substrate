@@ -1,4 +1,4 @@
-# Runbook: Local Runtime Identity Validation (v1)
+# Governed Execution ES Local Runtime Identity Validation
 
 - Version: `v1`
 - Last Updated: `2026-04-05`
@@ -252,7 +252,7 @@ Package the reference workload:
 
 Follow the governed publish + submit flow from:
 
-- `.runbooks/execution/v1_submit_runtime_identity_reference.md`
+- [.runbooks/execution/Governed Execution ES Submit Runtime Identity Reference Workload.md](Governed%20Execution%20ES%20Submit%20Runtime%20Identity%20Reference%20Workload.md)
 
 Use these important values:
 
