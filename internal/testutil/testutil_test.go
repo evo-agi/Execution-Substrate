@@ -825,7 +825,7 @@ var followedImports = map[string]string{
 func repoPathProblems(fset *token.FileSet, files []*ast.File, paths *layout) []string {
 	var problems []string
 	report := func(pos token.Pos, format string, args ...any) {
-		p := fset.Position(pos)
+		p := fset.PositionFor(pos, false)
 		problems = append(problems, fmt.Sprintf("%s:%d: %s", filepath.Base(p.Filename), p.Line, fmt.Sprintf(format, args...)))
 	}
 	// Values of package-level constants and variables, by name.
@@ -959,7 +959,7 @@ type paramUse struct{ kind, rest string }
 func functionProblems(fset *token.FileSet, fn *ast.FuncDecl, packageBindings map[string][]ast.Expr, pathParams map[string]map[int]map[paramUse]bool, rules pathRules, grew *bool) []string {
 	var problems []string
 	report := func(pos token.Pos, format string, args ...any) {
-		p := fset.Position(pos)
+		p := fset.PositionFor(pos, false)
 		problems = append(problems, fmt.Sprintf("%s:%d: %s", filepath.Base(p.Filename), p.Line, fmt.Sprintf(format, args...)))
 	}
 	params := map[string]int{}
@@ -1102,7 +1102,7 @@ func functionProblems(fset *token.FileSet, fn *ast.FuncDecl, packageBindings map
 func valueProblems(fset *token.FileSet, file *ast.File, pathParams map[string]map[int]map[paramUse]bool) []string {
 	var problems []string
 	report := func(pos token.Pos, name string) {
-		p := fset.Position(pos)
+		p := fset.PositionFor(pos, false)
 		problems = append(problems, fmt.Sprintf("%s:%d: %s is used as a value, so the check cannot see the arguments it gets", filepath.Base(p.Filename), p.Line, name))
 	}
 	var stack []ast.Node

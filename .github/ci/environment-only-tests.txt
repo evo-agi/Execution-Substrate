@@ -111,9 +111,12 @@ execution-substrate/es/app TestSubmitFlowMountsGovernedArtifactAndLifecycleWithI
 
 # es/admission/internal/reliablesubmit: historical-opener probes. They need
 # test binaries built from older trees with an overlay kept outside this
-# repository (the ES_REPLAY_*_PROBE variables).
+# repository (the ES_REPLAY_*_PROBE variables). The third test needs the
+# opener of schema 4 (ES_REPLAY_SCHEMA4_PROBE) and fails at its first line
+# without it.
 execution-substrate/es/admission/internal/reliablesubmit TestSQLiteV4PreviousSchema3BinaryRefusesWithoutMutation
 execution-substrate/es/admission/internal/reliablesubmit TestSQLiteV3OldBinaryRefusesWithoutMutation
+execution-substrate/es/admission/internal/reliablesubmit TestOperationalHandoffSchema4BinaryRefusesSchema5
 
 
 # Tests that skip themselves on the runner.
@@ -144,6 +147,12 @@ execution-substrate/es/admission/internal/reliablesubmit TestSQLiteV3OldBinaryRe
 # gates the same rule without a race.
 skips-itself execution-substrate/es/admission TestExecutionRootProbeDirectorySwapStress
 skips-itself execution-substrate/es/admission TestExecutionRootProbeDirectorySwapStressAttacker
+
+# es/admission: a helper process of the operational handoff tests. Tests of
+# the package start the test binary a second time with
+# ES_OPERATIONAL_CHILD_FIXTURE set, and only that process runs the body. Run
+# as a test, it has nothing to do. It skips itself on every host.
+skips-itself execution-substrate/es/admission TestOperationalHandoffChildProcess
 
 # es/admission/internal/reliablesubmit: helper processes. Another test of the
 # package starts the test binary a second time with a variable set, and only

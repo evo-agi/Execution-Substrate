@@ -26,7 +26,8 @@ The readiness vocabulary for that primary path is now:
 - `service health`: the public health surfaces for ARS, EGS, AGS, and ES are up and reporting ready
 - `prepare-ready`: service health plus successful workload-zone Vault runtime-config blob verification through ARS, including structural validation of any supplied Vault CA bundle
 - `submit-ready`: prepare-ready plus ES submit config present, Docker available, required enabled runtime-profile images present, Nomad leader present, and at least one ready Nomad client node with positive `cpu.totalcompute` and a healthy Docker driver
-- for enabled local runtime-profile images, `submit-ready` also requires Nomad Docker image cleanup to be disabled through `docker.cleanup.image=false`, because the supported-local CP normal-shell proof image is local runtime material rather than a pullable product registry image
+- `submit-ready` also requires Nomad to enable only the Docker driver, with its Docker plugin refusing privileged containers and allowing only ES's runtime-helper capabilities
+- for enabled local runtime-profile images, `submit-ready` also requires Nomad Docker image garbage collection to be disabled through the Docker plugin's `gc { image = false }`, because the supported-local CP normal-shell proof image is local runtime material rather than a pullable product registry image
 
 For the ES-side supported-local Control Plane consumer story, including the real CP-facing API surface, `control-plane-normal-shell/v1`, workload-visible identity/Vault/trust-material handoff, retained-result meaning, and ownership boundaries, use [supported_local_cp_consumer_runbook.md](../../.docs/supported_local_cp_consumer_runbook.md).
 
@@ -152,7 +153,7 @@ export ARS_READ_KEY="/abs/path/execution-client-key.pem"
 
 `scripts/01_bringup.sh` and `scripts/10_health_check.sh` use a runtime-issued client certificate for all service health checks because `/health` is now behind strict mTLS. They use the ARS read client only for the workload-zone Vault blob read when the operator identity is not sufficient. If `ARS_READ_CERT` and `ARS_READ_KEY` are omitted, those checks fall back to `OPERATOR_CERT` and `OPERATOR_KEY`.
 
-The current repo-owned AGS and ES configs keep `authorization.allowed_spiffe_path_prefixes=["operator"]`, so the operator identity above remains the right credential for the documented helper path even though those services now authorize callers from configured SPIFFE path prefixes rather than from hard-coded caller checks.
+The current repo-owned AGS and ES configs keep `authorization.allowed_spiffe_path_prefixes=["operator/local"]`, so the operator identity above remains the right credential for the documented helper path even though those services now authorize callers from configured SPIFFE path prefixes rather than from hard-coded caller checks.
 
 ### Required service URLs
 
@@ -216,7 +217,8 @@ Pass only if the check reports:
 - `nomad-startup-mode: pre-managed`
 - `submit-ready-mode: natural`
 - `supported-environment: supported`
-- `runtime profile image durability: nomad docker.cleanup.image=false`
+- `nomad: drivers=docker docker_privileged=refused docker_caps=chown,dac_override,fowner,kill,setgid,setpcap,setuid`
+- `runtime profile image durability: nomad docker plugin gc.image=false`
 - `submit-ready: true`
 
 On the current Apple Silicon Mac, Lima `qemu` + Ubuntu 24.04 arm64 is the known supported local reference profile for this path. The previously investigated Ubuntu 24.04 VMware/aarch64 and Lima `vz` Ubuntu 24.04 arm64 local profiles remain unsupported on this Mac because natural `cpu.totalcompute` stays `0`.
@@ -330,7 +332,8 @@ For the full profile, `submit-ready: true` means:
 - `docker info` succeeds
 - ES submit config still includes `nomad.base_url`, `nomad.datacenter`, `execution.staging_root_dir`, `execution.results_root_dir`, and `execution.base_image`
 - required enabled runtime-profile images are present according to `docker image inspect`
-- enabled local runtime-profile images are protected from Nomad stopped-task image cleanup by `docker.cleanup.image=false`
+- Nomad enables only the Docker driver and its Docker plugin refuses privileged containers and allows only ES's runtime-helper capabilities
+- enabled local runtime-profile images are protected from Nomad stopped-task image cleanup by the Docker plugin's `gc { image = false }`
 - the workload-zone Vault blob named by `runtime_config.workload_zone_vault_config_ref.digest` is readable through ARS and validates structurally, including any `vault_config.ca_bundle_pem` certificate material
 - the current ES same-path staging invariant has already been recorded at `${BRINGUP_DIR}/staging-invariant.json`
 

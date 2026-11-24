@@ -366,7 +366,8 @@ func TestPrivateReplayProgressTransitions(t *testing.T) {
 		before := f.record()
 		sealedBytes := f.object(before)
 		for _, tc := range []struct{ label, field, value string }{
-			{"UnsupportedCodec", "codec_version", "5"},
+			{"OperationalCodecInProgressScope", "codec_version", "5"},
+			{"UnsupportedCodec", "codec_version", "6"},
 			{"CodecNarrowingAlias", "codec_version", "65540"},
 			{"WrongScope", "replay_scope", "1"},
 			{"WrongWrapper", "envelope_wrapper_format", "1"},

@@ -63,8 +63,8 @@ var spireAgentHelperModule = filepath.Join(executionSubstrateRepoRoot, "scripts"
 // default Layout, or classifies an agent.conf, or runs the SPIRE-side
 // pinned check with a Layout from a JSON file, or runs the server bundle
 // checks on a PEM file standing in for "spire-server bundle show" output
-// (only the spire-server call is replaced; openssl runs for real). It is
-// test code only.
+// (only the spire-server call is replaced; openssl runs for real), or hands
+// a directory over with take_new_dir. It is test code only.
 const spireAgentHelperDriver = `import dataclasses, importlib.util, json, sys
 spec = importlib.util.spec_from_file_location("ra_spire_agent", sys.argv[1])
 mod = importlib.util.module_from_spec(spec)
@@ -86,6 +86,13 @@ if sys.argv[2] == "--confirm-pinned":
             overrides[key] = tuple(value)
     ok, detail = mod.spire_confirms_pinned(mod.Runner(mod.Layout(**overrides), mod.Report("status", False)))
     print(json.dumps({"ok": ok, "detail": detail}))
+    sys.exit(0)
+if sys.argv[2] == "--take-new-dir":
+    try:
+        mod.take_new_dir(sys.argv[3], int(sys.argv[4]), int(sys.argv[5]), int(sys.argv[6], 8))
+        print(json.dumps({"ok": True}))
+    except (mod.Failure, OSError) as exc:
+        print(json.dumps({"ok": False, "reason": str(exc)}))
     sys.exit(0)
 if sys.argv[2] == "--export-bundle":
     pem = open(sys.argv[3], newline="").read()
@@ -252,9 +259,13 @@ os.execve(args[5], args[5:], {"PATH": "/usr/local/bin:/bin:/usr/bin", "HOME": "/
 // (in a file or, which the helper must never do, on the command line) exits
 // at once, so the tests can reach the helper's failure paths. Two more
 // markers hold an attesting run or a "validate" at its start, so a test can
-// signal the helper at that point.
+// signal the helper at that point. Two markers play a hostile SPIRE account
+// (in the tests it is the same user as the helper): PLANT_LOG makes
+// "token generate" put attest.log in the helper's token directory first, as
+// a symlink to another file; SWAP_LOG makes a failing attesting run replace
+// its own log file, by name, with a symlink to another file before it exits.
 const spireAgentHelperShim = `import json, os, sys, time
-LOG, REAL, FAIL_VALIDATE, FAIL_ATTEST, HOLD_ATTEST, HOLD_VALIDATE, LINGER, LINGERING = %q, %q, %q, %q, %q, %q, %q, %q
+LOG, REAL, FAIL_VALIDATE, FAIL_ATTEST, HOLD_ATTEST, HOLD_VALIDATE, LINGER, LINGERING, PLANT_LOG, SWAP_LOG = %q, %q, %q, %q, %q, %q, %q, %q, %q, %q
 args = sys.argv[1:]
 entry = {"tool": os.path.basename(REAL), "argv": args}
 if "-joinTokenFile" in args:
@@ -269,6 +280,11 @@ if "-joinTokenFile" in args:
     entry["stop_signals_blocked"] = [s for s in (1, 2, 15) if blocked >> (s - 1) & 1]
 with open(LOG, "a") as fh:
     fh.write(json.dumps(entry) + "\n")
+if PLANT_LOG and args[:2] == ["token", "generate"] and os.path.exists(PLANT_LOG):
+    import glob
+    plant = json.load(open(PLANT_LOG))
+    for d in glob.glob(plant["dirs"]):
+        os.symlink(plant["target"], os.path.join(d, "attest.log"))
 if LINGER and args[:1] == ["run"] and ("-joinTokenFile" in args or "-joinToken" in args) and os.path.exists(LINGER):
     # An attesting agent that takes its time to exit on SIGTERM: it says
     # so in LINGERING and stays until the LINGER marker is gone.
@@ -298,6 +314,11 @@ if FAIL_ATTEST and args[:1] == ["run"] and ("-joinTokenFile" in args or "-joinTo
     rest = ('\ntime="2026-01-01T00:00:00Z" level=info msg="Node attestation was successful" spiffe_id="spiffe://execution.internal/spire/agent/join_token/0f0f0f0f-1e1e-4d4d-8c8c-7b7b7b7b7b7b" subsystem_name=attestor'
             "\nagent crashed: injected by the test\n")
     sys.stdout.write("join token " + token + "." * (1500 - len(token) // 2 - len(rest)) + rest)
+    sys.stdout.flush()
+    if SWAP_LOG and os.path.exists(SWAP_LOG):
+        logname = os.readlink("/proc/self/fd/1")
+        os.unlink(logname)
+        os.symlink(open(SWAP_LOG).read(), logname)
     sys.exit(3)
 os.execv(REAL, [REAL] + args)
 `
@@ -314,6 +335,8 @@ type spireAgentHelperBox struct {
 	shimLog     string
 	failMarker  string
 	failAttest  string
+	plantLog    string
+	swapLog     string
 	holdAttest  string
 	holdValid   string
 	linger      string
@@ -532,6 +555,8 @@ func newSPIREAgentHelperBox(t *testing.T, svidTTL string) *spireAgentHelperBox {
 	b.shimLog = filepath.Join(b.logsDir, "commands.jsonl")
 	b.failMarker = filepath.Join(root, "fail-validate")
 	b.failAttest = filepath.Join(root, "fail-attest")
+	b.plantLog = filepath.Join(root, "plant-log")
+	b.swapLog = filepath.Join(root, "swap-log")
 	b.holdAttest = filepath.Join(root, "hold-attest")
 	b.holdValid = filepath.Join(root, "hold-validate")
 	b.linger = filepath.Join(root, "linger-attest")
@@ -564,8 +589,8 @@ func newSPIREAgentHelperBox(t *testing.T, svidTTL string) *spireAgentHelperBox {
 	b.write(setpriv, "#!"+python+"\n"+fmt.Sprintf(spireAgentHelperFakeSetpriv, b.shimLog, b.user, b.group), 0o755)
 	shimServer := filepath.Join(root, "bin", "spire-server")
 	shimAgent := filepath.Join(root, "bin", "spire-agent")
-	b.write(shimServer, "#!"+python+"\n"+fmt.Sprintf(spireAgentHelperShim, b.shimLog, b.realServer, "", "", "", "", "", ""), 0o755)
-	b.write(shimAgent, "#!"+python+"\n"+fmt.Sprintf(spireAgentHelperShim, b.shimLog, b.realAgent, b.failMarker, b.failAttest, b.holdAttest, b.holdValid, b.linger, b.lingering), 0o755)
+	b.write(shimServer, "#!"+python+"\n"+fmt.Sprintf(spireAgentHelperShim, b.shimLog, b.realServer, "", "", "", "", "", "", b.plantLog, ""), 0o755)
+	b.write(shimAgent, "#!"+python+"\n"+fmt.Sprintf(spireAgentHelperShim, b.shimLog, b.realAgent, b.failMarker, b.failAttest, b.holdAttest, b.holdValid, b.linger, b.lingering, "", b.swapLog), 0o755)
 	openssl, _ := exec.LookPath("openssl")
 
 	layout := map[string]any{
@@ -1597,12 +1622,24 @@ func TestRemoteAlphaSPIREAgentRecoverAgainstRealSPIRE(t *testing.T) {
 	}
 
 	// An attestation that fails puts the old data directory back and leaves
-	// the units stopped.
+	// the units stopped. Before it exits, the failing agent replaces its log
+	// file by name with a symlink to a file it must not be able to read
+	// through the helper: the report's log tail comes from the helper's own
+	// descriptor, so it is the agent's output, not that file.
+	secret := filepath.Join(b.root, "root-only-secret")
+	b.write(secret, "ROOT-ONLY-SECRET-MARKER\n", 0o600)
+	b.write(b.swapLog, secret, 0o644)
 	b.write(b.failAttest, "", 0o644)
 	crashed := b.helper("recover", "--apply")
 	crashed.expect(t, 1, "failed")
 	if !strings.Contains(crashed.report["message"].(string), "the attesting agent exited") {
 		t.Fatalf("attestation failure not reported:\n%s", crashed)
+	}
+	if strings.Contains(crashed.stdout, "ROOT-ONLY-SECRET-MARKER") || !strings.Contains(crashed.report["message"].(string), "agent crashed: injected by the test") {
+		t.Fatalf("the failure report's log tail was read by name, not from the helper's own descriptor:\n%s", crashed)
+	}
+	if err := os.Remove(b.swapLog); err != nil {
+		t.Fatal(err)
 	}
 	if strings.Contains(crashed.stdout, "0f0f0f0f-1e1e-4d4d-8c8c-7b7b7b7b7b7b") || !strings.Contains(crashed.report["message"].(string), "join_token/<redacted>") {
 		t.Fatalf("the agent log tail in the failure report was not redacted:\n%s", crashed)
@@ -1642,6 +1679,35 @@ func TestRemoteAlphaSPIREAgentRecoverAgainstRealSPIRE(t *testing.T) {
 	}
 	if !bytes.Equal(spireAgentHelperRead(t, filepath.Join(b.dataDir, "agent-data.json")), oldData) || len(spireAgentHelperGlob(t, b.dataDir+".failed-*")) != 2 || len(spireAgentHelperGlob(t, b.dataDir+".recover-*")) != 0 {
 		t.Fatalf("an OS error during the swap did not put the old data directory back:\n%s", osErr)
+	}
+	time.Sleep(1100 * time.Millisecond)
+
+	// A hostile SPIRE account puts attest.log in the token directory as a
+	// symlink to another file while the token is generated. The helper
+	// creates its log only as a new file, so it refuses, leaves that file
+	// untouched and puts the old data directory back.
+	victim := filepath.Join(b.root, "root-owned-victim")
+	b.write(victim, "VICTIM-BYTES\n", 0o600)
+	b.writeJSON(b.plantLog, map[string]any{"dirs": filepath.Join(b.scratch, "es-spire-agent-recover.*"), "target": victim})
+	planted := b.helper("recover", "--apply")
+	if err := os.Remove(b.plantLog); err != nil {
+		t.Fatal(err)
+	}
+	planted.expect(t, 1, "failed")
+	if msg := planted.report["message"].(string); !strings.Contains(msg, "attestation failed") || !strings.Contains(msg, "attest.log") {
+		t.Fatalf("a planted attest.log was not refused:\n%s", planted)
+	}
+	if got := string(spireAgentHelperRead(t, victim)); got != "VICTIM-BYTES\n" {
+		t.Fatalf("the helper wrote through a planted attest.log symlink: the target now holds %q", got)
+	}
+	if mode, _ := spireAgentHelperMode(t, victim); mode != 0o600 {
+		t.Fatalf("the planted symlink's target changed mode to %o", mode)
+	}
+	if !bytes.Equal(spireAgentHelperRead(t, filepath.Join(b.dataDir, "agent-data.json")), oldData) || len(spireAgentHelperGlob(t, b.dataDir+".failed-*")) != 3 || len(spireAgentHelperGlob(t, b.dataDir+".recover-*")) != 0 {
+		t.Fatalf("a planted attest.log did not put the old data directory back:\n%s", planted)
+	}
+	if left := spireAgentHelperGlob(t, filepath.Join(b.scratch, "*")); len(left) != 0 {
+		t.Fatalf("a refused attest.log left scratch entries: %v", left)
 	}
 	time.Sleep(1100 * time.Millisecond)
 
@@ -1803,12 +1869,15 @@ func TestRemoteAlphaSPIREAgentRecoverAgainstRealSPIRE(t *testing.T) {
 			setprivRuns++
 		}
 	}
-	if attestRuns != 4 || setprivTokens != 4 || setprivRuns != 4 {
-		t.Fatalf("attesting runs %d, token generations as the SPIRE account with -ttl 120: %d, attesting runs as the SPIRE account: %d; want 4 each", attestRuns, setprivTokens, setprivRuns)
+	// The planted-log step generated a token but never started an agent.
+	if attestRuns != 4 || setprivTokens != 5 || setprivRuns != 4 {
+		t.Fatalf("attesting runs %d, token generations as the SPIRE account with -ttl 120: %d, attesting runs as the SPIRE account: %d; want 4, 5 and 4", attestRuns, setprivTokens, setprivRuns)
 	}
+	// The token directory is the helper's own, with group search only: the
+	// SPIRE account can reach its file but not add or replace entries.
 	for _, tf := range tokenFiles {
-		if tf["mode"] != "0o600" || tf["dir_mode"] != "0o700" || int(tf["uid"].(float64)) != b.uid || !strings.HasPrefix(tf["path"].(string), b.scratch+"/") {
-			t.Fatalf("join token file was not a 0600 file of the SPIRE account under the scratch parent: %v", tf)
+		if tf["mode"] != "0o600" || tf["dir_mode"] != "0o710" || int(tf["uid"].(float64)) != b.uid || !strings.HasPrefix(tf["path"].(string), b.scratch+"/") {
+			t.Fatalf("join token file was not a 0600 file of the SPIRE account in a 0710 directory under the scratch parent: %v", tf)
 		}
 	}
 	if left := spireAgentHelperGlob(t, filepath.Join(b.scratch, "*")); len(left) != 0 {
@@ -1993,6 +2062,141 @@ func TestRemoteAlphaSPIREAgentGroupMembersCountPrimaryGroup(t *testing.T) {
 		}
 	}
 	t.Fatalf("members of %s %v leave out %s, whose primary group it is", g.Name, members, cur.Username)
+}
+
+// recover creates the new agent data directory in a parent the SPIRE
+// account may be able to write, and its token directory, and gives each its
+// final owner and mode. take_new_dir must act only on the empty private
+// directory the run created, never through a symlink or on something else
+// put in its place.
+func TestRemoteAlphaSPIREAgentTakeNewDirRefusesSwaps(t *testing.T) {
+	t.Parallel()
+	// Owners and modes are set only through descriptors: a call by path
+	// would follow a symlink that the SPIRE account put in place.
+	if m := regexp.MustCompile(`\bos\.(chown|chmod|lchown)\(`).FindString(string(spireAgentHelperRead(t, spireAgentHelperModule))); m != "" {
+		t.Fatalf("the helper sets an owner or mode by path (%s...); use a descriptor (take_new_dir, fchown, fchmod)", m)
+	}
+	// The token directory stays the helper's own (group search for SPIRE
+	// only). The recover test cannot see its owner, because the test user
+	// plays the SPIRE account too.
+	if !regexp.MustCompile(`\btake_new_dir\(scratch, os\.geteuid\(\), spire_gid, 0o710\)`).Match(spireAgentHelperRead(t, spireAgentHelperModule)) {
+		t.Fatalf("attest_once no longer keeps the token directory its own: take_new_dir(scratch, os.geteuid(), spire_gid, 0o710) is gone")
+	}
+	dir := t.TempDir()
+	stat := func(path string) (os.FileMode, uint32) {
+		t.Helper()
+		fi, err := os.Lstat(path)
+		if err != nil {
+			t.Fatalf("stat %s: %v", path, err)
+		}
+		return fi.Mode().Perm(), fi.Sys().(*syscall.Stat_t).Uid
+	}
+	mkdir := func(name string, mode os.FileMode) string {
+		t.Helper()
+		path := filepath.Join(dir, name)
+		if err := os.Mkdir(path, mode); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(path, mode); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	take := func(path string) map[string]any {
+		t.Helper()
+		code, out, stderr := spireAgentHelperDriverRun(t, "--take-new-dir", path, strconv.Itoa(os.Geteuid()), strconv.Itoa(os.Getegid()), "750")
+		var res map[string]any
+		if code != 0 || json.Unmarshal([]byte(out), &res) != nil {
+			t.Fatalf("take_new_dir %s: exit %d: %s %s", path, code, out, stderr)
+		}
+		return res
+	}
+
+	fresh := mkdir("fresh", 0o700)
+	if res := take(fresh); res["ok"] != true {
+		t.Fatalf("the directory the run created was not handed over: %v", res)
+	}
+	if mode, _ := stat(fresh); mode != 0o750 {
+		t.Fatalf("handed-over directory has mode %o, want 750", mode)
+	}
+
+	target := mkdir("target", 0o700)
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if res := take(link); res["ok"] != false {
+		t.Fatalf("a symlink in place of the new directory was followed: %v", res)
+	}
+	if mode, _ := stat(target); mode != 0o700 {
+		t.Fatalf("the symlink's target changed mode to %o", mode)
+	}
+
+	full := mkdir("full", 0o700)
+	if err := os.WriteFile(filepath.Join(full, "planted"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if res := take(full); res["ok"] != false {
+		t.Fatalf("a directory with entries was handed over: %v", res)
+	}
+	if mode, _ := stat(full); mode != 0o700 {
+		t.Fatalf("a refused directory changed mode to %o", mode)
+	}
+
+	open := mkdir("open", 0o755)
+	if res := take(open); res["ok"] != false {
+		t.Fatalf("a directory others could already reach was handed over: %v", res)
+	}
+	if mode, _ := stat(open); mode != 0o755 {
+		t.Fatalf("a refused directory changed mode to %o", mode)
+	}
+
+	// Another account's directory can only be set up as root.
+	if os.Geteuid() == 0 {
+		foreign := mkdir("foreign", 0o700)
+		if err := os.Chown(foreign, 65534, 65534); err != nil {
+			t.Fatal(err)
+		}
+		if res := take(foreign); res["ok"] != false {
+			t.Fatalf("another account's directory was handed over: %v", res)
+		}
+		if mode, uid := stat(foreign); mode != 0o700 || uid != 65534 {
+			t.Fatalf("a refused directory changed to mode %o owner %d", mode, uid)
+		}
+	}
+
+	// The handover sets the owner as well as the mode. The steps above, and
+	// the recover test, give a directory to the test user itself, so they
+	// cannot see that. Give one to another owner (as root) or to another of
+	// the test user's groups (any user may do that).
+	toUID, toGID := os.Geteuid(), -1
+	if os.Geteuid() == 0 {
+		toUID, toGID = 65534, 65534
+	} else if groups, err := os.Getgroups(); err == nil {
+		for _, g := range groups {
+			if g != os.Getegid() {
+				toGID = g
+				break
+			}
+		}
+	}
+	if toGID < 0 {
+		t.Log("not root and no second group: the owner change of take_new_dir is not checked in this run")
+		return
+	}
+	other := mkdir("other-owner", 0o700)
+	code, out, stderr := spireAgentHelperDriverRun(t, "--take-new-dir", other, strconv.Itoa(toUID), strconv.Itoa(toGID), "750")
+	var res map[string]any
+	if code != 0 || json.Unmarshal([]byte(out), &res) != nil || res["ok"] != true {
+		t.Fatalf("take_new_dir to %d:%d: exit %d: %s %s", toUID, toGID, code, out, stderr)
+	}
+	fi, err := os.Lstat(other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st := fi.Sys().(*syscall.Stat_t); int(st.Uid) != toUID || int(st.Gid) != toGID || fi.Mode().Perm() != 0o750 {
+		t.Fatalf("handed-over directory is %d:%d %o, want %d:%d 750", st.Uid, st.Gid, fi.Mode().Perm(), toUID, toGID)
+	}
 }
 
 func TestRemoteAlphaSPIREAgentConfigAnalysis(t *testing.T) {

@@ -35,7 +35,7 @@ func (d replayClaimDescriptor) clone() replayClaimDescriptor { return d }
 func (d replayClaimDescriptor) valid() bool { return d.validForScope(1) }
 
 func (d replayClaimDescriptor) validForScope(scope int64) bool {
-	return (scope == 1 || scope == 2) && d.scope == scope && d.intentFormat == 1 &&
+	return (scope == 1 || scope == 2 || scope == 3) && d.scope == scope && d.intentFormat == 1 &&
 		d.wrapperFormat == scope && d.payloadFormat == scope && d.algorithm == 1 &&
 		replayObjectRefValid(d.ref) && d.size >= 29 && d.size <= replaySealedLimit &&
 		replayKeyIDValid(d.bindingKeyID) && replayKeyIDValid(d.envelopeKeyID) &&
