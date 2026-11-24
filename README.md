@@ -29,9 +29,9 @@ flowchart LR
 
     Publisher -->|"publish"| AGS
     AGS -->|"store"| ARS
-    Caller -->|"prepare<br/>submit<br/>status<br/>logs<br/>result<br/>cancel"| ES
+    Caller -->|"prepare<br/>submit<br/>status<br/>cancel"| ES
     ES -->|"read package<br/>read evidence"| ARS
-    ES -->|"read trust (at startup)"| EGS
+    ES -->|"read trust<br/>(at startup)"| EGS
     ES -->|"submit job"| Nomad
     Nomad --> Task
     SPIRE -.->|"identity"| Task
