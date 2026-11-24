@@ -531,7 +531,13 @@ remain outside this retirement. Future infrastructure recovery requires a
 separately selected fresh-host setup contract, but a
 complete supported fresh-host ES provisioner is not currently implemented.
 Reuse of an old or nonempty host remains blocked without a separately governed
-existing-host migration contract.
+existing-host migration contract. One such contract exists, for one host:
+`scripts/remote_alpha_upgrade_es.sh` moves the Remote Alpha box's ES from its
+`74748063` build to one named commit, adding `nomad.token_file` and
+`execution.retained_result_auth` to its `es.json`, and locks its Nomad. It
+refuses any other host shape; see
+`.docs/system_overview/remote_supported_host_alpha.md`, section "Remote ES
+Upgrade And Nomad Lock".
 
 ## CGS
 

@@ -7247,6 +7247,134 @@ not a per-run network grant, not Docker or Nomad hardening, not a full sshd
 hardening, not protection against root on the box, and not a change to the
 router or any other home device.
 
+## Remote ES Upgrade And Nomad Lock
+
+`Bounded slice rule`: the one existing-host migration contract. It moves the
+Remote Alpha box's ES, built from `74748063`, to one named `trunk_dev`
+commit, and in the same run locks the box's Nomad so that only ES can submit
+(the lock of PR #31 and PR #48). Current ES refuses the box's old `es.json`,
+because it decodes its config with unknown fields refused and requires
+`nomad.token_file` and `execution.retained_result_auth`, and the old ES
+cannot read a config that has them, so the binaries, the config and the
+Nomad lock change together. It applies to that host shape only: anything
+the read-only preflight of 2026-11-24 did not see is refused. It does not
+redeploy AGS, ARS or EGS, change a unit file, move ES storage, or add
+Nomad's HTTPS listener (part 2b of the Nomad lock).
+
+Scripts:
+
+- public: `scripts/remote_alpha_upgrade_es.sh`, which runs the Python core
+  with `python3 -I -B`
+- internal: `scripts/internal/remote_alpha_upgrade_es.py`
+- config check: `scripts/internal/esconfigcheck`, a Go program that only
+  calls ES's own `config.Load` on a file and reports its answer, so the
+  upgrade accepts exactly the configs the new ES accepts. Tests keep it to
+  that one call.
+
+Operator interface:
+
+- `scripts/remote_alpha_upgrade_es.sh build --out <dir> --commit <sha>`,
+  unprivileged, in a fresh clone checked out at `<sha>`. It requires Go
+  `go1.26.5` (`/usr/local/go/bin/go` by default; `--go` names another), a
+  clean checkout and an output folder outside it. It builds `es`,
+  `es-runtime-support` and `esconfigcheck` for linux/amd64 with
+  `CGO_ENABLED=0`, `GOTOOLCHAIN=local`, `-mod=readonly` and
+  `-buildvcs=true`, checks that each binary's build info names `<sha>` with
+  `vcs.modified=false`, and writes `provenance.json` with their SHA-256.
+- `sudo scripts/remote_alpha_upgrade_es.sh check --payload <dir> --commit <sha>`
+  reads only. It prints a JSON report (schema
+  `execution-substrate.remote-alpha.es-upgrade-summary.v1`) with every
+  change apply would make, and exits 1 with nothing changed when there is a
+  blocker.
+- `sudo scripts/remote_alpha_upgrade_es.sh apply --payload <dir> --commit <sha>`
+  runs the same checks, then the steps below.
+- `sudo scripts/remote_alpha_upgrade_es.sh rollback --backup-dir <dir>`
+  puts a backup back.
+
+Hand the clone and the payload to root before `check` (`chown -R root:root`)
+so that no other account can change them between the check and the run. Run
+`apply` under `systemd-run` so that a dropped SSH session does not stop it;
+its output then goes to the journal, and its summary to the backup folder.
+
+`check` refuses when:
+
+- it does not run as root, or the payload folder or a payload file is
+  writable by group or others, was built from another commit, with another
+  Go or from a modified checkout, or does not match its provenance
+- one of `ars`, `ags`, `egs`, `es`, `vault`, `spire-server`, `spire-agent`,
+  `nomad` and `docker` is not active, or `es.service` does not run
+  `/usr/local/lib/execution-substrate/bin/es -config /etc/execution-substrate/es.json`
+  as `es`
+- `/etc/execution-substrate/es.json` is not `root:es 0640`, its key set is
+  not the box build's 49 key paths, it is already migrated, or the new
+  ES's `config.Load` refuses the migrated config
+- ES's `/health` and `/v1/executions:contract` and AGS's `/health`, at the
+  addresses their configs name and with the operator certificate of
+  `/etc/execution-substrate/healthcheck.env`, do not all answer 200
+  (healthcheck runbook step 4)
+- `/etc/nomad.d/nomad.hcl` is not the exact file the preflight read (its
+  SHA-256 is pinned), Nomad is already locked, or `/etc/nomad.d` holds
+  another `.hcl` or `.json` file that Nomad would load
+- `/etc/nomad.d`, `/opt/nomad` or `/opt/nomad/data` is not a directory,
+  Nomad names no leader, or Nomad has a pending or running job
+- a file already stands at the retained-result key path and does not meet
+  ES's rules for that key
+
+`apply`, after a clean check:
+
+1. backs up `es.json`, `es.service` and its `10-account.conf` drop-in, both
+   ES binaries, `nomad.hcl` and `nomad.env` (bytes, owner, mode and
+   SHA-256), and the owner and mode of the three Nomad folders, into a new
+   folder `/var/backups/execution-substrate-es-upgrade/<UTC time>-<commit>`
+   (root, 0700), and copies the verified payload into it
+2. stops ES
+3. checks the locked `nomad.hcl` with `nomad config validate`, stops Nomad,
+   gives every entry of `/opt/nomad/data` that root does not own to
+   `root:root` (recording each old owner in the backup), and makes
+   `/etc/nomad.d`, `/opt/nomad` (0755) and `/opt/nomad/data` (0700)
+   root-owned (audit INF-16). The locked `nomad.hcl` replaces the legacy
+   Docker client options with `"driver.allowlist" = "docker"` and adds the
+   `acl` block and the `plugin "docker"` block of
+   `scripts/70_linux_setup.sh`; it and `nomad.env` become `root:root 0640`.
+   A test keeps those pieces equal to the setup script's.
+4. starts Nomad, waits up to 90 seconds for a named leader, and runs
+   `scripts/nomad_acl_setup.sh` with `ES_USER=es`, `NOMAD_USER=root` and
+   `OBSERVER_USER=root`: it bootstraps the ACLs, creates the `es-submit-v1`
+   namespace and the policies, writes the token files under
+   `/etc/execution-substrate/nomad-acl`, and checks the lock. Pass the same
+   `ES_USER` and `OBSERVER_USER` to a later `check` or `rotate`.
+5. creates the retained-result key
+   `/etc/execution-substrate/retained-result-auth/es.key` (32 random bytes,
+   `es`, 0400, folder `root:root 0755`), or keeps an existing valid one
+6. writes `es.json` with `nomad.token_file`
+   `/etc/execution-substrate/nomad-acl/es-token` and
+   `execution.retained_result_auth` `{store_id: remote-alpha, key_id: k1,
+   key_file: <the key>}` added and nothing else changed, after the new
+   ES's `config.Load` accepts it, then installs `es` and
+   `es-runtime-support` (`root:root 0755`); every file is replaced by one
+   rename
+7. starts ES and verifies: within 60 seconds ES is active and the three
+   endpoints answer 200, Nomad answers an anonymous job list with 403, and
+   `nomad_acl_setup.sh check` passes. The summary goes to `summary.json` in
+   the backup folder.
+
+If any step after the backup fails, or `apply` gets `SIGTERM`, `SIGHUP` or
+`SIGINT`, it ignores further signals, stops ES and Nomad, puts every backed-up
+file, owner and mode back, starts Nomad and ES, and records `rolled_back`
+(or `rolled_back_unhealthy` when the endpoints do not answer 200 within 60
+seconds, or `rollback_failed`) with the failure. `rollback` does the same
+from a backup folder. Both leave the key, the token files and the backup in
+place: the old config names none of them, Nomad keeps its ACL bootstrap in
+its state, and a later `apply` reuses all three. Nothing prints a key or a
+token.
+
+The tests (`scripts/remote_alpha_upgrade_es_test.go`,
+`scripts/remote_alpha_upgrade_es_host_test.go` and
+`scripts/remote_alpha_upgrade_es_config_check_test.go`) run `check`,
+`apply`, the automatic rollback, an interrupted apply and `rollback` on a
+host-shaped folder with fake `systemctl`, `curl`, `nomad` and ACL setup,
+and the box's own `nomad.hcl` through the lock.
+
 ## Python In The Scripts
 
 Every Python run that a script under `scripts/` starts, the remote alpha
