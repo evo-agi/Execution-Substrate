@@ -329,6 +329,87 @@ func TestStandingRulesKeepPlansAuthority(t *testing.T) {
 	}
 }
 
+// TestStandingRulesPinEachOtherwiseUncheckedRule pins the standing rule
+// paragraphs that no other test reads. Deleting any one of them failed no
+// test, before and after the move out of PLANS.md (audit 08, finding A08-1).
+// Each row names one paragraph by its rule and pins phrases that state it.
+// Every phrase must occur exactly once in its file, so deleting the paragraph
+// fails this test. When a rule changes, edit its phrases here with it.
+func TestStandingRulesPinEachOtherwiseUncheckedRule(t *testing.T) {
+	for _, rule := range []struct {
+		path, name string
+		phrases    []string
+	}{
+		{standingAdmissionRulesPath, "Stage A slice scope", []string{
+			"The independently accepted R9.28 owner is bounded artifact-design evidence, not repository adoption or runtime qualification.",
+			"It adds no active import, public route, configuration, job, process, endpoint, issuer, ledger, receipt consumption, or production evidence intake.",
+		}},
+		{standingAdmissionRulesPath, "B1 current invariant", []string{
+			"**Current invariant:** real artifact, capability, target, runtime-profile, policy and trust admission remain authoritative",
+			"The strict legacy decoder rejects a structural `reliable_submit` body, even when a schema string alone is supplied.",
+			"mode defaults to async, timeout to zero, and omitted CPU/memory to 10/128.",
+		}},
+		{standingAdmissionRulesPath, "Review-09 proof-artifact collection", []string{
+			"The selected repair collects only explicitly classified top-level proof evidence, records a deterministic relative-path and SHA-256 manifest, uses a private `0700` host proof directory",
+			"The proof collector is evidence projection, not ES, Nomad, Vault, SPIRE, result-auth, or cleanup authority.",
+		}},
+		{standingAdmissionRulesPath, "B2 provider response limits", []string{
+			"Submit registration, projected-allocation list, and allocation-detail JSON use the existing 256 KiB transport boundary and one compatible JSON document",
+			"B2 therefore selects neither a universal provider-response limit nor a public Logs byte/oversize policy.",
+		}},
+		{standingAdmissionRulesPath, "B2 preparedAdmission redaction and assurance", []string{
+			"`preparedAdmission` carries the private formatter marker as its first anonymous field",
+			"non-purging cancellation is enforced by a private construction that has no purge option.",
+		}},
+		{standingRouteRulesPath, "P0q bootstrap effects", []string{
+			"P0q bootstrap configures expected Vault objects only.",
+			"It must not claim workload-auth success, runtime-profile readiness, submit readiness, Vault production readiness, governed execution proof, IM authority, CP recovery authority, ES Vault token brokerage, or Remote Alpha production/deployment/provisioning/reconciliation architecture. The workload-auth check remains a separate post-bootstrap command.",
+		}},
+		{standingRouteRulesPath, "P0s/P0t failure witness", []string{
+			"the fixed root bootstrap is the sole owner of an optional, at-most-one, source-bound P0s/P0t failure witness on its existing controlling terminal.",
+			"The output is one fixed ASCII line of at most 512 bytes",
+		}},
+		{standingRouteRulesPath, "P0s/P0t collector scope tables", []string{
+			"the root-run Python collector has only two immutable, source-controlled scope tables and no renewal mode, path override, arbitrary command, shell, backup, generation, install, restart, or post-renewal probe.",
+			"A collector lifecycle failure is incomplete and publishes no generation.",
+		}},
+		{standingRouteRulesPath, "P0s/P0t related configuration states", []string{
+			"a related configuration used for a fixed disjointness or exclusion check has a proved state.",
+			"never an empty-object pass.",
+		}},
+		{standingRouteRulesPath, "P0s/P0t protected status directories", []string{
+			"must each be real root:root `0755` directories with no symlink, unsafe access, or unresolved ACL/equivalent state.",
+			"The collector never creates a missing protected directory; host preparation is separate.",
+		}},
+		{standingRouteRulesPath, "P0s/P0t legacy summaries", []string{
+			"are historical only: no read as current status, migration, copy, overwrite, symlink, fallback, renewal, or rollback authority.",
+			"The blocked candidate is design evidence and is not the implementation base.",
+		}},
+		{standingRouteRulesPath, "P0t diagnostic Mac facade", []string{
+			"the new Mac facade form accepts only the existing validated `--ssh-target` and visible `--interactive-tty` for live use, plus a diagnostic-only local `--verify-only`.",
+			"there is no nonroot cleanup, transcript capture, password relay, NOPASSWD change, automatic retry, or status package copy-back.",
+		}},
+		{standingRouteRulesPath, "P0u summary contents", []string{
+			"P0u summaries are evidence/projection only.",
+			"They must not include private key PEM bodies, full certificate PEM bodies, Vault tokens",
+		}},
+		{standingRouteRulesPath, "P0u authority bounds", []string{
+			"P0u remains bounded ES Remote Alpha proof/support workflow glue only. It is not generic TLS deployment, not Infrastructure Manager reconciliation",
+		}},
+		{standingRouteRulesPath, "P0v cross-repo consumers", []string{
+			"Bridge/MA/CP/IM consumers must not wrap missing ES prerequisites into ES status truth.",
+			"P0v does not renew, mutate cert/profile/key/trust/env/state, run live proof, or widen any cross-repo authority boundary.",
+		}},
+	} {
+		text := compactText(mustRead(t, rule.path))
+		for _, phrase := range rule.phrases {
+			if n := strings.Count(text, phrase); n != 1 {
+				t.Errorf("%s rule %q: phrase occurs %d times, want exactly once: %q", rule.path, rule.name, n, phrase)
+			}
+		}
+	}
+}
+
 var (
 	plansCitedFile          = `(?:PLANS\.md|standing_rules/[A-Za-z0-9_]+\.md)`
 	plansCitedFileName      = regexp.MustCompile(plansCitedFile)
