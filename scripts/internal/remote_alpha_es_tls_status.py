@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S python3 -I
 """Fixed Remote Alpha P0s/P0t status evidence. No renewal entry point."""
 from __future__ import annotations
 

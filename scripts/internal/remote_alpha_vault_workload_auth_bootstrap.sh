@@ -249,7 +249,7 @@ remote_alpha_vault_workload_auth_bootstrap_validate_summary_file() {
   local summary_path=$1
   shift || true
 
-  python3 - "${summary_path}" "$@" <<'PY'
+  python3 -I - "${summary_path}" "$@" <<'PY'
 import pathlib
 import re
 import sys
@@ -277,7 +277,7 @@ PY
 }
 
 remote_alpha_vault_workload_auth_bootstrap_execute() {
-  python3 - \
+  python3 -I - \
     "${REMOTE_ALPHA_BOOTSTRAP_WORKLOAD_ZONE_CONFIG_PATH}" \
     "${REMOTE_ALPHA_BOOTSTRAP_SUMMARY_PATH}" \
     "${REMOTE_ALPHA_BOOTSTRAP_SPIRE_SERVER_SOCKET_PATH}" \

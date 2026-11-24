@@ -1798,11 +1798,13 @@ func TestRemoteAlphaVaultWorkloadAuthBootstrapDisablesCoreDumpsBeforeSecrets(t *
 	}
 }
 
-// bootstrapPrctlShim is a sitecustomize module that changes ctypes.CDLL in
-// every python3 that has its directory on PYTHONPATH, and so in the helper's.
-// ES_TEST_PRCTL picks what the helper's prctl lookup and calls then see.
-// PR_SET_DUMPABLE is 4 and PR_GET_DUMPABLE is 3.
-const bootstrapPrctlShim = `import ctypes
+// bootstrapPrctlHook is the body of a hook module that changes ctypes.CDLL in
+// the helper's python3. ES_TEST_PRCTL picks what the helper's prctl lookup
+// and calls then see. Each lookup first appends a line to the file named by
+// _MARKER, which writeBootstrapPythonHook defines, so a test can tell that
+// the helper's lookup went through the hook. PR_SET_DUMPABLE is 4 and
+// PR_GET_DUMPABLE is 3.
+const bootstrapPrctlHook = `import ctypes
 import os
 
 _mode = os.environ.get("ES_TEST_PRCTL", "")
@@ -1815,6 +1817,8 @@ def _option(value):
 
 class _TestCDLL(_RealCDLL):
     def __init__(self, *args, **kwargs):
+        with open(_MARKER, "a") as ran:
+            ran.write("CDLL\n")
         if _mode == "no_c_library":
             raise OSError("test: the C library cannot be opened")
         super().__init__(*args, **kwargs)
@@ -1831,6 +1835,68 @@ class _TestCDLL(_RealCDLL):
 
 ctypes.CDLL = _TestCDLL
 `
+
+// writeBootstrapPythonHook puts a python3 in bin that loads body as a hook
+// module at startup, and returns the marker file that body may write. The
+// helper runs python3 -I, which ignores PYTHONPATH (so a sitecustomize there)
+// and the user's site-packages, but still reads a virtual environment's own
+// site-packages. So bin/python3 is the real interpreter inside a minimal
+// virtual environment (pyvenv.cfg in bin's parent), whose site-packages hold
+// a .pth file that imports the module. The interpreter is the one that
+// python3 on PATH reports as sys.executable, so that a python3 that is a
+// wrapper or a stub (a pyenv or asdf shim, for example) still leads to the
+// binary itself, which is what a virtual environment needs.
+func writeBootstrapPythonHook(t *testing.T, bin, body string) string {
+	t.Helper()
+	found, err := exec.LookPath("python3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	probe := exec.Command(found, "-I", "-c", `import sys; print(sys.executable); print("%d.%d" % sys.version_info[:2])`)
+	probe.Dir = executionSubstrateRepoRoot
+	probed, err := probe.Output()
+	if err != nil {
+		t.Fatalf("python3 executable and version: %v", err)
+	}
+	fields := strings.Split(strings.TrimSpace(string(probed)), "\n")
+	if len(fields) != 2 || !filepath.IsAbs(fields[0]) {
+		t.Fatalf("python3 reported %q, want its absolute sys.executable and its version", probed)
+	}
+	realPython, err := filepath.EvalSymlinks(fields[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	envDir := filepath.Dir(bin)
+	site := filepath.Join(envDir, "lib", "python"+fields[1], "site-packages")
+	if err := os.MkdirAll(site, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(envDir, "python-hook-ran")
+	files := map[string]string{
+		filepath.Join(envDir, "pyvenv.cfg"):            "home = " + filepath.Dir(realPython) + "\ninclude-system-site-packages = false\n",
+		filepath.Join(site, "es_test_python_hook.py"):  "_MARKER = " + strconv.Quote(marker) + "\n" + body,
+		filepath.Join(site, "es_test_python_hook.pth"): "import es_test_python_hook\n",
+	}
+	for path, content := range files {
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(realPython, filepath.Join(bin, "python3")); err != nil {
+		t.Fatal(err)
+	}
+	return marker
+}
+
+// requireBootstrapPythonHookRan fails unless the hook's ctypes.CDLL was
+// called, which in the helper only its prctl lookup does.
+func requireBootstrapPythonHookRan(t *testing.T, marker string) {
+	t.Helper()
+	data, err := os.ReadFile(marker)
+	if err != nil || !strings.Contains(string(data), "CDLL\n") {
+		t.Fatalf("the helper's prctl lookup did not go through the test's ctypes hook (marker %s: %q, %v)", marker, data, err)
+	}
+}
 
 // TestRemoteAlphaVaultWorkloadAuthBootstrapRefusesWhenTheProcessStaysDumpable
 // runs the helper with a python3 whose ctypes cannot make the process not
@@ -1851,13 +1917,7 @@ func TestRemoteAlphaVaultWorkloadAuthBootstrapRefusesWhenTheProcessStaysDumpable
 				t.Fatalf("mkdir fake bin: %v", err)
 			}
 			spireLog := setupFakeBootstrapSpireServer(t, fakeBin)
-			shimDir := filepath.Join(tmpDir, "python-shim")
-			if err := os.MkdirAll(shimDir, 0o755); err != nil {
-				t.Fatalf("mkdir python shim dir: %v", err)
-			}
-			if err := os.WriteFile(filepath.Join(shimDir, "sitecustomize.py"), []byte(bootstrapPrctlShim), 0o644); err != nil {
-				t.Fatalf("write sitecustomize.py: %v", err)
-			}
+			marker := writeBootstrapPythonHook(t, fakeBin, bootstrapPrctlHook)
 
 			rootToken := "hvs.fakeRootTokenForDumpableRefusal1234567890"
 			proofSecret := "sk-fakeProofSecretForDumpableRefusal1234567890"
@@ -1868,7 +1928,6 @@ func TestRemoteAlphaVaultWorkloadAuthBootstrapRefusesWhenTheProcessStaysDumpable
 			env := envWithPath(fakeBin,
 				"REMOTE_ALPHA_BOOTSTRAP_WORKLOAD_ZONE_CONFIG_PATH="+configPath,
 				"REMOTE_ALPHA_BOOTSTRAP_SUMMARY_PATH="+summaryPath,
-				"PYTHONPATH="+shimDir,
 				"ES_TEST_PRCTL="+mode,
 			)
 			input := rootToken + "\n" + proofSecret + "\n"
@@ -1878,6 +1937,7 @@ func TestRemoteAlphaVaultWorkloadAuthBootstrapRefusesWhenTheProcessStaysDumpable
 				if err != nil {
 					t.Fatalf("with the module in place and nothing changed, the helper must run to the end: %v\noutput=%s", err, output)
 				}
+				requireBootstrapPythonHookRan(t, marker)
 				if len(state.requests) == 0 {
 					t.Fatalf("with nothing changed, the helper must reach Vault:\n%s", output)
 				}
@@ -1890,6 +1950,7 @@ func TestRemoteAlphaVaultWorkloadAuthBootstrapRefusesWhenTheProcessStaysDumpable
 			if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
 				t.Fatalf("a helper that cannot make itself not dumpable must exit 1, got %v\noutput=%s", err, output)
 			}
+			requireBootstrapPythonHookRan(t, marker)
 			assertContainsAll(t, "dumpable refusal output", output,
 				"failure_phase=disable_core_dumps failure_class=core_dumps_not_disabled",
 			)

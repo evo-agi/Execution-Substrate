@@ -205,7 +205,7 @@ remote_alpha_runtime_image_ds_not_in_docker_group() {
 }
 
 remote_alpha_runtime_image_build_context_meta() {
-  python3 - "${REPO_ROOT}" \
+  python3 -I - "${REPO_ROOT}" \
     "${remote_alpha_runtime_image_expected_recipe_script}" \
     "${remote_alpha_runtime_image_expected_recipe_builder_script}" \
     "${remote_alpha_runtime_image_expected_ref}" \
@@ -316,7 +316,7 @@ remote_alpha_runtime_image_nomad_meta() {
   local output=""
 
   if ! command -v nomad >/dev/null 2>&1; then
-    python3 - <<'PY'
+    python3 -I - <<'PY'
 import json
 print(json.dumps({"ready": False, "ready_nodes": 0, "error": "nomad command not found"}, sort_keys=True))
 PY
@@ -329,7 +329,7 @@ PY
   if [[ -n "${NOMAD_TOKEN_FILE:-}" ]]; then
     source "${REPO_ROOT}/scripts/internal/nomad_acl.sh"
     if ! token="$(nomad_token_from_file "${NOMAD_TOKEN_FILE}" 2>/dev/null)"; then
-      python3 - <<'PY'
+      python3 -I - <<'PY'
 import json
 print(json.dumps({"ready": False, "ready_nodes": 0, "error": "nomad observer token file is missing or invalid"}, sort_keys=True))
 PY
@@ -338,14 +338,14 @@ PY
   fi
 
   if ! output="$(NOMAD_TOKEN="${token}" nomad node status -json 2>/dev/null)"; then
-    python3 - <<'PY'
+    python3 -I - <<'PY'
 import json
 print(json.dumps({"ready": False, "ready_nodes": 0, "error": "nomad node status did not succeed"}, sort_keys=True))
 PY
     return 0
   fi
 
-  printf '%s' "${output}" | python3 /dev/fd/3 3<<'PY'
+  printf '%s' "${output}" | python3 -I /dev/fd/3 3<<'PY'
 import json
 import sys
 
@@ -379,7 +379,7 @@ remote_alpha_runtime_image_inspect_meta() {
   local output=""
 
   if ! command -v docker >/dev/null 2>&1; then
-    python3 - "${image_ref}" <<'PY'
+    python3 -I - "${image_ref}" <<'PY'
 import json
 import sys
 print(json.dumps({
@@ -399,7 +399,7 @@ PY
   fi
 
   if ! output="$(docker image inspect "${image_ref}" 2>/dev/null)"; then
-    python3 - "${image_ref}" <<'PY'
+    python3 -I - "${image_ref}" <<'PY'
 import json
 import sys
 print(json.dumps({
@@ -418,7 +418,7 @@ PY
     return 0
   fi
 
-  printf '%s' "${output}" | python3 /dev/fd/3 "${image_ref}" 3<<'PY'
+  printf '%s' "${output}" | python3 -I /dev/fd/3 "${image_ref}" 3<<'PY'
 import json
 import sys
 
@@ -447,7 +447,7 @@ remote_alpha_runtime_image_minimal_run() {
   local stderr_path=$4
 
   if ! command -v docker >/dev/null 2>&1; then
-    python3 - <<'PY'
+    python3 -I - <<'PY'
 import json
 print(json.dumps({
     "status": "not_exercised",
@@ -462,14 +462,14 @@ PY
   fi
 
   if docker run --rm --entrypoint /bin/sh -e "CODEX_CLI_PATH=${codex_cli_path}" "${image_ref}" \
-    -lc 'python3 --version 2>&1; git --version 2>&1; if [ -x "$CODEX_CLI_PATH" ]; then "$CODEX_CLI_PATH" --version 2>&1 || "$CODEX_CLI_PATH" --help 2>&1; else echo "missing codex cli: $CODEX_CLI_PATH" >&2; exit 3; fi' \
+    -lc 'python3 -I --version 2>&1; git --version 2>&1; if [ -x "$CODEX_CLI_PATH" ]; then "$CODEX_CLI_PATH" --version 2>&1 || "$CODEX_CLI_PATH" --help 2>&1; else echo "missing codex cli: $CODEX_CLI_PATH" >&2; exit 3; fi' \
     >"${stdout_path}" 2>"${stderr_path}"; then
     REMOTE_ALPHA_RUNTIME_IMAGE_RUN_STATUS="pass"
   else
     REMOTE_ALPHA_RUNTIME_IMAGE_RUN_STATUS="fail"
   fi
 
-  python3 - "${stdout_path}" "${stderr_path}" "${REMOTE_ALPHA_RUNTIME_IMAGE_RUN_STATUS}" <<'PY'
+  python3 -I - "${stdout_path}" "${stderr_path}" "${REMOTE_ALPHA_RUNTIME_IMAGE_RUN_STATUS}" <<'PY'
 import json
 import pathlib
 import re
@@ -515,7 +515,7 @@ PY
 remote_alpha_runtime_image_validate_summary_file() {
   local summary_path=$1
 
-  python3 - "${summary_path}" <<'PY'
+  python3 -I - "${summary_path}" <<'PY'
 import pathlib
 import re
 import sys
@@ -542,7 +542,7 @@ remote_alpha_runtime_image_write_summary() {
   local host_meta_path=$4
   local run_meta_path=$5
 
-  python3 - "${summary_path}" "${build_meta_path}" "${image_meta_path}" "${host_meta_path}" "${run_meta_path}" "${remote_alpha_normal_shell_runtime_image_summary_schema_version}" <<'PY'
+  python3 -I - "${summary_path}" "${build_meta_path}" "${image_meta_path}" "${host_meta_path}" "${run_meta_path}" "${remote_alpha_normal_shell_runtime_image_summary_schema_version}" <<'PY'
 import json
 import sys
 
@@ -683,7 +683,7 @@ remote_alpha_runtime_image_check_main() {
   export REMOTE_ALPHA_HOSTNAME
   REMOTE_ALPHA_HOSTNAME="$(hostname)"
 
-  python3 - "${host_meta_path}" "$(remote_alpha_runtime_image_nomad_meta)" "${ds_not_in_docker_group}" "${passwordless_sudo_for_ds}" <<'PY'
+  python3 -I - "${host_meta_path}" "$(remote_alpha_runtime_image_nomad_meta)" "${ds_not_in_docker_group}" "${passwordless_sudo_for_ds}" <<'PY'
 import json
 import os
 import pathlib
@@ -735,14 +735,14 @@ if failure_reasons:
 host_meta_path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
 PY
 
-  if [[ "$(python3 - "${build_meta_path}" <<'PY'
+  if [[ "$(python3 -I - "${build_meta_path}" <<'PY'
 import json, sys
 print("true" if json.load(open(sys.argv[1], encoding="utf-8")).get("safe") else "false")
 PY
   )" != "true" ]]; then
     overall_ok=false
   fi
-  if [[ "$(python3 - "${build_meta_path}" <<'PY'
+  if [[ "$(python3 -I - "${build_meta_path}" <<'PY'
 import json, sys
 print("true" if json.load(open(sys.argv[1], encoding="utf-8")).get("recipe_matches_slice") else "false")
 PY
@@ -759,7 +759,7 @@ PY
   if [[ "${docker_info_ok}" != "true" ]]; then
     overall_ok=false
   fi
-  if [[ "$(python3 - "${host_meta_path}" <<'PY'
+  if [[ "$(python3 -I - "${host_meta_path}" <<'PY'
 import json, sys
 print("true" if json.load(open(sys.argv[1], encoding="utf-8")).get("nomad_ready") else "false")
 PY
@@ -773,7 +773,7 @@ PY
     overall_ok=false
   fi
 
-  if [[ "$(python3 - "${image_meta_path}" <<'PY'
+  if [[ "$(python3 -I - "${image_meta_path}" <<'PY'
 import json, sys
 print("true" if json.load(open(sys.argv[1], encoding="utf-8")).get("present") else "false")
 PY
@@ -784,7 +784,7 @@ PY
       "${run_stdout_path}" \
       "${run_stderr_path}" >"${run_meta_path}"
   else
-    python3 - "${run_meta_path}" <<'PY'
+    python3 -I - "${run_meta_path}" <<'PY'
 import json
 import sys
 
@@ -813,7 +813,7 @@ PY
   remote_alpha_prepare_output_dir "$(dirname "${REMOTE_ALPHA_SUMMARY_PATH}")" || return 1
   install -m 0644 "${summary_tmp_path}" "${REMOTE_ALPHA_SUMMARY_PATH}"
 
-  if [[ "$(python3 - "${run_meta_path}" <<'PY'
+  if [[ "$(python3 -I - "${run_meta_path}" <<'PY'
 import json, sys
 meta = json.load(open(sys.argv[1], encoding="utf-8"))
 print("true" if meta.get("status") == "pass" and meta.get("safe") and meta.get("codex_realization") == "proof" else "false")
@@ -822,7 +822,7 @@ PY
     overall_ok=false
   fi
 
-  if [[ "$(python3 - "${image_meta_path}" <<'PY'
+  if [[ "$(python3 -I - "${image_meta_path}" <<'PY'
 import json, sys
 print("true" if json.load(open(sys.argv[1], encoding="utf-8")).get("status") == "pass" else "false")
 PY

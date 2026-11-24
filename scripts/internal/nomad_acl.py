@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S python3 -I
 """Nomad access control (ACL) setup and check for Execution Substrate.
 
 ES submits Nomad jobs with one least-privilege ACL client token. This tool is

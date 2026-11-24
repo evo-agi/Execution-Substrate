@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S python3 -I
 """Create a deterministic single-file tar.gz example payload."""
 
 from __future__ import annotations

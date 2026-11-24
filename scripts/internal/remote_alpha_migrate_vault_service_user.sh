@@ -292,7 +292,7 @@ remote_alpha_migrate_vault_service_user_require_command() {
 remote_alpha_migrate_vault_service_user_validate_summary_file() {
   local summary_path=$1
 
-  python3 - "${summary_path}" <<'PY'
+  python3 -I - "${summary_path}" <<'PY'
 import pathlib
 import re
 import sys
@@ -356,7 +356,7 @@ remote_alpha_migrate_vault_service_user_main() {
   summary_tmp_path="${tmp_dir}/summary.json"
   trap 'rm -rf "'"${tmp_dir}"'"' EXIT
 
-  if python3 - \
+  if python3 -I - \
     "${remote_alpha_migrate_vault_service_user_summary_schema_version}" \
     "${REMOTE_ALPHA_OPERATION_MODE}" \
     "${summary_tmp_path}" \

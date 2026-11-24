@@ -74,7 +74,7 @@ remote_alpha_runtime_security_boundary_require_command() {
 remote_alpha_runtime_security_boundary_validate_summary_file() {
   local summary_path=$1
 
-  python3 - "${summary_path}" <<'PY'
+  python3 -I - "${summary_path}" <<'PY'
 import pathlib
 import re
 import sys
@@ -120,7 +120,7 @@ remote_alpha_runtime_security_boundary_main() {
 
   summary_tmp_path="${TMPDIR:-/tmp}/remote-alpha-runtime-security-boundary.${PPID:-0}.$$.$RANDOM.json"
 
-  python3 - \
+  python3 -I - \
     "${remote_alpha_runtime_security_boundary_schema}" \
     "${REMOTE_ALPHA_RUNTIME_SECURITY_BOUNDARY_CONFIG_PATH}" \
     "${REMOTE_ALPHA_RUNTIME_SECURITY_BOUNDARY_WORKLOAD_ZONE_CONFIG_PATH}" \
@@ -1515,7 +1515,7 @@ PY
 
   cat "${summary_tmp_path}"
 
-  python3 - "${summary_tmp_path}" <<'PY'
+  python3 -I - "${summary_tmp_path}" <<'PY'
 import json
 import sys
 

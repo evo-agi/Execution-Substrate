@@ -73,7 +73,7 @@ write_summary() {
     return
   fi
 
-  python3 - <<'PY' \
+  python3 -I - <<'PY' \
     "${SUMMARY_PATH}" \
     "${OK}" \
     "${FAILED_PHASE}" \
@@ -195,7 +195,7 @@ require_readable() {
 json_get() {
   local path=$1
   local python_expr=$2
-  python3 - <<'PY' "${path}" "${python_expr}"
+  python3 -I - <<'PY' "${path}" "${python_expr}"
 import json
 import pathlib
 import sys
@@ -211,7 +211,7 @@ PY
 
 json_error_fields() {
   local path=$1
-  python3 - <<'PY' "${path}"
+  python3 -I - <<'PY' "${path}"
 import json
 import pathlib
 import sys
@@ -308,7 +308,7 @@ fail_local_phase() {
 }
 
 parse_status_snapshot() {
-  python3 - <<'PY' "${STATUS_PATH}"
+  python3 -I - <<'PY' "${STATUS_PATH}"
 import json
 import pathlib
 import sys
@@ -325,7 +325,7 @@ PY
 }
 
 compute_file_digest() {
-  python3 - <<'PY' "$1"
+  python3 -I - <<'PY' "$1"
 import hashlib
 import pathlib
 import sys
@@ -359,7 +359,7 @@ require_readable "${SPEC_PATH}" "input spec"
 require_readable "${CANONICALIZE_JSON}" "canonicalize_json.py"
 operator_require_json_file_or_die "internal" "input spec" "${SPEC_PATH}"
 
-SPEC_PATH="$(python3 - <<'PY' "${SPEC_PATH}"
+SPEC_PATH="$(python3 -I - <<'PY' "${SPEC_PATH}"
 import pathlib
 import sys
 print(pathlib.Path(sys.argv[1]).resolve())
@@ -369,7 +369,7 @@ PY
 WORKDIR_BASE="${WORKDIR_BASE:-${TMPDIR:-/tmp}/execution-loop}"
 mkdir -p "${WORKDIR_BASE}"
 
-SPEC_NAME="$(python3 - <<'PY' "${SPEC_PATH}"
+SPEC_NAME="$(python3 -I - <<'PY' "${SPEC_PATH}"
 import json
 import pathlib
 import re
@@ -405,7 +405,7 @@ RESULT_PATH="${WORKDIR}/result.tar.gz"
 
 cp "${SPEC_PATH}" "${INPUT_COPY_PATH}"
 
-python3 - <<'PY' "${SPEC_PATH}" "${WORKDIR}"
+python3 -I - <<'PY' "${SPEC_PATH}" "${WORKDIR}"
 import json
 import pathlib
 import sys
@@ -451,11 +451,11 @@ metadata = {
 (workdir / "spec-metadata.json").write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 PY
 
-python3 "${CANONICALIZE_JSON}" canonicalize "${WORKDIR}/intent.raw.json" > "${INTENT_PATH}"
-python3 "${CANONICALIZE_JSON}" canonicalize "${WORKDIR}/derivation-spec.raw.json" > "${DERIVATION_SPEC_PATH}"
+python3 -I "${CANONICALIZE_JSON}" canonicalize "${WORKDIR}/intent.raw.json" > "${INTENT_PATH}"
+python3 -I "${CANONICALIZE_JSON}" canonicalize "${WORKDIR}/derivation-spec.raw.json" > "${DERIVATION_SPEC_PATH}"
 
-INTENT_DIGEST="$(python3 "${CANONICALIZE_JSON}" digest "${INTENT_PATH}")"
-DERIVATION_SPEC_DIGEST="$(python3 "${CANONICALIZE_JSON}" digest "${DERIVATION_SPEC_PATH}")"
+INTENT_DIGEST="$(python3 -I "${CANONICALIZE_JSON}" digest "${INTENT_PATH}")"
+DERIVATION_SPEC_DIGEST="$(python3 -I "${CANONICALIZE_JSON}" digest "${DERIVATION_SPEC_PATH}")"
 
 RESOLVED_PAYLOAD_PATH="$(json_get "${WORKDIR}/spec-metadata.json" 'payload["payload_path"]')"
 require_readable "${RESOLVED_PAYLOAD_PATH}" "payload_path"
@@ -471,7 +471,7 @@ else
 fi
 BUILD_LOG_DIGEST="$(compute_file_digest "${BUILD_LOG_PATH}")"
 
-python3 - <<'PY' \
+python3 -I - <<'PY' \
   "${COMPUTED_DIGESTS_PATH}" \
   "${INTENT_DIGEST}" \
   "${DERIVATION_SPEC_DIGEST}" \
@@ -494,7 +494,7 @@ payload = {
 pathlib.Path(sys.argv[1]).write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 PY
 
-python3 - <<'PY' \
+python3 -I - <<'PY' \
   "${SPEC_PATH}" \
   "${PUBLISH_JSON_PATH}" \
   "${PREPARE_JSON_PATH}" \
@@ -613,7 +613,7 @@ if [[ -z "${ARTIFACT_DIGEST}" ]]; then
 fi
 echo "publish: success artifact_digest=${ARTIFACT_DIGEST}"
 
-python3 - <<'PY' "${PREPARE_JSON_PATH}" "${SUBMIT_JSON_PATH}" "${ARTIFACT_DIGEST}"
+python3 -I - <<'PY' "${PREPARE_JSON_PATH}" "${SUBMIT_JSON_PATH}" "${ARTIFACT_DIGEST}"
 import json
 import pathlib
 import sys
@@ -667,7 +667,7 @@ if [[ -z "${RUN_ID}" ]]; then
 fi
 echo "submit: accepted run_id=${RUN_ID}"
 
-deadline_seconds="$(python3 - <<'PY' "${SUBMIT_JSON_PATH}" "${DEFAULT_TIMEOUT_SECONDS}"
+deadline_seconds="$(python3 -I - <<'PY' "${SUBMIT_JSON_PATH}" "${DEFAULT_TIMEOUT_SECONDS}"
 import json
 import pathlib
 import sys

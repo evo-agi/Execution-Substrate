@@ -222,7 +222,7 @@ remote_alpha_deploy_es_binaries_json_field() {
   local json_path=$1
   local dotted_path=$2
 
-  python3 - "${json_path}" "${dotted_path}" <<'PY'
+  python3 -I - "${json_path}" "${dotted_path}" <<'PY'
 import json
 import sys
 
@@ -300,7 +300,7 @@ remote_alpha_deploy_es_binaries_parse_host_args() {
 }
 
 remote_alpha_deploy_es_binaries_python() {
-  python3 - \
+  python3 -I - \
     "${remote_alpha_deploy_es_binaries_summary_schema_version}" \
     "${REMOTE_ALPHA_OPERATION_MODE}" \
     "${REMOTE_ALPHA_SUMMARY_PATH}" \
@@ -1167,7 +1167,7 @@ remote_alpha_deploy_es_binaries_stage_make_local_payload_tree() {
   env GOTOOLCHAIN=local CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o "${payload_dir}/es" ./cmd/es
   env GOTOOLCHAIN=local CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o "${payload_dir}/es-runtime-support" ./cmd/es-runtime-support
 
-  python3 - "${payload_dir}/build-provenance.json" "${REPO_ROOT}" <<'PY'
+  python3 -I - "${payload_dir}/build-provenance.json" "${REPO_ROOT}" <<'PY'
 import hashlib
 import json
 import pathlib
@@ -1262,7 +1262,7 @@ remote_alpha_deploy_es_binaries_stage_local_file_meta() {
   local output_path=$1
   shift
 
-  python3 - "$output_path" "$@" <<'PY'
+  python3 -I - "$output_path" "$@" <<'PY'
 import hashlib
 import json
 import pathlib
@@ -1291,7 +1291,7 @@ remote_alpha_deploy_es_binaries_stage_build_remote_bash_command() {
   local script=$1
   shift
 
-  python3 - "${script}" "$@" <<'PY'
+  python3 -I - "${script}" "$@" <<'PY'
 import shlex
 import sys
 
@@ -1532,7 +1532,7 @@ remote_alpha_deploy_es_binaries_stage_validate_stage_stat() {
   local stat_path=$1
   local output_path=$2
 
-  python3 - "$stat_path" "$output_path" "${REMOTE_ALPHA_DEPLOY_ES_BINARIES_STAGE_REMOTE_STAGING_ROOT}" <<'PY'
+  python3 -I - "$stat_path" "$output_path" "${REMOTE_ALPHA_DEPLOY_ES_BINARIES_STAGE_REMOTE_STAGING_ROOT}" <<'PY'
 import json
 import pathlib
 import sys
@@ -1609,7 +1609,7 @@ remote_alpha_deploy_es_binaries_stage_validate_check_report() {
   local report_path=$1
   local meta_path=$2
 
-  python3 - "$report_path" "$meta_path" "${remote_alpha_deploy_es_binaries_summary_schema_version}" <<'PY'
+  python3 -I - "$report_path" "$meta_path" "${remote_alpha_deploy_es_binaries_summary_schema_version}" <<'PY'
 import json
 import pathlib
 import sys
@@ -1764,7 +1764,7 @@ remote_alpha_deploy_es_binaries_stage_visible_cleanup_if_needed() {
 }
 
 remote_alpha_deploy_es_binaries_stage_write_provenance() {
-  python3 - \
+  python3 -I - \
     "${REMOTE_ALPHA_STAGE_ES_BINARY_DEPLOY_PROVENANCE_OUTPUT_PATH}" \
     "${REMOTE_ALPHA_STAGE_ES_BINARY_DEPLOY_LOCAL_FILE_META_PATH}" \
     "${REMOTE_ALPHA_STAGE_ES_BINARY_DEPLOY_STAGE_STAT_META_PATH}" \

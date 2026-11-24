@@ -47,7 +47,7 @@ esac
 
 BUNDLE_JSON_PATH="$(resolve_bundle_json_path "$1")" || fail_usage "unable to read diagnostics bundle"
 
-python3 - <<'PY' "${BUNDLE_JSON_PATH}"
+python3 -I - <<'PY' "${BUNDLE_JSON_PATH}"
 import json
 import pathlib
 import sys

@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S python3 -I
 """Fixed service-root-v1 provisioning for two fresh supported-local ES roots."""
 from __future__ import annotations
 
