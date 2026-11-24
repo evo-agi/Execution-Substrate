@@ -1,4 +1,4 @@
-# Runbook: Submit Runtime Identity Reference Workload (v1)
+# Governed Execution ES Submit Runtime Identity Reference Workload
 
 - Version: `v1`
 - Last Updated: `2026-04-05`
@@ -9,11 +9,11 @@ Submit the legacy reference runtime-identity workload through the governed execu
 
 `AGS publish -> ARS -> ES submit -> Nomad/Docker -> workload discovers identity endpoint -> workload authenticates to Vault -> observable logs + exit code`
 
-This runbook is retained for legacy compatibility validation only. It exercises the older workload-authored bridge example on top of the same static-script execution model documented in [.runbooks/execution/v1_submit_static_script.md](v1_submit_static_script.md). It is not the slice-1 platform-owned runtime identity proof path.
+This runbook is retained for legacy compatibility validation only. It exercises the older workload-authored bridge example on top of the same static-script execution model documented in [.runbooks/execution/Governed Execution ES Submit Static Script Workload.md](Governed%20Execution%20ES%20Submit%20Static%20Script%20Workload.md). It is not the slice-1 platform-owned runtime identity proof path.
 
-For the current bounded platform-owned proof path, use [.runbooks/execution/v1_submit_runtime_identity_vault_login.md](v1_submit_runtime_identity_vault_login.md) instead.
+For the current bounded platform-owned proof path, use [.runbooks/execution/Governed Execution ES Submit Runtime Identity Vault Login Workload.md](Governed%20Execution%20ES%20Submit%20Runtime%20Identity%20Vault%20Login%20Workload.md) instead.
 
-For a local non-production Vault dev path plus a simple HTTP identity adapter, see [.runbooks/execution/v1_runtime_identity_local_validation.md](v1_runtime_identity_local_validation.md).
+For a local non-production Vault dev path plus a simple HTTP identity adapter, see [.runbooks/execution/Governed Execution ES Local Runtime Identity Validation.md](Governed%20Execution%20ES%20Local%20Runtime%20Identity%20Validation.md).
 
 Run command examples from the repository root unless a step says otherwise.
 

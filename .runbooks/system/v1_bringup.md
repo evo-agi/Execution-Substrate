@@ -434,7 +434,7 @@ scripts/73_supported_local_proof.sh run
 
 This path still proves the one-host Linux substrate and same-path staging contract directly, and it now makes the bounded useful credential flow the canonical higher-value governed proof on that already-qualified host. The first platform-owned runtime identity boundary remains active through the real ES -> Nomad -> Docker path: same-container supervisor/helper, helper-private SPIRE channel, fixed non-root workload launch, and helper-death/task-fatal behavior are all active in the current slice.
 
-For the underlying credential-flow details, use [.runbooks/execution/v1_submit_runtime_identity_vault_login.md](../execution/v1_submit_runtime_identity_vault_login.md).
+For the underlying credential-flow details, use [.runbooks/execution/Governed Execution ES Submit Runtime Identity Vault Login Workload.md](../execution/Governed%20Execution%20ES%20Submit%20Runtime%20Identity%20Vault%20Login%20Workload.md).
 
 That bounded proof has now also been exercised on a supported local host on the current Apple Silicon Mac through Lima `qemu` + Ubuntu 24.04 arm64 under a pre-managed non-`-dev` Nomad service with natural `cpu.totalcompute`. The previously investigated Ubuntu 24.04 VMware/aarch64 and Lima `vz` Ubuntu 24.04 arm64 local profiles remain unsupported on this Mac because the real service path still leaves natural `cpu.totalcompute=0`.
 
@@ -474,8 +474,8 @@ Keep host qualification and smoke proof distinct:
 
 If you want the manual publish/prepare/submit breakdown instead, use:
 
-- [.runbooks/execution/v1_submit_static_script.md](../execution/v1_submit_static_script.md)
-- [.runbooks/execution/v1_submit_runtime_identity_reference.md](../execution/v1_submit_runtime_identity_reference.md)
+- [.runbooks/execution/Governed Execution ES Submit Static Script Workload.md](../execution/Governed%20Execution%20ES%20Submit%20Static%20Script%20Workload.md)
+- [.runbooks/execution/Governed Execution ES Submit Runtime Identity Reference Workload.md](../execution/Governed%20Execution%20ES%20Submit%20Runtime%20Identity%20Reference%20Workload.md)
 
 ## 7. Shutdown
 
