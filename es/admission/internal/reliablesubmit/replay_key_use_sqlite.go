@@ -263,7 +263,12 @@ func (s *sqliteClaimStore) consumeReplaySealPermit(ctx context.Context, keys Pri
 	return nil
 }
 
-func (s *sqliteClaimStore) reserveReplaySealUse(ctx context.Context, keys PrivateReplayKeys, frozenDigest [32]byte, isolatedLifetimeProfile bool) (permit *privateSealPermit, out error) {
+func (s *sqliteClaimStore) reserveReplaySealUse(ctx context.Context, keys PrivateReplayKeys, frozenDigest [32]byte, isolatedLifetimeProfile bool) (*privateSealPermit, error) {
+	return s.reserveReplaySealUseWithScope(ctx, keys, frozenDigest, isolatedLifetimeProfile, nil)
+}
+
+func (s *sqliteClaimStore) reserveReplaySealUseWithScope(ctx context.Context, keys PrivateReplayKeys, frozenDigest [32]byte,
+	isolatedLifetimeProfile bool, operational *PrivateReplayFrozen) (permit *privateSealPermit, out error) {
 	if !keys.valid {
 		return nil, errClaimStoreUnsupported
 	}
@@ -288,11 +293,24 @@ func (s *sqliteClaimStore) reserveReplaySealUse(ctx context.Context, keys Privat
 			}
 		}
 	}()
-	if err := s.registerOrCompareReplayKey(ctx, conn, keys.bindingID, 1, keys.bindingFP, true); err != nil {
-		return nil, err
-	}
-	if err := s.registerOrCompareReplayKey(ctx, conn, keys.envelopeID, 2, keys.envelopeFP, true); err != nil {
-		return nil, err
+	if operational == nil {
+		if err := s.registerOrCompareReplayKey(ctx, conn, keys.bindingID, 1, keys.bindingFP, true); err != nil {
+			return nil, err
+		}
+		if err := s.registerOrCompareReplayKey(ctx, conn, keys.envelopeID, 2, keys.envelopeFP, true); err != nil {
+			return nil, err
+		}
+	} else {
+		if isolatedLifetimeProfile || operational.format != operationalReplayFormat ||
+			!operational.claim.Valid() || subtle.ConstantTimeCompare(operational.digest[:], frozenDigest[:]) != 1 {
+			return nil, errClaimStoreUnsupported
+		}
+		if err := s.requireNewOperationalSlot(ctx, conn, operational.claim); err != nil {
+			return nil, err
+		}
+		if err := s.requireOperationalKeys(ctx, conn, keys, true); err != nil {
+			return nil, err
+		}
 	}
 	var count int64
 	err = conn.QueryRowContext(ctx, `SELECT granted_count FROM reliable_submit_seal_use WHERE envelope_key_id=? COLLATE BINARY`, keys.envelopeID).Scan(&count)

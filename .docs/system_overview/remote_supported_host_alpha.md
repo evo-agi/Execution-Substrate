@@ -6553,17 +6553,26 @@ with a bundle just read over the admin socket. Then it stops
 `spire-agent.service` (`es.service` stops with it), moves
 `/var/lib/spire/agent` aside to `/var/lib/spire/agent.recover-<UTC timestamp>`
 (kept, never deleted) and creates an empty one with the same owner and mode.
+It sets that owner and mode through a descriptor opened without following
+symlinks, and only on the empty directory it just created, because `spire`
+may be able to write `/var/lib/spire`: a symlink or directory put in its
+place is refused and rolled back, never handed over.
 It generates one join token for `spiffe://execution.internal/spire-agent`
 with a 120 s lifetime over the admin socket as `spire`. The token stays in
-the helper's memory and in a `0600` file owned by `spire` inside a private
-`0700` directory under `/run` (tmpfs); it is never printed, logged by the
-helper, put in an environment or on any command line. The helper runs
+the helper's memory and in a `0600` file owned by `spire` inside a
+directory under `/run` (tmpfs) that stays root's own, mode `0710` with
+group `spire`: `spire` can reach the token file but cannot create, rename
+or replace anything there. The token is never printed, logged by the
+helper, put in an environment or on any command line. The attesting
+agent's output goes to a log file the helper creates there as a new file
+(never through an existing name or symlink) and reads back, for a failure
+report, through its own descriptor. The helper runs
 `spire-agent run -config /etc/spire/agent/agent.conf -trustBundle /etc/spire/agent/bootstrap-bundle.pem -trustBundleFormat pem -joinTokenFile <file>`
 as `spire` until the new agent's SVID appears (with `-trustBundle`, SPIRE
 itself refuses to start if it still reads `insecure_bootstrap` in
 `agent.conf`, whatever the helper's own scan concluded), deletes the token file at
 once, checks the server lists the new agent, stops that process and removes
-the private directory. It then starts `spire-agent.service` and
+the token directory. It then starts `spire-agent.service` and
 `es.service` and requires the same health, identity, server record,
 workload SVID and unit checks as `pin`. If the attestation fails, it moves
 the new data directory aside to `/var/lib/spire/agent.failed-<UTC timestamp>`,

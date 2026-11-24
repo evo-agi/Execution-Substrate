@@ -273,6 +273,8 @@ type resolvedExecution struct {
 	material         resolvedExecutionMaterial
 	host             hostMaterializationContext
 	custodyPlacement resolvedCustodyPlacement
+	// Separate from the plan, material, host context and PB1 input.
+	provenanceRecord string
 }
 
 func snapshotAdmissionRequest(request PrepareRequest) PrepareRequest {
@@ -599,9 +601,10 @@ func (s *Service) resolveExecutionForSubmit(ctx context.Context, request Prepare
 		placement.datacenter,
 	)
 	return resolvedExecution{
-		plan:     plan,
-		material: material,
-		host:     host,
+		plan:             plan,
+		material:         material,
+		host:             host,
+		provenanceRecord: prepared.artifact.provenanceRecord,
 		custodyPlacement: resolvedCustodyPlacement{
 			stagingRootDir: placement.stagingRootDir,
 			resultsRootDir: placement.resultsRootDir,

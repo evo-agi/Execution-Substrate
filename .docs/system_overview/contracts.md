@@ -744,6 +744,15 @@ Current invocation shape:
 - `mounts`
 - `annotations`
 
+The invocation strings that ES places in the Nomad job (`output_id`, each
+`argv` element, each `env` key and value, and each mount `target_path`) must
+not contain `${`, `%{` or a NUL byte, which Nomad would not pass to the
+workload as written. Each `argv` element and each mount `target_path` must
+also be in Unicode Normalization Form C, hold only code points assigned in
+the Unicode version of ES's normalization tables and not begin with a byte
+order mark, because Nomad's client would pass it on in another form
+(`.docs/execution_lifecycle/contracts.md`).
+
 Current runtime-profile annotation:
 
 - `execution_substrate.runtime_profile`
