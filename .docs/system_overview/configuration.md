@@ -257,7 +257,7 @@ For a minimal active system, `runtime_trust.signer_policy.allowed_signers` must 
 - `verification.derivation_attestation.*`
 - `verification.workload_identity_binding.*`
 - `workload_vault_auth.default_mode`
-- `nomad.base_url`, `nomad.datacenter`, `nomad.timeout_seconds` when submit is enabled
+- `nomad.base_url`, `nomad.datacenter`, `nomad.timeout_seconds`, `nomad.token_file` when submit is enabled
 - `execution.staging_root_dir`, `execution.results_root_dir`, `execution.base_image` when submit is enabled
 - `execution.runtime_profiles.control_plane_normal_shell.*` only when the bounded Control Plane normal-shell runtime profile is enabled
 
@@ -336,6 +336,7 @@ For a minimal active system, `runtime_trust.signer_policy.allowed_signers` must 
 - for full end-to-end execution verification, include:
   - `nomad.base_url`
   - `nomad.datacenter`
+  - `nomad.token_file`
   - `execution.staging_root_dir`
   - `execution.results_root_dir`
   - `execution.retained_result_auth.store_id`, `key_id`, and `key_file`
@@ -499,7 +500,7 @@ they were not passed or waived.
 - The primary bring-up/check path distinguishes:
   - service health: ARS, EGS, AGS, and ES public health surfaces
   - prepare-ready: service health plus successful workload-zone Vault runtime-config blob verification through ARS, including structural validation of any supplied Vault CA bundle
-  - submit-ready: prepare-ready plus ES submit config present, Docker available, required enabled runtime-profile images present, Nomad leader present, and at least one ready Nomad client node that exposes positive `cpu.totalcompute` and a healthy Docker driver
+  - submit-ready: prepare-ready plus ES submit config present (including a `nomad.token_file` that is a regular 0400/0600 file), Docker available, required enabled runtime-profile images present, Nomad leader present, Nomad enforcing ACLs with no anonymous policy (read with the observer token named by `NOMAD_TOKEN_FILE`), and at least one ready Nomad client node that exposes positive `cpu.totalcompute` and a healthy Docker driver
 
 Minimal vault-auth example:
 
@@ -587,17 +588,143 @@ The current host-qualification boundary for the supported Linux environment is d
 
 - reachable at the `es.nomad.base_url`
 - configured for the target datacenter in `es.nomad.datacenter`
-- Docker driver available
-- client bind mounts enabled through `client.options["docker.volumes.enabled"] = "true"`
-- when enabled local runtime-profile images are part of the supported-local proof/runtime surface, Nomad Docker image cleanup disabled through `client.options["docker.cleanup.image"] = "false"` so Nomad does not remove the configured local profile image after a stopped allocation
+- Docker driver available, and the only driver the client enables: `client.options["driver.allowlist"] = "docker"` (every ES task runs through its runtime helper on the Docker driver)
+- an explicit `plugin "docker"` block that refuses privileged containers (`allow_privileged = false`) and allows only the capabilities ES's runtime helper uses to prepare a run and drop to the workload user: `allow_caps = ["chown", "dac_override", "fowner", "kill", "setgid", "setuid", "setpcap"]` (each one is needed: removing any one fails the real Nomad and Docker submit tests)
+- bind mounts enabled in that block through `volumes { enabled = true }`
+- when enabled local runtime-profile images are part of the supported-local proof/runtime surface, Nomad Docker image garbage collection disabled in that block through `gc { image = false }` so Nomad does not remove the configured local profile image after a stopped allocation (the supported config no longer writes the older `client.options` keys `docker.cleanup.image` and `docker.volumes.enabled`, and readiness reads the plugin block instead, which Nomad 2.1 reports as an object and Nomad 2.0 as a list holding one object; both are accepted)
+- Nomad's configuration directory and its data directory (Raft state and keyring) owned by root (`/etc/nomad.d` 0755 with `nomad.hcl` root:root 0640, data directory 0700), because Nomad runs as root
+- readiness (`scripts/10_health_check.sh`, bring-up and supported-local setup) refuses a Nomad whose agent does not report the Docker-only allowlist, `allow_privileged = false` and capabilities within the list above (`nomad: drivers=docker docker_privileged=refused docker_caps=...`)
 - explicit local data directory for repeatable manual bring-up
 - when the current slice-0 single-node topology binds Nomad to `127.0.0.1`, the Nomad config must also set explicit loopback `advertise` addresses for `http`, `rpc`, and `serf`
 - for the supported Linux environment story in this slice, Nomad should already be running as a pre-managed non-dev service on the host/VM before `scripts/01_bringup.sh up`; the local script-managed Nomad startup path remains bounded fallback/troubleshooting scaffolding
 - the operator readiness path now inspects `GET /v1/agent/self` and rejects `config.DevMode=true`; `nomad agent -dev` is unsupported for the slice-0 supported-environment claim even if it reports healthy Docker and positive compute
 - when Nomad uses the Docker driver on Linux, HashiCorp's Docker driver guidance treats root-managed Nomad as the compatible mode for CPU-core / NUMA-aware behavior; user-managed Nomad startup may still be useful for bounded proof and troubleshooting, but it is not the supported-environment baseline
+- access control (ACLs) enabled with `acl { enabled = true }` and bootstrapped, with no anonymous policy; see [Nomad access control](#nomad-access-control) below
 - if a Linux proof host exposes `cpu.totalcompute=0` because Nomad CPU fingerprinting fails, the bounded slice-0 operator path can provide `NOMAD_CLIENT_CPU_TOTAL_COMPUTE` as a temporary client override for that host; this is deployment troubleshooting, not a new cross-service contract
   - when this override is active, the operator path must surface that host as `submit-ready-mode: bounded-override (...)` rather than implying natural schedulability
   - if the override is absent and the host remains at `cpu.totalcompute=0`, the current bring-up path now fails explicitly instead of claiming submit-ready
+
+### Nomad access control
+
+Without ACLs any local process that reaches Nomad's API can register a job and
+bypass ES admission. ES therefore submits only to a Nomad that enforces them.
+
+- **Nomad config**: `acl { enabled = true }`. `scripts/70_linux_setup.sh`
+  writes it into the managed `/etc/nomad.d/nomad.hcl`, restarts Nomad when
+  the config changed, and bootstraps the ACL system.
+- **Management token**: Nomad's bootstrap token. `scripts/70_linux_setup.sh`
+  generates its secret, writes it root-only (0600) to
+  `/etc/execution-substrate/nomad-acl/management-token` before the bootstrap
+  call, and reuses it on later runs. Only that script and
+  `scripts/nomad_acl_setup.sh` (as root) read it. It is never given to ES or
+  to an operator check. If Nomad is already bootstrapped and the file is
+  lost, both scripts refuse; recovery is Nomad's ACL bootstrap reset
+  procedure, done by hand.
+- **ES token** (`nomad.token_file`): a client token with only policy
+  `es-submit-v1` (`submit-job`, `read-job`, `read-logs` in namespace
+  `es-submit-v1`). It cannot read nodes or the agent, write policies or
+  tokens, or act in any other namespace. ES reads the file once at startup,
+  before it provisions any execution root, and refuses to start unless it is
+  a regular file (not a symbolic link, one hard link) owned by ES's user,
+  mode 0400 or 0600, in a directory owned by ES's user or root that is not
+  group- or world-writable, holding one canonical lower-case Nomad token with
+  an optional trailing newline. The file must lie outside ES's staging and
+  results roots and outside the directory of
+  `execution.spire_workload_api_socket_path` (workloads mount those), and must
+  differ from the retained-result key file. No error names the path or the
+  token. ES sends the token only in the `X-Nomad-Token` header, uses no proxy
+  for Nomad and follows no redirect from it. A test fails the build if any
+  Go code names a Nomad API path outside the request builder that sets the
+  token.
+- **Per-submit check**: before every submit ES confirms that its token is a
+  client token, that ACLs are enabled and that no anonymous policy exists;
+  otherwise it refuses with `503 execution_runtime_unavailable` ("execution
+  runtime access control check failed").
+- **Observer token**: a read-only client token (policy `es-observer-v1`:
+  agent and node read, `read-job` and `read-logs` in `es-submit-v1`) for
+  readiness and evidence checks. Operator scripts read it from the file named
+  by `NOMAD_TOKEN_FILE` and pass it to curl through a configuration on a file
+  descriptor, to Python by file, and to the nomad CLI through its
+  environment, never on a command line. The observer token cannot submit.
+- **Provisioning**: `sudo scripts/nomad_acl_setup.sh` creates the namespace,
+  both policies and both token files in
+  `/etc/execution-substrate/nomad-acl/` (`es-token` 0400 owned by `ES_USER`,
+  default root; `observer-token` 0400 owned by `OBSERVER_USER`, default the
+  sudo caller), then runs the lock check. It is idempotent: a working token
+  is kept. `check` verifies the lock (an anonymous plan in `es-submit-v1`,
+  ES's token in `default` or on `/v1/nodes`, and the observer token planning
+  are all refused; ES's token can plan in `es-submit-v1`; the ES and
+  observer tokens are client tokens with only their own policy and no roles;
+  the ES and observer policies have exactly the tool's rules and no job ACL,
+  which would give their capabilities to the workloads of the job it names),
+  and `rotate` issues new
+  ES and observer tokens and deletes the old ones. Only ES may submit or
+  change jobs in `es-submit-v1`, and only the read-only observer may read
+  them: the tool asks Nomad itself, by issuing a short-lived (5 minute) probe
+  token for each other policy and for each role, and with it reading the
+  `es-submit-v1` namespace (Nomad allows that for any job capability there, so
+  `scale-job`, `dispatch-job`, `alloc-lifecycle`, `alloc-exec` and
+  `read-job` grants all count) and planning a job there; any answer other
+  than 403 to either counts as a grant and is refused. So every policy
+  syntax (HCL, JSON, escaped names, namespace globs) and every role is
+  covered, and a glob grant shadowed by a `deny` on `es-submit-v1` passes.
+  Variables capabilities are not job capabilities and are not judged; ES's
+  jobs read no Nomad variables. The observer policy is exempt only while its
+  rules are exactly the tool's and it has no job ACL.
+  It also refuses when any ACL auth method exists (its binding rules could
+  issue tokens), when a live management token other than the one in the
+  management token file exists (every management token can submit
+  anywhere), when a live token other than the ES or observer token holds
+  their policy, when an anonymous policy exists, or when ACLs are off.
+  Provision writes the two policies before these probes, so a widened copy
+  is restored and a job ACL cleared, replaces an ES or observer token that
+  has a role, and deletes other tokens with ES's or the observer's policy.
+  `scripts/nomad_acl_setup.sh check` runs all of this with the management
+  token; that part writes to Nomad (it creates and deletes the probe
+  tokens). `nomad_acl.py check` without `--management-token-file` checks
+  only what ES's and the observer's tokens can do and their policies' rules.
+  Grants outside namespaces stay operator power the check does not judge:
+  for example `node` write can drain the node and so stop ES's allocations.
+  The tool behind it is `scripts/internal/nomad_acl.py`; it talks only to a
+  loopback Nomad address, with no proxy and no redirects.
+- **Rotation needs an ES restart**: ES reads its token only at startup, and a
+  container bind mount keeps the old file, so restart ES after `rotate`.
+- **Bring-up and proof paths**: `BRINGUP_PROFILE=full scripts/01_bringup.sh
+  up` starts its own Nomad with ACLs, provisions it before ES starts (ES needs
+  its token at startup), and exports the observer token for its checks.
+  `scripts/72_supported_local_setup.sh` refuses before any effect unless the
+  host's Nomad enforces ACLs, then runs `scripts/nomad_acl_setup.sh` through
+  `sudo -n` (ES token owned by root, because ES runs as root in the
+  `service-root-v1` profile), writes `nomad.token_file` into `es.json`, and
+  exports `NOMAD_TOKEN_FILE` in `env.sh`. The directory is
+  `SUPPORTED_LOCAL_NOMAD_ACL_DIR`, which must lie outside the proof, staging,
+  results and SPIRE socket directories. `SUPPORTED_LOCAL_NOMAD_PORT` (default
+  4646) names the loopback port of the host's Nomad.
+
+Known limits of this lock:
+
+- Nomad's HTTP API is plain HTTP on loopback. A local process that binds
+  `127.0.0.1:4646` while Nomad is down could receive ES's token from ES's
+  next request. Nomad HTTPS with a server key ES pins is the follow-up that
+  closes this.
+- The lock governs Nomad's API, not Docker. Root and members of the `docker`
+  group can start containers directly and are outside it.
+- ES's submit token still controls job shape within the Docker limits. The
+  supported Nomad refuses only privileged containers, capabilities beyond the
+  seven above, and drivers other than Docker. Checked on Nomad 2.1.1 and
+  2.0.0, it still runs, for any holder of ES's token (audit INF-02):
+  - bind mounts of host paths, `/` included, with the task user `0:0`;
+  - `network_mode = "host"` (the container shares the host's network,
+    including loopback services such as Nomad's API);
+  - `devices` (host device nodes mapped into the container);
+  - `security_opt`, for example `seccomp=unconfined`;
+  - on Nomad 2.0.0 only, `pid_mode = "host"`, `ipc_mode = "host"` (the
+    container joins the host IPC namespace) and `userns_mode = "host"`
+    (Nomad 2.1.1 refuses all three).
+
+  Nomad's Docker plugin has no setting that refuses these options. ES's own
+  admission decides job shape; a stricter design for job shape and the task
+  user is tracked separately.
 
 ### Docker requirements
 
@@ -650,7 +777,8 @@ The current unified health check verifies:
 - Nomad has a leader and at least one ready node with positive `cpu.totalcompute` and a healthy Docker driver when `BRINGUP_PROFILE=full`
 - `docker info` succeeds when `BRINGUP_PROFILE=full`
 - any enabled `control-plane-normal-shell/v1` runtime-profile image is present according to `docker image inspect` in the Docker daemon used by Nomad when `BRINGUP_PROFILE=full`
-- when an enabled runtime-profile image is present, the Nomad Docker driver client options report `docker.cleanup.image=false`, so Nomad will not remove that local image after stopped tasks as part of the supported-local runtime surface
+- when an enabled runtime-profile image is present, the Nomad Docker plugin reports `gc.image = false`, so Nomad will not remove that local image after stopped tasks as part of the supported-local runtime surface
+- Nomad enables only the Docker driver and its Docker plugin refuses privileged containers and allows only ES's runtime-helper capabilities
 - ES submit config still includes `execution.runtime_support_binary` and `execution.spire_workload_api_socket_path`, and the configured SPIRE socket path is present as a local Unix socket, when `BRINGUP_PROFILE=full`
 - the workload-zone Vault blob referenced by `ES.runtime_config.workload_zone_vault_config_ref.digest` is readable through ARS and structurally valid before first execution
 - if that blob supplies `vault_config.ca_bundle_pem`, the readiness check validates that it contains PEM certificate material; submit then stages it for workloads as `VAULT_CACERT` and as part of the runtime `SSL_CERT_FILE` bundle

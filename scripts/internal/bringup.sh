@@ -4,6 +4,8 @@
 # read-only supported-local root validator they share with staging preflight.
 # shellcheck source=scripts/internal/control_plane.sh
 source "$(dirname "${BASH_SOURCE[0]}")/control_plane.sh"
+# shellcheck source=scripts/internal/nomad_acl.sh
+source "$(dirname "${BASH_SOURCE[0]}")/nomad_acl.sh"
 
 bringup_repo_root() {
   local script_dir
@@ -289,16 +291,20 @@ check_nomad_ready_once() {
   nodes_path="$(mktemp)"
   agent_path="$(mktemp)"
 
-  if ! curl --fail-with-body --silent --show-error "${NOMAD_ADDR}/v1/status/leader" >"${leader_path}"; then
+  if ! curl --noproxy '*' --fail-with-body --silent --show-error "${NOMAD_ADDR}/v1/status/leader" >"${leader_path}"; then
     echo "nomad: leader request failed for ${NOMAD_ADDR}/v1/status/leader" >&2
     status=1
-  elif ! curl --fail-with-body --silent --show-error "${NOMAD_ADDR}/v1/agent/self" >"${agent_path}"; then
+  elif ! nomad_acl_state_check; then
+    status=1
+  elif ! nomad_api_get "/v1/agent/self" "${agent_path}"; then
     echo "nomad: agent self request failed for ${NOMAD_ADDR}/v1/agent/self" >&2
     status=1
-  elif ! curl --fail-with-body --silent --show-error "${NOMAD_ADDR}/v1/nodes" >"${nodes_path}"; then
+  elif ! nomad_runtime_posture_check "${agent_path}"; then
+    status=1
+  elif ! nomad_api_get "/v1/nodes" "${nodes_path}"; then
     echo "nomad: node request failed for ${NOMAD_ADDR}/v1/nodes" >&2
     status=1
-  elif ! summary="$(python3 - <<'PY' "${NOMAD_ADDR}" "${leader_path}" "${nodes_path}" "${agent_path}"
+  elif ! summary="$(python3 - <<'PY' "${NOMAD_ADDR}" "${leader_path}" "${nodes_path}" "${agent_path}" "${NOMAD_TOKEN_FILE}"
 import glob
 import json
 import os
@@ -307,7 +313,17 @@ import sys
 import urllib.error
 import urllib.request
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+# No proxy and no redirects: a token reaches only the loopback Nomad.
+nomad_opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
+
 base_url = sys.argv[1].rstrip("/")
+with open(sys.argv[5], encoding="ascii") as token_file:
+    nomad_token = token_file.readline().strip()
 leader = json.loads(pathlib.Path(sys.argv[2]).read_text(encoding="utf-8"))
 if not isinstance(leader, str) or not leader.strip():
     print("nomad: leader missing", file=sys.stderr)
@@ -344,7 +360,8 @@ for node in ready_nodes:
         reasons.append(f"{node_name}=missing-id")
         continue
     try:
-        with urllib.request.urlopen(f"{base_url}/v1/node/{node_id}") as response:
+        request = urllib.request.Request(f"{base_url}/v1/node/{node_id}", headers={"X-Nomad-Token": nomad_token})
+        with nomad_opener.open(request) as response:
             detail = json.load(response)
     except urllib.error.URLError as exc:
         reasons.append(f"{node_name}=detail-unavailable:{exc.reason}")
@@ -413,6 +430,52 @@ PY
 
   rm -f "${leader_path}" "${nodes_path}" "${agent_path}"
   return "${status}"
+}
+
+wait_for_nomad_leader() {
+  local timeout_seconds=${1:-30}
+  local deadline=$((SECONDS + timeout_seconds))
+  local leader=""
+
+  while ((SECONDS < deadline)); do
+    if leader="$(curl --noproxy '*' --fail --silent "${NOMAD_ADDR}/v1/status/leader" 2>/dev/null)" && [[ "${leader}" =~ ^\"[^\"]+\"$ ]]; then
+      return 0
+    fi
+    sleep 1
+  done
+  echo "nomad: no leader at ${NOMAD_ADDR} within ${timeout_seconds}s" >&2
+  return 1
+}
+
+es_config_nomad_token_file() {
+  local config_path=$1
+  python3 -I - "${config_path}" <<'PY'
+import json
+import os
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    cfg = json.load(handle)
+value = (cfg.get("nomad") or {}).get("token_file") if isinstance(cfg, dict) else None
+if not isinstance(value, str) or not os.path.isabs(value) or os.path.normpath(value) != value:
+    raise SystemExit("es config: nomad.token_file must be a clean absolute path")
+print(value)
+PY
+}
+
+# Bring-up keeps its managed-local Nomad ACL material under BRINGUP_DIR. When
+# NOMAD_TOKEN_FILE is unset and that observer token exists, operator checks
+# use it.
+bringup_nomad_acl_dir() {
+  printf '%s/nomad-acl\n' "${BRINGUP_DIR:-$(bringup_repo_root)/.tmp/bringup}"
+}
+
+default_bringup_nomad_token_file() {
+  local observer
+  observer="$(bringup_nomad_acl_dir)/observer-token"
+  if [[ -z "${NOMAD_TOKEN_FILE:-}" && -f "${observer}" ]]; then
+    export NOMAD_TOKEN_FILE="${observer}"
+  fi
 }
 
 wait_for_nomad_ready() {
@@ -502,7 +565,7 @@ check_runtime_profile_image_gc_policy_once() {
 
   response_path="$(mktemp)"
 
-  if ! curl --fail-with-body --silent --show-error "${NOMAD_ADDR}/v1/agent/self" >"${response_path}"; then
+  if ! nomad_api_get "/v1/agent/self" "${response_path}"; then
     echo "runtime profile image durability: nomad agent self request failed for ${NOMAD_ADDR}/v1/agent/self" >&2
     status=1
   elif ! summary="$(python3 - <<'PY' "${response_path}" "${images}"
@@ -513,18 +576,25 @@ import sys
 payload = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
 images = [line.strip() for line in sys.argv[2].splitlines() if line.strip()]
 config = payload.get("config") or {}
-client = config.get("Client") or {}
-options = client.get("Options") or {}
-value = str(options.get("docker.cleanup.image", "")).strip().lower()
-if value != "false":
+# The supported Nomad sets image garbage collection in its explicit Docker
+# plugin block, so readiness reads it there (the older client option
+# docker.cleanup.image is no longer written).
+plugins = [plugin for plugin in (config.get("Plugins") or []) if isinstance(plugin, dict) and plugin.get("Name") == "docker"]
+plugin_config = (plugins[0].get("Config") or {}) if len(plugins) == 1 else {}
+gc = plugin_config.get("gc") if isinstance(plugin_config, dict) else None
+# Nomad 2.1 reports a plugin's nested block as an object, Nomad 2.0 as a
+# list that holds one object.
+if isinstance(gc, list) and len(gc) == 1:
+    gc = gc[0]
+if not isinstance(gc, dict) or gc.get("image") is not False:
     image_list = ", ".join(images)
     print(
-        "runtime profile image durability: missing nomad client option "
-        f'docker.cleanup.image=false for enabled runtime profile image(s): {image_list}',
+        "runtime profile image durability: missing nomad docker plugin setting "
+        f'gc.image = false for enabled runtime profile image(s): {image_list}',
         file=sys.stderr,
     )
     raise SystemExit(1)
-print("runtime profile image durability: nomad docker.cleanup.image=false")
+print("runtime profile image durability: nomad docker plugin gc.image=false")
 PY
 )"; then
     status=1
@@ -559,6 +629,7 @@ def require_non_empty(path):
 for path in (
     ("nomad", "base_url"),
     ("nomad", "datacenter"),
+    ("nomad", "token_file"),
     ("execution", "staging_root_dir"),
     ("execution", "results_root_dir"),
     ("execution", "base_image"),
@@ -608,6 +679,7 @@ def require_non_empty(path):
 
 base_url = require_non_empty(("nomad", "base_url"))
 datacenter = require_non_empty(("nomad", "datacenter"))
+token_file = require_non_empty(("nomad", "token_file"))
 staging_root_dir = require_non_empty(("execution", "staging_root_dir"))
 results_root_dir = require_non_empty(("execution", "results_root_dir"))
 base_image = require_non_empty(("execution", "base_image"))
@@ -640,6 +712,18 @@ if sys.argv[2] != "service-root-v1" and not os.access(results_root_dir, os.W_OK)
     raise SystemExit(f"es submit config: execution.results_root_dir is not writable: {results_root_dir}")
 if not pathlib.Path(runtime_support_binary).is_absolute():
     raise SystemExit("es submit config: execution.runtime_support_binary must be an absolute path")
+# The token file may be readable only by ES's user, so this checks its
+# placement and type without opening it; ES checks its custody at startup.
+if not os.path.isabs(token_file) or os.path.normpath(token_file) != token_file:
+    raise SystemExit("es submit config: nomad.token_file must be a clean absolute path")
+try:
+    token_mode = os.lstat(token_file).st_mode
+except OSError:
+    raise SystemExit(f"es submit config: nomad.token_file does not exist: {token_file}")
+if not stat.S_ISREG(token_mode):
+    raise SystemExit(f"es submit config: nomad.token_file is not a regular file: {token_file}")
+if stat.S_IMODE(token_mode) not in (0o400, 0o600):
+    raise SystemExit(f"es submit config: nomad.token_file must have mode 0400 or 0600: {token_file}")
 spire_socket = pathlib.Path(spire_socket_path)
 if not spire_socket.is_absolute():
     raise SystemExit("es submit config: execution.spire_workload_api_socket_path must be an absolute path")
@@ -653,6 +737,7 @@ print(
     "es submit config: "
     f"base_url={base_url} "
     f"datacenter={datacenter} "
+    f"token_file={token_file} "
     f"staging_root_dir={staging_root_dir} "
     f"results_root_dir={results_root_dir} "
     f"base_image={base_image} "

@@ -5,7 +5,8 @@ set -euo pipefail
 # baseline and then tries to qualify the repo's narrow supported Linux profile.
 # It stays explicit on purpose:
 # - no retry loops
-# - no polling
+# - no polling, except one bounded wait (up to 30 s) for Nomad's leader,
+#   which the ACL bootstrap needs
 # - no background waiting
 # - one SSH key handoff for cloning
 # - one Nomad service qualification attempt
@@ -90,6 +91,15 @@ NOMAD_CONFIG_BACKUP_PATH="${NOMAD_CONFIG_DIR}/nomad.hcl.execution-substrate.bak"
 NOMAD_DATA_DIR="/opt/nomad/data"
 NOMAD_HTTP_ADDR="${NOMAD_HTTP_ADDR:-http://127.0.0.1:4646}"
 NOMAD_MANAGED_MARKER="# Managed by Execution Substrate scripts/70_linux_setup.sh for the single-node workload-zone baseline."
+# The supported Nomad enforces ACLs: ES submits only with its own token and
+# refuses a Nomad that accepts jobs without one. This script bootstraps the
+# ACLs and keeps the management token root-only here; after cloning,
+# scripts/nomad_acl_setup.sh creates ES's namespace, policies and tokens.
+NOMAD_ACL_DIR="${NOMAD_ACL_DIR:-/etc/execution-substrate/nomad-acl}"
+NOMAD_ACL_MANAGEMENT_TOKEN_FILE="${NOMAD_ACL_DIR}/management-token"
+NOMAD_LEADER_WAIT_SECONDS=30
+NOMAD_CONFIG_CHANGED=0
+NOMAD_QUALIFY_TOKEN=""
 GO_REQUIRED_VERSION="go1.26.5"
 GO_DOWNLOAD_BASE_URL="https://go.dev/dl"
 GO_PATH_PROFILE="/etc/profile.d/execution-substrate-go.sh"
@@ -250,8 +260,11 @@ install_nomad_service_config() {
   local backup_suffix
 
   echo "==> Installing supported single-node Nomad service config"
-  sudo install -d -o nomad -g nomad -m 0755 "${NOMAD_CONFIG_DIR}"
-  sudo install -d -o nomad -g nomad -m 0755 "${NOMAD_DATA_DIR}"
+  # Nomad runs as root, so only root may change what it reads or keeps
+  # (audit INF-16): its config directory and data directory (Raft state and
+  # the keyring) are root-owned.
+  sudo install -d -o root -g root -m 0755 "${NOMAD_CONFIG_DIR}"
+  sudo install -d -o root -g root -m 0700 "${NOMAD_DATA_DIR}"
 
   if sudo test -f "${NOMAD_CONFIG_PATH}" && ! sudo grep -Fq "${NOMAD_MANAGED_MARKER}" "${NOMAD_CONFIG_PATH}"; then
     backup_suffix="$(date +%Y%m%d%H%M%S)"
@@ -259,10 +272,17 @@ install_nomad_service_config() {
     sudo cp "${NOMAD_CONFIG_PATH}" "${NOMAD_CONFIG_BACKUP_PATH}.${backup_suffix}"
   fi
 
+  local previous_config=""
+  previous_config="$(sudo cat "${NOMAD_CONFIG_PATH}" 2>/dev/null || true)"
+
   cat <<EOF | sudo tee "${NOMAD_CONFIG_PATH}" >/dev/null
 ${NOMAD_MANAGED_MARKER}
 data_dir = "${NOMAD_DATA_DIR}"
 bind_addr = "127.0.0.1"
+
+acl {
+  enabled = true
+}
 
 server {
   enabled = true
@@ -273,8 +293,27 @@ client {
   enabled = true
   servers = ["127.0.0.1"]
   options = {
-    "docker.cleanup.image" = "false"
-    "docker.volumes.enabled" = "true"
+    "driver.allowlist" = "docker"
+  }
+}
+
+# ES runs every task through its runtime helper on the Docker driver, so only
+# that driver is enabled and the Docker plugin is limited (audit INF-02): no
+# privileged containers, and only the capabilities the helper uses to prepare
+# a run and drop to the workload user. ES's bind mounts need volumes enabled.
+# Runtime profile images must survive image garbage collection.
+plugin "docker" {
+  config {
+    allow_privileged = false
+    allow_caps       = ["chown", "dac_override", "fowner", "kill", "setgid", "setuid", "setpcap"]
+
+    volumes {
+      enabled = true
+    }
+
+    gc {
+      image = false
+    }
   }
 }
 
@@ -290,8 +329,89 @@ advertise {
   serf = "127.0.0.1:4648"
 }
 EOF
-  sudo chown nomad:nomad "${NOMAD_CONFIG_PATH}"
-  sudo chmod 0644 "${NOMAD_CONFIG_PATH}"
+  sudo chown root:root "${NOMAD_CONFIG_PATH}"
+  sudo chmod 0640 "${NOMAD_CONFIG_PATH}"
+  if [[ "$(sudo cat "${NOMAD_CONFIG_PATH}")" != "${previous_config}" ]]; then
+    NOMAD_CONFIG_CHANGED=1
+  fi
+}
+
+# nomad_token_curl <token> <curl args...>: the token reaches curl through a
+# configuration on a file descriptor, never through a command line.
+nomad_token_curl() {
+  local token=$1
+  shift
+  curl --noproxy '*' --config <(printf 'header = "X-Nomad-Token: %s"\n' "${token}") "$@"
+}
+
+# Bootstrap Nomad's ACLs once. The management secret is written root-only
+# before Nomad sees it, so a lost response never loses it, and a rerun reuses
+# it. Nomad needs a leader to bootstrap; it elects one a few seconds after
+# start, so this is the script's one bounded wait.
+bootstrap_nomad_acl() {
+  local secret=""
+  local created=0
+  local status
+  local response_path
+  local waited=0
+
+  while ! curl --noproxy '*' --fail --silent "${NOMAD_HTTP_ADDR}/v1/status/leader" 2>/dev/null | grep -q '"'; do
+    if (( waited >= NOMAD_LEADER_WAIT_SECONDS )); then
+      echo "nomad: no leader within ${NOMAD_LEADER_WAIT_SECONDS}s, so ACLs cannot be bootstrapped" >&2
+      return 1
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+
+  if ! sudo test -d "${NOMAD_ACL_DIR}"; then
+    sudo install -d -o root -g root -m 0755 "${NOMAD_ACL_DIR}"
+  fi
+  if sudo test -e "${NOMAD_ACL_MANAGEMENT_TOKEN_FILE}"; then
+    secret="$(sudo cat "${NOMAD_ACL_MANAGEMENT_TOKEN_FILE}")"
+  else
+    secret="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+    printf '%s\n' "${secret}" | sudo sh -c 'umask 077 && cat > "$1"' sh "${NOMAD_ACL_MANAGEMENT_TOKEN_FILE}"
+    created=1
+  fi
+  if [[ ! "${secret}" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
+    echo "nomad acl: ${NOMAD_ACL_MANAGEMENT_TOKEN_FILE} does not hold one Nomad token" >&2
+    return 1
+  fi
+
+  response_path="$(mktemp)"
+  status="$(nomad_token_curl "${secret}" --silent --output "${response_path}" --write-out '%{http_code}' "${NOMAD_HTTP_ADDR}/v1/acl/token/self")" || status="000"
+  if [[ "${status}" == "200" ]] && grep -q '"Type":"management"' "${response_path}"; then
+    cleanup_tempfiles "${response_path}"
+    NOMAD_QUALIFY_TOKEN="${secret}"
+    echo "nomad acl: enforced; management token in ${NOMAD_ACL_MANAGEMENT_TOKEN_FILE} (root only)"
+    return 0
+  fi
+  if [[ "${status}" == "200" ]] && grep -q '"AccessorID":"acls-disabled"' "${response_path}"; then
+    cleanup_tempfiles "${response_path}"
+    echo "nomad acl: Nomad still runs without ACLs; restart nomad.service so it reads the acl block" >&2
+    return 1
+  fi
+
+  status="$(curl --noproxy '*' --silent --output "${response_path}" --write-out '%{http_code}' -X POST --data-binary @- \
+    "${NOMAD_HTTP_ADDR}/v1/acl/bootstrap" <<<"{\"BootstrapSecret\":\"${secret}\"}")" || status="000"
+  if [[ "${status}" == "200" ]]; then
+    cleanup_tempfiles "${response_path}"
+    NOMAD_QUALIFY_TOKEN="${secret}"
+    echo "nomad acl: bootstrapped; management token in ${NOMAD_ACL_MANAGEMENT_TOKEN_FILE} (root only)"
+    return 0
+  fi
+  if [[ "${status}" == "400" ]] && grep -qi 'bootstrap already done' "${response_path}"; then
+    cleanup_tempfiles "${response_path}"
+    if (( created == 1 )); then
+      sudo rm -f "${NOMAD_ACL_MANAGEMENT_TOKEN_FILE}"
+    fi
+    echo "nomad acl: ACLs were bootstrapped before and ${NOMAD_ACL_MANAGEMENT_TOKEN_FILE} does not hold that management token; put it there (root, 0600) or follow Nomad's ACL bootstrap reset procedure, then rerun" >&2
+    return 1
+  fi
+  echo "nomad acl: bootstrap returned HTTP ${status}: $(head -c 200 "${response_path}")" >&2
+  cleanup_tempfiles "${response_path}"
+  return 1
 }
 
 warn_existing_nomad_processes() {
@@ -330,15 +450,25 @@ report_nomad_cpu_visibility_diagnostics() {
   local proc_cpu_mhz
   local dmi_current_speed="unavailable"
 
-  if ! python3 - <<'PY' "${NOMAD_HTTP_ADDR}" >/dev/null 2>&1
+  if ! NOMAD_TOKEN="${NOMAD_QUALIFY_TOKEN}" python3 - <<'PY' "${NOMAD_HTTP_ADDR}" >/dev/null 2>&1
 import json
+import os
 import sys
 import urllib.error
 import urllib.request
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+# No proxy and no redirects: a token reaches only the loopback Nomad.
+nomad_opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
+
 base_url = sys.argv[1].rstrip("/")
+headers = {"X-Nomad-Token": os.environ.get("NOMAD_TOKEN", "")}
 try:
-    nodes = json.load(urllib.request.urlopen(f"{base_url}/v1/nodes"))
+    nodes = json.load(nomad_opener.open(urllib.request.Request(f"{base_url}/v1/nodes", headers=headers)))
 except Exception:
     raise SystemExit(1)
 
@@ -350,7 +480,7 @@ for node in ready:
     node_id = (node.get("ID") or "").strip()
     if not node_id:
         raise SystemExit(1)
-    detail = json.load(urllib.request.urlopen(f"{base_url}/v1/node/{node_id}"))
+    detail = json.load(nomad_opener.open(urllib.request.Request(f"{base_url}/v1/node/{node_id}", headers=headers)))
     attrs = detail.get("Attributes") or {}
     try:
         cpu_total_compute = int(str(attrs.get("cpu.totalcompute", "0")).strip() or "0")
@@ -404,6 +534,13 @@ qualify_supported_substrate() {
     sudo systemctl status nomad --no-pager --full || true
     return 1
   fi
+  # A running Nomad reads a changed config (such as the acl block) only when
+  # it restarts. Jobs keep running; the client reattaches to them.
+  if [[ "${NOMAD_CONFIG_CHANGED}" == "1" ]] && ! sudo systemctl restart nomad; then
+    echo "nomad: failed to restart nomad.service after its config changed" >&2
+    sudo systemctl status nomad --no-pager --full || true
+    return 1
+  fi
 
   if ! sudo systemctl is-active --quiet docker; then
     echo "docker: systemd unit is not active" >&2
@@ -416,34 +553,45 @@ qualify_supported_substrate() {
     sudo systemctl status nomad --no-pager --full || true
     return 1
   fi
+  bootstrap_nomad_acl || return 1
 
   leader_path="$(mktemp)"
   agent_path="$(mktemp)"
   nodes_path="$(mktemp)"
 
-  if ! curl --fail-with-body --silent --show-error "${NOMAD_HTTP_ADDR}/v1/status/leader" >"${leader_path}"; then
+  if ! curl --noproxy '*' --fail-with-body --silent --show-error "${NOMAD_HTTP_ADDR}/v1/status/leader" >"${leader_path}"; then
     echo "nomad: leader request failed for ${NOMAD_HTTP_ADDR}/v1/status/leader" >&2
     cleanup_tempfiles "${leader_path}" "${agent_path}" "${nodes_path}"
     return 1
   fi
-  if ! curl --fail-with-body --silent --show-error "${NOMAD_HTTP_ADDR}/v1/agent/self" >"${agent_path}"; then
+  if ! nomad_token_curl "${NOMAD_QUALIFY_TOKEN}" --fail-with-body --silent --show-error "${NOMAD_HTTP_ADDR}/v1/agent/self" >"${agent_path}"; then
     echo "nomad: agent self request failed for ${NOMAD_HTTP_ADDR}/v1/agent/self" >&2
     cleanup_tempfiles "${leader_path}" "${agent_path}" "${nodes_path}"
     return 1
   fi
-  if ! curl --fail-with-body --silent --show-error "${NOMAD_HTTP_ADDR}/v1/nodes" >"${nodes_path}"; then
+  if ! nomad_token_curl "${NOMAD_QUALIFY_TOKEN}" --fail-with-body --silent --show-error "${NOMAD_HTTP_ADDR}/v1/nodes" >"${nodes_path}"; then
     echo "nomad: node request failed for ${NOMAD_HTTP_ADDR}/v1/nodes" >&2
     cleanup_tempfiles "${leader_path}" "${agent_path}" "${nodes_path}"
     return 1
   fi
 
-  if ! python3 - <<'PY' "${NOMAD_HTTP_ADDR}" "${leader_path}" "${agent_path}" "${nodes_path}"
+  if ! NOMAD_TOKEN="${NOMAD_QUALIFY_TOKEN}" python3 - <<'PY' "${NOMAD_HTTP_ADDR}" "${leader_path}" "${agent_path}" "${nodes_path}"
 import json
+import os
 import pathlib
 import sys
 import urllib.request
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+# No proxy and no redirects: a token reaches only the loopback Nomad.
+nomad_opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
+
 base_url = sys.argv[1].rstrip("/")
+headers = {"X-Nomad-Token": os.environ.get("NOMAD_TOKEN", "")}
 leader = json.loads(pathlib.Path(sys.argv[2]).read_text(encoding="utf-8"))
 if not isinstance(leader, str) or not leader.strip():
     raise SystemExit("nomad: leader missing")
@@ -466,7 +614,7 @@ for node in ready:
     if not node_id:
         reasons.append(f"{node_name}=missing-id")
         continue
-    detail = json.load(urllib.request.urlopen(f"{base_url}/v1/node/{node_id}"))
+    detail = json.load(nomad_opener.open(urllib.request.Request(f"{base_url}/v1/node/{node_id}", headers=headers)))
     attrs = detail.get("Attributes") or {}
     drivers = detail.get("Drivers") or {}
     docker = drivers.get("docker") or {}
@@ -619,7 +767,8 @@ echo "2. Review the bounded useful credential flow runbook:"
 echo "   \"$CLONE_DIR/.runbooks/execution/Governed Execution ES Submit Runtime Identity Vault Login Workload.md\""
 echo "3. Keep the legacy compatibility runbook only for older reference-bridge validation:"
 echo "   \"$CLONE_DIR/.runbooks/execution/Governed Execution ES Submit Runtime Identity Reference Workload.md\""
-echo "4. Start the Go platform with explicit configs and TLS material."
+echo "4. Lock Nomad so only ES can submit: run 'sudo \"$CLONE_DIR/scripts/nomad_acl_setup.sh\"' (ES_USER=<ES's user> if ES does not run as root), set nomad.token_file in ES's config to ${NOMAD_ACL_DIR}/es-token, and export NOMAD_TOKEN_FILE=${NOMAD_ACL_DIR}/observer-token for readiness checks."
+echo "   Start the Go platform with explicit configs and TLS material."
 echo "5. Verify the VM still reports nomad-startup-mode: pre-managed, submit-ready-mode: natural, and supported-environment: supported through scripts/01_bringup.sh check."
 echo "6. Treat script-managed local Nomad startup and any compute override as bounded fallback/troubleshooting, not the supported Linux environment story."
 echo "7. Use the repo-owned proof bootstrap to start the proof-scoped Vault dev/test target used by the runbook."
@@ -629,7 +778,9 @@ echo "Environment notes:"
 echo "- This script assumes an apt-based Linux VM."
 echo "- The supported Linux profile is Docker healthy plus a root-managed non-dev nomad.service with positive natural cpu.totalcompute and no override."
 echo "- This script writes /etc/nomad.d/nomad.hcl for the single-node loopback Nomad service used by the current one-host workload-zone profile."
+echo "- That Nomad config enables ACLs; the bootstrap management token is in ${NOMAD_ACL_MANAGEMENT_TOKEN_FILE} (root only). Keep it out of ES and operator scripts."
 echo "- That Nomad config disables Docker image cleanup so local runtime-profile images survive completed allocations for repeated supported-local client runs."
+echo "- That Nomad config enables only the Docker driver, refuses privileged containers and allows only the capabilities ES's runtime helper uses; it and Nomad's data directory are root-owned."
 echo "- If supported-substrate qualification failed above, do not treat this VM as supported yet."
 echo "- If nomad.service could not start or remain healthy, fix that with root-managed host investigation instead of falling back to a user-started Nomad proof."
 echo "- Some proof VMs may still need manual root investigation or bounded fallback when Nomad fingerprinting leaves cpu.totalcompute at 0."

@@ -354,8 +354,9 @@ func startResolvedPlanCustodyHermeticStack(t *testing.T, handler http.Handler) *
 	resultAuth := newSubmitStackSyntheticRetainedResultAuth(t, rootDir)
 	fixture := newTLSFixture(t)
 	var nomad *nomadHarness
-	nomadServer := httptest.NewServer(handler)
+	nomadServer := httptest.NewServer(lockedFakeNomadHandler(handler))
 	nomadBaseURL := nomadServer.URL
+	nomadTokenFile := writeFakeNomadTokenFile(t, rootDir)
 	runtimeSupportBinary := buildResolvedPlanCustodyHermeticRuntimeSupport(t, rootDir)
 	mockSPIRE := startMockWorkloadAPIServer(t, rootDir, mockWorkloadAPIServerOptions{
 		jwtTTL:    firstNonZeroDuration(opts.mockSPIREJWTTTL, 20*time.Second),
@@ -603,6 +604,7 @@ func startResolvedPlanCustodyHermeticStack(t *testing.T, handler http.Handler) *
 			BaseURL:        nomadBaseURL,
 			Datacenter:     "dc1",
 			TimeoutSeconds: 5,
+			TokenFile:      nomadTokenFile,
 		},
 		Execution: esconfig.ExecutionConfig{
 			StagingRootDir:             stagingRoot,

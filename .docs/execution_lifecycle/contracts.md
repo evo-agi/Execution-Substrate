@@ -785,7 +785,7 @@ bounded receipt, and Nomad submission through ES.
   - a configured profile image
   - an absolute configured Codex CLI path metadata value
   - configured workload-vault secret path and field metadata for Codex credential material
-- In the repo-owned supported-local runtime surface, submit-readiness for that enabled profile also requires the configured image to be present and Nomad Docker image cleanup to be disabled through `docker.cleanup.image=false`, so repeated client runs from the same prepared environment are not invalidated merely by Nomad's stopped-task image cleanup.
+- In the repo-owned supported-local runtime surface, submit-readiness for that enabled profile also requires the configured image to be present and Nomad Docker image garbage collection to be disabled through the Docker plugin's `gc { image = false }`, so repeated client runs from the same prepared environment are not invalidated merely by Nomad's stopped-task image cleanup.
 - Runtime mounts, when present, must satisfy both the prepare-time mount request rules and submit-time reserved-path checks.
 - Submit resolves payload bytes through the explicit payload digest carried in aggregate evidence, and uses only bytes that hash to that digest (section 5A).
 - Submit reuses the same ES Admission Policy Layer v0 path as `:prepare` and
@@ -1174,6 +1174,7 @@ B2 preserves every status and code above and the public
 | Workload Vault trust capture or materialization | `500` | `submission_failed` | `stage workload vault trust material failed` |
 | Platform-state owner derivation | `500` | `submission_failed` | `derive execution platform state owner failed` |
 | Nomad submission transport, bounded read, decode, trailing document, or missing EvalID | `503` | `submission_failed` | `execution submission failed` |
+| Nomad access control not enforced, an anonymous ACL policy present, or ES's own token not a client token | `503` | `execution_runtime_unavailable` | `execution runtime access control check failed` |
 
 No underlying cause, provider body, cause field, diagnostic field, or new code
 is included. Existing safe specific errors outside these families remain
@@ -1192,6 +1193,20 @@ unchanged.
   trailing JSON, and missing EvalID fail with the fixed submission message.
   Non-success response bodies are not read or exposed.
 - It uses the explicit payload reference carried by the ARS discovery record and cross-checks that reference against aggregate evidence rather than treating `artifact_digest` as the payload locator.
+- ES submits only to a Nomad that enforces access control (ACLs). After the
+  execution plan is resolved and before a run is assigned or anything is
+  staged, ES asks Nomad, with its own token, whether that token is a client
+  token, and asks without a token whether ACLs are enabled and whether an
+  anonymous policy exists. ACLs off, an anonymous policy, any other answer or
+  any transport failure refuses with the fixed access-control message above,
+  creates no run and registers no job. The check runs before every submit, so
+  a Nomad that loses its lock later is refused at the next submit.
+- ES registers jobs only in Nomad namespace `es-submit-v1`, with a
+  least-privilege client token (policy `es-submit-v1`: `submit-job`,
+  `read-job` and `read-logs` in that namespace, nothing else). Status, logs,
+  result and cancel read and stop jobs in the same namespace with the same
+  token. The token file is configured as `nomad.token_file`; see
+  [configuration.md](../system_overview/configuration.md#nomad-access-control).
 - `control-plane-normal-shell/v1` is a bounded runtime contract for the CP-owned normal-shell attempt path, not an ES-owned orchestration, review, checkpoint, or finalization contract.
 
 ### Reopened seams

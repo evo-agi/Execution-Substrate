@@ -28,6 +28,8 @@ validate_env() {
   if [[ "${PROFILE}" == "full" ]]; then
     require_command docker
     require_env NOMAD_ADDR
+    default_bringup_nomad_token_file
+    require_env NOMAD_TOKEN_FILE
   fi
 
   if [[ "${VERIFY_RUNTIME_CONFIG}" == "1" ]]; then
