@@ -1070,6 +1070,29 @@ The first delegation slice must stay check-only/non-mutating. It may rely on
 the helper's existing temporary checker staging under
 `/var/tmp/execution-substrate-remote-alpha/helper-staging/<run-id>/`, but the
 operator facade itself must not introduce a generic remote staging framework.
+
+`Current invariant`: root writes summaries, preflights, backups and staged
+helpers into the shared artifact folder `/var/tmp/execution-substrate-remote-alpha`
+by name, and `/var/tmp` is writable by every account, so another account could
+create that folder first and plant links in it (whole-trunk red-team follow-up
+N-1, 2026-11-24). Every helper that writes there, and every Mac-side route that
+stages helpers there, first runs `remote_alpha_prepare_output_dir`
+(`scripts/internal/remote_alpha_output_dir.sh`; helpers that are staged on
+their own carry an identical copy, which a test keeps identical). It creates
+missing folders one at a time without following links and refuses a symbolic
+link anywhere on the path, a folder that belongs to an account other than root,
+the user running the step or the user who ran sudo, a folder its group or
+others can write unless root owns it and it is sticky (such as `/var/tmp`
+itself), an artifact folder its group or others can write, and a path with a
+`..` component (normalizing `link/..` away would check a folder other than the
+one the write reaches). It reads owners and modes without needing read
+permission on a folder, so a root-owned private folder still passes when the
+SSH user checks it before sudo hands it over. The Mac-side
+staging routes run that check through sudo before any other sudo step, so a
+folder they create belongs to root, and they make their `/tmp` upload and
+artifact folders fresh and private (`mkdir -m 0700` without `-p`, which fails
+when a folder of that name already exists). The Vault reset reads the
+workload-auth summary only from a folder that passes the same check.
 Default sudo behavior must remain the helper's noninteractive `sudo -n`
 preflight and structured `sudo_unavailable` evidence. `--interactive-sudo`
 may remain available only for a visible terminal when a bounded password
@@ -2055,6 +2078,17 @@ Stop conditions for P0m:
 - any request to pass secrets as CLI args, environment values, environment
   files, local files, remote files, logs, artifacts, or Codex output
 - reset helper broad raft path guard triggers
+- the raft path is a symbolic link or does not belong to the Vault service user
+- a process still runs as the Vault service user after the unit stops; the
+  helper moves nothing and Vault stays stopped (whole-trunk red-team RT-2,
+  2026-11-24)
+- a directory on the raft path is a symbolic link when the helper moves the
+  raft directory, or the raft directory is no longer the Vault service user's;
+  the helper reaches the raft directory's parent from `/` without following a
+  link, moves the old directory and creates the new one inside that parent,
+  and hands the new one over through its own descriptor, so a link the Vault
+  account plants anywhere on the path cannot point root at another directory
+  (audit 03 of PR #49, 2026-11-24)
 - exact phrase mismatch
 - request to run post-unseal check, workload-auth check, Infrastructure Manager
   refresh, support-bundle collection, CP proof, governed smoke, runtime identity
@@ -2702,15 +2736,22 @@ Summary-path preparation:
   request Vault/root/proof secret material, run workload-auth checks,
   reset/unseal, IM, support bundles, CP proof, runtime identity generation,
   helper staging, or summary copy-back.
+- Before any sudo step, preparation checks the parent with
+  `remote_alpha_prepare_output_dir`: it refuses
+  (`error_classification=summary_parent_unsafe`) a symbolic link anywhere on
+  the path, a parent that belongs to an account other than root or the helper
+  user, and a parent its group or others can write.
 - If the parent is missing, preparation creates it. If the parent exists but is
   not writable/executable by the helper user, preparation uses only an explicit
   operator-authorized OS sudo prompt through the visible SSH TTY to make that
-  parent helper-user/group owned with mode `0750`. The preparation command must
+  parent helper-user/group owned with mode `0750` (through `chown -h`, which
+  never follows a link). The preparation command must
   keep SSH stdin attached to the visible terminal instead of feeding the remote
   script over SSH stdin, so sudo controls password echo suppression. If the
   bootstrap summary file already exists as a regular file but is not writable by
   the helper user, preparation uses visible sudo to make only that file
-  helper-owned with mode `0600`. Preparation does not delete workload-auth check
+  helper-owned with mode `0600`; a summary path that is a symbolic link is
+  refused (`summary_path_symlink`). Preparation does not delete workload-auth check
   summaries or other unrelated evidence files, creates and removes only a hidden
   same-directory temp probe, and creates no final bootstrap summary in
   standalone mode.
@@ -3143,7 +3184,10 @@ Generate-root access:
   wait until Vault answers. After generate-root, once the 15-minute token is
   made and the root token is revoked, it writes the original bytes back with
   the same owner and mode, reloads again, and waits until Vault refuses
-  again, all before any configuration request. If that cannot be shown, it
+  again, all before any configuration request. The Vault account may own
+  the folder of that file, so the helper reads the file without following
+  a link at its name and sets the new file's owner and mode through the
+  descriptor it created it with, never by name. If that cannot be shown, it
   revokes the 15-minute token, fails with `vault_config_restore_failed` and
   prints the exact line to remove and the reload command.
 - with `temporary-config`, a Vault that already answers generate-root
@@ -3678,7 +3722,9 @@ before its fixed release and is reaped on every path. One successful
 invocation-local capability state is required by every fixed OpenSSL command;
 no command forks another probe. Failure or indeterminate capability reads no
 status input, spawns no OpenSSL child, publishes no generation, and leaves no
-probe descriptor or process. On group signal
+probe descriptor or process. A second part of the same probe proves the
+PID-namespace containment stated below with two further fixed internal fork
+children, a probe anchor and one probe member, under the same rules. On group signal
 failure it enumerates only members whose observed PGID equals the reserved
 leader PGID, acquires pidfds, revalidates identity and membership, signals
 members through pidfds, and repeats bounded scans until nonleader members are
@@ -3693,7 +3739,8 @@ identity revalidation, signaling, polling, waiting, or cleanup-state
 reporting is contained by this unresolved-cleanup hold. One-shot faults
 recover on later iterations; persistent faults retain the invocation and
 lock with bounded backoff. No outer retry may return until group absence
-and exactly one direct-child reap are proved. No unrelated process is signaled.
+and exactly one direct-child reap are proved, and no fixed command returns
+before the anchor of its PID namespace is reaped. No unrelated process is signaled.
 Group TERM and KILL occur while the child remains unreaped, so
 its PID remains reserved; cleanup never signals a process group after reaping.
 Nonreaping `waitid` with `WNOWAIT` detects terminal leader state without
@@ -3737,6 +3784,146 @@ error is unproved, never absent, and a missing `<pid> (` prefix, a line over
 therefore neither fails the capability probe nor prolongs the
 unresolved-cleanup hold. This rule adds no time limit to that hold and never
 counts a visible zombie as absent.
+
+`Bounded slice rule` for fixed-child containment: the process-group
+disposition reaches only a process that stays in the fixed child's process
+group and that one identity scan observes. A descendant that leaves the group
+with `setsid` or `setpgid`, or that ignores TERM and replaces itself with a
+new process between two scans, is outside both. Each fixed OpenSSL command
+therefore runs in a PID namespace of its own, and the kernel, not a scan,
+accounts for its processes. The sequence for one command is fixed:
+
+1. The collector opens `/proc/self/ns/pid` and proves that
+   `/proc/self/ns/pid_for_children` names the same namespace object, by
+   device and inode. Otherwise the command refuses before any spawn.
+2. It creates one control pipe and one ready pipe, calls
+   `unshare(CLONE_NEWPID)`, and forks exactly one fixed internal anchor. The
+   anchor is the first process of the new namespace. It first asks the
+   kernel with `prctl(PR_SET_PDEATHSIG)` to kill it when the collector's
+   thread that forked it ends. It then closes every inherited descriptor
+   except its standard streams, the read end of the control pipe and the
+   write end of the ready pipe, including the status lock and the
+   trust-anchor pipe, checks that none is left, and ends with a nonzero
+   status when one is. Only then does it write one byte to the ready pipe and
+   close it. It then reaps every orphan of the namespace and ends with status
+   zero when the control pipe reports end of input. The reaping is required:
+   an orphan that ends as a zombie in the fixed child's process group would
+   otherwise stay visible to the absence scan of step 6 and hold it. The
+   anchor runs no other code and reads no status input. The collector reads
+   the ready byte before step 3, so no fixed child exists while a death of
+   the collector could leave the anchor alive.
+3. The collector spawns the fixed child exactly as before. The child is the
+   second process of the namespace and a direct child of the collector, so
+   the collector sees its ordinary process and group IDs and every existing
+   cleanup step applies to it unchanged.
+4. Directly after the spawn attempt, successful or not, the collector calls
+   `setns` with its own namespace and proves the reset by the check of step 1.
+5. Collection runs unchanged.
+6. The cleanup owner, process-group disposition, the unresolved-cleanup hold,
+   the direct-child reap, and the post-reap absence scan run unchanged, and on
+   every path after the spawn the collector closes the control pipe before the
+   cleanup owner runs and sends the anchor, its own unreaped child, one KILL.
+   The namespace therefore ends whatever a process of the namespace does to
+   the pipe or to the anchor: a root process can open the collector's end of
+   the pipe once more through `/proc`, or stop the anchor with `ptrace`, and
+   any process can keep the anchor busy with orphans to reap. A descendant
+   that left the group can keep a child of its own in the fixed child's
+   process group and leave it unreaped. Once that child has ended, it is a
+   zombie that is not an orphan, so the anchor cannot reap it, and no group
+   signal can end it; the unchanged cleanup would wait until the descendant
+   ends by itself, which may be never. With the namespace ended first, the
+   kernel kills that descendant, the zombie goes to the anchor, which reaps
+   it, and the cleanup finds the fixed child alone. A fixed child that still
+   runs at a timeout, an interruption, an output overflow, or a failed step
+   after the spawn, and any process that outlived the fixed child, is
+   therefore killed by the kernel without the grace period of TERM before
+   KILL; on those paths the command is incomplete, and after a normal end the
+   result is already complete, so nothing such a process could still write
+   counts. When the anchor ends, the kernel kills every process that is still
+   in the namespace, admits no new process into it, and lets the anchor
+   become terminal only when no other process of the namespace is left, which
+   includes an unreaped direct child of the collector.
+
+   The fixed command can make such a direct child itself: a process that it
+   makes with `clone` and `CLONE_PARENT` is inside the namespace, and its
+   parent is the collector. Only the collector can reap that stray, and its
+   zombie would hold the group cleanup when it stays in the fixed child's
+   group, and the anchor otherwise. Before the cleanup owner runs, the
+   collector therefore waits without a time limit until the fixed child is
+   terminal and then reaps every stray: each child of the collector, as
+   `/proc/self/task/<tid>/children` lists them, that is outside the
+   collector's own PID namespace and is neither the anchor nor the fixed
+   child. It waits for a stray once it has ended and never signals it, and it
+   goes on until one list of its children holds no stray. Only the fixed
+   child and a stray can make a stray, so a list that holds none, read after
+   the fixed child was seen terminal, is final. The fixed child stays
+   unreaped for the cleanup owner.
+7. The collector waits for the anchor with a nonblocking `waitpid`, reaping
+   every ended stray in the same loop, sends the anchor one KILL when it has
+   not had one and is not terminal after the grace period or when the pipe
+   close failed, and reaps it exactly once. No fixed command returns, with a
+   result or incomplete, before that reap.
+
+A collector that ceases to exist ends its anchor through the parent-death
+signal of step 2, whatever a process of the namespace does to the control
+pipe or to the anchor, so a killed collector takes its fixed child and every
+descendant in the namespace with it. As the first process of its namespace
+the anchor cannot be ended by a signal from inside it. An anchor that does
+not become terminal holds the invocation with lifecycle ownership and the
+status lock retained, as the unresolved-cleanup hold does, and that hold has
+no time limit.
+
+Failure never selects a weaker mode. A missing `os.unshare` or `os.setns`, a
+refused namespace, a failed anchor fork, or an anchor that does not write its
+ready byte means no spawn and an incomplete command. An unproved reset, a
+failed control-pipe close, a failed KILL of the anchor, a failed list of the
+collector's children or wait for a stray, an anchor that ends in any way
+other than status zero or the collector's own KILL, and an unproved anchor
+reap are incomplete after the complete cleanup; the private
+`child_namespace_unproved` literal maps to the existing
+`openssl_child_unproved` collection witness reason. While the reset stays
+unproved, every later command refuses at step 1. No command falls back to
+process-group disposition alone.
+
+The process-capability probe proves this by behavior in its second part,
+after its first part succeeded and before any status input is read. It opens
+one probe namespace by steps 1, 2 and 4 with one fixed internal member in
+place of the fixed child. The member closes its inherited descriptors and
+then waits for input that never comes, so it never ends by itself. After the
+collector closes the control pipe, the member must become terminal by the
+kernel's KILL within the grace period, the anchor must not be terminal while
+the member is unreaped, the ended member must be listed among the
+collector's children outside its own PID namespace, as a stray is found, and
+after the member's reap the anchor must end with status zero without a KILL
+from the collector. Both children are reaped and
+every probe descriptor is closed on every path. Any other outcome is
+`process_capability_unproved` before any status input is read and before any
+OpenSSL spawn. The decision is by behavior, never by an OS label, a kernel
+version, or the caller's user ID.
+
+Limits that this rule states and does not remove:
+
+- The fixed child still runs as root. It cannot leave its PID namespace, but
+  a hostile child could ask a service of the host to start a process outside
+  it, or write any file that root may write. A root process of the namespace
+  that may trace the anchor could also undo the anchor's parent-death
+  signal, so that a killed collector leaves that namespace alive; while the
+  collector lives, its KILL ends the anchor all the same. The rule contains
+  the processes of the fixed command, not the authority of root.
+- A process that cannot die, for example one that is stuck in the kernel,
+  keeps the anchor or a stray from becoming terminal. The invocation then
+  holds.
+- Inside its namespace the fixed child has process ID 2 and parent ID 0,
+  while `/proc` stays the host's and shows the host's process IDs.
+- The namespace setting belongs to the calling thread, and a kernel may
+  refuse `unshare(CLONE_NEWPID)` to a process with several threads. The
+  collector keeps exactly one thread.
+- Creating a PID namespace needs root on Linux. Local and unprivileged tests
+  replace the namespace steps with a stand-in and prove nothing about the
+  kernel path; only a run as root on Linux does.
+
+This rule changes no process-group signal, hold, direct-child reap, lock,
+publication, public code, schema, reader, or retry authority.
 
 The exact client verification argv is `/usr/bin/openssl verify -trusted
 <selected-ca-fd> -purpose sslclient /dev/stdin`. The server argv is
@@ -5125,6 +5312,14 @@ The active repo-derived ARS service inputs for that ARS step remain:
 - systemd drop-in dir `/etc/systemd/system/ars.service.d`
 - systemd drop-in path `/etc/systemd/system/ars.service.d/10-account.conf`
 
+`Current invariant`: after the first run the ars account owns its state tree,
+so a rerun must not follow names in it (whole-trunk red-team RT-1,
+2026-11-24). The state step opens every directory and file without following
+links, refuses a link, a file with more than one link, anything that is not a
+directory or regular file, and a tree more than 16 directories deep, checks
+the whole tree before it changes anything, and requires the state root's
+parent to belong to root and not be writable by group or others.
+
 ### EGS De-root Step
 
 The EGS step in this tranche is already landed. It remains documented because
@@ -6486,6 +6681,27 @@ mutation it must create backup evidence and rollback notes. The mutation scope
 must stay limited to the dedicated Vault service account posture, the Vault
 systemd drop-in, and the minimum config or storage or log or audit or TLS
 ownership or readability changes needed for Vault.
+
+`Current invariant`: the vault account may own the directories this helper
+changes, so root must never change a path by name there (whole-trunk red-team
+RT-3, 2026-11-24). The check-only plan blocks a path that goes through a
+symbolic link, any directory the apply would change that is not dedicated to
+Vault (owned by the Vault account or group, and never a shared system directory
+such as `/etc` or `/var/log`), a log, audit or storage directory that vault can
+only read now and the apply would make writable by it, a storage directory that
+is not Vault's own or inside one, and a directory the plan would give two
+owners. Apply opens every
+path without following links, checks all of them before changing any, changes
+the path owners before it installs the drop-in, takes a config or TLS file's
+directory to `root:<vault group>` before the file, changes only regular files
+with one link, and refuses anything else with a summary that says whether a
+path had already changed. Once the unit already runs as the Vault user, a
+process of that account may have moved or renamed entries in the directories
+it owns, so the plan and the apply also refuse a config or TLS file that vault
+cannot read now, and the apply refuses a storage entry vault does not own,
+instead of opening either up to vault (red-team re-check 06 of PR #49, RC-1).
+While the unit still runs as root, those files are root's by design and the
+apply hands them over.
 
 The apply summary must record changed paths, backups, rollback path,
 post-apply checks, skipped checks, redaction status, and explicit non-claims.

@@ -1,5 +1,61 @@
 remote_alpha_vault_workload_auth_bootstrap_schema_version="execution-substrate.remote-alpha.vault-workload-auth-bootstrap-summary.v1"
 
+# Copy of remote_alpha_prepare_output_dir from scripts/internal/remote_alpha_output_dir.sh,
+# which explains it; TestRemoteAlphaOutputDirCopiesMatch keeps the two identical.
+remote_alpha_prepare_output_dir() {
+  python3 -I - "$1" <<'REMOTE_ALPHA_OUTPUT_DIR_PY'
+import os
+import stat
+import sys
+
+if not sys.argv[1]:
+    sys.exit("remote alpha output folder: no folder given")
+if ".." in sys.argv[1].split("/"):
+    sys.exit(f"remote alpha output folder: {sys.argv[1]} has a '..' component; refusing to check a path that is not canonical")
+# The path is checked as given, never normalized: dropping "link/.." would
+# check another folder than the one a later write through the link reaches.
+parts = [part for part in os.path.join(os.getcwd(), sys.argv[1]).split("/") if part not in ("", ".")]
+trusted = {0, os.geteuid()}
+if os.environ.get("SUDO_UID", "").isdigit():
+    trusted.add(int(os.environ["SUDO_UID"]))
+# O_PATH reads a folder's owner and mode without read permission on it, so a
+# folder that root keeps private still passes and sudo can hand it over.
+flags = getattr(os, "O_PATH", os.O_RDONLY) | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+shown = "/"
+fd = os.open("/", flags)
+try:
+    for index in range(len(parts) + 1):
+        info = os.fstat(fd)
+        last = index == len(parts)
+        if info.st_uid not in trusted:
+            sys.exit(
+                f"remote alpha output folder: {shown} belongs to uid {info.st_uid}, not to root, "
+                "the user running this step or the user who ran sudo; refusing to write under it"
+            )
+        if info.st_mode & (stat.S_IWGRP | stat.S_IWOTH) and (
+            last or info.st_uid != 0 or not info.st_mode & stat.S_ISVTX
+        ):
+            sys.exit(f"remote alpha output folder: {shown} can be written by its group or others; refusing to write under it")
+        if last:
+            break
+        shown = "/" + "/".join(parts[: index + 1])
+        try:
+            next_fd = os.open(parts[index], flags, dir_fd=fd)
+        except FileNotFoundError:
+            try:
+                os.mkdir(parts[index], 0o755, dir_fd=fd)
+            except FileExistsError:
+                pass
+            next_fd = os.open(parts[index], flags, dir_fd=fd)
+        os.close(fd)
+        fd = next_fd
+except OSError as exc:
+    sys.exit(f"remote alpha output folder: {shown} is not a directory or is a symbolic link ({exc.strerror})")
+finally:
+    os.close(fd)
+REMOTE_ALPHA_OUTPUT_DIR_PY
+}
+
 remote_alpha_vault_workload_auth_bootstrap_defaults() {
   REMOTE_ALPHA_BOOTSTRAP_WORKLOAD_ZONE_CONFIG_PATH="${REMOTE_ALPHA_BOOTSTRAP_WORKLOAD_ZONE_CONFIG_PATH:-/etc/execution-substrate/vault/workload-zone-vault-config.json}"
   REMOTE_ALPHA_BOOTSTRAP_SUMMARY_PATH="${REMOTE_ALPHA_BOOTSTRAP_SUMMARY_PATH:-/var/tmp/execution-substrate-remote-alpha/vault-workload-auth-bootstrap-summary.json}"
@@ -240,6 +296,7 @@ remote_alpha_vault_workload_auth_bootstrap_execute() {
 import base64
 import ctypes
 import datetime as dt
+import errno
 import getpass
 import hashlib
 import ipaddress
@@ -544,6 +601,39 @@ def cleanup_path(path):
         pass
 
 
+class NotARegularFile(Exception):
+    pass
+
+
+def read_regular_file_no_follow(path):
+    """Read a file without following a link at its name, and return its
+    bytes with the stat of what was read. The Vault account may own the
+    folder of Vault's configuration file, so the name can be swapped for a
+    link at any moment; checking first and reading by name after would read
+    wherever the link points. Raises NotARegularFile for a link or anything
+    but a regular file; other errors (a missing file, no permission) pass
+    through."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise NotARegularFile(str(path)) from None
+        raise
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise NotARegularFile(str(path))
+        chunks = []
+        while True:
+            chunk = os.read(fd, 1 << 16)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        return b"".join(chunks), info
+    finally:
+        os.close(fd)
+
+
 def preflight_summary_writable():
     parent = SUMMARY_PATH.parent
     preflight_temp = parent / f".{SUMMARY_PATH.name}.preflight.{os.getpid()}.tmp"
@@ -676,7 +766,9 @@ def preflight_temporary_generate_root_access():
     if path.is_symlink() or not path.is_file():
         raise_failure(phase, "config_invalid", message_class="vault_config_not_a_regular_file")
     try:
-        raw = path.read_bytes()
+        raw, _ = read_regular_file_no_follow(path)
+    except NotARegularFile:
+        raise_failure(phase, "config_invalid", message_class="vault_config_not_a_regular_file")
     except OSError:
         raise_failure(phase, "config_unreadable", message_class="vault_config_unreadable")
     if UNAUTHENTICATED_ACCESS_KEYWORD.encode("ascii") in raw:
@@ -760,12 +852,15 @@ class TemporaryGenerateRootAccess:
         fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
         temp_path = pathlib.Path(temp_name)
         try:
+            # The Vault account may own this folder and could swap the new
+            # file's name for a link, so its owner and mode are set through
+            # the descriptor mkstemp opened, never by name.
             with os.fdopen(fd, "wb") as handle:
                 handle.write(data)
                 handle.flush()
+                os.fchown(handle.fileno(), self.file_stat.st_uid, self.file_stat.st_gid)
+                os.fchmod(handle.fileno(), stat.S_IMODE(self.file_stat.st_mode))
                 os.fsync(handle.fileno())
-            os.chown(temp_path, self.file_stat.st_uid, self.file_stat.st_gid)
-            os.chmod(temp_path, stat.S_IMODE(self.file_stat.st_mode))
             os.replace(temp_path, path)
         except BaseException:
             cleanup_path(temp_path)
@@ -797,10 +892,10 @@ class TemporaryGenerateRootAccess:
         set_next_operation(phase)
         path = VAULT_CONFIG_PATH
         try:
-            self.file_stat = os.lstat(path)
-            if not stat.S_ISREG(self.file_stat.st_mode):
+            try:
+                self.original, self.file_stat = read_regular_file_no_follow(path)
+            except NotARegularFile:
                 raise_failure(phase, "config_invalid", message_class="vault_config_not_a_regular_file")
-            self.original = path.read_bytes()
             if UNAUTHENTICATED_ACCESS_KEYWORD.encode("ascii") in self.original:
                 raise_failure(phase, "config_invalid", message_class="vault_config_already_mentions_enable_unauthenticated_access")
             separator = b"" if not self.original or self.original.endswith(b"\n") else b"\n"
@@ -827,7 +922,7 @@ class TemporaryGenerateRootAccess:
         file_restored = reloaded = refuses_again = False
         try:
             self._write(self.original)
-            file_restored = VAULT_CONFIG_PATH.read_bytes() == self.original
+            file_restored = read_regular_file_no_follow(VAULT_CONFIG_PATH)[0] == self.original
         except Exception:
             file_restored = False
         if file_restored:
@@ -1759,5 +1854,6 @@ remote_alpha_vault_workload_auth_bootstrap_main() {
   fi
   remote_alpha_vault_workload_auth_bootstrap_reject_secret_env || return $?
   remote_alpha_vault_workload_auth_bootstrap_require_command python3 || return 1
+  (umask 077 && remote_alpha_prepare_output_dir "$(dirname "${REMOTE_ALPHA_BOOTSTRAP_SUMMARY_PATH}")") || return 1
   remote_alpha_vault_workload_auth_bootstrap_execute
 }
