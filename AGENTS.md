@@ -34,7 +34,7 @@ Additional rules:
 - Do not treat code as design authority for cross-service behavior.
 - If docs and code disagree on factual behavior, code and tests win for current behavior, and the docs must be realigned.
 - If docs disagree on design intent and code does not settle it, surface a design-governance conflict instead of guessing.
-- `PLANS.md`'s closed dated record, `.docs/history/plans-record.md`, keeps the standing its entries had in `PLANS.md`, but it is not part of the read-first path: consult it when a change touches a surface one of its entries names.
+- `.docs/history/plans-record.md`, the closed dated record that moved out of `PLANS.md`, is historical evidence and holds no current authority: where it differs from `PLANS.md` or from an owning `.docs/` contract, they win. It is not part of the read-first path; consult it when a change touches a surface one of its entries names.
 
 ## 4. Required terminology
 

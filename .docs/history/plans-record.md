@@ -1,12 +1,15 @@
 # Execution Substrate Plan Record
 
 This is the closed dated record of `PLANS.md`. On 2026-11-24 it moved here
-verbatim from `PLANS.md` at `trunk_dev` commit
+from `PLANS.md` at `trunk_dev` commit
 `16cbf739eea8c6a673aef8048aefb69cebd5121b`, so that `PLANS.md` opens with
-the current plan instead of its history. Nothing in it was reworded. It
-keeps the standing it had in `PLANS.md`: a superseded or historical section
-stays superseded or historical, and an entry that names an owning `.docs/`
-contract leaves the precise wording to that contract.
+the current plan instead of its history. Nothing in it was reworded. The one
+change is that each relative link target gained a `../../` prefix, so it
+still resolves from this folder.
+
+It is historical evidence and holds no current authority. Where it differs
+from `PLANS.md` or from an owning `.docs/` contract, they win. An entry that
+names an owning contract leaves the precise wording to that contract.
 
 The record is closed. Do not add entries: a change says what it did in its
 pull request description, and `PLANS.md` is edited in place. A test pins this
@@ -14,8 +17,8 @@ file's SHA-256, so any edit is deliberate.
 
 It holds, in this order:
 
-- the `Status` entries up to 2026-11-24, newest first, as they stood at the
-  top of `PLANS.md`;
+- the `Status` entries up to 2026-11-24, in the order they stood at the top
+  of `PLANS.md`;
 - the source publication and selection history of 2026-11-17 and 2026-11-18;
 - the superseded Remote Alpha operator facade routes P0n and P0r, which
   stood under `PLANS.md`'s "Highest-Priority Backlog Entry".
@@ -47,7 +50,7 @@ which no caller can send today, is now refused too.
 
 This entry changes no public behaviour, request contract or stored format.
 The precise wording is owned by
-[the operational handoff contract](.docs/execution_lifecycle/reliable_submit_operational_handoff.md).
+[the operational handoff contract](../../.docs/execution_lifecycle/reliable_submit_operational_handoff.md).
 
 ### PR #12 durable admission: repairs after the red-team re-check (2026-11-24)
 
@@ -82,9 +85,9 @@ target, or with less than 10 MB of memory, which ES accepted before, is now
 refused with `400 invalid_request` on the ordinary path and with no claim on
 the private path. It changes no stored format. The public request contract
 gains both refusals, which
-[the execution lifecycle contracts](.docs/execution_lifecycle/contracts.md)
+[the execution lifecycle contracts](../../.docs/execution_lifecycle/contracts.md)
 state. The precise wording of the private path is owned by
-[the operational handoff contract](.docs/execution_lifecycle/reliable_submit_operational_handoff.md).
+[the operational handoff contract](../../.docs/execution_lifecycle/reliable_submit_operational_handoff.md).
 
 ### PR #12 durable admission: repairs after the third red-team and the guard coverage review (2026-11-23)
 
@@ -121,9 +124,9 @@ plus its repairs became 66 files.
 This entry changes behaviour: a request that holds one of those strings,
 which ES accepted before, is now refused. It changes no stored format. The
 public request contract gains the refusal, which
-[the execution lifecycle contracts](.docs/execution_lifecycle/contracts.md)
+[the execution lifecycle contracts](../../.docs/execution_lifecycle/contracts.md)
 state. The precise wording of the private path is owned by
-[the operational handoff contract](.docs/execution_lifecycle/reliable_submit_operational_handoff.md).
+[the operational handoff contract](../../.docs/execution_lifecycle/reliable_submit_operational_handoff.md).
 
 ### PR #12 durable admission: taking up trunk_dev after its PRs #23 and #22 (2026-11-23)
 
@@ -142,7 +145,7 @@ CI's list, so the path ceiling of PR #12 plus its repairs became 56 files.
 This entry adds one test file, changes another, changes the CI's list of
 environment-only tests and changes documents. It changes no behaviour, no
 stored format and no public contract. The precise wording is owned by
-[the operational handoff contract](.docs/execution_lifecycle/reliable_submit_operational_handoff.md).
+[the operational handoff contract](../../.docs/execution_lifecycle/reliable_submit_operational_handoff.md).
 
 ### PR #12 durable admission: line directives after the sixth audit (2026-11-23)
 
@@ -162,7 +165,7 @@ file, so the path ceiling of PR #12 plus its repairs became 53 files.
 This entry changes guard tests and documents only. It changes no
 behaviour, no stored format and no public contract. The precise wording is
 owned by
-[the operational handoff contract](.docs/execution_lifecycle/reliable_submit_operational_handoff.md).
+[the operational handoff contract](../../.docs/execution_lifecycle/reliable_submit_operational_handoff.md).
 
 ### PR #12 durable admission: repairs after the red-team (2026-11-23)
 
@@ -194,7 +197,7 @@ gets the closed handle, and the hash pin of that file follows it.
 This entry changes guard tests, adopted tests, one comment of production
 code and documents. It changes no behaviour, no stored format and no public
 contract. The precise wording is owned by
-[the operational handoff contract](.docs/execution_lifecycle/reliable_submit_operational_handoff.md).
+[the operational handoff contract](../../.docs/execution_lifecycle/reliable_submit_operational_handoff.md).
 The bytes of this entry need their own audit before PR #12's merge gate.
 
 ### PR #12 durable admission: a limit named after the fifth audit (2026-11-23)
@@ -222,7 +225,7 @@ the compiler itself. The owner document now says so.
 This entry changes documents and the docs contract test only. It selects
 nothing new and changes no production code and no guard. The precise wording
 is owned by
-[the operational handoff contract](.docs/execution_lifecycle/reliable_submit_operational_handoff.md).
+[the operational handoff contract](../../.docs/execution_lifecycle/reliable_submit_operational_handoff.md).
 The bytes of this entry need their own audit, and the red-team review of the
 combined PR #12 is still required.
 
@@ -268,7 +271,7 @@ an evaluator behind the selected built-in set, which can refuse a claim or
 require an input and cannot allow one.
 
 The precise rules are owned by
-[the operational handoff contract](.docs/execution_lifecycle/reliable_submit_operational_handoff.md).
+[the operational handoff contract](../../.docs/execution_lifecycle/reliable_submit_operational_handoff.md).
 This candidate requires a fresh independent audit of its complete committed
 bytes, and the red-team review of the combined PR #12 after it.
 
@@ -306,7 +309,7 @@ of a call passes while the provider is asked about the job, the answer is
 `OperationalCanceled` with the stored run.
 
 The precise rules are owned by
-[the operational handoff contract](.docs/execution_lifecycle/reliable_submit_operational_handoff.md).
+[the operational handoff contract](../../.docs/execution_lifecycle/reliable_submit_operational_handoff.md).
 This candidate requires a fresh independent audit of its complete committed
 bytes, and the red-team review of the combined PR #12 after it.
 
@@ -342,7 +345,7 @@ reasons, which includes what a refused first delivery tells its caller, must
 be selected before the handoff or commissioning has a production caller. The
 outcome table now says where a cancelled call still returns the stored run.
 The precise rules are owned by
-[the operational handoff contract](.docs/execution_lifecycle/reliable_submit_operational_handoff.md).
+[the operational handoff contract](../../.docs/execution_lifecycle/reliable_submit_operational_handoff.md).
 This candidate requires a fresh independent audit of its complete committed
 bytes, and the red-team review of the combined PR #12 after it.
 
@@ -372,7 +375,7 @@ store's admission write gains the COMMIT fault seam the claim writers have.
 The lock statements now say that the three admission operations and the two
 pre-check confirmations hold the custody handle's read lock. The precise
 rules are owned by
-[the operational handoff contract](.docs/execution_lifecycle/reliable_submit_operational_handoff.md).
+[the operational handoff contract](../../.docs/execution_lifecycle/reliable_submit_operational_handoff.md).
 This candidate requires a fresh independent audit of its complete committed
 bytes, and the red-team review of the combined PR #12 after it.
 
@@ -430,7 +433,7 @@ remaining limits. Public keyed refusal, ordinary unkeyed Submit, what
 sender and the provider exchange are unchanged and remain **Current
 invariants** or **Bounded slice rules** as before. The precise table, token,
 cuts, deadline, outcomes and test obligations are owned by
-[the operational handoff contract](.docs/execution_lifecycle/reliable_submit_operational_handoff.md).
+[the operational handoff contract](../../.docs/execution_lifecycle/reliable_submit_operational_handoff.md).
 This candidate requires a fresh independent audit and red-team review of its
 complete committed bytes before it can resolve the PR #12 finding.
 
@@ -498,7 +501,7 @@ release and final sender entry. The already sealed `operational_local_v1` is a
 reconciliation remain readable, while any v1 unmarked first effect refuses
 without resealing. No SQL migration, public/native wiring or policy platform is
 selected. The precise format, locks, outcomes and test obligations are owned by
-[the operational handoff contract](.docs/execution_lifecycle/reliable_submit_operational_handoff.md).
+[the operational handoff contract](../../.docs/execution_lifecycle/reliable_submit_operational_handoff.md).
 This unstaged repair candidate requires a new frozen validation generation and a
 fresh independent audit before any additive commit or PR update.
 Superseded in part by the 2026-11-22 durable admission generation entry: the
@@ -559,7 +562,7 @@ follow record the earlier planning and audit decisions.
 
 Select a candidate **re-derivation of the reliable-submit Reopened redesign
 seam** for the private operational handoff and restart slice. The
-[operational handoff owner contract](.docs/execution_lifecycle/reliable_submit_operational_handoff.md)
+[operational handoff owner contract](../../.docs/execution_lifecycle/reliable_submit_operational_handoff.md)
 selects schema 5, codec 5 and encoded scope 3, a checked current writer turn,
 a permanent marker and one live sender only from the direct acknowledgement
 of the applied first-marker COMMIT. It selects exclusive staging custody

@@ -13,13 +13,14 @@ How this file is kept:
   let the owning `.docs/` contract hold the precise wording.
 - Cite this file by section heading, never by line number, because its lines
   move.
-- The dated record that used to open this file moved verbatim to
-  [`.docs/history/plans-record.md`](.docs/history/plans-record.md) on
-  2026-11-24: the `Status` entries up to that day, the source publication and
+- The dated record that used to open this file moved to
+  [`.docs/history/plans-record.md`](.docs/history/plans-record.md) on 2026-11-24,
+  unreworded: the `Status` entries up to that day, the source publication and
   selection history of 2026-11-17 and 2026-11-18, and the records of the
   superseded Remote Alpha operator facade routes P0n and P0r. The record is
-  closed and keeps the standing it had here. Read it when a change touches a
-  surface one of its entries names.
+  closed and is historical evidence only: it holds no current authority, and
+  where it differs from this file or from an owning `.docs/` contract, they
+  win. Read it when a change touches a surface one of its entries names.
 
 ## Current Planning Objective
 
@@ -112,7 +113,7 @@ The current reopened-seam plan is complete only when all of the following are tr
 
 Until those conditions are met, reopened seams must stay explicit in `PLANS.md`; outside those seams, treat the repository as bounded platform work rather than rewrite-by-default feature work.
 
-## Document Scope And Current Bounded Implementation Status
+## Document Scope And Current Implementation
 
 This document is the authoritative planning document for the current Execution Substrate workstreams, bounded platform hardening, and explicitly reopened seams.
 
