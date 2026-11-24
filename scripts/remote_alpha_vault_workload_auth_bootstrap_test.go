@@ -69,7 +69,9 @@ if prctl(ctypes.c_int(3), zero, zero, zero, zero) != 0:
 func requireBootstrapNotDumpableCapability(t *testing.T) {
 	t.Helper()
 	bootstrapNotDumpableProbe.once.Do(func() {
-		output, err := exec.Command("python3", "-I", "-c", bootstrapNotDumpableProbeScript).CombinedOutput()
+		probe := exec.Command("python3", "-I", "-c", bootstrapNotDumpableProbeScript)
+		probe.Dir = executionSubstrateRepoRoot
+		output, err := probe.CombinedOutput()
 		if err != nil {
 			bootstrapNotDumpableProbe.reason = strings.TrimSpace(string(output))
 			if bootstrapNotDumpableProbe.reason == "" {
