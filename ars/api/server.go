@@ -13,6 +13,7 @@ import (
 
 	"execution-substrate/ars/index"
 	"execution-substrate/ars/store"
+	"execution-substrate/internal/callerallowlist"
 	"execution-substrate/internal/callerauth"
 	"execution-substrate/internal/httpx"
 	"execution-substrate/internal/observability"
@@ -544,10 +545,8 @@ func (s *Server) requireAuthorizedCaller(w http.ResponseWriter, r *http.Request)
 		return true
 	}
 
-	for _, prefix := range s.allowedPathPrefixes {
-		if matchesAuthorizedPathPrefix(caller.ID().Path(), prefix) {
-			return false
-		}
+	if callerallowlist.MatchesAny(caller.ID(), s.allowedPathPrefixes) {
+		return false
 	}
 
 	writeText(w, http.StatusForbidden, "Caller not authorized for this operation")
@@ -560,23 +559,12 @@ func (s *Server) requireWriterCaller(w http.ResponseWriter, r *http.Request) boo
 		return true
 	}
 
-	if matchesAuthorizedPathPrefix(caller.ID().Path(), writerSPIFFEPath) {
+	if callerallowlist.Matches(caller.ID(), writerSPIFFEPath) {
 		return false
 	}
 
 	writeText(w, http.StatusForbidden, "Caller not authorized for this operation")
 	return true
-}
-
-func matchesAuthorizedPathPrefix(path string, prefix string) bool {
-	normalizedPath := strings.Trim(path, "/")
-	normalizedPrefix := strings.Trim(prefix, "/")
-
-	if normalizedPath == "" || normalizedPrefix == "" {
-		return false
-	}
-
-	return normalizedPath == normalizedPrefix || strings.HasPrefix(normalizedPath, normalizedPrefix+"/")
 }
 
 func decodeDigestSegment(raw string) (string, bool) {

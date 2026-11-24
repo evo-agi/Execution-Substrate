@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -796,6 +797,7 @@ func d1LostBeginHook(t *testing.T, executed *bool, original *uintptr) func(conte
 				return errClaimStoreInternal
 			}
 			*original = value.Pointer()
+			d1RetainDriverConn(t, raw)
 			return nil
 		}); err != nil {
 			return err
@@ -808,6 +810,9 @@ func d1LostBeginHook(t *testing.T, executed *bool, original *uintptr) func(conte
 	}
 }
 
+// d1DriverConnIdentity returns the address of conn's driver connection. The
+// address names that connection until the test ends, because
+// d1RetainDriverConn keeps the connection object reachable until then.
 func d1DriverConnIdentity(t *testing.T, conn *sql.Conn) uintptr {
 	t.Helper()
 	var identity uintptr
@@ -817,11 +822,24 @@ func d1DriverConnIdentity(t *testing.T, conn *sql.Conn) uintptr {
 			return errClaimStoreInternal
 		}
 		identity = value.Pointer()
+		d1RetainDriverConn(t, raw)
 		return nil
 	}); err != nil || identity == 0 {
 		t.Fatalf("driver connection identity unavailable: %v", err)
 	}
 	return identity
+}
+
+// d1RetainDriverConn keeps a driver connection object reachable until t ends.
+// The tests name a driver connection by its address, and Go may give the
+// address of an object it has freed to a new object of the same size. Without
+// this, a connection that the pool discarded could be freed after its address
+// was recorded, the next connection could be allocated at that address, and a
+// test that requires a fresh connection would fail although the connection is
+// new. Two recorded addresses are therefore equal exactly when they name the
+// same connection. The object is only kept; nothing calls it outside Raw.
+func d1RetainDriverConn(t *testing.T, raw any) {
+	t.Cleanup(func() { runtime.KeepAlive(raw) })
 }
 
 func TestReplayGrantD1BeginResponseLossQuarantine(t *testing.T) {

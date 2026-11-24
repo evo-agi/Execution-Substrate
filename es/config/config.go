@@ -14,6 +14,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"execution-substrate/internal/callerallowlist"
 	runtimeconfigv1 "execution-substrate/internal/contracts/runtimeconfig/v1"
 )
 
@@ -109,6 +110,10 @@ type NomadConfig struct {
 	BaseURL        string `json:"base_url"`
 	Datacenter     string `json:"datacenter"`
 	TimeoutSeconds int    `json:"timeout_seconds"`
+	// TokenFile names the file that holds ES's Nomad ACL client token (the
+	// token's SecretID). ES reads it once at startup and sends it on every
+	// Nomad request. The token itself never appears in this config.
+	TokenFile string `json:"token_file"`
 }
 
 type ExecutionConfig struct {
@@ -278,45 +283,16 @@ func (c Config) Validate() error {
 		if err := c.Execution.Validate("execution"); err != nil {
 			return err
 		}
+		if err := validateNomadTokenFilePlacement(c.Nomad.TokenFile, c.Execution); err != nil {
+			return err
+		}
 	}
 
 	return nil
 }
 
 func (c AuthorizationConfig) Validate(field string) error {
-	prefixField := field + ".allowed_spiffe_path_prefixes"
-	if len(c.AllowedSPIFFEPathPrefixes) == 0 {
-		return fmt.Errorf("%s is required", prefixField)
-	}
-	for _, prefix := range c.AllowedSPIFFEPathPrefixes {
-		if err := validateAllowedSPIFFEPathPrefix(prefixField, prefix); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func validateAllowedSPIFFEPathPrefix(field string, prefix string) error {
-	if strings.TrimSpace(prefix) == "" {
-		return fmt.Errorf("%s cannot contain empty values", field)
-	}
-	if prefix != strings.TrimSpace(prefix) {
-		return fmt.Errorf("%s values must not contain leading or trailing whitespace", field)
-	}
-
-	segments := strings.Split(prefix, "/")
-	for _, segment := range segments {
-		switch segment {
-		case "":
-			return fmt.Errorf("%s values must not contain empty path segments", field)
-		case ".", "..":
-			return fmt.Errorf("%s values must not contain . or .. path segments", field)
-		}
-	}
-	if len(segments) < 2 {
-		return fmt.Errorf("%s values must contain at least two path segments", field)
-	}
-	return nil
+	return callerallowlist.ValidatePrefixes(field+".allowed_spiffe_path_prefixes", c.AllowedSPIFFEPathPrefixes)
 }
 
 func (c RuntimeConfigConfig) Validate() error {
@@ -467,6 +443,32 @@ func (c NomadConfig) Validate(field string) error {
 	}
 	if c.TimeoutSeconds <= 0 {
 		return fmt.Errorf("%s.timeout_seconds must be greater than 0", field)
+	}
+	if c.TokenFile == "" || !filepath.IsAbs(c.TokenFile) || filepath.Clean(c.TokenFile) != c.TokenFile ||
+		strings.TrimSpace(c.TokenFile) != c.TokenFile || strings.ContainsRune(c.TokenFile, 0) {
+		return fmt.Errorf("%s.token_file must be a clean absolute path", field)
+	}
+	if filepath.Dir(c.TokenFile) == string(os.PathSeparator) {
+		return fmt.Errorf("%s.token_file must have a non-root parent directory", field)
+	}
+	return nil
+}
+
+// validateNomadTokenFilePlacement keeps the Nomad token file outside ES's
+// staging and results storage, where workload-visible or retained material
+// lives, and outside the SPIRE Workload API socket's directory, which every
+// workload gets as a bind mount.
+func validateNomadTokenFilePlacement(tokenFile string, execution ExecutionConfig) error {
+	if pathsOverlap(tokenFile, filepath.Clean(strings.TrimSpace(execution.StagingRootDir))) ||
+		pathsOverlap(tokenFile, filepath.Clean(strings.TrimSpace(execution.ResultsRootDir))) {
+		return fmt.Errorf("nomad.token_file must be outside staging and results storage")
+	}
+	if socketPath := strings.TrimSpace(execution.SPIREWorkloadAPISocketPath); socketPath != "" &&
+		pathsOverlap(tokenFile, filepath.Dir(filepath.Clean(socketPath))) {
+		return fmt.Errorf("nomad.token_file must be outside the directory of execution.spire_workload_api_socket_path, which workloads mount")
+	}
+	if tokenFile == execution.RetainedResultAuth.KeyFile {
+		return fmt.Errorf("nomad.token_file must differ from execution.retained_result_auth.key_file")
 	}
 	return nil
 }
@@ -676,6 +678,7 @@ func (c Config) SubmitConfigured() bool {
 	return strings.TrimSpace(c.Nomad.BaseURL) != "" ||
 		strings.TrimSpace(c.Nomad.Datacenter) != "" ||
 		c.Nomad.TimeoutSeconds != 0 ||
+		c.Nomad.TokenFile != "" ||
 		strings.TrimSpace(c.Execution.StagingRootDir) != "" ||
 		strings.TrimSpace(c.Execution.ResultsRootDir) != "" ||
 		strings.TrimSpace(c.Execution.BaseImage) != "" ||

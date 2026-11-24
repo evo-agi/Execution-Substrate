@@ -71,7 +71,8 @@
   "nomad": {
     "base_url": "http://127.0.0.1:4646",
     "datacenter": "dc1",
-    "timeout_seconds": 5
+    "timeout_seconds": 5,
+    "token_file": "/external/private/nomad-acl/es-token"
   },
   "execution": {
     "staging_root_dir": "/abs/path/es-staging",

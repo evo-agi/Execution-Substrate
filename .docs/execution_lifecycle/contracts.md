@@ -257,7 +257,9 @@ These labels are intentionally different. A contract may be live today, relied o
   equals a configured prefix or starts with that prefix followed by `/`.
 - ES startup config validation keeps those prefixes narrow. Each configured
   prefix must be a relative SPIFFE path prefix with at least two non-empty path
-  segments, no leading or trailing slash, and no `.` or `..` segment.
+  segments, no leading or trailing slash, and no `.` or `..` segment, and
+  every segment uses only the SPIFFE ID path characters, under the
+  allowlist-prefix rule in `.docs/system_overview/contracts.md` section 3A.
 - Single-segment prefixes such as `service` or `operator`, root-like prefixes
   such as `/`, and traversal-like prefixes are rejected because exact-or-subpath
   matching would make them broad namespace grants.
@@ -488,8 +490,10 @@ object or scheduler handoff.
 - `invocation.output_id` is required.
 - `invocation.derivation_spec_digest` and `invocation.output_id` are the only currently shared derivation authorization inputs ES compares against aggregate artifact evidence during `:prepare`.
 - `timeout_seconds` must be non-negative.
-- If `resources` is present, both CPU and memory must be greater than zero.
+- If `resources` is present, CPU must be greater than zero and `memory_mb` must be at least 10, the least memory Nomad registers a task with.
 - If `mode` is present, it must be `sync` or `async`.
+- `invocation.output_id`, every `argv` element, every environment key and value, and every mount target path must not contain `${`, `%{` or a NUL byte. Nomad's client evaluates `${...}` and `%{...}` in each string of a task's driver configuration as an HCL template (with node attributes, node metadata, the task environment and a set of functions), rewrites the escapes `$${` and `%%{`, and replaces `${name}` in environment and meta values; no process can receive a NUL byte. ES refuses such a request with `400 invalid_request` before anything is staged or sent, so the workload receives exactly the strings ES admitted. Other control bytes are passed on as written.
+- Every `argv` element and every mount target path must also be in Unicode Normalization Form C, must hold only code points that are assigned in the Unicode version of ES's normalization tables (today 15.0.0), and must not begin with a byte order mark (U+FEFF). Nomad's client parses each string of a task's driver configuration with HCL, which drops a byte order mark at the start of a string and holds every string in Normalization Form C, so it would pass such a string on in another form than ES admitted, and two mount targets that differ only in normal form would be one path for the container. A string that holds only assigned code points and is in Normalization Form C stays unchanged under every later version of the normalization tables. ES refuses such a request with `400 invalid_request` before anything is staged or sent. Environment keys and values and `invocation.output_id` are not parsed that way and are not held to this rule.
 - Environment keys must not use reserved runtime/control-plane keys.
 - If the manifest runtime interface declares allowed environment keys, provided keys must stay within that set.
 - If mounts are provided, they must satisfy the current mount contract:
@@ -783,7 +787,7 @@ bounded receipt, and Nomad submission through ES.
   - a configured profile image
   - an absolute configured Codex CLI path metadata value
   - configured workload-vault secret path and field metadata for Codex credential material
-- In the repo-owned supported-local runtime surface, submit-readiness for that enabled profile also requires the configured image to be present and Nomad Docker image cleanup to be disabled through `docker.cleanup.image=false`, so repeated client runs from the same prepared environment are not invalidated merely by Nomad's stopped-task image cleanup.
+- In the repo-owned supported-local runtime surface, submit-readiness for that enabled profile also requires the configured image to be present and Nomad Docker image garbage collection to be disabled through the Docker plugin's `gc { image = false }`, so repeated client runs from the same prepared environment are not invalidated merely by Nomad's stopped-task image cleanup.
 - Runtime mounts, when present, must satisfy both the prepare-time mount request rules and submit-time reserved-path checks.
 - Submit resolves payload bytes through the explicit payload digest carried in aggregate evidence, and uses only bytes that hash to that digest (section 5A).
 - Submit reuses the same ES Admission Policy Layer v0 path as `:prepare` and
@@ -1172,6 +1176,7 @@ B2 preserves every status and code above and the public
 | Workload Vault trust capture or materialization | `500` | `submission_failed` | `stage workload vault trust material failed` |
 | Platform-state owner derivation | `500` | `submission_failed` | `derive execution platform state owner failed` |
 | Nomad submission transport, bounded read, decode, trailing document, or missing EvalID | `503` | `submission_failed` | `execution submission failed` |
+| Nomad access control not enforced, an anonymous ACL policy present, or ES's own token not a client token | `503` | `execution_runtime_unavailable` | `execution runtime access control check failed` |
 
 No underlying cause, provider body, cause field, diagnostic field, or new code
 is included. Existing safe specific errors outside these families remain
@@ -1190,6 +1195,20 @@ unchanged.
   trailing JSON, and missing EvalID fail with the fixed submission message.
   Non-success response bodies are not read or exposed.
 - It uses the explicit payload reference carried by the ARS discovery record and cross-checks that reference against aggregate evidence rather than treating `artifact_digest` as the payload locator.
+- ES submits only to a Nomad that enforces access control (ACLs). After the
+  execution plan is resolved and before a run is assigned or anything is
+  staged, ES asks Nomad, with its own token, whether that token is a client
+  token, and asks without a token whether ACLs are enabled and whether an
+  anonymous policy exists. ACLs off, an anonymous policy, any other answer or
+  any transport failure refuses with the fixed access-control message above,
+  creates no run and registers no job. The check runs before every submit, so
+  a Nomad that loses its lock later is refused at the next submit.
+- ES registers jobs only in Nomad namespace `es-submit-v1`, with a
+  least-privilege client token (policy `es-submit-v1`: `submit-job`,
+  `read-job` and `read-logs` in that namespace, nothing else). Status, logs,
+  result and cancel read and stop jobs in the same namespace with the same
+  token. The token file is configured as `nomad.token_file`; see
+  [configuration.md](../system_overview/configuration.md#nomad-access-control).
 - `control-plane-normal-shell/v1` is a bounded runtime contract for the CP-owned normal-shell attempt path, not an ES-owned orchestration, review, checkpoint, or finalization contract.
 
 ### Reopened seams

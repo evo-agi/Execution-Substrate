@@ -10,6 +10,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"execution-substrate/internal/callerallowlist"
 )
 
 type Config struct {
@@ -121,13 +123,8 @@ func (c Config) Validate() error {
 	if strings.TrimSpace(c.Security.BootstrapIssuerCommonName) == "" {
 		return fmt.Errorf("security.bootstrap_issuer_common_name is required")
 	}
-	if len(c.Authorization.AllowedSPIFFEPathPrefixes) == 0 {
-		return fmt.Errorf("authorization.allowed_spiffe_path_prefixes is required")
-	}
-	for _, prefix := range c.Authorization.AllowedSPIFFEPathPrefixes {
-		if strings.TrimSpace(prefix) == "" {
-			return fmt.Errorf("authorization.allowed_spiffe_path_prefixes cannot contain empty values")
-		}
+	if err := callerallowlist.ValidatePrefixes("authorization.allowed_spiffe_path_prefixes", c.Authorization.AllowedSPIFFEPathPrefixes); err != nil {
+		return err
 	}
 
 	if err := c.Dependencies.ArtifactRegistry.Validate("dependencies.artifact_registry"); err != nil {

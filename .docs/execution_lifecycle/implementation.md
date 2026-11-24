@@ -922,7 +922,7 @@ Current job-spec assumptions:
   - default executions use `execution.base_image`
   - `control-plane-normal-shell/v1` executions use `execution.runtime_profiles.control_plane_normal_shell.image`
 - For repo-owned readiness checks, an enabled `control-plane-normal-shell/v1` profile also requires the configured image to be present in the Docker daemon used by Nomad before `submit-ready` is claimed. This is a substrate/tooling readiness check; it does not change ES result-retention semantics.
-- For that supported-local runtime-profile surface, readiness also requires Nomad's Docker client options to report `docker.cleanup.image=false`. The configured profile image is local proof/runtime material, so ES-supported readiness must not claim repeated-run durability while Nomad can remove that image after stopped allocations.
+- For that supported-local runtime-profile surface, readiness also requires Nomad's Docker plugin to report `gc.image = false`. The configured profile image is local proof/runtime material, so ES-supported readiness must not claim repeated-run durability while Nomad can remove that image after stopped allocations.
 
 After submission, ES asks Nomad for:
 
@@ -1126,6 +1126,7 @@ Operator helper ownership in the current slice:
 - Runtime identity handling is reservation and path protection, not token ownership or endpoint implementation.
 - Authority handoff reporting is non-secret submit/status read evidence, not a live credential observer.
 - Runtime-trust loading is startup-time initialization rather than a live refresh path in the current slice.
+- The private operational handoff path, which has no production caller, confirms its commissioned trust with EGS before a retained first effect and refuses unless the last confirmation is less than 30 seconds old. It does not adopt new trust while running, and ordinary Submit does not confirm.
 - Aggregate evidence is the only first-class admission input for the published artifact path.
 
 These are active implementation choices, not automatically permanent design commitments.

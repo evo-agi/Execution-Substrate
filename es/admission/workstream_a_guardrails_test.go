@@ -1291,10 +1291,10 @@ func workstreamASourceOccurrencesOf(t *testing.T, file string, data []byte, term
 					if strings.Contains(n.Name, spelling) {
 						occurrences = append(occurrences, workstreamASourceOccurrence{
 							file:     file,
-							line:     fileSet.Position(n.Pos()).Line,
+							line:     guardPosition(fileSet, n.Pos()).Line,
 							term:     term,
 							spelling: spelling,
-							source:   workstreamASourceLine(lines, fileSet.Position(n.Pos()).Line),
+							source:   workstreamASourceLine(lines, guardPosition(fileSet, n.Pos()).Line),
 							node:     n,
 							syntax:   parsed,
 						})
@@ -1314,10 +1314,10 @@ func workstreamASourceOccurrencesOf(t *testing.T, file string, data []byte, term
 					if strings.Contains(value, spelling) {
 						occurrences = append(occurrences, workstreamASourceOccurrence{
 							file:     file,
-							line:     fileSet.Position(n.Pos()).Line,
+							line:     guardPosition(fileSet, n.Pos()).Line,
 							term:     term,
 							spelling: spelling,
-							source:   workstreamASourceLine(lines, fileSet.Position(n.Pos()).Line),
+							source:   workstreamASourceLine(lines, guardPosition(fileSet, n.Pos()).Line),
 							node:     n,
 							syntax:   parsed,
 						})

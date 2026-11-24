@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"path"
 	"strings"
 	"time"
 
@@ -26,7 +25,10 @@ const (
 type nomadClient struct {
 	baseURL    *url.URL
 	datacenter string
-	client     *http.Client
+	// token is ES's Nomad ACL client token secret, read once at startup from
+	// nomad.token_file. It is sent only in the X-Nomad-Token header.
+	token  string
+	client *http.Client
 }
 
 type nomadJobRegisterResponse struct {
@@ -37,6 +39,9 @@ func (s *Service) Submit(ctx context.Context, req PrepareRequest) (SubmitResult,
 	resolved, resolveErr := s.resolveExecutionForSubmit(ctx, req)
 	if resolveErr != nil {
 		return SubmitResult{}, resolveErr
+	}
+	if accessErr := s.nomadClient.verifyAccessControl(ctx); accessErr != nil {
+		return SubmitResult{}, accessErr
 	}
 	locator, locatorErr := newExecutionLocator()
 	if locatorErr != nil {
@@ -178,6 +183,7 @@ func buildNomadJobSpec(projection resolvedNomadJobProjection) map[string]any {
 		"Job": map[string]any{
 			"ID":          projection.jobID,
 			"Name":        projection.jobID,
+			"Namespace":   nomadSubmitNamespace,
 			"Meta":        jobMeta,
 			"Type":        projection.jobEnvelope.jobType,
 			"Datacenters": copyStringSlice(projection.datacenters),
@@ -228,19 +234,41 @@ func newNomadClient(cfg esconfig.NomadConfig) (*nomadClient, error) {
 	if err != nil {
 		return nil, err
 	}
+	token, err := loadNomadToken(cfg.TokenFile)
+	if err != nil {
+		return nil, err
+	}
 
 	return &nomadClient{
 		baseURL:    baseURL,
 		datacenter: strings.TrimSpace(cfg.Datacenter),
+		token:      token,
 		client: &http.Client{
 			Timeout: time.Duration(cfg.TimeoutSeconds) * time.Second,
 			// TODO: Nomad is treated as an external execution dependency in this
 			// 		 slice, so traceparent propagation remains disabled explicitly.
 			// 		 Future external dependencies must make the same propagation decision
 			// 		 deliberately rather than inheriting internal behavior silently.
-			Transport: observability.WrapRoundTripper("execution", "nomad", false, nil),
+			Transport:     observability.WrapRoundTripper("execution", "nomad", false, newNomadTransport()),
+			CheckRedirect: refuseNomadRedirect,
 		},
 	}, nil
+}
+
+// newNomadTransport is the transport for every request that carries ES's
+// Nomad token. It uses no proxy, so the token reaches only the configured
+// Nomad address.
+func newNomadTransport() *http.Transport {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = nil
+	return transport
+}
+
+// refuseNomadRedirect keeps a redirect answer as the response instead of
+// following it: following would send ES's token to whatever the redirect
+// names. Every Nomad call then sees a non-200 status and fails closed.
+func refuseNomadRedirect(*http.Request, []*http.Request) error {
+	return http.ErrUseLastResponse
 }
 
 func (c *nomadClient) submitJob(ctx context.Context, jobSpec map[string]any) (string, error) {
@@ -249,8 +277,7 @@ func (c *nomadClient) submitJob(ctx context.Context, jobSpec map[string]any) (st
 		return "", fmt.Errorf("marshal nomad job: %w", err)
 	}
 
-	requestURL := c.baseURL.ResolveReference(&url.URL{Path: path.Clean("/v1/jobs")})
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, requestURL.String(), strings.NewReader(string(body)))
+	request, err := c.newJobRequest(ctx, http.MethodPost, "/v1/jobs", nil, strings.NewReader(string(body)))
 	if err != nil {
 		return "", err
 	}

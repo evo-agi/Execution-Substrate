@@ -105,7 +105,7 @@ func remoteAlphaESStatusFixtureScripts(t *testing.T) (scripts, unresolved []remo
 			}
 			text, err := strconv.Unquote(e.Value)
 			if err != nil {
-				t.Fatalf("%s: %v", fset.Position(e.Pos()), err)
+				t.Fatalf("%s: %v", fset.PositionFor(e.Pos(), false), err)
 			}
 			return text, true, true
 		case *ast.ParenExpr:
@@ -150,7 +150,7 @@ func remoteAlphaESStatusFixtureScripts(t *testing.T) (scripts, unresolved []remo
 			if !literal {
 				return true
 			}
-			script := remoteAlphaESStatusFixtureScript{file: name, line: fset.Position(expr.Pos()).Line, text: text}
+			script := remoteAlphaESStatusFixtureScript{file: name, line: fset.PositionFor(expr.Pos(), false).Line, text: text}
 			if resolved {
 				scripts = append(scripts, script)
 			} else {

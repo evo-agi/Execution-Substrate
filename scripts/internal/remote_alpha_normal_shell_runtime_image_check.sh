@@ -11,6 +11,62 @@ remote_alpha_runtime_image_expected_recipe_builder_script="scripts/build_control
 remote_alpha_runtime_image_expected_dockerfile="es/runtimeprofiles/control_plane_normal_shell/Dockerfile"
 remote_alpha_runtime_image_expected_codex_realization="proof"
 
+# Copy of remote_alpha_prepare_output_dir from scripts/internal/remote_alpha_output_dir.sh,
+# which explains it; TestRemoteAlphaOutputDirCopiesMatch keeps the two identical.
+remote_alpha_prepare_output_dir() {
+  python3 -I - "$1" <<'REMOTE_ALPHA_OUTPUT_DIR_PY'
+import os
+import stat
+import sys
+
+if not sys.argv[1]:
+    sys.exit("remote alpha output folder: no folder given")
+if ".." in sys.argv[1].split("/"):
+    sys.exit(f"remote alpha output folder: {sys.argv[1]} has a '..' component; refusing to check a path that is not canonical")
+# The path is checked as given, never normalized: dropping "link/.." would
+# check another folder than the one a later write through the link reaches.
+parts = [part for part in os.path.join(os.getcwd(), sys.argv[1]).split("/") if part not in ("", ".")]
+trusted = {0, os.geteuid()}
+if os.environ.get("SUDO_UID", "").isdigit():
+    trusted.add(int(os.environ["SUDO_UID"]))
+# O_PATH reads a folder's owner and mode without read permission on it, so a
+# folder that root keeps private still passes and sudo can hand it over.
+flags = getattr(os, "O_PATH", os.O_RDONLY) | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+shown = "/"
+fd = os.open("/", flags)
+try:
+    for index in range(len(parts) + 1):
+        info = os.fstat(fd)
+        last = index == len(parts)
+        if info.st_uid not in trusted:
+            sys.exit(
+                f"remote alpha output folder: {shown} belongs to uid {info.st_uid}, not to root, "
+                "the user running this step or the user who ran sudo; refusing to write under it"
+            )
+        if info.st_mode & (stat.S_IWGRP | stat.S_IWOTH) and (
+            last or info.st_uid != 0 or not info.st_mode & stat.S_ISVTX
+        ):
+            sys.exit(f"remote alpha output folder: {shown} can be written by its group or others; refusing to write under it")
+        if last:
+            break
+        shown = "/" + "/".join(parts[: index + 1])
+        try:
+            next_fd = os.open(parts[index], flags, dir_fd=fd)
+        except FileNotFoundError:
+            try:
+                os.mkdir(parts[index], 0o755, dir_fd=fd)
+            except FileExistsError:
+                pass
+            next_fd = os.open(parts[index], flags, dir_fd=fd)
+        os.close(fd)
+        fd = next_fd
+except OSError as exc:
+    sys.exit(f"remote alpha output folder: {shown} is not a directory or is a symbolic link ({exc.strerror})")
+finally:
+    os.close(fd)
+REMOTE_ALPHA_OUTPUT_DIR_PY
+}
+
 remote_alpha_runtime_image_defaults() {
   REMOTE_ALPHA_RUNTIME_IMAGE_REF="${remote_alpha_runtime_image_expected_ref}"
   REMOTE_ALPHA_CODEX_CLI_PATH="${remote_alpha_runtime_image_expected_codex_cli_path}"
@@ -267,7 +323,21 @@ PY
     return 0
   fi
 
-  if ! output="$(nomad node status -json 2>/dev/null)"; then
+  # Nomad enforces ACLs: read node status with the read-only observer token
+  # named by NOMAD_TOKEN_FILE, handed to the nomad CLI in its environment only.
+  local token=""
+  if [[ -n "${NOMAD_TOKEN_FILE:-}" ]]; then
+    source "${REPO_ROOT}/scripts/internal/nomad_acl.sh"
+    if ! token="$(nomad_token_from_file "${NOMAD_TOKEN_FILE}" 2>/dev/null)"; then
+      python3 - <<'PY'
+import json
+print(json.dumps({"ready": False, "ready_nodes": 0, "error": "nomad observer token file is missing or invalid"}, sort_keys=True))
+PY
+      return 0
+    fi
+  fi
+
+  if ! output="$(NOMAD_TOKEN="${token}" nomad node status -json 2>/dev/null)"; then
     python3 - <<'PY'
 import json
 print(json.dumps({"ready": False, "ready_nodes": 0, "error": "nomad node status did not succeed"}, sort_keys=True))
@@ -579,6 +649,7 @@ remote_alpha_runtime_image_check_main() {
   remote_alpha_runtime_image_parse_args "$@" || return $?
 
   remote_alpha_runtime_image_require_command python3 || return 1
+  remote_alpha_prepare_output_dir "$(dirname "${REMOTE_ALPHA_SUMMARY_PATH}")" || return 1
   remote_alpha_runtime_image_require_command hostname || return 1
   remote_alpha_runtime_image_require_command id || return 1
   remote_alpha_runtime_image_require_command docker || return 1
@@ -739,7 +810,7 @@ PY
 
   remote_alpha_runtime_image_validate_summary_file "${summary_tmp_path}"
 
-  mkdir -p "$(dirname "${REMOTE_ALPHA_SUMMARY_PATH}")"
+  remote_alpha_prepare_output_dir "$(dirname "${REMOTE_ALPHA_SUMMARY_PATH}")" || return 1
   install -m 0644 "${summary_tmp_path}" "${REMOTE_ALPHA_SUMMARY_PATH}"
 
   if [[ "$(python3 - "${run_meta_path}" <<'PY'

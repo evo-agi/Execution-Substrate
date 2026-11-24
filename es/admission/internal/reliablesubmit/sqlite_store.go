@@ -164,7 +164,7 @@ func (s *sqliteClaimStore) establishClaim(ctx context.Context, cmd establishClai
 	if err := cmd.record.validate(); err != nil {
 		return establishClaimStoreResult{}, errClaimStoreCorrupt
 	}
-	if cmd.record.codecVersion == durableClaimCodecVersionProgress {
+	if cmd.record.codecVersion >= durableClaimCodecVersionProgress {
 		return establishClaimStoreResult{}, errClaimStoreUnsupported
 	}
 	conn, err := s.checkedConn(ctx)
@@ -258,7 +258,7 @@ func (s *sqliteClaimStore) establishClaim(ctx context.Context, cmd establishClai
 	if err != nil {
 		return establishClaimStoreResult{}, err
 	}
-	if loaded.codecVersion == durableClaimCodecVersionProgress {
+	if loaded.codecVersion >= durableClaimCodecVersionProgress {
 		return establishClaimStoreResult{}, errClaimStoreUnsupported
 	}
 	commitAttempted = true
@@ -509,7 +509,7 @@ func (s *sqliteClaimStore) compareAndSwapClaim(ctx context.Context, cmd compareA
 		}
 		return compareAndSwapClaimStoreResult{}, err
 	}
-	if current.codecVersion == durableClaimCodecVersionProgress {
+	if current.codecVersion >= durableClaimCodecVersionProgress {
 		return compareAndSwapClaimStoreResult{}, errClaimStoreUnsupported
 	}
 	commitAttempted = true
@@ -1400,7 +1400,7 @@ func (b *sqliteNullableBlob) Scan(value any) error {
 }
 
 func (r sqliteClaimRow) record() (durableClaimRecord, error) {
-	if r.codecVersion < 1 || r.codecVersion > int64(durableClaimCodecVersionProgress) ||
+	if r.codecVersion < 1 || r.codecVersion > int64(durableClaimCodecVersionOperational) ||
 		r.phaseTag < 1 || r.phaseTag > int64(durablePhaseProvablyNotAcceptedAfterAssignment) ||
 		r.retentionState < 1 || r.retentionState > int64(durableRetentionTombstoned) ||
 		r.providerObservationKind < 0 || r.providerObservationKind > int64(durableProviderObservationCallUncertain) ||
@@ -1408,12 +1408,27 @@ func (r sqliteClaimRow) record() (durableClaimRecord, error) {
 		return durableClaimRecord{}, errInvalidDurableRecord
 	}
 	var rowID int64
-	if r.codecVersion == int64(durableClaimCodecVersionProgress) {
+	if r.codecVersion >= int64(durableClaimCodecVersionProgress) {
 		if r.rowID <= 0 {
 			return durableClaimRecord{}, errInvalidDurableRecord
 		}
 		rowID = r.rowID
+	}
+	if r.codecVersion == int64(durableClaimCodecVersionProgress) {
 		for _, value := range [][]byte{r.runRef, r.receiptRef, r.effectIntentRef, r.stagingRef,
+			r.dispatchRef, r.providerObservationRef, r.reconciliationRef} {
+			if value != nil && len(value) != 32 {
+				return durableClaimRecord{}, errInvalidDurableRecord
+			}
+		}
+	}
+	if r.codecVersion == int64(durableClaimCodecVersionOperational) {
+		// Keep SQL NULL distinct from empty BLOB before phase or effect
+		// construction. Operational RunRefs retain their full ASCII width.
+		if r.runRef != nil && len(r.runRef) != 69 {
+			return durableClaimRecord{}, errInvalidDurableRecord
+		}
+		for _, value := range [][]byte{r.receiptRef, r.effectIntentRef, r.stagingRef,
 			r.dispatchRef, r.providerObservationRef, r.reconciliationRef} {
 			if value != nil && len(value) != 32 {
 				return durableClaimRecord{}, errInvalidDurableRecord
@@ -1542,7 +1557,7 @@ func sqliteLatestOperationDescriptor(codecVersion uint16, mutation durableMutati
 			return durableLatestOperationDescriptor{}, errInvalidDurableRecord
 		}
 		return newLegacyDurableLatestOperationDescriptor(mutation)
-	case durableClaimCodecVersion, durableClaimCodecVersionSynthetic, durableClaimCodecVersionProgress:
+	case durableClaimCodecVersion, durableClaimCodecVersionSynthetic, durableClaimCodecVersionProgress, durableClaimCodecVersionOperational:
 		if !kind.Valid || !digest.valid || kind.Int64 < 1 || kind.Int64 > int64(durableOperationTombstoneOrExpire) {
 			return durableLatestOperationDescriptor{}, errInvalidDurableRecord
 		}

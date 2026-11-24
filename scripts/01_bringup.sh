@@ -37,7 +37,13 @@ Required for up:
 
 Required additionally for full profile:
   NOMAD_CONFIG
-  NOMAD_ADDR
+  NOMAD_ADDR                          http://127.0.0.1:<port>
+  ES_CONFIG with nomad.token_file     where bring-up writes ES's Nomad token
+
+Optional for full profile:
+  NOMAD_TOKEN_FILE=/abs/path          read-only Nomad token for readiness checks;
+                                      default: the observer token bring-up writes
+                                      under BRINGUP_DIR/nomad-acl
 
 Optional resolve helpers for local hostnames:
   ARS_RESOLVE EGS_RESOLVE AGS_RESOLVE ES_RESOLVE
@@ -51,6 +57,9 @@ Notes:
   check reports service health, prepare-ready state, and submit-ready state
   prepare-only proves bounded preflight readiness only; it intentionally skips submit readiness
   full-profile up still starts Nomad itself from NOMAD_CONFIG as bounded fallback/troubleshooting
+  full-profile up starts Nomad before ES: NOMAD_CONFIG must enable ACLs, and bring-up bootstraps
+  them once (management token in BRINGUP_DIR/nomad-acl/management-token, owner only) and writes
+  ES's token before ES starts, because ES refuses to start without it
   the supported Linux environment story is narrower: pre-managed non-dev Nomad plus natural schedulability without cpu_total_compute override
 EOF
 }
@@ -125,6 +134,43 @@ require_bringup_check_env() {
     require_env NOMAD_ADDR
     verify_es_submit_config_enabled "${ES_CONFIG}"
   fi
+}
+
+# Managed-local Nomad enforces ACLs like every supported Nomad. Bring-up
+# bootstraps them once, keeps the management token under BRINGUP_DIR (owner
+# only), writes ES's client token where es.json's nomad.token_file names it,
+# and reads Nomad with a read-only observer token.
+provision_bringup_nomad_acl() {
+  local acl_dir
+  local es_token_file
+  local es_owner
+
+  acl_dir="$(bringup_nomad_acl_dir)"
+  es_token_file="$(es_config_nomad_token_file "${ES_CONFIG}")" || return 1
+  if [[ -n "${SUPPORTED_LOCAL_ES_ROOTS_PROFILE:-}" ]]; then
+    es_owner="0:0"
+  else
+    es_owner="$(control_plane_operator_user ES)" || return 1
+  fi
+  mkdir -p "${acl_dir}"
+  chmod 0700 "${acl_dir}"
+  if [[ ! -d "$(dirname "${es_token_file}")" ]]; then
+    mkdir -p -m 0700 "$(dirname "${es_token_file}")"
+  fi
+  wait_for_nomad_leader "${READY_TIMEOUT_SECONDS}" || return 1
+  # This profile started Nomad itself, as the current user.
+  if ! python3 -I "$(nomad_acl_tool)" provision \
+    --addr "${NOMAD_ADDR}" \
+    --nomad-uid "$(id -u)" \
+    --management-token-file "${acl_dir}/management-token" \
+    --es-token-file "${es_token_file}" \
+    --es-token-owner "${es_owner}" \
+    --observer-token-file "${acl_dir}/observer-token" \
+    --observer-token-owner "$(id -u):$(id -g)"; then
+    echo "nomad: ACL provisioning failed; if this Nomad's data directory was reset, remove ${acl_dir} and rerun" >&2
+    return 1
+  fi
+  export NOMAD_TOKEN_FILE="${NOMAD_TOKEN_FILE:-${acl_dir}/observer-token}"
 }
 
 start_managed_service() {
@@ -275,17 +321,20 @@ cmd_up() {
   start_managed_service "ags" "${SCRIPT_DIR}/04_start_ags.sh"
   wait_for_service_ready "artifact-governance" "${AGS_URL}" "$(resolve_value AGS_RESOLVE)" "${READY_TIMEOUT_SECONDS}"
 
+  # ES loads its Nomad token at startup, so in the full profile Nomad starts,
+  # and its ACLs are provisioned, before ES.
+  if [[ "${PROFILE}" == "full" ]]; then
+    start_managed_service "nomad" "${SCRIPT_DIR}/06_start_nomad.sh"
+    provision_bringup_nomad_acl
+    wait_for_nomad_ready "${READY_TIMEOUT_SECONDS}"
+  fi
+
   start_managed_service "es" "${SCRIPT_DIR}/05_start_es.sh"
   wait_for_service_ready "execution" "${ES_URL}" "$(resolve_value ES_RESOLVE)" "${READY_TIMEOUT_SECONDS}"
   if [[ "${PROFILE}" == "full" ]]; then
     echo "prepare-ready: true (service health is up and the workload-zone Vault runtime-config blob has already been verified; submit readiness still depends on Docker and Nomad)"
   else
     echo "prepare-ready: true (prepare-only profile; submit readiness is intentionally skipped)"
-  fi
-
-  if [[ "${PROFILE}" == "full" ]]; then
-    start_managed_service "nomad" "${SCRIPT_DIR}/06_start_nomad.sh"
-    wait_for_nomad_ready "${READY_TIMEOUT_SECONDS}"
   fi
 
   VERIFY_RUNTIME_CONFIG=1 "${SCRIPT_DIR}/10_health_check.sh"
@@ -312,6 +361,7 @@ cmd_up() {
 
 cmd_check() {
   require_bringup_check_env "${PROFILE}"
+  default_bringup_nomad_token_file
   VERIFY_RUNTIME_CONFIG=1 "${SCRIPT_DIR}/10_health_check.sh"
 }
 
