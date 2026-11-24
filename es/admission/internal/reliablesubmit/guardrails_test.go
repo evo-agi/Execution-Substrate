@@ -250,7 +250,7 @@ func replayPermitIssuerViolation(source string) string {
 				}
 			}
 			switch {
-			case receiver == "sqliteClaimStore" && typed.Name.Name == "reserveReplaySealUse":
+			case receiver == "sqliteClaimStore" && typed.Name.Name == "reserveReplaySealUseWithScope":
 				reserve = typed
 			case receiver == "privateSealPermit" && typed.Name.Name == "consume":
 				consume = typed
@@ -760,7 +760,16 @@ func assertNoSQLiteOutsideReliableSubmitPackage(t *testing.T, repoRoot string) {
 			if err != nil {
 				t.Fatalf("rel %s: %v", path, err)
 			}
-			if !strings.HasPrefix(filepath.ToSlash(rel), "es/admission/internal/reliablesubmit/") {
+			rel = filepath.ToSlash(rel)
+			// The operational proof provisions and observes only the owned
+			// temporary file at this named test fixture site.
+			if rel == "es/admission/reliable_submit_operational_handoff_test.go" &&
+				!importsModernCSQLite(t, path, data) &&
+				strings.Count(source, `sql.Open("sqlite", filepath.Join(root, "reliable-submit.sqlite3"))`) == 1 &&
+				strings.Count(source, `sql.Open("sqlite"`) == 1 {
+				return nil
+			}
+			if !strings.HasPrefix(rel, "es/admission/internal/reliablesubmit/") {
 				t.Fatalf("SQLite source outside reliable-submit package: %s", rel)
 			}
 		}

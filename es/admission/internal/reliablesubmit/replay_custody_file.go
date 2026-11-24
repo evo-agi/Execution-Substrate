@@ -157,6 +157,10 @@ func (m AuthenticatedClaimMeta) MatchesClaimAndPlan(claim ClaimID, plan BoundPla
 }
 
 func OpenPrivateReplayCustody(ctx context.Context, root string) (*PrivateReplayCustody, error) {
+	return openReplayCustody(ctx, root, false)
+}
+
+func openReplayCustody(ctx context.Context, root string, operational bool) (*PrivateReplayCustody, error) {
 	if !filepath.IsAbs(root) || filepath.Clean(root) != root || rejectSymlinkPath(root) != nil {
 		return nil, errClaimStoreUnsupported
 	}
@@ -174,21 +178,23 @@ func OpenPrivateReplayCustody(ctx context.Context, root string) (*PrivateReplayC
 	if unix.Fstat(rootFD, &rootStat) != nil || !replayDirectoryQualified(rootStat) {
 		return nil, errClaimStoreUnsupported
 	}
-	// The fixture marker is created only with a new synthetic state root. It
-	// refuses silent adoption of an unrelated owner-owned database directory.
-	markerFD, err := openReplayReadOnlyCandidate(rootFD, "synthetic-replay-v1.marker")
-	if err != nil {
-		return nil, errClaimStoreUnsupported
-	}
-	var markerStat unix.Stat_t
-	if unix.Fstat(markerFD, &markerStat) != nil || !replayFileQualified(markerStat) || markerStat.Size != int64(len("synthetic_nonoperational_v1\n")) {
-		_ = unix.Close(markerFD)
-		return nil, errClaimStoreUnsupported
-	}
-	marker, readErr := readReplayFD(markerFD, int(markerStat.Size))
-	markerCloseErr := unix.Close(markerFD)
-	if readErr != nil || markerCloseErr != nil || string(marker) != "synthetic_nonoperational_v1\n" {
-		return nil, errClaimStoreUnsupported
+	if !operational {
+		// The fixture marker is created only with a new synthetic state root. It
+		// refuses silent adoption of an unrelated owner-owned database directory.
+		markerFD, err := openReplayReadOnlyCandidate(rootFD, "synthetic-replay-v1.marker")
+		if err != nil {
+			return nil, errClaimStoreUnsupported
+		}
+		var markerStat unix.Stat_t
+		if unix.Fstat(markerFD, &markerStat) != nil || !replayFileQualified(markerStat) || markerStat.Size != int64(len("synthetic_nonoperational_v1\n")) {
+			_ = unix.Close(markerFD)
+			return nil, errClaimStoreUnsupported
+		}
+		marker, readErr := readReplayFD(markerFD, int(markerStat.Size))
+		markerCloseErr := unix.Close(markerFD)
+		if readErr != nil || markerCloseErr != nil || string(marker) != "synthetic_nonoperational_v1\n" {
+			return nil, errClaimStoreUnsupported
+		}
 	}
 	objectsFD, err := unix.Openat(rootFD, "objects", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {
@@ -227,7 +233,12 @@ func OpenPrivateReplayCustody(ctx context.Context, root string) (*PrivateReplayC
 	if err := checkReplayDBFiles(dbPath); err != nil {
 		return nil, err
 	}
-	store, err := openSQLiteClaimStore(ctx, sqliteClaimStoreOptions{path: dbPath})
+	var store *sqliteClaimStore
+	if operational {
+		store, err = openProvisionedOperationalSQLite(ctx, dbPath)
+	} else {
+		store, err = openSQLiteClaimStore(ctx, sqliteClaimStoreOptions{path: dbPath})
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -390,11 +401,7 @@ func (f PrivateReplayFrozen) valid() bool {
 		return false
 	}
 	intentWire, _ := encodeReplayField(fields[1])
-	contextWire := make([]byte, 0)
-	for _, field := range fields[5:8] {
-		encoded, _ := encodeReplayField(field)
-		contextWire = append(contextWire, encoded...)
-	}
+	contextWire := format.contextFields(fields)
 	wantIntent := replayHMAC(f.keys.binding, format.intentDomain, intentWire)
 	wantContext := replayHMAC(f.keys.binding, format.contextDomain, contextWire)
 	wantDigest := format.frozenDigest(f.keys, f.header, f.plaintext)
@@ -423,7 +430,7 @@ func (c *PrivateReplayCustody) publishReplayOriginal(ctx context.Context, frozen
 		return PrivateReplayPublication{}, errClaimStoreUnavailable
 	}
 	basename := hex.EncodeToString(frozen.objectID[:])
-	fd, held, err := c.allocateReplayObject(ctx, basename)
+	fd, held, err := c.allocateReplayObject(ctx, basename, frozen.format == operationalReplayFormat)
 	if err != nil {
 		return PrivateReplayPublication{}, err
 	}
@@ -579,7 +586,7 @@ func (p *privateSealPermit) matchesAllocation(issuer *sqliteClaimStore, frozen P
 		subtle.ConstantTimeCompare(p.frozenDigest[:], frozen.digest[:]) == 1
 }
 
-func (c *PrivateReplayCustody) allocateReplayObject(ctx context.Context, name string) (int, unix.Stat_t, error) {
+func (c *PrivateReplayCustody) allocateReplayObject(ctx context.Context, name string, strictNames bool) (int, unix.Stat_t, error) {
 	if ctx.Err() != nil || c.checkParents() != nil || !replayObjectRefValid("objects/v1/"+name) {
 		return -1, unix.Stat_t{}, errClaimStoreUnavailable
 	}
@@ -641,7 +648,7 @@ func (c *PrivateReplayCustody) allocateReplayObject(ctx context.Context, name st
 		if ctx.Err() != nil || c.checkParents() != nil {
 			return errClaimStoreUnavailable
 		}
-		if err := c.checkObjectBudget(); err != nil {
+		if err := c.checkObjectBudget(strictNames); err != nil {
 			return err
 		}
 		if ctx.Err() != nil {
@@ -695,10 +702,9 @@ func (c *PrivateReplayCustody) qualifiedEmptyReplayObject(fd int, name string) (
 		held.Size == 0 && visible.Size == 0 && sameReplayIdentity(held, visible)
 }
 
-func (c *PrivateReplayCustody) checkObjectBudget() error {
+func (c *PrivateReplayCustody) checkObjectBudget(strictNames bool) error {
 	// Counting names is only a first-proof resource bound. A name never grants
 	// authority; only a matching committed claim and checked file can do so.
-	var names int
 	fd, err := unix.Openat(c.parentFD, ".", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return errClaimStoreUnavailable
@@ -712,9 +718,18 @@ func (c *PrivateReplayCustody) checkObjectBudget() error {
 	if closeErr != nil {
 		return errClaimStoreUnavailable
 	}
-	names = len(entries)
-	if names >= 32 {
+	if len(entries) >= 32 {
 		return errClaimStoreUnsupported
+	}
+	if strictNames {
+		for _, name := range entries {
+			var st unix.Stat_t
+			if !replayObjectRefValid("objects/v1/"+name) ||
+				unix.Fstatat(c.parentFD, name, &st, unix.AT_SYMLINK_NOFOLLOW) != nil ||
+				!replayFileQualified(st) || st.Dev != c.rootStat.Dev || st.Size < 0 || st.Size > 2<<20 {
+				return errClaimStoreUnsupported
+			}
+		}
 	}
 	return nil
 }
@@ -940,11 +955,7 @@ func verifyReplayFileBytes(file []byte, claim ClaimID, plan BoundPlan, keys Priv
 		return nil, err
 	}
 	intentWire, _ := encodeReplayField(payloadFields[1])
-	otherWire := make([]byte, 0)
-	for _, field := range payloadFields[5:8] {
-		encoded, _ := encodeReplayField(field)
-		otherWire = append(otherWire, encoded...)
-	}
+	otherWire := format.contextFields(payloadFields)
 	wantIntent := replayHMAC(keys.binding, format.intentDomain, intentWire)
 	wantContext := replayHMAC(keys.binding, format.contextDomain, otherWire)
 	if subtle.ConstantTimeCompare(wantIntent[:], intent) != 1 || subtle.ConstantTimeCompare(wantContext[:], contextMAC) != 1 {

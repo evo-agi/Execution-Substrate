@@ -942,7 +942,7 @@ func (r durableClaimRecord) withPhaseAndOperation(phase ClaimPhase, operation du
 	if !operation.complete() {
 		return durableClaimRecord{}, errInvalidDurableLatestOperation
 	}
-	if r.codecVersion == durableClaimCodecVersionProgress {
+	if r.codecVersion == durableClaimCodecVersionProgress || r.codecVersion == durableClaimCodecVersionOperational {
 		claim, plan, snapshot, err := durablePhaseSnapshotFromPhase(phase)
 		if err != nil || !claim.Equal(r.claim) || !plan.EqualBinding(r.plan.Binding()) ||
 			!witnessEqual(plan.Witness(), r.plan.Witness()) || r.revision == math.MaxInt64 ||

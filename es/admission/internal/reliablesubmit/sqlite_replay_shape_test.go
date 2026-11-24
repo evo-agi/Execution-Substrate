@@ -3,6 +3,9 @@ package reliablesubmit
 import (
 	"bytes"
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/sha256"
 	"database/sql"
 	"errors"
 	"os"
@@ -33,13 +36,7 @@ func TestSQLiteV4PreviousSchema3BinaryRefusesWithoutMutation(t *testing.T) {
 	seedProgressMigrationV3WithOriginal(t, path, legacy)
 	progressBase, _ := syntheticReplayRecordFixture(t)
 	progressBase.claim = mustPrivateClaimID(t, progressBase.claim.caller, mustPrivateSubmitKeyRef(t, bytes.Repeat([]byte{64}, 32)))
-	f := newProgressTestFixture(t, root, progressBase, fixtureReplayKeys(t, 63))
-	f.assignAndIntent(FixturePendingBeforeAssignment)
-	progress := f.record()
-	progressObject := f.object(progress)
-	if err := f.custody.Close(); err != nil {
-		t.Fatal(err)
-	}
+	progress, progressObject := seedHistoricalSchema4Progress(t, root, path, progressBase, fixtureReplayKeys(t, 63))
 	before := replayLogicalWitness(t, path, 0)
 	if before.version != 4 || before.digest != sqliteSchema4SHA256 || len(before.claims) != 4 || len(before.ledger) != 4 {
 		t.Fatal("schema-4 probe target must contain all four codecs")
@@ -54,11 +51,134 @@ func TestSQLiteV4PreviousSchema3BinaryRefusesWithoutMutation(t *testing.T) {
 		t.Fatalf("schema-3 probe result: %v\n%s", err, output)
 	}
 	after := replayLogicalWitness(t, path, 0)
-	if !reflect.DeepEqual(before, after) || !bytes.Equal(legacyObject, f.object(legacy)) ||
-		!bytes.Equal(progressObject, f.object(progress)) {
-		t.Fatal("schema-3 refused open mutated logical evidence or sealed original")
+	if !reflect.DeepEqual(before, after) {
+		t.Fatal("schema-3 refused open mutated logical evidence")
+	}
+	for _, preserved := range []struct {
+		record durableClaimRecord
+		bytes  []byte
+	}{{legacy, legacyObject}, {progress, progressObject}} {
+		got, err := os.ReadFile(filepath.Join(root, preserved.record.replay.ref))
+		if err != nil || !bytes.Equal(got, preserved.bytes) {
+			t.Fatalf("schema-3 refused open changed a sealed original: %v", err)
+		}
 	}
 	t.Log("SCHEMA3_REFUSED_SCHEMA4 with complete equal logical witnesses and both sealed originals")
+}
+
+// This target uses the authentic migration-4 literal and the codec-4
+// publication/row representation. The application opener now migrates to 5.
+func seedHistoricalSchema4Progress(t *testing.T, root, path string, base durableClaimRecord, keys PrivateReplayKeys) (durableClaimRecord, []byte) {
+	t.Helper()
+	ctx := context.Background()
+	store := openNonmigratingSQLiteFixture(t, path)
+	defer store.close()
+
+	conn, err := store.checkedConn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	m := sqliteClaimStoreMigrations[3]
+	if m.version != 4 || m.sql != sqliteMigration4SQL {
+		t.Fatal("historical shape has wrong literal")
+	}
+	if err := beginImmediate(ctx, conn); err != nil {
+		t.Fatal(err)
+	}
+	committed := false
+	defer rollbackIfOpen(ctx, conn, &committed)
+	if _, err := conn.ExecContext(ctx, m.sql); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.ExecContext(ctx, "INSERT INTO reliable_submit_migrations VALUES (?,?,?,?)",
+		m.version, m.name, base.createdAt.UnixNano(), sqliteMigrationSHA256(m.sql)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.ExecContext(ctx, "PRAGMA user_version=4"); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifySQLiteSchemaShape(ctx, conn, 4); err != nil {
+		t.Fatal(err)
+	}
+	if err := commit(ctx, conn); err != nil {
+		t.Fatal(err)
+	}
+	committed = true
+
+	frozen, err := freezeReplayOriginal(progressReplayFormat, base.claim, base.plan, keys, progressFixturePayload(t, base, keys))
+	if err != nil {
+		t.Fatal(err)
+	}
+	permit, err := store.reserveReplaySealUse(ctx, keys, frozen.digest, false)
+	if err != nil || !permit.consume(store, keys.envelopeID, keys.envelopeFP, frozen.digest) {
+		t.Fatalf("reserve historical original: %v", err)
+	}
+	block, err := aes.NewCipher(keys.envelope[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	gcm, err := cipher.NewGCMWithRandomNonce(block)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealed := append(bytes.Clone(frozen.header), gcm.Seal(nil, nil, frozen.plaintext, frozen.aad)...)
+	d := replayClaimDescriptor{
+		scope: 2, intentFormat: 1, wrapperFormat: 2, payloadFormat: 2, algorithm: 1,
+		ref: replayObjectRef(frozen.objectID), size: int64(len(sealed)), fileSHA: sha256.Sum256(sealed),
+		bindingKeyID: keys.bindingID, bindingKeyFP: keys.bindingFP,
+		envelopeKeyID: keys.envelopeID, envelopeKeyFP: keys.envelopeFP,
+		intentMAC: frozen.intentMAC, contextMAC: frozen.contextMAC,
+	}
+	if err := os.WriteFile(filepath.Join(root, d.ref), sealed, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if actual, err := verifyReplayFileBytes(sealed, base.claim, base.plan, keys, d); err != nil || !bytes.Equal(actual, frozen.plaintext) {
+		t.Fatalf("invalid historical original: %v", err)
+	}
+	initial, err := newProgressInitialClaim(base.claim, base.plan, durablePhasePendingBeforeAssignment, d, base.createdAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reply, err := store.establishProgressRow(ctx, initial)
+	if err != nil || !reply.applied {
+		t.Fatalf("establish historical progress: %v", err)
+	}
+	run := NewFixtureRunRef([32]byte{11}).value
+	assigned, err := hydrateAssignedPhase(base.claim, base.plan, run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := someClaimTime(base.createdAt)
+	facts := reply.record.effects
+	mutation := NewFixtureMutationRef([32]byte{12}).value
+	op, err := deriveDurableOperationDescriptor(mutation, durableOperationAssignRun, 1, operationPartRunRef(run))
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, err := reply.record.withPhaseAndOperation(assigned, op, base.createdAt, at, facts, reply.record.retention)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assignedReply, err := store.compareAndSwapProgress(ctx, reply.record, next, keys)
+	if err != nil || !assignedReply.applied {
+		t.Fatalf("assign historical progress: %v", err)
+	}
+	intent := NewFixtureFactRef([32]byte{13}).value
+	facts.intent = newDurableEffectRefTime(intent, base.createdAt)
+	op, err = deriveDurableOperationDescriptor(NewFixtureMutationRef([32]byte{14}).value, durableOperationRecordProviderEffectIntent, 2, operationPartFactRef(intent))
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, err = assignedReply.record.withPhaseAndOperation(assigned, op, base.createdAt, at, facts, assignedReply.record.retention)
+	if err != nil {
+		t.Fatal(err)
+	}
+	intentReply, err := store.compareAndSwapProgress(ctx, assignedReply.record, next, keys)
+	if err != nil || !intentReply.applied {
+		t.Fatalf("record historical progress intent: %v", err)
+	}
+	return intentReply.record, sealed
 }
 
 func TestSQLiteV3ReopenRejectsMixedSchemaLedger(t *testing.T) {
@@ -81,7 +201,7 @@ func TestSQLiteV3ReopenRejectsMixedSchemaLedger(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		expected := []string{sqliteSchema1SHA256, sqliteSchema2SHA256, sqliteSchema3SHA256, sqliteSchema4SHA256}[migration.version-1]
+		expected := []string{sqliteSchema1SHA256, sqliteSchema2SHA256, sqliteSchema3SHA256, sqliteSchema4SHA256, sqliteSchema5SHA256}[migration.version-1]
 		if digest != expected {
 			t.Fatalf("version %d source shape changed", migration.version)
 		}

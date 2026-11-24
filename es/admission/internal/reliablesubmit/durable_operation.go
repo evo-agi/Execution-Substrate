@@ -119,6 +119,13 @@ func (d durableLatestOperationDescriptor) validForCodec(codecVersion uint16, las
 		return d.complete() && d.kind == durableOperationEstablishClaim
 	case durableClaimCodecVersionProgress:
 		return d.complete() && d.kind >= durableOperationEstablishClaim && d.kind < durableOperationTombstoneOrExpire
+	case durableClaimCodecVersionOperational:
+		switch d.kind {
+		case durableOperationEstablishClaim, durableOperationAssignRun, durableOperationRecordProviderEffectIntent,
+			durableOperationRecordStagingEvidence, durableOperationRecordProviderDispatchAttempt, durableOperationAcceptWithReceipt:
+			return d.complete()
+		}
+		return false
 	default:
 		return false
 	}

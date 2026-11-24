@@ -754,12 +754,46 @@ func TestPrivateReplayFiniteCallerAndNoRuntimeWiring(t *testing.T) {
 				t.Fatalf("missing selected private helper %s", name)
 			}
 		}
-		if err := validateTypedReferenceInventory("private PB1 caller closure", pkg.referencesTo(requirePackageFunction(t, pkg, "buildReliableSubmitAdmissionBinding")), map[string]int{
-			"es/admission/reliable_submit_replay_private.go:Service.composePrivateSyntheticReplay": 1,
-			"es/admission/reliable_submit_replay_hydration.go:decodePrivateReplayOriginal":         1,
-		}, true); err != nil {
+		refs := pkg.referencesTo(requirePackageFunction(t, pkg, "buildReliableSubmitAdmissionBinding"))
+		want := privateBindingCallerInventory()
+		if err := validateTypedReferenceInventory("private PB1 caller closure", refs, want, true); err != nil {
 			t.Fatal(err)
 		}
+		var operational typedReference
+		for _, ref := range refs {
+			if ref.site == "es/admission/reliable_submit_operational_format.go:verifyOperationalOriginal" {
+				operational = ref
+			}
+		}
+		if operational.site == "" {
+			t.Fatal("operational verification reference was not measured")
+		}
+		t.Run(view.target.String(), func(t *testing.T) {
+			extraSite := operational
+			extraSite.site = "es/admission/reliable_submit_operational_format.go:unreviewedDirectCall"
+			escape := operational
+			escape.directCall = false
+			closure := operational
+			closure.insideFuncLiteral = true
+			for _, tc := range []struct {
+				name   string
+				ref    typedReference
+				reason string
+			}{
+				{"UnlistedDirectSite", extraSite, "reference inventory changed"},
+				{"ExtraDirectOccurrence", operational, "reference inventory changed"},
+				{"OperationalFunctionValue", escape, "indirect reference escape"},
+				{"OperationalClosure", closure, "indirect reference escape"},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					changed := append(append([]typedReference(nil), refs...), tc.ref)
+					err := validateTypedReferenceInventory("private PB1 caller closure", changed, want, true)
+					if err == nil || !strings.Contains(err.Error(), tc.reason) {
+						t.Fatalf("expected the typed guard to reject %s: %v", tc.name, err)
+					}
+				})
+			}
+		})
 	}
 	for _, rel := range []string{"es/admission/submit.go", "es/api/server.go", "es/app/app.go", "es/config/config.go"} {
 		source := mustReadAdmissionRepoSource(t, admissionRepoRoot(t), rel)
@@ -778,6 +812,32 @@ func TestPrivateReplayFiniteCallerAndNoRuntimeWiring(t *testing.T) {
 	}
 	if err := bindingValidateOtherProductionSource("es/admission/reliable_submit_replay_private.go", file); err == nil {
 		t.Fatal("function-value escape passed private guard")
+	}
+
+	const operationalPath = "es/admission/reliable_submit_operational_format.go"
+	operational := mustReadAdmissionSource(t, "reliable_submit_operational_format.go")
+	const direct = "assessment, err := buildReliableSubmitAdmissionBinding(resolved, family, keys.key)"
+	const escaped = "builder := buildReliableSubmitAdmissionBinding\n\tassessment, err := builder(resolved, family, keys.key)"
+	mutant = strings.Replace(operational, direct, escaped, 1)
+	if mutant == operational {
+		t.Fatal("operational caller mutation anchor missing")
+	}
+	file, err = parser.ParseFile(token.NewFileSet(), operationalPath, mutant, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bindingValidateOtherProductionSource(operationalPath, file); err == nil ||
+		!strings.Contains(err.Error(), "references private binding producer buildReliableSubmitAdmissionBinding") {
+		t.Fatalf("operational function-value escape did not reach the binding guard: %v", err)
+	}
+}
+
+func privateBindingCallerInventory() map[string]int {
+	return map[string]int{
+		"es/admission/reliable_submit_replay_private.go:Service.composePrivateSyntheticReplay":   1,
+		"es/admission/reliable_submit_replay_hydration.go:decodePrivateReplayOriginal":           1,
+		"es/admission/reliable_submit_operational_handoff.go:Service.composeOperationalOriginal": 1,
+		"es/admission/reliable_submit_operational_format.go:verifyOperationalOriginal":           1,
 	}
 }
 
