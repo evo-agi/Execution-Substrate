@@ -134,6 +134,7 @@ architecture.
 - in bring-up, ARS runs as the operator's UID and primary GID; before starting ARS, `scripts/02_start_ars.sh` (and `scripts/01_bringup.sh up`, before any service) refuses unless `storage.root_dir` and `storage.index_file` are absolute and in normal form (ARS opens them exactly as written, while its mounts use the normal form), creates a missing storage root as the operator, refuses unless the index file exists as a regular file, not a symbolic link, and then does what ARS does with its storage in a short-lived container that runs exactly as ARS will: the same image, the same UID:GID with no supplementary groups, the same mounts, and ARS's container name, so Docker refuses the check while an ARS container still exists. In it, the check searches every directory on the way to the storage root and the index directory, creates and removes a file in the index directory and in every storage directory, finds its file again by listing each storage directory, reads the index and every stored file, refuses any symbolic link or special file below the storage root (ARS never creates one), and last rewrites the index the way ARS does (a new `0600` file with the same content, renamed over it), so the kernel decides each step for that identity. The check starts no process per directory and takes seconds even at ARS's full `sha256/xx/yy` fan-out of 65,794 directories, and `scripts/01_bringup.sh up` starts ARS's readiness wait only once ARS's launcher has passed its own run of the check
 - `security.bootstrap_issuer_common_name` must name the legacy/bootstrap issuer that ARS rejects on both read and write paths
 - `authorization.allowed_spiffe_path_prefixes` must allow ES and other intended readers
+- ARS validates each allowed SPIFFE path prefix at startup with the same rule as AGS and ES (see the ES section below and `contracts.md` section 3A)
 - AGS writes use the dedicated `service/artifact-governance` writer identity
 
 ## AGS
@@ -172,6 +173,7 @@ architecture.
 - `signer.algorithm` must be `ed25519`
 - `dependencies.artifact_registry.base_url` must be an absolute `https://` URL
 - `authorization.allowed_spiffe_path_prefixes` must contain the SPIFFE path prefixes allowed to call `POST /v1/artifacts:publish`
+- AGS validates each allowed SPIFFE path prefix at startup with the same rule as ARS and ES (see the ES section below and `contracts.md` section 3A)
 - signer key material must match the public key ES verifies and the signer key ID EGS allows
 - the current repo-owned runbooks, proofs, and generated helper configs keep this allowlist operator-only, but the caller allowlist is now deployment-configured rather than hard-coded in AGS
 - the first repo-owned non-operator caller activation path uses `service/control-plane`; prefer a narrow allowlist such as `["operator/local", "service/control-plane"]` over a broad `service/` prefix
@@ -281,6 +283,11 @@ For a minimal active system, `runtime_trust.signer_policy.allowed_signers` must 
   `operator/local` are accepted; `service`, `operator`, `/`, `.`, `..`,
   `service//control-plane`, `service/./control-plane`, and
   `service/../control-plane` are rejected.
+- Every segment must use only `A-Z`, `a-z`, `0-9`, `.`, `-`, and `_`, the
+  SPIFFE ID path characters, so white space, a full
+  `spiffe://execution.internal/...` ID, a query, or percent encoding is also
+  rejected: no authenticated caller path could match such a prefix. ARS, AGS,
+  and ES share this rule through `internal/callerallowlist`.
 - ES authorization keeps exact-or-subpath matching after config validation:
   `service/control-plane` authorizes `service/control-plane` and
   `service/control-plane/provider`, but not `service/control-plane-evil`.

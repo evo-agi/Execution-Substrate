@@ -206,11 +206,24 @@ route, stays with each service and is described in that service's section.
   allowlists, and the full canonical SPIFFE ID where a service compares
   whole identities (AGS publication caller binding, CGS caller/workload
   match). A path that is not in canonical form never reaches authorization.
+- ARS, AGS, and ES check and match their path-prefix allowlists with the one
+  shared package `internal/callerallowlist`. A configured prefix must be the
+  path of a SPIFFE ID that this section accepts, without its leading slash,
+  and must have at least two segments. Each of those services refuses any
+  other prefix at startup: no authenticated caller could ever match it, or a
+  one-segment prefix such as `service` would grant every identity below it. A
+  prefix matches the caller path that equals it and every caller path that
+  continues it after a `/`, so `operator/local` matches `operator/local/a` but
+  not `operator/local-evil`. A prefix that fails the rule matches nothing.
 
 ### Ownership boundary
 
 - `internal/callerauth` owns caller authentication only. It does not own any
   allowlist, route, policy decision, or service grammar.
+- `internal/callerallowlist` owns only the shape of a valid path prefix and
+  the prefix match that ARS, AGS, and ES share. It owns no allowlist content
+  and no route: which prefixes each of those services configures, and which
+  routes they open, stay with that service.
 - Each service owns its authorization: ARS read prefixes and its writer
   path, AGS and ES configured prefixes, EGS's fixed caller list, and CGS's
   caller/workload match plus `id.conf`.
@@ -349,7 +362,7 @@ Current response shape:
 `Current invariant`
 
 - AGS requires authenticated SPIFFE caller identity and rejects bootstrap-PKI callers under the caller authentication contract in section 3A.
-- AGS authorizes publish callers by configured SPIFFE path prefixes from `authorization.allowed_spiffe_path_prefixes`.
+- AGS authorizes publish callers by configured SPIFFE path prefixes from `authorization.allowed_spiffe_path_prefixes`, checked at startup and matched under the allowlist-prefix rule in section 3A.
 - The current repo-owned runbooks, proofs, and generated helper configs keep that AGS caller allowlist operator-only:
   - `spiffe://execution.internal/operator/local`
 - The first repo-owned non-operator AGS caller activation path is Control Plane at:
@@ -413,7 +426,7 @@ Provide content-addressed blob storage, integrity enforcement, artifact registra
 - Descriptor/manifest support data remain ARS-owned secondary publication
   detail for publication/support reads; they are not required ES admission
   inputs on the current hot path.
-- Other read callers may access ARS if their SPIFFE path matches configured allowed prefixes.
+- Other read callers may access ARS if their SPIFFE path matches configured allowed prefixes. ARS checks those prefixes at startup and matches them under the allowlist-prefix rule in section 3A.
 
 ### Public surface
 
@@ -788,9 +801,11 @@ Current successful response shapes:
 - ES authorizes execution and lifecycle callers by configured SPIFFE path prefixes from `authorization.allowed_spiffe_path_prefixes`.
 - ES prefix matching is exact-or-subpath: the authenticated caller path must
   equal a configured prefix or start with that prefix followed by `/`.
-- ES startup config validation rejects broad or malformed prefixes. Accepted
+- ES startup config validation rejects broad or malformed prefixes under the
+  allowlist-prefix rule in section 3A, which ARS and AGS share. Accepted
   prefixes are relative SPIFFE path prefixes with at least two non-empty path
-  segments, no leading or trailing slash, and no `.` or `..` segment. A
+  segments, no leading or trailing slash, and no `.` or `..` segment, and
+  every segment uses only `A-Z`, `a-z`, `0-9`, `.`, `-`, and `_`. A
   single-segment prefix such as `service` or `operator` is invalid.
 - `GET /v1/executions:contract` uses that same caller authorization and returns only non-secret, non-run-specific producer compatibility metadata.
 - The current repo-owned runbooks, proofs, and generated helper configs keep that ES caller allowlist operator-only:

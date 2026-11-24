@@ -40,7 +40,6 @@ COMMAND_TERMINATION_GRACE_SECONDS = 1.0
 READ_CHUNK_SIZE = 16384
 
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
-URI_SAN_RE = re.compile(r"(?:^|[\s,])URI:([^,\s]+)")
 FORBIDDEN_PATTERNS = [
     re.compile(r"-----BEGIN"),
     re.compile(r"PRIVATE KEY"),
@@ -493,7 +492,7 @@ def sudo_allowlist(paths: Paths) -> set[tuple[str, ...]]:
         (OPENSSL, "x509", "-in", paths.cert, "-noout", "-fingerprint", "-sha256"),
         (OPENSSL, "x509", "-in", paths.cert, "-pubkey", "-noout"),
         (OPENSSL, "x509", "-in", paths.cert, "-noout", "-subject", "-issuer", "-nameopt", "RFC2253"),
-        (OPENSSL, "x509", "-in", paths.cert, "-noout", "-ext", "subjectAltName"),
+        (OPENSSL, "x509", "-in", paths.cert, "-outform", "DER"),
         (OPENSSL, "verify", "-CAfile", paths.ca, paths.cert),
         (OPENSSL, "pkey", "-in", paths.key, "-pubout", "-outform", "DER"),
         (SHA256SUM, paths.cert),
@@ -627,21 +626,270 @@ def rfc2253_component_values(name: str, key: str) -> list[str] | None:
     return values
 
 
-def extract_uri_sans(stdout: bytes) -> list[str] | None:
-    """Return every URI SAN in certificate order, duplicates included."""
-    try:
-        text = stdout.decode("utf-8", "strict")
-    except UnicodeDecodeError:
+# The same client certificate decoder is in
+# scripts/internal/remote_alpha_operator_healthcheck_tls_renew.sh. Both tools
+# must stay self-contained (this collector is streamed over SSH and its hash is
+# pinned; the staged renew route copies only its two shell scripts), so each
+# carries the decoder, and
+# TestRemoteAlphaOperatorHealthcheckTLSCertificateDecoderCopiesMatch fails
+# unless the lines between the BEGIN and END markers are identical in both files.
+# BEGIN client-certificate-der-decoder
+SUBJECT_ALT_NAME_OID = bytes((0x55, 0x1D, 0x11))
+BASIC_CONSTRAINTS_OID = bytes((0x55, 0x1D, 0x13))
+KEY_USAGE_OID = bytes((0x55, 0x1D, 0x0F))
+EXTENDED_KEY_USAGE_OID = bytes((0x55, 0x1D, 0x25))
+CLIENT_AUTH_USAGE_OID = bytes((0x2B, 0x06, 0x01, 0x05, 0x05, 0x07, 0x03, 0x02))
+ANY_EXTENDED_KEY_USAGE_OID = bytes((0x55, 0x1D, 0x25, 0x00))
+MAX_URI_SAN_LENGTH = 256
+
+
+def der_element(data: bytes, offset: int, end: int) -> tuple[int, int, int] | None:
+    """Return (tag, content start, content end) of the DER element at offset.
+
+    Only what certificates use is accepted: one-byte tags and definite,
+    minimally encoded lengths that stay inside data[:end].
+    """
+    if offset + 2 > end:
         return None
-    if contains_control(text):
+    tag = data[offset]
+    if tag & 0x1F == 0x1F:
+        return None
+    first = data[offset + 1]
+    position = offset + 2
+    if first < 0x80:
+        length = first
+    else:
+        count = first & 0x7F
+        if count == 0 or count > 4 or position + count > end or data[position] == 0:
+            return None
+        length = int.from_bytes(data[position : position + count], "big")
+        if length < 0x80:
+            return None
+        position += count
+    if length > end - position:
+        return None
+    return tag, position, position + length
+
+
+def der_children(data: bytes, start: int, end: int) -> list[tuple[int, int, int]] | None:
+    """Return the DER elements that exactly fill data[start:end]."""
+    children: list[tuple[int, int, int]] = []
+    offset = start
+    while offset < end:
+        element = der_element(data, offset, end)
+        if element is None:
+            return None
+        children.append(element)
+        offset = element[2]
+    return children
+
+
+def der_value(data: bytes, value: tuple[int, int, int]) -> tuple[int, int, int] | None:
+    """Return the one element that exactly fills an extension's octet string."""
+    element = der_element(data, value[1], value[2])
+    if element is None or element[2] != value[2]:
+        return None
+    return element
+
+
+def der_object_identifier_valid(content: bytes) -> bool:
+    """Report whether content is an object identifier that Go's parser reads.
+
+    That is at least one subidentifier, each in minimal base 128 and below
+    2**31. Go also refuses a subidentifier longer than five bytes, which the
+    value check already refuses once its leading byte is not 0x80.
+    """
+    if not content:
+        return False
+    position = 0
+    while position < len(content):
+        if content[position] == 0x80:
+            return False
+        value = 0
+        while True:
+            if position >= len(content) or value >= 1 << 24:
+                return False
+            byte = content[position]
+            position += 1
+            value = (value << 7) | (byte & 0x7F)
+            if byte < 0x80:
+                break
+    return True
+
+
+def der_unsigned_integer_valid(content: bytes) -> bool:
+    """Report whether content is a minimal, non-negative INTEGER below 2**63."""
+    if not content or content[0] >= 0x80:
+        return False
+    if len(content) > 1 and content[0] == 0 and content[1] < 0x80:
+        return False
+    return int.from_bytes(content, "big") < 1 << 63
+
+
+def san_uris(der: bytes, value: tuple[int, int, int]) -> list[str] | None:
+    """Return the URI entries of a subjectAltName value, or None if malformed."""
+    names = der_value(der, value)
+    if names is None or names[0] != 0x30:
+        return None
+    general_names = der_children(der, names[1], names[2])
+    if general_names is None:
         return None
     uris: list[str] = []
-    for match in URI_SAN_RE.finditer(text):
-        uri = match.group(1)
-        if not uri or len(uri) > 256 or any(ord(ch) < 33 or ord(ch) > 126 for ch in uri):
+    for tag, start, end in general_names:
+        raw = der[start:end]
+        # Go's certificate parser refuses an rfc822Name or dNSName that is not
+        # IA5 text and an iPAddress that is not 4 or 16 bytes long, and ignores
+        # every entry but those and the URIs, a constructed [6] among them. A
+        # URI must be printable ASCII without spaces, which is stricter than
+        # Go's IA5 rule for URIs.
+        if tag in (0x81, 0x82) and any(byte >= 0x80 for byte in raw):
             return None
-        uris.append(uri)
+        if tag == 0x87 and len(raw) not in (4, 16):
+            return None
+        if tag != 0x86:
+            continue
+        if not raw or len(raw) > MAX_URI_SAN_LENGTH or any(byte < 33 or byte > 126 for byte in raw):
+            return None
+        uris.append(raw.decode("ascii"))
     return uris
+
+
+def basic_constraints_ca(der: bytes, value: tuple[int, int, int]) -> bool | None:
+    """Return the cA flag of a basicConstraints value, or None if malformed."""
+    sequence = der_value(der, value)
+    if sequence is None or sequence[0] != 0x30:
+        return None
+    fields = der_children(der, sequence[1], sequence[2])
+    if fields is None:
+        return None
+    is_ca = False
+    if fields and fields[0][0] == 0x01:
+        tag, start, end = fields.pop(0)
+        if end - start != 1 or der[start] not in (0x00, 0xFF):
+            return None
+        is_ca = der[start] == 0xFF
+    if fields and fields[0][0] == 0x02:
+        tag, start, end = fields.pop(0)
+        if not der_unsigned_integer_valid(der[start:end]):
+            return None
+    if fields:
+        return None
+    return is_ca
+
+
+def key_usage_signs_certificates(der: bytes, value: tuple[int, int, int]) -> bool | None:
+    """Report whether a keyUsage value has keyCertSign or cRLSign, or None if malformed."""
+    bits = der_value(der, value)
+    if bits is None or bits[0] != 0x03:
+        return None
+    content = der[bits[1] : bits[2]]
+    if not content or content[0] > 7 or (len(content) == 1 and content[0] != 0):
+        return None
+    if len(content) > 1 and content[-1] & ((1 << content[0]) - 1):
+        return None
+    # Bit 5 is keyCertSign and bit 6 is cRLSign, both in the first byte.
+    return len(content) > 1 and content[1] & 0x06 != 0
+
+
+def extended_key_usages(der: bytes, value: tuple[int, int, int]) -> list[bytes] | None:
+    """Return the object identifiers of an extKeyUsage value, or None if malformed."""
+    sequence = der_value(der, value)
+    if sequence is None or sequence[0] != 0x30:
+        return None
+    usages = der_children(der, sequence[1], sequence[2])
+    if usages is None:
+        return None
+    oids: list[bytes] = []
+    for tag, start, end in usages:
+        if tag != 0x06 or not der_object_identifier_valid(der[start:end]):
+            return None
+        oids.append(der[start:end])
+    return oids
+
+
+def decode_client_certificate(der: bytes) -> dict[str, object] | None:
+    """Return what ES's caller rule reads from a DER client certificate.
+
+    The certificate is decoded structurally. OpenSSL's printed SAN text cannot
+    tell a URI that contains ", DNS:" apart from two SAN entries, or a DNS name
+    that contains ", URI:" apart from a URI SAN. The result has:
+
+    - "uri_sans": every URI SAN in certificate order, duplicates included;
+    - "end_entity": False when basicConstraints marks a CA or keyUsage has
+      keyCertSign or cRLSign, which ES refuses (contracts.md section 3A);
+    - "client_auth": False when an extKeyUsage is present and allows neither
+      clientAuth nor anyExtendedKeyUsage, which Go's TLS server refuses.
+
+    None means the certificate, its extensions or a name is malformed, or the
+    certificate is not version 3 although it has extensions, which Go would
+    then ignore.
+    """
+    certificate = der_element(der, 0, len(der))
+    if certificate is None or certificate[0] != 0x30 or certificate[2] != len(der):
+        return None
+    parts = der_children(der, certificate[1], certificate[2])
+    if parts is None or [part[0] for part in parts] != [0x30, 0x30, 0x03]:
+        return None
+    tbs = der_children(der, parts[0][1], parts[0][2])
+    if tbs is None:
+        return None
+    facts: dict[str, object] = {"uri_sans": [], "end_entity": True, "client_auth": True}
+    if not any(item[0] == 0xA3 for item in tbs):
+        return facts
+    # Go reads extensions only from a version 3 TBSCertificate, as its last
+    # field after the optional issuer and subject unique identifiers.
+    layout = [item[0] for item in tbs]
+    if layout[:7] != [0xA0, 0x02, 0x30, 0x30, 0x30, 0x30, 0x30]:
+        return None
+    if layout[7:] not in ([0xA3], [0x81, 0xA3], [0x82, 0xA3], [0x81, 0x82, 0xA3]):
+        return None
+    version = der_children(der, tbs[0][1], tbs[0][2])
+    if version is None or len(version) != 1 or version[0][0] != 0x02 or der[version[0][1] : version[0][2]] != b"\x02":
+        return None
+    wrapper = der_children(der, tbs[-1][1], tbs[-1][2])
+    if wrapper is None or len(wrapper) != 1 or wrapper[0][0] != 0x30:
+        return None
+    extensions = der_children(der, wrapper[0][1], wrapper[0][2])
+    if extensions is None:
+        return None
+    values: dict[bytes, tuple[int, int, int]] = {}
+    for tag, start, end in extensions:
+        if tag != 0x30:
+            return None
+        fields = der_children(der, start, end)
+        if fields is None or len(fields) not in {2, 3} or fields[0][0] != 0x06 or fields[-1][0] != 0x04:
+            return None
+        if len(fields) == 3 and (fields[1][0] != 0x01 or fields[1][2] - fields[1][1] != 1 or der[fields[1][1]] not in (0x00, 0xFF)):
+            return None
+        oid = der[fields[0][1] : fields[0][2]]
+        if not der_object_identifier_valid(oid) or oid in values:
+            return None
+        values[oid] = fields[-1]
+    if SUBJECT_ALT_NAME_OID in values:
+        uris = san_uris(der, values[SUBJECT_ALT_NAME_OID])
+        if uris is None:
+            return None
+        facts["uri_sans"] = uris
+    if BASIC_CONSTRAINTS_OID in values:
+        is_ca = basic_constraints_ca(der, values[BASIC_CONSTRAINTS_OID])
+        if is_ca is None:
+            return None
+        if is_ca:
+            facts["end_entity"] = False
+    if KEY_USAGE_OID in values:
+        signs = key_usage_signs_certificates(der, values[KEY_USAGE_OID])
+        if signs is None:
+            return None
+        if signs:
+            facts["end_entity"] = False
+    if EXTENDED_KEY_USAGE_OID in values:
+        usages = extended_key_usages(der, values[EXTENDED_KEY_USAGE_OID])
+        if usages is None:
+            return None
+        if usages and CLIENT_AUTH_USAGE_OID not in usages and ANY_EXTENDED_KEY_USAGE_OID not in usages:
+            facts["client_auth"] = False
+    return facts
+# END client-certificate-der-decoder
 
 
 def command_unavailable(result: CommandResult) -> bool:
@@ -722,7 +970,7 @@ def classify_identity(
     paths: Paths,
     runner: Callable[[tuple[str, ...], bytes | None], CommandResult],
 ) -> tuple[dict[str, object], bool, bool]:
-    result = run_fixed((OPENSSL, "x509", "-in", paths.cert, "-noout", "-ext", "subjectAltName"), paths=paths, runner=runner)
+    result = run_fixed((OPENSSL, "x509", "-in", paths.cert, "-outform", "DER"), paths=paths, runner=runner)
     if not result.ok:
         return (
             {
@@ -736,8 +984,8 @@ def classify_identity(
             result.fixed_sudo_used,
             result.noninteractive_auth_required,
         )
-    uris = extract_uri_sans(result.stdout)
-    if uris is None:
+    facts = decode_client_certificate(result.stdout)
+    if facts is None:
         return (
             {
                 "status": "fail",
@@ -752,17 +1000,24 @@ def classify_identity(
         )
     # ES refuses a certificate with more than one URI SAN (caller
     # authentication contract, contracts.md section 3A), so the expected
-    # identity must be the certificate's only URI SAN.
+    # identity must be the certificate's only URI SAN. ES also refuses a leaf
+    # that is not an end-entity certificate, and Go's TLS server refuses one
+    # whose extended key usage does not allow client authentication.
+    uris = facts["uri_sans"]
     expected = uris == [EXPECTED_OPERATOR_URI]
-    legacy = LEGACY_OPERATOR_URI in uris
-    if expected:
+    legacy = isinstance(uris, list) and LEGACY_OPERATOR_URI in uris
+    status = "fail"
+    failure: str | None = "identity_mismatch"
+    if not expected:
+        classification = "legacy_operator_identity" if legacy else "identity_mismatch"
+    elif facts["end_entity"] is not True:
+        classification = "identity_not_end_entity"
+    elif facts["client_auth"] is not True:
+        classification = "identity_not_for_client_auth"
+    else:
         status = "pass"
         classification = "expected_operator_local_identity"
         failure = None
-    else:
-        status = "fail"
-        classification = "legacy_operator_identity" if legacy else "identity_mismatch"
-        failure = "identity_mismatch"
     return (
         {
             "status": status,

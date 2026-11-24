@@ -93,6 +93,7 @@ Top-level interaction notes:
 - `internal/httpx` is cross-cutting transport support for strict JSON request decoding and consistent HTTP response writing.
 - `internal/observability` is cross-cutting support, not a system boundary.
 - `internal/callerauth` is cross-cutting caller authentication shared by all five services; authorization stays in each service.
+- `internal/callerallowlist` is the cross-cutting path-prefix allowlist rule shared by ARS, AGS, and ES: which configured prefixes are valid and how a caller's path matches one. Each of those services owns its own allowlist.
 
 ## 5. Primary system flows
 
