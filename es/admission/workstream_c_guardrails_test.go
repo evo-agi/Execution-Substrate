@@ -8687,9 +8687,12 @@ es/admission/executionpackage.go:executionPackageLayout.stagePayload
 es/admission/executionpackage.go:executionPackageLayout.stageWorkloadVaultTrustMaterial
 es/admission/executionpackage.go:materializeExecutionInputs
 es/admission/executionpackage.go:newExecutionPackageLayoutFromHost
+es/admission/lifecycle.go:nomadUnavailableError
 es/admission/mounts.go:materializeValidatedMountEntries
 es/admission/mounts.go:materializeValidatedRuntimeMounts
 es/admission/mounts.go:mountArtifactError
+es/admission/nomad_access.go:nomadClient.newJobRequest
+es/admission/nomad_access.go:nomadClient.verifyAccessControl
 es/admission/resolved_execution_plan.go:copyResolvedJobEnvelope
 es/admission/resolved_execution_plan.go:copyResolvedMountPlans
 es/admission/resolved_execution_plan.go:copyStagedRuntimeMounts
@@ -8750,13 +8753,14 @@ es/admission/submit.go:nomadClient.submitJob
 es/admission/submit.go:stagingClaimSubmissionError
 `),
 		external: trancheB1InventoryOccurrences(`
-builtin.append 15
+builtin.append 16
 builtin.copy 3
 builtin.delete 1
-builtin.len 31
+builtin.len 33
 builtin.make 11
 bytes:bytes.NewReader 1
 crypto/rand:crypto/rand.Read 1
+crypto/subtle:crypto/subtle.ConstantTimeCompare 1
 encoding/hex:encoding/hex.EncodeToString 1
 encoding/json:(*encoding/json.Decoder).Decode 2
 encoding/json:encoding/json.Marshal 1
@@ -8780,11 +8784,13 @@ golang.org/x/sys/unix:golang.org/x/sys/unix.Syscall 1
 golang.org/x/sys/unix:golang.org/x/sys/unix.Write 1
 io/fs:(io/fs.FileMode).Perm 8
 io:io.ReadAll 1
-net/http:(*net/http.Client).Do 1
-net/http:(net/http.Header).Set 1
-net/http:net/http.NewRequestWithContext 1
-net/url:(*net/url.URL).ResolveReference 1
-net/url:(*net/url.URL).String 1
+net/http:(*net/http.Client).Do 3
+net/http:(net/http.Header).Set 3
+net/http:net/http.NewRequestWithContext 3
+net/url:(*net/url.URL).ResolveReference 3
+net/url:(*net/url.URL).String 3
+net/url:(net/url.Values).Encode 1
+net/url:(net/url.Values).Set 1
 os:(*os.File).Close 1
 os:os.NewFile 1
 path/filepath:path/filepath.Base 1
@@ -8809,6 +8815,7 @@ strings:strings.TrimSpace 8
 `),
 		dynamic: trancheB1InventoryOccurrences(`
 es/admission/mounts.go:materializeValidatedRuntimeMounts-><builtin>:(error).Error 1
+es/admission/nomad_access.go:nomadClient.verifyAccessControl->io:(io.Closer).Close 2
 es/admission/staging_custody.go:claimStagingCustodyFromQualifiedRoot->call-through-failAfterCreation 10
 es/admission/staging_custody.go:stagingCustody.ensureDirectory->call-through-beforeStagingChildRegistrationStatForTest 1
 es/admission/staging_custody.go:stagingCustody.ensureDirectory->reviewed-package-global.beforeStagingChildRegistrationStatForTest 2
@@ -8831,6 +8838,7 @@ es/admission/submit.go:Service.Submit#post-freeze:func-literal
 es/admission/submit.go:Service.Submit#post-freeze:func-literal
 `),
 		structured: trancheB1InventoryOccurrences(`
+es/admission/nomad_access.go:nomadClient.verifyAccessControl->execution-substrate/es/admission.decodeBoundedCompatibleJSONDocumentResponse 1
 es/admission/resource_limits.go:readBoundedResponseBody->io:io.ReadAll 1
 es/admission/service.go:decodeBoundedCompatibleJSONDocumentResponse->bytes:bytes.NewReader 1
 es/admission/service.go:decodeBoundedCompatibleJSONDocumentResponse->execution-substrate/es/admission.decodeCompatibleJSONDocument 1
@@ -8862,15 +8870,16 @@ es/admission/execution_roots_linux.go:validateLinuxStatxIdentity
 `)...)
 		inventory.reachable = linuxReachable
 		inventory.external = trancheB1InventoryOccurrences(`
-builtin.append 18
+builtin.append 19
 builtin.copy 3
 builtin.delete 1
-builtin.len 54
+builtin.len 56
 builtin.make 13
 bytes:bytes.Equal 1
 bytes:bytes.NewReader 1
 bytes:bytes.Split 1
 crypto/rand:crypto/rand.Read 1
+crypto/subtle:crypto/subtle.ConstantTimeCompare 1
 encoding/hex:encoding/hex.EncodeToString 1
 encoding/json:(*encoding/json.Decoder).Decode 2
 encoding/json:encoding/json.Marshal 1
@@ -8895,11 +8904,13 @@ golang.org/x/sys/unix:golang.org/x/sys/unix.Write 1
 io/fs:(io/fs.FileMode).Perm 8
 io:io.LimitReader 1
 io:io.ReadAll 2
-net/http:(*net/http.Client).Do 1
-net/http:(net/http.Header).Set 1
-net/http:net/http.NewRequestWithContext 1
-net/url:(*net/url.URL).ResolveReference 1
-net/url:(*net/url.URL).String 1
+net/http:(*net/http.Client).Do 3
+net/http:(net/http.Header).Set 3
+net/http:net/http.NewRequestWithContext 3
+net/url:(*net/url.URL).ResolveReference 3
+net/url:(*net/url.URL).String 3
+net/url:(net/url.Values).Encode 1
+net/url:(net/url.Values).Set 1
 os:(*os.File).Close 2
 os:os.NewFile 1
 os:os.Open 1

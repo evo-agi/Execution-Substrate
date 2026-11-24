@@ -582,8 +582,9 @@ For `BRINGUP_PROFILE=full`, the current readiness helpers require:
 - Nomad has a leader
 - Nomad reports `config.DevMode=false`
 - at least one ready Nomad client has positive natural `cpu.totalcompute` and a healthy Docker driver
+- Nomad enables only the Docker driver, and its Docker plugin refuses privileged containers and allows only ES's runtime-helper capabilities
 - any enabled runtime-profile image is present in the Docker daemon used by Nomad
-- for enabled local runtime-profile images, Nomad Docker image cleanup is disabled through `client.options["docker.cleanup.image"]="false"`
+- for enabled local runtime-profile images, Nomad Docker image garbage collection is disabled through the Docker plugin's `gc { image = false }`
 - the same-path staging invariant has been recorded by the bring-up path
 
 For `control-plane-normal-shell/v1`, this additionally means the configured profile image for `execution.runtime_profiles.control_plane_normal_shell.image` exists locally before readiness is claimed.
@@ -594,7 +595,7 @@ Readiness can still become false after a green check if an operator or external 
 
 - removes the profile image with `docker image rm`, `docker system prune`, or an equivalent cleanup
 - resets or replaces the Docker daemon used by Nomad
-- restarts Nomad with config that omits `docker.cleanup.image=false`
+- restarts Nomad with config that omits the Docker plugin's `gc { image = false }`
 - switches ES config to a different runtime-profile image
 - changes or removes the SPIRE, Vault, TLS, staging, or results paths that ES submit depends on
 - exhausts host resources or introduces placement constraints not covered by the readiness check
@@ -793,7 +794,7 @@ Route based on the first failed boundary. Do not over-classify a later symptom u
 | `POST /v1/artifacts:publish` fails with publish request validation or evidence assembly errors | The artifact publication boundary failed before ES runtime. | CP request construction or AGS publication config, depending on the concrete response |
 | `POST /v1/executions:prepare` fails with evidence, trust, runtime-config, unsupported profile, or request/fact mismatch errors | ES rejected the request before runtime handoff. | ES/AGS/ARS/EGS inputs for evidence/trust/config; CP if the request shape or profile annotation is wrong |
 | CP contract probe expects routes or fields beyond the listed API surface | The probe is asking for behavior outside the accepted ES client contract. | CP proof harness / contract probe |
-| `submit-ready: false`, missing Docker, missing Nomad leader/client, `DevMode=true`, `cpu.totalcompute=0`, missing profile image, or missing `docker.cleanup.image=false` | ES is refusing to claim runtime readiness honestly. The fix is substrate/profile/image lifecycle, not a runtime contract widening. | Local environment / Infra Manager for bootstrap and lifecycle; ES docs define the readiness truth |
+| `submit-ready: false`, missing Docker, missing Nomad leader/client, `DevMode=true`, `cpu.totalcompute=0`, missing profile image, missing Docker plugin `gc.image = false`, or Docker limits not as supported | ES is refusing to claim runtime readiness honestly. The fix is substrate/profile/image lifecycle, not a runtime contract widening. | Local environment / Infra Manager for bootstrap and lifecycle; ES docs define the readiness truth |
 | `:submit` returns `execution_runtime_unavailable`, `submission_failed`, or a Nomad/Docker runtime placement problem after readiness | Runtime handoff reached the substrate, but the substrate could not accept or run that workload shape. | ES runtime/profile config or local Nomad/Docker environment, based on the concrete failure |
 | `status`, `logs`, `result`, or `cancel` returns `execution_not_found` for a syntactically valid `run_id` | ES has no lifecycle observation for that `run_id` through the current Nomad-backed lookup. This is run lifecycle observation absence, not producer declaration incompatibility or submit readiness. | ES/Nomad lifecycle observation first; CP if the `run_id` was never submitted to this ES instance |
 | Workload starts, then identity endpoint or Vault login fails | The run passed ES submit. Check endpoint use, helper-private SPIRE availability, workload-Vault metadata, CA trust, and the proof-scoped Vault target. | ES runtime contract if injected values/files are wrong; workload/CP runner if it misuses them; local environment for SPIRE/Vault availability |
@@ -807,7 +808,7 @@ Route based on the first failed boundary. Do not over-classify a later symptom u
 3. Confirm CP is using the direct API surface, not assuming helper script behavior as product contract.
 4. Confirm AGS and ES configs allow `spiffe://execution.internal/service/control-plane` narrowly.
 5. For `control-plane-normal-shell/v1`, confirm the request sets `invocation.annotations["execution_substrate.runtime_profile"]="control-plane-normal-shell/v1"` and the published artifact has `network_access=true`.
-6. Confirm the configured profile image exists in the Docker daemon used by Nomad and Nomad reports `docker.cleanup.image=false`.
+6. Confirm the configured profile image exists in the Docker daemon used by Nomad and Nomad's Docker plugin reports `gc.image = false`.
 7. If the workload starts, inspect logs for endpoint/Vault/trust-material failures before treating the issue as submit readiness.
 8. If retained result fetch fails, distinguish `result_unavailable` from `result_not_found`, then check whether the workload wrote result files under `/execution/run/result`.
 

@@ -267,7 +267,21 @@ PY
     return 0
   fi
 
-  if ! output="$(nomad node status -json 2>/dev/null)"; then
+  # Nomad enforces ACLs: read node status with the read-only observer token
+  # named by NOMAD_TOKEN_FILE, handed to the nomad CLI in its environment only.
+  local token=""
+  if [[ -n "${NOMAD_TOKEN_FILE:-}" ]]; then
+    source "${REPO_ROOT}/scripts/internal/nomad_acl.sh"
+    if ! token="$(nomad_token_from_file "${NOMAD_TOKEN_FILE}" 2>/dev/null)"; then
+      python3 - <<'PY'
+import json
+print(json.dumps({"ready": False, "ready_nodes": 0, "error": "nomad observer token file is missing or invalid"}, sort_keys=True))
+PY
+      return 0
+    fi
+  fi
+
+  if ! output="$(NOMAD_TOKEN="${token}" nomad node status -json 2>/dev/null)"; then
     python3 - <<'PY'
 import json
 print(json.dumps({"ready": False, "ready_nodes": 0, "error": "nomad node status did not succeed"}, sort_keys=True))

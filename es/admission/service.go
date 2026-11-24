@@ -240,6 +240,13 @@ func NewService(cfg esconfig.Config) (*Service, error) {
 		if err != nil {
 			return nil, err
 		}
+		// The Nomad token is a startup prerequisite like the result key: a
+		// missing or unsafe token file refuses startup before any execution
+		// root is provisioned.
+		nomadClient, err = newNomadClient(cfg.Nomad)
+		if err != nil {
+			return nil, fmt.Errorf("build nomad client: %w", err)
+		}
 		roots, err := provisionExecutionRoots(cfg.Execution.StagingRootDir, cfg.Execution.ResultsRootDir, nil)
 		if err != nil {
 			return nil, err
@@ -262,10 +269,6 @@ func NewService(cfg esconfig.Config) (*Service, error) {
 		}
 		if err := validateExecutionRuntimeInputs(cfg.Execution); err != nil {
 			return nil, err
-		}
-		nomadClient, err = newNomadClient(cfg.Nomad)
-		if err != nil {
-			return nil, fmt.Errorf("build nomad client: %w", err)
 		}
 	}
 

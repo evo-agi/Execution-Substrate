@@ -596,7 +596,13 @@ ES does not own:
    bounded receipt. Submit cannot bypass the admission policy path used by
    prepare. Policy denial occurs before payload staging or Nomad submission.
    More generally, admission/prefreeze failure occurs before run assignment,
-   payload staging, or Nomad submission. The first post-freeze filesystem
+   payload staging, or Nomad submission. Right after the freeze and before run
+   assignment, Submit checks that Nomad enforces access control (ES's token
+   resolves as a client token, ACLs are enabled, no anonymous policy); a
+   failed check refuses with the fixed `execution_runtime_unavailable`
+   access-control message and creates no run, staging or job. Admission
+   refusals therefore keep their precedence over runtime unavailability. The
+   first post-freeze filesystem
    mutation is exclusive run-root creation. The opened identity is held and
    verified through descriptor-relative materialization and complete
    expected-tree revalidation immediately before the one Nomad registration.
@@ -896,7 +902,8 @@ by the separate private `hostMaterializationContext`. The normalized results
 root participates in current service/custody qualification but is outside the
 semantic plan, host context, provider-job projection, and B1 binding.
 
-After the freeze, `Service.Submit` assigns one locator and calls
+After the freeze, `Service.Submit` first runs the Nomad access-control check
+(no run, staging or job on refusal), then assigns one locator and calls
 `newResolvedRunProjection` with the plan, host context, and locator. Narrow
 typed projections then supply `materializeExecutionInputs`, authority handoff,
 `buildNomadJobSpec`, handoff revalidation, and the one Nomad submission. No
