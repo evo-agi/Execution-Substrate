@@ -8,6 +8,62 @@ remote_alpha_es_service_tls_renew_backup_root_default="/var/tmp/execution-substr
 remote_alpha_es_service_tls_renew_summary_path_default="/var/tmp/execution-substrate-remote-alpha/es-service-tls-renew-summary.json"
 remote_alpha_es_governance_tls_renew_summary_path_default="/var/tmp/execution-substrate-remote-alpha/es-governance-tls-renew-summary.json"
 
+# Copy of remote_alpha_prepare_output_dir from scripts/internal/remote_alpha_output_dir.sh,
+# which explains it; TestRemoteAlphaOutputDirCopiesMatch keeps the two identical.
+remote_alpha_prepare_output_dir() {
+  python3 -I - "$1" <<'REMOTE_ALPHA_OUTPUT_DIR_PY'
+import os
+import stat
+import sys
+
+if not sys.argv[1]:
+    sys.exit("remote alpha output folder: no folder given")
+if ".." in sys.argv[1].split("/"):
+    sys.exit(f"remote alpha output folder: {sys.argv[1]} has a '..' component; refusing to check a path that is not canonical")
+# The path is checked as given, never normalized: dropping "link/.." would
+# check another folder than the one a later write through the link reaches.
+parts = [part for part in os.path.join(os.getcwd(), sys.argv[1]).split("/") if part not in ("", ".")]
+trusted = {0, os.geteuid()}
+if os.environ.get("SUDO_UID", "").isdigit():
+    trusted.add(int(os.environ["SUDO_UID"]))
+# O_PATH reads a folder's owner and mode without read permission on it, so a
+# folder that root keeps private still passes and sudo can hand it over.
+flags = getattr(os, "O_PATH", os.O_RDONLY) | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+shown = "/"
+fd = os.open("/", flags)
+try:
+    for index in range(len(parts) + 1):
+        info = os.fstat(fd)
+        last = index == len(parts)
+        if info.st_uid not in trusted:
+            sys.exit(
+                f"remote alpha output folder: {shown} belongs to uid {info.st_uid}, not to root, "
+                "the user running this step or the user who ran sudo; refusing to write under it"
+            )
+        if info.st_mode & (stat.S_IWGRP | stat.S_IWOTH) and (
+            last or info.st_uid != 0 or not info.st_mode & stat.S_ISVTX
+        ):
+            sys.exit(f"remote alpha output folder: {shown} can be written by its group or others; refusing to write under it")
+        if last:
+            break
+        shown = "/" + "/".join(parts[: index + 1])
+        try:
+            next_fd = os.open(parts[index], flags, dir_fd=fd)
+        except FileNotFoundError:
+            try:
+                os.mkdir(parts[index], 0o755, dir_fd=fd)
+            except FileExistsError:
+                pass
+            next_fd = os.open(parts[index], flags, dir_fd=fd)
+        os.close(fd)
+        fd = next_fd
+except OSError as exc:
+    sys.exit(f"remote alpha output folder: {shown} is not a directory or is a symbolic link ({exc.strerror})")
+finally:
+    os.close(fd)
+REMOTE_ALPHA_OUTPUT_DIR_PY
+}
+
 remote_alpha_es_service_tls_renew_init_expected_inputs() {
   remote_alpha_es_service_tls_renew_expected_ars_config_path="${remote_alpha_es_service_tls_renew_expected_ars_config_path:-/etc/execution-substrate/ars.json}"
   remote_alpha_es_service_tls_renew_expected_ags_config_path="${remote_alpha_es_service_tls_renew_expected_ags_config_path:-/etc/execution-substrate/ags.json}"
@@ -880,7 +936,7 @@ remote_alpha_es_service_tls_renew_create_backup() {
   local timestamp backup_dir material_dir path rel target
   shift
   timestamp="$(remote_alpha_es_service_tls_renew_timestamp)"
-  mkdir -p -- "${REMOTE_ALPHA_BACKUP_ROOT}"
+  remote_alpha_prepare_output_dir "${REMOTE_ALPHA_BACKUP_ROOT}" || return 1
   backup_dir="$(mktemp -d "${REMOTE_ALPHA_BACKUP_ROOT}/es-service-tls-renew-${timestamp}-XXXXXX")"
   material_dir="${backup_dir}/material"
   mkdir -p -- "${material_dir}"
@@ -1291,6 +1347,11 @@ remote_alpha_es_service_tls_renew_main() {
   remote_alpha_es_service_tls_renew_apply_scope_defaults || return $?
   remote_alpha_es_service_tls_renew_require_root || return 1
   remote_alpha_es_service_tls_renew_require_command python3 || return 1
+  remote_alpha_prepare_output_dir "$(dirname "${REMOTE_ALPHA_SUMMARY_PATH}")" || return 1
+  # Only a renewal writes backups; status must leave the backup root alone.
+  if [[ "${REMOTE_ALPHA_OPERATION_MODE}" == "execute_renew" ]]; then
+    remote_alpha_prepare_output_dir "${REMOTE_ALPHA_BACKUP_ROOT}" || return 1
+  fi
   remote_alpha_es_service_tls_renew_require_command openssl || return 1
 
   tmpdir="$(mktemp -d)"

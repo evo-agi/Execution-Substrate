@@ -15,6 +15,62 @@ remote_alpha_migrate_vault_service_user_non_authority_labels=(
   "not_support_bundle_authority"
 )
 
+# Copy of remote_alpha_prepare_output_dir from scripts/internal/remote_alpha_output_dir.sh,
+# which explains it; TestRemoteAlphaOutputDirCopiesMatch keeps the two identical.
+remote_alpha_prepare_output_dir() {
+  python3 -I - "$1" <<'REMOTE_ALPHA_OUTPUT_DIR_PY'
+import os
+import stat
+import sys
+
+if not sys.argv[1]:
+    sys.exit("remote alpha output folder: no folder given")
+if ".." in sys.argv[1].split("/"):
+    sys.exit(f"remote alpha output folder: {sys.argv[1]} has a '..' component; refusing to check a path that is not canonical")
+# The path is checked as given, never normalized: dropping "link/.." would
+# check another folder than the one a later write through the link reaches.
+parts = [part for part in os.path.join(os.getcwd(), sys.argv[1]).split("/") if part not in ("", ".")]
+trusted = {0, os.geteuid()}
+if os.environ.get("SUDO_UID", "").isdigit():
+    trusted.add(int(os.environ["SUDO_UID"]))
+# O_PATH reads a folder's owner and mode without read permission on it, so a
+# folder that root keeps private still passes and sudo can hand it over.
+flags = getattr(os, "O_PATH", os.O_RDONLY) | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+shown = "/"
+fd = os.open("/", flags)
+try:
+    for index in range(len(parts) + 1):
+        info = os.fstat(fd)
+        last = index == len(parts)
+        if info.st_uid not in trusted:
+            sys.exit(
+                f"remote alpha output folder: {shown} belongs to uid {info.st_uid}, not to root, "
+                "the user running this step or the user who ran sudo; refusing to write under it"
+            )
+        if info.st_mode & (stat.S_IWGRP | stat.S_IWOTH) and (
+            last or info.st_uid != 0 or not info.st_mode & stat.S_ISVTX
+        ):
+            sys.exit(f"remote alpha output folder: {shown} can be written by its group or others; refusing to write under it")
+        if last:
+            break
+        shown = "/" + "/".join(parts[: index + 1])
+        try:
+            next_fd = os.open(parts[index], flags, dir_fd=fd)
+        except FileNotFoundError:
+            try:
+                os.mkdir(parts[index], 0o755, dir_fd=fd)
+            except FileExistsError:
+                pass
+            next_fd = os.open(parts[index], flags, dir_fd=fd)
+        os.close(fd)
+        fd = next_fd
+except OSError as exc:
+    sys.exit(f"remote alpha output folder: {shown} is not a directory or is a symbolic link ({exc.strerror})")
+finally:
+    os.close(fd)
+REMOTE_ALPHA_OUTPUT_DIR_PY
+}
+
 remote_alpha_migrate_vault_service_user_defaults() {
   REMOTE_ALPHA_OPERATION_MODE="check_only"
   REMOTE_ALPHA_SERVICE_NAME="${REMOTE_ALPHA_SERVICE_NAME:-vault}"
@@ -283,6 +339,11 @@ remote_alpha_migrate_vault_service_user_main() {
     remote_alpha_migrate_vault_service_user_require_root || return 1
   fi
   remote_alpha_migrate_vault_service_user_require_command python3 || return 1
+  remote_alpha_prepare_output_dir "$(dirname "${REMOTE_ALPHA_SUMMARY_PATH}")" || return 1
+  if [[ "${REMOTE_ALPHA_OPERATION_MODE}" == "apply" ]]; then
+    remote_alpha_prepare_output_dir "$(dirname "${REMOTE_ALPHA_PRECHECK_PATH}")" || return 1
+    remote_alpha_prepare_output_dir "${REMOTE_ALPHA_BACKUP_ROOT_DIR}" || return 1
+  fi
   if [[ "$(id -u)" == "0" ]]; then
     remote_alpha_migrate_vault_service_user_require_command systemctl || return 1
   fi
@@ -2056,7 +2117,10 @@ PY
     return 1
   }
 
-  mkdir -p "$(dirname "${REMOTE_ALPHA_SUMMARY_PATH}")"
+  remote_alpha_prepare_output_dir "$(dirname "${REMOTE_ALPHA_SUMMARY_PATH}")" || {
+    rm -f -- "${summary_tmp_path}"
+    return 1
+  }
   mv "${summary_tmp_path}" "${REMOTE_ALPHA_SUMMARY_PATH}"
   /bin/chmod 0644 "${REMOTE_ALPHA_SUMMARY_PATH}" 2>/dev/null || true
   printf '%s\n' "${REMOTE_ALPHA_SUMMARY_PATH}"
