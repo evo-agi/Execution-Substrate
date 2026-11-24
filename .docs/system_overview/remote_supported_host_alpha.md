@@ -7292,15 +7292,24 @@ Operator interface:
   puts a backup back.
 
 Hand the clone and the payload to root before `check` (`chown -R root:root`)
-so that no other account can change them between the check and the run. Run
+so that no other account can change them between the check and the run;
+`check` refuses a payload that is not root's. Run
 `apply` under `systemd-run` so that a dropped SSH session does not stop it;
 its output then goes to the journal, and its summary to the backup folder.
 
 `check` refuses when:
 
-- it does not run as root, or the payload folder or a payload file is
-  writable by group or others, was built from another commit, with another
-  Go or from a modified checkout, or does not match its provenance
+- it does not run as root, or the payload folder, `provenance.json` or a
+  payload file is not `root:root` or is writable by group or others, the
+  provenance names another commit, another Go or a modified checkout, or a
+  file does not match the SHA-256 it records
+- `es` or `es-runtime-support` does not name, in its own Go build info (the
+  `.go.buildinfo` section that `go version -m` reads, read here without
+  running anything), Go `go1.26.5`, `vcs.revision=<commit>` and
+  `vcs.modified=false`. A test keeps that reader in agreement with
+  `go version -m`. `apply` repeats the check and installs copies with the
+  same SHA-256. `esconfigcheck` is bound by its owner and SHA-256 only, since the
+  upgrade runs it and does not install it
 - one of `ars`, `ags`, `egs`, `es`, `vault`, `spire-server`, `spire-agent`,
   `nomad` and `docker` is not active, or `es.service` does not run
   `/usr/local/lib/execution-substrate/bin/es -config /etc/execution-substrate/es.json`
@@ -7387,6 +7396,8 @@ The tests (`scripts/remote_alpha_upgrade_es_test.go`,
 `scripts/remote_alpha_upgrade_es_config_check_test.go`) run `check`,
 `apply`, the automatic rollback, an interrupted apply and `rollback` on a
 host-shaped folder with fake `systemctl`, `curl`, `nomad` and ACL setup,
+payload binaries whose Go build info names another commit, another Go or a
+modified build, payload files of another owner or group,
 with Nomad data that another group owns (a setgid file and a link among it),
 an `apply` whose terminal hangs up and one whose output pipe closes, the
 box's own `nomad.hcl` through the lock, and `build` with a fake Go against

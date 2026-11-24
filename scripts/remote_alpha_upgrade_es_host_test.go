@@ -3,6 +3,8 @@ package scripts_test
 import (
 	"bytes"
 	"crypto/sha256"
+	"debug/elf"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -295,6 +297,85 @@ func sha256Hex(data []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// goBinaryWithBuildInfo returns a minimal 64-bit little-endian ELF file
+// whose .go.buildinfo section carries version and modinfo the way the Go
+// linker writes them (inline strings, module info framed by 16-byte
+// sentinels), with a load segment covering it so that debug/buildinfo, and
+// so `go version -m`, reads it like a real binary. A test checks that.
+func goBinaryWithBuildInfo(version, modinfo string) []byte {
+	const base = 0x400000
+	names := []byte("\x00.shstrtab\x00.go.buildinfo\x00")
+	var info bytes.Buffer
+	info.WriteString("\xff Go buildinf:")
+	info.WriteByte(8) // pointer size
+	info.WriteByte(2) // inline strings, little-endian
+	info.Write(make([]byte, 16))
+	for _, field := range []string{version, "0w\xaf\x0c\x92t\b\x02A\xe1\xc1\a\xe6\xd6\x18\xe6" + modinfo + "\xf92C1\x86\x18 r\x00\x82B\x10A\x16\xd8\xf2"} {
+		info.Write(binary.AppendUvarint(nil, uint64(len(field))))
+		info.WriteString(field)
+	}
+	align := func(n, to int) int { return (n + to - 1) / to * to }
+	namesAt := 64 + 56
+	infoAt := align(namesAt+len(names), 16)
+	sectionsAt := align(infoAt+info.Len(), 8)
+	size := sectionsAt + 3*64
+
+	var out bytes.Buffer
+	header := elf.Header64{
+		Type: uint16(elf.ET_EXEC), Machine: uint16(elf.EM_X86_64), Version: uint32(elf.EV_CURRENT), Entry: base,
+		Phoff: 64, Shoff: uint64(sectionsAt), Ehsize: 64, Phentsize: 56, Phnum: 1, Shentsize: 64, Shnum: 3, Shstrndx: 1,
+	}
+	copy(header.Ident[:], []byte{0x7f, 'E', 'L', 'F', byte(elf.ELFCLASS64), byte(elf.ELFDATA2LSB), byte(elf.EV_CURRENT)})
+	write := func(v any) {
+		if err := binary.Write(&out, binary.LittleEndian, v); err != nil {
+			panic(err)
+		}
+	}
+	write(header)
+	write(elf.Prog64{Type: uint32(elf.PT_LOAD), Flags: uint32(elf.PF_R | elf.PF_W), Vaddr: base, Paddr: base,
+		Filesz: uint64(size), Memsz: uint64(size), Align: 0x1000})
+	out.Write(names)
+	out.Write(make([]byte, infoAt-out.Len()))
+	out.Write(info.Bytes())
+	out.Write(make([]byte, sectionsAt-out.Len()))
+	write(elf.Section64{})
+	write(elf.Section64{Name: 1, Type: uint32(elf.SHT_STRTAB), Off: uint64(namesAt), Size: uint64(len(names)), Addralign: 1})
+	write(elf.Section64{Name: 11, Type: uint32(elf.SHT_PROGBITS), Flags: uint64(elf.SHF_WRITE | elf.SHF_ALLOC),
+		Addr: uint64(base + infoAt), Off: uint64(infoAt), Size: uint64(info.Len()), Addralign: 16})
+	return out.Bytes()
+}
+
+// stampedBinary is a payload binary whose own build info names a Go
+// version, a commit and whether the checkout was modified.
+func stampedBinary(name, goVersion, revision, modified string) []byte {
+	return goBinaryWithBuildInfo(goVersion, "path\texecution-substrate/cmd/"+name+"\n"+
+		"mod\texecution-substrate\t(devel)\t\n"+
+		"build\t-buildmode=exe\nbuild\t-compiler=gc\nbuild\tCGO_ENABLED=0\nbuild\tGOARCH=amd64\nbuild\tGOOS=linux\n"+
+		"build\tvcs=git\nbuild\tvcs.revision="+revision+"\nbuild\tvcs.modified="+modified+"\n")
+}
+
+// newESBuild and newRuntimeSupportBuild are the payload's binaries: clean
+// go1.26.5 builds of upgradeTestCommit by their own build info.
+var (
+	newESBuild             = stampedBinary("es", "go1.26.5", upgradeTestCommit, "false")
+	newRuntimeSupportBuild = stampedBinary("es-runtime-support", "go1.26.5", upgradeTestCommit, "false")
+)
+
+// replacePayloadFile puts data in the payload under name and records its
+// SHA-256 in provenance.json, so that only the check under test can refuse.
+func (h *upgradeHost) replacePayloadFile(name string, data []byte) {
+	h.t.Helper()
+	if err := os.WriteFile(filepath.Join(h.payload, name), data, 0o755); err != nil {
+		h.t.Fatal(err)
+	}
+	var prov map[string]any
+	if err := json.Unmarshal([]byte(mustRead(h.t, filepath.Join(h.payload, "provenance.json"))), &prov); err != nil {
+		h.t.Fatal(err)
+	}
+	prov["sha256"].(map[string]any)[name] = sha256Hex(data)
+	writeJSONFile(h.t, filepath.Join(h.payload, "provenance.json"), prov)
+}
+
 // newUpgradeHost lays out a host root shaped like the box, a payload built
 // from upgradeTestCommit, and the fakes.
 func newUpgradeHost(t *testing.T, helper string) *upgradeHost {
@@ -328,7 +409,7 @@ func newUpgradeHost(t *testing.T, helper string) *upgradeHost {
 	if err != nil {
 		t.Fatal(err)
 	}
-	files := map[string][]byte{"es": []byte("new es build\n"), "es-runtime-support": []byte("new runtime support build\n"), "esconfigcheck": helperBytes}
+	files := map[string][]byte{"es": newESBuild, "es-runtime-support": newRuntimeSupportBuild, "esconfigcheck": helperBytes}
 	sums := map[string]string{}
 	for name, data := range files {
 		if err := os.WriteFile(filepath.Join(h.payload, name), data, 0o755); err != nil {
@@ -501,6 +582,57 @@ func modeOf(t *testing.T, path string) os.FileMode {
 	return st.Mode().Perm()
 }
 
+// TestRemoteAlphaUpgradeESReadsGoBuildInfoLikeGoVersion keeps the upgrade's
+// own reader of a binary's Go build info, which check and apply use to tie
+// es and es-runtime-support to the commit, in agreement with `go version -m`:
+// on a real Go binary, and on the fixture binaries the other tests install.
+func TestRemoteAlphaUpgradeESReadsGoBuildInfoLikeGoVersion(t *testing.T) {
+	dir := t.TempDir()
+	fixture := filepath.Join(dir, "es")
+	if err := os.WriteFile(fixture, newESBuild, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, binary := range []string{buildESConfigCheck(t), fixture} {
+		goVersion := exec.Command("go", "version", "-m", binary)
+		goVersion.Dir = dir
+		out, err := goVersion.Output()
+		if err != nil {
+			t.Fatalf("go version -m %s: %v", binary, err)
+		}
+		lines := strings.Split(strings.TrimRight(string(out), "\n"), "\n")
+		want := map[string]any{"version": strings.TrimPrefix(lines[0], binary+": "), "build": []any{}}
+		for _, line := range lines[1:] {
+			if setting, ok := strings.CutPrefix(line, "\tbuild\t"); ok {
+				want["build"] = append(want["build"].([]any), setting)
+			}
+		}
+		if len(want["build"].([]any)) < 3 {
+			t.Fatalf("go version -m shows %d build settings for %s; the comparison would check nothing:\n%s", len(want["build"].([]any)), binary, out)
+		}
+
+		code := `import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("upgrade", sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+with open(sys.argv[2], "rb") as handle:
+    version, build = m.go_build_info(handle.read())
+print(json.dumps({"version": version, "build": build}))`
+		read := exec.Command("python3", "-I", "-c", code, repoPath(upgradeESPython), binary)
+		read.Dir = dir
+		got, err := read.Output()
+		if err != nil {
+			t.Fatalf("go_build_info %s: %v", binary, err)
+		}
+		var gotInfo map[string]any
+		if err := json.Unmarshal(got, &gotInfo); err != nil {
+			t.Fatal(err)
+		}
+		if fmt.Sprint(gotInfo) != fmt.Sprint(want) {
+			t.Fatalf("%s: the upgrade reads\n%v\ngo version -m reads\n%v", binary, gotInfo, want)
+		}
+	}
+}
+
 func TestRemoteAlphaUpgradeESNomadLockMatchesSupportedConfig(t *testing.T) {
 	if len(boxNomadHCL) != 529 {
 		t.Fatalf("the box's nomad.hcl fixture is %d bytes; the preflight read 529", len(boxNomadHCL))
@@ -628,6 +760,30 @@ func TestRemoteAlphaUpgradeESCheckRefusesWhatItWasNotWrittenFor(t *testing.T) {
 		{"the payload directory is group-writable", func(h *upgradeHost) {
 			_ = os.Chmod(h.payload, 0o775)
 		}, "payload", "group and others cannot write"},
+		{"the payload directory belongs to another account", func(h *upgradeHost) {
+			h.payload = foreignOwnedDir(t)
+		}, "payload", "a directory that root owns (root:root)"},
+		{"the payload directory belongs to another group", func(h *upgradeHost) {
+			giveAnotherGroup(t, h.payload)
+		}, "payload", "a directory that root owns (root:root)"},
+		{"a payload binary belongs to another group", func(h *upgradeHost) {
+			giveAnotherGroup(t, filepath.Join(h.payload, "es-runtime-support"))
+		}, "payload", "the payload file es-runtime-support must be root:root"},
+		{"provenance.json belongs to another group", func(h *upgradeHost) {
+			giveAnotherGroup(t, filepath.Join(h.payload, "provenance.json"))
+		}, "payload", "provenance.json must be root:root"},
+		{"es names another commit in its own build info", func(h *upgradeHost) {
+			h.replacePayloadFile("es", stampedBinary("es", "go1.26.5", strings.Repeat("a", 40), "false"))
+		}, "payload", "vcs.revision '" + strings.Repeat("a", 40) + "'"},
+		{"es-runtime-support is a build of a modified checkout", func(h *upgradeHost) {
+			h.replacePayloadFile("es-runtime-support", stampedBinary("es-runtime-support", "go1.26.5", upgradeTestCommit, "true"))
+		}, "payload", "vcs.modified 'true'"},
+		{"es was built with another Go", func(h *upgradeHost) {
+			h.replacePayloadFile("es", stampedBinary("es", "go1.26.1", upgradeTestCommit, "false"))
+		}, "payload", "Go 'go1.26.1'"},
+		{"es carries no Go build info", func(h *upgradeHost) {
+			h.replacePayloadFile("es", []byte("new es build\n"))
+		}, "payload", "not a 64-bit little-endian ELF file"},
 		{"a retained-result key of the wrong size exists", func(h *upgradeHost) {
 			h.write("etc/execution-substrate/retained-result-auth/es.key", "short", 0o400)
 		}, "retained_result_key", "exactly 32 bytes"},
@@ -695,6 +851,34 @@ func otherGroup(t *testing.T) int {
 	}
 	t.Fatalf("the test user has no supplementary group, so no fake Nomad data can have an owner other than the stand-in root")
 	return 0
+}
+
+// giveAnotherGroup gives path to a group other than the stand-in root's and
+// keeps its owner, so that only the group differs.
+func giveAnotherGroup(t *testing.T, path string) {
+	t.Helper()
+	if err := os.Lchown(path, -1, otherGroup(t)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// foreignOwnedDir is a directory another account owns. When the test runs
+// as an ordinary user it is "/", whose owner and group both differ from the
+// stand-in root's. When it runs as root, it is a new directory given to uid 1
+// with root's own group, so that only the owner differs.
+func foreignOwnedDir(t *testing.T) string {
+	t.Helper()
+	if os.Geteuid() != 0 {
+		return "/"
+	}
+	dir := filepath.Join(t.TempDir(), "payload")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chown(dir, 1, os.Getgid()); err != nil {
+		t.Fatal(err)
+	}
+	return dir
 }
 
 // giveNomadDataAnotherOwner makes the fake host's Nomad data look as a
@@ -779,11 +963,11 @@ func TestRemoteAlphaUpgradeESApply(t *testing.T) {
 			t.Errorf("%s mode %04o, want %04o", path, got, want)
 		}
 	}
-	if got := mustRead(t, h.path("usr/local/lib/execution-substrate/bin/es")); got != "new es build\n" {
-		t.Fatalf("es binary %q", got)
+	if got := mustRead(t, h.path("usr/local/lib/execution-substrate/bin/es")); got != string(newESBuild) {
+		t.Fatalf("es binary is not the payload's: %d bytes", len(got))
 	}
-	if got := mustRead(t, h.path("usr/local/bin/es-runtime-support")); got != "new runtime support build\n" {
-		t.Fatalf("runtime support binary %q", got)
+	if got := mustRead(t, h.path("usr/local/bin/es-runtime-support")); got != string(newRuntimeSupportBuild) {
+		t.Fatalf("runtime support binary is not the payload's: %d bytes", len(got))
 	}
 	if got := mustRead(t, h.path("etc/nomad.d/nomad.hcl")); got != boxNomadHCLLocked {
 		t.Fatalf("nomad.hcl after the lock:\n%s", got)
@@ -985,8 +1169,8 @@ func TestRemoteAlphaUpgradeESRollbackFailuresAreReported(t *testing.T) {
 		if !strings.Contains(fmt.Sprint(summary["rollback_failure"]), "Failed to stop es") {
 			t.Fatalf("rollback_failure %v", summary["rollback_failure"])
 		}
-		if got := mustRead(t, h.path("usr/local/lib/execution-substrate/bin/es")); got != "new es build\n" {
-			t.Fatalf("files were restored under a running ES: es binary %q", got)
+		if got := mustRead(t, h.path("usr/local/lib/execution-substrate/bin/es")); got != string(newESBuild) {
+			t.Fatalf("files were restored under a running ES: es binary of %d bytes", len(got))
 		}
 	})
 

@@ -39,6 +39,7 @@ import pwd
 import shutil
 import signal
 import stat
+import struct
 import subprocess
 import sys
 import tempfile
@@ -479,6 +480,10 @@ BACKUP_ROOT = "/var/backups/execution-substrate-es-upgrade"
 ES_USER = "es"
 SERVICES = ("ars", "ags", "egs", "es", "vault", "spire-server", "spire-agent", "nomad", "docker")
 PAYLOAD_FILES = ("es", "es-runtime-support", "esconfigcheck")
+# The binaries apply installs. Each must name the commit in its own Go build
+# info, not only in provenance.json. esconfigcheck is a checker the upgrade
+# runs, not something it installs.
+STAMPED_PAYLOAD_FILES = ("es", "es-runtime-support")
 SUPPORTED_GO_VERSION = "go1.26.5"
 SUMMARY_SCHEMA = "execution-substrate.remote-alpha.es-upgrade-summary.v1"
 LEADER_WAIT_SECONDS = 90
@@ -823,17 +828,104 @@ def valid_commit(commit):
     return isinstance(commit, str) and len(commit) == 40 and set(commit) <= set("0123456789abcdef")
 
 
-def load_payload(payload_dir, commit):
-    """Verify a build's payload against its provenance and copy nothing.
+GO_BUILDINFO_MAGIC = b"\xff Go buildinf:"
 
-    Returns the provenance. The directory must not be writable by others;
-    every file's SHA-256 must match, and the commit must be the one named."""
+
+def go_uvarint_string(data):
+    """(string, rest) of a Go uvarint-length-prefixed string."""
+    length = shift = i = 0
+    while True:
+        if i >= len(data) or shift > 63:
+            raise Refusal("the Go build info is truncated")
+        byte = data[i]
+        i += 1
+        length |= (byte & 0x7F) << shift
+        if byte < 0x80:
+            break
+        shift += 7
+    if i + length > len(data):
+        raise Refusal("the Go build info is truncated")
+    return data[i:i + length], data[i + length:]
+
+
+def go_build_info(blob):
+    """(Go version, [build setting lines]) from a 64-bit little-endian ELF
+    Go binary's .go.buildinfo section: what `go version -m` reads, read here
+    without running anything. A test keeps the two in agreement."""
+    if blob[:6] != b"\x7fELF\x02\x01" or len(blob) < 64:
+        raise Refusal("not a 64-bit little-endian ELF file")
+    (shoff,) = struct.unpack_from("<Q", blob, 0x28)
+    shentsize, shnum, shstrndx = struct.unpack_from("<HHH", blob, 0x3A)
+    if shentsize != 64 or shstrndx >= shnum or shoff + shnum * 64 > len(blob):
+        raise Refusal("the ELF section headers are malformed")
+
+    def section(index):
+        # (name, file offset, size). Only the sections read here must lie in
+        # the file; .bss and the like occupy none of it.
+        name, _, _, _, offset, size = struct.unpack_from("<IIQQQQ", blob, shoff + index * 64)
+        return name, offset, size
+
+    def contents(offset, size):
+        if offset + size > len(blob):
+            raise Refusal("an ELF section lies outside the file")
+        return blob[offset:offset + size]
+
+    _, names_at, names_size = section(shstrndx)
+    names = contents(names_at, names_size)
+    data = None
+    for index in range(shnum):
+        name, offset, size = section(index)
+        if name >= len(names):
+            raise Refusal("an ELF section name lies outside its table")
+        end = names.find(b"\0", name)
+        if end >= 0 and names[name:end] == b".go.buildinfo":
+            if data is not None:
+                raise Refusal("the binary has two .go.buildinfo sections")
+            data = contents(offset, size)
+    if data is None or len(data) < 32 or data[:14] != GO_BUILDINFO_MAGIC or not data[15] & 2:
+        raise Refusal("the binary carries no Go build info in the inline format of Go 1.18 and later")
+    version, rest = go_uvarint_string(data[32:])
+    modinfo, _ = go_uvarint_string(rest)
+    if len(modinfo) >= 33 and modinfo[-17] == ord("\n"):
+        modinfo = modinfo[16:-16]
+    try:
+        lines = modinfo.decode("utf-8").splitlines()
+        return version.decode("utf-8"), [line[len("build\t"):] for line in lines if line.startswith("build\t")]
+    except UnicodeDecodeError:
+        raise Refusal("the Go build info is not UTF-8") from None
+
+
+def check_build_stamp(name, blob, commit):
+    """Refuse a binary whose own build info does not name a clean build of
+    commit with the supported Go."""
+    version, lines = go_build_info(blob)
+    settings = dict(line.partition("=")[::2] for line in lines)
+    if version != SUPPORTED_GO_VERSION or settings.get("vcs.revision") != commit or settings.get("vcs.modified") != "false":
+        raise Refusal(f"the payload file {name} is not, by its own Go build info, a clean {SUPPORTED_GO_VERSION} build of "
+                      f"{commit}: Go {version!r}, vcs.revision {settings.get('vcs.revision')!r}, "
+                      f"vcs.modified {settings.get('vcs.modified')!r}")
+
+
+def owned_by_root(st):
+    uid, gid = root_ids()
+    return st.st_uid == uid and st.st_gid == gid
+
+
+def load_payload(payload_dir, commit):
+    """Verify a build's payload and copy nothing. Returns the provenance.
+
+    The directory and its files must be root:root and not writable by group
+    or others, so no other account can change them after the check. Every
+    file's SHA-256 must match provenance.json, which must name the commit,
+    and each installed binary must name it in its own Go build info."""
     if not valid_commit(commit):
         raise Refusal("the commit must be a full lower-case 40-character SHA-1")
     st = os.lstat(payload_dir)
-    if not stat.S_ISDIR(st.st_mode) or st.st_mode & 0o022:
-        raise Refusal("the payload directory must be a directory that group and others cannot write")
-    data, _ = read_regular_file(os.path.join(payload_dir, "provenance.json"))
+    if not stat.S_ISDIR(st.st_mode) or st.st_mode & 0o022 or not owned_by_root(st):
+        raise Refusal("the payload directory must be a directory that root owns (root:root) and group and others cannot write")
+    data, pst = read_regular_file(os.path.join(payload_dir, "provenance.json"))
+    if pst.st_mode & 0o022 or not owned_by_root(pst):
+        raise Refusal("provenance.json must be root:root and not writable by group or others")
     prov = json.loads(data)
     if prov.get("commit") != commit:
         raise Refusal(f"the payload was built from {prov.get('commit')!r}, not the named commit {commit!r}")
@@ -841,13 +933,18 @@ def load_payload(payload_dir, commit):
         raise Refusal("the payload was not built with the supported Go toolchain from a clean checkout")
     for name in PAYLOAD_FILES:
         blob, fst = read_regular_file(os.path.join(payload_dir, name))
-        if fst.st_mode & 0o022 or sha256_bytes(blob) != prov.get("sha256", {}).get(name):
+        if fst.st_mode & 0o022 or not owned_by_root(fst):
+            raise Refusal(f"the payload file {name} must be root:root and not writable by group or others")
+        if sha256_bytes(blob) != prov.get("sha256", {}).get(name):
             raise Refusal(f"the payload file {name} does not match its provenance")
+        if name in STAMPED_PAYLOAD_FILES:
+            check_build_stamp(name, blob, commit)
     return prov
 
 
 def stage_payload(payload_dir, prov, stage_dir):
-    """Copy the verified payload into a root-only directory and re-verify."""
+    """Copy the verified payload into a root-only directory, and require each
+    copy to have the SHA-256 that load_payload verified, build info included."""
     os.mkdir(stage_dir, 0o700)
     for name in PAYLOAD_FILES:
         blob, _ = read_regular_file(os.path.join(payload_dir, name))
