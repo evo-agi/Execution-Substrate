@@ -1404,3 +1404,51 @@ func TestRemoteAlphaVaultServiceUserMigrationKeepsFilesVaultCannotReadFromVault(
 		}
 	})
 }
+
+// RC-1 follow-up (diff check 09 of PR #49): the refusals that apply once
+// Vault runs as the Vault user must not refuse what the migration itself
+// produces. A completed migration leaves config and TLS files root:vault 0640,
+// which vault reads through its group, and a storage directory the step
+// creates is root's and empty until it is handed over.
+func TestRemoteAlphaVaultServiceUserMigrationKeepsWorkingOnceVaultRunsAsVault(t *testing.T) {
+	t.Parallel()
+	if os.Geteuid() != 0 {
+		t.Log("only root can hand files to root:vault; nothing to check as this user")
+		return
+	}
+
+	t.Run("a completed migration runs again", func(t *testing.T) {
+		t.Parallel()
+		f := newVaultMigrationFixture(t)
+		f.mustBeReady(t)
+		if summary, output, err := f.apply(t); err != nil {
+			t.Fatalf("the first migration failed: %v\nresult=%v\n%s", err, summary["result"], output)
+		}
+		f.vaultRunsAsVault(t)
+		f.mustBeReady(t)
+		if summary, output, err := f.apply(t); err != nil {
+			t.Fatalf("a second migration refused what the first one produced: %v\nresult=%v\n%s", err, summary["result"], output)
+		}
+		for _, path := range []string{f.VaultConfigPath, filepath.Join(f.TLSDir, "vault-server-key.pem")} {
+			if uid, gid, mode := lstatOwnerMode(t, path); uid != 0 || gid != f.owner.gid || mode != 0o640 {
+				t.Errorf("%s is %d:%d %04o after the second migration, want 0:%d 0640", path, uid, gid, mode, f.owner.gid)
+			}
+		}
+	})
+
+	t.Run("a missing storage directory is created", func(t *testing.T) {
+		t.Parallel()
+		f := newVaultMigrationFixture(t)
+		f.vaultRunsAsVault(t)
+		if err := os.RemoveAll(f.StorageDir); err != nil {
+			t.Fatal(err)
+		}
+		f.mustBeReady(t)
+		if summary, output, err := f.apply(t); err != nil {
+			t.Fatalf("the apply refused to create a missing storage directory while Vault runs as vault: %v\nresult=%v\n%s", err, summary["result"], output)
+		}
+		if uid, gid, mode := lstatOwnerMode(t, f.StorageDir); uid != f.owner.uid || gid != f.owner.gid || mode != 0o750 {
+			t.Errorf("the new storage directory is %d:%d %04o, want %d:%d 0750", uid, gid, mode, f.owner.uid, f.owner.gid)
+		}
+	})
+}
