@@ -843,7 +843,6 @@ var byPathOwnershipChangeAllowance = map[string]int{
 	"scripts/internal/remote_alpha_vault_workload_auth_check.sh":      2,
 	"scripts/nomad_acl_setup.sh":                                      1,
 	"scripts/remote_alpha_operator.sh":                                14,
-	"scripts/remote_alpha_reset_disposable_vault.sh":                  1,
 	"scripts/remote_alpha_runtime_identity_helper_summary.sh":         2,
 }
 
@@ -901,12 +900,15 @@ func TestRedTeamFixedStepsChangeOwnersOnlyThroughDescriptors(t *testing.T) {
 	}
 	assertContainsAll(t, "ARS state step", ars, "os.O_NOFOLLOW", "os.fchown(", "os.fchmod(", "st_nlink != 1")
 
-	// RT-2
-	for _, line := range byPathOwnershipChangeLines(read("remote_alpha_reset_disposable_vault.sh")) {
-		if !strings.Contains(line, "chown -h --") {
-			t.Errorf("the Vault reset changes an owner or mode by name without -h: %q", line)
-		}
+	// RT-2: the reset changes no owner or mode by name, and moves and
+	// recreates the raft directory through its parent's descriptor (audit
+	// 03, A03-1).
+	reset := read("remote_alpha_reset_disposable_vault.sh")
+	if lines := byPathOwnershipChangeLines(reset); len(lines) > 0 {
+		t.Errorf("the Vault reset changes owners or modes by name: %q", lines)
 	}
+	replace := docSection(t, reset, "replace_raft_directory() {", "\n}\n")
+	assertContainsAll(t, "Vault reset raft step", replace, "os.O_NOFOLLOW", "dir_fd=parent_fd", "os.fchown(new_fd", "os.fchmod(new_fd", "sudo pgrep -u")
 
 	// RT-3
 	migrate := read("internal", "remote_alpha_migrate_vault_service_user.sh")
@@ -916,4 +918,335 @@ func TestRedTeamFixedStepsChangeOwnersOnlyThroughDescriptors(t *testing.T) {
 	}
 	assertContainsAll(t, "Vault migration apply step", applyStep, "DIR_OPEN_FLAGS", "os.fchown(", "os.fchmod(", "for apply in (False, True):")
 	assertContainsNone(t, "Vault migration helper", migrate, `["chown"`, `["chmod"`, `"-R"`)
+}
+
+// Audit 03 of PR #49 (2026-11-24) added the four tests below.
+
+// RT-1: the first walk only checks. On a first run (a tree the running user
+// owns), a tree with an entry the step refuses, found late in the walk, must
+// keep every owner: no object may already have gone to the ARS account.
+// Owners show as root (account 65534) and, unprivileged, when the user has a
+// second group to hand over; otherwise only the refusal is checked.
+func TestRemoteAlphaARSHardeningRefusedFirstRunKeepsOwners(t *testing.T) {
+	t.Parallel()
+	f := newARSStateFixture(t)
+	self := rootPathOwner{os.Geteuid(), os.Getegid()}
+	if os.Geteuid() != 0 {
+		groups, _ := os.Getgroups()
+		for _, g := range groups {
+			if g != self.gid {
+				f.owner = rootPathOwner{self.uid, g}
+				break
+			}
+		}
+		if f.owner == self {
+			t.Log("this user has no second group, so a handed-over owner would not show; checking only the refusal")
+		}
+		writeExecutable(t, f.fakeBin, "id", fmt.Sprintf("#!/bin/sh\nif [ \"$1\" = -u ] && [ \"$2\" = ars ]; then echo %d; exit 0; fi\nexec /usr/bin/id \"$@\"\n", f.owner.uid))
+		writeExecutable(t, f.fakeBin, "getent", fmt.Sprintf("#!/bin/sh\nif [ \"$1\" = group ] && [ \"$2\" = ars ]; then echo ars:x:%d:; exit 0; fi\nexit 2\n", f.owner.gid))
+	}
+	tree := []string{f.state, f.blobs, filepath.Join(f.blobs, "sha256"), filepath.Join(f.blobs, "sha256", "ab"), filepath.Join(f.blobs, "sha256", "ab", "cd"), f.blob, f.index}
+	rootPathChown(t, self, tree...)
+	// Sorted after sha256/, so a walk that changes as it goes has already
+	// handed over the state root and the blob tree when it gets here.
+	if err := syscall.Mkfifo(filepath.Join(f.blobs, "zz-pipe"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before := map[string]rootPathState{}
+	for _, path := range tree {
+		before[path] = rootPathStat(t, path)
+	}
+	output, err := f.run(t)
+	if err == nil {
+		t.Fatalf("the state step accepted a tree with a named pipe:\n%s", output)
+	}
+	for _, path := range tree {
+		if got := rootPathStat(t, path); got != before[path] {
+			t.Errorf("%s changed from %+v to %+v although the step refused the tree", path, before[path], got)
+		}
+	}
+}
+
+// RT-2: the Vault account chooses the raft path (it can rewrite vault.hcl
+// while /etc/vault.d is vault-owned) and owns the directories in it below
+// /opt/vault. After the ownership check, it swaps a directory above the raft
+// directory for a link to a root directory holding an entry of the same name.
+// The reset must not move or recreate that entry.
+func TestRemoteAlphaResetDisposableVaultNeverFollowsALinkAboveTheRaftDirectory(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	owner := rootPathServiceOwner()
+	vaultBase := filepath.Join(dir, "opt-vault")
+	inner := filepath.Join(vaultBase, "x")
+	raft := filepath.Join(inner, "system")
+	victimParent := filepath.Join(dir, "etc-systemd")
+	victim := filepath.Join(victimParent, "system")
+	unit := filepath.Join(victim, "es.service")
+	for _, d := range []string{raft, victim} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(unit, []byte("[Service]\nExecStart=/usr/local/bin/es\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rootPathChmod(t, 0o755, vaultBase, inner, victimParent, victim)
+	rootPathChmod(t, 0o700, raft)
+	rootPathChown(t, owner, vaultBase, inner, raft)
+	victimBefore, unitBefore := rootPathStat(t, victim), rootPathStat(t, unit)
+
+	cmd := exec.Command("stat", "-c", "%U", raft)
+	cmd.Dir = executionSubstrateRepoRoot
+	name, err := cmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if output, err := vaultResetShell(t, false, fmt.Sprintf("require_vault_owned_raft_dir %q %q && echo accepted", raft, strings.TrimSpace(string(name)))); err != nil || !strings.Contains(output, "accepted") {
+		t.Fatalf("the check before the confirmation refused the real raft directory: %v\n%s", err, output)
+	}
+	// While the operator reads the confirmation prompt.
+	if err := os.Rename(inner, inner+".old"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(victimParent, inner); err != nil {
+		t.Fatal(err)
+	}
+	backup := raft + ".remote-alpha-reset-backup-test"
+	output, err := vaultResetShell(t, false, fmt.Sprintf("VAULT_RAFT_PATH=%q\nreplace_raft_directory %d %d %q", raft, owner.uid, owner.gid, backup))
+	if err == nil {
+		t.Errorf("the reset went through a link above the raft directory:\n%s", output)
+	}
+	if _, statErr := os.Lstat(filepath.Join(victimParent, "system.remote-alpha-reset-backup-test")); !os.IsNotExist(statErr) {
+		t.Errorf("the reset moved the root directory aside: %v\n%s", statErr, output)
+	}
+	if got, err := os.Lstat(victim); err != nil {
+		t.Fatalf("the root directory is gone: %v\n%s", err, output)
+	} else if !got.IsDir() {
+		t.Fatalf("the root directory was replaced\n%s", output)
+	}
+	if got := rootPathStat(t, victim); got != victimBefore {
+		t.Errorf("the root directory changed from %+v to %+v\n%s", victimBefore, got, output)
+	}
+	if _, err := os.Lstat(unit); err != nil {
+		t.Fatalf("the root directory no longer holds its file: %v\n%s", err, output)
+	}
+	if got := rootPathStat(t, unit); got != unitBefore {
+		t.Errorf("the file in the root directory changed from %+v to %+v", unitBefore, got)
+	}
+}
+
+// RT-3: a directory the Vault account can read but not write (root:vault
+// 0750) must not become writable by that account because the config names a
+// log file in it. Only root can build that directory, so as an ordinary user
+// the test only says so.
+func TestRemoteAlphaVaultServiceUserMigrationKeepsAReadOnlyVaultDirectoryReadOnly(t *testing.T) {
+	t.Parallel()
+	if os.Geteuid() != 0 {
+		t.Log("only root can make a directory the Vault account reads but cannot write; nothing to check as this user")
+		return
+	}
+	f := newVaultMigrationFixture(t)
+	dir := filepath.Join(t.TempDir(), "root-vault-dir")
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	rootPathChown(t, rootPathOwner{0, f.owner.gid}, dir)
+	rootPathChmod(t, 0o750, dir)
+	before := rootPathStat(t, dir)
+	f.editVaultConfig(t, func(config map[string]any) { config["log_file"] = filepath.Join(dir, "vault.log") })
+	if nestedMap(t, f.checkOnly(t), "plan")["apply_ready"] == true {
+		_, _, _ = f.apply(t)
+	}
+	if got := rootPathStat(t, dir); got != before {
+		t.Fatalf("%s changed from %+v to %+v: the Vault account can now write a directory it could only read", dir, before, got)
+	}
+}
+
+// RT-3: the apply's first pass only checks. A refusal at the last target
+// (the audit directory) must leave every earlier target as it was: the
+// config and TLS directories, the storage tree and the log directory. The
+// storage files start with another owner (root as root, a second group
+// unprivileged) so a hand-over during the check pass would show.
+func TestRemoteAlphaVaultServiceUserMigrationRefusedApplyChangesNoPath(t *testing.T) {
+	t.Parallel()
+	f := newVaultMigrationFixture(t)
+	other := rootPathOwner{0, 0}
+	if os.Geteuid() != 0 {
+		other = f.owner
+		groups, _ := os.Getgroups()
+		for _, g := range groups {
+			if g != f.owner.gid {
+				other = rootPathOwner{f.owner.uid, g}
+				break
+			}
+		}
+		if other == f.owner {
+			t.Log("this user has no second group, so a storage hand-over would not show")
+		}
+	}
+	storageFiles := []string{filepath.Join(f.StorageDir, "vault.db"), filepath.Join(f.StorageDir, "raft"), filepath.Join(f.StorageDir, "raft", "raft.db")}
+	rootPathChown(t, other, storageFiles...)
+	f.mustBeReady(t)
+	paths := append([]string{f.vaultDir, f.VaultConfigPath, f.TLSDir, f.StorageDir, f.LogDir, f.LogPath}, storageFiles...)
+	entries, err := os.ReadDir(f.TLSDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		paths = append(paths, filepath.Join(f.TLSDir, entry.Name()))
+	}
+	before := map[string]rootPathState{}
+	for _, path := range paths {
+		before[path] = rootPathStat(t, path)
+	}
+	victimDir := rootPathStat(t, f.victimDir)
+	replaceWithSymlink(t, f.victimDir, f.AuditDir)
+	summary, output, err := f.apply(t)
+	result := nestedMap(t, summary, "result")
+	if err == nil || result["ok"] != false || !strings.Contains(result["summary"].(string), "no path was changed") {
+		t.Fatalf("the apply did not refuse in its check pass: %v\nresult=%+v\n%s", err, result, output)
+	}
+	for _, path := range paths {
+		if got := rootPathStat(t, path); got != before[path] {
+			t.Errorf("%s changed from %+v to %+v although the apply said no path was changed", path, before[path], got)
+		}
+	}
+	if got := rootPathStat(t, f.victimDir); got != victimDir {
+		t.Errorf("the victim directory changed from %+v to %+v", victimDir, got)
+	}
+}
+
+// RT-3, audit 03 A03-2: a storage directory that vault can only read must not
+// become vault's, unless it sits in a directory vault can write already. A
+// missing storage directory may still be created in a directory dedicated to
+// Vault that vault can only read: the new directory goes to vault and the
+// parent stays as it was. Only root can build a directory the Vault account
+// reads but cannot write, so as an ordinary user the test only says so.
+func TestRemoteAlphaVaultServiceUserMigrationStorageInAReadOnlyVaultDirectory(t *testing.T) {
+	t.Parallel()
+	if os.Geteuid() != 0 {
+		t.Log("only root can make a directory the Vault account reads but cannot write; nothing to check as this user")
+		return
+	}
+	readOnlyVaultDir := func(t *testing.T, f vaultMigrationFixture, parts ...string) string {
+		dir := filepath.Join(append([]string{t.TempDir()}, parts...)...)
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		rootPathChown(t, rootPathOwner{0, f.owner.gid}, dir)
+		rootPathChmod(t, 0o750, dir)
+		return dir
+	}
+
+	t.Run("existing storage directory is refused", func(t *testing.T) {
+		t.Parallel()
+		f := newVaultMigrationFixture(t)
+		parent := readOnlyVaultDir(t, f, "read-only-parent")
+		storage := filepath.Join(parent, "data")
+		if err := os.Mkdir(storage, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(storage, "root-file"), []byte("root's bytes\n"), 0o640); err != nil {
+			t.Fatal(err)
+		}
+		rootPathChown(t, rootPathOwner{0, f.owner.gid}, storage)
+		rootPathChmod(t, 0o750, storage)
+		before := map[string]rootPathState{}
+		for _, path := range []string{parent, storage, filepath.Join(storage, "root-file")} {
+			before[path] = rootPathStat(t, path)
+		}
+		f.editVaultConfig(t, func(config map[string]any) {
+			config["storage"] = []map[string]any{{"type": "raft", "path": storage}}
+		})
+		summary := f.checkOnly(t)
+		if nestedMap(t, summary, "plan")["apply_ready"] != false {
+			t.Fatalf("the plan accepted a storage directory vault can only read: %s", mustRead(t, f.preflight))
+		}
+		found := false
+		for _, raw := range summary["blockers"].([]any) {
+			blocker := jsonMap(t, raw)
+			if blocker["name"] == "storage_access" && strings.Contains(fmt.Sprint(blocker["summary"]), "is not writable by") {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("no storage_access blocker saying the directory is not writable by vault: %+v", summary["blockers"])
+		}
+		for path, state := range before {
+			if got := rootPathStat(t, path); got != state {
+				t.Errorf("%s changed from %+v to %+v", path, state, got)
+			}
+		}
+	})
+
+	t.Run("missing storage directory is created", func(t *testing.T) {
+		t.Parallel()
+		f := newVaultMigrationFixture(t)
+		parent := readOnlyVaultDir(t, f, "read-only-parent")
+		storage := filepath.Join(parent, "data")
+		parentBefore := rootPathStat(t, parent)
+		f.editVaultConfig(t, func(config map[string]any) {
+			config["storage"] = []map[string]any{{"type": "raft", "path": storage}}
+		})
+		f.mustBeReady(t)
+		summary, output, err := f.apply(t)
+		if err != nil || nestedMap(t, summary, "result")["ok"] != true {
+			t.Fatalf("the apply failed: %v\n%+v\n%s", err, summary["result"], output)
+		}
+		if got := rootPathStat(t, parent); got != parentBefore {
+			t.Errorf("the parent changed from %+v to %+v; it should stay one vault can only read", parentBefore, got)
+		}
+		if got := rootPathStat(t, storage); got.uid != f.owner.uid || got.gid != f.owner.gid || got.mode != 0o750 {
+			t.Errorf("the new storage directory is %+v, want vault's with mode 0750", got)
+		}
+	})
+}
+
+// RT-2, audit 03 A03-1: the reset refuses a link above the raft directory even
+// when the directory it leads to holds a directory of the Vault account under
+// the raft directory's name, so root never renames or creates entries in a
+// directory the link leads to. (The owner check alone would let this through.)
+func TestRemoteAlphaResetDisposableVaultRefusesALinkAboveTheRaftDirectoryToAVaultFolder(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	owner := rootPathServiceOwner()
+	vaultBase := filepath.Join(dir, "opt-vault")
+	inner := filepath.Join(vaultBase, "x")
+	raft := filepath.Join(inner, "raft")
+	elsewhere := filepath.Join(dir, "elsewhere")
+	lookalike := filepath.Join(elsewhere, "raft")
+	for _, d := range []string{raft, lookalike} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rootPathChmod(t, 0o755, vaultBase, inner, elsewhere)
+	rootPathChmod(t, 0o700, raft, lookalike)
+	rootPathChown(t, owner, vaultBase, inner, raft, lookalike)
+	elsewhereBefore, lookalikeBefore := rootPathStat(t, elsewhere), rootPathStat(t, lookalike)
+
+	if err := os.Rename(inner, inner+".old"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(elsewhere, inner); err != nil {
+		t.Fatal(err)
+	}
+	backup := raft + ".remote-alpha-reset-backup-test"
+	output, err := vaultResetShell(t, false, fmt.Sprintf("VAULT_RAFT_PATH=%q\nreplace_raft_directory %d %d %q", raft, owner.uid, owner.gid, backup))
+	if err == nil || !strings.Contains(output, inner+" is not a directory or is a symbolic link") {
+		t.Fatalf("the reset did not refuse the link above the raft directory: %v\n%s", err, output)
+	}
+	entries, readErr := os.ReadDir(elsewhere)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if len(entries) != 1 || entries[0].Name() != "raft" {
+		t.Errorf("the reset renamed or created entries where the link led: %v\n%s", entries, output)
+	}
+	if got := rootPathStat(t, elsewhere); got != elsewhereBefore {
+		t.Errorf("%s changed from %+v to %+v", elsewhere, elsewhereBefore, got)
+	}
+	if got := rootPathStat(t, lookalike); got != lookalikeBefore {
+		t.Errorf("%s changed from %+v to %+v", lookalike, lookalikeBefore, got)
+	}
 }

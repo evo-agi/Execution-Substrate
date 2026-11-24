@@ -27,10 +27,12 @@ func TestRemoteAlphaResetDisposableVaultStaticSafety(t *testing.T) {
 		"--unseal-only",
 		"--post-unseal-check",
 		`backup_path="${VAULT_RAFT_PATH}.remote-alpha-reset-backup-${timestamp}"`,
-		`sudo mv -T -- "${VAULT_RAFT_PATH}" "${backup_path}"`,
-		`sudo mkdir -m 0700 -- "${VAULT_RAFT_PATH}"`,
-		`sudo chown -h -- "${vault_user}:${vault_group}" "${VAULT_RAFT_PATH}"`,
-		`pgrep -u "${vault_user}"`,
+		`sudo python3 -I - "${VAULT_RAFT_PATH}" "${backup_path##*/}" "${vault_user}" "${vault_group}"`,
+		"os.O_NOFOLLOW",
+		"os.rename(name, backup_name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)",
+		"os.mkdir(name, 0o700, dir_fd=parent_fd)",
+		"os.fchown(new_fd, uid, gid)",
+		`sudo pgrep -u "${vault_user}"`,
 		`require_vault_owned_raft_dir "${VAULT_RAFT_PATH}" "${vault_user}"`,
 		`""|"/"|"/var"|"/var/lib"|"/opt"|"/home"|"/etc"|"/usr"|"/tmp")`,
 		`remote_alpha_vault_workload_auth_check.sh`,
@@ -53,8 +55,12 @@ func TestRemoteAlphaResetDisposableVaultStaticSafety(t *testing.T) {
 	assertContainsNone(t, "reset helper source", source,
 		`rm -rf -- "${VAULT_RAFT_PATH}"`,
 		// RT-2: install -d changes the owner and mode of whatever a planted
-		// link points at.
+		// link points at, and by-name mv, mkdir and chown follow a link the
+		// Vault account plants above the raft directory (audit 03, A03-1).
 		"install -d",
+		"sudo mv ",
+		"sudo mkdir ",
+		"sudo chown ",
 		"vault auth enable",
 		"vault secrets enable",
 		"vault policy write",

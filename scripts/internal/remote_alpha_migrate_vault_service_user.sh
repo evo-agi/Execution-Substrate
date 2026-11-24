@@ -478,7 +478,13 @@ def path_shape_problem(path_value):
     return ""
 
 
-def dedicated_directory_problem(path_value, uid, gid, account):
+def dedicated_directory_problem(path_value, uid, gid, account, writable_mode=None):
+    # writable_mode is the directory's mode when this step gives vault write
+    # access to the directory or to what it holds (log and audit parents, the
+    # storage directory, and a storage parent that must stand in for it). Such
+    # a directory must be one vault can write already, so that a directory
+    # vault can only read never becomes writable by it (audit 03 of PR #49,
+    # A03-2).
     shown = clean_path(path_value)
     if shown is None:
         return f"{path_value} must be an absolute path without '..'"
@@ -489,6 +495,12 @@ def dedicated_directory_problem(path_value, uid, gid, account):
             f"{shown} is not dedicated to Vault: it belongs to {uid}:{gid}, "
             f"not to the {SERVICE_USER} account or the {SERVICE_GROUP} group; "
             f"if it holds only Vault files, give it to the {SERVICE_GROUP} group first"
+        )
+    if writable_mode is not None and uid != account["uid"] and not writable_mode & 0o020:
+        return (
+            f"{shown} is not writable by {SERVICE_USER} now (it belongs to {uid}:{gid} with mode {writable_mode:04o}), "
+            f"and this step would give {SERVICE_USER} write access to it or to what it holds; "
+            f"if it holds only Vault files, give it to {SERVICE_USER} first"
         )
     return ""
 
@@ -1010,9 +1022,16 @@ def plan_directory_access(path_value, label):
         return desired
     parent_value = str(pathlib.Path(path_value).parent)
     parent_info = stat_path(parent_value)
+    # The parent only receives a new storage directory, so it must be
+    # dedicated to Vault; to stand in for a storage directory that is not,
+    # vault must be able to write it already.
     parent_problem = "is missing"
+    parent_stand_in_problem = "is missing"
     if parent_info["exists"]:
         parent_problem = dedicated_directory_problem(parent_value, parent_info["uid"], parent_info["gid"], account_status)
+        parent_stand_in_problem = dedicated_directory_problem(
+            parent_value, parent_info["uid"], parent_info["gid"], account_status, int(parent_info["mode"], 8)
+        )
     if info["exists"]:
         if info["file_type"] != "directory":
             desired["classification"] = "blocker"
@@ -1020,10 +1039,12 @@ def plan_directory_access(path_value, label):
             return desired
         if info["uid"] != account_status["uid"] or info["gid"] != account_status["gid"] or info["mode"] != "0750":
             desired["apply_adjustment_required"] = True
-            own_problem = dedicated_directory_problem(path_value, info["uid"], info["gid"], account_status)
-            if own_problem and parent_problem:
+            own_problem = dedicated_directory_problem(
+                path_value, info["uid"], info["gid"], account_status, int(info["mode"], 8)
+            )
+            if own_problem and parent_stand_in_problem:
                 desired["classification"] = "blocker"
-                desired["summary"] = f"{label} directory {own_problem}, and its parent {parent_problem}"
+                desired["summary"] = f"{label} directory {own_problem}, and its parent {parent_stand_in_problem}"
         return desired
     ok, error = ensure_parent_exists(path_value)
     if not ok:
@@ -1071,7 +1092,8 @@ def plan_file_or_parent_write_access(path_value, label):
     parent_info = stat_path(pathlib.Path(path_value).parent)
     desired["parent"] = parent_info
     parent_problem = dedicated_directory_problem(
-        str(pathlib.Path(path_value).parent), parent_info["uid"], parent_info["gid"], account_status
+        str(pathlib.Path(path_value).parent), parent_info["uid"], parent_info["gid"], account_status,
+        int(parent_info["mode"], 8),
     )
     if parent_problem:
         desired["classification"] = "blocker"
@@ -1551,9 +1573,10 @@ def open_regular_file(dir_fd, name, label, shown, missing_ok=False):
     return fd
 
 
-def require_dedicated_directory(dir_fd, path_value, label, account):
+def require_dedicated_directory(dir_fd, path_value, label, account, becomes_vault_writable=False):
     info = os.fstat(dir_fd)
-    problem = dedicated_directory_problem(path_value, info.st_uid, info.st_gid, account)
+    writable_mode = statmod.S_IMODE(info.st_mode) if becomes_vault_writable else None
+    problem = dedicated_directory_problem(path_value, info.st_uid, info.st_gid, account, writable_mode)
     if problem:
         raise PathRefusal(f"{label}: {problem}")
 
@@ -1580,12 +1603,13 @@ def change_read_file(path_value, label, account, root_uid, apply):
 
 
 def change_write_file(path_value, label, account, apply):
-    # Log and audit files: the parent stays writable by vault, so it must be a
-    # directory dedicated to Vault; the file, when present, goes to vault.
+    # Log and audit files: the parent goes to vault, so it must be a directory
+    # dedicated to Vault that vault can write already; the file, when present,
+    # goes to vault.
     parent_value, name = split_parent(path_value, label)
     parent_fd = open_directory_path(parent_value, f"{label} parent directory")
     try:
-        require_dedicated_directory(parent_fd, parent_value, f"{label} parent directory", account)
+        require_dedicated_directory(parent_fd, parent_value, f"{label} parent directory", account, True)
         if apply:
             os.fchown(parent_fd, account["uid"], account["gid"])
             os.fchmod(parent_fd, 0o750)
@@ -1640,7 +1664,9 @@ def own_storage_tree(dir_fd, shown, label, account, depth, apply):
 
 def change_storage(path_value, label, account, apply):
     # The storage directory and everything in it go to vault. It must be a
-    # directory dedicated to Vault, or sit directly in one.
+    # directory dedicated to Vault that vault can write already, or sit
+    # directly in one; a missing one is created only in a directory dedicated
+    # to Vault.
     shown = clean_path(path_value)
     if shown in SHARED_SYSTEM_DIRECTORIES:
         raise PathRefusal(f"{label}: {shown} is a shared system directory, not one dedicated to Vault")
@@ -1649,6 +1675,10 @@ def change_storage(path_value, label, account, apply):
     try:
         parent_info = os.fstat(parent_fd)
         parent_problem = dedicated_directory_problem(parent_value, parent_info.st_uid, parent_info.st_gid, account)
+        parent_stand_in_problem = dedicated_directory_problem(
+            parent_value, parent_info.st_uid, parent_info.st_gid, account, statmod.S_IMODE(parent_info.st_mode)
+        )
+        created = False
         try:
             storage_fd = os.open(name, DIR_OPEN_FLAGS, dir_fd=parent_fd)
         except FileNotFoundError:
@@ -1661,13 +1691,19 @@ def change_storage(path_value, label, account, apply):
             except FileExistsError:
                 raise PathRefusal(f"{label}: {shown} appeared while this step ran") from None
             storage_fd = os.open(name, DIR_OPEN_FLAGS, dir_fd=parent_fd)
+            created = True
         except OSError as exc:
             raise PathRefusal(f"{label}: {shown} is not a directory or is a symbolic link ({exc.strerror})") from None
         try:
             info = os.fstat(storage_fd)
-            own_problem = dedicated_directory_problem(path_value, info.st_uid, info.st_gid, account)
-            if own_problem and parent_problem:
-                raise PathRefusal(f"{label}: {own_problem}, and its parent {parent_problem}")
+            # A directory this step just created is root's and empty, and its
+            # parent passed the rule for creating one.
+            if not created:
+                own_problem = dedicated_directory_problem(
+                    path_value, info.st_uid, info.st_gid, account, statmod.S_IMODE(info.st_mode)
+                )
+                if own_problem and parent_stand_in_problem:
+                    raise PathRefusal(f"{label}: {own_problem}, and its parent {parent_stand_in_problem}")
             own_storage_tree(storage_fd, shown, label, account, 0, apply)
             if apply:
                 os.fchmod(storage_fd, 0o750)

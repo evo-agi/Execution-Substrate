@@ -2058,8 +2058,14 @@ Stop conditions for P0m:
 - the raft path is a symbolic link or does not belong to the Vault service user
 - a process still runs as the Vault service user after the unit stops; the
   helper moves nothing and Vault stays stopped (whole-trunk red-team RT-2,
-  2026-11-24: the old directory moves with `mv -T`, the new one is made with
-  `mkdir`, which refuses a name that exists, and handed over with `chown -h`)
+  2026-11-24)
+- a directory on the raft path is a symbolic link when the helper moves the
+  raft directory, or the raft directory is no longer the Vault service user's;
+  the helper reaches the raft directory's parent from `/` without following a
+  link, moves the old directory and creates the new one inside that parent,
+  and hands the new one over through its own descriptor, so a link the Vault
+  account plants anywhere on the path cannot point root at another directory
+  (audit 03 of PR #49, 2026-11-24)
 - exact phrase mismatch
 - request to run post-unseal check, workload-auth check, Infrastructure Manager
   refresh, support-bundle collection, CP proof, governed smoke, runtime identity
@@ -6343,9 +6349,10 @@ changes, so root must never change a path by name there (whole-trunk red-team
 RT-3, 2026-11-24). The check-only plan blocks a path that goes through a
 symbolic link, any directory the apply would change that is not dedicated to
 Vault (owned by the Vault account or group, and never a shared system directory
-such as `/etc` or `/var/log`), a log or audit file that would make such a
-directory writable by vault, a storage directory that is not Vault's own or
-inside one, and a directory the plan would give two owners. Apply opens every
+such as `/etc` or `/var/log`), a log, audit or storage directory that vault can
+only read now and the apply would make writable by it, a storage directory that
+is not Vault's own or inside one, and a directory the plan would give two
+owners. Apply opens every
 path without following links, checks all of them before changing any, changes
 the path owners before it installs the drop-in, takes a config or TLS file's
 directory to `root:<vault group>` before the file, changes only regular files
