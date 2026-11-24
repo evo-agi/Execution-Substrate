@@ -802,7 +802,9 @@ print(json.dumps({"cases":cases,"detail":detail}))
 // with status zero. Inside a namespace the processes it reaps are the
 // orphans of the namespace; here they are two children that end when the
 // probe says so. An anchor whose parent ends is killed by the kernel, even
-// while another process still holds its control pipe open.
+// while another process still holds its control pipe open. The order of the
+// closing and the ready byte is decided without a race: the ready pipe is
+// full when the anchor starts, so its byte waits until the probe reads.
 //
 // The probe decides by attempts whether this host has what the anchor and
 // the probe use: a list of its own descriptors in /proc/self/fd, pidfd_open
@@ -845,6 +847,16 @@ def until(condition):
     return True
 control_r,control_w=os.pipe();kept_r,kept_w=os.pipe();report_r,report_w=os.pipe()
 first_go_r,first_go_w=os.pipe();second_go_r,second_go_w=os.pipe();ready_r,ready_w=os.pipe()
+# The ready pipe is full before the anchor starts, so its one byte waits in
+# the write until the probe reads. An anchor that closes what it inherited
+# before it reports ready has closed it while it waits there; one that
+# reports first still holds it, however fast it would close it afterwards.
+os.set_blocking(ready_w,False);filled=0
+for size in (65536,1):
+    while True:
+        try:filled+=os.write(ready_w,b"f"*size)
+        except BlockingIOError:break
+os.set_blocking(ready_w,True)
 anchor=os.fork()
 if anchor==0:
     try:
@@ -867,15 +879,23 @@ for fd in (control_r,kept_w,report_w,first_go_r,second_go_r,ready_w):os.close(fd
 first,second=(int(word) for word in os.read(report_r,64).split());os.close(report_r)
 # Both wait for the probe, so both are alive here and each pidfd names it.
 pidfds={first:os.pidfd_open(first),second:os.pidfd_open(second)}
-ready,_write,_error=select.select([ready_r],[],[],20.0)
-word=os.read(ready_r,1) if ready else None
-# The byte comes only after the anchor closed what it inherited. A fork keeps
-# the numbers of the descriptors, so the anchor's own list shows it.
-held=sorted(int(name) for name in os.listdir("/proc/%d/fd"%anchor))
+# While the anchor's byte waits, the inherited write end of kept must already
+# be closed: the probe reads the ready pipe only after that end of input.
 ready,_write,_error=select.select([kept_r],[],[],20.0)
 closed=bool(ready) and os.read(kept_r,1)==b""
+data=b""
+while len(data)<=filled:
+    ready,_write,_error=select.select([ready_r],[],[],20.0)
+    chunk=os.read(ready_r,65536) if ready else b""
+    if not chunk:break
+    data+=chunk
+word=data[filled:]
+# Once the byte is here, the anchor has closed what it inherited. A fork keeps
+# the numbers of the descriptors, so the anchor's own list shows what is left.
+held=sorted(int(name) for name in os.listdir("/proc/%d/fd"%anchor))
 record("the anchor closes every inherited descriptor but its standard streams, the control pipe and the ready pipe before it reports ready",
-       word==b"r" and set(held)<={0,1,2,control_r,ready_w} and closed and not terminal(anchor),(word,held,closed))
+       closed and data[:filled]==b"f"*filled and word==b"r" and set(held)<={0,1,2,control_r,ready_w}
+       and not terminal(anchor),(closed,filled,len(data),word,held))
 ready,_write,_error=select.select([ready_r],[],[],20.0)
 record("the anchor reports ready with one byte and then closes the ready pipe",
        bool(ready) and os.read(ready_r,1)==b"" and not terminal(anchor),ready)
