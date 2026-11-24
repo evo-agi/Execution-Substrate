@@ -14381,6 +14381,7 @@ func operationalV2AssuranceOwnerRule(owner string) bool {
 		strings.Contains(owner, "It adds exactly one more path, a test file:\nA/nomad_request_guard_test.go, PR #31's token guard, which now covers the\nprovider and reads unadjusted positions.") &&
 		strings.Contains(owner, "A/reliable_submit_operational_handoff.go, A/service.go and their tests,\nwhich are already counted.") &&
 		strings.Contains(owner, "gains the prerequisite `CP-NOMAD-ACL`.") &&
+		strings.Contains(owner, "the provider's token is the one ES loads from `nomad.token_file` at startup for the current submit client;") &&
 		strings.Contains(owner, "carries ES's Nomad\nACL client token in one `X-Nomad-Token` header and never in the URL.") &&
 		strings.Contains(owner, "the provider cannot be built without a token in\nNomad's canonical SecretID form.") &&
 		strings.Contains(owner, "`trunk_dev` after its PRs #33, #41, #37 and #39, are a further owner\nreconciliation at this gate.") &&
@@ -14576,6 +14577,7 @@ func TestOperationalSubmitHandoffCurrentAdmissionV2Contract(t *testing.T) {
 		"It adds exactly one more path, a test file:\nA/nomad_request_guard_test.go, PR #31's token guard, which now covers the\nprovider and reads unadjusted positions.",
 		"A/reliable_submit_operational_handoff.go, A/service.go and their tests,\nwhich are already counted.",
 		"gains the prerequisite `CP-NOMAD-ACL`.",
+		"the provider's token is the one ES loads from `nomad.token_file` at startup for the current submit client;",
 		"carries ES's Nomad\nACL client token in one `X-Nomad-Token` header and never in the URL.",
 		"the provider cannot be built without a token in\nNomad's canonical SecretID form.",
 		"`trunk_dev` after its PRs #33, #41, #37 and #39, are a further owner\nreconciliation at this gate.",
@@ -14889,6 +14891,7 @@ func TestOperationalSubmitHandoffCurrentAdmissionV2RejectsUnsafeMutants(t *testi
 		{"MissingNomadTokenCountedPaths", "A/reliable_submit_operational_handoff.go, A/service.go and their tests,\nwhich are already counted."},
 		{"MissingNomadTokenHeader", "carries ES's Nomad\nACL client token in one `X-Nomad-Token` header and never in the URL."},
 		{"MissingNomadTokenRequired", "the provider cannot be built without a token in\nNomad's canonical SecretID form."},
+		{"MissingNomadACLTokenCustody", "the provider's token is the one ES loads from `nomad.token_file` at startup for the current submit client;"},
 		{"MissingRedTeamRecheckTrunkDevPRs", "`trunk_dev` after its PRs #33, #41, #37 and #39, are a further owner\nreconciliation at this gate."},
 		{"MissingRedTeamRecheckMovedPath", "remote_alpha_es_service_tls_status_local_boundary_test.go, which keeps its\ncount there."},
 		{"MissingRedTeamRecheckPaths", "It adds exactly three more paths, the module file and two test files:\ngo.mod, which makes `golang.org/x/text` a direct requirement at the version\nalready selected, A/nomad_request_strings_redteam31_finding_test.go\n(new), the re-check's tests, and internal/testutil/testutil_test.go, whose\nthree position reads now ignore line directives."},
