@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +17,17 @@ import (
 const supportedNomadClientOptions = `  options = {
     "driver.allowlist" = "docker"
   }`
+
+// supportedNomadClientNetworkInterface pins the node's host network to
+// loopback in the supported Nomad configuration. ES jobs ask for no ports, so
+// they need only a host-mode network to exist; loopback exists on Wi-Fi and on
+// a cable alike, while a wired-port pin leaves none when the cable is out and
+// no pin leaves Nomad unable to start without a default route.
+const supportedNomadClientNetworkInterface = `  network_interface = "lo"`
+
+// nomadNetworkInterfaceSetting matches every network_interface setting in a
+// Nomad config, wherever it stands.
+var nomadNetworkInterfaceSetting = regexp.MustCompile(`(?m)^\s*network_interface\s*=`)
 
 // supportedNomadDockerPluginBlock is the Docker plugin block of the supported
 // Nomad configuration, byte for byte as scripts/70_linux_setup.sh and
@@ -93,6 +105,11 @@ func TestSupportedNomadDockerLimitsMatchSetupExampleAndTests(t *testing.T) {
 		client := extractNomadBlock(t, text, "client")
 		if !strings.Contains(client, supportedNomadClientOptions+"\n") {
 			t.Fatalf("%s client block does not enable only the Docker driver:\n%s", rel, client)
+		}
+		// Wi-Fi or cable: the host network comes from loopback, never from a
+		// named wired or wireless port.
+		if len(nomadNetworkInterfaceSetting.FindAllString(text, -1)) != 1 || !strings.Contains(client, "\n"+supportedNomadClientNetworkInterface+"\n") {
+			t.Fatalf("%s client block does not pin the host network to loopback, and only there:\n%s", rel, client)
 		}
 		for _, stale := range []string{`"docker.cleanup.image"`, `"docker.volumes.enabled"`, "allow_privileged = true", `"raw_exec"`} {
 			if strings.Contains(text, stale) {
@@ -293,6 +310,20 @@ func TestRealNomadOffersOnlyTheLimitedDockerDriver(t *testing.T) {
 	}
 	if docker := node.Drivers["docker"]; !docker.Detected || !docker.Healthy {
 		t.Fatal("node does not offer a healthy Docker driver")
+	}
+
+	// The supported client config pins the node's host network to loopback,
+	// and the operators' placement check passes on it: ES's job shapes
+	// (network mode none and bridge, no Nomad network block) plan with ES's
+	// token in ES's namespace.
+	esConfig := filepath.Join(t.TempDir(), "es.json")
+	if err := os.WriteFile(esConfig, mustMarshalJSON(t, map[string]any{"nomad": map[string]any{"datacenter": "dc1"}}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if output, err := runNomadACLTool(t, "placement", "--addr", harness.addr, "--es-token-file", harness.esTokenFile,
+		"--observer-token-file", harness.observerTokenFile, "--es-config", esConfig, "--wait-seconds", "30"); err != nil ||
+		!strings.Contains(output, "nomad placement: ok (host-mode network on ") {
+		t.Fatalf("placement check on the supported client config: %v output=%s", err, output)
 	}
 
 	job := func(id string, driver string, config map[string]any) []byte {

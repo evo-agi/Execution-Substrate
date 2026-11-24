@@ -1750,6 +1750,8 @@ func TestMountedSourceIdentityNomadTaskLabelProfileLaunchConfig(t *testing.T) {
 	if strings.Count(defaultConfig, supportedNomadDockerPluginBlock) != 1 ||
 		strings.Count(defaultConfig, `plugin "docker"`) != 1 ||
 		!strings.Contains(defaultConfig, supportedNomadClientOptions) ||
+		len(nomadNetworkInterfaceSetting.FindAllString(defaultConfig, -1)) != 1 ||
+		!strings.Contains(defaultConfig, "\n"+supportedNomadClientNetworkInterface+"\n") ||
 		strings.Contains(defaultConfig, `extra_labels`) ||
 		strings.Contains(defaultConfig, `"docker.cleanup.image"`) || strings.Contains(defaultConfig, `"docker.volumes.enabled"`) {
 		t.Fatal("default/capability-probe Nomad config changed")

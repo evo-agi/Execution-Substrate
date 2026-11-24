@@ -297,6 +297,14 @@ server {
 client {
   enabled = true
   servers = ["127.0.0.1"]
+  # Nomad gives the node its host network from loopback, where it already
+  # binds and advertises. ES jobs ask for no ports and need only that host
+  # network to exist, and loopback exists whether the host is on Wi-Fi or a
+  # cable. Without this line Nomad takes the default route's interface and
+  # does not start while there is none (Wi-Fi not up yet); pinned to a wired
+  # port, the node has no host network while the cable is out, and every ES
+  # job fails to place ("missing network").
+  network_interface = "lo"
   options = {
     "driver.allowlist" = "docker"
   }
@@ -686,10 +694,15 @@ for node in ready:
     if docker.get("Healthy") is not True:
         reasons.append(f"{node_name}=docker:{docker.get('HealthDescription') or 'unhealthy'}")
         continue
+    # ES's jobs need a host-mode network on the node (network_interface above).
+    networks = (detail.get("NodeResources") or {}).get("Networks") or []
+    if not any(isinstance(network, dict) and network.get("Mode") == "host" for network in networks):
+        reasons.append(f"{node_name}=no-host-network")
+        continue
     schedulable.append((node_name, cpu_total_compute))
 
 if not schedulable:
-    reason = "nomad: no ready client nodes with positive cpu.totalcompute and healthy docker driver"
+    reason = "nomad: no ready client nodes with positive cpu.totalcompute, healthy docker driver and a host-mode network"
     if reasons:
         reason += "; " + ", ".join(reasons)
     raise SystemExit(reason)
@@ -826,7 +839,7 @@ echo "   \"$CLONE_DIR/.runbooks/execution/Governed Execution ES Submit Runtime I
 echo "3. Keep the legacy compatibility runbook only for older reference-bridge validation:"
 echo "   \"$CLONE_DIR/.runbooks/execution/Governed Execution ES Submit Runtime Identity Reference Workload.md\""
 echo "4. Lock Nomad so only ES can submit: run 'sudo \"$CLONE_DIR/scripts/nomad_acl_setup.sh\"' (ES_USER=<ES's user> if ES does not run as root), set nomad.token_file in ES's config to ${NOMAD_ACL_DIR}/es-token, and export NOMAD_TOKEN_FILE=${NOMAD_ACL_DIR}/observer-token for readiness checks."
-echo "   Start the Go platform with explicit configs and TLS material."
+echo "   Start the Go platform with explicit configs and TLS material. After every Nomad start, run 'sudo \"$CLONE_DIR/scripts/nomad_acl_setup.sh\" placement' (ES_CONFIG=<ES's config> if not /etc/execution-substrate/es.json): it checks that Nomad can place ES's jobs."
 echo "5. Verify the VM still reports nomad-startup-mode: pre-managed, submit-ready-mode: natural, and supported-environment: supported through scripts/01_bringup.sh check."
 echo "6. Treat script-managed local Nomad startup and any compute override as bounded fallback/troubleshooting, not the supported Linux environment story."
 echo "7. Use the repo-owned proof bootstrap to start the proof-scoped Vault dev/test target used by the runbook."
@@ -835,6 +848,7 @@ echo
 echo "Environment notes:"
 echo "- This script assumes an apt-based Linux VM."
 echo "- The supported Linux profile is Docker healthy plus a root-managed non-dev nomad.service with positive natural cpu.totalcompute and no override."
+echo "- Nomad takes the node's host network from loopback (network_interface = \"lo\"), so the setup works on Wi-Fi or a cable and assumes neither."
 echo "- This script writes /etc/nomad.d/nomad.hcl for the single-node loopback Nomad service used by the current one-host workload-zone profile."
 echo "- That Nomad config enables ACLs; the bootstrap management token is in ${NOMAD_ACL_MANAGEMENT_TOKEN_FILE} (root only). Keep it out of ES and operator scripts."
 echo "- That Nomad config disables Docker image cleanup so local runtime-profile images survive completed allocations for repeated supported-local client runs."

@@ -2776,6 +2776,7 @@ client {
   enabled = true
 %s
 %s
+%s
 }
 %sports {
   http = %d
@@ -2787,7 +2788,7 @@ advertise {
   rpc  = "127.0.0.1:%d"
   serf = "127.0.0.1:%d"
 }
-`, dataDir, aclConfig, clientCPUOverride, clientDockerConfig, dockerPluginConfig, httpPort, rpcPort, serfPort, httpPort, rpcPort, serfPort)
+`, dataDir, aclConfig, clientCPUOverride, supportedNomadClientNetworkInterface, clientDockerConfig, dockerPluginConfig, httpPort, rpcPort, serfPort, httpPort, rpcPort, serfPort)
 	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
 		return nil, fmt.Sprintf("write nomad config: %v", err)
 	}
@@ -2946,6 +2947,11 @@ func (n *nomadHarness) readySchedulableNode(client *http.Client, nodes []struct 
 				Healthy           bool   `json:"Healthy"`
 				HealthDescription string `json:"HealthDescription"`
 			} `json:"Drivers"`
+			NodeResources struct {
+				Networks []struct {
+					Mode string `json:"Mode"`
+				} `json:"Networks"`
+			} `json:"NodeResources"`
 		}
 		decodeErr := json.NewDecoder(response.Body).Decode(&detail)
 		response.Body.Close()
@@ -2970,10 +2976,21 @@ func (n *nomadHarness) readySchedulableNode(client *http.Client, nodes []struct 
 			continue
 		}
 
+		// ES's jobs need a host-mode network on the node, as bring-up
+		// readiness (scripts/internal/bringup.sh) requires.
+		hostNetwork := false
+		for _, network := range detail.NodeResources.Networks {
+			hostNetwork = hostNetwork || network.Mode == "host"
+		}
+		if !hostNetwork {
+			reasons = append(reasons, nodeName+"=no-host-network")
+			continue
+		}
+
 		return true, ""
 	}
 
-	reason := "nomad: no ready client nodes with positive cpu.totalcompute and healthy docker driver"
+	reason := "nomad: no ready client nodes with positive cpu.totalcompute, healthy docker driver and a host-mode network"
 	if len(reasons) > 0 {
 		reason += "; " + strings.Join(reasons, ", ")
 		if allReasonsHaveZeroCPU(reasons) {

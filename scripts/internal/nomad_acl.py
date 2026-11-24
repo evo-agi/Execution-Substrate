@@ -26,6 +26,18 @@ receive a token or a bootstrap secret.
              auth method or management token holds any job capability there.
              That part writes to Nomad: it creates and deletes short-lived
              probe tokens.
+  placement  Verify that Nomad can place ES's jobs: some ready, eligible
+             client node has a healthy Docker driver and a host-mode network
+             (read with the observer token), and a plan of each job shape ES
+             submits (Docker, network_mode none and bridge, no Nomad network
+             block, no ports) in the ES namespace and ES's datacenter, made
+             with the ES token, places its one allocation. A plan registers
+             nothing. Run it after every Nomad start: Nomad gives the node its
+             host network from the interface its client's network_interface
+             names (or the default route's), and a node without one cannot
+             place any ES job, while every ACL check still passes. After a
+             restart, pass --fresh-after so that the node state the servers
+             kept from before the restart does not count.
 
 Exit status: 0 on success, 1 on a refusal (one line on stderr), 2 on usage.
 """
@@ -86,6 +98,15 @@ PROBE_JOB_ID = "es-acl-probe"
 # one minute.
 PROBE_TOKEN_NAME = "es-acl-probe"
 PROBE_TOKEN_TTL = "5m"
+# Plans of the job shapes ES submits, for `placement`: ES's runtime helper on
+# the Docker driver with network_mode "none", or "bridge" when the execution
+# has network access, and no Nomad network block. Such a job needs a node with
+# a host-mode network. The image is never pulled: a plan does not run tasks.
+PLACEMENT_PROBE_JOB_PREFIX = "es-placement-probe-"
+PLACEMENT_NETWORK_MODES = ("none", "bridge")
+DEFAULT_PLACEMENT_WAIT_SECONDS = 60
+DATACENTER_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z", re.ASCII)
+MAX_ES_CONFIG_BYTES = 1 << 20
 
 
 class Refusal(Exception):
@@ -942,6 +963,156 @@ def command_check(args) -> None:
     )
 
 
+def es_config_datacenter(path: str) -> str:
+    """nomad.datacenter from ES's JSON config: the datacenter ES submits to."""
+    _clean_absolute(path, "--es-config")
+    try:
+        fd = os.open(path, FILE_FLAGS)
+    except OSError:
+        raise Refusal(f"ES config {path} is unavailable or is a symbolic link") from None
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise Refusal(f"ES config {path} is not a regular file")
+        data = os.read(fd, MAX_ES_CONFIG_BYTES + 1)
+    finally:
+        os.close(fd)
+    if len(data) > MAX_ES_CONFIG_BYTES:
+        raise Refusal(f"ES config {path} is too large")
+    try:
+        config = json.loads(data)
+    except ValueError:
+        raise Refusal(f"ES config {path} is not JSON") from None
+    datacenter = (config.get("nomad") or {}).get("datacenter") if isinstance(config, dict) else None
+    if not isinstance(datacenter, str) or not DATACENTER_PATTERN.fullmatch(datacenter):
+        raise Refusal(f"ES config {path} names no valid nomad.datacenter")
+    return datacenter
+
+
+def _placement_plan_body(datacenter: str, network_mode: str) -> dict:
+    job_id = PLACEMENT_PROBE_JOB_PREFIX + network_mode
+    return {
+        "Job": {
+            "ID": job_id,
+            "Name": job_id,
+            "Type": "batch",
+            "Namespace": NAMESPACE,
+            "Datacenters": [datacenter],
+            "TaskGroups": [
+                {
+                    "Name": "probe",
+                    "Count": 1,
+                    "Tasks": [
+                        {
+                            "Name": "probe",
+                            "Driver": "docker",
+                            "Config": {"image": "alpine:3.20", "command": "/bin/true", "network_mode": network_mode},
+                            "Resources": {"CPU": 100, "MemoryMB": 64},
+                        }
+                    ],
+                }
+            ],
+        },
+        "Diff": False,
+    }
+
+
+def host_network_nodes(nomad: Nomad, observer: str, fresh_after: int = 0) -> tuple[list[str], list[str]]:
+    """Names of ready, eligible client nodes with a healthy Docker driver and
+    a host-mode network, and why each other node does not count. The
+    scheduler's network check reads NodeResources.Networks.
+
+    For up to about half a minute after a Nomad restart the servers can still
+    serve the node as the client last registered it, before the restart. With
+    fresh_after (Unix seconds), a node counts only once its status changed at
+    or after that time, that is once the restarted client registered again."""
+    nodes = nomad.json("GET", "/v1/nodes", observer)
+    if not isinstance(nodes, list):
+        raise Refusal("nomad GET /v1/nodes returned no node list")
+    ready, reasons = [], []
+    for stub in nodes:
+        if not isinstance(stub, dict):
+            continue
+        node_id = str(stub.get("ID") or "")
+        name = str(stub.get("Name") or node_id[:8] or "unknown")
+        if stub.get("Status") != "ready" or stub.get("SchedulingEligibility") != "eligible":
+            reasons.append(f"{name}={stub.get('Status')}/{stub.get('SchedulingEligibility')}")
+            continue
+        detail = nomad.json("GET", "/v1/node/" + urllib.parse.quote(node_id, safe=""), observer)
+        detail = detail if isinstance(detail, dict) else {}
+        updated = detail.get("StatusUpdatedAt")
+        if fresh_after and not (isinstance(updated, int) and updated >= fresh_after):
+            reasons.append(f"{name}=not-registered-since-the-start")
+            continue
+        docker = (detail.get("Drivers") or {}).get("docker") or {}
+        if docker.get("Healthy") is not True:
+            reasons.append(f"{name}=docker-unhealthy")
+            continue
+        networks = (detail.get("NodeResources") or {}).get("Networks") or []
+        if not any(isinstance(net, dict) and net.get("Mode") == "host" for net in networks):
+            reasons.append(f"{name}=no-host-network")
+            continue
+        ready.append(name)
+    return ready, reasons
+
+
+def plan_failures(nomad: Nomad, es_token: str, datacenter: str) -> list[str]:
+    """For each job shape ES submits, why its plan with the ES token would not
+    place its one allocation; empty when both would."""
+    failures = []
+    for mode in PLACEMENT_NETWORK_MODES:
+        body = _placement_plan_body(datacenter, mode)
+        path = "/v1/job/" + body["Job"]["ID"] + "/plan?namespace=" + NAMESPACE
+        result = nomad.json("POST", path, es_token, body)
+        result = result if isinstance(result, dict) else {}
+        failed = result.get("FailedTGAllocs") or {}
+        place = (((result.get("Annotations") or {}).get("DesiredTGUpdates") or {}).get("probe") or {}).get("Place")
+        if failed or place != 1:
+            details = []
+            for metric in failed.values():
+                metric = metric if isinstance(metric, dict) else {}
+                for key in ("ConstraintFiltered", "ClassFiltered", "DimensionExhausted", "QuotaExhausted"):
+                    if metric.get(key):
+                        details.append(f"{key} {json.dumps(metric[key], sort_keys=True)}")
+                if not metric.get("NodesAvailable"):
+                    details.append(f"no node in datacenter {datacenter}")
+            summary = "its allocation would fail" if failed else f"would place {place if isinstance(place, int) else 0} of 1"
+            failures.append(f"network_mode {mode}: {summary}" + (f" ({'; '.join(details)})" if details else ""))
+    return failures
+
+
+def command_placement(args) -> None:
+    nomad = Nomad(args.addr, args.nomad_uid)
+    datacenter = es_config_datacenter(args.es_config)
+    es_uid = parse_owner(args.es_token_owner)[0] if args.es_token_owner else None
+    es_token = read_token_file(args.es_token_file, "ES token file", owner_uid=es_uid)
+    observer_uid = parse_owner(args.observer_token_owner)[0] if args.observer_token_owner else None
+    observer = read_token_file(args.observer_token_file, "observer token file", owner_uid=observer_uid)
+    deadline = time.monotonic() + args.wait_seconds
+    while True:
+        ready, reasons = host_network_nodes(nomad, observer, args.fresh_after)
+        failures = plan_failures(nomad, es_token, datacenter) if ready else []
+        if ready and not failures:
+            break
+        if time.monotonic() >= deadline:
+            if not ready:
+                raise Refusal(
+                    f"after {args.wait_seconds} s no ready, eligible client node has a healthy Docker driver and a "
+                    f"host-mode network ({', '.join(reasons) or 'no nodes'}), so no ES job can be placed. A node takes "
+                    "its host network from the interface its client's network_interface names, or from the default "
+                    "route's: pin network_interface = \"lo\" (scripts/70_linux_setup.sh) so that it holds on Wi-Fi "
+                    "and on a cable alike"
+                )
+            raise Refusal(
+                f"after {args.wait_seconds} s a plan of ES's jobs in {NAMESPACE}, datacenter {datacenter}, "
+                "places nothing: " + " | ".join(failures)
+            )
+        time.sleep(2)
+    print(
+        f"nomad placement: ok (host-mode network on {', '.join(ready)}; ES's job shapes, network_mode "
+        f"{' and '.join(PLACEMENT_NETWORK_MODES)}, plan in {NAMESPACE}, datacenter {datacenter}, with the ES token)"
+    )
+
+
 NOMAD_UID_HELP = "uid that Nomad's HTTP listener runs as; nothing is sent to a listener owned by any other user (default 0)"
 
 
@@ -983,9 +1154,32 @@ def main(argv: list[str]) -> int:
         help="also prove, with the management token, that the ES and observer tokens are the only ones with their policies and that no other policy, role, auth method or management token holds any job capability in the ES namespace (creates and deletes short-lived probe tokens)",
     )
 
+    placement = sub.add_parser("placement")
+    placement.add_argument("--addr", required=True)
+    placement.add_argument("--nomad-uid", type=_non_negative_int, default=0, help=NOMAD_UID_HELP)
+    placement.add_argument("--es-token-file", required=True)
+    placement.add_argument("--es-token-owner", help="<uid>:<gid> expected to own the ES token file (default: current user)")
+    placement.add_argument("--observer-token-file", required=True)
+    placement.add_argument("--observer-token-owner", help="<uid>:<gid> expected to own the observer token file (default: current user)")
+    placement.add_argument("--es-config", required=True, help="ES's JSON config; its nomad.datacenter is where the plans go")
+    placement.add_argument(
+        "--wait-seconds",
+        type=_non_negative_int,
+        default=DEFAULT_PLACEMENT_WAIT_SECONDS,
+        help="how long to wait after a Nomad start for a node that can place ES's jobs (default 60)",
+    )
+    placement.add_argument(
+        "--fresh-after",
+        type=_non_negative_int,
+        default=0,
+        help="Unix time of the latest Nomad start: count a node only once it registered again after it (default 0: any)",
+    )
+
     args = parser.parse_args(argv)
     try:
-        if args.command == "provision":
+        if args.command == "placement":
+            command_placement(args)
+        elif args.command == "provision":
             for path, label in (
                 (args.management_token_file, "--management-token-file"),
                 (args.es_token_file, "--es-token-file"),

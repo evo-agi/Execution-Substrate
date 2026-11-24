@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -65,11 +66,11 @@ func TestNomadACLSetupWrapperChecksWithTheManagementToken(t *testing.T) {
 		t.Fatal(err)
 	}
 	aclDir := filepath.Join(root, "acl")
-	run := func(t *testing.T, args ...string) [][]string {
+	run := func(t *testing.T, env []string, args ...string) [][]string {
 		t.Helper()
 		log := filepath.Join(t.TempDir(), "tool.log")
 		command := exec.Command("bash", append([]string{filepath.Join(root, "scripts", "nomad_acl_setup.sh")}, args...)...)
-		command.Env = []string{"PATH=" + os.Getenv("PATH"), "NOMAD_ACL_DIR=" + aclDir, "ES_USER=root", "OBSERVER_USER=root", "FAKE_TOOL_LOG=" + log}
+		command.Env = append([]string{"PATH=" + os.Getenv("PATH"), "NOMAD_ACL_DIR=" + aclDir, "ES_USER=root", "OBSERVER_USER=root", "FAKE_TOOL_LOG=" + log}, env...)
 		if output, err := command.CombinedOutput(); err != nil {
 			t.Fatalf("setup wrapper %v failed: %v output=%s", args, err, output)
 		}
@@ -102,7 +103,7 @@ func TestNomadACLSetupWrapperChecksWithTheManagementToken(t *testing.T) {
 		{"rotate", []string{"rotate"}, []string{"provision", "check"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			calls := run(t, test.args...)
+			calls := run(t, nil, test.args...)
 			if len(calls) != len(test.actions) {
 				t.Fatalf("wrapper ran the tool %d time(s), want %v: %q", len(calls), test.actions, calls)
 			}
@@ -111,6 +112,33 @@ func TestNomadACLSetupWrapperChecksWithTheManagementToken(t *testing.T) {
 					!hasPair(call, "--observer-token-file", filepath.Join(aclDir, "observer-token")) ||
 					!hasPair(call, "--nomad-uid", "0") {
 					t.Fatalf("tool call %d = %q, want %s with the management and observer token files and Nomad's uid 0", i, call, test.actions[i])
+				}
+			}
+		})
+	}
+	// placement reads node state with the observer token and plans with ES's
+	// token; it never gets the management token. ES's config and the time of
+	// the latest Nomad start come from the environment.
+	for _, test := range []struct {
+		name string
+		env  []string
+		want [][2]string
+	}{
+		{"placement", nil, [][2]string{{"--es-config", "/etc/execution-substrate/es.json"}, {"--fresh-after", "0"}, {"--wait-seconds", "60"}}},
+		{"placement after a start", []string{"ES_CONFIG=/srv/es/es.json", "NOMAD_STARTED_AT=1764022640", "NOMAD_PLACEMENT_WAIT_SECONDS=120"},
+			[][2]string{{"--es-config", "/srv/es/es.json"}, {"--fresh-after", "1764022640"}, {"--wait-seconds", "120"}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			calls := run(t, test.env, "placement")
+			if len(calls) != 1 || calls[0][0] != "placement" || slices.Contains(calls[0], "--management-token-file") ||
+				!hasPair(calls[0], "--es-token-file", filepath.Join(aclDir, "es-token")) ||
+				!hasPair(calls[0], "--observer-token-file", filepath.Join(aclDir, "observer-token")) ||
+				!hasPair(calls[0], "--nomad-uid", "0") {
+				t.Fatalf("wrapper placement ran %q, want one placement call with the ES and observer token files only", calls)
+			}
+			for _, pair := range test.want {
+				if !hasPair(calls[0], pair[0], pair[1]) {
+					t.Fatalf("wrapper placement call %q lacks %s %s", calls[0], pair[0], pair[1])
 				}
 			}
 		})

@@ -7322,8 +7322,9 @@ its output then goes to the journal, and its summary to the backup folder.
   `/etc/execution-substrate/healthcheck.env`, do not all answer 200
   (healthcheck runbook step 4)
 - `/etc/nomad.d/nomad.hcl` is not the exact file the preflight read (its
-  SHA-256 is pinned), Nomad is already locked, or `/etc/nomad.d` holds
-  another `.hcl` or `.json` file that Nomad would load
+  SHA-256 is pinned) or does not pin the wired port that file pins, Nomad is
+  already locked, or `/etc/nomad.d` holds another `.hcl` or `.json` file
+  that Nomad would load
 - `/etc/nomad.d`, `/opt/nomad` or `/opt/nomad/data` is not a directory,
   Nomad names no leader, or Nomad has a pending or running job
 - a file already stands at the retained-result key path and does not meet
@@ -7343,16 +7344,28 @@ its output then goes to the journal, and its summary to the backup folder.
    change of owner clears a setuid or setgid bit), and makes
    `/etc/nomad.d`, `/opt/nomad` (0755) and `/opt/nomad/data` (0700)
    root-owned (audit INF-16). The locked `nomad.hcl` replaces the legacy
-   Docker client options with `"driver.allowlist" = "docker"` and adds the
-   `acl` block and the `plugin "docker"` block of
-   `scripts/70_linux_setup.sh`; it and `nomad.env` become `root:root 0640`.
-   A test keeps those pieces equal to the setup script's.
+   Docker client options with `"driver.allowlist" = "docker"`, replaces the
+   wired-port pin `network_interface = "enp1s0"` with the loopback pin
+   `network_interface = "lo"`, and adds the `acl` block and the
+   `plugin "docker"` block of `scripts/70_linux_setup.sh`; it and
+   `nomad.env` become `root:root 0640`. A test keeps those pieces equal to
+   the setup script's. The box runs on Wi-Fi, and its cable may or may not
+   be plugged in: pinned to the wired port, the node has no host network
+   while the cable is out, and no ES job can be placed. Loopback holds on
+   Wi-Fi and on a cable alike (see
+   [configuration.md](configuration.md#nomad-requirements)).
 4. starts Nomad, waits up to 90 seconds for a named leader, and runs
    `scripts/nomad_acl_setup.sh` with `ES_USER=es`, `NOMAD_USER=root` and
    `OBSERVER_USER=root`: it bootstraps the ACLs, creates the `es-submit-v1`
    namespace and the policies, writes the token files under
    `/etc/execution-substrate/nomad-acl`, and checks the lock. Pass the same
-   `ES_USER` and `OBSERVER_USER` to a later `check` or `rotate`.
+   `ES_USER` and `OBSERVER_USER` to a later `check` or `rotate`. It then
+   runs `nomad_acl_setup.sh placement` with `ES_CONFIG` the box's
+   `es.json`, `NOMAD_STARTED_AT` the time just before the Nomad start and
+   `NOMAD_PLACEMENT_WAIT_SECONDS=120`: within 120 seconds the restarted node
+   must have a host-mode network, and plans of both ES job shapes (Docker,
+   `network_mode` `none` and `bridge`) made with ES's token must place.
+   Every other check passes on a Nomad that can place nothing.
 5. creates the retained-result key
    `/etc/execution-substrate/retained-result-auth/es.key` (32 random bytes,
    `es`, 0400, folder `root:root 0755`), or keeps an existing valid one
@@ -7399,8 +7412,11 @@ host-shaped folder with fake `systemctl`, `curl`, `nomad` and ACL setup,
 payload binaries whose Go build info names another commit, another Go or a
 modified build, payload files of another owner or group,
 with Nomad data that another group owns (a setgid file and a link among it),
-an `apply` whose terminal hangs up and one whose output pipe closes, the
-box's own `nomad.hcl` through the lock, and `build` with a fake Go against
+an `apply` whose terminal hangs up and one whose output pipe closes, an
+`apply` whose placement check fails after the Nomad start, the box's own
+`nomad.hcl` through the lock (the result is byte for byte the box's
+`nomad.hcl` after the host-network repair of 2026-11-24), and `build` with a
+fake Go against
 a dirty checkout and build info that names another commit or a modified
 build.
 

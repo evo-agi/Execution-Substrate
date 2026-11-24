@@ -500,7 +500,7 @@ they were not passed or waived.
 - The primary bring-up/check path distinguishes:
   - service health: ARS, EGS, AGS, and ES public health surfaces
   - prepare-ready: service health plus successful workload-zone Vault runtime-config blob verification through ARS, including structural validation of any supplied Vault CA bundle
-  - submit-ready: prepare-ready plus ES submit config present (including a `nomad.token_file` that is a regular 0400/0600 file), Docker available, required enabled runtime-profile images present, Nomad leader present, Nomad enforcing ACLs with no anonymous policy (read with the observer token named by `NOMAD_TOKEN_FILE`), and at least one ready Nomad client node that exposes positive `cpu.totalcompute` and a healthy Docker driver
+  - submit-ready: prepare-ready plus ES submit config present (including a `nomad.token_file` that is a regular 0400/0600 file), Docker available, required enabled runtime-profile images present, Nomad leader present, Nomad enforcing ACLs with no anonymous policy (read with the observer token named by `NOMAD_TOKEN_FILE`), and at least one ready Nomad client node that exposes positive `cpu.totalcompute`, a healthy Docker driver and a host-mode network
 
 Minimal vault-auth example:
 
@@ -602,6 +602,7 @@ The current host-qualification boundary for the supported Linux environment is d
 - readiness (`scripts/10_health_check.sh`, bring-up and supported-local setup) refuses a Nomad whose agent does not report the Docker-only allowlist, `allow_privileged = false` and capabilities within the list above (`nomad: drivers=docker docker_privileged=refused docker_caps=...`)
 - explicit local data directory for repeatable manual bring-up
 - when the current slice-0 single-node topology binds Nomad to `127.0.0.1`, the Nomad config must also set explicit loopback `advertise` addresses for `http`, `rpc`, and `serf`
+- the client's host network pinned to loopback: `client { network_interface = "lo" }` (`scripts/70_linux_setup.sh` and `.examples/config/nomad.hcl` write it). ES's jobs (Docker with `network_mode` `none`, or `bridge` when the execution has network access, no Nomad network block, no ports) can be placed only on a node with a host-mode network, which Nomad takes from the interface `network_interface` names, or from the default route's interface when it names none. Loopback exists whether the host is on Wi-Fi or a cable, so the supported setup works on either and assumes neither: pinned to a wired port, the node has no host network while the cable is out and every plan fails with `missing network`; unpinned, Nomad does not start while there is no default route (Wi-Fi not up yet). Readiness refuses a node without a host-mode network (`<node>=no-host-network`), and `sudo scripts/nomad_acl_setup.sh placement`, run after every Nomad start, plans ES's job shapes with ES's token (see [Nomad access control](#nomad-access-control))
 - for the supported Linux environment story in this slice, Nomad should already be running as a pre-managed non-dev service on the host/VM before `scripts/01_bringup.sh up`; the local script-managed Nomad startup path remains bounded fallback/troubleshooting scaffolding
 - the operator readiness path now inspects `GET /v1/agent/self` and rejects `config.DevMode=true`; `nomad agent -dev` is unsupported for the slice-0 supported-environment claim even if it reports healthy Docker and positive compute
 - when Nomad uses the Docker driver on Linux, HashiCorp's Docker driver guidance treats root-managed Nomad as the compatible mode for CPU-core / NUMA-aware behavior; user-managed Nomad startup may still be useful for bounded proof and troubleshooting, but it is not the supported-environment baseline
@@ -710,6 +711,21 @@ bypass ES admission. ES therefore submits only to a Nomad that enforces them.
   for example `node` write can drain the node and so stop ES's allocations.
   The tool behind it is `scripts/internal/nomad_acl.py`; it talks only to a
   loopback Nomad address, with no proxy and no redirects.
+- **Placement check**: `sudo scripts/nomad_acl_setup.sh placement` proves
+  what no ACL check sees: that Nomad can place ES's jobs. With the observer
+  token it waits (`NOMAD_PLACEMENT_WAIT_SECONDS`, default 60) for a ready,
+  eligible client node with a healthy Docker driver and a host-mode
+  network. With `NOMAD_STARTED_AT`, the Unix time just before the latest
+  Nomad start, a node counts only once the restarted client registered
+  again, because for about half a minute after a restart the servers can
+  serve the node as it was before. With ES's token it then plans each job
+  shape ES submits (Docker, `network_mode` `none` and `bridge`, no network
+  block, no ports) in `es-submit-v1` and in the datacenter that
+  `nomad.datacenter` names in ES's config (`ES_CONFIG`, default
+  `/etc/execution-substrate/es.json`); each plan must place its one
+  allocation. A plan registers nothing, and the check never uses the
+  management token. The Remote Alpha upgrade script runs it after it
+  restarts Nomad.
 - **Rotation needs an ES restart**: ES reads its token only at startup, and a
   container bind mount keeps the old file, so restart ES after `rotate`.
 - **Bring-up and proof paths**: `BRINGUP_PROFILE=full scripts/01_bringup.sh
@@ -797,7 +813,7 @@ The current unified health check verifies:
 
 - ARS, EGS, AGS, and ES all report `ready=true`
 - those health checks succeeded with a real client certificate at the TLS boundary
-- Nomad has a leader and at least one ready node with positive `cpu.totalcompute` and a healthy Docker driver when `BRINGUP_PROFILE=full`
+- Nomad has a leader and at least one ready node with positive `cpu.totalcompute`, a healthy Docker driver and a host-mode network when `BRINGUP_PROFILE=full`
 - `docker info` succeeds when `BRINGUP_PROFILE=full`
 - any enabled `control-plane-normal-shell/v1` runtime-profile image is present according to `docker image inspect` in the Docker daemon used by Nomad when `BRINGUP_PROFILE=full`
 - when an enabled runtime-profile image is present, the Nomad Docker plugin reports `gc.image = false`, so Nomad will not remove that local image after stopped tasks as part of the supported-local runtime surface

@@ -581,7 +581,7 @@ For `BRINGUP_PROFILE=full`, the current readiness helpers require:
 - Docker is reachable through `docker info`
 - Nomad has a leader
 - Nomad reports `config.DevMode=false`
-- at least one ready Nomad client has positive natural `cpu.totalcompute` and a healthy Docker driver
+- at least one ready Nomad client has positive natural `cpu.totalcompute`, a healthy Docker driver and a host-mode network
 - Nomad enables only the Docker driver, and its Docker plugin refuses privileged containers and allows only ES's runtime-helper capabilities
 - any enabled runtime-profile image is present in the Docker daemon used by Nomad
 - for enabled local runtime-profile images, Nomad Docker image garbage collection is disabled through the Docker plugin's `gc { image = false }`
