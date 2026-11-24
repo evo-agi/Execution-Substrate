@@ -1272,3 +1272,135 @@ func TestRemoteAlphaResetDisposableVaultRefusesALinkAboveTheRaftDirectoryToAVaul
 		t.Errorf("%s changed from %+v to %+v", lookalike, lookalikeBefore, got)
 	}
 }
+
+// vaultRunsAsVault installs the drop-in the migration writes, so the unit
+// reports that Vault already runs as the Vault user.
+func (f vaultMigrationFixture) vaultRunsAsVault(t *testing.T) {
+	t.Helper()
+	if err := os.MkdirAll(f.ServiceDropInDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(f.ServiceDropInPath, []byte("[Service]\nUser=vault\nGroup=vault\nUMask=0027\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// vaultUnreadableFile writes a root-only file (root's, 0600) in dir, which
+// the Vault account (uid 65534 when the test runs as root) cannot read.
+func (f vaultMigrationFixture) vaultUnreadableFile(t *testing.T, dir string) string {
+	t.Helper()
+	path := filepath.Join(dir, "root-only.key")
+	if err := os.WriteFile(path, []byte("root keeps this from vault\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func lstatOwnerMode(t *testing.T, path string) (int, int, os.FileMode) {
+	t.Helper()
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatalf("lstat %s: %v", path, err)
+	}
+	sys := info.Sys().(*syscall.Stat_t)
+	return int(sys.Uid), int(sys.Gid), info.Mode().Perm()
+}
+
+// RT-3 residual RC-1 (red-team re-check 06 of PR #49): once Vault runs as the
+// Vault user, a file in a directory that account owns, but which it cannot
+// read, must not be opened up to it, whether the account names it as a TLS
+// file in the config it owns or moves it into the storage tree. While the unit
+// still runs as root, the apply hands config and TLS files over as before.
+func TestRemoteAlphaVaultServiceUserMigrationKeepsFilesVaultCannotReadFromVault(t *testing.T) {
+	t.Parallel()
+	if os.Geteuid() != 0 {
+		t.Log("only root can make a file in a Vault directory that the Vault account cannot read; nothing to check as this user")
+		return
+	}
+	nameAsTLSFile := func(t *testing.T, f vaultMigrationFixture, secret string) {
+		f.editVaultConfig(t, func(config map[string]any) {
+			listener := config["listener"].([]any)[0].(map[string]any)
+			listener["tls_client_ca_file"] = secret
+		})
+		rootPathChown(t, f.owner, f.VaultConfigPath)
+	}
+
+	t.Run("named as a TLS file", func(t *testing.T) {
+		t.Parallel()
+		f := newVaultMigrationFixture(t)
+		f.vaultRunsAsVault(t)
+		f.mustBeReady(t)
+		secret := f.vaultUnreadableFile(t, f.TLSDir)
+		uid, gid, mode := lstatOwnerMode(t, secret)
+		nameAsTLSFile(t, f, secret)
+
+		// The plan blocks it.
+		preflight := f.checkOnly(t)
+		if nestedMap(t, preflight, "plan")["apply_ready"] == true || !strings.Contains(mustRead(t, f.preflight), "is not readable by vault now") {
+			t.Fatalf("the plan did not block a TLS file vault cannot read:\n%s", mustRead(t, f.preflight))
+		}
+		// An apply from a preflight that lists it anyway refuses before any change.
+		tls := nestedMap(t, nestedMap(t, preflight, "validation"), "tls_read_paths")
+		tls["classification"] = "pass"
+		items := tls["items"].([]any)
+		for _, raw := range items {
+			item := raw.(map[string]any)
+			item["classification"] = "pass"
+			if item["path"] == secret {
+				item["apply_adjustment_required"] = true
+			}
+		}
+		plan := nestedMap(t, preflight, "plan")
+		plan["apply_ready"] = true
+		preflight["blockers"] = []any{}
+		preflight["overall_classification"] = "pass"
+		writeJSONFile(t, f.preflight, preflight)
+		summary, output, err := f.apply(t)
+		result := fmt.Sprint(nestedMap(t, summary, "result")["summary"])
+		if err == nil || !strings.Contains(result, "Vault listener TLS path: "+secret+" is not readable by vault now") || !strings.Contains(result, "no path was changed") {
+			t.Fatalf("the apply opened up a TLS file vault cannot read: %v\nresult=%s\n%s", err, result, output)
+		}
+		if gotUID, gotGID, gotMode := lstatOwnerMode(t, secret); gotUID != uid || gotGID != gid || gotMode != mode {
+			t.Fatalf("the file changed from %d:%d %04o to %d:%d %04o", uid, gid, mode, gotUID, gotGID, gotMode)
+		}
+	})
+
+	t.Run("named as a TLS file while Vault still runs as root", func(t *testing.T) {
+		t.Parallel()
+		f := newVaultMigrationFixture(t)
+		secret := f.vaultUnreadableFile(t, f.TLSDir)
+		nameAsTLSFile(t, f, secret)
+		f.mustBeReady(t)
+		if summary, output, err := f.apply(t); err != nil {
+			t.Fatalf("the first migration refused a TLS file root keeps: %v\nresult=%v\n%s", err, summary["result"], output)
+		}
+		if uid, gid, mode := lstatOwnerMode(t, secret); uid != 0 || gid != f.owner.gid || mode != 0o640 {
+			t.Fatalf("the first migration should hand the TLS file to root:vault 0640, it is %d:%d %04o", uid, gid, mode)
+		}
+	})
+
+	t.Run("moved into the storage tree", func(t *testing.T) {
+		t.Parallel()
+		f := newVaultMigrationFixture(t)
+		f.vaultRunsAsVault(t)
+		moved := filepath.Join(f.StorageDir, "root-only.key")
+		// The account moves the file within directories it owns.
+		if err := os.Rename(f.vaultUnreadableFile(t, f.TLSDir), moved); err != nil {
+			t.Fatal(err)
+		}
+		f.mustBeReady(t)
+		storage := rootPathStat(t, f.StorageDir)
+		before := rootPathStat(t, moved)
+		summary, output, err := f.apply(t)
+		result := fmt.Sprint(nestedMap(t, summary, "result")["summary"])
+		if err == nil || !strings.Contains(result, moved+" belongs to uid 0, not to vault") || !strings.Contains(result, "no path was changed") {
+			t.Fatalf("the apply gave the account a storage entry it did not own: %v\nresult=%s\n%s", err, result, output)
+		}
+		if got := rootPathStat(t, moved); got != before {
+			t.Fatalf("the moved file changed from %+v to %+v", before, got)
+		}
+		if got := rootPathStat(t, f.StorageDir); got != storage {
+			t.Fatalf("the storage directory changed from %+v to %+v", storage, got)
+		}
+	})
+}

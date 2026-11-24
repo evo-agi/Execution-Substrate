@@ -6357,7 +6357,13 @@ path without following links, checks all of them before changing any, changes
 the path owners before it installs the drop-in, takes a config or TLS file's
 directory to `root:<vault group>` before the file, changes only regular files
 with one link, and refuses anything else with a summary that says whether a
-path had already changed.
+path had already changed. Once the unit already runs as the Vault user, a
+process of that account may have moved or renamed entries in the directories
+it owns, so the plan and the apply also refuse a config or TLS file that vault
+cannot read now, and the apply refuses a storage entry vault does not own,
+instead of opening either up to vault (red-team re-check 06 of PR #49, RC-1).
+While the unit still runs as root, those files are root's by design and the
+apply hands them over.
 
 The apply summary must record changed paths, backups, rollback path,
 post-apply checks, skipped checks, redaction status, and explicit non-claims.

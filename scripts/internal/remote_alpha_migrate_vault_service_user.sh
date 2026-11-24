@@ -505,6 +505,39 @@ def dedicated_directory_problem(path_value, uid, gid, account, writable_mode=Non
     return ""
 
 
+def vault_runs_as_service_user(service_meta, account):
+    # Once the unit runs as the Vault user, a process of that account may have
+    # moved or renamed entries in the directories it owns, so files there that
+    # root keeps from it must stay that way (red-team re-check 06 of PR #49,
+    # RC-1). While the unit still runs as root, the files Vault needs are
+    # root's by design and the apply hands them over.
+    user = (service_meta or {}).get("effective_user", "")
+    return user == SERVICE_USER or (account.get("uid") is not None and user == str(account["uid"]))
+
+
+def vault_can_read(uid, gid, mode, account):
+    return bool(
+        (uid == account["uid"] and mode & 0o400)
+        or (gid == account["gid"] and mode & 0o040)
+        or mode & 0o004
+    )
+
+
+def unreadable_by_vault_problem(shown, uid, gid, mode):
+    return (
+        f"{shown} is not readable by {SERVICE_USER} now (it belongs to {uid}:{gid} with mode {mode:04o}), "
+        f"although Vault already runs as {SERVICE_USER}, so this step will not open it up; "
+        f"if Vault needs it, give it to root:{SERVICE_GROUP} with mode 0640 first"
+    )
+
+
+def not_vault_owned_problem(shown, uid):
+    return (
+        f"{shown} belongs to uid {uid}, not to {SERVICE_USER}, although Vault already runs as {SERVICE_USER}, "
+        f"so this step will not give it to {SERVICE_USER}; if it is Vault's, give it to {SERVICE_USER} first"
+    )
+
+
 def planned_directory_conflicts(config_access, tls_items, storage_access, log_access, audit_access):
     def usable_path(item):
         if not item or item.get("classification") == "blocker":
@@ -954,7 +987,7 @@ def ensure_parent_exists(path_value):
     return True, ""
 
 
-def plan_file_access(path_value, label, target_gid):
+def plan_file_access(path_value, label, target_gid, keep_unreadable=False):
     info = stat_path(path_value)
     parent_info = stat_path(pathlib.Path(path_value).parent)
     desired = {
@@ -990,6 +1023,10 @@ def plan_file_access(path_value, label, target_gid):
     if parent_problem:
         desired["classification"] = "blocker"
         desired["summary"] = f"{label} parent directory {parent_problem}"
+        return desired
+    if keep_unreadable and not vault_can_read(info["uid"], info["gid"], int(info["mode"], 8), account_status):
+        desired["classification"] = "blocker"
+        desired["summary"] = f"{label} path " + unreadable_by_vault_problem(path_value, info["uid"], info["gid"], int(info["mode"], 8))
         return desired
     if info["uid"] != 0 or info["gid"] != target_gid or info["mode"] != "0640":
         desired["apply_adjustment_required"] = True
@@ -1337,7 +1374,8 @@ def plan_summary():
     if vault_config is None:
         blockers.append({"name": "vault_config", "summary": vault_config_error})
     elif account_status["classification"] != "blocker":
-        config_access = plan_file_access(vault_config["config_path"], "Vault config", account_status["gid"])
+        keep_unreadable = vault_runs_as_service_user(service_meta, account_status)
+        config_access = plan_file_access(vault_config["config_path"], "Vault config", account_status["gid"], keep_unreadable)
         if config_access["classification"] == "blocker":
             blockers.append({"name": "config_access", "summary": config_access["summary"]})
         elif config_access.get("apply_adjustment_required"):
@@ -1371,7 +1409,7 @@ def plan_summary():
 
         tls_items = []
         for tls_path in vault_config["tls_read_paths"]:
-            item = plan_file_access(tls_path, "Vault listener TLS path", account_status["gid"])
+            item = plan_file_access(tls_path, "Vault listener TLS path", account_status["gid"], keep_unreadable)
             tls_items.append(item)
             if item["classification"] == "blocker":
                 blockers.append({"name": "tls_read_paths", "summary": item["summary"]})
@@ -1581,9 +1619,10 @@ def require_dedicated_directory(dir_fd, path_value, label, account, becomes_vaul
         raise PathRefusal(f"{label}: {problem}")
 
 
-def change_read_file(path_value, label, account, root_uid, apply):
+def change_read_file(path_value, label, account, root_uid, apply, keep_unreadable):
     # Config and TLS files: the parent goes to root first, so the vault account
-    # can no longer swap names in it, then the file itself.
+    # can no longer swap names in it, then the file itself. Once Vault runs as
+    # vault, a file vault cannot read now is refused rather than opened up.
     parent_value, name = split_parent(path_value, label)
     parent_fd = open_directory_path(parent_value, f"{label} parent directory")
     try:
@@ -1593,6 +1632,10 @@ def change_read_file(path_value, label, account, root_uid, apply):
             os.fchmod(parent_fd, 0o750)
         file_fd = open_regular_file(parent_fd, name, label, path_value)
         try:
+            file_info = os.fstat(file_fd)
+            file_mode = statmod.S_IMODE(file_info.st_mode)
+            if keep_unreadable and not vault_can_read(file_info.st_uid, file_info.st_gid, file_mode, account):
+                raise PathRefusal(f"{label}: " + unreadable_by_vault_problem(path_value, file_info.st_uid, file_info.st_gid, file_mode))
             if apply:
                 os.fchown(file_fd, root_uid, account["gid"])
                 os.fchmod(file_fd, 0o640)
@@ -1625,9 +1668,16 @@ def change_write_file(path_value, label, account, apply):
         os.close(parent_fd)
 
 
-def own_storage_tree(dir_fd, shown, label, account, depth, apply):
+def own_storage_tree(dir_fd, shown, label, account, depth, apply, keep_foreign):
+    # keep_foreign: once Vault runs as vault, everything in its storage is
+    # vault's already, so an entry of another owner is refused rather than
+    # given to vault (the account may have moved it in from a directory it owns).
     if depth > STORAGE_MAX_DEPTH:
         raise PathRefusal(f"{label}: {shown} is more than {STORAGE_MAX_DEPTH} directories below the storage directory")
+    if keep_foreign:
+        dir_uid = os.fstat(dir_fd).st_uid
+        if dir_uid != account["uid"]:
+            raise PathRefusal(f"{label}: " + not_vault_owned_problem(shown, dir_uid))
     if apply:
         os.fchown(dir_fd, account["uid"], account["gid"])
     for entry in sorted(os.listdir(dir_fd)):
@@ -1646,7 +1696,7 @@ def own_storage_tree(dir_fd, shown, label, account, depth, apply):
             except OSError as exc:
                 raise PathRefusal(f"{label}: {where} is not a directory or is a symbolic link ({exc.strerror})") from None
             try:
-                own_storage_tree(child_fd, where, label, account, depth + 1, apply)
+                own_storage_tree(child_fd, where, label, account, depth + 1, apply, keep_foreign)
             finally:
                 os.close(child_fd)
         elif statmod.S_ISREG(info.st_mode):
@@ -1654,6 +1704,10 @@ def own_storage_tree(dir_fd, shown, label, account, depth, apply):
             if file_fd is None:
                 continue
             try:
+                if keep_foreign:
+                    file_uid = os.fstat(file_fd).st_uid
+                    if file_uid != account["uid"]:
+                        raise PathRefusal(f"{label}: " + not_vault_owned_problem(where, file_uid))
                 if apply:
                     os.fchown(file_fd, account["uid"], account["gid"])
             finally:
@@ -1662,7 +1716,7 @@ def own_storage_tree(dir_fd, shown, label, account, depth, apply):
             raise PathRefusal(f"{label}: {where} is not a directory or a regular file")
 
 
-def change_storage(path_value, label, account, apply):
+def change_storage(path_value, label, account, apply, keep_foreign):
     # The storage directory and everything in it go to vault. It must be a
     # directory dedicated to Vault that vault can write already, or sit
     # directly in one; a missing one is created only in a directory dedicated
@@ -1704,7 +1758,8 @@ def change_storage(path_value, label, account, apply):
                 )
                 if own_problem and parent_stand_in_problem:
                     raise PathRefusal(f"{label}: {own_problem}, and its parent {parent_stand_in_problem}")
-            own_storage_tree(storage_fd, shown, label, account, 0, apply)
+            # A directory this step just created is root's and empty.
+            own_storage_tree(storage_fd, shown, label, account, 0, apply, keep_foreign and not created)
             if apply:
                 os.fchmod(storage_fd, 0o750)
         finally:
@@ -1744,6 +1799,10 @@ def apply_path_changes(preflight_summary):
     conflicts = planned_directory_conflicts(config_access, tls_items, storage_access, log_access, audit_access)
     if conflicts:
         raise PathRefusal("; ".join(conflicts) + "; no path was changed")
+    service_meta, service_error = service_show(SERVICE_NAME)
+    if service_meta is None:
+        raise PathRefusal(f"{service_error}, so this step cannot tell which user Vault runs as; no path was changed")
+    keep_existing = vault_runs_as_service_user(service_meta, account)
     # Root in production (the apply step requires it); the test user in tests.
     root_uid = os.geteuid()
 
@@ -1754,11 +1813,11 @@ def apply_path_changes(preflight_summary):
         try:
             for kind, path_value, label in targets:
                 if kind == "read":
-                    change_read_file(path_value, label, account, root_uid, apply)
+                    change_read_file(path_value, label, account, root_uid, apply, keep_existing)
                 elif kind == "write":
                     change_write_file(path_value, label, account, apply)
                 else:
-                    change_storage(path_value, label, account, apply)
+                    change_storage(path_value, label, account, apply, keep_existing)
         except (PathRefusal, OSError) as exc:
             if apply:
                 raise PathRefusal(
