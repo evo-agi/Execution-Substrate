@@ -107,8 +107,9 @@ func TestNomadACLSetupWrapperChecksWithTheManagementToken(t *testing.T) {
 			}
 			for i, call := range calls {
 				if call[0] != test.actions[i] || !hasPair(call, "--management-token-file", management) ||
-					!hasPair(call, "--observer-token-file", filepath.Join(aclDir, "observer-token")) {
-					t.Fatalf("tool call %d = %q, want %s with the management and observer token files", i, call, test.actions[i])
+					!hasPair(call, "--observer-token-file", filepath.Join(aclDir, "observer-token")) ||
+					!hasPair(call, "--nomad-uid", "0") {
+					t.Fatalf("tool call %d = %q, want %s with the management and observer token files and Nomad's uid 0", i, call, test.actions[i])
 				}
 			}
 		})

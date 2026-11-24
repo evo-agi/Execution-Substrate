@@ -25,6 +25,8 @@ set -euo pipefail
 #   ES_USER         user ES runs as; default root (the supported-local
 #                   service-root-v1 profile). Remote Alpha's es.service: es
 #   OBSERVER_USER   operator who runs readiness checks; default SUDO_USER, else root
+#   NOMAD_USER      user Nomad runs as; default root (nomad.service). Nothing
+#                   is sent to a listener on NOMAD_ADDR that another user owns.
 #
 # ES reads its token only at startup: restart ES after `rotate`.
 
@@ -35,9 +37,10 @@ NOMAD_ADDR="${NOMAD_ADDR:-http://127.0.0.1:4646}"
 NOMAD_ACL_DIR="${NOMAD_ACL_DIR:-/etc/execution-substrate/nomad-acl}"
 ES_USER="${ES_USER:-root}"
 OBSERVER_USER="${OBSERVER_USER:-${SUDO_USER:-root}}"
+NOMAD_USER="${NOMAD_USER:-root}"
 
 usage() {
-  sed -n '4,27p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '4,29p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 owner_of_user() {
@@ -75,10 +78,13 @@ fi
 
 ES_OWNER="$(owner_of_user "${ES_USER}")"
 OBSERVER_OWNER="$(owner_of_user "${OBSERVER_USER}")"
+NOMAD_OWNER="$(owner_of_user "${NOMAD_USER}")"
+NOMAD_UID="${NOMAD_OWNER%%:*}"
 
 if [[ "${ACTION}" == "check" ]]; then
   exec python3 -I "${TOOL}" check \
     --addr "${NOMAD_ADDR}" \
+    --nomad-uid "${NOMAD_UID}" \
     --es-token-file "${NOMAD_ACL_DIR}/es-token" \
     --es-token-owner "${ES_OWNER}" \
     --observer-token-file "${NOMAD_ACL_DIR}/observer-token" \
@@ -97,6 +103,7 @@ fi
 
 python3 -I "${TOOL}" provision \
   --addr "${NOMAD_ADDR}" \
+  --nomad-uid "${NOMAD_UID}" \
   --management-token-file "${NOMAD_ACL_DIR}/management-token" \
   --es-token-file "${NOMAD_ACL_DIR}/es-token" \
   --es-token-owner "${ES_OWNER}" \
@@ -106,6 +113,7 @@ python3 -I "${TOOL}" provision \
 
 python3 -I "${TOOL}" check \
   --addr "${NOMAD_ADDR}" \
+  --nomad-uid "${NOMAD_UID}" \
   --es-token-file "${NOMAD_ACL_DIR}/es-token" \
   --es-token-owner "${ES_OWNER}" \
   --observer-token-file "${NOMAD_ACL_DIR}/observer-token" \

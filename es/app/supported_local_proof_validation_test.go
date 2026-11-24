@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -82,6 +83,11 @@ func TestSupportedLocalSetupScriptBootstrapsRealSPIREAndVaultDevTarget(t *testin
 	writeFakeCommand(t, filepath.Join(fakeBinDir, "nomad"))
 
 	vaultPort := reserveTCPPort(t)
+	// The test's Nomad runs as the test's user, not as root.
+	nomadUser, err := user.Current()
+	if err != nil {
+		t.Fatal(err)
+	}
 	command := exec.Command(filepath.Join(repoRoot, "scripts", "72_supported_local_setup.sh"), "setup")
 	command.Dir = repoRoot
 	command.Env = append(os.Environ(),
@@ -97,6 +103,7 @@ func TestSupportedLocalSetupScriptBootstrapsRealSPIREAndVaultDevTarget(t *testin
 		"SUPPORTED_LOCAL_VAULT_PUBLIC_HOST=127.0.0.1",
 		"SUPPORTED_LOCAL_VAULT_PORT="+strconv.Itoa(vaultPort),
 		"SUPPORTED_LOCAL_NOMAD_PORT="+nomadPort,
+		"SUPPORTED_LOCAL_NOMAD_USER="+nomadUser.Username,
 		"SUPPORTED_LOCAL_NOMAD_ACL_DIR="+nomadACLDir,
 	)
 	if spireTarball := strings.TrimSpace(os.Getenv("SUPPORTED_LOCAL_TEST_SPIRE_TARBALL")); spireTarball != "" {

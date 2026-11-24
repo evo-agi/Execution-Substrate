@@ -624,6 +624,19 @@ bypass ES admission. ES therefore submits only to a Nomad that enforces them.
   lost or holds another token, both scripts refuse and leave an existing
   file as it is; recovery is Nomad's ACL bootstrap reset procedure, done by
   hand.
+- **Port holder guard (interim)**: while Nomad is down, any local account
+  can listen on its port. Before the setup script and the ACL tool send a
+  token or a bootstrap secret, they check in the kernel's TCP tables that
+  the socket belongs to Nomad's user: root for `nomad.service`; `NOMAD_USER`
+  for `scripts/nomad_acl_setup.sh`, `SUPPORTED_LOCAL_NOMAD_USER` for
+  supported-local setup, and the current user for full-profile bring-up,
+  which starts Nomad itself. Otherwise they send nothing. The tool checks the
+  socket that accepted its own connection. The setup script checks the
+  listener just before each request, which leaves a short window for a
+  restart in between. `provision` also waits up to 30 s for Nomad to name a
+  leader before it bootstraps. HTTPS with a pinned server key (part 2b of the
+  lock) replaces this guard. Until then ES's own token and the observer
+  token's readiness requests do not get this check.
 - **ES token** (`nomad.token_file`): a client token with only policy
   `es-submit-v1` (`submit-job`, `read-job`, `read-logs` in namespace
   `es-submit-v1`). It cannot read nodes or the agent, write policies or
