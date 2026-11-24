@@ -17,6 +17,7 @@ const upgradeESPython = "scripts/internal/remote_alpha_upgrade_es.py"
 func runUpgradeESPython(t *testing.T, args ...string) (string, string, int) {
 	t.Helper()
 	cmd := exec.Command("python3", append([]string{"-I", repoPath(upgradeESPython)}, args...)...)
+	cmd.Dir = t.TempDir()
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()
@@ -62,7 +63,9 @@ func TestRemoteAlphaUpgradeESMigratedConfigIsAcceptedByES(t *testing.T) {
 	oldPath, newPath := filepath.Join(dir, "old.json"), filepath.Join(dir, "new.json")
 	writeJSONFile(t, oldPath, preSubmitAuthExample(t))
 
-	if out, err := exec.Command(helper, oldPath).CombinedOutput(); err == nil {
+	refuses := exec.Command(helper, oldPath)
+	refuses.Dir = dir
+	if out, err := refuses.CombinedOutput(); err == nil {
 		t.Fatalf("current ES accepts the pre-upgrade shape, so this test proves nothing: %s", out)
 	}
 	stdout, stderr, code := runUpgradeESPython(t, append([]string{"migrate-config", "--input", oldPath, "--output", newPath}, upgradeAuthArgs...)...)
@@ -72,7 +75,9 @@ func TestRemoteAlphaUpgradeESMigratedConfigIsAcceptedByES(t *testing.T) {
 	if strings.TrimSpace(stdout) != `{"changes": ["nomad.token_file", "execution.retained_result_auth"]}` {
 		t.Fatalf("migrate-config reported %q", stdout)
 	}
-	if out, err := exec.Command(helper, newPath).CombinedOutput(); err != nil {
+	accepts := exec.Command(helper, newPath)
+	accepts.Dir = dir
+	if out, err := accepts.CombinedOutput(); err != nil {
 		t.Fatalf("ES refuses the migrated config: %v %s", err, out)
 	}
 

@@ -76,11 +76,11 @@ func TestESConfigCheckOnlyCallsConfigLoad(t *testing.T) {
 		switch d := decl.(type) {
 		case *ast.GenDecl:
 			if d.Tok != token.IMPORT {
-				t.Fatalf("esconfigcheck declares a %s at %s; only main is allowed", d.Tok, fset.Position(d.Pos()))
+				t.Fatalf("esconfigcheck declares a %s at %s; only main is allowed", d.Tok, fset.PositionFor(d.Pos(), false))
 			}
 		case *ast.FuncDecl:
 			if d.Name.Name != "main" || d.Recv != nil {
-				t.Fatalf("esconfigcheck declares func %s at %s; only main is allowed", d.Name.Name, fset.Position(d.Pos()))
+				t.Fatalf("esconfigcheck declares func %s at %s; only main is allowed", d.Name.Name, fset.PositionFor(d.Pos(), false))
 			}
 			var body bytes.Buffer
 			if err := format.Node(&body, fset, d.Body); err != nil {
@@ -100,7 +100,7 @@ func TestESConfigCheckOnlyCallsConfigLoad(t *testing.T) {
 	ast.Inspect(file, func(n ast.Node) bool {
 		switch node := n.(type) {
 		case *ast.FuncLit:
-			t.Errorf("esconfigcheck has a function literal at %s", fset.Position(node.Pos()))
+			t.Errorf("esconfigcheck has a function literal at %s", fset.PositionFor(node.Pos(), false))
 		case *ast.CallExpr:
 			name := ""
 			switch fun := node.Fun.(type) {
@@ -112,7 +112,7 @@ func TestESConfigCheckOnlyCallsConfigLoad(t *testing.T) {
 				}
 			}
 			if !allowed[name] {
-				t.Errorf("esconfigcheck calls %q at %s; it may call only config.Load and the reporting functions", name, fset.Position(node.Pos()))
+				t.Errorf("esconfigcheck calls %q at %s; it may call only config.Load and the reporting functions", name, fset.PositionFor(node.Pos(), false))
 			}
 			if name == "config.Load" {
 				loads++
@@ -175,6 +175,7 @@ func TestESConfigCheckAgreesWithConfigLoad(t *testing.T) {
 			_, loadErr := config.Load(path)
 			var stdout, stderr bytes.Buffer
 			cmd := exec.Command(helper, path)
+			cmd.Dir = t.TempDir()
 			cmd.Stdout, cmd.Stderr = &stdout, &stderr
 			runErr := cmd.Run()
 			if loadErr == nil {
@@ -201,7 +202,7 @@ func TestESConfigCheckAgreesWithConfigLoad(t *testing.T) {
 func buildESConfigCheck(t *testing.T) string {
 	t.Helper()
 	out := filepath.Join(t.TempDir(), "esconfigcheck")
-	cmd := exec.Command("go", "build", "-o", out, "./scripts/internal/esconfigcheck")
+	cmd := exec.Command("go", "build", "-o", out, "execution-substrate/scripts/internal/esconfigcheck")
 	cmd.Dir = executionSubstrateRepoRoot
 	cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
 	if output, err := cmd.CombinedOutput(); err != nil {

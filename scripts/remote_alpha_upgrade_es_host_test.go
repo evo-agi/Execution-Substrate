@@ -350,6 +350,7 @@ func newUpgradeHost(t *testing.T, helper string) *upgradeHost {
 
 func (h *upgradeHost) command(args ...string) *exec.Cmd {
 	cmd := exec.Command("python3", append([]string{"-I", repoPath(upgradeESPython), "--host-root", h.root}, args...)...)
+	cmd.Dir = h.state
 	cmd.Env = append(os.Environ(),
 		"PATH="+h.bin+string(os.PathListSeparator)+os.Getenv("PATH"),
 		"FAKE_STATE="+h.state,
@@ -512,6 +513,7 @@ new, state = m.plan_nomad_hcl(sys.stdin.read())
 print(json.dumps({"locked": new, "state": state, "box_sha256": m.NOMAD_HCL_BOX_SHA256,
                   "fragments": [m.NOMAD_LOCKED_OPTIONS, m.NOMAD_ACL_BLOCK, m.NOMAD_PLUGIN_BLOCK]}))`
 	cmd := exec.Command("python3", "-I", "-c", code, repoPath(upgradeESPython))
+	cmd.Dir = t.TempDir()
 	cmd.Stdin = strings.NewReader(boxNomadHCL)
 	out, err := cmd.Output()
 	if err != nil {
@@ -746,7 +748,9 @@ func TestRemoteAlphaUpgradeESApply(t *testing.T) {
 
 	// ES's own config loader accepts the migrated es.json, which carries the
 	// token file and retained-result auth, with its old owner and mode.
-	if out, err := exec.Command(helper, h.path("etc/execution-substrate/es.json")).CombinedOutput(); err != nil {
+	loadCheck := exec.Command(helper, h.path("etc/execution-substrate/es.json"))
+	loadCheck.Dir = h.state
+	if out, err := loadCheck.CombinedOutput(); err != nil {
 		t.Fatalf("ES refuses the installed es.json: %v %s", err, out)
 	}
 	var esConfig map[string]any
@@ -1074,6 +1078,7 @@ func buildRepo(t *testing.T) (repo, script, goBin, commit string) {
 	}
 	git := func(args ...string) string {
 		cmd := exec.Command("git", append([]string{"-C", repo, "-c", "user.name=test", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false"}, args...)...)
+		cmd.Dir = repo
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			t.Fatalf("git %v: %v %s", args, err, out)
@@ -1125,6 +1130,7 @@ func TestRemoteAlphaUpgradeESBuildChecksToolchainCheckoutAndBuildInfo(t *testing
 			}
 			out := filepath.Join(t.TempDir(), "payload")
 			cmd := exec.Command("python3", "-I", script, "build", "--out", out, "--commit", commit, "--go", goBin)
+			cmd.Dir = t.TempDir()
 			cmd.Env = os.Environ()
 			for k, v := range env {
 				cmd.Env = append(cmd.Env, k+"="+v)
@@ -1221,6 +1227,7 @@ func TestRemoteAlphaUpgradeESApplySurvivesALostSession(t *testing.T) {
 			h.mark("slow-validate", "")
 			inner := h.command("apply", "--payload", h.payload, "--commit", upgradeTestCommit)
 			cmd := exec.Command("python3", append([]string{"-I", driver, filepath.Join(h.state, "validating"), tc.mode, "--"}, inner.Args...)...)
+			cmd.Dir = inner.Dir
 			cmd.Env = inner.Env
 			out, err := cmd.Output()
 			if err != nil {
