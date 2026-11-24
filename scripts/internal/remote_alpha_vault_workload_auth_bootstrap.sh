@@ -87,8 +87,11 @@ Secret posture:
   Signals: from before generate-root until the root token is revoked and
   Vault's configuration is back, SIGINT, SIGTERM, SIGHUP and SIGQUIT wait;
   they take effect right after, and the short-lived token is still revoked.
-  SIGKILL or a power loss cannot wait; the two checks above find what they
-  leave behind on the next run.
+  Ctrl-Z (SIGTSTP, SIGTTIN, SIGTTOU) waits the same way. SIGKILL or a power
+  loss cannot wait; the two checks above find what they leave behind on the
+  next run.
+  Core dumps: off (core file limit 0 and, on Linux, not dumpable) before
+  anything is read, so a crash writes no secret to disk.
   Root tokens, Vault tokens, proof secret values, JWT-SVID payloads, API keys,
   private keys, passwords, and secret payloads are never accepted through CLI
   args, environment variables, files, logs, summaries, reports, .out, support
@@ -233,6 +236,7 @@ remote_alpha_vault_workload_auth_bootstrap_execute() {
     "${REMOTE_ALPHA_BOOTSTRAP_VAULT_RELOAD_COMMAND}" \
     "${REMOTE_ALPHA_BOOTSTRAP_STANDING_ROOT_TOKENS}" <<'PY'
 import base64
+import ctypes
 import datetime as dt
 import getpass
 import hashlib
@@ -241,6 +245,7 @@ import json
 import os
 import pathlib
 import re
+import resource
 import shlex
 import shutil
 import signal
@@ -398,6 +403,37 @@ def raise_interrupted(signum, _frame):
 # refuse_open_generate_root_access for how a later run finds what they
 # leave behind.
 DEFERRED_SIGNALS = {signal.SIGINT, signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT}
+# The terminal's stop signals (Ctrl-Z, and reads or writes from the
+# background) are held over the same section, so that an accidental Ctrl-Z
+# cannot freeze the run while generate-root is open; the run stops when the
+# section ends instead. SIGSTOP cannot be held.
+HELD_STOP_SIGNALS = {signal.SIGTSTP, signal.SIGTTIN, signal.SIGTTOU}
+
+PR_GET_DUMPABLE = 3
+PR_SET_DUMPABLE = 4
+
+
+def disable_core_dumps():
+    """Keep this run's secrets out of core files. The run holds the unseal
+    key, the generated root token, the short-lived token and the proof value
+    in memory, and a crash (a fault, or SIGABRT or SIGSEGV, which are not
+    deferred) would otherwise write them to a core file, for example under
+    systemd-coredump, where they outlive the run. RLIMIT_CORE 0 stops a core
+    file and is inherited by every command the run starts; PR_SET_DUMPABLE 0
+    also stops a core_pattern pipe and keeps other processes of the same
+    user out of this process's memory (a command the run starts is dumpable
+    again once it execs). Both are read back; if either does not hold, the
+    run stops before anything is read."""
+    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+    if resource.getrlimit(resource.RLIMIT_CORE) != (0, 0):
+        raise OSError("RLIMIT_CORE is not 0")
+    if sys.platform.startswith("linux"):
+        libc = ctypes.CDLL(None, use_errno=True)
+        zero = ctypes.c_ulong(0)
+        if libc.prctl(ctypes.c_int(PR_SET_DUMPABLE), zero, zero, zero, zero) != 0:
+            raise OSError(ctypes.get_errno(), "prctl PR_SET_DUMPABLE failed")
+        if libc.prctl(ctypes.c_int(PR_GET_DUMPABLE), zero, zero, zero, zero) != 0:
+            raise OSError("the process is still dumpable")
 
 
 class VaultAPIError(Exception):
@@ -1500,6 +1536,12 @@ def main():
         return 1
 
     try:
+        set_next_operation("disable_core_dumps")
+        try:
+            disable_core_dumps()
+        except (OSError, ValueError, AttributeError):
+            raise_failure("disable_core_dumps", "core_dumps_not_disabled", message_class="core_dump_limit_failed")
+        set_status("disable_core_dumps", "pass", rlimit_core=0, dumpable=not sys.platform.startswith("linux"))
         validate_choices()
         preflight_temporary_generate_root_access()
         token_limits = validate_role_token_limits()
@@ -1571,7 +1613,7 @@ def main():
             # takes effect after this block, when the finally below can
             # still revoke the short-lived token. The reload command
             # inherits the mask, so Ctrl-C does not cut a reload short.
-            previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, DEFERRED_SIGNALS)
+            previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, DEFERRED_SIGNALS | HELD_STOP_SIGNALS)
             try:
                 root_token = make_short_lived_authority(opener, address, authority_secret, secret_values_for_scan)
                 short_lived = True

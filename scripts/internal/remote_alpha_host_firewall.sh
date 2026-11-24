@@ -241,13 +241,15 @@ Modes:
               count): install the ruleset and the es-host-firewall.service
               unit so the rules load at every boot, keep the sshd drop-in,
               then cancel the rollback timer.
-  --status    Read-only: report whether the installed rules are loaded and
-              unchanged, whether the sshd drop-in matches the settings and
-              sshd -T agrees, the unit state, a pending rollback, whether
-              every bridge is still a container interface and no container
-              interface has IPv6, the source Vault sees for the box and the
-              counters. Exit 0 only when installed and unchanged and both
-              host checks pass.
+  --status    Read-only: report whether both tables are loaded at all,
+              whether the installed rules are loaded and unchanged (an
+              empty installed file counts as not installed), whether the
+              sshd drop-in matches the settings and sshd -T agrees, the unit
+              state, a pending rollback, whether every bridge is still a
+              container interface and no container interface has IPv6, the
+              source Vault sees for the box and the counters. Exit 0 only
+              when both tables are loaded, the installed rules are not empty
+              and unchanged, and both host checks pass.
   --probe     Start two short-lived containers from PROBE_IMAGE and check
               from inside one of them that Vault, DNS and the internet work
               and that the box's LAN services, the LAN gateway and the other
@@ -675,7 +677,7 @@ remote_alpha_host_firewall_write_rollback_script() {
 remote_alpha_host_firewall_apply() {
   local run_dir candidate rollback applied peers at work sshd_candidate
   remote_alpha_host_firewall_require_root || return 1
-  remote_alpha_host_firewall_require_commands nft ip ss systemctl systemd-run python3 sha256sum install sshd || return 1
+  remote_alpha_host_firewall_require_commands nft ip ss systemctl systemd-run python3 sha256sum install sshd sync || return 1
   run_dir="${REMOTE_ALPHA_HOST_FIREWALL_RUN_DIR}"
   candidate="${run_dir}/candidate.nft"
   sshd_candidate="${run_dir}/candidate-sshd.conf"
@@ -777,20 +779,32 @@ remote_alpha_host_firewall_apply() {
   printf 'RESULT: applied, awaiting confirm\n'
 }
 
+# Puts a whole file in place or none of it: the new content is flushed to
+# disk before the rename and the directory after it. Without the flushes a
+# crash or power cut soon after can leave the renamed file present but empty
+# (the rename can reach the disk before the data), and the boot unit would
+# then load an empty ruleset.
 remote_alpha_host_firewall_install_file() {
   local source=$1 target=$2
   local tmp
-  tmp=$(mktemp "${target}.XXXXXX")
-  cat "${source}" >"${tmp}"
-  chmod 0644 "${tmp}"
-  chown root:root "${tmp}"
-  mv -f "${tmp}" "${target}"
+  tmp=$(mktemp "${target}.XXXXXX") || return 1
+  if ! {
+    cat "${source}" >"${tmp}" \
+      && chmod 0644 "${tmp}" \
+      && chown root:root "${tmp}" \
+      && sync "${tmp}" \
+      && mv -f "${tmp}" "${target}"
+  }; then
+    rm -f "${tmp}"
+    return 1
+  fi
+  sync "$(dirname "${target}")"
 }
 
 remote_alpha_host_firewall_confirm() {
   local run_dir candidate rollback applied peers rendered work ruleset_path listing_path backup_dir nft_path sshd_candidate
   remote_alpha_host_firewall_require_root || return 1
-  remote_alpha_host_firewall_require_commands nft ss systemctl python3 install sshd || return 1
+  remote_alpha_host_firewall_require_commands nft ss systemctl python3 install sshd sync || return 1
   run_dir="${REMOTE_ALPHA_HOST_FIREWALL_RUN_DIR}"
   candidate="${run_dir}/candidate.nft"
   sshd_candidate="${run_dir}/candidate-sshd.conf"
@@ -891,7 +905,7 @@ remote_alpha_host_firewall_confirm() {
 }
 
 remote_alpha_host_firewall_status() {
-  local ruleset_path listing_path status=0 work
+  local ruleset_path listing_path status=0 work family missing=""
   remote_alpha_host_firewall_require_root || return 1
   remote_alpha_host_firewall_require_commands nft ip systemctl python3 sshd || return 1
   ruleset_path=$(remote_alpha_host_firewall_ruleset_path)
@@ -906,16 +920,32 @@ remote_alpha_host_firewall_status() {
       "$(cat "$(remote_alpha_host_firewall_unconfirmed_marker)" 2>/dev/null)"
     status=1
   fi
+  # The tables themselves, whatever the files say: an empty listing would
+  # otherwise match an empty set of loaded tables.
+  for family in inet bridge; do
+    nft list table "${family}" "${remote_alpha_host_firewall_table}" >/dev/null 2>&1 \
+      || missing="${missing}${missing:+, }table ${family} ${remote_alpha_host_firewall_table}"
+  done
+  if [[ -n "${missing}" ]]; then
+    printf 'loaded tables: MISSING (%s not loaded); the firewall is not in force\n' "${missing}"
+    [[ "${status}" -eq 0 ]] && status=1
+  fi
   if [[ ! -f "${ruleset_path}" || ! -f "${listing_path}" ]]; then
     printf 'installed ruleset: none\n'
     [[ "${status}" -eq 0 ]] && status=1
+  elif [[ ! -s "${ruleset_path}" || ! -s "${listing_path}" ]]; then
+    printf 'installed ruleset: EMPTY (%s or %s has no content, for example after a crash during an install); run --plan, --apply and --confirm again\n' \
+      "${ruleset_path}" "${listing_path}"
+    [[ "${status}" -eq 0 ]] && status=1
   else
     printf 'installed ruleset: %s (sha256 %s)\n' "${ruleset_path}" "$(sha256sum "${ruleset_path}" | awk '{print $1}')"
-    if remote_alpha_host_firewall_live_listing | cmp -s - "${listing_path}"; then
-      printf 'loaded tables: match the installed ruleset\n'
-    else
-      printf 'loaded tables: DIFFER from the installed ruleset (missing, edited or replaced)\n'
-      [[ "${status}" -eq 0 ]] && status=1
+    if [[ -z "${missing}" ]]; then
+      if remote_alpha_host_firewall_live_listing | cmp -s - "${listing_path}"; then
+        printf 'loaded tables: match the installed ruleset\n'
+      else
+        printf 'loaded tables: DIFFER from the installed ruleset (edited or replaced)\n'
+        [[ "${status}" -eq 0 ]] && status=1
+      fi
     fi
     work=$(mktemp -d)
     if remote_alpha_host_firewall_py render >"${work}/rendered.nft" 2>/dev/null && cmp -s "${work}/rendered.nft" "${ruleset_path}"; then

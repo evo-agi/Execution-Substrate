@@ -3080,11 +3080,20 @@ Bootstrap authority:
 
 Signals and interrupted runs:
 
+- before it reads anything, the helper turns core dumps off
+  (`RLIMIT_CORE` 0, which the commands it starts inherit, and, on Linux,
+  `PR_SET_DUMPABLE` 0, which also stops a `core_pattern` pipe such as
+  systemd-coredump), and it stops (phase `disable_core_dumps`) if either
+  does not hold. So a crash while the unseal key or a token is in memory
+  writes no core file
 - from before generate-root until the root token is revoked and Vault's
   configuration is back, SIGINT, SIGTERM, SIGHUP and SIGQUIT are blocked;
   the reload command inherits that, so Ctrl-C does not cut a reload short.
   A signal that arrives then takes effect right after that section, at the
-  latest after the reload timeout (60 s) and the two waits (20 s each)
+  latest after the reload timeout (60 s) and the two waits (20 s each).
+  The terminal's stop signals (SIGTSTP from Ctrl-Z, SIGTTIN, SIGTTOU) are
+  held over the same section, so the run stops only after it; SIGSTOP
+  cannot be held
 - SIGTERM, SIGHUP and SIGQUIT are turned into the same clean stop as
   Ctrl-C: no configuration request follows, the 15-minute token is
   revoked, the summary records `failure_class=interrupted` and
@@ -6624,7 +6633,8 @@ What it owns, and nothing else:
   (`es-host-firewall.nft` and its listing); it reads the settings file there
   and never writes it
 - unit `/etc/systemd/system/es-host-firewall.service`, which loads the
-  installed ruleset at boot
+  installed ruleset at boot and then fails unless both tables exist (`nft -f`
+  succeeds on an empty file and loads nothing)
 - sshd drop-in `/etc/ssh/sshd_config.d/00-execution-substrate-host-access.conf`
 - a transient `es-host-firewall-rollback` timer and the records of an apply
   that awaits `--confirm`, under `/var/lib/es-host-firewall`. They are on
@@ -6740,20 +6750,24 @@ Modes:
   checks the drop-in and reloads sshd. Existing sessions stay
 - `--confirm`: only from an SSH connection opened after `--apply` and with
   the same settings; installs the ruleset and unit, keeps the drop-in and
-  cancels the timer. The new connection must come from an address inside
+  cancels the timer. Every file it installs (and the drop-in `--apply`
+  installs) is written to a temporary file, flushed to disk, renamed into
+  place, and its directory flushed, so a crash or power cut leaves the old
+  file or the new one, never an empty one. The new connection must come from an address inside
   `SSH_SOURCES` and not from loopback (IPv4-mapped addresses are compared as
   IPv4); a loopback connection proves nothing about the operator's path. At
   the box's console, where no SSH connection can prove anything,
   `REMOTE_ALPHA_HOST_FIREWALL_CONFIRM_WITHOUT_NEW_SSH=1` skips the
   new-connection check
-- `--status`: read-only; whether the installed ruleset is loaded and
-  unchanged, whether the drop-in matches the settings and `sshd -T` agrees,
+- `--status`: read-only; whether both tables are loaded at all (an empty
+  installed ruleset or listing counts as not installed), whether the
+  installed ruleset is loaded and unchanged, whether the drop-in matches the settings and `sshd -T` agrees,
   the unit, a pending rollback, whether every bridge is still a container
   interface and no container interface has a global or unique-local IPv6
   address (so a bridge or an IPv6 network added after `--apply` shows up
   here, not only at the next `--apply`), the source Vault sees for the box
-  and the counters. Exit 0 only when installed and unchanged and both host
-  checks pass
+  and the counters. Exit 0 only when both tables are loaded, the installed
+  ruleset is not empty and is unchanged, and both host checks pass
 - `--probe`: two short-lived containers from `PROBE_IMAGE` (never pulled);
   Vault, DNS and the internet must work, and the box's LAN services, the LAN
   gateway and the other container must not; Vault must see the box's own

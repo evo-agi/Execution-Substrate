@@ -15,7 +15,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -451,14 +453,19 @@ func fakeSpireJWTValidationBundle(keys ...fakeSpireJWTValidationKey) string {
 func setupFakeBootstrapSpireServerWithBundle(t *testing.T, dir string, bundleJSON string) string {
 	t.Helper()
 	logPath := filepath.Join(dir, "spire-server.log")
+	// It also records the core file limits it inherited from the helper and,
+	// where /proc exists, who owns the helper's /proc entry: root, for a
+	// process that is not dumpable.
 	writeExecutable(t, dir, "spire-server", fmt.Sprintf(`#!/usr/bin/env bash
 set -euo pipefail
-printf 'args=%%s\n' "$*" >> %q
-env | sort | sed -n '/TOKEN/p;/SECRET/p;/PASSWORD/p' >> %q
+printf 'args=%%s\n' "$*" >> %[1]q
+printf 'core_limit=%%s/%%s\n' "$(ulimit -c)" "$(ulimit -H -c)" >> %[1]q
+if [ -d "/proc/$PPID" ]; then printf 'uid=%%s helper_proc_owner=%%s\n' "$(id -u)" "$(stat -c %%u "/proc/$PPID")" >> %[1]q; fi
+env | sort | sed -n '/TOKEN/p;/SECRET/p;/PASSWORD/p' >> %[1]q
 cat <<'JSON'
-%s
+%[2]s
 JSON
-`, logPath, logPath, bundleJSON))
+`, logPath, bundleJSON))
 	return logPath
 }
 
@@ -586,6 +593,8 @@ func TestRemoteAlphaVaultWorkloadAuthBootstrapHelpDocumentsSecretPosture(t *test
 		"api_key",
 		"does not run workload-auth checks, reset, unseal, IM refresh",
 		"does not claim workload-auth success",
+		"Ctrl-Z (SIGTSTP, SIGTTIN, SIGTTOU) waits the same way.",
+		"Core dumps: off (core file limit 0 and, on Linux, not dumpable) before\n  anything is read, so a crash writes no secret to disk.",
 	)
 }
 
@@ -1365,6 +1374,28 @@ func TestRemoteAlphaVaultWorkloadAuthBootstrapFakeVaultWritesExpectedObjectsAndS
 		proofSecret,
 		"VAULT_TOKEN",
 	)
+	assertBootstrapCoreDumpsOff(t, spireLogRaw, summary)
+}
+
+// assertBootstrapCoreDumpsOff checks, through a command the helper started
+// before its first prompt (the SPIRE server), that core dumps were off by
+// then: the inherited core file limit is 0, and on Linux, when the test
+// does not run as root, the helper's /proc entry belongs to root, which is
+// what a process that is not dumpable looks like. (RT07-2)
+func assertBootstrapCoreDumpsOff(t *testing.T, spireLog string, summary map[string]any) {
+	t.Helper()
+	if !strings.Contains(spireLog, "core_limit=0/0\n") {
+		t.Fatalf("commands the helper starts must inherit a core file limit of 0 (soft and hard), got:\n%s", spireLog)
+	}
+	if uid := os.Getuid(); uid != 0 && strings.Contains(spireLog, "helper_proc_owner=") {
+		if !strings.Contains(spireLog, fmt.Sprintf("uid=%d helper_proc_owner=0\n", uid)) {
+			t.Fatalf("the helper must not be dumpable (its /proc entry must belong to root), got:\n%s", spireLog)
+		}
+	}
+	operation, ok := summary["operations"].(map[string]any)["disable_core_dumps"].(map[string]any)
+	if !ok || operation["status"] != "pass" || operation["rlimit_core"] != float64(0) {
+		t.Fatalf("the summary must record disable_core_dumps pass with rlimit_core 0, got %#v", summary["operations"])
+	}
 }
 
 func TestRemoteAlphaVaultWorkloadAuthBootstrapWritesAllValidationKeysForWorkloadTrustDomain(t *testing.T) {
@@ -1659,6 +1690,49 @@ func TestRemoteAlphaVaultWorkloadAuthBootstrapSourceKeepsPreflightAndBoundaries(
 		"cp-proof",
 		"runtime_identity_generation",
 	)
+}
+
+// RT07-2 (Low; secret hygiene, at the edge of the stated "not protection against
+// root" boundary): the Vault workload-auth bootstrap keeps the unseal key, the
+// generated root token, the short-lived token and the proof secret in ordinary
+// Python memory, and goes to lengths to hold the generated root token for only
+// two requests. It never disables core dumps, so a crash while a secret is in
+// memory (a genuine fault, or kill -ABRT/-SEGV) writes that secret to a core
+// file that persists on disk, defeating the minimal-lifetime design. The
+// catchable termination signals (INT/TERM/HUP/QUIT) are already deferred across
+// the generate-root window and proven so by TestRemoteAlphaVault...SignalsWithRealVault;
+// this is the one on-disk leak path left for a crash.
+//
+// Fix: disable core dumps before reading any secret, e.g.
+//
+//	import resource; resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+//
+// and/or prctl(PR_SET_DUMPABLE, 0); `ulimit -c 0` in the bash wrapper also works.
+func TestRemoteAlphaVaultWorkloadAuthBootstrapDisablesCoreDumpsBeforeSecrets(t *testing.T) {
+	source := mustRead(t, remoteAlphaVaultWorkloadAuthBootstrapInternalPath())
+	disablers := []string{
+		"RLIMIT_CORE",
+		"PR_SET_DUMPABLE",
+		"prctl",
+		"ulimit -c 0",
+		"ulimit -c unlimited\nulimit -c 0", // any explicit zero core limit
+	}
+	firstDisabler := -1
+	for _, d := range disablers {
+		if i := strings.Index(source, d); i >= 0 {
+			firstDisabler = i
+			break
+		}
+	}
+	if firstDisabler < 0 {
+		t.Errorf("RT07-2: bootstrap never disables core dumps; a crash while the unseal key or a root token is in memory can persist it to a core file")
+		return
+	}
+	// The run marks the point just before it reads the first secret.
+	firstPrompt := strings.Index(source, `summary["secret_prompts_started"] = True`)
+	if firstPrompt >= 0 && firstDisabler > firstPrompt {
+		t.Errorf("RT07-2: core dumps are disabled only after secret prompts start (disabler at %d, prompts start at %d)", firstDisabler, firstPrompt)
+	}
 }
 
 func TestRemoteAlphaVaultWorkloadAuthBootstrapSummaryRedactionScanRejectsSecretLikeContent(t *testing.T) {
@@ -2085,6 +2159,7 @@ type temporaryAccessFixture struct {
 	configPath string
 	loadedPath string
 	countPath  string
+	sigBlkPath string
 	original   []byte
 	mode       os.FileMode
 }
@@ -2096,6 +2171,7 @@ func newTemporaryAccessFixture(t *testing.T, content string, reloadMode string) 
 		configPath: filepath.Join(dir, "vault.d", "vault.hcl"),
 		loadedPath: filepath.Join(dir, "loaded.hcl"),
 		countPath:  filepath.Join(dir, "reload-count"),
+		sigBlkPath: filepath.Join(dir, "helper-sigblk"),
 		original:   []byte(content),
 		mode:       0o640,
 	}
@@ -2112,8 +2188,11 @@ func newTemporaryAccessFixture(t *testing.T, content string, reloadMode string) 
 		t.Fatalf("write loaded config: %v", err)
 	}
 	reload := filepath.Join(dir, "fake-reload")
+	// Each reload also records the signals its parent, the helper, holds
+	// blocked (Linux only).
 	script := fmt.Sprintf(`#!/bin/sh
 n=$(cat %[1]q 2>/dev/null || echo 0); n=$((n+1)); echo "$n" > %[1]q
+[ -r "/proc/$PPID/status" ] && sed -n 's/^SigBlk:[[:space:]]*//p' "/proc/$PPID/status" >> %[5]q
 case %[2]q in
   fail) exit 1 ;;
   noeffect) exit 0 ;;
@@ -2121,13 +2200,39 @@ case %[2]q in
   noeffect-second) [ "$n" -ge 2 ] && exit 0 ;;
 esac
 cp %[3]q %[4]q
-`, f.countPath, reloadMode, f.configPath, f.loadedPath)
+`, f.countPath, reloadMode, f.configPath, f.loadedPath, f.sigBlkPath)
 	if err := os.WriteFile(reload, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake reload: %v", err)
 	}
 	return f, []string{
 		"REMOTE_ALPHA_BOOTSTRAP_VAULT_CONFIG_PATH=" + f.configPath,
 		"REMOTE_ALPHA_BOOTSTRAP_VAULT_RELOAD_COMMAND=" + reload + " vault.service",
+	}
+}
+
+// assertSignalsHeldDuringReloads checks that during both reloads the helper
+// held blocked the signals it defers (INT, TERM, HUP, QUIT) and the
+// terminal's stop signals (TSTP, TTIN, TTOU), so that neither Ctrl-C nor
+// Ctrl-Z can end or freeze it while generate-root is open.
+func (f temporaryAccessFixture) assertSignalsHeldDuringReloads(t *testing.T) {
+	t.Helper()
+	if _, err := os.Stat("/proc/self/status"); err != nil {
+		return
+	}
+	lines := strings.Fields(readIfExists(f.sigBlkPath))
+	if len(lines) != 2 {
+		t.Fatalf("expected the helper's blocked signals from both reloads, got %q", lines)
+	}
+	for _, line := range lines {
+		mask, err := strconv.ParseUint(line, 16, 64)
+		if err != nil {
+			t.Fatalf("parse SigBlk %q: %v", line, err)
+		}
+		for _, sig := range []syscall.Signal{syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGQUIT, syscall.SIGTSTP, syscall.SIGTTIN, syscall.SIGTTOU} {
+			if mask&(1<<(uint(sig)-1)) == 0 {
+				t.Fatalf("the helper must hold %v blocked during the reload, SigBlk=%s", sig, line)
+			}
+		}
 	}
 }
 
@@ -2188,6 +2293,7 @@ func TestRemoteAlphaVaultWorkloadAuthBootstrapTemporaryGenerateRootAccess(t *tes
 		if fmt.Sprint(g.revoked) != fmt.Sprint([]string{g.rootToken, g.childToken}) {
 			t.Fatalf("expected the root token and then the child token revoked")
 		}
+		f.assertSignalsHeldDuringReloads(t)
 		assertContainsAll(t, "temporary-config output", run.output,
 			"Vault's configuration file is back byte for byte, and Vault again refuses generate-root without a token.",
 			"overall_status=pass",
@@ -2382,7 +2488,7 @@ func TestRemoteAlphaVaultWorkloadAuthBootstrapP0qR1Docs(t *testing.T) {
 		"the same tranche refines the P0q workload-auth bootstrap helper (INF-04, INF-05, and the root-token half of INF-06)",
 		"`enable_unauthenticated_access = [\"generate-root\"]`",
 		"one key share; CI installs Vault 2.2.2",
-		"SIGINT, SIGTERM, SIGHUP and SIGQUIT wait until the root token is revoked and Vault's configuration is back",
+		"SIGINT, SIGTERM, SIGHUP and SIGQUIT wait until the root token is revoked and Vault's configuration is back, and Ctrl-Z (SIGTSTP, SIGTTIN, SIGTTOU) takes effect only then; core dumps are off before anything is read;",
 		"`REMOTE_ALPHA_BOOTSTRAP_STANDING_ROOT_TOKENS=revoke` revokes them",
 	)
 	section := compactDocSection(t, mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md"), "#### P0q-R1 Bootstrap Token Limits, Proof History And Unseal-Key Authority", "### Historical P0r Mac-Side Runtime Identity Summary — Superseded and Non-Authoritative")
@@ -2398,6 +2504,8 @@ func TestRemoteAlphaVaultWorkloadAuthBootstrapP0qR1Docs(t *testing.T) {
 		"requires a threshold of exactly one share",
 		"`ttl` and `explicit_max_ttl` `15m` and `renewable=false`, then revokes the root token with `auth/token/revoke-self` as the very next request, before Vault's configuration is put back",
 		"SIGINT, SIGTERM, SIGHUP and SIGQUIT are blocked",
+		"before it reads anything, the helper turns core dumps off (`RLIMIT_CORE` 0, which the commands it starts inherit, and, on Linux, `PR_SET_DUMPABLE` 0, which also stops a `core_pattern` pipe such as systemd-coredump), and it stops (phase `disable_core_dumps`) if either does not hold.",
+		"The terminal's stop signals (SIGTSTP from Ctrl-Z, SIGTTIN, SIGTTOU) are held over the same section, so the run stops only after it; SIGSTOP cannot be held",
 		"the exit code is 128 plus the signal number",
 		"SIGKILL and a power loss cannot be deferred.",
 		"`generate_root_access_open_outside_config_file`",

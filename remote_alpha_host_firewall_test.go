@@ -846,8 +846,10 @@ func TestRemoteAlphaHostFirewallArgumentsAndRoot(t *testing.T) {
 		"container\n              interface with a global or unique-local IPv6 address",
 		"never confirmed or rolled back",
 		"From a new SSH connection from SSH_SOURCES (loopback does not",
-		"every bridge is still a container interface and no container\n              interface has IPv6",
-		"both\n              host checks pass",
+		"whether both tables are loaded at all",
+		"(an\n              empty installed file counts as not installed)",
+		"every bridge is still a\n              container interface and no container interface has IPv6",
+		"when both tables are loaded, the installed rules are not empty\n              and unchanged, and both host checks pass",
 		"records of an earlier --apply in\n              RUN_DIR",
 		"(/var/lib/es-host-firewall\n  by default",
 		"Not egress lanes",
@@ -923,10 +925,34 @@ case "$1" in
   is-enabled) [[ "$*" == *es-host-firewall.service* && -f "$state/enabled" ]] ;;
   enable) touch "$state/enabled" ;;
   disable) rm -f "$state/enabled" ;;
-  restart) nft -f "$(sed -n 's/^ExecStart=[^ ]* -f //p' "$FAKE_UNIT_PATH")" ;;
+  restart)
+    nft -f "$(sed -n 's/^ExecStart=[^ ]* -f //p' "$FAKE_UNIT_PATH")" || exit 1
+    while IFS= read -r post; do $post || exit 1; done < <(sed -n 's/^ExecStartPost=//p' "$FAKE_UNIT_PATH") ;;
   *) exit 0 ;;
 esac
 `, state, log))
+	// The fake sync logs what it flushes and fails for a path that does not
+	// exist, when FAKE_SYNC_FAIL is set, and for a directory when
+	// FAKE_SYNC_FAIL_DIRS is set. A directory flushed while a file
+	// flushed earlier still exists under its temporary name means the rename
+	// had not happened yet.
+	writeExecutable(t, fakeBin, "sync", fmt.Sprintf(`#!/bin/bash
+state=%q
+[[ -n "${FAKE_SYNC_FAIL:-}" ]] && { echo "sync: I/O error" >&2; exit 1; }
+for arg in "$@"; do
+  if [[ -d "$arg" ]]; then
+    [[ -n "${FAKE_SYNC_FAIL_DIRS:-}" ]] && { echo "sync: I/O error" >&2; exit 1; }
+    while IFS= read -r pending; do [[ -e "$pending" ]] && echo "sync dir before rename of $pending" >>%q; done <"$state/sync-pending" 2>/dev/null
+    : >"$state/sync-pending"
+    echo "sync dir $arg" >>%q
+  elif [[ -f "$arg" ]]; then
+    echo "$arg" >>"$state/sync-pending"
+    echo "sync file $arg" >>%q
+  else
+    exit 1
+  fi
+done
+`, state, log, log, log))
 	writeExecutable(t, fakeBin, "ss", fmt.Sprintf(`#!/bin/bash
 echo "ss $*" >>%q
 if [[ "$*" == *"state established"* ]]; then cat %q 2>/dev/null; exit 0; fi
@@ -1106,7 +1132,9 @@ func TestRemoteAlphaHostFirewallApplyConfirmRollbackOrderWithFakes(t *testing.T)
 		t.Fatal("the installed ruleset must be the rendered one")
 	}
 	unit := mustRead(t, unitPath)
-	assertContainsAll(t, "unit", unit, "ExecStart=", "-f "+filepath.Join(root, "state", "es-host-firewall.nft"), "WantedBy=sysinit.target", "Before=network-pre.target docker.service nomad.service")
+	assertContainsAll(t, "unit", unit, "ExecStart=", "-f "+filepath.Join(root, "state", "es-host-firewall.nft"), "WantedBy=sysinit.target", "Before=network-pre.target docker.service nomad.service",
+		"ExecStartPost="+filepath.Join(fakeBin, "nft")+" list table inet es_host_firewall\n",
+		"ExecStartPost="+filepath.Join(fakeBin, "nft")+" list table bridge es_host_firewall\n")
 	for _, path := range []string{"candidate.nft", "rollback.nft", "applied.listing"} {
 		if _, err := os.Stat(filepath.Join(root, "run", path)); !os.IsNotExist(err) {
 			t.Fatalf("confirm must remove %s, stat err=%v", path, err)
@@ -1249,11 +1277,6 @@ func TestRemoteAlphaHostFirewallApplyRefusesOtherBridgesAndContainerIPv6(t *test
 	}
 }
 
-// TestRemoteAlphaHostFirewallUnconfirmedApplyRecords: rollback.sh (what the
-// timer runs) puts back a drop-in that existed before --apply and clears the
-// unconfirmed marker; an apply whose timer vanished (a reboot inside the
-// confirm window) leaves the marker, which --status reports and --plan and
-// --apply refuse until --rollback.
 // An --apply that stops before the ruleset is loaded changes nothing, so it
 // must not leave the unconfirmed marker behind: a later --plan or --apply
 // would otherwise refuse with "never confirmed" until --rollback.
@@ -1315,6 +1338,222 @@ func TestRemoteAlphaHostFirewallApplyFailuresLeaveNoUnconfirmedMarker(t *testing
 	}
 }
 
+// appliedHostFirewallFakes runs --apply against the fakes and opens a new
+// SSH-like connection, so that --confirm can follow. It returns the
+// environment, the fakes' state directory and the paths --confirm installs
+// the ruleset and its listing at.
+func appliedHostFirewallFakes(t *testing.T) (env []string, state, ruleset, listing string) {
+	t.Helper()
+	fakeBin, state := hostFirewallFakes(t, "0 0 192.168.1.156:22 192.168.1.23:50000\n")
+	root := t.TempDir()
+	unitPath := filepath.Join(root, "systemd", "es-host-firewall.service")
+	for _, dir := range []string{filepath.Dir(unitPath), filepath.Join(root, "state"), filepath.Join(root, "run")} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	env = hostFirewallBaseEnv(t, fakeBin,
+		"REMOTE_ALPHA_HOST_FIREWALL_STATE_DIR="+filepath.Join(root, "state"),
+		"REMOTE_ALPHA_HOST_FIREWALL_RUN_DIR="+filepath.Join(root, "run"),
+		"REMOTE_ALPHA_HOST_FIREWALL_UNIT_PATH="+unitPath,
+		"FAKE_UNIT_PATH="+unitPath,
+	)
+	if stdout, stderr, code := runHostFirewall(t, env, "--apply"); code != 0 {
+		t.Fatalf("apply: exit %d\n%s\n%s", code, stdout, stderr)
+	}
+	writeFile(t, filepath.Join(state, "established"),
+		[]byte("0 0 192.168.1.156:22 192.168.1.23:50000\n0 0 192.168.1.156:22 192.168.1.23:50010\n"), 0o644)
+	return env, state, filepath.Join(root, "state", "es-host-firewall.nft"), filepath.Join(root, "state", "es-host-firewall.listing")
+}
+
+// confirmedHostFirewallFakes is appliedHostFirewallFakes followed by a
+// --confirm and a healthy --status.
+func confirmedHostFirewallFakes(t *testing.T) (env []string, state, ruleset, listing string) {
+	t.Helper()
+	env, state, ruleset, listing = appliedHostFirewallFakes(t)
+	if stdout, stderr, code := runHostFirewall(t, env, "--confirm"); code != 0 || !strings.Contains(stdout, "RESULT: confirmed") {
+		t.Fatalf("confirm: exit %d\n%s\n%s", code, stdout, stderr)
+	}
+	if stdout, _, code := runHostFirewall(t, env, "--status"); code != 0 || !strings.Contains(stdout, "loaded tables: match the installed ruleset") {
+		t.Fatalf("status after confirm must be healthy: exit %d\n%s", code, stdout)
+	}
+	return env, state, ruleset, listing
+}
+
+// TestRemoteAlphaHostFirewallStatusChecksTheTablesAreLoaded: --status
+// checks the tables themselves, not only the installed listing against the
+// loaded tables, and an empty installed file counts as not installed.
+// (RT07-1: after a crash left both files empty and no tables loaded, an
+// empty listing matched the empty set of loaded tables and --status said
+// "installed and unchanged".)
+func TestRemoteAlphaHostFirewallStatusChecksTheTablesAreLoaded(t *testing.T) {
+	const missing = "loaded tables: MISSING (table inet es_host_firewall, table bridge es_host_firewall not loaded); the firewall is not in force"
+	const failed = "RESULT: not installed, changed, or a host check failed"
+	for _, tc := range []struct {
+		name          string
+		emptyRuleset  bool
+		emptyListing  bool
+		dropTables    bool
+		want, notWant []string
+	}{
+		{name: "tables_gone_files_intact", dropTables: true,
+			want:    []string{missing, "installed ruleset: /"},
+			notWant: []string{"loaded tables: match", "loaded tables: DIFFER"}},
+		{name: "ruleset_empty_tables_loaded", emptyRuleset: true,
+			want:    []string{"installed ruleset: EMPTY (", "for example after a crash during an install); run --plan, --apply and --confirm again"},
+			notWant: []string{"loaded tables: MISSING", "loaded tables: match"}},
+		{name: "listing_empty_tables_loaded", emptyListing: true,
+			want:    []string{"installed ruleset: EMPTY ("},
+			notWant: []string{"loaded tables: MISSING", "loaded tables: match"}},
+		{name: "both_empty_tables_gone", emptyRuleset: true, emptyListing: true, dropTables: true,
+			want:    []string{missing, "installed ruleset: EMPTY ("},
+			notWant: []string{"loaded tables: match"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env, state, ruleset, listing := confirmedHostFirewallFakes(t)
+			if tc.emptyRuleset {
+				writeFile(t, ruleset, nil, 0o644)
+			}
+			if tc.emptyListing {
+				writeFile(t, listing, nil, 0o644)
+			}
+			if tc.dropTables {
+				if err := os.Remove(filepath.Join(state, "loaded")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			stdout, _, code := runHostFirewall(t, env, "--status")
+			if code != 1 || !strings.Contains(stdout, failed) {
+				t.Fatalf("status: expected exit 1 and %q, got %d\n%s", failed, code, stdout)
+			}
+			assertContainsAll(t, "status", stdout, tc.want...)
+			assertContainsNone(t, "status", stdout, tc.notWant...)
+		})
+	}
+}
+
+// RT07-1 (Low; bug + monitoring gap): the installer (install_file) renames the
+// ruleset and listing into place without fsync, so a crash or power loss just
+// after --confirm can leave both files present but empty. --status then reports
+// "loaded tables: match the installed ruleset" and exit 0 "installed and
+// unchanged" although no es_host_firewall tables are loaded: the box is open at
+// the nft layer while every signal says healthy. The es-host-firewall.service
+// unit makes it worse: ExecStart runs `nft -f <empty .nft>`, which loads no
+// tables and succeeds, so after a reboot the unit is active with no firewall.
+//
+// Fix: --status must treat an empty or no-longer-parseable installed ruleset as
+// not installed, and should check the tables actually exist (nft list table ...)
+// rather than comparing a possibly-empty listing; the installer should fsync the
+// file and its directory before and after the rename.
+func TestRemoteAlphaHostFirewallStatusRefusesEmptyInstalledRulesetAfterCrash(t *testing.T) {
+	fakeBin, state := hostFirewallFakes(t, "0 0 192.168.1.156:22 192.168.1.23:50000\n")
+	root := t.TempDir()
+	unitPath := filepath.Join(root, "systemd", "es-host-firewall.service")
+	if err := os.MkdirAll(filepath.Dir(unitPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	env := hostFirewallBaseEnv(t, fakeBin,
+		"REMOTE_ALPHA_HOST_FIREWALL_STATE_DIR="+filepath.Join(root, "state"),
+		"REMOTE_ALPHA_HOST_FIREWALL_RUN_DIR="+filepath.Join(root, "run"),
+		"REMOTE_ALPHA_HOST_FIREWALL_UNIT_PATH="+unitPath,
+		"FAKE_UNIT_PATH="+unitPath,
+	)
+	for _, dir := range []string{filepath.Join(root, "state"), filepath.Join(root, "run")} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// A clean, fully installed and confirmed box.
+	if _, stderr, code := runHostFirewall(t, env, "--apply"); code != 0 {
+		t.Fatalf("apply: exit %d\n%s", code, stderr)
+	}
+	writeFile(t, filepath.Join(state, "established"),
+		[]byte("0 0 192.168.1.156:22 192.168.1.23:50000\n0 0 192.168.1.156:22 192.168.1.23:50010\n"), 0o644)
+	if stdout, stderr, code := runHostFirewall(t, env, "--confirm"); code != 0 || !strings.Contains(stdout, "RESULT: confirmed") {
+		t.Fatalf("confirm: exit %d\n%s\n%s", code, stdout, stderr)
+	}
+	if _, _, code := runHostFirewall(t, env, "--status"); code != 0 {
+		t.Fatalf("baseline --status must be healthy, got exit %d", code)
+	}
+
+	// Simulate the crash: both installed files survive the rename as 0 bytes and
+	// no tables are loaded (the fake records loaded tables in state/loaded).
+	writeFile(t, filepath.Join(root, "state", "es-host-firewall.nft"), []byte{}, 0o644)
+	writeFile(t, filepath.Join(root, "state", "es-host-firewall.listing"), []byte{}, 0o644)
+	if err := os.Remove(filepath.Join(state, "loaded")); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, _, code := runHostFirewall(t, env, "--status")
+	if strings.Contains(stdout, "loaded tables: match the installed ruleset") {
+		t.Errorf("RT07-1: --status reports the empty ruleset as loaded; no tables are loaded:\n%s", stdout)
+	}
+	if code == 0 || strings.Contains(stdout, "RESULT: installed and unchanged") {
+		t.Errorf("RT07-1: --status reports a healthy box (exit %d) while no firewall tables are loaded:\n%s", code, stdout)
+	}
+}
+
+// TestRemoteAlphaHostFirewallInstallsFilesDurably: every file the script
+// installs (the drop-in at --apply; the ruleset, the unit and the listing at
+// --confirm) is flushed under its temporary name before the rename and its
+// directory after it, and a failed flush fails the install.
+func TestRemoteAlphaHostFirewallInstallsFilesDurably(t *testing.T) {
+	env, state, ruleset, listing := confirmedHostFirewallFakes(t)
+	calls := readCalls(t, state)
+	if strings.Contains(calls, "sync dir before rename") {
+		t.Fatalf("a directory was flushed before the rename into it:\n%s", calls)
+	}
+	var unitPath, dropIn string
+	for _, entry := range env {
+		switch k, v, _ := strings.Cut(entry, "="); k {
+		case "REMOTE_ALPHA_HOST_FIREWALL_UNIT_PATH":
+			unitPath = v
+		case "REMOTE_ALPHA_HOST_FIREWALL_SSHD_DROP_IN":
+			dropIn = v
+		}
+	}
+	lines := strings.Split(calls, "\n")
+	for _, target := range []string{dropIn, ruleset, unitPath, listing} {
+		fileAt, dirAt := -1, -1
+		for i, line := range lines {
+			if fileAt < 0 && strings.HasPrefix(line, "sync file "+target+".") && len(line) == len("sync file "+target+".XXXXXX") {
+				fileAt = i
+			}
+			if fileAt >= 0 && dirAt < 0 && i > fileAt && line == "sync dir "+filepath.Dir(target) {
+				dirAt = i
+			}
+		}
+		if fileAt < 0 || dirAt < 0 {
+			t.Fatalf("%s: expected its temporary file flushed, then its directory:\n%s", target, calls)
+		}
+	}
+
+	// A flush that fails fails the install, which then restores the state
+	// from before --apply and leaves no temporary file.
+	for _, failure := range []string{"FAKE_SYNC_FAIL=1", "FAKE_SYNC_FAIL_DIRS=1"} {
+		failEnv, failState, failRuleset, _ := appliedHostFirewallFakes(t)
+		stdout, stderr, code := runHostFirewall(t, append(append([]string{}, failEnv...), failure), "--confirm")
+		if code != 1 || !strings.Contains(stderr, "install failed; restoring the previous files") {
+			t.Fatalf("confirm with %s: expected the install to fail, got %d\n%s\n%s", failure, code, stdout, stderr)
+		}
+		if _, err := os.Stat(failRuleset); !os.IsNotExist(err) {
+			t.Fatalf("%s: a failed install must not leave the ruleset in place, stat err=%v", failure, err)
+		}
+		if entries, _ := filepath.Glob(failRuleset + ".*"); len(entries) != 0 {
+			t.Fatalf("%s: a failed install must not leave temporary files: %v", failure, entries)
+		}
+		if _, err := os.Stat(filepath.Join(failState, "loaded")); !os.IsNotExist(err) {
+			t.Fatalf("%s: a failed install must restore the state from before --apply (no tables), stat err=%v", failure, err)
+		}
+	}
+}
+
+// TestRemoteAlphaHostFirewallUnconfirmedApplyRecords: rollback.sh (what the
+// timer runs) puts back a drop-in that existed before --apply and clears the
+// unconfirmed marker; an apply whose timer vanished (a reboot inside the
+// confirm window) leaves the marker, which --status reports and --plan and
+// --apply refuse until --rollback.
 func TestRemoteAlphaHostFirewallUnconfirmedApplyRecords(t *testing.T) {
 	fakeBin, state := hostFirewallFakes(t, "0 0 192.168.1.156:22 192.168.1.23:50000\n")
 	root := t.TempDir()
@@ -2020,14 +2259,16 @@ printf '%%q ' "${cmd[@]}" >%q/rollback-command
 echo waiting >%q/timer
 `, state, state))
 	writeExecutable(t, fakeBin, "systemctl", fmt.Sprintf(`#!/bin/bash
-state=%q
+state=%[1]q
 case "$1" in
   show) cat "$state/timer" 2>/dev/null || echo dead ;;
   stop) echo dead >"$state/timer" ;;
   is-enabled) [[ "$*" == *es-host-firewall.service* && -f "$state/enabled" ]] ;;
   enable) touch "$state/enabled" ;;
   disable) rm -f "$state/enabled" ;;
-  restart) nft -f "$(sed -n 's/^ExecStart=[^ ]* -f //p' %q)" ;;
+  restart)
+    nft -f "$(sed -n 's/^ExecStart=[^ ]* -f //p' %[2]q)" || exit 1
+    while IFS= read -r post; do $post || exit 1; done < <(sed -n 's/^ExecStartPost=//p' %[2]q) ;;
   *) exit 0 ;;
 esac
 `, state, unitPath))
@@ -2132,6 +2373,56 @@ esac
 		t.Fatalf("status after reload: %d\n%s", code, stdout)
 	}
 
+	// A crash that left both installed files empty, then a boot (RT07-1):
+	// nothing is loaded, --status says so, and the unit's own lines fail
+	// although `nft -f` of the empty file succeeds.
+	rulesetPath := filepath.Join(root, "state", "es-host-firewall.nft")
+	listingPath := filepath.Join(root, "state", "es-host-firewall.listing")
+	savedRuleset, savedListing := mustRead(t, rulesetPath), mustRead(t, listingPath)
+	writeFile(t, rulesetPath, nil, 0o644)
+	writeFile(t, listingPath, nil, 0o644)
+	l.run("ip", "netns", "exec", box, "nft", "delete", "table", "inet", "es_host_firewall")
+	l.run("ip", "netns", "exec", box, "nft", "delete", "table", "bridge", "es_host_firewall")
+	stdout, _, code = inBox(env, "--status")
+	if code != 1 || !strings.Contains(stdout, "loaded tables: MISSING (table inet es_host_firewall, table bridge es_host_firewall not loaded)") ||
+		!strings.Contains(stdout, "installed ruleset: EMPTY (") || strings.Contains(stdout, "loaded tables: match") {
+		t.Fatalf("status after a crash emptied the installed files: %d\n%s", code, stdout)
+	}
+	unitLines := func(prefix string) [][]string {
+		var lines [][]string
+		for _, line := range strings.Split(mustRead(t, unitPath), "\n") {
+			if rest, ok := strings.CutPrefix(line, prefix); ok {
+				lines = append(lines, strings.Fields(rest))
+			}
+		}
+		if len(lines) == 0 {
+			t.Fatalf("the unit has no %s line", prefix)
+		}
+		return lines
+	}
+	runUnitLines := func() error {
+		t.Helper()
+		for _, argv := range append(unitLines("ExecStart="), unitLines("ExecStartPost=")...) {
+			cmd := exec.Command("ip", append([]string{"netns", "exec", box}, argv...)...)
+			cmd.Dir = executionSubstrateRepoRoot
+			if out, err := cmd.CombinedOutput(); err != nil {
+				return fmt.Errorf("%v: %v: %s", argv, err, out)
+			}
+		}
+		return nil
+	}
+	if err := runUnitLines(); err == nil || !strings.Contains(err.Error(), "list table inet es_host_firewall") {
+		t.Fatalf("the unit must fail when the installed ruleset loads no tables, got %v", err)
+	}
+	writeFile(t, rulesetPath, []byte(savedRuleset), 0o644)
+	writeFile(t, listingPath, []byte(savedListing), 0o644)
+	if err := runUnitLines(); err != nil {
+		t.Fatalf("the unit must load the intact ruleset and pass its checks: %v", err)
+	}
+	if stdout, _, code := inBox(env, "--status"); code != 0 {
+		t.Fatalf("status after the unit reloaded the intact ruleset: %d\n%s", code, stdout)
+	}
+
 	// Rollback removes everything; traffic is as before the firewall.
 	if stdout, stderr, code := inBox(env, "--rollback"); code != 0 {
 		t.Fatalf("rollback: %d\n%s\n%s", code, stdout, stderr)
@@ -2169,6 +2460,10 @@ func TestRemoteAlphaHostFirewallDocsContract(t *testing.T) {
 		"no new connection into a container is forwarded, published ports (Docker DNAT) included",
 		"containers cannot reach each other at layer 2, whatever the `br_netfilter` state: no frame passes from one bridge port to another (IPv4 whatever its addresses, IPv6, VLAN-tagged frames, ARP)",
 		"`--apply` refuses while a bridge exists that is not a container interface",
+		"which loads the installed ruleset at boot and then fails unless both tables exist (`nft -f` succeeds on an empty file and loads nothing)",
+		"is written to a temporary file, flushed to disk, renamed into place, and its directory flushed, so a crash or power cut leaves the old file or the new one, never an empty one.",
+		"whether both tables are loaded at all (an empty installed ruleset or listing counts as not installed)",
+		"Exit 0 only when both tables are loaded, the installed ruleset is not empty and is unchanged, and both host checks pass",
 		"whether every bridge is still a container interface and no container interface has a global or unique-local IPv6 address (so a bridge or an IPv6 network added after `--apply` shows up here, not only at the next `--apply`)",
 		"a bridge created after `--apply` that is not a container interface (for example a libvirt bridge) loses every frame between its ports",
 		"the Vault address is on a container interface, every bridge is a container interface",

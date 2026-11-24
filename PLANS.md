@@ -3408,7 +3408,8 @@ bootstrap helper (INF-04, INF-05, and the root-token half of INF-06):
   uses it once for a 15-minute orphan token, revokes it with the next
   request, and revokes the 15-minute token before it exits; SIGINT,
   SIGTERM, SIGHUP and SIGQUIT wait until the root token is revoked and
-  Vault's configuration is back;
+  Vault's configuration is back, and Ctrl-Z (SIGTSTP, SIGTTIN, SIGTTOU)
+  takes effect only then; core dumps are off before anything is read;
 - `REMOTE_ALPHA_BOOTSTRAP_GENERATE_ROOT_ACCESS=temporary-config` adds
   `enable_unauthenticated_access = ["generate-root"]` to Vault's
   configuration only for the generate-root step and puts the file back byte

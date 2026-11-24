@@ -456,6 +456,10 @@ def render(settings):
 
 
 def render_unit(ruleset_path, nft_path):
+    """The boot unit. `nft -f` succeeds on an empty file and loads nothing,
+    so after loading the unit checks that both tables exist and fails
+    otherwise; their listing is not needed, so stdout goes nowhere (nft
+    reports errors on stderr)."""
     return "\n".join(
         [
             "# Managed by Execution-Substrate scripts/remote_alpha_host_firewall.sh.",
@@ -476,7 +480,10 @@ def render_unit(ruleset_path, nft_path):
             "Type=oneshot",
             "RemainAfterExit=yes",
             "StandardInput=null",
+            "StandardOutput=null",
             f"ExecStart={nft_path} -f {ruleset_path}",
+            f"ExecStartPost={nft_path} list table inet {TABLE}",
+            f"ExecStartPost={nft_path} list table bridge {TABLE}",
             f"ExecReload={nft_path} -f {ruleset_path}",
             "",
             "[Install]",

@@ -14,7 +14,10 @@ RequiresMountsFor=/etc/execution-substrate/host-firewall
 Type=oneshot
 RemainAfterExit=yes
 StandardInput=null
+StandardOutput=null
 ExecStart=/usr/sbin/nft -f /etc/execution-substrate/host-firewall/es-host-firewall.nft
+ExecStartPost=/usr/sbin/nft list table inet es_host_firewall
+ExecStartPost=/usr/sbin/nft list table bridge es_host_firewall
 ExecReload=/usr/sbin/nft -f /etc/execution-substrate/host-firewall/es-host-firewall.nft
 
 [Install]
