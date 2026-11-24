@@ -527,6 +527,8 @@ func TestNomadACLToolCheckRefusesEachDeviation(t *testing.T) {
 				"Roles": []map[string]string{{"ID": "role-id", "Name": "wider"}}}), "does not hold the observer client token with only the es-observer-v1 policy and no roles"},
 		{"observer token file holds a management token", answer("/v1/acl/token/self", testObserverNomadToken, http.StatusOK,
 			map[string]any{"SecretID": testObserverNomadToken, "Type": "management", "Policies": []string{"es-observer-v1"}}), "does not hold the observer client token"},
+		{"observer token answers for another secret", answer("/v1/acl/token/self", testObserverNomadToken, http.StatusOK,
+			map[string]any{"SecretID": testESNomadToken, "Type": "client", "Policies": []string{"es-observer-v1"}}), "does not hold the observer client token"},
 		{"observer token can plan", plan(testObserverNomadToken, "es-submit-v1", http.StatusOK), "the observer token could plan jobs in es-submit-v1"},
 		{"management token is not one", answer("/v1/acl/token/self", fakeACLManagementToken, http.StatusOK,
 			map[string]any{"SecretID": fakeACLManagementToken, "Type": "client"}), "does not hold a working Nomad management token"},
