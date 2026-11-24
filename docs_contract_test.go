@@ -4029,7 +4029,7 @@ func TestReliableSubmitPersistenceAndConcurrencyADRDocsContract(t *testing.T) {
 	)
 
 	serviceSource := mustRead(t, "es/admission/service.go")
-	serviceStartup := docSection(t, serviceSource, "if cfg.SubmitConfigured() {", "nomadClient, err = newNomadClient(cfg.Nomad)")
+	serviceStartup := docSection(t, serviceSource, "if cfg.SubmitConfigured() {", "validateExecutionRuntimeInputs(cfg.Execution)")
 	assertContainsAll(t, "current startup provisions, qualifies, and probes the execution root pair", serviceStartup,
 		"provisionExecutionRoots(cfg.Execution.StagingRootDir, cfg.Execution.ResultsRootDir, nil)",
 		"owner, err := roots.owner()",
@@ -10370,7 +10370,7 @@ func TestRemoteAlphaOperatorP0vDocsOperatorHealthcheckTLSNoninteractiveStatusDes
 		"OPENSSL_CONF",
 		"direct_file_sha256",
 		"selectors.DefaultSelector",
-		"extract_uri_sans",
+		"decode_client_certificate",
 		"rfc2253_component_values",
 		"collect_status",
 		"public_key_digest_from_cert",

@@ -53,6 +53,14 @@ func writeProofEvidenceFile(t *testing.T, root, name string, contents []byte) {
 	}
 }
 
+// writeProofEvidenceEnv writes the guest env.sh the proof sources: like the
+// one supported-local setup writes, it names the observer token file the
+// proof's Nomad reads use.
+func writeProofEvidenceEnv(t *testing.T, guest string) {
+	t.Helper()
+	writeProofEvidenceFile(t, guest, "env.sh", []byte("export NOMAD_TOKEN_FILE=\""+writeFakeNomadObserverTokenFile(t, t.TempDir())+"\"\n"))
+}
+
 func prepareProofStagingObservationRoot(t *testing.T, proof string) {
 	t.Helper()
 	if err := os.Mkdir(filepath.Join(proof, "staging"), 0o755); err != nil {
@@ -358,7 +366,7 @@ func TestSupportedLocalProofSafeEvidenceCollector(t *testing.T) {
 func TestSupportedLocalProofLogAssertionProjection(t *testing.T) {
 	guest := t.TempDir()
 	fakeCommands := t.TempDir()
-	writeProofEvidenceFile(t, guest, "env.sh", nil)
+	writeProofEvidenceEnv(t, guest)
 	writeProofEvidenceFile(t, guest, "es.json", []byte(`{"execution":{"staging_root_dir":"`+guest+`/staging"}}`))
 	prepareProofStagingObservationRoot(t, guest)
 	writeProofEvidenceFile(t, guest, "workdirs/run-1/summary.json", []byte(`{"ok":true,"message":"execution completed successfully","run_id":"run-0123456789abcdef"}`))
@@ -415,7 +423,7 @@ func TestSupportedLocalProofSequentialCapturesAndLineage(t *testing.T) {
 	const secondAllocation = "fedcba98-7654-3210-fedc-ba9876543210"
 	guest := proofPhysicalTempDir(t)
 	fakeCommands := t.TempDir()
-	writeProofEvidenceFile(t, guest, "env.sh", nil)
+	writeProofEvidenceEnv(t, guest)
 	writeProofEvidenceFile(t, guest, "es.json", []byte(`{"execution":{"staging_root_dir":"`+guest+`/staging"}}`))
 	prepareProofStagingObservationRoot(t, guest)
 	writeProofEvidenceFile(t, guest, "workdirs/first/summary.json", proofExecutionLoopSummary(t, filepath.Join(guest, "workdirs", "first"), firstRun, nil))
@@ -544,7 +552,7 @@ validate_control_plane_normal_shell_result_bundle`
 func TestSupportedLocalProofCaptureRejectsResultPathMismatch(t *testing.T) {
 	guest := proofPhysicalTempDir(t)
 	workdir := filepath.Join(guest, "workdirs", "normal")
-	writeProofEvidenceFile(t, guest, "env.sh", nil)
+	writeProofEvidenceEnv(t, guest)
 	summary := proofExecutionLoopSummary(t, workdir, "run-fedcba9876543210", proofResultFixture(t, ""))
 	var value map[string]any
 	if err := json.Unmarshal(summary, &value); err != nil {
@@ -802,7 +810,7 @@ func TestSupportedLocalProofResultValidationFinalizerContinuation(t *testing.T) 
 			host := filepath.Join(proofPhysicalTempDir(t), "host-proof")
 			fakeCommands := t.TempDir()
 			writeFakeProofLimactl(t, fakeCommands)
-			writeProofEvidenceFile(t, guest, "env.sh", nil)
+			writeProofEvidenceEnv(t, guest)
 			writeProofEvidenceFile(t, guest, "es.json", []byte(`{"execution":{"staging_root_dir":"`+guest+`/staging"}}`))
 			prepareProofStagingObservationRoot(t, guest)
 			writeProofEvidenceFile(t, guest, "workdirs/first/summary.json",
@@ -1001,7 +1009,7 @@ func TestSupportedLocalProofAllocationExactCount(t *testing.T) {
 			responsePath := filepath.Join(fakeCommands, "alloc-response.json")
 			logPath := filepath.Join(fakeCommands, "nomad.log")
 			resultMarker := filepath.Join(fakeCommands, "result-validation-reached")
-			writeProofEvidenceFile(t, guest, "env.sh", nil)
+			writeProofEvidenceEnv(t, guest)
 			writeProofEvidenceFile(t, guest, "es.json", []byte(`{"execution":{"staging_root_dir":"`+guest+`/staging"}}`))
 			prepareProofStagingObservationRoot(t, guest)
 			writeProofEvidenceFile(t, guest, "workdirs/only/summary.json", []byte(`{"ok":true,"message":"execution completed successfully","run_id":"`+runID+`","Meta":"`+proofAPIKeyCanary+`"}`))
@@ -1117,7 +1125,7 @@ func TestSupportedLocalProofSequentialAllocationFailureFinalizer(t *testing.T) {
 	host := filepath.Join(t.TempDir(), "host-proof")
 	fakeCommands := t.TempDir()
 	resultMarker := filepath.Join(t.TempDir(), "result-validation-reached")
-	writeProofEvidenceFile(t, guest, "env.sh", nil)
+	writeProofEvidenceEnv(t, guest)
 	writeProofEvidenceFile(t, guest, "es.json", []byte(`{"execution":{"staging_root_dir":"`+guest+`/staging"}}`))
 	prepareProofStagingObservationRoot(t, guest)
 	writeProofEvidenceFile(t, guest, "workdirs/first/summary.json", proofExecutionLoopSummary(t, filepath.Join(guest, "workdirs", "first"), firstRun, nil))
