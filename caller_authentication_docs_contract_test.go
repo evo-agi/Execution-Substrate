@@ -54,6 +54,8 @@ func TestCallerAuthenticationContractIsDocumentedOnce(t *testing.T) {
 		// Red-team N1 and re-audit O7-1: OpenSSL's printed SAN text is ambiguous.
 		"The collector reads the URI SAN entries from the certificate's own DER encoding, through the fixed `openssl x509 -outform DER` read of the public certificate, and never from OpenSSL's printed SAN text,",
 		"The host-local renew helper's `--status` mode carries the same decoder, and a test keeps the two copies identical.",
+		// Re-audit 13, N13-2: where the decoder stops mirroring Go.
+		"The decoder reads only the subjectAltName, basicConstraints, keyUsage and extKeyUsage extensions, so a certificate that Go refuses for another malformed extension, such as certificatePolicies or authorityInfoAccess, can still show identity pass, and ES refuses it at the handshake.",
 		"(including the fixed DER encoding of the public operator certificate, from which the URI SAN entries are decoded)",
 	)
 

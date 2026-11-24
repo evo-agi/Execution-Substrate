@@ -972,11 +972,14 @@ DER = {
     "unique_id_constructed": certificate(san((URI, EXP)), unique_ids=tlv(0xA1, tlv(0x03, b"\x00\x01"))),
     "field_before_extensions": certificate(san((URI, EXP)), unique_ids=tlv(0x05, b"")),
     # Go refuses an rfc822Name, dNSName or URI that is not IA5 text, and an
-    # iPAddress that is not 4 or 16 bytes long (A11-3).
+    # iPAddress that is not 4 or 16 bytes long (A11-3), also the 8- and 32-byte
+    # address-and-mask lengths of nameConstraints (re-audit 13, N13-1).
     "rfc822_not_ia5": certificate(san((EMAIL, b"operator\x80@example.invalid"), (URI, EXP))),
     "dns_not_ia5": certificate(san((DNS, b"client.operator\x80"), (URI, EXP))),
     "ip_five_bytes": certificate(san((IP, b"\xc0\x00\x02\x01\x00"), (URI, EXP))),
     "ip_empty": certificate(san((IP, b""), (URI, EXP))),
+    "ip_eight_bytes": certificate(san((IP, b"\xc0\x00\x02\x01\xff\xff\xff\x00"), (URI, EXP))),
+    "ip_thirty_two_bytes": certificate(san((IP, b"\x20\x01\x0d\xb8" + b"\x00" * 12 + b"\xff" * 8 + b"\x00" * 8), (URI, EXP))),
     # Extension identifiers, basicConstraints, keyUsage and extKeyUsage that
     # Go's parser refuses (A11-4). Stricter than Go: an INTEGER pathLen that
     # is negative or followed by more fields, and data after an extension's
@@ -1180,6 +1183,7 @@ for mode in [
     "v1_with_extensions", "v2_with_extensions", "version_four", "version_not_minimal", "version_not_integer",
     "version_extra_field", "version_primitive", "version_malformed", "extensions_not_last", "unique_ids_reversed", "unique_id_twice",
     "unique_id_constructed", "field_before_extensions", "rfc822_not_ia5", "dns_not_ia5", "ip_five_bytes", "ip_empty",
+    "ip_eight_bytes", "ip_thirty_two_bytes",
     "extension_id_empty", "extension_id_not_minimal", "duplicate_unknown_extension", "duplicate_basic_constraints",
     "basic_constraints_not_sequence", "basic_constraints_trailing", "basic_constraints_fields_malformed",
     "basic_constraints_flag_not_der", "basic_constraints_flag_long", "basic_constraints_flag_empty",
@@ -1218,6 +1222,8 @@ TWINS = {
     "rfc822_not_ia5": certificate(san((EMAIL, b"operator\x7f@example.invalid"), (URI, EXP))),
     "dns_not_ia5": certificate(san((DNS, b"client.operator\x7f"), (URI, EXP))),
     "ip_five_bytes": certificate(san((IP, b"\xc0\x00\x02\x01"), (URI, EXP))),
+    "ip_eight_bytes": certificate(san((IP, b"\xc0\x00\x02\x01"), (URI, EXP))),
+    "ip_thirty_two_bytes": certificate(san((IP, b"\x20\x01\x0d\xb8" + b"\x00" * 12), (URI, EXP))),
     "extension_id_empty": certificate(san((URI, EXP)), extension(UNKNOWN_OID, b"")),
     "extension_id_not_minimal": certificate(san((URI, EXP)), extension(tlv(0x06, bytes.fromhex("2b06010401")), b"")),
     "basic_constraints_flag_not_der": certificate(san((URI, EXP)), basic_constraints(tlv(0x01, b"\xff"))),

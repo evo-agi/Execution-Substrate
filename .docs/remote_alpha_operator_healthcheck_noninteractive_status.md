@@ -390,7 +390,11 @@ byte outside printable ASCII without spaces, and, as Go's certificate parser
 does, an rfc822Name or dNSName with a byte above `0x7F` and an iPAddress that
 is not 4 or 16 bytes long. It also refuses an extension identifier,
 basicConstraints, keyUsage or extKeyUsage that Go's parser would refuse. Such a
-certificate is `identity_malformed` and fails with `identity_mismatch`. A
+certificate is `identity_malformed` and fails with `identity_mismatch`. The
+decoder reads only the subjectAltName, basicConstraints, keyUsage and
+extKeyUsage extensions, so a certificate that Go refuses for another malformed
+extension, such as certificatePolicies or authorityInfoAccess, can still show
+identity pass, and ES refuses it at the handshake. A
 certificate whose only URI SAN is the expected one still fails with
 `identity_mismatch` when ES would refuse it as a client certificate: `identity_not_end_entity` when its basic constraints mark it as a
 CA or its key usage includes keyCertSign or cRLSign (section 3A), and
