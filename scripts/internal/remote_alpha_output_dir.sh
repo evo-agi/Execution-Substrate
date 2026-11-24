@@ -17,7 +17,9 @@
 # missing directories of DIR one at a time without following links, and
 # refuses a symbolic link anywhere on the way, a directory another account
 # owns, a directory its group or others can write unless it is root's and
-# sticky (such as /var/tmp), and a DIR its group or others can write.
+# sticky (such as /var/tmp), a DIR its group or others can write, and a DIR
+# with a '..' component. It needs no read permission on the directories it
+# checks, so a DIR that only root can read passes when root owns it.
 remote_alpha_prepare_output_dir() {
   python3 -I - "$1" <<'REMOTE_ALPHA_OUTPUT_DIR_PY'
 import os
@@ -26,11 +28,17 @@ import sys
 
 if not sys.argv[1]:
     sys.exit("remote alpha output folder: no folder given")
-parts = [part for part in os.path.abspath(sys.argv[1]).split("/") if part]
+if ".." in sys.argv[1].split("/"):
+    sys.exit(f"remote alpha output folder: {sys.argv[1]} has a '..' component; refusing to check a path that is not canonical")
+# The path is checked as given, never normalized: dropping "link/.." would
+# check another folder than the one a later write through the link reaches.
+parts = [part for part in os.path.join(os.getcwd(), sys.argv[1]).split("/") if part not in ("", ".")]
 trusted = {0, os.geteuid()}
 if os.environ.get("SUDO_UID", "").isdigit():
     trusted.add(int(os.environ["SUDO_UID"]))
-flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+# O_PATH reads a folder's owner and mode without read permission on it, so a
+# folder that root keeps private still passes and sudo can hand it over.
+flags = getattr(os, "O_PATH", os.O_RDONLY) | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 shown = "/"
 fd = os.open("/", flags)
 try:

@@ -75,7 +75,7 @@ func remoteAlphaOutputDirFunction(t *testing.T, text, label string) string {
 // definition file, so a new writer cannot name the folder without the check.
 func TestRemoteAlphaOutputDirCopiesMatch(t *testing.T) {
 	definition := remoteAlphaOutputDirFunction(t, mustRead(t, remoteAlphaOutputDirDefinitionPath), remoteAlphaOutputDirDefinitionPath)
-	for _, required := range []string{"os.O_NOFOLLOW", "dir_fd=fd", "SUDO_UID", "stat.S_ISVTX", "os.mkdir(parts[index], 0o755, dir_fd=fd)"} {
+	for _, required := range []string{"getattr(os, \"O_PATH\", os.O_RDONLY) | os.O_DIRECTORY | os.O_NOFOLLOW", "dir_fd=fd", "SUDO_UID", "stat.S_ISVTX", "os.mkdir(parts[index], 0o755, dir_fd=fd)", "has a '..' component"} {
 		if !strings.Contains(definition, required) {
 			t.Fatalf("definition lost %q:\n%s", required, definition)
 		}
@@ -295,6 +295,89 @@ func TestRemoteAlphaOutputDirRefusesFoldersOthersCanWrite(t *testing.T) {
 	requireRemoteAlphaOutputDirRefusal(t, output, err, sticky, "can be written by its group or others")
 }
 
+// TestRemoteAlphaOutputDirRefusesDotDotComponents shows that the check never
+// normalizes "link/.." away: with base/link pointing at other/nested, the
+// kernel resolves base/link/../output to other/output, so checking base/output
+// instead would approve a folder the write never reaches (Codex review of
+// PR #50).
+func TestRemoteAlphaOutputDirRefusesDotDotComponents(t *testing.T) {
+	base := remoteAlphaOutputDirTempDir(t)
+	other := filepath.Join(base, "other")
+	if err := os.MkdirAll(filepath.Join(other, "nested"), 0o755); err != nil {
+		t.Fatalf("mkdir other/nested: %v", err)
+	}
+	if err := os.Chmod(other, 0o777); err != nil {
+		t.Fatalf("chmod other: %v", err)
+	}
+	if err := os.Symlink(filepath.Join(other, "nested"), filepath.Join(base, "link")); err != nil {
+		t.Fatalf("plant link: %v", err)
+	}
+	dotted := filepath.Join(base, "link") + "/../output"
+
+	output, err := runRemoteAlphaOutputDir(t, dotted)
+	requireRemoteAlphaOutputDirRefusal(t, output, err, dotted, "has a '..' component")
+	output, err = runRemoteAlphaOutputDir(t, base+"/output/..")
+	requireRemoteAlphaOutputDirRefusal(t, output, err, "has a '..' component")
+
+	// The runtime identity summary, a root helper of the host, stops before it
+	// writes into the folder the link leads to.
+	output, err = runRemoteAlphaRuntimeIdentitySummary(t, base, dotted+"/runtime-identity-helper-summary.json")
+	requireRemoteAlphaOutputDirRefusal(t, output, err, "has a '..' component")
+	for _, dir := range []string{filepath.Join(other, "output"), filepath.Join(base, "output")} {
+		if _, err := os.Lstat(dir); !os.IsNotExist(err) {
+			t.Fatalf("%s should not exist after the refusal: %v", dir, err)
+		}
+	}
+
+	// A "." component names the same folder, so it is only skipped.
+	if output, err := runRemoteAlphaOutputDir(t, base+"/./private/."); err != nil {
+		t.Fatalf("check refused a path with '.' components: %v\n%s", err, output)
+	}
+	if info, err := os.Lstat(filepath.Join(base, "private")); err != nil || !info.IsDir() {
+		t.Fatalf("base/private should be a new folder: %v", err)
+	}
+}
+
+// TestRemoteAlphaOutputDirChecksFoldersItCannotRead shows that the check reads
+// a folder's owner and mode without read permission on it, the case of a
+// folder that root keeps private when the SSH user checks it before sudo
+// hands it over (Codex review of PR #50). As root, permissions never block,
+// so only an unprivileged run tells the two apart.
+func TestRemoteAlphaOutputDirChecksFoldersItCannotRead(t *testing.T) {
+	base := remoteAlphaOutputDirTempDir(t)
+
+	private := filepath.Join(base, "private")
+	if err := os.Mkdir(private, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.Chmod(private, 0o000); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(private, 0o755) })
+	if output, err := runRemoteAlphaOutputDir(t, private); err != nil {
+		t.Fatalf("check refused a folder it may not read: %v\n%s", err, output)
+	}
+	if info, err := os.Lstat(private); err != nil || info.Mode().Perm() != 0 {
+		t.Fatalf("the check changed the private folder: %v %v", info, err)
+	}
+
+	// A parent it may search and write but not read still takes a new folder.
+	searchOnly := filepath.Join(base, "search-only")
+	if err := os.Mkdir(searchOnly, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.Chmod(searchOnly, 0o300); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(searchOnly, 0o755) })
+	if output, err := runRemoteAlphaOutputDir(t, filepath.Join(searchOnly, "below")); err != nil {
+		t.Fatalf("check refused to create a folder below a parent it may not read: %v\n%s", err, output)
+	}
+	if info, err := os.Lstat(filepath.Join(searchOnly, "below")); err != nil || !info.IsDir() {
+		t.Fatalf("search-only/below should be a new folder: %v", err)
+	}
+}
+
 // remoteAlphaOutputDirPrivileged runs a command as root, through sudo -n when
 // the test does not run as root, and skips the test when it can do neither.
 func remoteAlphaOutputDirPrivileged(t *testing.T, args ...string) {
@@ -379,6 +462,23 @@ func TestRemoteAlphaOutputDirRefusesFolderOwnedByAnotherAccount(t *testing.T) {
 	requireEmptyDir(t, rootOpen)
 }
 
+// runRemoteAlphaRuntimeIdentitySummary runs the runtime identity summary, a
+// root helper of the host, with its output at outputPath and every other path
+// below base.
+func runRemoteAlphaRuntimeIdentitySummary(t *testing.T, base, outputPath string) (string, error) {
+	t.Helper()
+	cmd := exec.Command("/bin/bash", repoPath("scripts/remote_alpha_runtime_identity_helper_summary.sh"),
+		"--output", outputPath,
+		"--runtime-support-path", filepath.Join(base, "missing-runtime-support"),
+		"--spire-agent-socket-path", filepath.Join(base, "agent.sock"),
+		"--spire-server-socket-path", filepath.Join(base, "server.sock"),
+	)
+	cmd.Dir = executionSubstrateRepoRoot
+	cmd.Env = remoteAlphaOutputDirEnv()
+	output, err := cmd.CombinedOutput()
+	return string(output), err
+}
+
 // TestRemoteAlphaRootHelperRefusesPlantedArtifactFolder runs a root helper of
 // the host, the runtime identity summary, with its output in an artifact
 // folder that another account planted, and shows it stops before it writes.
@@ -394,16 +494,7 @@ func TestRemoteAlphaRootHelperRefusesPlantedArtifactFolder(t *testing.T) {
 	}
 
 	run := func(outputPath string) (string, error) {
-		cmd := exec.Command("/bin/bash", repoPath("scripts/remote_alpha_runtime_identity_helper_summary.sh"),
-			"--output", outputPath,
-			"--runtime-support-path", filepath.Join(base, "missing-runtime-support"),
-			"--spire-agent-socket-path", filepath.Join(base, "agent.sock"),
-			"--spire-server-socket-path", filepath.Join(base, "server.sock"),
-		)
-		cmd.Dir = executionSubstrateRepoRoot
-		cmd.Env = remoteAlphaOutputDirEnv()
-		output, err := cmd.CombinedOutput()
-		return string(output), err
+		return runRemoteAlphaRuntimeIdentitySummary(t, base, outputPath)
 	}
 
 	output, err := run(filepath.Join(planted, "runtime-identity-helper-summary.json"))
@@ -504,4 +595,46 @@ func TestRemoteAlphaOperatorPrepareSummaryPathRefusesPlantedArtifactFolder(t *te
 		t.Fatalf("victim folder mode changed to %v", info.Mode().Perm())
 	}
 	requireEmptyDir(t, victim)
+}
+
+// TestRemoteAlphaOperatorPrepareSummaryPathHandsOverAnUnreadableFolder runs the
+// operator's summary-path preparation against a fake host whose artifact
+// folder the SSH user may not read, standing in for a root-owned 0700 folder
+// that a root helper created. The check must still pass so that sudo can hand
+// the folder to the helper user (Codex review of PR #50).
+func TestRemoteAlphaOperatorPrepareSummaryPathHandsOverAnUnreadableFolder(t *testing.T) {
+	h := setupFakeRemoteAlphaWorkloadAuthBootstrapHarness(t)
+
+	folder := filepath.Join(h.remoteRoot, "var", "tmp", "execution-substrate-remote-alpha")
+	if err := os.MkdirAll(folder, 0o755); err != nil {
+		t.Fatalf("mkdir artifact folder: %v", err)
+	}
+	if err := os.Chmod(folder, 0o000); err != nil {
+		t.Fatalf("chmod artifact folder: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(folder, 0o755) })
+
+	output, err := runRemoteAlphaOperatorWithPTY(t, h.env(),
+		"recovery-session", "vault-workload-auth-bootstrap",
+		"--ssh-target", "ds@m75q-test",
+		"--prepare-summary-path",
+		"--interactive-tty",
+	)
+	if err != nil {
+		t.Fatalf("summary-path preparation refused a folder it may not read: %v\n%s", err, output)
+	}
+	assertContainsAll(t, "summary-path preparation output", output, "summary_path_prepare_status=pass")
+	assertContainsNone(t, "summary-path preparation output", output, "summary_parent_unsafe")
+	if os.Geteuid() == 0 {
+		// Root may write any folder, so the route never needs the hand-over.
+		return
+	}
+	assertContainsAll(t, "sudo log", readIfExists(h.sudoLogPath), "-n chown -h", "execution-substrate-remote-alpha")
+	info, err := os.Stat(folder)
+	if err != nil {
+		t.Fatalf("stat artifact folder: %v", err)
+	}
+	if info.Mode().Perm() != 0o750 {
+		t.Fatalf("artifact folder mode is %v, want 0750 after the hand-over", info.Mode().Perm())
+	}
 }

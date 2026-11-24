@@ -1083,7 +1083,11 @@ missing folders one at a time without following links and refuses a symbolic
 link anywhere on the path, a folder that belongs to an account other than root,
 the user running the step or the user who ran sudo, a folder its group or
 others can write unless root owns it and it is sticky (such as `/var/tmp`
-itself), and an artifact folder its group or others can write. The Mac-side
+itself), an artifact folder its group or others can write, and a path with a
+`..` component (normalizing `link/..` away would check a folder other than the
+one the write reaches). It reads owners and modes without needing read
+permission on a folder, so a root-owned private folder still passes when the
+SSH user checks it before sudo hands it over. The Mac-side
 staging routes run that check through sudo before any other sudo step, so a
 folder they create belongs to root, and they make their `/tmp` upload and
 artifact folders fresh and private (`mkdir -m 0700` without `-p`, which fails

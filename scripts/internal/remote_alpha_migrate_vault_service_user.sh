@@ -25,11 +25,17 @@ import sys
 
 if not sys.argv[1]:
     sys.exit("remote alpha output folder: no folder given")
-parts = [part for part in os.path.abspath(sys.argv[1]).split("/") if part]
+if ".." in sys.argv[1].split("/"):
+    sys.exit(f"remote alpha output folder: {sys.argv[1]} has a '..' component; refusing to check a path that is not canonical")
+# The path is checked as given, never normalized: dropping "link/.." would
+# check another folder than the one a later write through the link reaches.
+parts = [part for part in os.path.join(os.getcwd(), sys.argv[1]).split("/") if part not in ("", ".")]
 trusted = {0, os.geteuid()}
 if os.environ.get("SUDO_UID", "").isdigit():
     trusted.add(int(os.environ["SUDO_UID"]))
-flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+# O_PATH reads a folder's owner and mode without read permission on it, so a
+# folder that root keeps private still passes and sudo can hand it over.
+flags = getattr(os, "O_PATH", os.O_RDONLY) | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 shown = "/"
 fd = os.open("/", flags)
 try:
