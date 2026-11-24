@@ -6448,6 +6448,167 @@ Allowed shareable evidence is limited to bounded metadata such as:
 - explicit redaction and non-persistence flags
 - explicit `not_claimed` readiness fields for surfaces this slice does not prove
 
+## Remote SPIRE Agent Bootstrap Trust And Recovery Helper
+
+Classification: **Bounded slice rule** for one operator-owned host helper. It
+closes INF-14 of the 2026-11-23 infrastructure security audit in its
+short-term form and makes an expired SPIRE agent recoverable. It changes no
+ES, AGS, ARS or EGS contract, no SPIRE registration model and no Vault
+configuration.
+
+Facts it rests on, observed on the Remote Alpha host on 2026-11-23 and
+tested against the same SPIRE 1.14.4 binaries: the agent attests with
+`join_token`, which cannot re-attest, and with `insecure_bootstrap = true`.
+Its own SVID lives `default_x509_svid_ttl` (48h on the host) and renews at
+about half of that while the agent and server run. An agent kept from its
+server for longer than the SVID's remaining life never recovers on its own,
+and `es.service` (`Requires=spire-agent.service`) stays down with it. A fresh
+bootstrap with `insecure_bootstrap` attests to any server holding the
+agent's server address; with `trust_bundle_path` it refuses a server whose
+certificate does not chain to the bundle. With cached agent data, the
+bundle file is not read at all.
+
+Operator interface (run as root on the host):
+
+- `sudo scripts/remote_alpha_spire_agent.sh status`
+- `sudo scripts/remote_alpha_spire_agent.sh pin` and `sudo scripts/remote_alpha_spire_agent.sh pin --apply`
+- `sudo scripts/remote_alpha_spire_agent.sh recover` and `sudo scripts/remote_alpha_spire_agent.sh recover --apply`, optionally with `--evict-old-agent`
+- `--json` prints the report as JSON with schema `execution-substrate.remote-alpha.spire-agent.v1`
+
+Without `--apply`, `pin` and `recover` run every check and print their plan,
+and change nothing. The wrapper runs the Python core with `python3 -I -B`.
+Every path, account, unit and command the helper uses is fixed in its
+`Layout`; it reads no environment variable and accepts no path option. Exit
+status: 0 for success, a plan, or a status with nothing to act on; 1 for a
+refusal, a failure or a status that needs attention; 2 for a usage error or
+a caller that is not root.
+
+`status` is read-only. It reports the states of `spire-server.service`,
+`spire-agent.service` and `es.service`; the admin socket
+`/run/spire/server/private/api.sock` (`spire:spire 0600`); the agent's own
+SVID read from `/var/lib/spire/agent/agent-data.json` (expiry and hours left;
+under 12h is attention, expired is a failure); the server's record of that
+agent and the count of other agent records; whether `agent.conf` uses
+`insecure_bootstrap` or `trust_bundle_path` (a `trust_bundle_path` file
+counts as pinned only when `spire-agent validate` accepts it both plain and
+with `-trustBundle /etc/spire/agent/bootstrap-bundle.pem`, so SPIRE's own
+parser confirms that it reads a trust bundle and no `insecure_bootstrap`);
+whether
+`/etc/spire/agent/bootstrap-bundle.pem` matches the server's current bundle;
+whether every SPIRE runtime directory (`/run/spire`, `/run/spire/server`,
+`/run/spire/server/private`, `/run/spire/sockets`) is recreated at boot by a
+tmpfiles.d rule (as `systemd-tmpfiles --cat-config` merges them) or by a
+unit's `RuntimeDirectory=`; and `spire-agent healthcheck`.
+
+`pin --apply` requires an active server, an active and healthy agent with a
+valid SVID and an unbanned server record. In this order it:
+
+1. Reads the server bundle as `spire` over the admin socket, which a process
+   that only holds TCP 127.0.0.1:8081 cannot answer. The socket must be
+   `spire:spire 0600`, and every directory from its own up to `/run` must be
+   writable only by root or `spire` (group-writable only for a `spire` group
+   with no other member, listed or by primary group). Every certificate must
+   be a CA certificate whose only URI SAN is the trust domain, at least one
+   must be unexpired, and nothing but CERTIFICATE blocks may appear. It
+   writes the bundle atomically to `/etc/spire/agent/bootstrap-bundle.pem`,
+   `root:root 0644`, unless the file already holds exactly those
+   certificates.
+2. If some runtime directory has no boot-time rule, writes
+   `/etc/tmpfiles.d/spire.conf` with one `d` line per missing directory,
+   copying its current owner and mode, after the host's own
+   `systemd-tmpfiles --create` applied the candidate as expected under an
+   empty alternate root. It refuses when that file exists but does not cover
+   the directories.
+3. If `agent.conf` has exactly one `insecure_bootstrap = true` line in its
+   single `agent {` block and no trust bundle key, replaces that one line
+   with `trust_bundle_path = "/etc/spire/agent/bootstrap-bundle.pem"` and
+   keeps the original bytes, owner and mode in
+   `agent.conf.bak-<UTC timestamp>`. It runs `spire-agent validate` as
+   `spire`, plain and with `-trustBundle
+   /etc/spire/agent/bootstrap-bundle.pem -trustBundleFormat pem` (which SPIRE
+   refuses while its own reading still has `insecure_bootstrap`), and
+   restores the original when either refuses or a stop signal arrives. Any
+   other bootstrap shape (a second key, a key in another letter case, a
+   quoted key anywhere, a non-ASCII character, a heredoc, a comment naming a
+   key, a block comment, `trust_bundle_url`, another bundle path) is refused
+   for a hand edit, and a file the scan calls pinned is refused when SPIRE's
+   check above does not confirm it.
+4. Only when it edited `agent.conf`, restarts `spire-agent.service`, which
+   restarts `es.service` through `Requires=`. It then requires within fixed
+   timeouts: a healthy agent, the same agent ID as before (no
+   re-attestation), a live server record for it, a workload SVID for
+   `spiffe://execution.internal/workload` served to root, and `es.service`
+   active again. On a failure it restores the original `agent.conf`,
+   restarts again and reports a failure.
+
+A second `pin --apply` changes nothing. `pin` never needs a join token.
+
+`recover --apply` runs only when the server is active and the agent's own
+SVID has expired or the agent never attested; it refuses a valid SVID, an
+unreadable agent state, a server record that is still live for an expired
+local SVID, and a server with no registration entry under
+`spiffe://execution.internal/spire-agent`. It first runs the same three
+pinning steps, so it never bootstraps with `insecure_bootstrap`, and always
+with a bundle just read over the admin socket. Then it stops
+`spire-agent.service` (`es.service` stops with it), moves
+`/var/lib/spire/agent` aside to `/var/lib/spire/agent.recover-<UTC timestamp>`
+(kept, never deleted) and creates an empty one with the same owner and mode.
+It generates one join token for `spiffe://execution.internal/spire-agent`
+with a 120 s lifetime over the admin socket as `spire`. The token stays in
+the helper's memory and in a `0600` file owned by `spire` inside a private
+`0700` directory under `/run` (tmpfs); it is never printed, logged by the
+helper, put in an environment or on any command line. The helper runs
+`spire-agent run -config /etc/spire/agent/agent.conf -trustBundle /etc/spire/agent/bootstrap-bundle.pem -trustBundleFormat pem -joinTokenFile <file>`
+as `spire` until the new agent's SVID appears (with `-trustBundle`, SPIRE
+itself refuses to start if it still reads `insecure_bootstrap` in
+`agent.conf`, whatever the helper's own scan concluded), deletes the token file at
+once, checks the server lists the new agent, stops that process and removes
+the private directory. It then starts `spire-agent.service` and
+`es.service` and requires the same health, identity, server record,
+workload SVID and unit checks as `pin`. If the attestation fails, it moves
+the new data directory aside to `/var/lib/spire/agent.failed-<UTC timestamp>`,
+puts the old one back and leaves both units stopped. An OS error or a stop
+signal (`SIGINT`, `SIGHUP` from an SSH drop, `SIGTERM`) during the swap or
+the attestation ends the same way: the attesting process is stopped, the
+token file and its directory are removed, the old data directory is put
+back, and the report is printed.
+Cleanup and rollback hold further stop signals until they finish. After a
+successful attestation, a failed start or verification is reported and not
+rolled back, because the old identity has expired.
+
+A join token is single use, and SPIRE names an agent after its token
+(`spiffe://execution.internal/spire/agent/join_token/<token>`), so SPIRE's
+own logs show the token once it is spent. The helper prints agent IDs with
+that part redacted, plus a `sha256:` fingerprint for comparison.
+
+`recover` leaves the expired agent record and its alias entry in place.
+`--evict-old-agent` evicts exactly the agent record that this run replaced
+and deletes the alias entries whose parent is that agent; both are
+deletions on the SPIRE server, so a host run uses the flag only with the
+owner's go. The evict command names the old agent ID, which contains the
+old, already spent join token; the new token never appears on a command
+line.
+
+Operator rule: If the box or `spire-server.service` has been off for more
+than a day, run `sudo scripts/remote_alpha_spire_agent.sh status` before
+expecting ES to work, and `sudo scripts/remote_alpha_spire_agent.sh recover --apply`
+when it reports an expired agent SVID. `recover` is never automatic.
+
+Evidence: the repository tests drive the helper against real SPIRE 1.14.4
+binaries (the pinned release in `scripts/internal/spire_release.sha256`)
+with the host's server, agent and registration shape and short SVID
+lifetimes. They include a fresh bootstrap with the pinned `agent.conf`
+refusing an impostor server on the real server's port, while the same
+bootstrap with the original `agent.conf` attests to it. systemd and
+`setpriv` are replaced by test fakes there, so `Requires=` propagation,
+privilege dropping and boot-time directory creation are proved only by a
+run on the host.
+
+Not covered (long-term work owned elsewhere): a node attestor that can
+re-attest so that expiry heals itself, expiry alerting from the Maintenance
+Agent, issuing the services' certificates from SPIRE, and reproducing the
+host's SPIRE configuration from a repository.
+
 ## Non-Goals
 
 Remote Alpha 0.3 does not add:
