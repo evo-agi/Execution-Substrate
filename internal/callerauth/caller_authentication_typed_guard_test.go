@@ -1,4 +1,4 @@
-package executionsubstrate_test
+package callerauth_test
 
 import (
 	"bytes"
@@ -22,6 +22,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"execution-substrate/internal/testutil"
 )
 
 // The typed half of the guard that keeps caller identity reading inside
@@ -187,7 +189,7 @@ func callerIdentityTypedViolations(t *testing.T, target callerIdentityBuildTarge
 	}
 	args = append(args, "./...")
 	command := exec.Command(filepath.Join(runtime.GOROOT(), "bin", "go"), args...)
-	command.Dir = executionSubstrateRepoRoot
+	command.Dir = testutil.Root
 	command.Env = callerIdentityGoListEnvironment(target)
 	var stdout, stderr bytes.Buffer
 	command.Stdout = &stdout
@@ -268,7 +270,7 @@ func callerIdentityTypedViolations(t *testing.T, target callerIdentityBuildTarge
 		// Unadjusted, so a //line directive cannot move a finding to another file.
 		at := func(pos token.Pos, rule string) {
 			position := fset.PositionFor(pos, false)
-			rel, err := filepath.Rel(executionSubstrateRepoRoot, position.Filename)
+			rel, err := filepath.Rel(testutil.Root, position.Filename)
 			if err != nil {
 				rel = position.Filename
 			}
@@ -476,7 +478,7 @@ func zzPlatformIssuer(q zzPlatformRequest) string {
 		if err := os.WriteFile(source, []byte(content), 0o600); err != nil {
 			t.Fatalf("write probe %s: %v", rel, err)
 		}
-		replace[filepath.Join(executionSubstrateRepoRoot, filepath.FromSlash(rel))] = source
+		replace[filepath.Join(testutil.Root, filepath.FromSlash(rel))] = source
 	}
 	overlay, err := json.Marshal(map[string]any{"Replace": replace})
 	if err != nil {
@@ -566,7 +568,7 @@ func TestCallerIdentityTypedGuardCoversTheScriptsBuildTargets(t *testing.T) {
 	goarch := regexp.MustCompile(`GOARCH=([a-z0-9]+)`)
 	foundOS := map[string]string{}
 	foundArch := map[string]string{}
-	root := filepath.Join(executionSubstrateRepoRoot, "scripts")
+	root := filepath.Join(testutil.Root, "scripts")
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil || entry.IsDir() {
 			return err
@@ -575,7 +577,7 @@ func TestCallerIdentityTypedGuardCoversTheScriptsBuildTargets(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		rel, _ := filepath.Rel(executionSubstrateRepoRoot, path)
+		rel, _ := filepath.Rel(testutil.Root, path)
 		for _, match := range goos.FindAllSubmatch(raw, -1) {
 			foundOS[string(match[1])] = rel
 		}

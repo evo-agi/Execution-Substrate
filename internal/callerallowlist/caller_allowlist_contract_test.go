@@ -1,4 +1,4 @@
-package executionsubstrate_test
+package callerallowlist_test
 
 import (
 	"encoding/json"
@@ -12,6 +12,7 @@ import (
 	arsconfig "execution-substrate/ars/config"
 	esconfig "execution-substrate/es/config"
 	"execution-substrate/internal/callerallowlist"
+	"execution-substrate/internal/testutil"
 )
 
 // callerAllowlistExampleWithPrefixes writes the repo's example configuration
@@ -19,7 +20,7 @@ import (
 // file's path.
 func callerAllowlistExampleWithPrefixes(t *testing.T, example string, prefixes []string) string {
 	t.Helper()
-	raw, err := os.ReadFile(filepath.Join(executionSubstrateRepoRoot, ".examples", "config", example))
+	raw, err := os.ReadFile(filepath.Join(testutil.Root, ".examples", "config", example))
 	if err != nil {
 		t.Fatalf("read example %s: %v", example, err)
 	}
