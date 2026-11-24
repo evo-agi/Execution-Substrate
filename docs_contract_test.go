@@ -14375,7 +14375,14 @@ func operationalV2AssuranceOwnerRule(owner string) bool {
 		strings.Contains(owner, "HEAD ceiling for PR #12 plus its repairs was 53 files") &&
 		strings.Contains(owner, "HEAD ceiling for PR #12 plus its repairs was 56 files") &&
 		strings.Contains(owner, "HEAD ceiling for PR #12 plus its repairs was 66 files") &&
-		strings.Contains(owner, "HEAD ceiling for PR #12 plus its repairs is 69 files") &&
+		strings.Contains(owner, "HEAD ceiling for PR #12 plus its repairs was 69 files") &&
+		strings.Contains(owner, "HEAD ceiling for PR #12 plus its repairs is 70 files") &&
+		strings.Contains(owner, "`trunk_dev` after its\nPRs #43, #42, #34 and #31, are a further owner reconciliation at this gate.") &&
+		strings.Contains(owner, "It adds exactly one more path, a test file:\nA/nomad_request_guard_test.go, PR #31's token guard, which now covers the\nprovider and reads unadjusted positions.") &&
+		strings.Contains(owner, "A/reliable_submit_operational_handoff.go, A/service.go and their tests,\nwhich are already counted.") &&
+		strings.Contains(owner, "gains the prerequisite `CP-NOMAD-ACL`.") &&
+		strings.Contains(owner, "carries ES's Nomad\nACL client token in one `X-Nomad-Token` header and never in the URL.") &&
+		strings.Contains(owner, "the provider cannot be built without a token in\nNomad's canonical SecretID form.") &&
 		strings.Contains(owner, "`trunk_dev` after its PRs #33, #41, #37 and #39, are a further owner\nreconciliation at this gate.") &&
 		strings.Contains(owner, "remote_alpha_es_service_tls_status_local_boundary_test.go, which keeps its\ncount there.") &&
 		strings.Contains(owner, "It adds exactly three more paths, the module file and two test files:\ngo.mod, which makes `golang.org/x/text` a direct requirement at the version\nalready selected, A/nomad_request_strings_redteam31_finding_test.go\n(new), the re-check's tests, and internal/testutil/testutil_test.go, whose\nthree position reads now ignore line directives.") &&
@@ -14563,7 +14570,14 @@ func TestOperationalSubmitHandoffCurrentAdmissionV2Contract(t *testing.T) {
 		"HEAD ceiling for PR #12 plus its repairs was 53 files",
 		"HEAD ceiling for PR #12 plus its repairs was 56 files",
 		"HEAD ceiling for PR #12 plus its repairs was 66 files",
-		"HEAD ceiling for PR #12 plus its repairs is 69 files",
+		"HEAD ceiling for PR #12 plus its repairs was 69 files",
+		"HEAD ceiling for PR #12 plus its repairs is 70 files",
+		"`trunk_dev` after its\nPRs #43, #42, #34 and #31, are a further owner reconciliation at this gate.",
+		"It adds exactly one more path, a test file:\nA/nomad_request_guard_test.go, PR #31's token guard, which now covers the\nprovider and reads unadjusted positions.",
+		"A/reliable_submit_operational_handoff.go, A/service.go and their tests,\nwhich are already counted.",
+		"gains the prerequisite `CP-NOMAD-ACL`.",
+		"carries ES's Nomad\nACL client token in one `X-Nomad-Token` header and never in the URL.",
+		"the provider cannot be built without a token in\nNomad's canonical SecretID form.",
 		"`trunk_dev` after its PRs #33, #41, #37 and #39, are a further owner\nreconciliation at this gate.",
 		"remote_alpha_es_service_tls_status_local_boundary_test.go, which keeps its\ncount there.",
 		"It adds exactly three more paths, the module file and two test files:\ngo.mod, which makes `golang.org/x/text` a direct requirement at the version\nalready selected, A/nomad_request_strings_redteam31_finding_test.go\n(new), the re-check's tests, and internal/testutil/testutil_test.go, whose\nthree position reads now ignore line directives.",
@@ -14597,7 +14611,12 @@ func TestOperationalSubmitHandoffCurrentAdmissionV2Contract(t *testing.T) {
 		"PR #12 durable admission: repairs after the third red-team and the guard coverage review",
 		"the refusal, and seven test files are new, so the path ceiling of PR #12\nplus its repairs became 66 files",
 		"PR #12 durable admission: repairs after the red-team re-check",
-		"more paths, so the path ceiling of PR #12 plus its repairs is 69 files.",
+		"more paths, so the path ceiling of PR #12 plus its repairs became 69 files.",
+		"PR #12 durable admission: Nomad's token on the private path, after PR #31",
+		"sets it in the `X-Nomad-Token` header of every request,\nnever in the URL.",
+		"The gate gains a seventh prerequisite,\n`CP-NOMAD-ACL`",
+		"That\ntest file is one more path, so the path ceiling of PR #12 plus its repairs\nis 70 files.",
+		"This entry changes no public behaviour, request contract or stored format.",
 		"Taking up `trunk_dev` after its PRs #33, #41,\n#37 and #39 moves one counted test file to `scripts/`",
 		"which PR #12's position-read test refuses; they now read the real\nposition.",
 		"The re-check's\ntests are adopted unchanged",
@@ -14642,7 +14661,7 @@ func TestOperationalSubmitHandoffCurrentAdmissionV2Contract(t *testing.T) {
 		"so those two have no re-read",
 		"amend the\nunmerged migration 5 (decision D-1)", "with a 30 second limit (D-2)",
 		"delete `operational_local_v1` (D-3)", "no **Temporary compatibility\nedge** remains on this path",
-		"`CP-ROLLBACK`, `CP-EPOCH`, `CP-POLICY-CUSTODY`, `CP-NATIVE`, `CP-RELEASE`,\n`CP-PUBLIC-MAPPING`")
+		"`CP-ROLLBACK`, `CP-EPOCH`, `CP-POLICY-CUSTODY`, `CP-NATIVE`, `CP-RELEASE`,\n`CP-NOMAD-ACL`, `CP-PUBLIC-MAPPING`")
 	assertContainsAll(t, "separate evidence and policy ownership", admission,
 		"separately on `resolvedExecution`", "private SQLite writer accepts only an exact inspected",
 		"one durable admission row", "does not change the epoch", "no compatibility edge is retained on this",
@@ -14701,7 +14720,7 @@ func TestOperationalSubmitHandoffCurrentAdmissionV2Contract(t *testing.T) {
 		}
 	}
 
-	wantIDs := []string{"CP-ROLLBACK", "CP-EPOCH", "CP-POLICY-CUSTODY", "CP-NATIVE", "CP-RELEASE", "CP-PUBLIC-MAPPING"}
+	wantIDs := []string{"CP-ROLLBACK", "CP-EPOCH", "CP-POLICY-CUSTODY", "CP-NATIVE", "CP-RELEASE", "CP-NOMAD-ACL", "CP-PUBLIC-MAPPING"}
 	docIDs := operationalCommissioningPrerequisiteIDs(owner)
 	gateIDs := operationalCommissioningGateIDs(mustRead(t, "es/admission/reliable_submit_guardrails_test.go"))
 	if !slices.Equal(docIDs, wantIDs) || !slices.Equal(gateIDs, wantIDs) {
@@ -14863,7 +14882,13 @@ func TestOperationalSubmitHandoffCurrentAdmissionV2RejectsUnsafeMutants(t *testi
 		{"MissingSixthAuditCeiling", "HEAD ceiling for PR #12 plus its repairs was 53 files"},
 		{"MissingTrunkDevCeiling", "HEAD ceiling for PR #12 plus its repairs was 56 files"},
 		{"MissingThirdRedTeamCeiling", "HEAD ceiling for PR #12 plus its repairs was 66 files"},
-		{"MissingRedTeamRecheckCeiling", "HEAD ceiling for PR #12 plus its repairs is 69 files"},
+		{"MissingRedTeamRecheckCeiling", "HEAD ceiling for PR #12 plus its repairs was 69 files"},
+		{"MissingNomadTokenCeiling", "HEAD ceiling for PR #12 plus its repairs is 70 files"},
+		{"MissingNomadTokenTrunkDevPRs", "`trunk_dev` after its\nPRs #43, #42, #34 and #31, are a further owner reconciliation at this gate."},
+		{"MissingNomadTokenGuardPath", "It adds exactly one more path, a test file:\nA/nomad_request_guard_test.go, PR #31's token guard, which now covers the\nprovider and reads unadjusted positions."},
+		{"MissingNomadTokenCountedPaths", "A/reliable_submit_operational_handoff.go, A/service.go and their tests,\nwhich are already counted."},
+		{"MissingNomadTokenHeader", "carries ES's Nomad\nACL client token in one `X-Nomad-Token` header and never in the URL."},
+		{"MissingNomadTokenRequired", "the provider cannot be built without a token in\nNomad's canonical SecretID form."},
 		{"MissingRedTeamRecheckTrunkDevPRs", "`trunk_dev` after its PRs #33, #41, #37 and #39, are a further owner\nreconciliation at this gate."},
 		{"MissingRedTeamRecheckMovedPath", "remote_alpha_es_service_tls_status_local_boundary_test.go, which keeps its\ncount there."},
 		{"MissingRedTeamRecheckPaths", "It adds exactly three more paths, the module file and two test files:\ngo.mod, which makes `golang.org/x/text` a direct requirement at the version\nalready selected, A/nomad_request_strings_redteam31_finding_test.go\n(new), the re-check's tests, and internal/testutil/testutil_test.go, whose\nthree position reads now ignore line directives."},
@@ -14990,7 +15015,11 @@ func TestOperationalSubmitHandoffCurrentAdmissionV2RejectsUnsafeMutants(t *testi
 		{"CeilingNotRaisedForSixthAudit", "HEAD ceiling for PR #12 plus its repairs was 53 files", "HEAD ceiling for PR #12 plus its repairs was 52 files"},
 		{"CeilingNotRaisedForTrunkDev", "HEAD ceiling for PR #12 plus its repairs was 56 files", "HEAD ceiling for PR #12 plus its repairs was 55 files"},
 		{"CeilingNotRaisedForThirdRedTeam", "HEAD ceiling for PR #12 plus its repairs was 66 files", "HEAD ceiling for PR #12 plus its repairs was 56 files"},
-		{"CeilingNotRaisedForRedTeamRecheck", "HEAD ceiling for PR #12 plus its repairs is 69 files", "HEAD ceiling for PR #12 plus its repairs is 66 files"},
+		{"CeilingNotRaisedForRedTeamRecheck", "HEAD ceiling for PR #12 plus its repairs was 69 files", "HEAD ceiling for PR #12 plus its repairs was 66 files"},
+		{"CeilingNotRaisedForNomadToken", "HEAD ceiling for PR #12 plus its repairs is 70 files", "HEAD ceiling for PR #12 plus its repairs is 69 files"},
+		{"NomadTokenGuardPathUnnamed", "It adds exactly one more path, a test file:\nA/nomad_request_guard_test.go,", "It adds no path:\nnone,"},
+		{"NomadTokenInURL", "in one `X-Nomad-Token` header and never in the URL.", "in the URL query."},
+		{"NomadTokenOptional", "the provider cannot be built without a token in\nNomad's canonical SecretID form.", "the provider may be built without a token."},
 		{"RedTeamRecheckModulePathUnnamed", "It adds exactly three more paths, the module file and two test files:\ngo.mod, which makes `golang.org/x/text` a direct requirement at the version\nalready selected", "It adds exactly one more path, a test file:\nnone"},
 		{"RedTeamRecheckTestPathUnnamed", "A/nomad_request_strings_redteam31_finding_test.go\n(new), the re-check's tests,", "and the re-check's tests,"},
 		{"RedTeamRecheckTestutilPathUnnamed", "and internal/testutil/testutil_test.go, whose\nthree position reads now ignore line directives.", "and no other file."},
@@ -15048,7 +15077,7 @@ func TestOperationalSubmitHandoffCurrentAdmissionV2RejectsUnsafeMutants(t *testi
 			t.Fatalf("prerequisite row anchor count %d", strings.Count(owner, row))
 		}
 		ids := operationalCommissioningPrerequisiteIDs(strings.Replace(owner, row, "| CP-EPOCH (answered) |", 1))
-		if slices.Contains(ids, "CP-EPOCH") || len(ids) != 5 {
+		if slices.Contains(ids, "CP-EPOCH") || len(ids) != 6 {
 			t.Fatalf("a removed prerequisite was still read: %q", ids)
 		}
 	})
@@ -15058,7 +15087,7 @@ func TestOperationalSubmitHandoffCurrentAdmissionV2RejectsUnsafeMutants(t *testi
 			t.Fatalf("prerequisite row anchor count %d", strings.Count(owner, row))
 		}
 		ids := operationalCommissioningPrerequisiteIDs(strings.Replace(owner, row, "| CP-PUBLIC-MAPPING (later) |", 1))
-		if slices.Contains(ids, "CP-PUBLIC-MAPPING") || len(ids) != 5 {
+		if slices.Contains(ids, "CP-PUBLIC-MAPPING") || len(ids) != 6 {
 			t.Fatalf("a removed prerequisite was still read: %q", ids)
 		}
 	})
@@ -15069,7 +15098,28 @@ func TestOperationalSubmitHandoffCurrentAdmissionV2RejectsUnsafeMutants(t *testi
 			t.Fatalf("gate anchor count %d", strings.Count(gate, entry))
 		}
 		ids := operationalCommissioningGateIDs(strings.Replace(gate, entry, "", 1))
-		if slices.Contains(ids, "CP-PUBLIC-MAPPING") || len(ids) != 5 {
+		if slices.Contains(ids, "CP-PUBLIC-MAPPING") || len(ids) != 6 {
+			t.Fatalf("a removed gate prerequisite was still read: %q", ids)
+		}
+	})
+	t.Run("NomadACLRemovedFromOwner", func(t *testing.T) {
+		const row = "| `CP-NOMAD-ACL` |"
+		if strings.Count(owner, row) != 1 {
+			t.Fatalf("prerequisite row anchor count %d", strings.Count(owner, row))
+		}
+		ids := operationalCommissioningPrerequisiteIDs(strings.Replace(owner, row, "| CP-NOMAD-ACL (done by PR #31) |", 1))
+		if slices.Contains(ids, "CP-NOMAD-ACL") || len(ids) != 6 {
+			t.Fatalf("a removed prerequisite was still read: %q", ids)
+		}
+	})
+	t.Run("NomadACLRemovedFromGate", func(t *testing.T) {
+		gate := mustRead(t, "es/admission/reliable_submit_guardrails_test.go")
+		const entry = " \"CP-NOMAD-ACL\","
+		if strings.Count(gate, entry) != 1 {
+			t.Fatalf("gate anchor count %d", strings.Count(gate, entry))
+		}
+		ids := operationalCommissioningGateIDs(strings.Replace(gate, entry, "", 1))
+		if slices.Contains(ids, "CP-NOMAD-ACL") || len(ids) != 6 {
 			t.Fatalf("a removed gate prerequisite was still read: %q", ids)
 		}
 	})
@@ -15080,7 +15130,7 @@ func TestOperationalSubmitHandoffCurrentAdmissionV2RejectsUnsafeMutants(t *testi
 			t.Fatalf("gate anchor count %d", strings.Count(gate, entry))
 		}
 		ids := operationalCommissioningGateIDs(strings.Replace(gate, entry, "", 1))
-		if slices.Contains(ids, "CP-ROLLBACK") || len(ids) != 5 {
+		if slices.Contains(ids, "CP-ROLLBACK") || len(ids) != 6 {
 			t.Fatalf("a removed gate prerequisite was still read: %q", ids)
 		}
 	})

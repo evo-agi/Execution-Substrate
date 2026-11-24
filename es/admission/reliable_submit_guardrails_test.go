@@ -1311,7 +1311,7 @@ func assertAdmissionFoundationOmitsAll(t *testing.T, label string, source string
 // operational admission, or enter the private handoff. The documentation
 // contract test requires the same identifiers, in this order, in that table.
 // The list stays on one line.
-var operationalCommissioningPrerequisites = []string{"CP-ROLLBACK", "CP-EPOCH", "CP-POLICY-CUSTODY", "CP-NATIVE", "CP-RELEASE", "CP-PUBLIC-MAPPING"}
+var operationalCommissioningPrerequisites = []string{"CP-ROLLBACK", "CP-EPOCH", "CP-POLICY-CUSTODY", "CP-NATIVE", "CP-RELEASE", "CP-NOMAD-ACL", "CP-PUBLIC-MAPPING"}
 
 // operationalCommissioningEntries are the Service methods that create, replace
 // or stop the admission view. None has a production caller.

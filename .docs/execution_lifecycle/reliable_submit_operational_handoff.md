@@ -1424,6 +1424,15 @@ the only transport entry, regardless of whether bytes reach the receiver.
 Count logical POST deliveries separately from TCP retransmissions. Count
 entry, target receiver ingress and redirect receiver ingress separately.
 
+Every request of the provider, the POST and both GETs, carries ES's Nomad
+ACL client token in one `X-Nomad-Token` header and never in the URL. The
+token comes from the same startup custody as the current submit client's
+(`nomad.token_file`), and the provider cannot be built without a token in
+Nomad's canonical SecretID form. No redirect is followed, so the token
+reaches only the commissioned endpoint. PR #31's token guard holds the
+provider's requests to its one request builder, and a runtime test checks
+the token on each of the three requests.
+
 A usable immediate response is HTTP 200, uncompressed JSON, object with
 EvalID (canonical lower-case nonzero UUID in 8-4-4-4-12 form),
 EvalCreateIndex, JobModifyIndex and Index (all same positive u64). The pinned
@@ -1613,6 +1622,7 @@ list, so the gate and this document cannot drift apart.
 | `CP-POLICY-CUSTODY` | Who may commission, advance and withdraw, and where the installation policy is stored. |
 | `CP-NATIVE` | The native prerequisites of the paragraph above. |
 | `CP-RELEASE` | One qualified release per domain is enforced, or the admission digest covers the release. The digest covers configuration, not the compiled behaviour of the built-in policies. |
+| `CP-NOMAD-ACL` | The provider's Nomad access under access control is settled: ES's token holds `submit-job` and `read-job` in the operational namespace and no other policy may write there, set up and checked by the Nomad ACL tool; registration runs the current submit path's access-control check over the provider's own pinned transport before `POST /v1/jobs`; what a 401 or 403 on registration means for the claim is selected; and the provider's endpoint and pin come from the same ES configuration as the current submit client's Nomad identity. |
 | `CP-PUBLIC-MAPPING` | The public mapping of the handoff's results and reasons is selected: what each private reason tells a caller of the public keyed path. It includes what a first delivery that ordinary resolution refuses tells its caller. The private result answers `OperationalUnavailable` there, whatever the cause, while ordinary Submit names a refusal by the rules (`signer_revoked`, `artifact_revoked`). |
 
 ## 9. Future integrated proof and bounded path map
@@ -1746,7 +1756,19 @@ go.mod, which makes `golang.org/x/text` a direct requirement at the version
 already selected, A/nomad_request_strings_redteam31_finding_test.go
 (new), the re-check's tests, and internal/testutil/testutil_test.go, whose
 three position reads now ignore line directives. With them the
-aggregate HEAD ceiling for PR #12 plus its repairs is 69 files.
+aggregate HEAD ceiling for PR #12 plus its repairs was 69 files.
+
+The repairs after PR #31 locked Nomad, with taking up `trunk_dev` after its
+PRs #43, #42, #34 and #31, are a further owner reconciliation at this gate.
+The operational provider now sends ES's Nomad token on its three requests,
+prepares the registration with its own builder, and the commissioning gate
+gains the prerequisite `CP-NOMAD-ACL`. A driver string must also be valid
+UTF-8. Those changes are in A/reliable_submit_operational_provider.go,
+A/reliable_submit_operational_handoff.go, A/service.go and their tests,
+which are already counted. It adds exactly one more path, a test file:
+A/nomad_request_guard_test.go, PR #31's token guard, which now covers the
+provider and reads unadjusted positions. With it the aggregate
+HEAD ceiling for PR #12 plus its repairs is 70 files.
 Any further file again requires separate owner reconciliation.
 
 The seal-permit guard follows the shared reservation writer

@@ -2,6 +2,33 @@
 
 ## Status
 
+### PR #12 durable admission: Nomad's token on the private path, after PR #31 (2026-11-24)
+
+PR #31 made ES send its Nomad ACL client token on every Nomad request, and
+its guard refuses a Nomad request path outside a builder that sets the
+token. PR #12's reliable-submit operational provider sent its three
+requests to Nomad without one. It now takes ES's token when it is built,
+from the same custody as the current submit client's, cannot be built
+without one, and sets it in the `X-Nomad-Token` header of every request,
+never in the URL. PR #31's guard now covers both Nomad clients, and the fake
+Nomad of the handoff tests refuses any request without the token.
+
+The provider has no production caller, and wiring it still needs the
+commissioning gate's prerequisites. The gate gains a seventh prerequisite,
+`CP-NOMAD-ACL`: grants and exclusive writing for ES's token in the
+operational namespace, the access-control check before registration, what
+a refused registration means for the claim, and one Nomad identity in ES's
+configuration for both clients. Taking up `trunk_dev` after its PRs #43,
+#42, #34 and #31 brings PR #31's guard test, whose three position reads
+PR #12's position-read test refused; they now read the real position. That
+test file is one more path, so the path ceiling of PR #12 plus its repairs
+is 70 files. A driver string that is not valid UTF-8, which no caller can
+send today, is now refused too.
+
+This entry changes no public behaviour, request contract or stored format.
+The precise wording is owned by
+[the operational handoff contract](.docs/execution_lifecycle/reliable_submit_operational_handoff.md).
+
 ### PR #12 durable admission: repairs after the red-team re-check (2026-11-24)
 
 The red-team's re-check of those repairs found two low defects. Nomad's
@@ -28,7 +55,7 @@ version it already selected. Taking up `trunk_dev` after its PRs #33, #41,
 test of `internal/testutil` read an adjusted position in three places,
 which PR #12's position-read test refuses; they now read the real
 position. `go.mod`, the re-check's test file and that test file are three
-more paths, so the path ceiling of PR #12 plus its repairs is 69 files.
+more paths, so the path ceiling of PR #12 plus its repairs became 69 files.
 
 This entry changes behaviour: a request with such an argument or mount
 target, or with less than 10 MB of memory, which ES accepted before, is now
@@ -375,7 +402,7 @@ migration, bind trust or policy replacement to a new epoch, or describe
 withdrawal as local to one Service. Commissioning, advance and withdrawal keep
 zero production callers; a maintained gate names the prerequisites
 (`CP-ROLLBACK`, `CP-EPOCH`, `CP-POLICY-CUSTODY`, `CP-NATIVE`, `CP-RELEASE`,
-`CP-PUBLIC-MAPPING`) that must be answered before one is added. The typed protected-field guard
+`CP-NOMAD-ACL`, `CP-PUBLIC-MAPPING`) that must be answered before one is added. The typed protected-field guard
 now treats conversions as transparent, counts whole-value construction,
 assignment, conversion and declaration of an owning type, and names its
 remaining limits. Public keyed refusal, ordinary unkeyed Submit, what
