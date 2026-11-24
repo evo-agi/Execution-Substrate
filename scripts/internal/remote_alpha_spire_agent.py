@@ -369,6 +369,23 @@ def create_exclusive(path: str, data: bytes, mode: int, uid: int, gid: int) -> N
     fsync_dir(os.path.dirname(path))
 
 
+def take_new_dir(path: str, uid: int, gid: int, mode: int) -> None:
+    """Give a directory this run has just created its final owner and mode.
+    It acts through a descriptor opened without following symlinks, and only
+    on an empty directory that this process still owns with no group or
+    other access, so a symlink or another directory put in its place under
+    the same name is refused, never handed over."""
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        st = os.fstat(fd)
+        if st.st_uid != os.geteuid() or stat.S_IMODE(st.st_mode) & 0o077 or os.listdir(fd):
+            raise Failure(f"{path} is no longer the empty directory this run created; it was left as it is")
+        os.fchown(fd, uid, gid)
+        os.fchmod(fd, mode)
+    finally:
+        os.close(fd)
+
+
 # --------------------------------------------------------------------------
 # Commands
 
@@ -1278,7 +1295,7 @@ def mode_recover(r: Runner, rep: Report, apply: bool, evict_old: bool) -> None:
         rep.planned(f"move {L.agent_data_dir} aside to {backup_dir} (kept, not deleted) and create an empty one with the same owner and mode")
     else:
         rep.planned(f"create {L.agent_data_dir} as {L.spire_user}:{L.spire_group} {L.agent_data_dir_mode:04o}")
-    rep.planned(f"generate a join token for {alias} with a {L.join_token_ttl_seconds} s lifetime, kept in memory and in a 0600 file in a private directory under {L.scratch_parent}, never printed or passed as an argument")
+    rep.planned(f"generate a join token for {alias} with a {L.join_token_ttl_seconds} s lifetime, kept in memory and in a 0600 file of {L.spire_user} inside a directory under {L.scratch_parent} that only this helper can change, never printed or passed as an argument")
     rep.planned(f"attest once as {L.spire_user} with the pinned agent.conf, -trustBundle {L.bundle_path} (so SPIRE itself refuses to start if it still reads insecure_bootstrap) and that token file, delete the token file as soon as the new agent appears, then stop that process")
     rep.planned(f"start {L.agent_unit} and {', '.join(L.dependent_units)}, and check health, the new identity and a workload SVID")
     if evict_old and old_id:
@@ -1308,9 +1325,11 @@ def mode_recover(r: Runner, rep: Report, apply: bool, evict_old: bool) -> None:
         if data_st is not None:
             os.rename(L.agent_data_dir, backup_dir)
             rep.action(f"moved {L.agent_data_dir} to {backup_dir}")
+        # The SPIRE account may be able to write the parent directory, so the
+        # new directory gets its owner and mode through a descriptor, never
+        # by a path that could by then name a symlink.
         os.mkdir(L.agent_data_dir, 0o700)
-        os.chown(L.agent_data_dir, new_uid, new_gid)
-        os.chmod(L.agent_data_dir, new_mode)
+        take_new_dir(L.agent_data_dir, new_uid, new_gid, new_mode)
         rep.action(f"created an empty {L.agent_data_dir}")
         new_id = attest_once(r, rep, old_id, alias, spire_uid, spire_gid)
     except (CommandError, Failure, OSError) as exc:
@@ -1342,10 +1361,13 @@ def attest_once(r: Runner, rep: Report, old_id: str, alias: str, spire_uid: int,
     L = r.L
     scratch = tempfile.mkdtemp(prefix="es-spire-agent-recover.", dir=L.scratch_parent)
     proc = None
-    log_file = None
+    log_fd = -1
     try:
-        os.chown(scratch, spire_uid, spire_gid)
-        os.chmod(scratch, 0o700)
+        # The directory stays this process's own. The SPIRE account may only
+        # pass through it (group search) to read its token file; it cannot
+        # create, rename or replace anything in it, so every path below names
+        # what this process created.
+        take_new_dir(scratch, os.geteuid(), spire_gid, 0o710)
         doc = r.server_json(["token", "generate", "-spiffeID", alias, "-ttl", str(L.join_token_ttl_seconds)])
         token = doc.get("value")
         if not isinstance(token, str) or not re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", token):
@@ -1360,8 +1382,10 @@ def attest_once(r: Runner, rep: Report, old_id: str, alias: str, spire_uid: int,
         finally:
             os.close(fd)
         rep.action(f"generated a join token ({L.join_token_ttl_seconds} s lifetime) into a 0600 file in a private directory")
-        log_path = os.path.join(scratch, "attest.log")
-        log_file = open(log_path, "wb")
+        # The log is created here and read back through the same descriptor,
+        # never reopened by name.
+        log_fd = os.open(os.path.join(scratch, "attest.log"),
+                         os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
         # A stop signal while Popen waits for the exec would leave the agent
         # running with no handle to stop it, so signals are held until proc
         # is set; the agent itself starts with the normal mask.
@@ -1372,7 +1396,7 @@ def attest_once(r: Runner, rep: Report, old_id: str, alias: str, spire_uid: int,
                 r.as_spire([L.spire_agent_bin, "run", "-config", L.agent_config,
                             "-trustBundle", L.bundle_path, "-trustBundleFormat", "pem",
                             "-joinTokenFile", token_path]),
-                stdin=subprocess.DEVNULL, stdout=log_file, stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL, stdout=log_fd, stderr=subprocess.STDOUT,
                 env=r.env(), cwd="/", start_new_session=True,
                 preexec_fn=lambda: signal.pthread_sigmask(signal.SIG_SETMASK, mask),
             )
@@ -1391,10 +1415,8 @@ def attest_once(r: Runner, rep: Report, old_id: str, alias: str, spire_uid: int,
         except FileNotFoundError:
             pass
         if not outcome or outcome == "exited":
-            log_file.flush()
-            with open(log_path, "rb") as fh:
-                # Redact before cutting, so a cut cannot split a token.
-                tail = rep.redact(fh.read(1 << 20).decode("utf-8", "replace"))[-1500:]
+            # Redact before cutting, so a cut cannot split a token.
+            tail = rep.redact(os.pread(log_fd, 1 << 20, 0).decode("utf-8", "replace"))[-1500:]
             why = "the attesting agent exited" if outcome == "exited" else f"no new agent identity within {L.attestation_timeout_seconds} s"
             raise Failure(f"{why}; agent log tail: {tail}")
         new_id = outcome
@@ -1411,8 +1433,8 @@ def attest_once(r: Runner, rep: Report, old_id: str, alias: str, spire_uid: int,
                 except subprocess.TimeoutExpired:
                     proc.kill()
                     proc.wait(timeout=15)
-            if log_file is not None:
-                log_file.close()
+            if log_fd >= 0:
+                os.close(log_fd)
             shutil.rmtree(scratch, ignore_errors=True)
             if os.path.lexists(scratch):
                 rep.action(f"WARNING: could not remove {scratch}; delete it by hand")
