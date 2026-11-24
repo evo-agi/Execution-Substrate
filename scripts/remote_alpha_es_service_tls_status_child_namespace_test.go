@@ -986,7 +986,7 @@ print(json.dumps({"capability":True,"cases":cases,"detail":detail}))
 // The three documents state the same rule, and the collector's source holds
 // the steps that the rule names.
 func TestRemoteAlphaESServiceTLSStatusChildNamespaceDocumentsContract(t *testing.T) {
-	plans := compactDocSection(t, mustRead(t, "PLANS.md"),
+	routeRules := compactDocSection(t, mustRead(t, standingRouteRulesPath),
 		"`Bounded slice rule` fixed-child containment refinement:",
 		"The facade uses one fixed remote Python stage-creation helper.")
 	remote := compactDocSection(t, mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md"),
@@ -995,7 +995,7 @@ func TestRemoteAlphaESServiceTLSStatusChildNamespaceDocumentsContract(t *testing
 	access := compactDocSection(t, mustRead(t, ".docs/system_overview/remote_alpha_access_contract.md"),
 		"Process-group disposition reaches only a process that stays in the fixed",
 		"After bootstrap stage removal and status-lock acquisition")
-	for label, section := range map[string]string{"PLANS": plans, "Remote Alpha": remote, "access contract": access} {
+	for label, section := range map[string]string{"route rules": routeRules, "Remote Alpha": remote, "access contract": access} {
 		assertContainsAll(t, label+" fixed-child containment", section,
 			"`/proc/self/ns/pid_for_children`", "`unshare(CLONE_NEWPID)`", "`setns`",
 			"one fixed internal anchor", "status zero",
@@ -1011,7 +1011,7 @@ func TestRemoteAlphaESServiceTLSStatusChildNamespaceDocumentsContract(t *testing
 			"best effort", "falls back to the process group when", "the fixed child may still run",
 			"holds the invocation until the descendant ends by itself")
 	}
-	for label, section := range map[string]string{"PLANS": plans, "Remote Alpha": remote} {
+	for label, section := range map[string]string{"route rules": routeRules, "Remote Alpha": remote} {
 		assertContainsAll(t, label+" fixed-child containment steps", section,
 			"leaves the group with `setsid` or `setpgid`",
 			"the kernel, not a scan, accounts for its processes",

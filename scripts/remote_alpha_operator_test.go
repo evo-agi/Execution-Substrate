@@ -5063,13 +5063,13 @@ func TestRemoteAlphaOperatorRecoverySessionVaultWorkloadAuthBootstrapSourceKeeps
 }
 
 func TestRemoteAlphaOperatorP0qBootstrapExecutionContractIsImplementedNarrowly(t *testing.T) {
-	plans := compactText(mustRead(t, "PLANS.md"))
+	routeRules := compactText(mustRead(t, standingRouteRulesPath))
 	remoteRaw := mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md")
 	remoteSection := compactDocSection(t, remoteRaw, "### P0q Vault Workload-Auth Bootstrap Execution Route", "### Historical P0d interactive validation evidence — superseded and non-authoritative")
 	source := mustRead(t, remoteAlphaOperatorScriptPath())
 	sourceSection := docSection(t, source, "recovery_session_vault_workload_auth_bootstrap() {", "\nrecovery_session_vault_unseal_existing_require_command() {")
 
-	assertContainsAll(t, "P0q bootstrap execution docs", plans,
+	assertContainsAll(t, "P0q bootstrap execution route rules", routeRules,
 		"The P0q implementation/self-audit/merge-readiness slice may implement exactly one dedicated secret-sensitive workload-auth bootstrap helper, exactly one Mac-side recovery-session execution route, one bounded preparation form for the bootstrap summary path, and one bounded preparation form for fixed workload-zone config readability, and one bounded preparation form for fixed SPIRE server bundle-read access",
 		"`scripts/remote_alpha_operator.sh recovery-session vault-workload-auth-bootstrap --ssh-target <target> --execute-bootstrap --interactive-tty`",
 		"`scripts/remote_alpha_operator.sh recovery-session vault-workload-auth-bootstrap --ssh-target <target> --prepare-summary-path --interactive-tty`",

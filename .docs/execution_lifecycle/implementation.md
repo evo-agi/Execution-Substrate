@@ -105,7 +105,7 @@ cannot prove exact operation ownership. This candidate has no whole-root
 reclamation policy. Selected native Linux and test-owned installed-source
 evidence is accepted under the original Review-22 identities; actual
 running-deployment topology, key exposure and operating capacity/residence
-remain unqualified. `PLANS.md` and the lifecycle contract own the development
+remain unqualified. `.docs/standing_rules/execution_admission_and_custody.md` and the lifecycle contract own the development
 evidence and separate rollout acceptance boundaries.
 
 ## 2. How to read this document

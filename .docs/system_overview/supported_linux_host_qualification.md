@@ -125,7 +125,7 @@ while native Linux remained pending when its source and bounded checks were
 defect-free and Tranche B was independent of those native checks. That former
 sequence does not impose a blanket native pre-commit gate on local source
 preservation or integration. The owning acceptance and local-commit split is in
-`PLANS.md` and `.docs/execution_lifecycle/contracts.md`.
+`.docs/standing_rules/execution_admission_and_custody.md` and `.docs/execution_lifecycle/contracts.md`.
 
 For an actual claimed operating environment and architecture, governed Ubuntu
 24.04 linux/amd64 for Remote Alpha and governed Ubuntu 24.04 linux/arm64 for

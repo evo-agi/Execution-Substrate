@@ -205,6 +205,7 @@ Read these in order:
 
 Supporting references:
 
+- `.docs/standing_rules/` for the standing rules that moved out of `PLANS.md` and keep its authority: [the Workstream C admission and custody rules](.docs/standing_rules/execution_admission_and_custody.md) and [the Remote Alpha operator route rules P0i to P0v](.docs/standing_rules/remote_alpha_operator_routes.md)
 - [.docs/history/plans-record.md](.docs/history/plans-record.md) for the closed dated record that moved out of `PLANS.md` on 2026-11-24 (status entries and selection history); it is historical evidence with no current authority, so read it only when a change touches a surface it names
 - [.docs/system_overview/configuration.md](.docs/system_overview/configuration.md) for current config requirements
 - [.docs/system_overview/observability.md](.docs/system_overview/observability.md) for observability rules
