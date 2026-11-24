@@ -7330,7 +7330,8 @@ its output then goes to the journal, and its summary to the backup folder.
 2. stops ES
 3. checks the locked `nomad.hcl` with `nomad config validate`, stops Nomad,
    gives every entry of `/opt/nomad/data` that root does not own to
-   `root:root` (recording each old owner in the backup), and makes
+   `root:root` (recording each old owner and mode in the backup, because a
+   change of owner clears a setuid or setgid bit), and makes
    `/etc/nomad.d`, `/opt/nomad` (0755) and `/opt/nomad/data` (0700)
    root-owned (audit INF-16). The locked `nomad.hcl` replaces the legacy
    Docker client options with `"driver.allowlist" = "docker"` and adds the
@@ -7369,7 +7370,11 @@ starts Nomad and ES, and requires Nomad to name a leader within 90 seconds,
 because ES's `/health` does not ask Nomad. It records `rolled_back`,
 `rolled_back_unhealthy` when the endpoints do not answer 200 within 60
 seconds, or `rollback_failed`, with the failure. `rollback` does the same
-from a backup folder and exits 1 on any of those failures. Under
+from a backup folder, ignoring `SIGHUP`, and exits 1 on any of those
+failures. Output that can no longer be written never stops either one: a
+terminal that hangs up sends `SIGHUP`, so `apply` rolls back, while a closed
+output pipe alone does not, so `apply` goes on with its output sent to
+`/dev/null`; the summary records `output_lost` either way. Under
 `systemd-run`, give the unit `KillMode=mixed` and a long `TimeoutStopSec`, so
 that stopping the unit signals `apply` alone and leaves it time to roll
 back. Both leave the key, the token files and the backup in
@@ -7382,7 +7387,11 @@ The tests (`scripts/remote_alpha_upgrade_es_test.go`,
 `scripts/remote_alpha_upgrade_es_config_check_test.go`) run `check`,
 `apply`, the automatic rollback, an interrupted apply and `rollback` on a
 host-shaped folder with fake `systemctl`, `curl`, `nomad` and ACL setup,
-and the box's own `nomad.hcl` through the lock.
+with Nomad data that another group owns (a setgid file and a link among it),
+an `apply` whose terminal hangs up and one whose output pipe closes, the
+box's own `nomad.hcl` through the lock, and `build` with a fake Go against
+a dirty checkout and build info that names another commit or a modified
+build.
 
 ## Python In The Scripts
 

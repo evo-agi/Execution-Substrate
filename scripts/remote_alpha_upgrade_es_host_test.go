@@ -428,7 +428,8 @@ func (h *upgradeHost) snapshot() map[string]string {
 		if err != nil {
 			return err
 		}
-		entry := info.Mode().String()
+		st := info.Sys().(*syscall.Stat_t)
+		entry := fmt.Sprintf("%s %d:%d", info.Mode().String(), st.Uid, st.Gid)
 		if info.Mode().IsRegular() {
 			data, err := os.ReadFile(path)
 			if err != nil {
@@ -673,13 +674,74 @@ func TestRemoteAlphaUpgradeESCheckRefusesWhatItWasNotWrittenFor(t *testing.T) {
 	}
 }
 
+// otherGroup is a group the test may give files to that is not the group
+// of the stand-in root (the test user's own): a supplementary group of the
+// test user, or any group when the tests run as root.
+func otherGroup(t *testing.T) int {
+	t.Helper()
+	if os.Geteuid() == 0 {
+		return 1
+	}
+	groups, err := os.Getgroups()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, gid := range groups {
+		if gid != os.Getgid() {
+			return gid
+		}
+	}
+	t.Fatalf("the test user has no supplementary group, so no fake Nomad data can have an owner other than the stand-in root")
+	return 0
+}
+
+// giveNomadDataAnotherOwner makes the fake host's Nomad data look as a
+// package install leaves it: the data folder, a file, a setgid file and a
+// link belong to another group.
+func giveNomadDataAnotherOwner(t *testing.T, h *upgradeHost) {
+	t.Helper()
+	gid := otherGroup(t)
+	h.write("opt/nomad/data/plugins/helper", "#!/bin/sh\n", 0o755)
+	if err := os.Symlink("server", h.path("opt/nomad/data/current")); err != nil {
+		t.Fatal(err)
+	}
+	for _, rel := range []string{"opt/nomad/data", "opt/nomad/data/server/raft/raft.db", "opt/nomad/data/plugins/helper", "opt/nomad/data/current"} {
+		if err := os.Lchown(h.path(rel), -1, gid); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Chmod(h.path("opt/nomad/data/plugins/helper"), 0o755|os.ModeSetgid); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestRemoteAlphaUpgradeESApply(t *testing.T) {
 	helper := buildESConfigCheck(t)
 	h := newUpgradeHost(t, helper)
+	giveNomadDataAnotherOwner(t, h)
 	before := h.snapshot()
+	if !strings.Contains(before["opt/nomad/data/plugins/helper"], "grwxr-xr-x") {
+		t.Fatalf("the fake setgid file is %q", before["opt/nomad/data/plugins/helper"])
+	}
 	stdout, stderr, code := h.apply()
 	if code != 0 {
 		t.Fatalf("apply exited %d\nstdout %s\nstderr %s", code, stdout, stderr)
+	}
+
+	// Every entry of Nomad's data, and the folder, now belongs to the
+	// stand-in root, and the ledger holds each old owner and mode.
+	gid := os.Getgid()
+	if os.Geteuid() == 0 {
+		gid = 0
+	}
+	for _, rel := range []string{"opt/nomad/data", "opt/nomad/data/server/raft/raft.db", "opt/nomad/data/plugins/helper", "opt/nomad/data/current"} {
+		st, err := os.Lstat(h.path(rel))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := int(st.Sys().(*syscall.Stat_t).Gid); got != gid {
+			t.Errorf("%s has group %d after apply, want %d", rel, got, gid)
+		}
 	}
 
 	// ES's own config loader accepts the migrated es.json, which carries the
@@ -730,10 +792,15 @@ func TestRemoteAlphaUpgradeESApply(t *testing.T) {
 	}
 	// Files the upgrade does not own stay as they were.
 	for _, path := range []string{"etc/execution-substrate/ags.json", "etc/execution-substrate/healthcheck.env", "etc/systemd/system/es.service",
-		"etc/systemd/system/es.service.d/10-account.conf", "etc/nomad.d/nomad.hcl.pre-alpha0.7.20260422213553", "opt/nomad/data/server/raft/raft.db"} {
+		"etc/systemd/system/es.service.d/10-account.conf", "etc/nomad.d/nomad.hcl.pre-alpha0.7.20260422213553"} {
 		if after := h.snapshot()[path]; after != before[path] {
 			t.Errorf("%s changed: %q -> %q", path, before[path], after)
 		}
+	}
+	// Nomad's state keeps its bytes; only its owner changed (checked above).
+	contentOf := func(entry string) string { return entry[strings.LastIndex(entry, " ")+1:] }
+	if after := h.snapshot()["opt/nomad/data/server/raft/raft.db"]; contentOf(after) != contentOf(before["opt/nomad/data/server/raft/raft.db"]) {
+		t.Errorf("raft.db content changed: %q -> %q", before["opt/nomad/data/server/raft/raft.db"], after)
 	}
 
 	// The order: ES stops first, Nomad is validated, stopped, locked and
@@ -759,6 +826,20 @@ func TestRemoteAlphaUpgradeESApply(t *testing.T) {
 		if _, err := os.Lstat(filepath.Join(backupDir, name)); err != nil {
 			t.Errorf("backup lacks %s: %v", name, err)
 		}
+	}
+	var ledger struct {
+		Root    string  `json:"root"`
+		Entries [][]any `json:"entries"`
+	}
+	if err := json.Unmarshal([]byte(mustRead(t, filepath.Join(backupDir, "ownership.json"))), &ledger); err != nil {
+		t.Fatal(err)
+	}
+	var ledgerPaths []string
+	for _, entry := range ledger.Entries {
+		ledgerPaths = append(ledgerPaths, fmt.Sprint(entry[0]))
+	}
+	if ledger.Root != "/opt/nomad/data" || strings.Join(ledgerPaths, " ") != "current plugins/helper server/raft/raft.db" {
+		t.Fatalf("ownership ledger %s %v", ledger.Root, ledger.Entries)
 	}
 
 	// A second check sees an applied upgrade and refuses.
@@ -835,6 +916,7 @@ func TestRemoteAlphaUpgradeESApplyRollsBackWhenInterrupted(t *testing.T) {
 	}{
 		{"during the Nomad config validation", "slow-validate", "validating"},
 		{"during the ACL setup", "slow-acl", "acl-running"},
+		{"by two signals in a row", "slow-validate", "validating"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -857,6 +939,11 @@ func TestRemoteAlphaUpgradeESApplyRollsBackWhenInterrupted(t *testing.T) {
 			}
 			if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
 				t.Fatal(err)
+			}
+			if strings.HasPrefix(tc.name, "by two signals") {
+				// A second signal right after the first is ignored and
+				// does not break off the drain or the rollback.
+				_ = cmd.Process.Signal(syscall.SIGINT)
 			}
 			err := cmd.Wait()
 			exitErr, ok := err.(*exec.ExitError)
@@ -948,5 +1035,219 @@ func TestRemoteAlphaUpgradeESBuildRefusals(t *testing.T) {
 	}
 	if _, err := os.Lstat(repoPath("scripts/payload")); err == nil {
 		t.Fatalf("a refused build wrote into the checkout")
+	}
+}
+
+// fakeGo stands in for the Go toolchain in the build tests: it reports
+// FAKE_GOVERSION, writes a small binary per package, and prints build info
+// with FAKE_REVISION and FAKE_MODIFIED.
+const fakeGo = `#!/usr/bin/env bash
+set -eu
+case "$1" in
+  env) [[ "$2" == GOVERSION ]] && echo "$FAKE_GOVERSION" ;;
+  build) out="$4"; printf 'binary of %s\n' "$5" > "$out" ;;
+  version) printf '%s: go1.26.5\n\tbuild\tvcs.revision=%s\n\tbuild\tvcs.modified=%s\n' "$3" "$FAKE_REVISION" "$FAKE_MODIFIED" ;;
+  *) exit 2 ;;
+esac
+`
+
+// buildRepo makes a throwaway git repository holding the upgrade script at
+// its place in the tree, with one commit, and a fake go next to it.
+func buildRepo(t *testing.T) (repo, script, goBin, commit string) {
+	t.Helper()
+	dir := t.TempDir()
+	repo = filepath.Join(dir, "repo")
+	script = filepath.Join(repo, "scripts", "internal", "remote_alpha_upgrade_es.py")
+	if err := os.MkdirAll(filepath.Dir(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	source, err := os.ReadFile(repoPath(upgradeESPython))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(script, source, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	goBin = filepath.Join(dir, "go")
+	if err := os.WriteFile(goBin, []byte(fakeGo), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	git := func(args ...string) string {
+		cmd := exec.Command("git", append([]string{"-C", repo, "-c", "user.name=test", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false"}, args...)...)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	git("init", "-q")
+	git("add", ".")
+	git("commit", "-q", "-m", "fixture")
+	return repo, script, goBin, git("rev-parse", "HEAD")
+}
+
+func TestRemoteAlphaUpgradeESBuildChecksToolchainCheckoutAndBuildInfo(t *testing.T) {
+	cases := []struct {
+		name     string
+		prepare  func(repo string)
+		env      map[string]string
+		commit   func(head string) string
+		says     string
+		succeeds bool
+	}{
+		{name: "a clean build", succeeds: true},
+		{name: "another Go", env: map[string]string{"FAKE_GOVERSION": "go1.26.1"}, says: "the build needs go1.26.5, found go1.26.1"},
+		{name: "the checkout is at another commit", commit: func(string) string { return strings.Repeat("b", 40) }, says: "the checkout is at"},
+		{name: "an untracked file", prepare: func(repo string) {
+			_ = os.WriteFile(filepath.Join(repo, "stray.txt"), []byte("x"), 0o644)
+		}, says: "uncommitted or untracked files"},
+		{name: "a changed tracked file", prepare: func(repo string) {
+			f, _ := os.OpenFile(filepath.Join(repo, "scripts", "internal", "remote_alpha_upgrade_es.py"), os.O_APPEND|os.O_WRONLY, 0)
+			_, _ = f.WriteString("\n# local change\n")
+			_ = f.Close()
+		}, says: "uncommitted or untracked files"},
+		{name: "build info names another commit", env: map[string]string{"FAKE_REVISION": strings.Repeat("c", 40)}, says: "es does not carry the commit as a clean build"},
+		{name: "build info says modified", env: map[string]string{"FAKE_MODIFIED": "true"}, says: "es does not carry the commit as a clean build"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo, script, goBin, head := buildRepo(t)
+			commit := head
+			if tc.commit != nil {
+				commit = tc.commit(head)
+			}
+			env := map[string]string{"FAKE_GOVERSION": "go1.26.5", "FAKE_REVISION": head, "FAKE_MODIFIED": "false"}
+			for k, v := range tc.env {
+				env[k] = v
+			}
+			if tc.prepare != nil {
+				tc.prepare(repo)
+			}
+			out := filepath.Join(t.TempDir(), "payload")
+			cmd := exec.Command("python3", "-I", script, "build", "--out", out, "--commit", commit, "--go", goBin)
+			cmd.Env = os.Environ()
+			for k, v := range env {
+				cmd.Env = append(cmd.Env, k+"="+v)
+			}
+			var stdout, stderr bytes.Buffer
+			cmd.Stdout, cmd.Stderr = &stdout, &stderr
+			err := cmd.Run()
+			if tc.succeeds {
+				if err != nil {
+					t.Fatalf("build: %v\n%s", err, stderr.String())
+				}
+				var prov map[string]any
+				if err := json.Unmarshal([]byte(mustRead(t, filepath.Join(out, "provenance.json"))), &prov); err != nil {
+					t.Fatal(err)
+				}
+				if prov["commit"] != head || prov["go_version"] != "go1.26.5" || prov["vcs_modified"] != false {
+					t.Fatalf("provenance %v", prov)
+				}
+				sums := prov["sha256"].(map[string]any)
+				for name, pkg := range map[string]string{"es": "./cmd/es", "es-runtime-support": "./cmd/es-runtime-support", "esconfigcheck": "./scripts/internal/esconfigcheck"} {
+					if sums[name] != sha256Hex([]byte("binary of "+pkg+"\n")) {
+						t.Errorf("%s sha256 %v", name, sums[name])
+					}
+				}
+				return
+			}
+			exitErr, ok := err.(*exec.ExitError)
+			if !ok || exitErr.ExitCode() != 1 || !strings.Contains(stderr.String(), tc.says) {
+				t.Fatalf("build: %v, stderr %q", err, stderr.String())
+			}
+			if _, err := os.Lstat(filepath.Join(out, "provenance.json")); err == nil {
+				t.Fatalf("a refused build wrote provenance")
+			}
+		})
+	}
+}
+
+// ptyDriver runs a command the way an SSH session does and drops the
+// session once a marker file appears. Mode tty: the command's output is a
+// terminal, and closing it hangs the terminal up (SIGHUP; writes then fail
+// with EIO). Mode pipe: no terminal; the output is a pipe whose reader goes
+// away with no signal (writes fail with EPIPE).
+const ptyDriver = `import json, os, pty, select, sys, time
+marker, mode = sys.argv[1], sys.argv[2]
+argv = sys.argv[sys.argv.index("--") + 1:]
+if mode == "pipe":
+    rfd, wfd = os.pipe()
+    pid = os.fork()
+    if pid == 0:
+        os.setsid()
+        os.close(rfd); os.dup2(wfd, 1); os.dup2(wfd, 2); os.close(wfd)
+        os.execvp(argv[0], argv)
+    os.close(wfd)
+    fd = rfd
+else:
+    pid, fd = pty.fork()
+    if pid == 0:
+        os.execvp(argv[0], argv)
+deadline = time.time() + 30
+while not os.path.exists(marker) and time.time() < deadline:
+    r, _, _ = select.select([fd], [], [], 0.05)
+    if r:
+        try:
+            os.read(fd, 65536)
+        except OSError:
+            break
+reached = os.path.exists(marker)
+os.close(fd)
+_, status = os.waitpid(pid, 0)
+print(json.dumps({"reached": reached, "exit": os.waitstatus_to_exitcode(status)}))
+`
+
+func TestRemoteAlphaUpgradeESApplySurvivesALostSession(t *testing.T) {
+	helper := buildESConfigCheck(t)
+	driver := filepath.Join(t.TempDir(), "session.py")
+	if err := os.WriteFile(driver, []byte(ptyDriver), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		mode, result string
+		exit         int
+	}{
+		// The hangup's SIGHUP ends the forward path, and the rollback runs
+		// although every write to the terminal now fails.
+		{"tty", "rolled_back", 1},
+		// No signal: apply carries on with its output gone, and the summary
+		// records the run.
+		{"pipe", "applied", 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.mode, func(t *testing.T) {
+			h := newUpgradeHost(t, helper)
+			before := h.snapshot()
+			h.mark("slow-validate", "")
+			inner := h.command("apply", "--payload", h.payload, "--commit", upgradeTestCommit)
+			cmd := exec.Command("python3", append([]string{"-I", driver, filepath.Join(h.state, "validating"), tc.mode, "--"}, inner.Args...)...)
+			cmd.Env = inner.Env
+			out, err := cmd.Output()
+			if err != nil {
+				t.Fatalf("session driver: %v %s", err, out)
+			}
+			var got struct {
+				Reached bool `json:"reached"`
+				Exit    int  `json:"exit"`
+			}
+			if err := json.Unmarshal(out, &got); err != nil || !got.Reached {
+				t.Fatalf("session driver: %s (%v)", out, err)
+			}
+			if got.Exit != tc.exit {
+				t.Fatalf("apply exited %d, want %d", got.Exit, tc.exit)
+			}
+			_, summary := readSummary(t, h)
+			if summary["result"] != tc.result || summary["output_lost"] != true {
+				t.Fatalf("summary result %v, output_lost %v, failure %v", summary["result"], summary["output_lost"], summary["failure"])
+			}
+			if h.marked("inactive-es") || h.marked("inactive-nomad") {
+				t.Fatalf("ES or Nomad left stopped")
+			}
+			if tc.result == "rolled_back" {
+				assertRestored(t, before, h.snapshot())
+			} else if got := mustRead(t, h.path("etc/nomad.d/nomad.hcl")); got != boxNomadHCLLocked {
+				t.Fatalf("the applied run did not lock Nomad")
+			}
+		})
 	}
 }

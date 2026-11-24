@@ -712,8 +712,9 @@ def raise_error(exc):
 
 
 def foreign_owned_entries(top):
-    """[relative path, uid, gid] of every entry below top that is not
-    root:root. Symbolic links are listed, never followed."""
+    """[relative path, uid, gid, mode] of every entry below top that is not
+    root:root. Symbolic links are listed, never followed. The mode is kept
+    because a chown clears a file's setuid and setgid bits."""
     ruid, rgid = root_ids()
     found = []
     for dirpath, dirnames, filenames in os.walk(top, followlinks=False, onerror=raise_error):
@@ -721,7 +722,7 @@ def foreign_owned_entries(top):
             path = os.path.join(dirpath, name)
             st = os.lstat(path)
             if (st.st_uid, st.st_gid) != (ruid, rgid):
-                found.append([os.path.relpath(path, top), st.st_uid, st.st_gid])
+                found.append([os.path.relpath(path, top), st.st_uid, st.st_gid, stat.S_IMODE(st.st_mode)])
     return sorted(found)
 
 
@@ -1027,7 +1028,7 @@ def apply_nomad_lock(backup_dir, log):
     ledger = foreign_owned_entries(data_dir)
     write_new_file(os.path.join(backup_dir, "ownership.json"),
                    json.dumps({"root": NOMAD_DATA_DIR, "entries": ledger}, indent=2) + "\n")
-    for rel, _, _ in ledger:
+    for rel, _, _, _ in ledger:
         os.lchown(os.path.join(data_dir, rel), ruid, rgid)
     atomic_replace(host(NOMAD_HCL), new_text.encode(), ruid, rgid, NOMAD_CONFIG_MODE)
     env_data, _ = read_regular_file(host(NOMAD_ENV))
@@ -1086,9 +1087,14 @@ def restore_host(backup_dir, log):
         data, _ = read_regular_file(ownership)
         doc = json.loads(data)
         data_dir = host(doc["root"])
-        for rel, uid, gid in doc["entries"]:
+        for rel, uid, gid, mode in doc["entries"]:
+            path = os.path.join(data_dir, rel)
             try:
-                os.lchown(os.path.join(data_dir, rel), uid, gid)
+                os.lchown(path, uid, gid)
+                # After the owner, so that a setuid or setgid bit comes back
+                # with the owner it had.
+                if not stat.S_ISLNK(os.lstat(path).st_mode):
+                    os.chmod(path, mode)
             except FileNotFoundError:
                 pass
         result["nomad_data_owners_restored"] = len(doc["entries"])
@@ -1118,17 +1124,50 @@ def health_after_restore():
 
 
 class Interrupted(Exception):
-    """SIGTERM or SIGHUP arrived during apply."""
+    """SIGTERM, SIGHUP or SIGINT arrived during apply."""
+
+
+INTERRUPT_SIGNALS = (signal.SIGTERM, signal.SIGHUP, signal.SIGINT)
+
+
+def ignore_interrupts():
+    for signum in INTERRUPT_SIGNALS:
+        signal.signal(signum, signal.SIG_IGN)
 
 
 def raise_interrupted(signum, _frame):
+    # The first signal ends the forward path. Any later one is ignored from
+    # this point, so it cannot break off the drain of a command or the
+    # rollback.
+    ignore_interrupts()
     raise Interrupted(f"signal {signum}")
+
+
+OUTPUT = {"lost": False}
+
+
+def say(text, stream=None):
+    """Print, and never raise. A terminal that hung up (EIO) or a pipe whose
+    reader went away (EPIPE) must not stop apply or its rollback: the first
+    failed write sends the standard output and error to /dev/null, and the
+    events stay in the summary."""
+    try:
+        print(text, file=stream or sys.stdout, flush=True)
+    except (OSError, ValueError):
+        OUTPUT["lost"] = True
+        try:
+            devnull = os.open(os.devnull, os.O_WRONLY)
+            os.dup2(devnull, 1)
+            os.dup2(devnull, 2)
+            os.close(devnull)
+        except OSError:
+            pass
 
 
 def cmd_check(args):
     report, blockers = inspect_host(args.payload, args.commit)
     report["mode"] = "check"
-    print(json.dumps(report, indent=2, sort_keys=True))
+    say(json.dumps(report, indent=2, sort_keys=True))
     if blockers:
         raise Refusal(f"{len(blockers)} blocker(s); nothing was changed")
 
@@ -1138,13 +1177,13 @@ def cmd_apply(args):
 
     def log(message):
         events.append({"at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "event": message})
-        print(message, flush=True)
+        say(message)
 
     report, blockers = inspect_host(args.payload, args.commit)
     report["mode"] = "apply"
     report["events"] = events
     if blockers:
-        print(json.dumps(report, indent=2, sort_keys=True))
+        say(json.dumps(report, indent=2, sort_keys=True))
         raise Refusal(f"{len(blockers)} blocker(s); nothing was changed")
     prov = load_payload(args.payload, args.commit)
     backup_dir = os.path.join(backup_root_ready(),
@@ -1157,23 +1196,32 @@ def cmd_apply(args):
     data, _ = read_regular_file(host(ES_CONFIG))
     migrated, _ = migrate_config(json.loads(data), ES_TOKEN_FILE, retained_result_auth(), EXPECTED_ES_PATHS)
 
-    # From here on, any failure or interruption puts the backup back.
-    for signum in (signal.SIGTERM, signal.SIGHUP):
+    # From here on, any failure or interruption puts the backup back. The
+    # handler raises once at most (it sets every signal aside first), and the
+    # outer try catches the one case the inner except cannot: that first
+    # signal landing while another failure is being caught.
+    failure = None
+    for signum in INTERRUPT_SIGNALS:
         signal.signal(signum, raise_interrupted)
     try:
-        stop_service("es")
-        log("es stopped")
-        apply_nomad_lock(backup_dir, log)
-        install_es(stage_dir, migrated, log)
-        run(["systemctl", "start", "es"], timeout=120, check=True)
-        log("es started")
-        verify_after(log)
-        report["result"] = "applied"
-    except BaseException as exc:  # noqa: BLE001 - every failure after the backup rolls back
-        for signum in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
-            signal.signal(signum, signal.SIG_IGN)
-        log(f"apply failed: {exc!r}; rolling back")
-        report["failure"] = repr(exc)
+        try:
+            stop_service("es")
+            log("es stopped")
+            apply_nomad_lock(backup_dir, log)
+            install_es(stage_dir, migrated, log)
+            run(["systemctl", "start", "es"], timeout=120, check=True)
+            log("es started")
+            verify_after(log)
+            report["result"] = "applied"
+            ignore_interrupts()
+        except BaseException as exc:  # noqa: BLE001 - every failure after the backup rolls back
+            failure = exc
+            ignore_interrupts()
+    except Interrupted as exc:
+        failure = failure if failure is not None else exc
+    if failure is not None:
+        log(f"apply failed: {failure!r}; rolling back")
+        report["failure"] = repr(failure)
         try:
             report["rollback"] = restore_host(backup_dir, log)
         except Exception as rexc:  # noqa: BLE001
@@ -1182,19 +1230,23 @@ def cmd_apply(args):
         else:
             ok, report["after_rollback"] = health_after_restore()
             report["result"] = "rolled_back" if ok else "rolled_back_unhealthy"
+        report["output_lost"] = OUTPUT["lost"]
         write_summary(summary_path, report)
-        print(json.dumps(report, indent=2, sort_keys=True))
+        say(json.dumps(report, indent=2, sort_keys=True))
         raise Refusal(f"apply failed; result {report['result']}; summary {summary_path}")
     report["after"] = {"services": services_active(), "health": service_health()}
+    report["output_lost"] = OUTPUT["lost"]
     write_summary(summary_path, report)
-    print(json.dumps(report, indent=2, sort_keys=True))
+    say(json.dumps(report, indent=2, sort_keys=True))
     log("summary written to " + summary_path)
 
 
 def cmd_rollback(args):
-    result = restore_host(args.backup_dir, lambda message: print(message, flush=True))
+    # A terminal that hangs up must not break off a restore halfway.
+    signal.signal(signal.SIGHUP, signal.SIG_IGN)
+    result = restore_host(args.backup_dir, say)
     ok, after = health_after_restore()
-    print(json.dumps({"restored": result, "after": after}, indent=2, sort_keys=True))
+    say(json.dumps({"restored": result, "after": after}, indent=2, sort_keys=True))
     if not ok:
         raise Refusal("ES and AGS do not all answer 200 after the rollback")
 
@@ -1234,7 +1286,7 @@ def cmd_build(args):
             "built_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
     with open(os.path.join(out_dir, "provenance.json"), "x", encoding="utf-8") as handle:
         handle.write(json.dumps(prov, indent=2, sort_keys=True) + "\n")
-    print(json.dumps(prov, indent=2, sort_keys=True))
+    say(json.dumps(prov, indent=2, sort_keys=True))
 
 
 def main(argv):
@@ -1293,7 +1345,7 @@ def main(argv):
     try:
         args.func(args)
     except Refusal as exc:
-        print(f"remote alpha ES upgrade refused: {exc}", file=sys.stderr)
+        say(f"remote alpha ES upgrade refused: {exc}", sys.stderr)
         return 1
     return 0
 
