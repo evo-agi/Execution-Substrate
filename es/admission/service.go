@@ -21,6 +21,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	arsapi "execution-substrate/ars/api"
 	egsmodel "execution-substrate/egs/model"
@@ -29,6 +31,9 @@ import (
 	evidencev1 "execution-substrate/internal/contracts/evidence/v1"
 	runtimeconfigv1 "execution-substrate/internal/contracts/runtimeconfig/v1"
 	"execution-substrate/internal/observability"
+
+	"golang.org/x/text/unicode/norm"
+	"golang.org/x/text/unicode/rangetable"
 )
 
 const (
@@ -809,8 +814,8 @@ func validatePrepareRequest(req *PrepareRequest) *Error {
 		if req.Resources.CPU <= 0 {
 			return &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "resources.cpu must be greater than 0"}
 		}
-		if req.Resources.MemoryMB <= 0 {
-			return &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "resources.memory_mb must be greater than 0"}
+		if req.Resources.MemoryMB < nomadMinimumMemoryMB {
+			return &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: fmt.Sprintf("resources.memory_mb must be at least %d, the least memory Nomad registers a task with", nomadMinimumMemoryMB)}
 		}
 	}
 
@@ -843,6 +848,45 @@ func nomadPassesAsWritten(s string) bool {
 
 const nomadEvaluatedText = `must not contain "${", "%{" or a NUL byte, which Nomad would not pass on as written`
 
+// nomadKeepsDriverString reports whether Nomad's client leaves s, a string of a
+// task's driver configuration (an argument or a mount target), unchanged on
+// its way to the workload, apart from the templates nomadPassesAsWritten
+// refuses. The client parses each such string with HCL, whose template
+// scanner drops a byte order mark (U+FEFF) at its start, and holds the result
+// as a cty string, which is rewritten to Unicode Normalization Form C. So s
+// must not begin with U+FEFF and must be in NFC. ES judges NFC by its own
+// tables, of Unicode version norm.Version. A Nomad built with tables of a
+// later version could normalize a code point that ES's tables do not know, so
+// s also holds only code points assigned in norm.Version. Unicode's
+// normalization stability policy then keeps s unchanged by every later
+// version. Nomad leaves environment keys and values and meta values as they
+// are, so this applies to the driver configuration only.
+func nomadKeepsDriverString(s string) bool {
+	if strings.HasPrefix(s, "\ufeff") || !norm.NFC.IsNormalString(s) {
+		return false
+	}
+	for _, r := range s {
+		if r >= utf8.RuneSelf && (nomadNormalizationAssigned == nil || !unicode.Is(nomadNormalizationAssigned, r)) {
+			return false
+		}
+	}
+	return true
+}
+
+// nomadNormalizationAssigned holds the code points assigned in the Unicode
+// version of ES's normalization tables. If x/text has no table of assigned
+// code points for that version it is nil, and nomadKeepsDriverString then
+// refuses every string that is not ASCII.
+var nomadNormalizationAssigned = rangetable.Assigned(norm.Version)
+
+const nomadRewrittenText = "must be in Unicode Normalization Form C, use only code points assigned in Unicode " + norm.Version + " and not begin with a byte order mark, or Nomad would not pass it on as written"
+
+// nomadMinimumMemoryMB is the least memory Nomad registers a task with
+// (Nomad v2.1.1, structs.MinResources and Resources.MeetsMinResources). A
+// request below it would be accepted, claimed and staged, and then refused by
+// Nomad for good.
+const nomadMinimumMemoryMB = 10
+
 func validateInvocationAgainstManifest(invocation ArtifactInvocation, manifest Manifest) *Error {
 	if manifest.ArtifactDigest != invocation.ArtifactDigest {
 		return &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "artifact digest mismatch between request and manifest"}
@@ -856,6 +900,9 @@ func validateInvocationAgainstManifest(invocation ArtifactInvocation, manifest M
 	for _, arg := range invocation.Argv {
 		if !nomadPassesAsWritten(arg) {
 			return &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "invocation.argv " + nomadEvaluatedText}
+		}
+		if !nomadKeepsDriverString(arg) {
+			return &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "invocation.argv " + nomadRewrittenText}
 		}
 	}
 	allowedEnv := make(map[string]struct{}, len(manifest.RuntimeInterface.EnvironmentVariables))

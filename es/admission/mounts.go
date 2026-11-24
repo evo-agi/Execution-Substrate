@@ -111,6 +111,9 @@ func normalizeRuntimeMountTargetPath(targetPath string) (string, error) {
 	if !nomadPassesAsWritten(cleaned) {
 		return "", fmt.Errorf("mount target_path %s", nomadEvaluatedText)
 	}
+	if !nomadKeepsDriverString(cleaned) {
+		return "", fmt.Errorf("mount target_path %s", nomadRewrittenText)
+	}
 	return cleaned, nil
 }
 

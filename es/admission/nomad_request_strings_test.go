@@ -18,6 +18,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"golang.org/x/text/unicode/norm"
 )
 
 // nomadEvaluatedSamples are request strings that Nomad v2.1.1 would not pass
@@ -285,5 +287,73 @@ func TestOperationalHandoffRefusesAnEnvironmentValueThatNomadWouldEvaluate(t *te
 				t.Fatalf("environment value %q: %s state=%+v", value, operationalResultText(out), state)
 			}
 		})
+	}
+}
+
+// Report 31-redteam-recheck.md, RC31-1: Nomad's client drops a byte order
+// mark at the start of a string of a task's driver configuration and rewrites
+// the string to Unicode Normalization Form C. nomadKeepsDriverString keeps a
+// string exactly when neither changes it, and when every code point in it is
+// assigned in the Unicode version of ES's tables, so that a Nomad with tables
+// of a later version leaves it unchanged too.
+func TestNomadKeepsDriverStringRefusesWhatNomadWouldRewrite(t *testing.T) {
+	if nomadNormalizationAssigned == nil {
+		t.Fatalf("x/text has no table of code points assigned in Unicode %s", norm.Version)
+	}
+	for _, s := range []string{
+		"",
+		"--flag",
+		"/execution/mounts/caf\u00e9", // a composed letter
+		"\u1ead",                      // the composed form of a, U+0302, U+0323
+		"\U0001f603",                  // an emoji of Unicode 6.0
+		"\U0001fae8",                  // an emoji of Unicode 15.0, the version of ES's tables
+		"\u2028",                      // LINE SEPARATOR
+		"\ufffd",                      // REPLACEMENT CHARACTER
+		"\ufb01",                      // a ligature that only compatibility forms fold
+		"a\ufeff",                     // a byte order mark after the start
+		"\x01\x1f\x7f\r",              // ASCII control bytes
+	} {
+		if !nomadKeepsDriverString(s) {
+			t.Errorf("nomadKeepsDriverString(%+q) = false, want true", s)
+		}
+	}
+	rewritten := []string{
+		"\ufeff",     // a byte order mark alone
+		"\u0378",     // never assigned
+		"\ufffe",     // a noncharacter
+		"\U0001fae9", // assigned in Unicode 16.0, after ES's tables
+	}
+	for _, pair := range redTeam31Rewritten {
+		rewritten = append(rewritten, pair.written)
+	}
+	for _, s := range rewritten {
+		if nomadKeepsDriverString(s) {
+			t.Errorf("nomadKeepsDriverString(%+q) = true, want false", s)
+		}
+	}
+}
+
+// Report 31-redteam-recheck.md, RC31-2: Nomad v2.1.1 refuses a task with less
+// than 10 MB of memory, so the request validation that both paths share
+// refuses it first, and accepts the least Nomad registers.
+func TestValidatePrepareRequestRefusesMemoryBelowNomadMinimum(t *testing.T) {
+	fixture := newPreparedArtifactFixture(t)
+	for _, test := range []struct {
+		memory int
+		want   string
+	}{
+		{0, "resources.memory_mb must be at least 10, the least memory Nomad registers a task with"},
+		{9, "resources.memory_mb must be at least 10, the least memory Nomad registers a task with"},
+		{10, ""},
+	} {
+		request := fixture.prepareRequest()
+		request.Resources = &ExecutionResources{CPU: 1, MemoryMB: test.memory}
+		got := ""
+		if err := validatePrepareRequest(&request); err != nil {
+			got = err.Message
+		}
+		if got != test.want {
+			t.Errorf("memory_mb %d: got %q, want %q", test.memory, got, test.want)
+		}
 	}
 }

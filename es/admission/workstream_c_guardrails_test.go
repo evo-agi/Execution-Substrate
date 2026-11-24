@@ -4133,6 +4133,8 @@ var operationalGuardReviewedDependencyPackages = map[string]string{
 	"github.com/spiffe/go-spiffe/v2/svid/jwtsvid":          "github.com/spiffe/go-spiffe/v2@v2.4.0",
 	"github.com/spiffe/go-spiffe/v2/workloadapi":           "github.com/spiffe/go-spiffe/v2@v2.4.0",
 	"golang.org/x/sys/unix":                                "golang.org/x/sys@v0.46.0",
+	"golang.org/x/text/unicode/norm":                       "golang.org/x/text@v0.17.0",
+	"golang.org/x/text/unicode/rangetable":                 "golang.org/x/text@v0.17.0",
 	"google.golang.org/grpc":                               "google.golang.org/grpc@v1.67.1",
 	"google.golang.org/grpc/codes":                         "google.golang.org/grpc@v1.67.1",
 	"google.golang.org/grpc/status":                        "google.golang.org/grpc@v1.67.1",

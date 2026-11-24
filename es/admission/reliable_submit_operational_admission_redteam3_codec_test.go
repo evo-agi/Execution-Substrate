@@ -82,7 +82,7 @@ func redTeam3ExtremeRequests(t *testing.T, f *operationalFixture) map[string][]b
 		"timeout 0":                v(func(o, _ map[string]any) { o["timeout_seconds"] = 0 }),
 		"timeout 1":                v(func(o, _ map[string]any) { o["timeout_seconds"] = 1 }),
 		"timeout largest":          v(func(o, _ map[string]any) { o["timeout_seconds"] = 2147483647 }),
-		"resources smallest":       v(func(o, _ map[string]any) { o["resources"] = map[string]any{"cpu": 1, "memory_mb": 1} }),
+		"resources smallest":       v(func(o, _ map[string]any) { o["resources"] = map[string]any{"cpu": 1, "memory_mb": 10} }),
 		"resources largest":        v(func(o, _ map[string]any) { o["resources"] = map[string]any{"cpu": 2147483647, "memory_mb": 2147483647} }),
 		"invocation schema empty":  v(func(_, i map[string]any) { i["schema_version"] = "" }),
 		"invocation schema absent": v(func(_, i map[string]any) { delete(i, "schema_version") }),
