@@ -98,6 +98,11 @@ NOMAD_MANAGED_MARKER="# Managed by Execution Substrate scripts/70_linux_setup.sh
 NOMAD_ACL_DIR="${NOMAD_ACL_DIR:-/etc/execution-substrate/nomad-acl}"
 NOMAD_ACL_MANAGEMENT_TOKEN_FILE="${NOMAD_ACL_DIR}/management-token"
 NOMAD_LEADER_WAIT_SECONDS=30
+# nomad.service runs Nomad as root. While Nomad is down any local account can
+# hold its port, so the management token and the bootstrap secret go only to
+# a listener that root owns (an interim guard: HTTPS with a pinned server key
+# replaces it).
+NOMAD_SERVICE_UID=0
 NOMAD_CONFIG_CHANGED=0
 NOMAD_QUALIFY_TOKEN=""
 GO_REQUIRED_VERSION="go1.26.5"
@@ -336,11 +341,50 @@ EOF
   fi
 }
 
+# BEGIN nomad_acl_bootstrap (the tests run these functions on their own)
+# require_nomad_listener: every socket listening where NOMAD_HTTP_ADDR points
+# (127.0.0.1, or a wildcard address, on its port) belongs to NOMAD_SERVICE_UID.
+# It reads the kernel's TCP tables, whose addresses are hex words in host byte
+# order; the supported hosts (x86_64, aarch64) are little-endian.
+require_nomad_listener() {
+  local port
+  local -a tables=()
+  local table
+
+  if [[ ! "${NOMAD_HTTP_ADDR}" =~ ^http://127\.0\.0\.1:([0-9]{1,5})/?$ ]]; then
+    echo "nomad acl: ${NOMAD_HTTP_ADDR} is not http://127.0.0.1:<port>, so its listener cannot be checked; nothing was sent" >&2
+    return 1
+  fi
+  port="$(printf '%04X' "$((10#${BASH_REMATCH[1]}))")"
+  for table in /proc/net/tcp /proc/net/tcp6; do
+    [[ -r "${table}" ]] && tables+=("${table}")
+  done
+  if (( ${#tables[@]} == 0 )) || ! awk -v port="${port}" -v want="${NOMAD_SERVICE_UID}" '
+    FNR == 1 { next }
+    $4 == "0A" {
+      split($2, endpoint, ":")
+      if (endpoint[2] != port) next
+      if (endpoint[1] == "0100007F" || endpoint[1] == "00000000" ||
+          endpoint[1] == "00000000000000000000000000000000" ||
+          endpoint[1] == "0000000000000000FFFF00000100007F") {
+        found = 1
+        if ($8 != want) other = 1
+      }
+    }
+    END { exit !(found && !other) }
+  ' "${tables[@]}"; then
+    echo "nomad acl: the listener on ${NOMAD_HTTP_ADDR} is missing or not owned by Nomad's user (uid ${NOMAD_SERVICE_UID}); another local account may hold Nomad's port while Nomad is down, so nothing was sent" >&2
+    return 1
+  fi
+}
+
 # nomad_token_curl <token> <curl args...>: the token reaches curl through a
-# configuration on a file descriptor, never through a command line.
+# configuration on a file descriptor, never through a command line, and only
+# a listener that Nomad's user owns.
 nomad_token_curl() {
   local token=$1
   shift
+  require_nomad_listener || return 1
   curl --noproxy '*' --config <(printf 'header = "X-Nomad-Token: %s"\n' "${token}") "$@"
 }
 
@@ -353,9 +397,11 @@ bootstrap_nomad_acl() {
   local created=0
   local status
   local response_path
+  local leader=""
   local waited=0
 
-  while ! curl --noproxy '*' --fail --silent "${NOMAD_HTTP_ADDR}/v1/status/leader" 2>/dev/null | grep -q '"'; do
+  # Nomad answers "" while it elects a leader; only a named leader counts.
+  while ! { leader="$(curl --noproxy '*' --fail --silent "${NOMAD_HTTP_ADDR}/v1/status/leader" 2>/dev/null)" && [[ "${leader}" =~ ^\"[^\"]+\"$ ]]; }; do
     if (( waited >= NOMAD_LEADER_WAIT_SECONDS )); then
       echo "nomad: no leader within ${NOMAD_LEADER_WAIT_SECONDS}s, so ACLs cannot be bootstrapped" >&2
       return 1
@@ -363,6 +409,7 @@ bootstrap_nomad_acl() {
     sleep 1
     waited=$((waited + 1))
   done
+  require_nomad_listener || return 1
 
   if ! sudo test -d "${NOMAD_ACL_DIR}"; then
     sudo install -d -o root -g root -m 0755 "${NOMAD_ACL_DIR}"
@@ -393,6 +440,10 @@ bootstrap_nomad_acl() {
     return 1
   fi
 
+  if ! require_nomad_listener; then
+    cleanup_tempfiles "${response_path}"
+    return 1
+  fi
   status="$(curl --noproxy '*' --silent --output "${response_path}" --write-out '%{http_code}' -X POST --data-binary @- \
     "${NOMAD_HTTP_ADDR}/v1/acl/bootstrap" <<<"{\"BootstrapSecret\":\"${secret}\"}")" || status="000"
   if [[ "${status}" == "200" ]]; then
@@ -413,6 +464,7 @@ bootstrap_nomad_acl() {
   cleanup_tempfiles "${response_path}"
   return 1
 }
+# END nomad_acl_bootstrap
 
 warn_existing_nomad_processes() {
   local ps_output
@@ -443,6 +495,7 @@ docker_ready_for_operator() {
   return 1
 }
 
+# BEGIN nomad_cpu_visibility_diagnostics (the tests run this function on its own)
 report_nomad_cpu_visibility_diagnostics() {
   local arch
   local virt
@@ -450,7 +503,7 @@ report_nomad_cpu_visibility_diagnostics() {
   local proc_cpu_mhz
   local dmi_current_speed="unavailable"
 
-  if ! NOMAD_TOKEN="${NOMAD_QUALIFY_TOKEN}" python3 - <<'PY' "${NOMAD_HTTP_ADDR}" >/dev/null 2>&1
+  if ! require_nomad_listener || ! NOMAD_TOKEN="${NOMAD_QUALIFY_TOKEN}" python3 - <<'PY' "${NOMAD_HTTP_ADDR}" >/dev/null 2>&1
 import json
 import os
 import sys
@@ -522,6 +575,7 @@ PY
       ;;
   esac
 }
+# END nomad_cpu_visibility_diagnostics
 
 qualify_supported_substrate() {
   local leader_path
@@ -575,6 +629,10 @@ qualify_supported_substrate() {
     return 1
   fi
 
+  if ! require_nomad_listener; then
+    cleanup_tempfiles "${leader_path}" "${agent_path}" "${nodes_path}"
+    return 1
+  fi
   if ! NOMAD_TOKEN="${NOMAD_QUALIFY_TOKEN}" python3 - <<'PY' "${NOMAD_HTTP_ADDR}" "${leader_path}" "${agent_path}" "${nodes_path}"
 import json
 import os

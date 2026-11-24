@@ -393,6 +393,123 @@ validate_raft_path() {
   esac
 }
 
+# The Vault account may write the directory that holds the raft directory
+# (it owns /opt/vault on the box), and it may be able to replace the config
+# that names the raft path. So the reset only moves a raft directory that is
+# a real directory already belonging to the Vault account: moving and
+# recreating it then gives that account nothing it did not own before.
+require_vault_owned_raft_dir() {
+  local path=$1
+  local vault_user=$2
+  local owner=""
+
+  if sudo test -L "${path}"; then
+    die "Vault raft path is a symbolic link: ${path}"
+  fi
+  sudo test -d "${path}" || die "Vault raft path is not an existing directory: ${path}"
+  owner="$(sudo stat -c '%U' -- "${path}")"
+  [[ "${owner}" == "${vault_user}" ]] || die "Vault raft path ${path} belongs to ${owner}, not to the Vault service user ${vault_user}; refusing to move it"
+}
+
+# Stops Vault, moves the raft directory aside and creates an empty one for the
+# Vault account. The Vault account can choose the raft path and owns the
+# directories below /opt/vault, so it can change any name in that path, not
+# only the last one (audit 03 of PR #49, A03-1). Root therefore never acts on
+# the path by name: one step reaches the raft directory's parent from / without
+# following a link, moves the entry only if it is still a directory of the
+# Vault account, creates the new one in the same parent and hands it over
+# through its own descriptor, which a hard link cannot stand in for. The reset
+# also refuses to continue while a process still runs as the Vault account.
+replace_raft_directory() {
+  local vault_user=$1
+  local vault_group=$2
+  local backup_path=$3
+
+  info "Stopping $(unit_name)"
+  sudo systemctl stop "$(unit_name)"
+  if [[ "${vault_user}" != "root" ]] && sudo pgrep -u "${vault_user}" >/dev/null 2>&1; then
+    die "processes still run as ${vault_user} after $(unit_name) stopped; nothing was moved and Vault stays stopped. List them with: pgrep -a -u ${vault_user}"
+  fi
+  info "Moving ${VAULT_RAFT_PATH} to ${backup_path} and recreating it for ${vault_user}:${vault_group}"
+  # Every step works through a descriptor of the raft directory's parent,
+  # reached from / without following a link, so no name the Vault account
+  # can change (the raft entry, or a directory above it that it owns) can
+  # point root anywhere else.
+  local status=0
+  sudo python3 -I - "${VAULT_RAFT_PATH}" "${backup_path##*/}" "${vault_user}" "${vault_group}" <<'PY' || status=$?
+import grp
+import os
+import pwd
+import stat
+import sys
+
+path, backup_name, user, group = sys.argv[1:5]
+DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+
+
+def stop(code, message):
+    print(f"[ERROR] {message}", file=sys.stderr)
+    sys.exit(code)
+
+
+uid = int(user) if user.isdigit() else pwd.getpwnam(user).pw_uid
+gid = int(group) if group.isdigit() else grp.getgrnam(group).gr_gid
+parts = [part for part in path.split("/") if part]
+if not parts or any(part in (".", "..") for part in parts) or "/" in backup_name or backup_name in ("", ".", ".."):
+    stop(2, f"refusing raft path {path}; nothing was moved and Vault stays stopped")
+parent_fd = os.open("/", DIR_FLAGS)
+for index, part in enumerate(parts[:-1]):
+    try:
+        next_fd = os.open(part, DIR_FLAGS, dir_fd=parent_fd)
+    except OSError as exc:
+        shown = "/" + "/".join(parts[: index + 1])
+        stop(2, f"{shown} is not a directory or is a symbolic link ({exc.strerror}); nothing was moved and Vault stays stopped")
+    os.close(parent_fd)
+    parent_fd = next_fd
+name = parts[-1]
+try:
+    info = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+except OSError as exc:
+    stop(2, f"{path} cannot be read ({exc.strerror}); nothing was moved and Vault stays stopped")
+if not stat.S_ISDIR(info.st_mode) or info.st_uid != uid:
+    stop(2, f"{path} is no longer a directory of the Vault service user; nothing was moved and Vault stays stopped")
+try:
+    os.rename(name, backup_name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+except OSError as exc:
+    stop(2, f"{path} could not be moved to {backup_name} ({exc.strerror}); nothing was moved and Vault stays stopped")
+
+
+def recreate():
+    try:
+        os.mkdir(name, 0o700, dir_fd=parent_fd)
+    except FileExistsError:
+        stop(3, f"something created {path} after the move")
+    try:
+        new_fd = os.open(name, DIR_FLAGS, dir_fd=parent_fd)
+    except OSError:
+        stop(3, f"something replaced {path} after the move")
+    new_info = os.fstat(new_fd)
+    if new_info.st_uid != os.geteuid() or os.listdir(new_fd):
+        stop(3, f"something replaced {path} after the move")
+    os.fchown(new_fd, uid, gid)
+    os.fchmod(new_fd, 0o700)
+
+
+# The old directory has moved, so every failure from here on exits with 3.
+try:
+    recreate()
+except SystemExit:
+    raise
+except BaseException as exc:
+    stop(3, f"{path} was not recreated after the move ({exc})")
+PY
+  case "${status}" in
+    0) ;;
+    3) die "${VAULT_RAFT_PATH} was not recreated after the move; the old data is in ${backup_path} and Vault stays stopped" ;;
+    *) die "the raft directory was not replaced (exit ${status}); nothing was moved and Vault stays stopped" ;;
+  esac
+}
+
 detect_workload_auth_checker() {
   if [[ -n "${WORKLOAD_AUTH_CHECKER}" ]]; then
     printf '%s' "${WORKLOAD_AUTH_CHECKER}"
@@ -635,6 +752,7 @@ run_execute_reset() {
   require_command vault
   require_command python3
   require_command sudo
+  require_command pgrep
 
   ensure_config_path
   [[ -n "${VAULT_CONFIG_PATH}" ]] || die "could not detect Vault config path from systemd; supply --vault-config-path"
@@ -646,6 +764,7 @@ run_execute_reset() {
   [[ -n "${raft_path}" ]] || die "could not detect Vault raft path; supply --vault-raft-path"
   validate_raft_path "${raft_path}"
   VAULT_RAFT_PATH="${raft_path}"
+  require_vault_owned_raft_dir "${VAULT_RAFT_PATH}" "${vault_user}"
 
   addr="$(detect_vault_addr yes)"
   cacert="$(detect_vault_cacert yes || true)"
@@ -666,12 +785,7 @@ run_execute_reset() {
   backup_path="${VAULT_RAFT_PATH}.remote-alpha-reset-backup-${timestamp}"
   [[ ! -e "${backup_path}" ]] || die "backup path already exists: ${backup_path}"
 
-  info "Stopping $(unit_name)"
-  sudo systemctl stop "$(unit_name)"
-  info "Moving ${VAULT_RAFT_PATH} to ${backup_path}"
-  sudo mv -- "${VAULT_RAFT_PATH}" "${backup_path}"
-  info "Recreating ${VAULT_RAFT_PATH} for ${vault_user}:${vault_group}"
-  sudo install -d -o "${vault_user}" -g "${vault_group}" -m 0700 -- "${VAULT_RAFT_PATH}"
+  replace_raft_directory "${vault_user}" "${vault_group}" "${backup_path}"
   info "Starting $(unit_name)"
   sudo systemctl start "$(unit_name)"
   wait_for_vault_status
@@ -716,70 +830,78 @@ PYTHONPATH=src python3 -m infra_manager.cli remote-alpha-live-refresh \
 EOF
 }
 
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --dry-run)
-      MODE="dry-run"
-      shift
+main() {
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --dry-run)
+        MODE="dry-run"
+        shift
+        ;;
+      --execute-reset)
+        MODE="execute-reset"
+        shift
+        ;;
+      --unseal-only)
+        MODE="unseal-only"
+        shift
+        ;;
+      --post-unseal-check)
+        POST_UNSEAL_CHECK="true"
+        shift
+        ;;
+      --service-name)
+        SERVICE_NAME="$2"
+        shift 2
+        ;;
+      --vault-config-path)
+        VAULT_CONFIG_PATH="$2"
+        shift 2
+        ;;
+      --vault-raft-path)
+        VAULT_RAFT_PATH="$2"
+        shift 2
+        ;;
+      --vault-addr)
+        VAULT_ADDR_OVERRIDE="$2"
+        shift 2
+        ;;
+      --vault-cacert)
+        VAULT_CACERT_OVERRIDE="$2"
+        shift 2
+        ;;
+      --workload-auth-checker)
+        WORKLOAD_AUTH_CHECKER="$2"
+        shift 2
+        ;;
+      --help|-h)
+        usage
+        exit 0
+        ;;
+      *)
+        usage >&2
+        die "unknown argument: $1"
+        ;;
+    esac
+  done
+
+  case "${MODE}" in
+    dry-run)
+      dry_run
       ;;
-    --execute-reset)
-      MODE="execute-reset"
-      shift
+    unseal-only)
+      run_unseal_only
       ;;
-    --unseal-only)
-      MODE="unseal-only"
-      shift
-      ;;
-    --post-unseal-check)
-      POST_UNSEAL_CHECK="true"
-      shift
-      ;;
-    --service-name)
-      SERVICE_NAME="$2"
-      shift 2
-      ;;
-    --vault-config-path)
-      VAULT_CONFIG_PATH="$2"
-      shift 2
-      ;;
-    --vault-raft-path)
-      VAULT_RAFT_PATH="$2"
-      shift 2
-      ;;
-    --vault-addr)
-      VAULT_ADDR_OVERRIDE="$2"
-      shift 2
-      ;;
-    --vault-cacert)
-      VAULT_CACERT_OVERRIDE="$2"
-      shift 2
-      ;;
-    --workload-auth-checker)
-      WORKLOAD_AUTH_CHECKER="$2"
-      shift 2
-      ;;
-    --help|-h)
-      usage
-      exit 0
+    execute-reset)
+      run_execute_reset
       ;;
     *)
-      usage >&2
-      die "unknown argument: $1"
+      die "unknown mode: ${MODE}"
       ;;
   esac
-done
+}
 
-case "${MODE}" in
-  dry-run)
-    dry_run
-    ;;
-  unseal-only)
-    run_unseal_only
-    ;;
-  execute-reset)
-    run_execute_reset
-    ;;
-  *)
-    die "unknown mode: ${MODE}"
-    ;;
-esac
+# The tests source this file to call its functions. Run as a file, or read
+# from standard input, it runs main.
+if [[ "${BASH_SOURCE[0]:-$0}" == "$0" ]]; then
+  main "$@"
+fi
