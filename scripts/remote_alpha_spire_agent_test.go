@@ -2076,6 +2076,12 @@ func TestRemoteAlphaSPIREAgentTakeNewDirRefusesSwaps(t *testing.T) {
 	if m := regexp.MustCompile(`\bos\.(chown|chmod|lchown)\(`).FindString(string(spireAgentHelperRead(t, spireAgentHelperModule))); m != "" {
 		t.Fatalf("the helper sets an owner or mode by path (%s...); use a descriptor (take_new_dir, fchown, fchmod)", m)
 	}
+	// The token directory stays the helper's own (group search for SPIRE
+	// only). The recover test cannot see its owner, because the test user
+	// plays the SPIRE account too.
+	if !regexp.MustCompile(`\btake_new_dir\(scratch, os\.geteuid\(\), spire_gid, 0o710\)`).Match(spireAgentHelperRead(t, spireAgentHelperModule)) {
+		t.Fatalf("attest_once no longer keeps the token directory its own: take_new_dir(scratch, os.geteuid(), spire_gid, 0o710) is gone")
+	}
 	dir := t.TempDir()
 	stat := func(path string) (os.FileMode, uint32) {
 		t.Helper()
@@ -2157,6 +2163,39 @@ func TestRemoteAlphaSPIREAgentTakeNewDirRefusesSwaps(t *testing.T) {
 		if mode, uid := stat(foreign); mode != 0o700 || uid != 65534 {
 			t.Fatalf("a refused directory changed to mode %o owner %d", mode, uid)
 		}
+	}
+
+	// The handover sets the owner as well as the mode. The steps above, and
+	// the recover test, give a directory to the test user itself, so they
+	// cannot see that. Give one to another owner (as root) or to another of
+	// the test user's groups (any user may do that).
+	toUID, toGID := os.Geteuid(), -1
+	if os.Geteuid() == 0 {
+		toUID, toGID = 65534, 65534
+	} else if groups, err := os.Getgroups(); err == nil {
+		for _, g := range groups {
+			if g != os.Getegid() {
+				toGID = g
+				break
+			}
+		}
+	}
+	if toGID < 0 {
+		t.Log("not root and no second group: the owner change of take_new_dir is not checked in this run")
+		return
+	}
+	other := mkdir("other-owner", 0o700)
+	code, out, stderr := spireAgentHelperDriverRun(t, "--take-new-dir", other, strconv.Itoa(toUID), strconv.Itoa(toGID), "750")
+	var res map[string]any
+	if code != 0 || json.Unmarshal([]byte(out), &res) != nil || res["ok"] != true {
+		t.Fatalf("take_new_dir to %d:%d: exit %d: %s %s", toUID, toGID, code, out, stderr)
+	}
+	fi, err := os.Lstat(other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st := fi.Sys().(*syscall.Stat_t); int(st.Uid) != toUID || int(st.Gid) != toGID || fi.Mode().Perm() != 0o750 {
+		t.Fatalf("handed-over directory is %d:%d %o, want %d:%d 750", st.Uid, st.Gid, fi.Mode().Perm(), toUID, toGID)
 	}
 }
 
