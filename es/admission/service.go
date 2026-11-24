@@ -862,10 +862,12 @@ const nomadEvaluatedText = `must not contain "${", "%{" or a NUL byte, which Nom
 // later version could normalize a code point that ES's tables do not know, so
 // s also holds only code points assigned in norm.Version. Unicode's
 // normalization stability policy then keeps s unchanged by every later
-// version. Nomad leaves environment keys and values and meta values as they
-// are, so this applies to the driver configuration only.
+// version. ES writes the job with encoding/json, which writes U+FFFD in place
+// of each byte that is not valid UTF-8, so s must also be valid UTF-8. Nomad
+// leaves environment keys and values and meta values as they are, so this
+// applies to the driver configuration only.
 func nomadKeepsDriverString(s string) bool {
-	if strings.HasPrefix(s, "\ufeff") || !norm.NFC.IsNormalString(s) {
+	if !utf8.ValidString(s) || strings.HasPrefix(s, "\ufeff") || !norm.NFC.IsNormalString(s) {
 		return false
 	}
 	for _, r := range s {

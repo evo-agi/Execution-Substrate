@@ -318,10 +318,13 @@ func TestNomadKeepsDriverStringRefusesWhatNomadWouldRewrite(t *testing.T) {
 		}
 	}
 	rewritten := []string{
-		"\ufeff",     // a byte order mark alone
-		"\u0378",     // never assigned
-		"\ufffe",     // a noncharacter
-		"\U0001fae9", // assigned in Unicode 16.0, after ES's tables
+		"\ufeff",       // a byte order mark alone
+		"\u0378",       // never assigned
+		"\ufffe",       // a noncharacter
+		"\U0001fae9",   // assigned in Unicode 16.0, after ES's tables
+		"a\xffb",       // not UTF-8: encoding/json would write U+FFFD
+		"\xed\xa0\x80", // an encoded surrogate
+		"\xc0\xaf",     // an overlong encoding of '/'
 	}
 	for _, pair := range redTeam31Rewritten {
 		rewritten = append(rewritten, pair.written)
