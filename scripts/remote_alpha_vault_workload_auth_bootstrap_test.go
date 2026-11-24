@@ -454,13 +454,14 @@ func setupFakeBootstrapSpireServerWithBundle(t *testing.T, dir string, bundleJSO
 	t.Helper()
 	logPath := filepath.Join(dir, "spire-server.log")
 	// It also records the core file limits it inherited from the helper and,
-	// where /proc exists, who owns the helper's /proc entry: root, for a
-	// process that is not dumpable.
+	// where /proc exists, who owns the helper's /proc/<pid>/status: root, for
+	// a process that is not dumpable. (The /proc/<pid> directory itself keeps
+	// the process's own user either way.)
 	writeExecutable(t, dir, "spire-server", fmt.Sprintf(`#!/usr/bin/env bash
 set -euo pipefail
 printf 'args=%%s\n' "$*" >> %[1]q
 printf 'core_limit=%%s/%%s\n' "$(ulimit -c)" "$(ulimit -H -c)" >> %[1]q
-if [ -d "/proc/$PPID" ]; then printf 'uid=%%s helper_proc_owner=%%s\n' "$(id -u)" "$(stat -c %%u "/proc/$PPID")" >> %[1]q; fi
+if [ -r "/proc/$PPID/status" ]; then printf 'uid=%%s helper_proc_status_owner=%%s\n' "$(id -u)" "$(stat -c %%u "/proc/$PPID/status")" >> %[1]q; fi
 env | sort | sed -n '/TOKEN/p;/SECRET/p;/PASSWORD/p' >> %[1]q
 cat <<'JSON'
 %[2]s
@@ -1380,16 +1381,16 @@ func TestRemoteAlphaVaultWorkloadAuthBootstrapFakeVaultWritesExpectedObjectsAndS
 // assertBootstrapCoreDumpsOff checks, through a command the helper started
 // before its first prompt (the SPIRE server), that core dumps were off by
 // then: the inherited core file limit is 0, and on Linux, when the test
-// does not run as root, the helper's /proc entry belongs to root, which is
-// what a process that is not dumpable looks like. (RT07-2)
+// does not run as root, the helper's /proc/<pid>/status belongs to root,
+// which is what a process that is not dumpable looks like. (RT07-2)
 func assertBootstrapCoreDumpsOff(t *testing.T, spireLog string, summary map[string]any) {
 	t.Helper()
 	if !strings.Contains(spireLog, "core_limit=0/0\n") {
 		t.Fatalf("commands the helper starts must inherit a core file limit of 0 (soft and hard), got:\n%s", spireLog)
 	}
-	if uid := os.Getuid(); uid != 0 && strings.Contains(spireLog, "helper_proc_owner=") {
-		if !strings.Contains(spireLog, fmt.Sprintf("uid=%d helper_proc_owner=0\n", uid)) {
-			t.Fatalf("the helper must not be dumpable (its /proc entry must belong to root), got:\n%s", spireLog)
+	if uid := os.Getuid(); uid != 0 && strings.Contains(spireLog, "helper_proc_status_owner=") {
+		if !strings.Contains(spireLog, fmt.Sprintf("uid=%d helper_proc_status_owner=0\n", uid)) {
+			t.Fatalf("the helper must not be dumpable (its /proc/<pid>/status must belong to root), got:\n%s", spireLog)
 		}
 	}
 	operation, ok := summary["operations"].(map[string]any)["disable_core_dumps"].(map[string]any)
