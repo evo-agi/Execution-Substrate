@@ -347,26 +347,41 @@ def require_management(nomad: Nomad, token: str) -> None:
 def bootstrap_or_load_management(nomad: Nomad, path: str) -> str:
     if file_exists_no_follow(path):
         token = read_token_file(path, "management token file")
-        require_management(nomad, token)
-        return token
+        status, document = token_self(nomad, token)
+        if status == 200 and isinstance(document, dict) and document.get("Type") == "management":
+            return token
+        # Nomad does not know the saved secret. An earlier bootstrap may have
+        # failed before Nomad installed it (no leader yet, a lost response), so
+        # offer it again: Nomad accepts it only while ACLs are not bootstrapped.
+        return _bootstrap(nomad, path, token, created=False)
     secret = str(uuid.uuid4())
     # The secret is on disk before Nomad sees it, so a lost response never
     # loses the management token.
     write_token_file(path, "management token file", secret, os.geteuid(), os.getegid(), 0o600, replace=False)
+    return _bootstrap(nomad, path, secret, created=True)
+
+
+def _bootstrap(nomad: Nomad, path: str, secret: str, created: bool) -> str:
     status, payload = nomad.request("POST", "/v1/acl/bootstrap", None, {"BootstrapSecret": secret})
     if status == 200:
         require_management(nomad, secret)
         print("nomad acl: bootstrapped; management token kept in the management token file")
         return secret
     if status == 400 and b"bootstrap already done" in payload.lower():
-        remove_token_file(path)
+        if created:
+            remove_token_file(path)
+            raise Refusal(
+                "nomad ACLs were already bootstrapped by someone else and the management token file is absent: "
+                "put that management token into the file (mode 0600, owned by this user) or follow Nomad's "
+                "ACL bootstrap reset procedure, then rerun"
+            )
         raise Refusal(
-            "nomad ACLs were already bootstrapped by someone else and the management token file is absent: "
-            "put that management token into the file (mode 0600, owned by this user) or follow Nomad's "
-            "ACL bootstrap reset procedure, then rerun"
+            "the management token file does not hold a working Nomad management token and nomad ACLs were "
+            "already bootstrapped: put the management token into the file (mode 0600, owned by this user) or "
+            "follow Nomad's ACL bootstrap reset procedure, then rerun"
         )
     raise Refusal(
-        f"nomad ACL bootstrap returned HTTP {status}: {_text(payload)}; the generated management token was kept "
+        f"nomad ACL bootstrap returned HTTP {status}: {_text(payload)}; the management token was kept "
         "in the management token file, so a rerun can finish or reuse it"
     )
 

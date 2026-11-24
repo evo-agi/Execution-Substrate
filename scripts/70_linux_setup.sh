@@ -466,6 +466,7 @@ EOF
   fi
 }
 
+# BEGIN nomad_acl_bootstrap (the tests run these functions on their own)
 # nomad_curl <curl args...>: HTTPS to Nomad only, TLS 1.3, trusting only
 # Nomad's CA, with no proxy.
 nomad_curl() {
@@ -489,9 +490,11 @@ bootstrap_nomad_acl() {
   local created=0
   local status
   local response_path
+  local leader=""
   local waited=0
 
-  while ! nomad_curl --fail --silent "${NOMAD_HTTP_ADDR}/v1/status/leader" 2>/dev/null | grep -q '"'; do
+  # Nomad answers "" while it elects a leader; only a named leader counts.
+  while ! { leader="$(nomad_curl --fail --silent "${NOMAD_HTTP_ADDR}/v1/status/leader" 2>/dev/null)" && [[ "${leader}" =~ ^\"[^\"]+\"$ ]]; }; do
     if (( waited >= NOMAD_LEADER_WAIT_SECONDS )); then
       echo "nomad: no leader within ${NOMAD_LEADER_WAIT_SECONDS}s, so ACLs cannot be bootstrapped" >&2
       return 1
@@ -549,6 +552,7 @@ bootstrap_nomad_acl() {
   cleanup_tempfiles "${response_path}"
   return 1
 }
+# END nomad_acl_bootstrap
 
 warn_existing_nomad_processes() {
   local ps_output

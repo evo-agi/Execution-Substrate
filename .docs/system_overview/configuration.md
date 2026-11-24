@@ -661,11 +661,15 @@ bypass ES admission. ES therefore submits only to a Nomad that enforces them.
 - **Management token**: Nomad's bootstrap token. `scripts/70_linux_setup.sh`
   generates its secret, writes it root-only (0600) to
   `/etc/execution-substrate/nomad-acl/management-token` before the bootstrap
-  call, and reuses it on later runs. Only that script and
+  call, and reuses it on later runs. It bootstraps only once Nomad names a
+  leader. If a bootstrap never took effect (no leader yet, a lost
+  response), a rerun of either script offers the saved secret again; Nomad
+  accepts it only while its ACLs are not bootstrapped. Only that script and
   `scripts/nomad_acl_setup.sh` (as root) read it. It is never given to ES or
   to an operator check. If Nomad is already bootstrapped and the file is
-  lost, both scripts refuse; recovery is Nomad's ACL bootstrap reset
-  procedure, done by hand.
+  lost or holds another token, both scripts refuse and leave an existing
+  file as it is; recovery is Nomad's ACL bootstrap reset procedure, done by
+  hand.
 - **ES token** (`nomad.token_file`): a client token with only policy
   `es-submit-v1` (`submit-job`, `read-job`, `read-logs` in namespace
   `es-submit-v1`). It cannot read nodes or the agent, write policies or
