@@ -4203,10 +4203,11 @@ func TestRemoteAlphaOperatorRecoverySessionVaultWorkloadAuthBootstrapPrepareSumm
 	sudoLog := mustRead(t, h.sudoLogPath)
 	assertContainsAll(t, "fake workload-auth bootstrap prepare sudo log", sudoLog,
 		"-v -p Remote Alpha OS sudo password for summary path preparation: ",
-		"-n install -d -m 0750",
+		"-n chown -h",
 		"execution-substrate-remote-alpha",
 	)
 	assertContainsNone(t, "fake workload-auth bootstrap prepare sudo log forbidden surfaces", sudoLog,
+		"install -d",
 		"vault",
 		"remote_alpha_vault_workload_auth_bootstrap.sh",
 		"remote_alpha_vault_workload_auth_check.sh",
@@ -4808,7 +4809,7 @@ func TestRemoteAlphaOperatorRecoverySessionVaultWorkloadAuthBootstrapPrepareRuns
 	sudoLog := mustRead(t, h.sudoLogPath)
 	assertContainsAll(t, "fake workload-auth bootstrap combined sudo log", sudoLog,
 		"-v -p Remote Alpha OS sudo password for summary path preparation: ",
-		"-n install -d -m 0750",
+		"-n chown -h",
 	)
 	assertNoNewPaths(t, "Mac-side fake workload-auth bootstrap combined route", before)
 }
@@ -4995,7 +4996,12 @@ func TestRemoteAlphaOperatorRecoverySessionVaultWorkloadAuthBootstrapSourceKeeps
 		`ssh -tt "${ssh_target}" "/bin/bash -c ${remote_prepare_command_quoted}"`,
 		`sudo -v -p "Remote Alpha OS sudo password for summary path preparation: "`,
 		`sudo -n "$@"`,
-		"run_sudo install -d -m 0750",
+		"REMOTE_ALPHA_OUTPUT_DIR_DEFINITION",
+		`remote_alpha_prepare_output_dir "${summary_dir}"`,
+		"summary_parent_unsafe",
+		`run_sudo chown -h "${helper_user}:${helper_group}" -- "${summary_dir}"`,
+		"summary_path_symlink",
+		`run_sudo chown -h "${helper_user}:${helper_group}" -- "${summary_path}"`,
 		"final_summary_created=false",
 		"recovery_session_vault_workload_auth_bootstrap_prepare_config_readability_remote",
 		"config_readability_prepare_status=pass",
@@ -5057,6 +5063,8 @@ func TestRemoteAlphaOperatorRecoverySessionVaultWorkloadAuthBootstrapSourceKeeps
 		"operator-summary",
 		"recovery-session-summary",
 		"tee ",
+		"run_sudo install -d",
+		`run_sudo chown "`,
 	)
 }
 

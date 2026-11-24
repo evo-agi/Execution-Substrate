@@ -76,7 +76,7 @@ func setupFakeRemoteESBinaryDeploymentStageHarness(t *testing.T, checkOnlyReport
 	if err := os.MkdirAll(remoteBin, 0o755); err != nil {
 		t.Fatalf("mkdir remote bin: %v", err)
 	}
-	if err := os.MkdirAll(remoteRoot, 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(remoteRoot, "tmp"), 0o755); err != nil {
 		t.Fatalf("mkdir remote root: %v", err)
 	}
 
