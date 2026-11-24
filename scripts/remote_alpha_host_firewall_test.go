@@ -890,7 +890,8 @@ func hostFirewallFakes(t *testing.T, ssEstablished string) (string, string) {
 	log := filepath.Join(state, "calls.log")
 	writeExecutable(t, fakeBin, "id", "#!/bin/sh\nif [ \"$1\" = \"-u\" ]; then echo 0; exit 0; fi\nexec /usr/bin/id \"$@\"\n")
 	writeExecutable(t, fakeBin, "install", fmt.Sprintf("#!/bin/sh\necho \"install $*\" >>%q\nexit 0\n", log))
-	writeExecutable(t, fakeBin, "chown", "#!/bin/sh\nexit 0\n")
+	// FAKE_CHOWN_FAIL makes chown fail, as for a file system that refuses it.
+	writeExecutable(t, fakeBin, "chown", "#!/bin/sh\n[ -n \"${FAKE_CHOWN_FAIL:-}\" ] && { echo \"chown: Operation not permitted\" >&2; exit 1; }\nexit 0\n")
 	writeExecutable(t, fakeBin, "sshd", hostFirewallFakeSSHD)
 	writeExecutable(t, fakeBin, "nft", fmt.Sprintf(`#!/bin/bash
 state=%q
@@ -1532,8 +1533,9 @@ func TestRemoteAlphaHostFirewallInstallsFilesDurably(t *testing.T) {
 	}
 
 	// A flush that fails fails the install, which then restores the state
-	// from before --apply and leaves no temporary file.
-	for _, failure := range []string{"FAKE_SYNC_FAIL=1", "FAKE_SYNC_FAIL_DIRS=1"} {
+	// from before --apply and leaves no temporary file. So does a chown that
+	// fails: every step of the install counts.
+	for _, failure := range []string{"FAKE_SYNC_FAIL=1", "FAKE_SYNC_FAIL_DIRS=1", "FAKE_CHOWN_FAIL=1"} {
 		failEnv, failState, failRuleset, _ := appliedHostFirewallFakes(t)
 		stdout, stderr, code := runHostFirewall(t, append(append([]string{}, failEnv...), failure), "--confirm")
 		if code != 1 || !strings.Contains(stderr, "install failed; restoring the previous files") {
@@ -1548,6 +1550,63 @@ func TestRemoteAlphaHostFirewallInstallsFilesDurably(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(failState, "loaded")); !os.IsNotExist(err) {
 			t.Fatalf("%s: a failed install must restore the state from before --apply (no tables), stat err=%v", failure, err)
 		}
+	}
+}
+
+// TestRemoteAlphaHostFirewallApplyRestoresAfterAFailedDropInInstall: when
+// --apply cannot install the sshd drop-in (a flush of the temporary file or
+// of the directory fails, or chown fails), it stops the timer and runs
+// rollback.sh: the previous drop-in is back, no tables stay loaded, no
+// temporary file or unconfirmed marker stays, and the next --plan passes.
+func TestRemoteAlphaHostFirewallApplyRestoresAfterAFailedDropInInstall(t *testing.T) {
+	for _, failure := range []string{"FAKE_SYNC_FAIL", "FAKE_SYNC_FAIL_DIRS", "FAKE_CHOWN_FAIL"} {
+		t.Run(strings.ToLower(failure), func(t *testing.T) {
+			fakeBin, state := hostFirewallFakes(t, "0 0 192.168.1.156:22 192.168.1.23:50000\n")
+			root := t.TempDir()
+			unitPath := filepath.Join(root, "systemd", "es-host-firewall.service")
+			runDir := filepath.Join(root, "run")
+			for _, dir := range []string{filepath.Dir(unitPath), filepath.Join(root, "state"), runDir} {
+				if err := os.MkdirAll(dir, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			env := hostFirewallBaseEnv(t, fakeBin,
+				"REMOTE_ALPHA_HOST_FIREWALL_STATE_DIR="+filepath.Join(root, "state"),
+				"REMOTE_ALPHA_HOST_FIREWALL_RUN_DIR="+runDir,
+				"REMOTE_ALPHA_HOST_FIREWALL_UNIT_PATH="+unitPath,
+				"FAKE_UNIT_PATH="+unitPath,
+			)
+			var dropIn string
+			for _, entry := range env {
+				if k, v, _ := strings.Cut(entry, "="); k == "REMOTE_ALPHA_HOST_FIREWALL_SSHD_DROP_IN" {
+					dropIn = v
+				}
+			}
+			previous := "# Managed by Execution-Substrate scripts/remote_alpha_host_firewall.sh.\n# earlier settings\nPasswordAuthentication no\n"
+			writeFile(t, dropIn, []byte(previous), 0o644)
+			stdout, stderr, code := runHostFirewall(t, append(append([]string{}, env...), failure+"=1"), "--apply")
+			if code != 1 || !strings.Contains(stderr, "could not install the sshd drop-in; restored the state from before --apply") {
+				t.Fatalf("apply with %s: expected the drop-in install to fail and restore, got %d\n%s\n%s", failure, code, stdout, stderr)
+			}
+			if got := mustRead(t, dropIn); got != previous {
+				t.Fatalf("the previous drop-in must be back, got:\n%s", got)
+			}
+			if entries, _ := filepath.Glob(dropIn + ".*"); len(entries) != 0 {
+				t.Fatalf("a failed install must not leave temporary files: %v", entries)
+			}
+			if _, err := os.Stat(filepath.Join(state, "loaded")); !os.IsNotExist(err) {
+				t.Fatalf("no tables may stay loaded, stat err=%v", err)
+			}
+			if _, err := os.Stat(filepath.Join(runDir, "unconfirmed")); !os.IsNotExist(err) {
+				t.Fatalf("no unconfirmed marker may stay, stat err=%v", err)
+			}
+			if timer := strings.TrimSpace(readIfExists(filepath.Join(state, "timer"))); timer == "waiting" {
+				t.Fatal("the rollback timer must be stopped")
+			}
+			if stdout, _, code := runHostFirewall(t, env, "--plan"); code != 0 {
+				t.Fatalf("plan after the failed apply: exit %d\n%s", code, stdout)
+			}
+		})
 	}
 }
 
