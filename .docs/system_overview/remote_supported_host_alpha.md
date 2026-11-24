@@ -1101,7 +1101,9 @@ with `mkdir -m 0700` and no `-p`. A folder or link someone planted at that name
 makes staging fail, no parent another account could own sits between `/tmp`
 and the staged helpers (the healthcheck route runs its helper through sudo),
 and cleanup removes only a real folder the SSH user owns (red-team re-check 14
-of PR #50, O14-1).
+of PR #50, O14-1). The route stops at the first staging step that fails and
+copies or runs nothing after it, and the run step runs a helper only from a
+real `0700` folder the SSH user owns.
 Default sudo behavior must remain the helper's noninteractive `sudo -n`
 preflight and structured `sudo_unavailable` evidence. `--interactive-sudo`
 may remain available only for a visible terminal when a bounded password

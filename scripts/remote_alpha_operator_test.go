@@ -2154,6 +2154,7 @@ func setupFakeRemoteAlphaUnsealHarness(t *testing.T) *fakeRemoteAlphaUnsealHarne
 			t.Fatalf("mkdir %s: %v", dir, err)
 		}
 	}
+	mkdirFakeRemoteAlphaHostTmp(t, h.remoteRoot)
 
 	writeExecutable(t, h.localBin, "ssh", fmt.Sprintf(`#!/usr/bin/env bash
 set -euo pipefail
@@ -2366,6 +2367,7 @@ func setupFakeRemoteAlphaResetDryRunHarness(t *testing.T) *fakeRemoteAlphaResetD
 			t.Fatalf("mkdir %s: %v", dir, err)
 		}
 	}
+	mkdirFakeRemoteAlphaHostTmp(t, h.remoteRoot)
 
 	writeExecutable(t, h.localBin, "ssh", fmt.Sprintf(`#!/usr/bin/env bash
 set -euo pipefail
@@ -2657,6 +2659,7 @@ func setupFakeRemoteAlphaESServiceTLSHarness(t *testing.T) *fakeRemoteAlphaESSer
 			t.Fatalf("mkdir %s: %v", dir, err)
 		}
 	}
+	mkdirFakeRemoteAlphaHostTmp(t, h.remoteRoot)
 
 	writeExecutable(t, h.localBin, "ssh", fmt.Sprintf(`#!/usr/bin/env bash
 set -euo pipefail
@@ -3783,6 +3786,7 @@ func setupFakeRemoteAlphaWorkloadAuthBootstrapHarness(t *testing.T) *fakeRemoteA
 			t.Fatalf("mkdir %s: %v", dir, err)
 		}
 	}
+	mkdirFakeRemoteAlphaHostTmp(t, h.remoteRoot)
 
 	writeExecutable(t, h.localBin, "ssh", fmt.Sprintf(`#!/usr/bin/env bash
 set -euo pipefail

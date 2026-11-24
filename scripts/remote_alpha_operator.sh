@@ -1323,7 +1323,7 @@ recovery_session_vault_workload_auth_bootstrap_stage_remote() {
   local remote_public_helper_path=$3
   local remote_internal_helper_path=$4
 
-  ssh "${ssh_target}" /bin/bash -s -- "${remote_stage_dir}" <<'REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_PREPARE'
+  ssh "${ssh_target}" /bin/bash -s -- "${remote_stage_dir}" <<'REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_PREPARE' || return 1
 set -euo pipefail
 stage_dir=$1
 # A new folder directly under /tmp, made with mkdir and no -p: a folder or
@@ -1333,8 +1333,8 @@ mkdir -m 0700 -- "${stage_dir}"
 mkdir -m 0700 -- "${stage_dir}/scripts" "${stage_dir}/scripts/internal"
 REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_PREPARE
 
-  scp "${REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_PUBLIC_HELPER}" "${ssh_target}:${remote_public_helper_path}"
-  scp "${REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_INTERNAL_HELPER}" "${ssh_target}:${remote_internal_helper_path}"
+  scp "${REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_PUBLIC_HELPER}" "${ssh_target}:${remote_public_helper_path}" || return 1
+  scp "${REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_INTERNAL_HELPER}" "${ssh_target}:${remote_internal_helper_path}" || return 1
 }
 
 recovery_session_vault_workload_auth_bootstrap_cleanup_remote() {
@@ -1359,7 +1359,7 @@ recovery_session_vault_workload_auth_bootstrap_run_remote() {
   local remote_internal_helper_path=$4
   local remote_command remote_shell_command
 
-  printf -v remote_command 'set -euo pipefail; stage_dir=%q; helper_path=%q; internal_helper_path=%q; cleanup() { rm -rf -- "${stage_dir}" || true; }; trap cleanup EXIT; chmod 0700 "${helper_path}"; chmod 0600 "${internal_helper_path}" 2>/dev/null || true; "${helper_path}"' "${remote_stage_dir}" "${remote_public_helper_path}" "${remote_internal_helper_path}"
+  printf -v remote_command 'set -euo pipefail; stage_dir=%q; helper_path=%q; internal_helper_path=%q; [[ -d "${stage_dir}" && ! -L "${stage_dir}" && -O "${stage_dir}" && -n "$(find "${stage_dir}" -maxdepth 0 -perm 0700 -print)" ]] || { printf "%%s\n" "the staged helper folder is not a private folder of this user; not running it" >&2; exit 1; }; cleanup() { rm -rf -- "${stage_dir}" || true; }; trap cleanup EXIT; chmod 0700 "${helper_path}"; chmod 0600 "${internal_helper_path}" 2>/dev/null || true; "${helper_path}"' "${remote_stage_dir}" "${remote_public_helper_path}" "${remote_internal_helper_path}"
   printf -v remote_shell_command 'exec /bin/bash -c %q' "${remote_command}"
   ssh -tt "${ssh_target}" "${remote_shell_command}"
 }
@@ -1464,7 +1464,7 @@ recovery_session_vault_unseal_existing_stage_remote() {
   local remote_stage_dir=$2
   local remote_helper_path=$3
 
-  ssh "${ssh_target}" /bin/bash -s -- "${remote_stage_dir}" <<'REMOTE_ALPHA_VAULT_UNSEAL_PREPARE'
+  ssh "${ssh_target}" /bin/bash -s -- "${remote_stage_dir}" <<'REMOTE_ALPHA_VAULT_UNSEAL_PREPARE' || return 1
 set -euo pipefail
 stage_dir=$1
 # A new folder directly under /tmp, made with mkdir and no -p: a folder or
@@ -1473,7 +1473,7 @@ stage_dir=$1
 mkdir -m 0700 -- "${stage_dir}"
 REMOTE_ALPHA_VAULT_UNSEAL_PREPARE
 
-  scp "${REMOTE_ALPHA_VAULT_RESET_HELPER}" "${ssh_target}:${remote_helper_path}"
+  scp "${REMOTE_ALPHA_VAULT_RESET_HELPER}" "${ssh_target}:${remote_helper_path}" || return 1
 }
 
 recovery_session_vault_unseal_existing_cleanup_remote() {
@@ -1497,7 +1497,7 @@ recovery_session_vault_unseal_existing_run_remote() {
   local remote_helper_path=$3
   local remote_command remote_shell_command
 
-  printf -v remote_command 'set -euo pipefail; stage_dir=%q; helper_path=%q; cleanup() { rm -rf -- "${stage_dir}" || true; }; trap cleanup EXIT; chmod 0700 "${helper_path}"; "${helper_path}" --unseal-only' "${remote_stage_dir}" "${remote_helper_path}"
+  printf -v remote_command 'set -euo pipefail; stage_dir=%q; helper_path=%q; [[ -d "${stage_dir}" && ! -L "${stage_dir}" && -O "${stage_dir}" && -n "$(find "${stage_dir}" -maxdepth 0 -perm 0700 -print)" ]] || { printf "%%s\n" "the staged helper folder is not a private folder of this user; not running it" >&2; exit 1; }; cleanup() { rm -rf -- "${stage_dir}" || true; }; trap cleanup EXIT; chmod 0700 "${helper_path}"; "${helper_path}" --unseal-only' "${remote_stage_dir}" "${remote_helper_path}"
   printf -v remote_shell_command 'exec /bin/bash -c %q' "${remote_command}"
   ssh -tt "${ssh_target}" "${remote_shell_command}"
 }
@@ -1648,7 +1648,7 @@ recovery_session_vault_reset_disposable_stage_remote() {
   local remote_stage_dir=$2
   local remote_helper_path=$3
 
-  ssh "${ssh_target}" /bin/bash -s -- "${remote_stage_dir}" <<'REMOTE_ALPHA_VAULT_RESET_DRY_RUN_PREPARE'
+  ssh "${ssh_target}" /bin/bash -s -- "${remote_stage_dir}" <<'REMOTE_ALPHA_VAULT_RESET_DRY_RUN_PREPARE' || return 1
 set -euo pipefail
 stage_dir=$1
 # A new folder directly under /tmp, made with mkdir and no -p: a folder or
@@ -1657,7 +1657,7 @@ stage_dir=$1
 mkdir -m 0700 -- "${stage_dir}"
 REMOTE_ALPHA_VAULT_RESET_DRY_RUN_PREPARE
 
-  scp "${REMOTE_ALPHA_VAULT_RESET_HELPER}" "${ssh_target}:${remote_helper_path}"
+  scp "${REMOTE_ALPHA_VAULT_RESET_HELPER}" "${ssh_target}:${remote_helper_path}" || return 1
 }
 
 recovery_session_vault_reset_disposable_cleanup_remote() {
@@ -1684,12 +1684,12 @@ recovery_session_vault_reset_disposable_run_remote() {
 
   case "${helper_mode}" in
     --dry-run)
-      printf -v remote_command 'set -euo pipefail; stage_dir=%q; helper_path=%q; cleanup() { rm -rf -- "${stage_dir}" || true; }; trap cleanup EXIT; chmod 0700 "${helper_path}"; "${helper_path}" --dry-run' "${remote_stage_dir}" "${remote_helper_path}"
+      printf -v remote_command 'set -euo pipefail; stage_dir=%q; helper_path=%q; [[ -d "${stage_dir}" && ! -L "${stage_dir}" && -O "${stage_dir}" && -n "$(find "${stage_dir}" -maxdepth 0 -perm 0700 -print)" ]] || { printf "%%s\n" "the staged helper folder is not a private folder of this user; not running it" >&2; exit 1; }; cleanup() { rm -rf -- "${stage_dir}" || true; }; trap cleanup EXIT; chmod 0700 "${helper_path}"; "${helper_path}" --dry-run' "${remote_stage_dir}" "${remote_helper_path}"
       printf -v remote_shell_command 'exec /bin/bash -c %q' "${remote_command}"
       ssh "${ssh_target}" "${remote_shell_command}"
       ;;
     --execute-reset)
-      printf -v remote_command 'set -euo pipefail; stage_dir=%q; helper_path=%q; cleanup() { rm -rf -- "${stage_dir}" || true; }; trap cleanup EXIT; chmod 0700 "${helper_path}"; "${helper_path}" --execute-reset' "${remote_stage_dir}" "${remote_helper_path}"
+      printf -v remote_command 'set -euo pipefail; stage_dir=%q; helper_path=%q; [[ -d "${stage_dir}" && ! -L "${stage_dir}" && -O "${stage_dir}" && -n "$(find "${stage_dir}" -maxdepth 0 -perm 0700 -print)" ]] || { printf "%%s\n" "the staged helper folder is not a private folder of this user; not running it" >&2; exit 1; }; cleanup() { rm -rf -- "${stage_dir}" || true; }; trap cleanup EXIT; chmod 0700 "${helper_path}"; "${helper_path}" --execute-reset' "${remote_stage_dir}" "${remote_helper_path}"
       printf -v remote_shell_command 'exec /bin/bash -c %q' "${remote_command}"
       ssh -tt "${ssh_target}" "${remote_shell_command}"
       ;;
@@ -2731,7 +2731,7 @@ recovery_session_operator_healthcheck_tls_stage_remote() {
   local remote_public_helper_path=$3
   local remote_internal_helper_path=$4
 
-  ssh "${ssh_target}" /bin/bash -s -- "${remote_stage_dir}" <<'REMOTE_ALPHA_OPERATOR_HEALTHCHECK_TLS_PREPARE'
+  ssh "${ssh_target}" /bin/bash -s -- "${remote_stage_dir}" <<'REMOTE_ALPHA_OPERATOR_HEALTHCHECK_TLS_PREPARE' || return 1
 set -euo pipefail
 stage_dir=$1
 # A new folder directly under /tmp, made with mkdir and no -p: a folder or
@@ -2741,8 +2741,8 @@ mkdir -m 0700 -- "${stage_dir}"
 mkdir -m 0700 -- "${stage_dir}/scripts" "${stage_dir}/scripts/internal"
 REMOTE_ALPHA_OPERATOR_HEALTHCHECK_TLS_PREPARE
 
-  scp "${REMOTE_ALPHA_OPERATOR_HEALTHCHECK_TLS_RENEW_PUBLIC_HELPER}" "${ssh_target}:${remote_public_helper_path}"
-  scp "${REMOTE_ALPHA_OPERATOR_HEALTHCHECK_TLS_RENEW_INTERNAL_HELPER}" "${ssh_target}:${remote_internal_helper_path}"
+  scp "${REMOTE_ALPHA_OPERATOR_HEALTHCHECK_TLS_RENEW_PUBLIC_HELPER}" "${ssh_target}:${remote_public_helper_path}" || return 1
+  scp "${REMOTE_ALPHA_OPERATOR_HEALTHCHECK_TLS_RENEW_INTERNAL_HELPER}" "${ssh_target}:${remote_internal_helper_path}" || return 1
 }
 
 recovery_session_operator_healthcheck_tls_run_remote() {
@@ -2761,7 +2761,7 @@ recovery_session_operator_healthcheck_tls_run_remote() {
       ;;
   esac
 
-  printf -v remote_command 'set -euo pipefail; stage_dir=%q; helper_path=%q; internal_helper_path=%q; cleanup() { rm -rf -- "${stage_dir}" || true; }; trap cleanup EXIT; chmod 0700 "${helper_path}"; chmod 0600 "${internal_helper_path}" 2>/dev/null || true; if [[ "$(id -u)" == "0" ]]; then "${helper_path}" %q; else sudo "${helper_path}" %q; fi' "${remote_stage_dir}" "${remote_public_helper_path}" "${remote_internal_helper_path}" "${helper_mode}" "${helper_mode}"
+  printf -v remote_command 'set -euo pipefail; stage_dir=%q; helper_path=%q; internal_helper_path=%q; [[ -d "${stage_dir}" && ! -L "${stage_dir}" && -O "${stage_dir}" && -n "$(find "${stage_dir}" -maxdepth 0 -perm 0700 -print)" ]] || { printf "%%s\n" "the staged helper folder is not a private folder of this user; not running it" >&2; exit 1; }; cleanup() { rm -rf -- "${stage_dir}" || true; }; trap cleanup EXIT; chmod 0700 "${helper_path}"; chmod 0600 "${internal_helper_path}" 2>/dev/null || true; if [[ "$(id -u)" == "0" ]]; then "${helper_path}" %q; else sudo "${helper_path}" %q; fi' "${remote_stage_dir}" "${remote_public_helper_path}" "${remote_internal_helper_path}" "${helper_mode}" "${helper_mode}"
   printf -v remote_shell_command 'exec /bin/bash -c %q' "${remote_command}"
   ssh -tt "${ssh_target}" "${remote_shell_command}"
 }
