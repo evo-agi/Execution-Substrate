@@ -135,7 +135,7 @@ func makeOperationalFixture(t *testing.T, mode string, argv ...string) *operatio
 	fixture.egs = attachOperationalTrustAuthority(t, service, *service.trustModel)
 	roots := x509.NewCertPool()
 	roots.AddCert(server.Certificate())
-	provider, err := newOperationalLoopbackProvider(realm, target, roots, template)
+	provider, err := newOperationalLoopbackProvider(realm, target, roots, template, testNomadToken)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1006,7 +1006,7 @@ func TestOperationalHandoffChildProcess(t *testing.T) {
 	}
 	roots := x509.NewCertPool()
 	roots.AddCert(cert)
-	p, err := newOperationalLoopbackProvider(realm, netip.MustParseAddrPort(f.Target), roots, f.Template)
+	p, err := newOperationalLoopbackProvider(realm, netip.MustParseAddrPort(f.Target), roots, f.Template, testNomadToken)
 	if err != nil {
 		t.Fatal(err)
 	}

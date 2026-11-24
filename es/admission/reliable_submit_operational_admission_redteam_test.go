@@ -120,7 +120,7 @@ func redTeamRealmDomain(t *testing.T, f *operationalFixture, change func(*operat
 	if err != nil {
 		t.Fatal(err)
 	}
-	provider, err := newOperationalLoopbackProvider(realm, netip.AddrPortFrom(address, realm.port), roots, f.template)
+	provider, err := newOperationalLoopbackProvider(realm, netip.AddrPortFrom(address, realm.port), roots, f.template, testNomadToken)
 	if err != nil {
 		t.Fatal(err)
 	}

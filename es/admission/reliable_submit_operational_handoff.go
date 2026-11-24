@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
-	"net/http"
 	"sync"
 
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
@@ -669,7 +668,7 @@ func (s *liveSender) consume(owner *handoffOwner) operationalAck {
 	if s == nil || s.self != s || owner == nil || s.owner != owner || s.issuer != owner.domain {
 		return operationalAck{refused: true, reason: reliablesubmit.OperationalClosed}
 	}
-	prepared, err := s.issuer.provider.prepareExchange(owner.context, http.MethodPost, "/v1/jobs", s.prepared)
+	prepared, err := s.issuer.provider.prepareRegister(owner.context, s.prepared)
 	if err == nil {
 		defer prepared.cancel()
 	}

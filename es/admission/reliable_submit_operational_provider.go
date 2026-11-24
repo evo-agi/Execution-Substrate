@@ -332,15 +332,22 @@ func renderOperationalTemplate(template, job any, path string) (any, error) {
 
 type operationalProvider struct {
 	privateExecutionValue
-	realm         operationalRealm
-	target        netip.AddrPort
-	roots         *x509.CertPool
-	template      any
+	realm    operationalRealm
+	target   netip.AddrPort
+	roots    *x509.CertPool
+	template any
+	// token is ES's Nomad ACL client token, from the same startup custody as
+	// the ordinary client's (nomad.token_file, loadNomadToken). prepareExchange
+	// sets it on every request, in the header only.
+	token         string
 	exchangeEntry func(string) // Nil except for instance-scoped transport-entry proof.
 }
 
-func newOperationalLoopbackProvider(realm operationalRealm, target netip.AddrPort, roots *x509.CertPool, template []byte) (*operationalProvider, error) {
+func newOperationalLoopbackProvider(realm operationalRealm, target netip.AddrPort, roots *x509.CertPool, template []byte, token string) (*operationalProvider, error) {
 	if !target.Addr().IsLoopback() || target.Port() != realm.port || roots == nil || realm.host == "" || realm.spki == [32]byte{} {
+		return nil, errOperationalEvidence
+	}
+	if parsed, ok := parseNomadTokenFileContent([]byte(token)); !ok || parsed != token {
 		return nil, errOperationalEvidence
 	}
 	t, err := parseOperationalJSON(template, 65536)
@@ -350,7 +357,7 @@ func newOperationalLoopbackProvider(realm operationalRealm, target netip.AddrPor
 	if _, ok := t.(map[string]any); !ok {
 		return nil, errOperationalEvidence
 	}
-	return &operationalProvider{realm: realm, target: target, roots: roots.Clone(), template: t}, nil
+	return &operationalProvider{realm: realm, target: target, roots: roots.Clone(), template: t, token: token}, nil
 }
 
 type operationalJob struct {
@@ -463,6 +470,15 @@ type preparedOperationalExchange struct {
 	cancel    context.CancelFunc
 }
 
+// prepareRegister prepares the one registration request, POST /v1/jobs.
+func (p *operationalProvider) prepareRegister(ctx context.Context, body []byte) (preparedOperationalExchange, error) {
+	return p.prepareExchange(ctx, http.MethodPost, "/v1/jobs", body)
+}
+
+// prepareExchange builds every request the provider sends to Nomad. Each one
+// carries ES's Nomad token in the X-Nomad-Token header, never in the URL, and
+// names the operational region and namespace. The transport follows no
+// redirect, so the token reaches only the pinned Nomad.
 func (p *operationalProvider) prepareExchange(ctx context.Context, method, path string, body []byte) (preparedOperationalExchange, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	query := "region=" + p.realm.region + "&namespace=" + operationalNamespace
@@ -477,6 +493,7 @@ func (p *operationalProvider) prepareExchange(ctx context.Context, method, path 
 		return preparedOperationalExchange{}, errOperationalEvidence
 	}
 	req.Close = true
+	req.Header.Set(nomadTokenHeader, p.token)
 	req.Header.Set("Accept-Encoding", "identity")
 	if body != nil {
 		req.ContentLength = int64(len(body))

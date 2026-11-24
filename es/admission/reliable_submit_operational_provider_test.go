@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -62,6 +63,20 @@ type operationalReceiver struct {
 	sink                   string
 	observeEntered         chan struct{}
 	observeRelease         chan struct{}
+	requests               []operationalReceivedRequest
+}
+
+// operationalReceivedRequest is what the fake Nomad saw of one request: its
+// method, path and query, and every value of its token header.
+type operationalReceivedRequest struct {
+	method, path, query string
+	tokens              []string
+}
+
+func (r *operationalReceiver) received() []operationalReceivedRequest {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]operationalReceivedRequest(nil), r.requests...)
 }
 
 func (r *operationalReceiver) counts() (int, int, int) {
@@ -71,11 +86,22 @@ func (r *operationalReceiver) counts() (int, int, int) {
 }
 
 func (r *operationalReceiver) handler(w http.ResponseWriter, q *http.Request) {
+	r.mu.Lock()
+	r.requests = append(r.requests, operationalReceivedRequest{method: q.Method, path: q.URL.Path, query: q.URL.RawQuery,
+		tokens: append([]string(nil), q.Header.Values(nomadTokenHeader)...)})
+	r.mu.Unlock()
 	if q.URL.Path == "/unexpected" {
 		r.mu.Lock()
 		r.redirects++
 		r.mu.Unlock()
 		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	// Like a Nomad with ACLs on, the fake refuses a request that does not carry
+	// ES's token before it looks at anything else.
+	if tokens := q.Header.Values(nomadTokenHeader); len(tokens) != 1 || tokens[0] != testNomadToken {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte("Permission denied"))
 		return
 	}
 	if q.URL.RawQuery != "region=global&namespace=es-operational-v1" {
@@ -361,4 +387,96 @@ func testOperationalLostIngressRestart(t *testing.T) {
 		t.Fatalf("post-restart observation: result=%d GetConn events=%d posts=%d gets=%d redirects=%d", accepted.kind, getConn.Load(), posts, gets, redirects)
 	}
 	t.Log("four GetConn events across restart, one POST, three GETs and zero redirect ingress")
+}
+
+// TestEveryOperationalNomadRequestCarriesTheTokenAndTheOperationalNamespace is
+// the runtime half of PR #31's token guard for the operational provider. It
+// drives one handoff that registers the job and observes it, and checks that
+// each of the provider's three requests carried ES's token once, in the
+// header only, and named the operational region and namespace.
+func TestEveryOperationalNomadRequestCarriesTheTokenAndTheOperationalNamespace(t *testing.T) {
+	f := makeOperationalFixture(t, "")
+	result := f.service.handoffOperational(context.Background(), f.domain, f.domain.caller, f.raw)
+	if result.kind != operationalAccepted {
+		t.Fatalf("handoff result kind = %d, want accepted", result.kind)
+	}
+	seen := map[string]int{}
+	for _, request := range f.receiver.received() {
+		kind := request.method + " " + request.path
+		if strings.HasPrefix(request.path, "/v1/job/esoh-job-") {
+			kind = request.method + " /v1/job/<name>"
+			if strings.HasSuffix(request.path, "/evaluations") {
+				kind += "/evaluations"
+			}
+		}
+		seen[kind]++
+		if len(request.tokens) != 1 || request.tokens[0] != testNomadToken {
+			t.Errorf("%s carried %d token header(s) or the wrong token", kind, len(request.tokens))
+		}
+		if request.query != "region=global&namespace="+operationalNamespace {
+			t.Errorf("%s query = %q", kind, request.query)
+		}
+		if strings.Contains(request.query, testNomadToken) || strings.Contains(request.path, testNomadToken) {
+			t.Errorf("%s put the token into the URL", kind)
+		}
+	}
+	want := map[string]int{"POST /v1/jobs": 1, "GET /v1/job/<name>": 1, "GET /v1/job/<name>/evaluations": 1}
+	if len(seen) != len(want) {
+		t.Fatalf("requests = %v, want %v", seen, want)
+	}
+	for kind, count := range want {
+		if seen[kind] != count {
+			t.Fatalf("requests = %v, want %v", seen, want)
+		}
+	}
+}
+
+// TestOperationalProviderRefusesARequestWithoutTheToken shows that the fake
+// Nomad above enforces the token, so the handoff tests that pass through it
+// prove the token is sent: with another token the registration is refused and
+// nothing is accepted.
+func TestOperationalProviderRefusesARequestWithoutTheToken(t *testing.T) {
+	f := makeOperationalFixture(t, "")
+	f.domain.provider.token = "a1b2c3d4-0000-4000-8000-000000000031"
+	result := f.service.handoffOperational(context.Background(), f.domain, f.domain.caller, f.raw)
+	if result.kind == operationalAccepted {
+		t.Fatal("a handoff with another token was accepted")
+	}
+	if posts, _, _ := f.receiver.counts(); posts != 0 {
+		t.Fatalf("the fake Nomad registered %d job(s) without ES's token", posts)
+	}
+	received := f.receiver.received()
+	if len(received) == 0 || received[0].method != http.MethodPost || received[0].path != "/v1/jobs" {
+		t.Fatalf("the registration was not attempted: %v", received)
+	}
+}
+
+// TestOperationalProviderNeedsANomadToken shows that the provider cannot be
+// built without ES's Nomad token in its canonical form, so it cannot send a
+// request without one.
+func TestOperationalProviderNeedsANomadToken(t *testing.T) {
+	_, server, target, pin := newOperationalTestReceiver(t, "")
+	template := operationalProofTemplate(t)
+	realm := operationalRealm{spki: pin, host: "127.0.0.1", port: target.Port(), region: "global",
+		template: sha256.Sum256(operationalFrame([]byte("ESOHJTPL1"), template))}
+	roots := x509.NewCertPool()
+	roots.AddCert(server.Certificate())
+	if _, err := newOperationalLoopbackProvider(realm, target, roots, template, testNomadToken); err != nil {
+		t.Fatalf("the canonical token was refused: %v", err)
+	}
+	for name, token := range map[string]string{
+		"empty":               "",
+		"trailing line feed":  testNomadToken + "\n",
+		"upper case":          strings.ToUpper(testNomadToken),
+		"short":               testNomadToken[1:],
+		"not a UUID":          strings.Repeat("a", len(testNomadToken)),
+		"surrounding space":   " " + testNomadToken[1:],
+		"management-like tag": "management",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if provider, err := newOperationalLoopbackProvider(realm, target, roots, template, token); err == nil || provider != nil {
+				t.Fatalf("token %q was accepted", token)
+			}
+		})
+	}
 }

@@ -1758,7 +1758,8 @@ func TestOperationalHandoffNoPublicStartupOrdinaryOrFixtureCaller(t *testing.T) 
 			{"operationalProvider", "observe", map[string]int{handoff + "operationalDomain.reconcileOperational": 1}},
 			{"verifiedOperationalObservation", "bindOperationalObservation", map[string]int{handoff + "operationalDomain.reconcileOperational": 1}},
 			{"operationalProvider", "register", map[string]int{handoff + "liveSender.consume": 1}},
-			{"operationalProvider", "prepareExchange", map[string]int{handoff + "liveSender.consume": 1, provider + "operationalProvider.observe": 2}},
+			{"operationalProvider", "prepareRegister", map[string]int{handoff + "liveSender.consume": 1}},
+			{"operationalProvider", "prepareExchange", map[string]int{provider + "operationalProvider.prepareRegister": 1, provider + "operationalProvider.observe": 2}},
 			{"operationalProvider", "exchange", map[string]int{provider + "operationalProvider.register": 1, provider + "operationalProvider.observe": 2}},
 		} {
 			method := requirePackageMethod(t, pkg, member.typ, member.name)
