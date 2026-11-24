@@ -3184,10 +3184,13 @@ by behavior, never by an OS label. Between its fork and its exec the fixed
 child asks for `prctl(PR_SET_PDEATHSIG)`, proves that the collector is still
 its parent, and sets its own `RLIMIT_NPROC` to `(0, 0)`, so that an
 unprivileged fixed child can start no process or thread and dies with a
-killed collector. Stated limits: root is not bound by that limit, and the
-exec of `sudo` clears the parent-death request, so the root command of the
-fixed `sudo -n` path, and every command when the SSH target is root, depend
-on the drain alone; an unprivileged collector detects but cannot end a root
+killed collector unless its program undoes that request itself. Stated
+limits: root is not bound by that limit, and the exec of `sudo` clears the
+parent-death request, so the root command of the fixed `sudo -n` path, and
+every command when the SSH target is root, depend on the drain alone; a
+changed binary can undo its own parent-death request and then outlives a
+killed collector, as one process that the process limit still keeps from
+starting any other; an unprivileged collector detects but cannot end a root
 descendant of the fixed `sudo -n` path; descendants that only wait, such as a
 long chain or a herd with a long children list, can outlast the drain's
 bounded per-process kills, which then report a runtime failure and clear the

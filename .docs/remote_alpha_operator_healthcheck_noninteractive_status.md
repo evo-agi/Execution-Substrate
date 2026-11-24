@@ -433,9 +433,9 @@ collector therefore accounts for every descendant through the kernel instead:
   proves that the collector is still its parent after that request, and sets
   its own process limit `RLIMIT_NPROC` to `(0, 0)`. The kernel then refuses an
   unprivileged fixed child every new process and every new thread, so it can
-  have no descendant, and a collector that is killed takes it along. A
-  failure of that setup means that the command does not run, and it is a
-  runtime failure. The limit is the fixed child's own and does not change the
+  have no descendant, and a collector that is killed takes it along unless
+  the program itself undoes that request. A failure of that setup means that
+  the command does not run, and it is a runtime failure. The limit is the fixed child's own and does not change the
   collector's.
 - After every fixed command, on every path, once the fixed child is reaped
   exactly as before, the collector drains its descendants: it lists its own
@@ -461,7 +461,10 @@ and every fixed command when the SSH target is root, can start descendants,
 and only the drain contains them; an unprivileged collector cannot end a
 root descendant of the fixed `sudo -n` path, because `sudo` cannot forward
 `SIGKILL`; it detects such a descendant, reports the check unavailable, and
-the descendant outlives the collector. Where only the drain contains
+the descendant outlives the collector. The fixed child's program can undo its
+own parent-death request; a changed binary that does so outlives a killed
+collector, as one process that the process limit still keeps from starting
+any other. Where only the drain contains
 descendants, it ends them by repeated kills of the collector's own children,
 not by one step, and descendants that only wait can outlast its bound: a
 chain in which each process is the parent of the next gives the collector

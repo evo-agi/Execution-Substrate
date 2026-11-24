@@ -854,10 +854,12 @@ func TestRemoteAlphaOperatorHealthcheckTLSStatusNoninteractiveDescendantDocument
 		"- process limit of the fixed child: `RLIMIT_NPROC` set to `(0, 0)`",
 		"`prctl(PR_SET_PDEATHSIG)`", "proves that the collector is still its parent after that request",
 		"refuses an unprivileged fixed child every new process and every new thread",
+		"and a collector that is killed takes it along unless the program itself undoes that request",
+		"The fixed child's program can undo its own parent-death request; a changed binary that does so outlives a killed collector, as one process that the process limit still keeps from starting any other.",
 		"root is not bound by the process limit", "clears the parent-death request",
 		"every fixed command when the SSH target is root")
 	assertContainsNone(t, "P0v descendant containment", bounds, "best effort", "waitpid` reports",
-		"each round only shrinks what is left", "a relay that stays ahead")
+		"each round only shrinks what is left", "a relay that stays ahead", "takes it along.")
 	privilege := compactDocSection(t, design, "## 9. Remote Privilege Posture", "## 10. Final Route Schema")
 	assertContainsAll(t, "P0v privilege posture", privilege,
 		"detects a root descendant that outlives the command and reports the check unavailable, but cannot end it",
@@ -876,8 +878,11 @@ func TestRemoteAlphaOperatorHealthcheckTLSStatusNoninteractiveDescendantDocument
 		"refuses every later fixed command of the invocation before its spawn",
 		"detects but cannot end a root descendant of the fixed `sudo -n` path",
 		"sets its own `RLIMIT_NPROC` to `(0, 0)`", "root is not bound by that limit",
+		"dies with a killed collector unless its program undoes that request itself",
+		"a changed binary can undo its own parent-death request and then outlives a killed collector, as one process that the process limit still keeps from starting any other",
 		"no root-side runner is added",
 		"The route schema, failure vocabulary, internal protocol, sudo allowlist, and privilege posture do not change.")
+	assertContainsNone(t, "PLANS P0v descendant containment", plans, "dies with a killed collector.")
 
 	probing := compactDocSection(t, mustRead(t, ".docs/system_overview/capability_probing.md"),
 		"The noninteractive remote TLS status collector proves its descendant", "")
@@ -1128,18 +1133,21 @@ print(json.dumps({"capability":True,"cases":cases,"detail":detail}))
 // the fixed child asks the kernel to kill it when the collector's thread
 // ends, and proves that the collector was still its parent after that
 // request. The collector here is a child of the probe, with the real probe
-// and a stand-in that never ends by itself and starts nothing. The control
-// runs the same collector with a setup that does nothing, and there the
-// fixed child outlives it. An exec of a set-user-ID program such as sudo
-// clears the request, so the fixed sudo path stays a stated limit.
+// and a stand-in that never ends by itself and starts nothing. The stand-in
+// ignores TERM before it reports, so only a KILL ends it, and the case holds
+// the request to SIGKILL by behaviour. The control runs the same collector
+// with a setup that does nothing, and there the fixed child outlives it. An
+// exec of a set-user-ID program such as sudo clears the request, so the fixed
+// sudo path stays a stated limit, and so does a changed binary that undoes
+// the request itself.
 func TestRemoteAlphaOperatorHealthcheckTLSStatusNoninteractiveDescendantRealCollectorDeath(t *testing.T) {
 	probe := remoteCollectorDescendantRealPrelude + `
 import subprocess
 release=os.path.join(sys.argv[2],"release")
-stay=standin("""
-end=time.monotonic()+60
-while time.monotonic()<end and not os.path.exists(%r):time.sleep(0.02)
-"""%release)
+# Not standin(): this one ignores TERM before it writes its byte.
+stay=(sys.executable,"-c",("import os,signal,sys,time\nsignal.signal(signal.SIGTERM,signal.SIG_IGN)\n"
+      "w=os.open(%r,os.O_WRONLY);os.write(w,b'x')\nend=time.monotonic()+60\n"
+      "while time.monotonic()<end and not os.path.exists(%r):time.sleep(0.02)\n")%(fifo,release))
 head="""import importlib.util,json,sys
 spec=importlib.util.spec_from_file_location("remote_collector_death",sys.argv[1])
 m=importlib.util.module_from_spec(spec);sys.modules[spec.name]=m;spec.loader.exec_module(m)
