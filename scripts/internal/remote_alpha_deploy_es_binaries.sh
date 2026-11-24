@@ -1161,11 +1161,14 @@ remote_alpha_deploy_es_binaries_stage_git_status_short() {
 
 remote_alpha_deploy_es_binaries_stage_make_local_payload_tree() {
   local payload_dir=$1
-  mkdir -p "${payload_dir}"
+  # Called as `if ! remote_alpha_deploy_es_binaries_stage_make_local_upload_tree`,
+  # where Bash ignores set -e: each step returns on failure itself, and the
+  # last step's status is the function's.
+  mkdir -p "${payload_dir}" || return 1
 
-  remote_alpha_deploy_es_binaries_require_supported_go_toolchain
-  env GOTOOLCHAIN=local CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o "${payload_dir}/es" ./cmd/es
-  env GOTOOLCHAIN=local CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o "${payload_dir}/es-runtime-support" ./cmd/es-runtime-support
+  remote_alpha_deploy_es_binaries_require_supported_go_toolchain || return 1
+  env GOTOOLCHAIN=local CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o "${payload_dir}/es" ./cmd/es || return 1
+  env GOTOOLCHAIN=local CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o "${payload_dir}/es-runtime-support" ./cmd/es-runtime-support || return 1
 
   python3 -I - "${payload_dir}/build-provenance.json" "${REPO_ROOT}" <<'PY'
 import hashlib
@@ -1228,9 +1231,11 @@ PY
 remote_alpha_deploy_es_binaries_stage_make_local_upload_tree() {
   local upload_dir=$1
 
-  mkdir -p "${upload_dir}/scripts/internal" "${upload_dir}/payload"
-  cp "${REPO_ROOT}/scripts/remote_alpha_deploy_es_binaries.sh" "${upload_dir}/scripts/remote_alpha_deploy_es_binaries.sh"
-  cp "${REPO_ROOT}/scripts/internal/remote_alpha_deploy_es_binaries.sh" "${upload_dir}/scripts/internal/remote_alpha_deploy_es_binaries.sh"
+  # Called as `if ! ...`, where Bash ignores set -e: each step returns on
+  # failure itself, and the payload step's status is the function's.
+  mkdir -p "${upload_dir}/scripts/internal" "${upload_dir}/payload" || return 1
+  cp "${REPO_ROOT}/scripts/remote_alpha_deploy_es_binaries.sh" "${upload_dir}/scripts/remote_alpha_deploy_es_binaries.sh" || return 1
+  cp "${REPO_ROOT}/scripts/internal/remote_alpha_deploy_es_binaries.sh" "${upload_dir}/scripts/internal/remote_alpha_deploy_es_binaries.sh" || return 1
   remote_alpha_deploy_es_binaries_stage_make_local_payload_tree "${upload_dir}/payload"
 }
 
