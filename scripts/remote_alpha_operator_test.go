@@ -2334,9 +2334,7 @@ func TestRemoteAlphaOperatorRecoverySessionVaultUnsealExistingMacSideStagesSingl
 	assertContainsAll(t, "fake remote cleanup log", rmLog,
 		"execution-substrate-remote-alpha-vault-unseal-existing",
 	)
-	if entries, err := os.ReadDir(filepath.Join(h.remoteRoot, "tmp", "execution-substrate-remote-alpha-vault-unseal-existing")); err == nil && len(entries) > 0 {
-		t.Fatalf("expected remote staged helper directory to be cleaned, found %d entries", len(entries))
-	}
+	assertRemoteAlphaOperatorStageFoldersGone(t, h.remoteRoot, "execution-substrate-remote-alpha-vault-unseal-existing")
 	assertNoNewPaths(t, "Mac-side fake unseal route", before)
 }
 
@@ -2523,9 +2521,7 @@ func TestRemoteAlphaOperatorRecoverySessionVaultResetDisposableMacSideDryRunStag
 	assertContainsAll(t, "fake reset dry-run remote cleanup log", rmLog,
 		"execution-substrate-remote-alpha-vault-reset-disposable-dry-run",
 	)
-	if entries, err := os.ReadDir(filepath.Join(h.remoteRoot, "tmp", "execution-substrate-remote-alpha-vault-reset-disposable-dry-run")); err == nil && len(entries) > 0 {
-		t.Fatalf("expected remote reset dry-run staged helper directory to be cleaned, found %d entries", len(entries))
-	}
+	assertRemoteAlphaOperatorStageFoldersGone(t, h.remoteRoot, "execution-substrate-remote-alpha-vault-reset-disposable-dry-run")
 	assertNoNewPaths(t, "Mac-side fake reset dry-run route", before)
 }
 
@@ -2627,9 +2623,7 @@ func TestRemoteAlphaOperatorRecoverySessionVaultResetDisposableExecuteResetStage
 	assertContainsAll(t, "fake reset execute remote cleanup log", rmLog,
 		"execution-substrate-remote-alpha-vault-reset-disposable-execute",
 	)
-	if entries, err := os.ReadDir(filepath.Join(h.remoteRoot, "tmp", "execution-substrate-remote-alpha-vault-reset-disposable-execute")); err == nil && len(entries) > 0 {
-		t.Fatalf("expected remote reset execute staged helper directory to be cleaned, found %d entries", len(entries))
-	}
+	assertRemoteAlphaOperatorStageFoldersGone(t, h.remoteRoot, "execution-substrate-remote-alpha-vault-reset-disposable-execute")
 	assertNoNewPaths(t, "Mac-side fake reset execute route", before)
 }
 
@@ -3470,9 +3464,7 @@ func assertOperatorHealthcheckTLSFakeRoute(t *testing.T, h *fakeRemoteAlphaESSer
 	assertContainsAll(t, "fake operator healthcheck TLS remote cleanup log", rmLog,
 		"execution-substrate-remote-alpha-operator-healthcheck-tls-renew",
 	)
-	if entries, err := os.ReadDir(filepath.Join(h.remoteRoot, "tmp", "execution-substrate-remote-alpha-operator-healthcheck-tls-renew")); err == nil && len(entries) > 0 {
-		t.Fatalf("expected remote operator healthcheck TLS staged helper directory to be cleaned, found %d entries", len(entries))
-	}
+	assertRemoteAlphaOperatorStageFoldersGone(t, h.remoteRoot, "execution-substrate-remote-alpha-operator-healthcheck-tls-renew")
 }
 
 type fakeRemoteAlphaOperatorP0vFacadeHarness struct {
@@ -4921,9 +4913,7 @@ func TestRemoteAlphaOperatorRecoverySessionVaultWorkloadAuthBootstrapStagesOnlyA
 	assertContainsAll(t, "fake workload-auth bootstrap remote cleanup log", rmLog,
 		"execution-substrate-remote-alpha-vault-workload-auth-bootstrap",
 	)
-	if entries, err := os.ReadDir(filepath.Join(h.remoteRoot, "tmp", "execution-substrate-remote-alpha-vault-workload-auth-bootstrap")); err == nil && len(entries) > 0 {
-		t.Fatalf("expected remote workload-auth bootstrap staged helper directory to be cleaned, found %d entries", len(entries))
-	}
+	assertRemoteAlphaOperatorStageFoldersGone(t, h.remoteRoot, "execution-substrate-remote-alpha-vault-workload-auth-bootstrap")
 	assertNoNewPaths(t, "Mac-side fake workload-auth bootstrap route", before)
 }
 

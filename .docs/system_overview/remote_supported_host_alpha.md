@@ -1093,6 +1093,15 @@ folder they create belongs to root, and they make their `/tmp` upload and
 artifact folders fresh and private (`mkdir -m 0700` without `-p`, which fails
 when a folder of that name already exists). The Vault reset reads the
 workload-auth summary only from a folder that passes the same check.
+The operator's Vault unseal, Vault reset (dry run and execute), workload-auth
+bootstrap and operator healthcheck TLS routes stage their helpers in a folder
+named `<route prefix>-<run id>` directly under `/tmp`, such as
+`/tmp/execution-substrate-remote-alpha-vault-unseal-existing-<run id>`, made
+with `mkdir -m 0700` and no `-p`. A folder or link someone planted at that name
+makes staging fail, no parent another account could own sits between `/tmp`
+and the staged helpers (the healthcheck route runs its helper through sudo),
+and cleanup removes only a real folder the SSH user owns (red-team re-check 14
+of PR #50, O14-1).
 Default sudo behavior must remain the helper's noninteractive `sudo -n`
 preflight and structured `sudo_unavailable` evidence. `--interactive-sudo`
 may remain available only for a visible terminal when a bounded password
