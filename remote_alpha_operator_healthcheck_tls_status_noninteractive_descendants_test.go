@@ -493,6 +493,14 @@ record("an input over the bound is refused before the flag and the spawn",
        result.overflow and len(spawns)==1 and current["kernel"].events==[],(result,spawns))
 m.subprocess.Popen=RealPopen
 
+assert probe(Kernel()) is None and m.DESCENDANT_CAPABILITY_READY is True
+current["kernel"]=Kernel();limit=m.FIXED_CHILD_PROCESS_LIMIT;m.FIXED_CHILD_PROCESS_LIMIT="no limit"
+try:result=m.run_command(ok)
+finally:m.FIXED_CHILD_PROCESS_LIMIT=limit
+record("a fixed child whose setup before its exec fails does not run, and the command is a drained runtime failure",
+       result.returncode==125 and result.runtime_failed and result.stdout==b"" and names(current["kernel"])==["waitid"]
+       and m.DESCENDANT_CAPABILITY_READY is True,(result,current["kernel"].events))
+
 import contextlib,io
 collected=[]
 def collect_status():
@@ -521,6 +529,7 @@ print(json.dumps({"cases":cases,"detail":detail}))
 		"an unexpected error of the spawn is drained before it goes on",
 		"an unproved drain fails a successful command, clears the flag, and refuses every later command before its spawn",
 		"an input over the bound is refused before the flag and the spawn",
+		"a fixed child whose setup before its exec fails does not run, and the command is a drained runtime failure",
 		"the entry point runs the probe before it reads any status",
 		"a failed probe emits the unavailable document and reads no status")
 }
@@ -603,8 +612,13 @@ def standin(body):
 // Each stand-in for a fixed command starts descendants that ignore TERM and
 // hold the FIFO. The collector's real drain must leave none of them, whatever
 // their process group or session, and the collector must have no child left.
+// The process limit of the fixed child would refuse these descendants to an
+// unprivileged fixed child, so the cases switch it off, as it is for a
+// collector that runs as root and for the root command of the fixed sudo
+// path: there the drain is the only containment.
 func TestRemoteAlphaOperatorHealthcheckTLSStatusNoninteractiveDescendantRealKernel(t *testing.T) {
 	probe := remoteCollectorDescendantRealPrelude + `
+m.FIXED_CHILD_PROCESS_LIMIT=None
 m.validate_descendant_capability()
 record("the probe makes the collector a child subreaper and proves the drain",
        m.DESCENDANT_CAPABILITY_READY is True and no_child(),m.DESCENDANT_CAPABILITY_READY)
@@ -833,12 +847,20 @@ func TestRemoteAlphaOperatorHealthcheckTLSStatusNoninteractiveDescendantDocument
 		"no command falls back to the process-group signals alone",
 		"An unproved drain also clears the capability flag, so every later fixed command of the invocation is refused before its spawn",
 		"an unprivileged collector cannot end a root descendant of the fixed `sudo -n` path",
-		"the bound turns a relay that stays ahead into a reported failure",
-		"A process that a host service starts on a descendant's behalf is no descendant.")
-	assertContainsNone(t, "P0v descendant containment", bounds, "best effort", "waitpid` reports")
+		"The bound turns each of them into a reported failure",
+		"no command returns success while a descendant still lives",
+		"A process that a host service starts on a descendant's behalf is no descendant.",
+		"- process limit of the fixed child: `RLIMIT_NPROC` set to `(0, 0)`",
+		"`prctl(PR_SET_PDEATHSIG)`", "proves that the collector is still its parent after that request",
+		"refuses an unprivileged fixed child every new process and every new thread",
+		"root is not bound by the process limit", "clears the parent-death request",
+		"every fixed command when the SSH target is root")
+	assertContainsNone(t, "P0v descendant containment", bounds, "best effort", "waitpid` reports",
+		"each round only shrinks what is left", "a relay that stays ahead")
 	privilege := compactDocSection(t, design, "## 9. Remote Privilege Posture", "## 10. Final Route Schema")
 	assertContainsAll(t, "P0v privilege posture", privilege,
 		"detects a root descendant that outlives the command and reports the check unavailable, but cannot end it",
+		"neither the process limit nor the parent-death request binds it",
 		"No root-side runner, such as `unshare` started through `sudo`, is used")
 	validation := compactDocSection(t, design, "## 14. Validation And Later Gates", "")
 	assertContainsAll(t, "P0v validation", validation,
@@ -852,6 +874,7 @@ func TestRemoteAlphaOperatorHealthcheckTLSStatusNoninteractiveDescendantDocument
 		"`waitid` reports no child", "two-second descendant drain bound",
 		"refuses every later fixed command of the invocation before its spawn",
 		"detects but cannot end a root descendant of the fixed `sudo -n` path",
+		"sets its own `RLIMIT_NPROC` to `(0, 0)`", "root is not bound by that limit",
 		"no root-side runner is added",
 		"The route schema, failure vocabulary, internal protocol, sudo allowlist, and privilege posture do not change.")
 
@@ -860,7 +883,8 @@ func TestRemoteAlphaOperatorHealthcheckTLSStatusNoninteractiveDescendantDocument
 	assertContainsAll(t, "capability probing descendant containment", probing,
 		"replace the flag and the descendant drain together, by one shared stand-in that proves only that the test process has no child left",
 		"a guard test refuses a script that replaces one of the two without the other",
-		"skips itself, with an explicit reason, only when the attempt to make the test process a child subreaper and to list its children is refused")
+		"skips itself, with an explicit reason, only when the attempt to make the test process a child subreaper and to list its children is refused",
+		"also skips itself when an attempt shows that the limit does not bind the user that runs the tests")
 
 	source := mustRead(t, p0vRemoteCollectorPath())
 	for _, line := range []string{
@@ -868,6 +892,8 @@ func TestRemoteAlphaOperatorHealthcheckTLSStatusNoninteractiveDescendantDocument
 		"DESCENDANT_REAPS_PER_ROUND = 64",
 		"MAX_CHILDREN_LIST_BYTES = 65536",
 		"PR_SET_CHILD_SUBREAPER = 36",
+		"PR_SET_PDEATHSIG = 1",
+		"FIXED_CHILD_PROCESS_LIMIT: int | None = 0",
 		"DESCENDANT_CAPABILITY_READY = False",
 	} {
 		if strings.Count(source, "\n"+line+"\n") != 1 {
@@ -880,6 +906,25 @@ func TestRemoteAlphaOperatorHealthcheckTLSStatusNoninteractiveDescendantDocument
 		"    try:\n        result = supervise_fixed_child(args, input_bytes, spawned)\n    finally:\n",
 		"            proved = drain_descendants(spawned[0] if spawned else None)\n",
 		"        if not proved:\n            DESCENDANT_CAPABILITY_READY = False\n")
+	setup := docSection(t, source, "\ndef fixed_child_setup(", "\ndef supervise_fixed_child(")
+	assertContainsAll(t, "collector fixed child setup", setup,
+		"    prctl = ctypes.CDLL(None, use_errno=True).prctl\n    limit = FIXED_CHILD_PROCESS_LIMIT\n",
+		"        if prctl(ctypes.c_int(PR_SET_PDEATHSIG), ctypes.c_ulong(signal.SIGKILL), ctypes.c_ulong(0),\n",
+		"        if os.getppid() != parent:\n            raise OSError(errno.ESRCH, \"collector ended\")\n",
+		"        if limit is not None:\n            resource.setrlimit(resource.RLIMIT_NPROC, (limit, limit))\n")
+	// The parent-death request comes first, then the proof that the collector
+	// is still the parent, and the limit last.
+	if strings.Index(setup, "PR_SET_PDEATHSIG") > strings.Index(setup, "os.getppid()") ||
+		strings.Index(setup, "os.getppid()") > strings.Index(setup, "RLIMIT_NPROC") {
+		t.Fatalf("the fixed child setup is not in the order: parent-death request, parent proof, process limit")
+	}
+	supervise := docSection(t, source, "\ndef supervise_fixed_child(", "\ndef direct_file_sha256(")
+	assertContainsAll(t, "collector fixed child spawn", supervise,
+		"            start_new_session=True,\n            preexec_fn=fixed_child_setup(os.getpid()),\n",
+		"    except subprocess.SubprocessError:\n")
+	if got := strings.Count(source, "preexec_fn="); got != 1 {
+		t.Fatalf("collector passes preexec_fn %d times, want once", got)
+	}
 	main := docSection(t, source, "\ndef main(", "\nif __name__ == \"__main__\":")
 	assertContainsAll(t, "collector entry point", main,
 		"    try:\n        validate_descendant_capability()\n        payload = collect_status()\n")
@@ -894,4 +939,248 @@ func TestRemoteAlphaOperatorHealthcheckTLSStatusNoninteractiveDescendantDocument
 	if got := strings.Count(source, "spawned.append(proc)"); got != 1 {
 		t.Fatalf("collector records the fixed child for the drain %d times, want once", got)
 	}
+}
+
+// Red-team finding RT12-3 (report 12-redteam.md of the workstream). The drain
+// kills the collector's own children once per round, reaps at most 64 ended
+// children per round, pauses for up to 50 milliseconds between two rounds,
+// and reads at most 65536 bytes of a children list. Descendants that only
+// wait can use each of these numbers, without a relay and without a race. A
+// chain in which every process is the parent of the next gives the collector
+// one child per round: the kill of one link hands it the next one, and the
+// pauses alone let the drain's two seconds hold no more than about 46
+// rounds, however fast the host, so of a chain of 80 the far end is still
+// alive when the drain gives up. A herd whose list is longer than one read is
+// not killed at all, because the round that cannot read the list kills
+// nothing; the case sets the read bound to 256 bytes so that 120 processes
+// are enough.
+//
+// An unprivileged fixed child cannot start either, because its process limit
+// refuses it every new process (RealProcessLimit). These cases switch the
+// limit off, as it is for a collector that runs as root and for the root
+// command of the fixed sudo path. There the drain is the only containment,
+// and what it cannot end within its bound must be a reported failure: the
+// command is a runtime failure without output, the capability flag is
+// cleared, and the next command is refused before its spawn. The processes of
+// each stand-in end by themselves when the release file appears; the probe
+// then drains what is left and proves the capability again.
+func TestRemoteAlphaOperatorHealthcheckTLSStatusNoninteractiveDescendantRealCrowd(t *testing.T) {
+	probe := remoteCollectorDescendantRealPrelude + `
+m.FIXED_CHILD_PROCESS_LIMIT=None
+m.validate_descendant_capability()
+release=os.path.join(sys.argv[2],"release")
+def clean():
+    # Let what a case left end by itself, end the rest, and prove the capability again.
+    open(release,"wb").close()
+    deadline=time.monotonic()+60
+    while not m.drain_descendants() and time.monotonic()<deadline:pass
+    os.unlink(release)
+    m.validate_descendant_capability()
+wait="""
+def wait():
+    end=time.monotonic()+60
+    while time.monotonic()<end and not os.path.exists(%r):time.sleep(0.02)
+    os._exit(0)
+signal.signal(signal.SIGTERM,signal.SIG_IGN)
+ready_r,ready_w=os.pipe()
+"""%release
+chain=wait+"""
+if os.fork()==0:
+    os.close(0);os.close(1);os.close(2);os.close(ready_r);os.setsid()
+    level=1
+    while level<80:
+        if os.fork()!=0:break
+        level+=1
+    if level==80:os.write(ready_w,b"r")
+    os.close(ready_w);wait()
+os.close(ready_w);os.read(ready_r,1);print('ok')
+"""
+herd=wait+"""
+if os.fork()==0:
+    os.close(0);os.close(1);os.close(2);os.close(ready_r);os.setsid()
+    for index in range(120):
+        if os.fork()==0:os.close(ready_w);wait()
+    os.write(ready_w,b"r");os._exit(0)
+os.close(ready_w);os.read(ready_r,1);print('ok')
+"""
+ok=(sys.executable,"-c","print('ok')")
+def closed(fd,seconds):
+    # The stand-in's byte was read before; end of input means that no process of it is left.
+    deadline=time.monotonic()+seconds
+    while True:
+        try:
+            if os.read(fd,64)==b"":return True
+        except BlockingIOError:pass
+        if time.monotonic()>deadline:return False
+        time.sleep(0.01)
+def crowd(body,label):
+    fd=watch()
+    result=m.run_command(standin(body))
+    flag=m.DESCENDANT_CAPABILITY_READY
+    left=not gone(fd,0.2)
+    refused=m.run_command(ok)
+    record(label+" is a runtime failure without output that clears the flag and refuses the next command",
+           result.runtime_failed and result.returncode==125 and result.stdout==b"" and not result.timed_out
+           and flag is False and left and refused.runtime_failed and refused.returncode==125,(result,flag,left,refused))
+    clean()
+    record(label+" ends when released, and the capability is proved again",
+           closed(fd,5.0) and no_child() and m.DESCENDANT_CAPABILITY_READY is True,m.DESCENDANT_CAPABILITY_READY)
+    os.close(fd)
+crowd(chain,"a chain of eighty waiting processes, each the parent of the next, that outlasts the drain")
+old_bound=m.MAX_CHILDREN_LIST_BYTES
+m.MAX_CHILDREN_LIST_BYTES=256
+try:crowd(herd,"a herd of waiting processes whose list is longer than one read")
+finally:m.MAX_CHILDREN_LIST_BYTES=old_bound
+print(json.dumps({"capability":True,"cases":cases,"detail":detail}))
+`
+	result := runRemoteCollectorDescendantProbe(t, probe, t.TempDir())
+	requireRemoteCollectorDescendantKernel(t, result)
+	assertRemoteCollectorDescendantCases(t, result,
+		"a chain of eighty waiting processes, each the parent of the next, that outlasts the drain is a runtime failure without output that clears the flag and refuses the next command",
+		"a chain of eighty waiting processes, each the parent of the next, that outlasts the drain ends when released, and the capability is proved again",
+		"a herd of waiting processes whose list is longer than one read is a runtime failure without output that clears the flag and refuses the next command",
+		"a herd of waiting processes whose list is longer than one read ends when released, and the capability is proved again")
+}
+
+// The process limit of an unprivileged fixed child (red-team finding RT12-3).
+// Between its fork and its exec the fixed child sets RLIMIT_NPROC to (0, 0),
+// and the kernel then refuses it every new process and every new thread, so
+// that a chain, a herd or a relay cannot start and the drain finds nothing
+// but the fixed child. The limit is the fixed child's own. Root is not bound
+// by it, so the probe asks the kernel, by an attempt in a child of its own,
+// whether the limit binds this user, and skips itself only on the explicit
+// answer that a fork still worked under it.
+func TestRemoteAlphaOperatorHealthcheckTLSStatusNoninteractiveDescendantRealProcessLimit(t *testing.T) {
+	probe := remoteCollectorDescendantRealPrelude + `
+import resource
+def unbound():
+    report_r,report_w=os.pipe();pid=os.fork()
+    if pid==0:
+        answer=b"bound"
+        try:
+            os.close(report_r);resource.setrlimit(resource.RLIMIT_NPROC,(0,0))
+            try:
+                child=os.fork()
+                if child==0:os._exit(0)
+                os.waitpid(child,0);answer=b"a fork still worked under RLIMIT_NPROC (0, 0)"
+            except BlockingIOError:pass
+        except BaseException as exc:answer=("unexpected answer: %r"%exc).encode()
+        os.write(report_w,answer);os._exit(0)
+    os.close(report_w);answer=os.read(report_r,4096).decode();os.close(report_r);os.waitpid(pid,0)
+    if answer=="bound":return None
+    if answer.startswith("a fork still worked"):return "the kernel does not bind this user by the process limit: "+answer
+    raise RuntimeError(answer)
+reason=unbound()
+if reason is not None:
+    print(json.dumps({"capability":False,"reason":reason}));sys.exit(0)
+m.validate_descendant_capability()
+own=resource.getrlimit(resource.RLIMIT_NPROC)
+# Should the limit fail, the chain stays bounded and ends at the release.
+release=os.path.join(sys.argv[2],"release")
+chain="""
+signal.signal(signal.SIGTERM,signal.SIG_IGN)
+try:pid=os.fork()
+except OSError as exc:print(errno.errorcode[exc.errno]);sys.exit(0)
+if pid==0:
+    os.close(1);os.close(2)
+    for level in range(80):
+        if os.fork()!=0:break
+    end=time.monotonic()+60
+    while time.monotonic()<end and not os.path.exists(%r):time.sleep(0.02)
+    os._exit(0)
+print('started')
+"""%release
+fd=watch()
+result=m.run_command(standin("import errno\n"+chain))
+record("an unprivileged fixed child cannot start a process, so a chain never starts and nothing is left",
+       result.returncode==0 and result.stdout==b"EAGAIN\n" and not result.runtime_failed and gone(fd) and no_child()
+       and m.DESCENDANT_CAPABILITY_READY is True,result)
+os.close(fd)
+thread="""
+import threading
+try:threading.Thread(target=time.sleep,args=(60,),daemon=True).start()
+except RuntimeError:print('refused');sys.exit(0)
+print('started')
+"""
+fd=watch()
+result=m.run_command(standin(thread))
+record("an unprivileged fixed child cannot start a thread",
+       result.returncode==0 and result.stdout==b"refused\n" and not result.runtime_failed and gone(fd) and no_child(),result)
+os.close(fd)
+record("the process limit is the fixed child's own, and the collector's own limit is unchanged",
+       resource.getrlimit(resource.RLIMIT_NPROC)==own,(own,resource.getrlimit(resource.RLIMIT_NPROC)))
+# Nothing is left after a pass; after a failure this ends what is.
+open(release,"wb").close();deadline=time.monotonic()+60
+while not m.drain_descendants() and time.monotonic()<deadline:pass
+print(json.dumps({"capability":True,"cases":cases,"detail":detail}))
+`
+	result := runRemoteCollectorDescendantProbe(t, probe, t.TempDir())
+	requireRemoteCollectorDescendantKernel(t, result)
+	assertRemoteCollectorDescendantCases(t, result,
+		"an unprivileged fixed child cannot start a process, so a chain never starts and nothing is left",
+		"an unprivileged fixed child cannot start a thread",
+		"the process limit is the fixed child's own, and the collector's own limit is unchanged")
+}
+
+// A collector that is killed during a fixed command takes the fixed child
+// with it (observation O12-1 of the red-team): between its fork and its exec
+// the fixed child asks the kernel to kill it when the collector's thread
+// ends, and proves that the collector was still its parent after that
+// request. The collector here is a child of the probe, with the real probe
+// and a stand-in that never ends by itself and starts nothing. The control
+// runs the same collector with a setup that does nothing, and there the
+// fixed child outlives it. An exec of a set-user-ID program such as sudo
+// clears the request, so the fixed sudo path stays a stated limit.
+func TestRemoteAlphaOperatorHealthcheckTLSStatusNoninteractiveDescendantRealCollectorDeath(t *testing.T) {
+	probe := remoteCollectorDescendantRealPrelude + `
+import subprocess
+release=os.path.join(sys.argv[2],"release")
+stay=standin("""
+end=time.monotonic()+60
+while time.monotonic()<end and not os.path.exists(%r):time.sleep(0.02)
+"""%release)
+head="""import importlib.util,json,sys
+spec=importlib.util.spec_from_file_location("remote_collector_death",sys.argv[1])
+m=importlib.util.module_from_spec(spec);sys.modules[spec.name]=m;spec.loader.exec_module(m)
+"""
+tail="""m.validate_descendant_capability()
+m.run_command(tuple(json.loads(sys.argv[2])))
+"""
+def collector_death(source,wait):
+    fd=watch()
+    collector=subprocess.Popen([sys.executable,"-I","-B","-c",source,sys.argv[1],json.dumps(stay)],
+                               stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE)
+    deadline=time.monotonic()+30;seen=b""
+    while not seen and time.monotonic()<deadline and collector.poll() is None:
+        try:seen=os.read(fd,64)
+        except BlockingIOError:time.sleep(0.01)
+    started=seen==b"x" and collector.poll() is None
+    collector.kill();_out,errors=collector.communicate()  # this probe's own unreaped child
+    ended=gone_after(fd,wait)
+    released=None
+    if not ended:
+        open(release,"wb").close();released=gone_after(fd,10.0);os.unlink(release)
+    os.close(fd)
+    return started,ended,released,errors[-2000:]
+def gone_after(fd,seconds):
+    # The stand-in has written its byte already; end of input means it is gone.
+    deadline=time.monotonic()+seconds
+    while True:
+        try:
+            if os.read(fd,64)==b"":return True
+        except BlockingIOError:pass
+        if time.monotonic()>deadline:return False
+        time.sleep(0.01)
+started,ended,released,errors=collector_death(head+tail,10.0)
+record("a killed collector takes its fixed child with it",started and ended is True,(started,ended,errors))
+started,ended,released,errors=collector_death(head+"m.fixed_child_setup=lambda parent:(lambda:None)\n"+tail,1.0)
+record("without the setup the same fixed child outlives a killed collector",
+       started and ended is False and released is True,(started,ended,released,errors))
+print(json.dumps({"capability":True,"cases":cases,"detail":detail}))
+`
+	result := runRemoteCollectorDescendantProbe(t, probe, t.TempDir())
+	requireRemoteCollectorDescendantKernel(t, result)
+	assertRemoteCollectorDescendantCases(t, result,
+		"a killed collector takes its fixed child with it",
+		"without the setup the same fixed child outlives a killed collector")
 }

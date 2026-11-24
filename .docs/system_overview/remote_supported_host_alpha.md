@@ -3590,16 +3590,22 @@ accounts for its processes. The sequence for one command is fixed:
 1. The collector opens `/proc/self/ns/pid` and proves that
    `/proc/self/ns/pid_for_children` names the same namespace object, by
    device and inode. Otherwise the command refuses before any spawn.
-2. It creates one control pipe, calls `unshare(CLONE_NEWPID)`, and forks
-   exactly one fixed internal anchor. The anchor is the first process of the
-   new namespace. It closes every inherited descriptor except its standard
-   streams and the read end of the control pipe, including the status lock
-   and the trust-anchor pipe, checks that none is left, and ends with a
-   nonzero status when one is. It then reaps every orphan of the namespace
-   and ends with status zero when the control pipe reports end of input. The
-   reaping is required: an orphan that ends as a zombie in the fixed child's
-   process group would otherwise stay visible to the absence scan of step 6
-   and hold it. The anchor runs no other code and reads no status input.
+2. It creates one control pipe and one ready pipe, calls
+   `unshare(CLONE_NEWPID)`, and forks exactly one fixed internal anchor. The
+   anchor is the first process of the new namespace. It first asks the
+   kernel with `prctl(PR_SET_PDEATHSIG)` to kill it when the collector's
+   thread that forked it ends. It then closes every inherited descriptor
+   except its standard streams, the read end of the control pipe and the
+   write end of the ready pipe, including the status lock and the
+   trust-anchor pipe, checks that none is left, and ends with a nonzero
+   status when one is. Only then does it write one byte to the ready pipe and
+   close it. It then reaps every orphan of the namespace and ends with status
+   zero when the control pipe reports end of input. The reaping is required:
+   an orphan that ends as a zombie in the fixed child's process group would
+   otherwise stay visible to the absence scan of step 6 and hold it. The
+   anchor runs no other code and reads no status input. The collector reads
+   the ready byte before step 3, so no fixed child exists while a death of
+   the collector could leave the anchor alive.
 3. The collector spawns the fixed child exactly as before. The child is the
    second process of the namespace and a direct child of the collector, so
    the collector sees its ordinary process and group IDs and every existing
@@ -3610,40 +3616,64 @@ accounts for its processes. The sequence for one command is fixed:
 6. The cleanup owner, process-group disposition, the unresolved-cleanup hold,
    the direct-child reap, and the post-reap absence scan run unchanged, and on
    every path after the spawn the collector closes the control pipe before the
-   cleanup owner runs. A descendant that left the group can keep a child of
-   its own in the fixed child's process group and leave it unreaped. Once that
-   child has ended, it is a zombie that is not an orphan, so the anchor cannot
-   reap it, and no group signal can end it; the unchanged cleanup would wait
-   until the descendant ends by itself, which may be never. With the pipe
-   closed first, the kernel kills that descendant, the zombie goes to the
-   anchor, which reaps it, and the cleanup finds the fixed child alone. A
-   fixed child that still runs at a timeout, an interruption, an output
-   overflow, or a failed step after the spawn, and any process that outlived
-   the fixed child, is therefore killed by the kernel without the grace period
-   of TERM before KILL; on those paths the command is incomplete, and after a
-   normal end the result is already complete, so nothing such a process could
-   still write counts. When the anchor ends, the kernel kills every process
-   that is still in the namespace, admits no new process into it, and lets the
-   anchor become terminal only when no other process of the namespace is left,
-   which includes an unreaped direct child of the collector.
-7. The collector waits for the anchor alone with a nonblocking `waitpid`,
-   sends it one KILL when it is not terminal after the grace period or when
-   the pipe close failed, and reaps it exactly once. No fixed command returns, with a result
-   or incomplete, before that reap.
+   cleanup owner runs and sends the anchor, its own unreaped child, one KILL.
+   The namespace therefore ends whatever a process of the namespace does to
+   the pipe or to the anchor: a root process can open the collector's end of
+   the pipe once more through `/proc`, or stop the anchor with `ptrace`, and
+   any process can keep the anchor busy with orphans to reap. A descendant
+   that left the group can keep a child of its own in the fixed child's
+   process group and leave it unreaped. Once that child has ended, it is a
+   zombie that is not an orphan, so the anchor cannot reap it, and no group
+   signal can end it; the unchanged cleanup would wait until the descendant
+   ends by itself, which may be never. With the namespace ended first, the
+   kernel kills that descendant, the zombie goes to the anchor, which reaps
+   it, and the cleanup finds the fixed child alone. A fixed child that still
+   runs at a timeout, an interruption, an output overflow, or a failed step
+   after the spawn, and any process that outlived the fixed child, is
+   therefore killed by the kernel without the grace period of TERM before
+   KILL; on those paths the command is incomplete, and after a normal end the
+   result is already complete, so nothing such a process could still write
+   counts. When the anchor ends, the kernel kills every process that is still
+   in the namespace, admits no new process into it, and lets the anchor
+   become terminal only when no other process of the namespace is left, which
+   includes an unreaped direct child of the collector.
 
-The control pipe closes when the collector closes its end and also when the
-collector ceases to exist, so a killed collector takes its fixed child and
-every descendant in the namespace with it. As the first process of its
-namespace the anchor cannot be ended by a signal from inside it. An anchor
-that does not become terminal holds the invocation with lifecycle ownership
-and the status lock retained, as the unresolved-cleanup hold does, and that
-hold has no time limit.
+   The fixed command can make such a direct child itself: a process that it
+   makes with `clone` and `CLONE_PARENT` is inside the namespace, and its
+   parent is the collector. Only the collector can reap that stray, and its
+   zombie would hold the group cleanup when it stays in the fixed child's
+   group, and the anchor otherwise. Before the cleanup owner runs, the
+   collector therefore waits without a time limit until the fixed child is
+   terminal and then reaps every stray: each child of the collector, as
+   `/proc/self/task/<tid>/children` lists them, that is outside the
+   collector's own PID namespace and is neither the anchor nor the fixed
+   child. It waits for a stray once it has ended and never signals it, and it
+   goes on until one list of its children holds no stray. Only the fixed
+   child and a stray can make a stray, so a list that holds none, read after
+   the fixed child was seen terminal, is final. The fixed child stays
+   unreaped for the cleanup owner.
+7. The collector waits for the anchor with a nonblocking `waitpid`, reaping
+   every ended stray in the same loop, sends the anchor one KILL when it has
+   not had one and is not terminal after the grace period or when the pipe
+   close failed, and reaps it exactly once. No fixed command returns, with a
+   result or incomplete, before that reap.
+
+A collector that ceases to exist ends its anchor through the parent-death
+signal of step 2, whatever a process of the namespace does to the control
+pipe or to the anchor, so a killed collector takes its fixed child and every
+descendant in the namespace with it. As the first process of its namespace
+the anchor cannot be ended by a signal from inside it. An anchor that does
+not become terminal holds the invocation with lifecycle ownership and the
+status lock retained, as the unresolved-cleanup hold does, and that hold has
+no time limit.
 
 Failure never selects a weaker mode. A missing `os.unshare` or `os.setns`, a
-refused namespace, or a failed anchor fork means no spawn and an incomplete
-command. An unproved reset, a failed control-pipe close, an anchor that ends
-in any way other than status zero or the collector's own KILL, and an
-unproved anchor reap are incomplete after the complete cleanup; the private
+refused namespace, a failed anchor fork, or an anchor that does not write its
+ready byte means no spawn and an incomplete command. An unproved reset, a
+failed control-pipe close, a failed KILL of the anchor, a failed list of the
+collector's children or wait for a stray, an anchor that ends in any way
+other than status zero or the collector's own KILL, and an unproved anchor
+reap are incomplete after the complete cleanup; the private
 `child_namespace_unproved` literal maps to the existing
 `openssl_child_unproved` collection witness reason. While the reset stays
 unproved, every later command refuses at step 1. No command falls back to
@@ -3656,8 +3686,10 @@ place of the fixed child. The member closes its inherited descriptors and
 then waits for input that never comes, so it never ends by itself. After the
 collector closes the control pipe, the member must become terminal by the
 kernel's KILL within the grace period, the anchor must not be terminal while
-the member is unreaped, and after the member's reap the anchor must end with
-status zero without a KILL from the collector. Both children are reaped and
+the member is unreaped, the ended member must be listed among the
+collector's children outside its own PID namespace, as a stray is found, and
+after the member's reap the anchor must end with status zero without a KILL
+from the collector. Both children are reaped and
 every probe descriptor is closed on every path. Any other outcome is
 `process_capability_unproved` before any status input is read and before any
 OpenSSL spawn. The decision is by behavior, never by an OS label, a kernel
@@ -3667,10 +3699,14 @@ Limits that this rule states and does not remove:
 
 - The fixed child still runs as root. It cannot leave its PID namespace, but
   a hostile child could ask a service of the host to start a process outside
-  it, or write any file that root may write. The rule contains the processes
-  of the fixed command, not the authority of root.
+  it, or write any file that root may write. A root process of the namespace
+  that may trace the anchor could also undo the anchor's parent-death
+  signal, so that a killed collector leaves that namespace alive; while the
+  collector lives, its KILL ends the anchor all the same. The rule contains
+  the processes of the fixed command, not the authority of root.
 - A process that cannot die, for example one that is stuck in the kernel,
-  keeps the anchor from becoming terminal. The invocation then holds.
+  keeps the anchor or a stray from becoming terminal. The invocation then
+  holds.
 - Inside its namespace the fixed child has process ID 2 and parent ID 0,
   while `/proc` stays the host's and shows the host's process IDs.
 - The namespace setting belongs to the calling thread, and a kernel may

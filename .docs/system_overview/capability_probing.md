@@ -493,4 +493,6 @@ The drain itself has tests of its own: one group with a deterministic backend
 in place of the kernel operations, which runs on every host, and one group with
 real processes, which runs as an unprivileged user and skips itself, with an
 explicit reason, only when the attempt to make the test process a child
-subreaper and to list its children is refused.
+subreaper and to list its children is refused. The test of the fixed child's
+process limit also skips itself when an attempt shows that the limit does not
+bind the user that runs the tests, as for root.

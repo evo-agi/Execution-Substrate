@@ -31,7 +31,7 @@ func remoteAlphaESServiceTLSStatusCollectorPath() string {
 // containment replaces the namespace by an object that does nothing, and the
 // namespace part of the capability probe with it. The containment has its own
 // tests, with a deterministic backend and, as root, with the real kernel.
-const remoteAlphaESStatusLocalChildNamespace = `module.ChildNamespace=type("LocalChildNamespace",(),{"open":lambda self:None,"restore":lambda self:None,"release":lambda self:True,"close":lambda self:False})
+const remoteAlphaESStatusLocalChildNamespace = `module.ChildNamespace=type("LocalChildNamespace",(),{"open":lambda self:None,"restore":lambda self:None,"end":lambda self,fixed_child:True,"close":lambda self:False})
 module.validate_child_namespace=lambda: None
 `
 

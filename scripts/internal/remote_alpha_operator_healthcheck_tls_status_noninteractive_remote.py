@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import re
+import resource
 import selectors
 import signal
 import subprocess
@@ -43,6 +44,12 @@ READ_CHUNK_SIZE = 16384
 MAX_CHILDREN_LIST_BYTES = 65536
 DESCENDANT_REAPS_PER_ROUND = 64
 PR_SET_CHILD_SUBREAPER = 36
+PR_SET_PDEATHSIG = 1
+# The process limit of the fixed child: with RLIMIT_NPROC (0, 0) the kernel
+# refuses an unprivileged fixed child every new process and thread. Root, and
+# so the command of the fixed sudo path, is not bound by it. Tests of the
+# drain set None, which stands for such a descendant.
+FIXED_CHILD_PROCESS_LIMIT: int | None = 0
 
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 URI_SAN_RE = re.compile(r"(?:^|[\s,])URI:([^,\s]+)")
@@ -480,6 +487,30 @@ def run_command(args: tuple[str, ...], input_bytes: bytes | None = None) -> Comm
     return result
 
 
+def fixed_child_setup(parent: int) -> Callable[[], None]:
+    """What the fixed child runs between its fork and its exec.
+
+    It asks the kernel to kill the fixed child when the collector's thread
+    ends, then proves that the collector was still its parent after that
+    request, and then sets its process limit. An exec of a set-user-ID
+    program such as sudo clears the parent-death signal. Any failure fails
+    the spawn.
+    """
+    prctl = ctypes.CDLL(None, use_errno=True).prctl
+    limit = FIXED_CHILD_PROCESS_LIMIT
+
+    def setup() -> None:
+        if prctl(ctypes.c_int(PR_SET_PDEATHSIG), ctypes.c_ulong(signal.SIGKILL), ctypes.c_ulong(0),
+                 ctypes.c_ulong(0), ctypes.c_ulong(0)) != 0:
+            raise OSError(ctypes.get_errno(), "prctl")
+        if os.getppid() != parent:
+            raise OSError(errno.ESRCH, "collector ended")
+        if limit is not None:
+            resource.setrlimit(resource.RLIMIT_NPROC, (limit, limit))
+
+    return setup
+
+
 def supervise_fixed_child(
     args: tuple[str, ...],
     input_bytes: bytes | None,
@@ -494,9 +525,13 @@ def supervise_fixed_child(
             shell=False,
             env=CHILD_ENV,
             start_new_session=True,
+            preexec_fn=fixed_child_setup(os.getpid()),
         )
     except OSError:
         return CommandResult(returncode=127, stdout=b"", stderr=b"")
+    except subprocess.SubprocessError:
+        # The setup between fork and exec failed; the command did not run.
+        return CommandResult(returncode=125, stdout=b"", stderr=b"", runtime_failed=True)
     spawned.append(proc)
 
     try:

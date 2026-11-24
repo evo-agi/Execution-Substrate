@@ -396,6 +396,7 @@ remote host:
 - descendant drain bound: `2` seconds
 - ended descendants reaped between two kill rounds of the drain: at most `64`
 - children list read per collector thread: at most `65536` bytes
+- process limit of the fixed child: `RLIMIT_NPROC` set to `(0, 0)`
 - file and pipe chunk size: `16384` bytes
 
 Fixed TLS files are hashed in bounded chunks. Child stdout and stderr are
@@ -427,6 +428,15 @@ collector therefore accounts for every descendant through the kernel instead:
   before any fixed command. The decision is by behavior, never by an OS
   label, a kernel version, or the caller's user ID. No fixed command runs
   without a successful probe.
+- Between its fork and its exec, the fixed child asks the kernel with
+  `prctl(PR_SET_PDEATHSIG)` to kill it when the collector's thread ends,
+  proves that the collector is still its parent after that request, and sets
+  its own process limit `RLIMIT_NPROC` to `(0, 0)`. The kernel then refuses an
+  unprivileged fixed child every new process and every new thread, so it can
+  have no descendant, and a collector that is killed takes it along. A
+  failure of that setup means that the command does not run, and it is a
+  runtime failure. The limit is the fixed child's own and does not change the
+  collector's.
 - After every fixed command, on every path, once the fixed child is reaped
   exactly as before, the collector drains its descendants: it lists its own
   children from `/proc/self/task/<tid>/children`, sends each one `SIGKILL`,
@@ -444,17 +454,27 @@ collector therefore accounts for every descendant through the kernel instead:
   flag, so every later fixed command of the invocation is refused before its
   spawn as a runtime failure.
 
-Limits this rule states and does not remove: an unprivileged collector cannot
-end a root descendant of the fixed `sudo -n` path, because `sudo` cannot
-forward `SIGKILL`; it detects such a descendant, reports the check
-unavailable, and the descendant outlives the collector. A relay that leaves
-the process group is ended by repeated per-process kills, not by one step;
-the kernel refuses a fork to a process with a pending `SIGKILL`, so each
-round only shrinks what is left, and the bound turns a relay that stays
-ahead into a reported failure. A process that a host service starts on a
-descendant's behalf is no descendant. The fixed `openssl`, `sha256sum`, and
-`stat` commands start no process; these rules matter only for a changed
-binary on the host.
+Limits this rule states and does not remove: root is not bound by the
+process limit, and the exec of a set-user-ID program such as `sudo` clears
+the parent-death request. So the root command of the fixed `sudo -n` path,
+and every fixed command when the SSH target is root, can start descendants,
+and only the drain contains them; an unprivileged collector cannot end a
+root descendant of the fixed `sudo -n` path, because `sudo` cannot forward
+`SIGKILL`; it detects such a descendant, reports the check unavailable, and
+the descendant outlives the collector. Where only the drain contains
+descendants, it ends them by repeated kills of the collector's own children,
+not by one step, and descendants that only wait can outlast its bound: a
+chain in which each process is the parent of the next gives the collector
+one more child per round, a herd whose children list is longer than one read
+is not killed in that round, and a backlog of ended children uses up the
+reaps of each round while a relay moves on. The bound turns each of them
+into a reported failure: the command is a runtime failure, the capability
+flag is cleared, and no command returns success while a descendant still
+lives. Those descendants then outlive the collector. A process that a host
+service starts on a descendant's behalf is no descendant. The fixed
+`openssl`, `sha256sum`, and `stat` commands start no process, so the process
+limit costs them nothing; these rules matter only for a changed binary on
+the host.
 
 ## 9. Remote Privilege Posture
 
@@ -487,7 +507,8 @@ is unavailable, the collector emits a valid internal protocol result with
 `failure_class=noninteractive_auth_required` and no raw sudo output.
 
 A fixed command run through `sudo -n` runs as root and stays inside the
-descendant containment of section 8 with its stated limit: the collector
+descendant containment of section 8 with its stated limit: neither the
+process limit nor the parent-death request binds it, and the collector
 detects a root descendant that outlives the command and reports the check
 unavailable, but cannot end it. No root-side runner, such as `unshare`
 started through `sudo`, is used, because it would need a host sudo grant for

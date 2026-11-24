@@ -210,28 +210,37 @@ child's group and that one scan observes, so each fixed OpenSSL command also
 runs in a PID namespace of its own. Before the spawn the collector proves
 from `/proc/self/ns/pid_for_children` that its children are created in its
 own PID namespace, opens a new one with `unshare(CLONE_NEWPID)`, and forks one
-fixed internal anchor as its first process. The anchor keeps only its standard
-streams and one control pipe, reaps the namespace's orphans, and ends with
-status zero when that pipe closes. The fixed child is spawned as before, as
-the second process of the namespace and a direct child of the collector, and
-directly after the spawn attempt the collector sets its child namespace back
-with `setns` and proves the reset. The process-group cleanup runs unchanged,
-and on every path after the spawn the collector closes the control pipe before
-the cleanup owner runs, so that an ended child which a descendant outside the
+fixed internal anchor as its first process. The anchor asks the kernel with
+`prctl(PR_SET_PDEATHSIG)` to kill it when the collector's thread ends, keeps
+only its standard streams, one control pipe and one ready pipe, reports ready
+with one byte that the collector reads before the spawn, reaps the
+namespace's orphans, and ends with status zero when the control pipe closes.
+The fixed child is spawned as before, as the second process of the namespace
+and a direct child of the collector, and directly after the spawn attempt the
+collector sets its child namespace back with `setns` and proves the reset.
+The process-group cleanup runs unchanged, and on every path after the spawn
+the collector closes the control pipe before the cleanup owner runs and sends
+the anchor one KILL, so that an ended child which a descendant outside the
 group left unreaped in the group, and which no group signal can end, cannot
-hold it; a fixed child that still runs at a failure is then killed by the
-kernel without the grace period of TERM before KILL. When the pipe closes, the
-kernel kills every process still in the namespace, admits no new one, and lets
-the anchor become terminal only when the namespace is otherwise empty. No
-fixed command returns before its anchor is reaped exactly once; an anchor that
-does not become terminal holds the invocation with the status lock retained
-and without a time limit, and a killed collector takes its fixed child and
-every descendant in the namespace with it. No namespace or no anchor means no
-spawn; an unproved reset, pipe close, anchor end, or anchor reap is incomplete
-after the complete cleanup under the existing `openssl_child_unproved` reason;
-no command falls back to process-group disposition alone. The fixed child
-still runs as root, so this contains its processes and not what root may ask
-the host to do; a process that cannot die holds the invocation.
+hold it, whatever a process of the namespace does to the pipe or the anchor;
+a fixed child that still runs at a failure is then killed by the kernel
+without the grace period of TERM before KILL. The collector then waits
+without a time limit until the fixed child is terminal and reaps, without a
+signal, every stray: a child of its own outside its own PID namespace, other
+than the anchor and the fixed child, which the fixed command made with
+`clone` and `CLONE_PARENT`. When the anchor ends, the kernel kills every
+process still in the namespace, admits no new one, and lets the anchor become
+terminal only when the namespace is otherwise empty. No fixed command returns
+before its anchor is reaped exactly once; an anchor that does not become
+terminal holds the invocation with the status lock retained and without a
+time limit, and a killed collector takes its anchor, its fixed child and
+every descendant in the namespace with it. No namespace, no anchor, or no
+ready byte means no spawn; an unproved reset, pipe close, anchor KILL, stray
+reap, anchor end, or anchor reap is incomplete after the complete cleanup
+under the existing `openssl_child_unproved` reason; no command falls back to
+process-group disposition alone. The fixed child still runs as root, so this
+contains its processes and not what root may ask the host to do; a process
+that cannot die holds the invocation.
 After bootstrap stage removal and status-lock acquisition, before status
 config, certificate, key, trust-anchor, or prior-summary reads and before any
 OpenSSL spawn, exactly one process-capability probe uses one fixed internal fork

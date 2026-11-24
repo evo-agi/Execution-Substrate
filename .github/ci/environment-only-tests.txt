@@ -144,11 +144,13 @@ execution-substrate/es/admission/internal/reliablesubmit TestSQLiteV3OldBinaryRe
 # Root package: real-kernel tests of the PID-namespace containment of the
 # Remote Alpha TLS status collector. Creating a PID namespace needs root on
 # Linux. Each test asks the kernel by an attempt in a child of its own and
-# skips itself when the kernel refuses. These three run as root in the step
+# skips itself when the kernel refuses. These five run as root in the step
 # named above.
 skips-itself execution-substrate TestRemoteAlphaESServiceTLSStatusChildNamespaceRealCollectorDeath
+skips-itself execution-substrate TestRemoteAlphaESServiceTLSStatusChildNamespaceRealDeafAnchor
 skips-itself execution-substrate TestRemoteAlphaESServiceTLSStatusChildNamespaceRealDescendants
 skips-itself execution-substrate TestRemoteAlphaESServiceTLSStatusChildNamespaceRealKernel
+skips-itself execution-substrate TestRemoteAlphaESServiceTLSStatusChildNamespaceRealSiblings
 
 # es/admission: the opt-in stress test of the directory swap race in the
 # startup probe, and the attacker process it starts (finding RT-3 of the
