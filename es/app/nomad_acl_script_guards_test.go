@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -107,8 +108,9 @@ func TestNomadACLSetupWrapperChecksWithTheManagementToken(t *testing.T) {
 			}
 			for i, call := range calls {
 				if call[0] != test.actions[i] || !hasPair(call, "--management-token-file", management) ||
-					!hasPair(call, "--observer-token-file", filepath.Join(aclDir, "observer-token")) {
-					t.Fatalf("tool call %d = %q, want %s with the management and observer token files", i, call, test.actions[i])
+					!hasPair(call, "--observer-token-file", filepath.Join(aclDir, "observer-token")) ||
+					!hasPair(call, "--nomad-uid", "0") {
+					t.Fatalf("tool call %d = %q, want %s with the management and observer token files and Nomad's uid 0", i, call, test.actions[i])
 				}
 			}
 		})
@@ -176,6 +178,106 @@ func TestNomadACLDirPlacementRefusesEveryScope(t *testing.T) {
 			if output, err := check(aclDir); err == nil || !strings.Contains(output, "outside the proof, staging, results and SPIRE socket directories") {
 				t.Fatalf("token directory %s overlapping scope %s accepted: %v output=%s", aclDir, scope, err, output)
 			}
+		}
+	}
+}
+
+// TestLinuxSetupChecksNomadsListenerBeforeEveryTokenSend: the setup script
+// sends Nomad a token or a bootstrap secret only right after it checked that
+// Nomad's user owns the listener (require_nomad_listener).
+// TestLinuxSetupBootstrapSendsNoSecretToAPortHolder shows that the checks
+// work; this test keeps each send next to one, including a send that a later
+// check covers today, so a send cannot be added or moved away from its check.
+//
+// A send is a command, outside a heredoc and outside a comment, that hands
+// NOMAD_TOKEN to a program, names X-Nomad-Token, or carries BootstrapSecret.
+// Its check is one of:
+//   - "require_nomad_listener ||" earlier in the same command;
+//   - the statement just before it: "require_nomad_listener || return 1";
+//   - the block just before it: "if ! require_nomad_listener; then", a body
+//     that ends in "return 1", then "fi".
+func TestLinuxSetupChecksNomadsListenerBeforeEveryTokenSend(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join(executionPlatformRepoRoot(t), "scripts", "70_linux_setup.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(string(data), "\n")
+	send := regexp.MustCompile(`\bNOMAD_TOKEN=|X-Nomad-Token|BootstrapSecret`)
+	heredoc := regexp.MustCompile(`<<-?'?([A-Za-z_][A-Za-z0-9_]*)'?`)
+	function := regexp.MustCompile(`^([a-z_][a-z0-9_]*)\(\) \{$`)
+	indent := func(line string) int { return len(line) - len(strings.TrimLeft(line, " ")) }
+	previousStatement := func(i int) int {
+		for i--; i >= 0 && strings.TrimSpace(lines[i]) == ""; i-- {
+		}
+		return i
+	}
+	checked := func(start int, at int, column int) bool {
+		for i := start; i <= at; i++ {
+			if index := strings.Index(lines[i], "require_nomad_listener ||"); index >= 0 && (i < at || index < column) {
+				return true
+			}
+		}
+		before := previousStatement(start)
+		if before < 0 {
+			return false
+		}
+		switch strings.TrimSpace(lines[before]) {
+		case "require_nomad_listener || return 1":
+			return true
+		case "fi":
+			body := previousStatement(before)
+			if body < 0 || strings.TrimSpace(lines[body]) != "return 1" {
+				return false
+			}
+			for i := body - 1; i >= 0; i-- {
+				if strings.TrimSpace(lines[i]) != "" && indent(lines[i]) <= indent(lines[before]) {
+					return indent(lines[i]) == indent(lines[before]) && strings.TrimSpace(lines[i]) == "if ! require_nomad_listener; then"
+				}
+			}
+		}
+		return false
+	}
+
+	inFunctions := map[string]bool{}
+	current := ""
+	terminator := ""
+	for i, line := range lines {
+		if terminator != "" {
+			if strings.TrimSpace(line) == terminator {
+				terminator = ""
+			}
+			continue
+		}
+		if m := function.FindStringSubmatch(line); m != nil {
+			current = m[1]
+		}
+		where := current
+		if where == "" {
+			where = "main body"
+		}
+		if !strings.HasPrefix(strings.TrimSpace(line), "#") {
+			if location := send.FindStringIndex(line); location != nil {
+				start := i
+				for start > 0 && strings.HasSuffix(strings.TrimRight(lines[start-1], " "), "\\") {
+					start--
+				}
+				if !checked(start, i, location[0]) {
+					t.Errorf("70_linux_setup.sh:%d (%s) sends a token without checking Nomad's listener just before: %s", i+1, where, strings.TrimSpace(line))
+				}
+				inFunctions[current] = true
+			}
+		}
+		if m := heredoc.FindStringSubmatch(line); m != nil {
+			terminator = m[1]
+		}
+		if line == "}" {
+			current = "" // a function ends at a closing brace in column 0
+		}
+	}
+	// The sends this test must at least find, so it cannot pass by finding none.
+	for _, name := range []string{"nomad_token_curl", "bootstrap_nomad_acl", "report_nomad_cpu_visibility_diagnostics", "qualify_supported_substrate"} {
+		if !inFunctions[name] {
+			t.Errorf("found no token send in %s; the scan no longer recognises the script's sends", name)
 		}
 	}
 }

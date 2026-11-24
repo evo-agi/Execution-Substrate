@@ -488,7 +488,7 @@ func TestNomadACLToolCheckRefusesEachDeviation(t *testing.T) {
 		proxy, requests := startElsewhere(t)
 		server := httptest.NewServer(&fakeNomadForACLCheck{})
 		defer server.Close()
-		command := exec.Command("python3", "-I", nomadACLToolPath(), "check", "--addr", server.URL,
+		command := exec.Command("python3", "-I", nomadACLToolPath(), "check", "--addr", server.URL, "--nomad-uid", strconv.Itoa(os.Geteuid()),
 			"--es-token-file", esTokenFile, "--observer-token-file", observerTokenFile, "--management-token-file", managementFile)
 		command.Env = append(os.Environ(), "http_proxy="+proxy.URL, "HTTP_PROXY="+proxy.URL, "all_proxy="+proxy.URL, "no_proxy=", "NO_PROXY=")
 		output, err := command.CombinedOutput()
