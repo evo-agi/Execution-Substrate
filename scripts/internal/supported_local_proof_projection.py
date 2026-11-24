@@ -493,6 +493,28 @@ def captured_result_evidence(proof_root: str, output: str) -> None:
         os.close(proof)
 
 
+NOMAD_TOKEN_PATTERN = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\n?\Z", re.ASCII)
+
+
+def nomad_token_header() -> dict:
+    """The X-Nomad-Token header from NOMAD_TOKEN_FILE (the read-only observer
+    token), or no header when it is unset. The file must be a regular file,
+    not a symbolic link, holding one canonical token."""
+    path = os.environ.get("NOMAD_TOKEN_FILE", "")
+    if not path:
+        return {}
+    require(path.startswith("/"))
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    try:
+        require(stat.S_ISREG(os.fstat(descriptor).st_mode))
+        payload = os.read(descriptor, 64)
+    finally:
+        os.close(descriptor)
+    text = payload.decode("ascii")
+    require(NOMAD_TOKEN_PATTERN.fullmatch(text) is not None)
+    return {"X-Nomad-Token": text.rstrip("\n")}
+
+
 def fetch_node_details(base_url: str) -> dict:
     require("?" not in base_url and "#" not in base_url)
     parsed = urllib.parse.urlsplit(base_url)
@@ -508,11 +530,12 @@ def fetch_node_details(base_url: str) -> dict:
             raise ProjectionError
 
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+    headers = nomad_token_header()
     total_bytes = 0
 
     def load(url: str) -> object:
         nonlocal total_bytes
-        with opener.open(url, timeout=10) as response:
+        with opener.open(urllib.request.Request(url, headers=headers), timeout=10) as response:
             payload = response.read(MAX_RAW_BYTES + 1)
         require(len(payload) <= MAX_RAW_BYTES)
         total_bytes += len(payload)

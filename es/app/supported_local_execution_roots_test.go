@@ -45,6 +45,8 @@ type fullReadinessFixture struct {
 	server  *httptest.Server
 	initial []byte
 	roots   map[string]os.FileInfo
+	// observerToken is the read-only Nomad token file readiness reads with.
+	observerToken string
 }
 
 func newFullReadinessFixture(t *testing.T) *fullReadinessFixture {
@@ -90,8 +92,10 @@ func newFullReadinessFixture(t *testing.T) *fullReadinessFixture {
 	}))
 	t.Cleanup(server.Close)
 	config := filepath.Join(proof, "es.json")
+	esTokenFile := writeFakeNomadTokenFile(t, workspace)
+	observerTokenFile := writeFakeNomadObserverTokenFile(t, workspace)
 	data, err := json.Marshal(map[string]any{
-		"nomad":          map[string]any{"base_url": server.URL, "datacenter": "dc1"},
+		"nomad":          map[string]any{"base_url": server.URL, "datacenter": "dc1", "token_file": esTokenFile},
 		"runtime_config": map[string]any{"workload_zone_vault_config_ref": map[string]any{"digest": "fixture-digest"}},
 		"execution": map[string]any{
 			"staging_root_dir": filepath.Join(proof, "es-staging"), "results_root_dir": filepath.Join(proof, "es-results"),
@@ -113,7 +117,8 @@ func newFullReadinessFixture(t *testing.T) *fullReadinessFixture {
 		t.Fatal(err)
 	}
 	f := &fullReadinessFixture{t: t, repo: repo, proof: proof, config: config, state: state, bin: bin,
-		events: filepath.Join(workspace, "events"), server: server, initial: data, roots: map[string]os.FileInfo{}}
+		events: filepath.Join(workspace, "events"), server: server, initial: data, roots: map[string]os.FileInfo{},
+		observerToken: observerTokenFile}
 	for _, name := range []string{"es-staging", "es-results"} {
 		info, err := os.Stat(filepath.Join(proof, name))
 		if err != nil {
@@ -140,8 +145,12 @@ case "$url" in
     printf '{"vault_config":{"address":"https://vault.example.invalid","auth_mount":"jwt","auth_role":"fixture","jwt_audience":"fixture"}}\n' ;;
   "$ROOT_SERVER_URL"/v1/status/leader)
     printf '"127.0.0.1:4647"\n' ;;
+  "$ROOT_SERVER_URL"/v1/acl/token/self)
+    printf '{"AccessorID":"anonymous","Type":"client","Policies":[]}\n' ;;
+  "$ROOT_SERVER_URL"/v1/acl/policy/anonymous)
+    printf '404' ;;
   "$ROOT_SERVER_URL"/v1/agent/self)
-    printf '{"config":{"DevMode":false,"Client":{"Options":{"docker.cleanup.image":"false"}}}}\n' ;;
+    printf '{"config":{"DevMode":false,"Client":{"Options":{"driver.allowlist":"docker"}},"Plugins":[{"Name":"docker","Config":{"allow_privileged":%s,"allow_caps":["chown","dac_override","fowner","kill","setgid","setuid","setpcap"],"volumes":{"enabled":true},"gc":{"image":false}}}]}}\n' "${ROOT_AGENT_ALLOW_PRIVILEGED:-false}" ;;
   "$ROOT_SERVER_URL"/v1/nodes)
     printf '[{"ID":"node-1","Name":"fixture","Status":"ready"}]\n' ;;
   *) printf 'unexpected curl URL\n' >> "$ROOT_EVENTS"; exit 97 ;;
@@ -183,7 +192,7 @@ func (f *fullReadinessFixture) env(overrides ...string) []string {
 		"SUPPORTED_LOCAL_PROOF_ID=fixture-proof", "CONTROL_PLANE_IMAGE=execution-substrate/control-plane:supported-local",
 		"CONTROL_PLANE_DOCKERFILE=" + filepath.Join(f.proof, "Dockerfile"),
 		"BRINGUP_PROFILE=full", "BRINGUP_DIR=" + f.state,
-		"ES_CONFIG=" + f.config, "NOMAD_ADDR=" + f.server.URL,
+		"ES_CONFIG=" + f.config, "NOMAD_ADDR=" + f.server.URL, "NOMAD_TOKEN_FILE=" + f.observerToken,
 		"ARS_URL=" + f.server.URL + "/ars", "EGS_URL=" + f.server.URL + "/egs",
 		"AGS_URL=" + f.server.URL + "/ags", "ES_URL=" + f.server.URL + "/es",
 		"CA_CERT=" + filepath.Join(f.proof, "ca.pem"),
@@ -378,6 +387,32 @@ func TestSupportedLocalFullReadinessActualEntrypoints(t *testing.T) {
 	}
 }
 
+// Bring-up and the health check refuse a Nomad agent outside the supported
+// Docker limits (here: privileged containers allowed), in both the one-shot
+// check and the wait loop that bring-up's up uses, before any Docker check.
+func TestSupportedLocalFullReadinessRefusesALoosenedNomadAgent(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		script    string
+		args      []string
+		overrides []string
+	}{
+		{"01_bringup.sh check", "01_bringup.sh", []string{"check"}, nil},
+		{"10_health_check.sh", "10_health_check.sh", nil, nil},
+		{"10_health_check.sh waiting for readiness", "10_health_check.sh", nil, []string{"WAIT_FOR_READY=1", "READY_TIMEOUT_SECONDS=2"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newFullReadinessFixture(t)
+			output, err := f.runScript(test.script, test.args, append([]string{"ROOT_AGENT_ALLOW_PRIVILEGED=true"}, test.overrides...)...)
+			if err == nil || !strings.Contains(output, "the Docker plugin must refuse privileged containers (allow_privileged = false)") ||
+				strings.Contains(output, "submit-ready: true") || strings.Contains(f.eventText(), "docker ") {
+				t.Fatalf("readiness accepted a Nomad that allows privileged containers: %v %q events=%q", err, output, f.eventText())
+			}
+			f.assertNoReadinessMutation()
+		})
+	}
+}
+
 func TestSupportedLocalFullReadinessStillChecksSubmitPrerequisites(t *testing.T) {
 	f := newFullReadinessFixture(t)
 	output, err := f.runScript("10_health_check.sh", nil, "ROOT_IMAGE_PRESENT=0")
@@ -410,6 +445,7 @@ nomad() { printf 'unexpected nomad\n' >> "$ROOT_EVENTS"; return 97; }
 vault() { printf 'unexpected vault\n' >> "$ROOT_EVENTS"; return 97; }
 limactl() { printf 'unexpected limactl\n' >> "$ROOT_EVENTS"; return 97; }
 curl() { printf 'unexpected curl\n' >> "$ROOT_EVENTS"; return 97; }
+nomad_acl_state_check() { :; }
 ss() { printf 'unexpected ss\n' >> "$ROOT_EVENTS"; return 97; }
 stop_background_process() { :; }
 stop_vault_dev_listener() { :; }

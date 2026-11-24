@@ -401,8 +401,10 @@ func (n *nomadHarness) mountedNomadEndpoint() (string, error) {
 	return n.addr, nil
 }
 
-func mountedLocalNomadClient() *http.Client {
-	return &http.Client{Timeout: 2 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+func (n *nomadHarness) mountedLocalNomadClient() *http.Client {
+	client := n.httpClient(2 * time.Second)
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	return client
 }
 
 func (n *nomadHarness) mountedNomadRead(ctx context.Context, path string, limit int64) ([]byte, int, error) {
@@ -414,7 +416,7 @@ func (n *nomadHarness) mountedNomadRead(ctx context.Context, path string, limit 
 	if err != nil {
 		return nil, 0, errors.New("mount witness: Nomad observation request unavailable")
 	}
-	response, err := mountedLocalNomadClient().Do(request)
+	response, err := n.mountedLocalNomadClient().Do(request)
 	if err != nil {
 		return nil, 0, errors.New("mount witness: Nomad observation unavailable")
 	}
@@ -468,7 +470,7 @@ func (n *nomadHarness) waitForUniqueRunningMountedAllocation(jobID, taskName str
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	client := mountedLocalNomadClient()
+	client := n.mountedLocalNomadClient()
 	for ctx.Err() == nil {
 		request, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/v1/job/"+jobID+"/allocations", nil)
 		if err != nil {
@@ -536,7 +538,7 @@ func (n *nomadHarness) verifyUniqueMountedAllocation(jobID, allocationID string)
 	if err != nil {
 		return errors.New("mount witness: terminal allocation request unavailable")
 	}
-	response, err := (&http.Client{Timeout: 2 * time.Second}).Do(request)
+	response, err := n.httpClient(2 * time.Second).Do(request)
 	if err != nil {
 		return errors.New("mount witness: terminal allocation list unavailable")
 	}
@@ -640,7 +642,7 @@ func (n *nomadHarness) cancelMountedJob(jobID string) error {
 	if err != nil {
 		return errors.New("mount witness: test-owned job cancellation request unavailable")
 	}
-	response, err := mountedLocalNomadClient().Do(request)
+	response, err := n.mountedLocalNomadClient().Do(request)
 	if err != nil {
 		return errors.New("mount witness: test-owned job cancellation failed")
 	}
@@ -1745,9 +1747,11 @@ func TestMountedSourceIdentityNomadTaskLabelProfileLaunchConfig(t *testing.T) {
 		t.Fatal("ordinary stack implicitly enabled the task-label profile")
 	}
 	defaultConfig := captureMountedNomadAgentConfig(t, defaultOptions)
-	if !strings.Contains(defaultConfig, `"docker.cleanup.image" = "false"`) ||
-		!strings.Contains(defaultConfig, `"docker.volumes.enabled" = "true"`) ||
-		strings.Contains(defaultConfig, `extra_labels`) || strings.Contains(defaultConfig, `plugin "docker"`) {
+	if strings.Count(defaultConfig, supportedNomadDockerPluginBlock) != 1 ||
+		strings.Count(defaultConfig, `plugin "docker"`) != 1 ||
+		!strings.Contains(defaultConfig, supportedNomadClientOptions) ||
+		strings.Contains(defaultConfig, `extra_labels`) ||
+		strings.Contains(defaultConfig, `"docker.cleanup.image"`) || strings.Contains(defaultConfig, `"docker.volumes.enabled"`) {
 		t.Fatal("default/capability-probe Nomad config changed")
 	}
 	witnessOptions := submitStackOptions{mountedSourceDockerTaskNameLabel: true, workloadVaultAddress: canary}.nomadHarnessOptions()
@@ -1758,8 +1762,8 @@ func TestMountedSourceIdentityNomadTaskLabelProfileLaunchConfig(t *testing.T) {
 	if strings.Count(witnessConfig, `plugin "docker"`) != 1 ||
 		strings.Count(witnessConfig, `extra_labels = ["task_name"]`) != 1 ||
 		strings.Count(witnessConfig, `extra_labels`) != 1 ||
-		!strings.Contains(witnessConfig, `volumes { enabled = true }`) ||
-		!strings.Contains(witnessConfig, `gc { image = false }`) ||
+		strings.Count(witnessConfig, supportedNomadDockerPluginBlockWithTaskNameLabel()) != 1 ||
+		!strings.Contains(witnessConfig, supportedNomadClientOptions) ||
 		strings.Contains(witnessConfig, `"docker.cleanup.image"`) ||
 		strings.Contains(witnessConfig, `"docker.volumes.enabled"`) ||
 		strings.Contains(witnessConfig, `job_id`) || strings.Contains(witnessConfig, `extra_labels = ["*"]`) ||

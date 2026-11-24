@@ -9,7 +9,6 @@ import (
 	"log"
 	"net/http"
 	"net/url"
-	"path"
 	"strings"
 )
 
@@ -395,11 +394,7 @@ func (c *nomadClient) fetchTaskLogs(ctx context.Context, allocationID string, ta
 }
 
 func (c *nomadClient) stopJob(ctx context.Context, jobID string) *Error {
-	requestURL := c.baseURL.ResolveReference(&url.URL{
-		Path:     path.Clean("/v1/job/" + jobID),
-		RawQuery: "purge=false",
-	})
-	request, err := http.NewRequestWithContext(ctx, http.MethodDelete, requestURL.String(), nil)
+	request, err := c.newJobRequest(ctx, http.MethodDelete, "/v1/job/"+jobID, url.Values{"purge": []string{"false"}}, nil)
 	if err != nil {
 		return nomadUnavailableError("execution runtime is unavailable")
 	}
@@ -424,11 +419,7 @@ func (c *nomadClient) stopJob(ctx context.Context, jobID string) *Error {
 }
 
 func (c *nomadClient) get(ctx context.Context, requestPath string, query url.Values) (*http.Response, error) {
-	requestURL := c.baseURL.ResolveReference(&url.URL{Path: path.Clean(requestPath)})
-	if query != nil {
-		requestURL.RawQuery = query.Encode()
-	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL.String(), nil)
+	request, err := c.newJobRequest(ctx, http.MethodGet, requestPath, query, nil)
 	if err != nil {
 		return nil, err
 	}

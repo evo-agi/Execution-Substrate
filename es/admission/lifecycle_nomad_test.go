@@ -199,13 +199,13 @@ func TestTrancheB2StopJobConstructsExactNonPurgingDelete(t *testing.T) {
 				if request.URL.Path != wantPath || request.URL.EscapedPath() != wantPath {
 					t.Fatalf("cancel path = %q escaped=%q, want %q", request.URL.Path, request.URL.EscapedPath(), wantPath)
 				}
-				if request.URL.RawQuery != "purge=false" {
-					t.Fatalf("cancel raw query = %q, want purge=false", request.URL.RawQuery)
+				if request.URL.RawQuery != "namespace="+nomadSubmitNamespace+"&purge=false" {
+					t.Fatalf("cancel raw query = %q, want namespace=%s&purge=false", request.URL.RawQuery, nomadSubmitNamespace)
 				}
 				query := request.URL.Query()
 				values, ok := query["purge"]
-				if len(query) != 1 || !ok || len(values) != 1 || values[0] != "false" {
-					t.Fatalf("cancel parsed query = %#v, want only purge=[false]", query)
+				if len(query) != 2 || !ok || len(values) != 1 || values[0] != "false" {
+					t.Fatalf("cancel parsed query = %#v, want only namespace and purge=[false]", query)
 				}
 				if request.Body != nil {
 					body, err := io.ReadAll(request.Body)
@@ -625,13 +625,26 @@ func trancheB2NomadClientWithResponse(t *testing.T, response func(*http.Request)
 	return &nomadClient{
 		baseURL:    baseURL,
 		datacenter: "dc1",
+		token:      testNomadToken,
 		client: &http.Client{Transport: resolvedPlanRoundTripper(func(request *http.Request) (*http.Response, error) {
+			assertNomadJobRequestAuthenticated(t, request)
 			return response(request), nil
 		})},
 	}
 }
 
+// newTestNomadClient serves handler behind nomadAccessControlTestHandler, an
+// ACL-enabled Nomad stand-in that also checks every job request's token and
+// namespace.
 func newTestNomadClient(t *testing.T, handler http.Handler) *nomadClient {
+	t.Helper()
+
+	return newUnwrappedTestNomadClient(t, nomadAccessControlTestHandler(t, handler))
+}
+
+// newUnwrappedTestNomadClient serves handler as the whole Nomad, including
+// the access-control endpoints.
+func newUnwrappedTestNomadClient(t *testing.T, handler http.Handler) *nomadClient {
 	t.Helper()
 
 	server := httptest.NewServer(handler)
@@ -644,6 +657,7 @@ func newTestNomadClient(t *testing.T, handler http.Handler) *nomadClient {
 	return &nomadClient{
 		baseURL:    baseURL,
 		datacenter: "dc1",
+		token:      testNomadToken,
 		client:     server.Client(),
 	}
 }
