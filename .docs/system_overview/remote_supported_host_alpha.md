@@ -1070,6 +1070,25 @@ The first delegation slice must stay check-only/non-mutating. It may rely on
 the helper's existing temporary checker staging under
 `/var/tmp/execution-substrate-remote-alpha/helper-staging/<run-id>/`, but the
 operator facade itself must not introduce a generic remote staging framework.
+
+`Current invariant`: root writes summaries, preflights, backups and staged
+helpers into the shared artifact folder `/var/tmp/execution-substrate-remote-alpha`
+by name, and `/var/tmp` is writable by every account, so another account could
+create that folder first and plant links in it (whole-trunk red-team follow-up
+N-1, 2026-11-24). Every helper that writes there, and every Mac-side route that
+stages helpers there, first runs `remote_alpha_prepare_output_dir`
+(`scripts/internal/remote_alpha_output_dir.sh`; helpers that are staged on
+their own carry an identical copy, which a test keeps identical). It creates
+missing folders one at a time without following links and refuses a symbolic
+link anywhere on the path, a folder that belongs to an account other than root,
+the user running the step or the user who ran sudo, a folder its group or
+others can write unless root owns it and it is sticky (such as `/var/tmp`
+itself), and an artifact folder its group or others can write. The Mac-side
+staging routes run that check through sudo before any other sudo step, so a
+folder they create belongs to root, and they make their `/tmp` upload and
+artifact folders fresh and private (`mkdir -m 0700` without `-p`, which fails
+when a folder of that name already exists). The Vault reset reads the
+workload-auth summary only from a folder that passes the same check.
 Default sudo behavior must remain the helper's noninteractive `sudo -n`
 preflight and structured `sudo_unavailable` evidence. `--interactive-sudo`
 may remain available only for a visible terminal when a bounded password
@@ -2702,15 +2721,22 @@ Summary-path preparation:
   request Vault/root/proof secret material, run workload-auth checks,
   reset/unseal, IM, support bundles, CP proof, runtime identity generation,
   helper staging, or summary copy-back.
+- Before any sudo step, preparation checks the parent with
+  `remote_alpha_prepare_output_dir`: it refuses
+  (`error_classification=summary_parent_unsafe`) a symbolic link anywhere on
+  the path, a parent that belongs to an account other than root or the helper
+  user, and a parent its group or others can write.
 - If the parent is missing, preparation creates it. If the parent exists but is
   not writable/executable by the helper user, preparation uses only an explicit
   operator-authorized OS sudo prompt through the visible SSH TTY to make that
-  parent helper-user/group owned with mode `0750`. The preparation command must
+  parent helper-user/group owned (`chown -h`, which never follows a link) with
+  mode `0750`. The preparation command must
   keep SSH stdin attached to the visible terminal instead of feeding the remote
   script over SSH stdin, so sudo controls password echo suppression. If the
   bootstrap summary file already exists as a regular file but is not writable by
   the helper user, preparation uses visible sudo to make only that file
-  helper-owned with mode `0600`. Preparation does not delete workload-auth check
+  helper-owned with mode `0600`; a summary path that is a symbolic link is
+  refused (`summary_path_symlink`). Preparation does not delete workload-auth check
   summaries or other unrelated evidence files, creates and removes only a hidden
   same-directory temp probe, and creates no final bootstrap summary in
   standalone mode.

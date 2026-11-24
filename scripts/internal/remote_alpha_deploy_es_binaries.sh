@@ -42,6 +42,56 @@ REMOTE_ALPHA_STAGE_ES_BINARY_DEPLOY_REMOTE_STAGED_INTERNAL_PATH=""
 REMOTE_ALPHA_STAGE_ES_BINARY_DEPLOY_REMOTE_STAGE_STAT_ARTIFACT_PATH=""
 REMOTE_ALPHA_STAGE_ES_BINARY_DEPLOY_REMOTE_CHECK_OUTPUT_ARTIFACT_PATH=""
 
+# Copy of remote_alpha_prepare_output_dir from scripts/internal/remote_alpha_output_dir.sh,
+# which explains it; TestRemoteAlphaOutputDirCopiesMatch keeps the two identical.
+remote_alpha_prepare_output_dir() {
+  python3 -I - "$1" <<'REMOTE_ALPHA_OUTPUT_DIR_PY'
+import os
+import stat
+import sys
+
+if not sys.argv[1]:
+    sys.exit("remote alpha output folder: no folder given")
+parts = [part for part in os.path.abspath(sys.argv[1]).split("/") if part]
+trusted = {0, os.geteuid()}
+if os.environ.get("SUDO_UID", "").isdigit():
+    trusted.add(int(os.environ["SUDO_UID"]))
+flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+shown = "/"
+fd = os.open("/", flags)
+try:
+    for index in range(len(parts) + 1):
+        info = os.fstat(fd)
+        last = index == len(parts)
+        if info.st_uid not in trusted:
+            sys.exit(
+                f"remote alpha output folder: {shown} belongs to uid {info.st_uid}, not to root, "
+                "the user running this step or the user who ran sudo; refusing to write under it"
+            )
+        if info.st_mode & (stat.S_IWGRP | stat.S_IWOTH) and (
+            last or info.st_uid != 0 or not info.st_mode & stat.S_ISVTX
+        ):
+            sys.exit(f"remote alpha output folder: {shown} can be written by its group or others; refusing to write under it")
+        if last:
+            break
+        shown = "/" + "/".join(parts[: index + 1])
+        try:
+            next_fd = os.open(parts[index], flags, dir_fd=fd)
+        except FileNotFoundError:
+            try:
+                os.mkdir(parts[index], 0o755, dir_fd=fd)
+            except FileExistsError:
+                pass
+            next_fd = os.open(parts[index], flags, dir_fd=fd)
+        os.close(fd)
+        fd = next_fd
+except OSError as exc:
+    sys.exit(f"remote alpha output folder: {shown} is not a directory or is a symbolic link ({exc.strerror})")
+finally:
+    os.close(fd)
+REMOTE_ALPHA_OUTPUT_DIR_PY
+}
+
 remote_alpha_deploy_es_binaries_init_expected_slice_inputs() {
   remote_alpha_deploy_es_binaries_expected_service_name="${remote_alpha_deploy_es_binaries_expected_service_name:-es}"
   remote_alpha_deploy_es_binaries_expected_binary_path="${remote_alpha_deploy_es_binaries_expected_binary_path:-/usr/local/lib/execution-substrate/bin/es}"
@@ -951,6 +1001,8 @@ remote_alpha_deploy_es_binaries_host_main() {
 
   remote_alpha_deploy_es_binaries_require_root || return 1
   remote_alpha_deploy_es_binaries_require_command python3 || return 1
+  remote_alpha_prepare_output_dir "$(dirname "${REMOTE_ALPHA_SUMMARY_PATH}")" || return 1
+  remote_alpha_prepare_output_dir "${remote_alpha_deploy_es_binaries_backup_root_dir}" || return 1
   remote_alpha_deploy_es_binaries_python
 }
 
@@ -1287,11 +1339,15 @@ remote_alpha_deploy_es_binaries_stage_noninteractive_sudo_preflight() {
 sudo -n true >/dev/null 2>&1'
 }
 
+# The upload and artifact folders sit in /tmp under names others can guess, so
+# each is made fresh and private (mkdir without -p fails if anyone planted it
+# first) before root copies helpers out of it or the Mac trusts what it holds.
 remote_alpha_deploy_es_binaries_stage_remote_prepare_upload_root() {
   remote_alpha_deploy_es_binaries_stage_run_remote_batch \
     'set -euo pipefail
 upload_root=$1
 rm -rf -- "${upload_root}"
+mkdir -m 0700 -- "${upload_root}"
 mkdir -p -- "${upload_root}/scripts/internal" "${upload_root}/payload"' \
     "${REMOTE_ALPHA_STAGE_ES_BINARY_DEPLOY_REMOTE_UPLOAD_ROOT}"
 }
@@ -1301,8 +1357,18 @@ remote_alpha_deploy_es_binaries_stage_remote_prepare_artifact_root() {
     'set -euo pipefail
 artifact_root=$1
 rm -rf -- "${artifact_root}"
-mkdir -p -- "${artifact_root}"' \
+mkdir -m 0700 -- "${artifact_root}"' \
     "${REMOTE_ALPHA_STAGE_ES_BINARY_DEPLOY_REMOTE_ARTIFACT_ROOT}"
+}
+
+# Prints scripts/internal/remote_alpha_output_dir.sh followed by BODY, so a
+# remote batch can check the host's artifact folder before root stages into it.
+remote_alpha_deploy_es_binaries_stage_remote_batch_with_output_dir_check() {
+  local body=$1
+  local definition
+
+  definition="$(cat -- "${REPO_ROOT}/scripts/internal/remote_alpha_output_dir.sh")" || return 1
+  printf '%s\n%s\n' "${definition}" "${body}"
 }
 
 remote_alpha_deploy_es_binaries_stage_fetch_remote_file() {
@@ -1344,17 +1410,18 @@ fi' \
 }
 
 remote_alpha_deploy_es_binaries_stage_remote_install_staged_tree() {
-  local sudo_cmd script
+  local sudo_cmd body script
   if [[ "${REMOTE_ALPHA_STAGE_ES_BINARY_DEPLOY_SUDO_MODE}" == "interactive" ]]; then
     sudo_cmd="sudo"
   else
     sudo_cmd="sudo -n"
   fi
-  script="$(cat <<EOF
+  body="$(cat <<EOF
 set -euo pipefail
 upload_root=\$1
 staging_root=\$2
 
+remote_alpha_prepare_output_dir_as_root "\$(dirname "\${staging_root}")" ${sudo_cmd#sudo}
 ${sudo_cmd} rm -rf -- "\${staging_root}"
 ${sudo_cmd} install -d -m 0755 -o root -g root "\${staging_root}"
 ${sudo_cmd} install -d -m 0755 -o root -g root "\${staging_root}/scripts"
@@ -1368,6 +1435,7 @@ ${sudo_cmd} install -m 0644 -o root -g root "\${upload_root}/payload/build-prove
 rm -rf -- "\${upload_root}"
 EOF
 )"
+  script="$(remote_alpha_deploy_es_binaries_stage_remote_batch_with_output_dir_check "${body}")" || return 1
 
   if [[ "${REMOTE_ALPHA_STAGE_ES_BINARY_DEPLOY_SUDO_MODE}" == "interactive" ]]; then
     remote_alpha_deploy_es_binaries_stage_run_remote_batch_with_tty "${script}" \
@@ -1381,8 +1449,8 @@ EOF
 }
 
 remote_alpha_deploy_es_binaries_stage_run_interactive_check_sequence() {
-  local script status=0
-  script="$(cat <<EOF
+  local body script status=0
+  body="$(cat <<EOF
 set -euo pipefail
 upload_root=\$1
 staging_root=\$2
@@ -1393,6 +1461,7 @@ check_output=\$5
 mkdir -p -- "\$(dirname "\${stage_stat_path}")"
 mkdir -p -- "\$(dirname "\${check_output}")"
 sudo -v
+remote_alpha_prepare_output_dir_as_root "\$(dirname "\${staging_root}")"
 cleanup() {
   sudo rm -rf -- "\${staging_root}" || true
 }
@@ -1437,6 +1506,7 @@ set -e
 exit "\${status}"
 EOF
 )"
+  script="$(remote_alpha_deploy_es_binaries_stage_remote_batch_with_output_dir_check "${body}")" || return 1
   set +e
   remote_alpha_deploy_es_binaries_stage_run_remote_batch_with_tty "${script}" \
     "${REMOTE_ALPHA_STAGE_ES_BINARY_DEPLOY_REMOTE_UPLOAD_ROOT}" \
@@ -1604,8 +1674,8 @@ EOF
 }
 
 remote_alpha_deploy_es_binaries_stage_run_interactive_apply_sequence() {
-  local script status=0
-  script="$(cat <<EOF
+  local body script status=0
+  body="$(cat <<EOF
 set -euo pipefail
 upload_root=\$1
 staging_root=\$2
@@ -1613,6 +1683,7 @@ staged_wrapper=\$3
 summary_path=\$4
 
 sudo -v
+remote_alpha_prepare_output_dir_as_root "\$(dirname "\${staging_root}")"
 cleanup() {
   sudo rm -rf -- "\${staging_root}" || true
 }
@@ -1632,6 +1703,7 @@ rm -rf -- "\${upload_root}"
 sudo "\${staged_wrapper}" --apply --summary-path "\${summary_path}" >/dev/null
 EOF
 )"
+  script="$(remote_alpha_deploy_es_binaries_stage_remote_batch_with_output_dir_check "${body}")" || return 1
   set +e
   remote_alpha_deploy_es_binaries_stage_run_remote_batch_with_tty "${script}" \
     "${REMOTE_ALPHA_STAGE_ES_BINARY_DEPLOY_REMOTE_UPLOAD_ROOT}" \
@@ -1647,17 +1719,22 @@ remote_alpha_deploy_es_binaries_stage_remote_cleanup() {
   if [[ "${REMOTE_ALPHA_DEPLOY_ES_BINARIES_REMOTE_UPLOAD_PREPARED}" != "true" && "${REMOTE_ALPHA_DEPLOY_ES_BINARIES_STAGING_OCCURRED}" != "true" && -z "${REMOTE_ALPHA_STAGE_ES_BINARY_DEPLOY_REMOTE_ARTIFACT_ROOT}" ]]; then
     return 0
   fi
-  local script
-  script="$(cat <<EOF
+  local body script
+  # Root removes the staging folder only through an artifact folder that
+  # passes the same check as staging did.
+  body="$(cat <<EOF
 set -euo pipefail
 staging_root=\$1
 upload_root=\$2
 artifact_root=\$3
-sudo -n rm -rf -- "\${staging_root}" || true
+if [[ -n "\${staging_root}" ]] && remote_alpha_prepare_output_dir_as_root "\$(dirname "\${staging_root}")" -n; then
+  sudo -n rm -rf -- "\${staging_root}" || true
+fi
 rm -rf -- "\${upload_root}" || true
 rm -rf -- "\${artifact_root}" || true
 EOF
 )"
+  script="$(remote_alpha_deploy_es_binaries_stage_remote_batch_with_output_dir_check "${body}")" || return 1
   remote_alpha_deploy_es_binaries_stage_run_remote_batch "${script}" \
     "${REMOTE_ALPHA_DEPLOY_ES_BINARIES_STAGE_REMOTE_STAGING_ROOT}" \
     "${REMOTE_ALPHA_STAGE_ES_BINARY_DEPLOY_REMOTE_UPLOAD_ROOT}" \

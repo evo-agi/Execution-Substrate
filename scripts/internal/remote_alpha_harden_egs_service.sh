@@ -5,6 +5,56 @@ fi
 
 remote_alpha_egs_hardening_summary_schema_version="execution-substrate.remote-alpha.egs-service-hardening-summary.v2"
 
+# Copy of remote_alpha_prepare_output_dir from scripts/internal/remote_alpha_output_dir.sh,
+# which explains it; TestRemoteAlphaOutputDirCopiesMatch keeps the two identical.
+remote_alpha_prepare_output_dir() {
+  python3 -I - "$1" <<'REMOTE_ALPHA_OUTPUT_DIR_PY'
+import os
+import stat
+import sys
+
+if not sys.argv[1]:
+    sys.exit("remote alpha output folder: no folder given")
+parts = [part for part in os.path.abspath(sys.argv[1]).split("/") if part]
+trusted = {0, os.geteuid()}
+if os.environ.get("SUDO_UID", "").isdigit():
+    trusted.add(int(os.environ["SUDO_UID"]))
+flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+shown = "/"
+fd = os.open("/", flags)
+try:
+    for index in range(len(parts) + 1):
+        info = os.fstat(fd)
+        last = index == len(parts)
+        if info.st_uid not in trusted:
+            sys.exit(
+                f"remote alpha output folder: {shown} belongs to uid {info.st_uid}, not to root, "
+                "the user running this step or the user who ran sudo; refusing to write under it"
+            )
+        if info.st_mode & (stat.S_IWGRP | stat.S_IWOTH) and (
+            last or info.st_uid != 0 or not info.st_mode & stat.S_ISVTX
+        ):
+            sys.exit(f"remote alpha output folder: {shown} can be written by its group or others; refusing to write under it")
+        if last:
+            break
+        shown = "/" + "/".join(parts[: index + 1])
+        try:
+            next_fd = os.open(parts[index], flags, dir_fd=fd)
+        except FileNotFoundError:
+            try:
+                os.mkdir(parts[index], 0o755, dir_fd=fd)
+            except FileExistsError:
+                pass
+            next_fd = os.open(parts[index], flags, dir_fd=fd)
+        os.close(fd)
+        fd = next_fd
+except OSError as exc:
+    sys.exit(f"remote alpha output folder: {shown} is not a directory or is a symbolic link ({exc.strerror})")
+finally:
+    os.close(fd)
+REMOTE_ALPHA_OUTPUT_DIR_PY
+}
+
 remote_alpha_egs_hardening_init_expected_slice_inputs() {
   remote_alpha_egs_hardening_expected_service_name="${remote_alpha_egs_hardening_expected_service_name:-egs}"
   remote_alpha_egs_hardening_expected_service_user="${remote_alpha_egs_hardening_expected_service_user:-egs}"
@@ -1543,6 +1593,7 @@ remote_alpha_egs_hardening_main() {
   remote_alpha_egs_hardening_require_root || return 1
 
   remote_alpha_egs_hardening_require_command python3 || return 1
+  remote_alpha_prepare_output_dir "$(dirname "${REMOTE_ALPHA_SUMMARY_PATH}")" || return 1
   remote_alpha_egs_hardening_require_command curl || return 1
   remote_alpha_egs_hardening_require_command systemctl || return 1
   remote_alpha_egs_hardening_require_command getent || return 1
@@ -1746,6 +1797,7 @@ remote_alpha_egs_hardening_main() {
     overall_ok=false
   fi
 
+  remote_alpha_prepare_output_dir "$(dirname "${REMOTE_ALPHA_SUMMARY_PATH}")" || return 1
   remote_alpha_egs_hardening_write_summary \
     "${REMOTE_ALPHA_SUMMARY_PATH}" \
     "${runtime_meta_path}" \
