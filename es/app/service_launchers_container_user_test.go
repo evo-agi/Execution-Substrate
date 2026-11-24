@@ -862,8 +862,9 @@ func TestServiceLaunchersContainerUser(t *testing.T) {
 				// and records the arguments of the service container instead
 				// of running it. The fake id answers only -u and -g; anything
 				// else fails with exit 96.
+				pythonHookRan := ""
 				if test.pythonHook != "" {
-					writeTestPythonHook(t, bin, test.pythonHook)
+					pythonHookRan = writeTestPythonHook(t, bin, test.pythonHook)
 				}
 				for name, body := range map[string]string{
 					"id": `#!/bin/sh
@@ -926,6 +927,13 @@ exit 97
 				eventBytes, eventErr := os.ReadFile(events)
 				if eventErr != nil || string(eventBytes) != wantEvents {
 					t.Fatalf("launcher calls = %q (err=%v), want %q; launcher err=%v output=%q", eventBytes, eventErr, wantEvents, err, output)
+				}
+				// The hook must have run in the launcher's python3, or the
+				// case would prove nothing about it.
+				if pythonHookRan != "" {
+					if ran, readErr := os.ReadFile(pythonHookRan); readErr != nil || !strings.Contains(string(ran), "ran\n") {
+						t.Fatalf("the %s python hook did not run in the launcher's python3 (err=%v)", test.pythonHook, readErr)
+					}
 				}
 				if test.after != nil {
 					defer test.after(t, storage, index, indexBefore)
@@ -1225,7 +1233,7 @@ esac
 exit 97
 `,
 		"python3": `#!/bin/sh
-if [ "$1 $2" = "-m http.server" ]; then
+if [ "$1 $2 $3" = "-I -m http.server" ]; then
   printf 'fake-http-server\n' >> "$ROOT_EVENTS"
   exit 0
 fi
@@ -1334,7 +1342,7 @@ esac
 exit 97
 `,
 		"python3": `#!/bin/sh
-if [ "$1 $2" = "-m http.server" ]; then
+if [ "$1 $2 $3" = "-I -m http.server" ]; then
   exit 0
 fi
 exec "$ROOT_REAL_PYTHON" "$@"
@@ -1416,7 +1424,7 @@ esac
 exit 97
 `,
 		"python3": `#!/bin/sh
-if [ "$1 $2" = "-m http.server" ]; then
+if [ "$1 $2 $3" = "-I -m http.server" ]; then
   exit 0
 fi
 exec "$ROOT_REAL_PYTHON" "$@"
@@ -1869,7 +1877,7 @@ esac
 exit 97
 `,
 		"python3": `#!/bin/sh
-if [ "$1 $2" = "-m http.server" ]; then
+if [ "$1 $2 $3" = "-I -m http.server" ]; then
   exit 0
 fi
 exec "$ROOT_REAL_PYTHON" "$@"
@@ -2168,37 +2176,61 @@ func testARSStorageCheckCommand(t *testing.T, docker testStorageCheckDocker, rep
 	return command
 }
 
-// writeTestPythonHook puts a python3 into bin that runs the host's python3
-// with a sitecustomize for hook, which changes how the ARS storage check can
-// read ACLs. "no-acl-reads" removes os.getxattr, as on hosts other than Linux;
-// "acl-read-error" makes every os.getxattr call fail with EACCES.
-func writeTestPythonHook(t *testing.T, bin, hook string) {
+// writeTestPythonHook makes bin/python3 the host's python3 in a minimal
+// virtual environment (pyvenv.cfg in bin's parent) whose site-packages runs a
+// module for hook when Python starts. The module changes how the ARS storage
+// check can read ACLs: "no-acl-reads" removes os.getxattr, as on hosts other
+// than Linux; "acl-read-error" makes every os.getxattr call fail with EACCES.
+// The scripts start Python with -I, which ignores PYTHONPATH and the user's
+// site-packages but still reads the site-packages of the environment the
+// interpreter runs in, so the module runs in an isolated run too. The module
+// appends a line to the returned file each time it runs, so that a test can
+// show the hook was in place.
+func writeTestPythonHook(t *testing.T, bin, hook string) string {
 	t.Helper()
-	realPython, err := exec.LookPath("python3")
+	found, err := exec.LookPath("python3")
 	if err != nil {
 		t.Fatal(err)
 	}
-	hookDir := filepath.Join(filepath.Dir(bin), "python-hook")
-	if err := os.Mkdir(hookDir, 0o700); err != nil {
+	realPython, err := filepath.EvalSymlinks(found)
+	if err != nil {
 		t.Fatal(err)
 	}
-	var site string
+	version, err := exec.Command(realPython, "-I", "-c", `import sys; print("%d.%d" % sys.version_info[:2])`).Output()
+	if err != nil {
+		t.Fatalf("python3 version: %v", err)
+	}
+	envDir := filepath.Dir(bin)
+	site := filepath.Join(envDir, "lib", "python"+strings.TrimSpace(string(version)), "site-packages")
+	if err := os.MkdirAll(site, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(envDir, "python-hook-ran")
+	var body string
 	switch hook {
 	case "no-acl-reads":
-		site = "import os\nif hasattr(os, \"getxattr\"):\n    del os.getxattr\n"
+		body = "if hasattr(os, \"getxattr\"):\n    del os.getxattr\n"
 	case "acl-read-error":
-		site = "import errno, os\n\n\ndef getxattr(path, name, *args, **kwargs):\n" +
+		body = "def getxattr(path, name, *args, **kwargs):\n" +
 			"    raise OSError(errno.EACCES, os.strerror(errno.EACCES), path)\n\n\nos.getxattr = getxattr\n"
 	default:
 		t.Fatalf("unknown python hook %q", hook)
 	}
-	if err := os.WriteFile(filepath.Join(hookDir, "sitecustomize.py"), []byte(site), 0o600); err != nil {
+	module := "import errno, os\n\nwith open(" + strconv.Quote(marker) + ", \"a\") as ran:\n    ran.write(\"ran\\n\")\n\n" + body
+	files := map[string]string{
+		filepath.Join(envDir, "pyvenv.cfg"):            "home = " + filepath.Dir(realPython) + "\ninclude-system-site-packages = false\n",
+		filepath.Join(site, "es_test_python_hook.py"):  module,
+		filepath.Join(site, "es_test_python_hook.pth"): "import es_test_python_hook\n",
+	}
+	for path, content := range files {
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(realPython, filepath.Join(bin, "python3")); err != nil {
 		t.Fatal(err)
 	}
-	wrapper := "#!/bin/sh\nPYTHONPATH=" + strconv.Quote(hookDir) + " exec " + strconv.Quote(realPython) + " \"$@\"\n"
-	if err := os.WriteFile(filepath.Join(bin, "python3"), []byte(wrapper), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	return marker
 }
 
 // testDistinctGID returns a GID, as text, that differs from this process's

@@ -104,7 +104,7 @@ remote_alpha_runtime_identity_helper_main() {
   REMOTE_ALPHA_SPIRE_SERVER_SOCKET_PATH="${spire_server_socket_path}" \
   REMOTE_ALPHA_WORKLOAD_SPIFFE_ID="${workload_spiffe_id}" \
   REMOTE_ALPHA_SPIRE_JWT_AUDIENCE="${audience}" \
-  python3 <<'PY'
+  python3 -I <<'PY'
 import datetime
 import getpass
 import grp

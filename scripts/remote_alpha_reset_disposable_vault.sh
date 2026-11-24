@@ -114,7 +114,7 @@ service_user_group() {
 execstart_config_path() {
   local exec_start
   exec_start="$(systemctl_property ExecStart)"
-  python3 - "${exec_start}" <<'PY'
+  python3 -I - "${exec_start}" <<'PY'
 import re
 import sys
 
@@ -151,7 +151,7 @@ parse_config_field() {
   local field=$1
   local raw
   raw="$(cat)"
-  FIELD="${field}" RAW_CONFIG="${raw}" python3 <<'PY'
+  FIELD="${field}" RAW_CONFIG="${raw}" python3 -I <<'PY'
 import json
 import os
 import re
@@ -469,7 +469,7 @@ detect_workload_auth_checker() {
 summary_field() {
   local dotted_path=$1
   [[ -r "${VAULT_WORKLOAD_AUTH_SUMMARY_PATH}" ]] || return 1
-  python3 - "${VAULT_WORKLOAD_AUTH_SUMMARY_PATH}" "${dotted_path}" <<'PY'
+  python3 -I - "${VAULT_WORKLOAD_AUTH_SUMMARY_PATH}" "${dotted_path}" <<'PY'
 import json
 import sys
 
@@ -517,7 +517,7 @@ vault_status_field() {
   local field=$1
   local raw
   raw="$(cat)"
-  STATUS_FIELD="${field}" STATUS_JSON="${raw}" python3 <<'PY'
+  STATUS_FIELD="${field}" STATUS_JSON="${raw}" python3 -I <<'PY'
 import json
 import os
 import sys

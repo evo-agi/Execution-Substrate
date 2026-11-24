@@ -132,7 +132,7 @@ preflight_supported_local_proof_retained_result_auth() {
 }
 
 preflight_supported_local_proof_bootstrap_scope() {
-  python3 - "${REPO_ROOT}" "${PARENT_ROOT}" "${SUPPORTED_LOCAL_HOST_PROOF_DIR}" \
+  python3 -I - "${REPO_ROOT}" "${PARENT_ROOT}" "${SUPPORTED_LOCAL_HOST_PROOF_DIR}" \
     "${SUPPORTED_LOCAL_HOST_BOOTSTRAP_DIR}" "${SUPPORTED_LOCAL_GUEST_PROOF_DIR}" \
     "${SUPPORTED_LOCAL_GUEST_BOOTSTRAP_DIR}" "${SUPPORTED_LOCAL_GUEST_REPO_ROOT}" \
     "${SUPPORTED_LOCAL_REPO_ROOT_IN_GUEST}" "${SUPPORTED_LOCAL_RETAINED_RESULT_AUTH_KEY_FILE:-}" \
@@ -190,7 +190,7 @@ collect_guest_workspace() {
 }
 
 create_private_host_bootstrap_dir() {
-  HOST_BOOTSTRAP_IDENTITY="$(python3 "${SCRIPT_DIR}/internal/supported_local_proof_source_snapshot.py" \
+  HOST_BOOTSTRAP_IDENTITY="$(python3 -I "${SCRIPT_DIR}/internal/supported_local_proof_source_snapshot.py" \
     create-scratch "${SUPPORTED_LOCAL_HOST_BOOTSTRAP_DIR}" "${SUPPORTED_LOCAL_PROOF_ID}")"
 }
 
@@ -199,18 +199,18 @@ cleanup_host_bootstrap_scratch() {
     [[ ! -e "${SUPPORTED_LOCAL_HOST_BOOTSTRAP_DIR}" && ! -L "${SUPPORTED_LOCAL_HOST_BOOTSTRAP_DIR}" ]]
     return
   fi
-  python3 "${SCRIPT_DIR}/internal/supported_local_proof_source_snapshot.py" \
+  python3 -I "${SCRIPT_DIR}/internal/supported_local_proof_source_snapshot.py" \
     cleanup-scratch "${SUPPORTED_LOCAL_HOST_BOOTSTRAP_DIR}" "${HOST_BOOTSTRAP_IDENTITY}"
 }
 
 finalize_host_evidence_manifest() {
-  python3 "${SCRIPT_DIR}/internal/supported_local_proof_host_manifest.py" \
+  python3 -I "${SCRIPT_DIR}/internal/supported_local_proof_host_manifest.py" \
     finalize "${SUPPORTED_LOCAL_HOST_PROOF_DIR}"
 }
 
 write_phase_status() {
   local phase=$1 status=$2
-  python3 - "${SUPPORTED_LOCAL_HOST_PROOF_DIR}" "${phase}" "${status}" <<'PY'
+  python3 -I - "${SUPPORTED_LOCAL_HOST_PROOF_DIR}" "${phase}" "${status}" <<'PY'
 import json
 import os
 import pathlib
@@ -255,7 +255,7 @@ run_phase() {
 }
 
 create_private_host_proof_dir() {
-  python3 - "${SUPPORTED_LOCAL_HOST_PROOF_DIR}" <<'PY'
+  python3 -I - "${SUPPORTED_LOCAL_HOST_PROOF_DIR}" <<'PY'
 import os
 import pathlib
 import stat
@@ -374,7 +374,7 @@ finalize() {
 }
 
 write_proof_closeout() {
-  python3 - "${SUPPORTED_LOCAL_HOST_PROOF_DIR}" "$1" "$2" "$3" <<'PY'
+  python3 -I - "${SUPPORTED_LOCAL_HOST_PROOF_DIR}" "$1" "$2" "$3" <<'PY'
 import json
 import os
 import pathlib
@@ -398,7 +398,7 @@ PY
 }
 
 write_proof_metadata() {
-  python3 - <<'PY' \
+  python3 -I - <<'PY' \
     "${SUPPORTED_LOCAL_HOST_PROOF_DIR}/proof-metadata.json" \
     "${SUPPORTED_LOCAL_PROOF_ID}"
 import json
@@ -418,7 +418,7 @@ PY
 }
 
 prepare_host_repo_snapshot() {
-  python3 "${SCRIPT_DIR}/internal/supported_local_proof_source_snapshot.py" snapshot \
+  python3 -I "${SCRIPT_DIR}/internal/supported_local_proof_source_snapshot.py" snapshot \
     "${REPO_ROOT}" "${SUPPORTED_LOCAL_HOST_BOOTSTRAP_DIR}" "${SUPPORTED_LOCAL_HOST_PROOF_DIR}"
 }
 
@@ -432,17 +432,17 @@ prepare_host_inputs() {
   if [[ -n "${SUPPORTED_LOCAL_DIST_PAYLOAD}" ]]; then
     run_phase package-identity cp "${SUPPORTED_LOCAL_DIST_PAYLOAD}" "${payload_copy}" || return $?
   else
-    run_phase package-identity python3 "${REPO_ROOT}/scripts/package_example_archive.py" \
+    run_phase package-identity python3 -I "${REPO_ROOT}/scripts/package_example_archive.py" \
       "${REPO_ROOT}/.examples/runtime_identity_vault_login/entrypoint" "${payload_copy}" entrypoint || return $?
   fi
   if [[ -n "${SUPPORTED_LOCAL_CP_NORMAL_SHELL_DIST_PAYLOAD}" ]]; then
     run_phase package-normal-shell cp "${SUPPORTED_LOCAL_CP_NORMAL_SHELL_DIST_PAYLOAD}" "${cp_payload_copy}" || return $?
   else
-    run_phase package-normal-shell python3 "${REPO_ROOT}/scripts/package_example_archive.py" \
+    run_phase package-normal-shell python3 -I "${REPO_ROOT}/scripts/package_example_archive.py" \
       "${REPO_ROOT}/.examples/control_plane_normal_shell_runtime/entrypoint" "${cp_payload_copy}" entrypoint || return $?
   fi
 
-  python3 - <<'PY' \
+  python3 -I - <<'PY' \
     "${SUPPORTED_LOCAL_INPUT_SPEC}" \
     "${spec_copy}" \
     "${SUPPORTED_LOCAL_GUEST_PROOF_DIR}/payload/runtime_identity_vault_login.tar.gz"
@@ -456,7 +456,7 @@ spec["payload_path"] = sys.argv[3]
 pathlib.Path(sys.argv[2]).write_text(json.dumps(spec, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 PY
 
-  python3 - <<'PY' \
+  python3 -I - <<'PY' \
     "${SUPPORTED_LOCAL_CP_NORMAL_SHELL_INPUT_SPEC}" \
     "${cp_spec_copy}" \
     "${SUPPORTED_LOCAL_GUEST_PROOF_DIR}/payload/control_plane_normal_shell_runtime.tar.gz"
@@ -527,7 +527,7 @@ copy_repo_snapshot_to_guest() {
 
 extract_guest_repo_snapshot() {
   local host_snapshot_sha
-  host_snapshot_sha="$(python3 - <<'PY' "${SUPPORTED_LOCAL_HOST_PROOF_DIR}/source-snapshot.json"
+  host_snapshot_sha="$(python3 -I - <<'PY' "${SUPPORTED_LOCAL_HOST_PROOF_DIR}/source-snapshot.json"
 import json
 import pathlib
 import sys
@@ -543,7 +543,7 @@ PY
       GUEST_REPO_ROOT="${SUPPORTED_LOCAL_GUEST_REPO_ROOT}" \
       HOST_REPO_SNAPSHOT_SHA256="${host_snapshot_sha}" \
     bash -seuo pipefail <<'EOF'
-python3 - <<'PY' "${GUEST_BOOTSTRAP_DIR}/repo-snapshot.tar.gz" "${GUEST_BOOTSTRAP_DIR}/guest-repo-snapshot.sha256"
+python3 -I - <<'PY' "${GUEST_BOOTSTRAP_DIR}/repo-snapshot.tar.gz" "${GUEST_BOOTSTRAP_DIR}/guest-repo-snapshot.sha256"
 import hashlib
 import pathlib
 import sys
@@ -697,22 +697,22 @@ source "$GUEST_PROOF_DIR/env.sh"
 source "$GUEST_REPO_ROOT/scripts/internal/nomad_acl.sh"
 projector="$GUEST_REPO_ROOT/scripts/internal/supported_local_proof_projection.py"
 systemctl show nomad --no-pager --property=Id,LoadState,ActiveState,SubState,UnitFileState,MainPID,ExecMainStatus |
-  python3 "$projector" host-systemd - "$GUEST_PROOF_DIR/nomad-service-safe.json"
+  python3 -I "$projector" host-systemd - "$GUEST_PROOF_DIR/nomad-service-safe.json"
 nomad_acl_state_check >/dev/null
 nomad_api_get /v1/agent/self /dev/stdout |
-  python3 "$projector" host-agent - "$GUEST_PROOF_DIR/nomad-agent-safe.json"
+  python3 -I "$projector" host-agent - "$GUEST_PROOF_DIR/nomad-agent-safe.json"
 nomad_api_get /v1/status/leader /dev/stdout |
-  python3 "$projector" host-leader - "$GUEST_PROOF_DIR/nomad-leader-safe.json"
+  python3 -I "$projector" host-leader - "$GUEST_PROOF_DIR/nomad-leader-safe.json"
 nomad_api_get /v1/nodes /dev/stdout |
-  python3 "$projector" host-nodes - "$GUEST_PROOF_DIR/nomad-nodes-safe.json"
-python3 "$projector" fetch-node-details "$NOMAD_ADDR" "$GUEST_PROOF_DIR/node-details-safe.json"
+  python3 -I "$projector" host-nodes - "$GUEST_PROOF_DIR/nomad-nodes-safe.json"
+python3 -I "$projector" fetch-node-details "$NOMAD_ADDR" "$GUEST_PROOF_DIR/node-details-safe.json"
 docker info --format '{{json .}}' |
-  python3 "$projector" host-docker - "$GUEST_PROOF_DIR/docker-info-safe.json"
+  python3 -I "$projector" host-docker - "$GUEST_PROOF_DIR/docker-info-safe.json"
 if grep -R -q 'cpu_total_compute\|NOMAD_CLIENT_CPU_TOTAL_COMPUTE' /etc/nomad.d || [[ -n "${NOMAD_CLIENT_CPU_TOTAL_COMPUTE:-}" ]]; then
   printf 'true\n'
 else
   printf 'false\n'
-fi | python3 "$projector" host-compute-override - "$GUEST_PROOF_DIR/nomad-compute-override-safe.json"
+fi | python3 -I "$projector" host-compute-override - "$GUEST_PROOF_DIR/nomad-compute-override-safe.json"
 EOF
 }
 
@@ -721,7 +721,7 @@ capture_execution_evidence() {
   EVIDENCE_LABEL="${evidence_label}" run_guest_stdin <<'EOF'
 cd "$GUEST_REPO_ROOT"
 source "$GUEST_PROOF_DIR/env.sh"
-python3 - <<'PY' "$GUEST_PROOF_DIR" "${EVIDENCE_LABEL:-}"
+python3 -I - <<'PY' "$GUEST_PROOF_DIR" "${EVIDENCE_LABEL:-}"
 import json
 import os
 import pathlib
@@ -753,7 +753,7 @@ if status_path.is_file():
     import subprocess
     projector = os.path.join(os.environ["GUEST_REPO_ROOT"], "scripts/internal/supported_local_proof_projection.py")
     output_name = f"{label}-status-safe.json" if label else "status-safe.json"
-    subprocess.run(["python3", projector, "execution-status", str(status_path), str(proof_dir / output_name)], check=True)
+    subprocess.run(["python3", "-I", projector, "execution-status", str(status_path), str(proof_dir / output_name)], check=True)
 
 # Workload stdout can contain the proof secret value. Keep only fixed boolean
 # markers; never copy raw logs to the top-level evidence projection.
@@ -802,7 +802,7 @@ nomad_observer() {
   NOMAD_TOKEN="${observer_token}" NOMAD_NAMESPACE="${NOMAD_ACL_NAMESPACE}" nomad "$@"
 }
 nomad_observer job status "${job_id}" >/dev/null
-alloc_id="$(nomad_observer job allocs -json "${job_id}" | python3 -c '
+alloc_id="$(nomad_observer job allocs -json "${job_id}" | python3 -I -c '
 import json
 import re
 import sys
@@ -825,7 +825,7 @@ print(value)
 '
 )"
 nomad_observer alloc status "${alloc_id}" >/dev/null
-python3 - <<'PY' "$GUEST_PROOF_DIR" "${EVIDENCE_LABEL:-}" "${run_id}" "${job_id}" "${alloc_id}"
+python3 -I - <<'PY' "$GUEST_PROOF_DIR" "${EVIDENCE_LABEL:-}" "${run_id}" "${job_id}" "${alloc_id}"
 import json
 import pathlib
 import sys
@@ -839,7 +839,7 @@ data = (json.dumps({"schema": "supported-local-nomad-execution-safe-v1",
 (root / (f"{label}-nomad-execution-safe.json" if label else "nomad-execution-safe.json")).write_bytes(data)
 PY
 
-staging_state="$(python3 - <<'PY' "$GUEST_PROOF_DIR/es.json" "${run_id}"
+staging_state="$(python3 -I - <<'PY' "$GUEST_PROOF_DIR/es.json" "${run_id}"
 import json
 import os
 import pathlib
@@ -877,7 +877,7 @@ EOF
 
 validate_control_plane_normal_shell_result_bundle() {
   run_guest_stdin <<'EOF'
-python3 "$GUEST_REPO_ROOT/scripts/internal/supported_local_proof_projection.py" captured-result \
+python3 -I "$GUEST_REPO_ROOT/scripts/internal/supported_local_proof_projection.py" captured-result \
   "$GUEST_PROOF_DIR" \
   "$GUEST_PROOF_DIR/control-plane-normal-shell-result-evidence.json"
 EOF

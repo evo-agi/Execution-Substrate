@@ -2524,7 +2524,7 @@ func TestRemoteAlphaHostFirewallDocsContract(t *testing.T) {
 		"`--apply` arms an automatic rollback that only `--confirm` from an SSH connection opened after `--apply` cancels.",
 	)
 
-	section := compactDocSection(t, mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md"), "## Remote Alpha Host Firewall", "## Non-Goals")
+	section := compactDocSection(t, mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md"), "## Remote Alpha Host Firewall", "## Python In The Scripts")
 	assertContainsAll(t, "host firewall docs section", section,
 		"`execution-substrate.remote-alpha.host-firewall.v1`",
 		"`testdata/remote_alpha_host_firewall/ruleset.golden.nft`",

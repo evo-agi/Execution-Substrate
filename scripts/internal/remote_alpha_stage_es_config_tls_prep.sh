@@ -185,7 +185,7 @@ remote_alpha_stage_es_config_tls_prep_local_file_meta() {
   local output_path=$1
   shift
 
-  python3 - "$output_path" "$@" <<'PY'
+  python3 -I - "$output_path" "$@" <<'PY'
 import hashlib
 import json
 import pathlib
@@ -265,7 +265,7 @@ remote_alpha_stage_es_config_tls_prep_validate_stage_stat() {
   local stat_path=$1
   local output_path=$2
 
-  python3 - "$stat_path" "$output_path" "${REMOTE_ALPHA_STAGE_ES_CONFIG_TLS_PREP_REMOTE_STAGING_ROOT}" <<'PY'
+  python3 -I - "$stat_path" "$output_path" "${REMOTE_ALPHA_STAGE_ES_CONFIG_TLS_PREP_REMOTE_STAGING_ROOT}" <<'PY'
 import json
 import pathlib
 import sys
@@ -317,7 +317,7 @@ remote_alpha_stage_es_config_tls_prep_write_provenance() {
   local provenance_path=$3
   local git_commit=$4
 
-  python3 - "$local_meta_path" "$remote_meta_path" "$provenance_path" "$git_commit" "${REMOTE_ALPHA_STAGE_ES_CONFIG_TLS_PREP_MODE}" "${REMOTE_ALPHA_STAGE_ES_CONFIG_TLS_PREP_SSH_TARGET}" "${REMOTE_ALPHA_STAGE_ES_CONFIG_TLS_PREP_REMOTE_STAGING_ROOT}" "${REMOTE_ALPHA_STAGE_ES_CONFIG_TLS_PREP_REMOTE_STAGED_WRAPPER_PATH}" "${REMOTE_ALPHA_STAGE_ES_CONFIG_TLS_PREP_REMOTE_STAGED_INTERNAL_PATH}" "${REMOTE_ALPHA_STAGE_ES_CONFIG_TLS_PREP_REMOTE_SUMMARY_PATH}" "${REMOTE_ALPHA_STAGE_ES_CONFIG_TLS_PREP_RUN_ID}" "${REPO_ROOT}" <<'PY'
+  python3 -I - "$local_meta_path" "$remote_meta_path" "$provenance_path" "$git_commit" "${REMOTE_ALPHA_STAGE_ES_CONFIG_TLS_PREP_MODE}" "${REMOTE_ALPHA_STAGE_ES_CONFIG_TLS_PREP_SSH_TARGET}" "${REMOTE_ALPHA_STAGE_ES_CONFIG_TLS_PREP_REMOTE_STAGING_ROOT}" "${REMOTE_ALPHA_STAGE_ES_CONFIG_TLS_PREP_REMOTE_STAGED_WRAPPER_PATH}" "${REMOTE_ALPHA_STAGE_ES_CONFIG_TLS_PREP_REMOTE_STAGED_INTERNAL_PATH}" "${REMOTE_ALPHA_STAGE_ES_CONFIG_TLS_PREP_REMOTE_SUMMARY_PATH}" "${REMOTE_ALPHA_STAGE_ES_CONFIG_TLS_PREP_RUN_ID}" "${REPO_ROOT}" <<'PY'
 import json
 import pathlib
 from pathlib import PurePosixPath
@@ -391,7 +391,7 @@ EOF
 remote_alpha_stage_es_config_tls_prep_validate_check_only_report() {
   local report_path=$1
 
-  python3 - "$report_path" "${REMOTE_ALPHA_STAGE_ES_CONFIG_TLS_PREP_REMOTE_SUMMARY_PATH}" "${remote_alpha_stage_es_config_tls_prep_config_path}" "${remote_alpha_stage_es_config_tls_prep_tls_dir}" <<'PY'
+  python3 -I - "$report_path" "${REMOTE_ALPHA_STAGE_ES_CONFIG_TLS_PREP_REMOTE_SUMMARY_PATH}" "${remote_alpha_stage_es_config_tls_prep_config_path}" "${remote_alpha_stage_es_config_tls_prep_tls_dir}" <<'PY'
 import json
 import pathlib
 import sys

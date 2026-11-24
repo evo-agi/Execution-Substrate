@@ -191,7 +191,7 @@ remote_alpha_es_service_tls_renew_timestamp() {
 }
 
 remote_alpha_es_service_tls_renew_topology_json() {
-  python3 - "$@" <<'PY'
+  python3 -I - "$@" <<'PY'
 import json
 import pathlib
 import sys
@@ -339,7 +339,7 @@ PY
 }
 
 remote_alpha_es_governance_tls_renew_topology_json() {
-  python3 - "$@" <<'PY'
+  python3 -I - "$@" <<'PY'
 import json
 import pathlib
 import sys
@@ -498,7 +498,7 @@ remote_alpha_es_service_tls_renew_collect_status() {
   local restart_meta_path=${5:-}
   local curl_meta_path=${6:-}
 
-  python3 - \
+  python3 -I - \
     "${mode}" \
     "${summary_path}" \
     "${topology_path}" \
@@ -893,7 +893,7 @@ remote_alpha_es_service_tls_renew_create_backup() {
     cp -p -- "${path}" "${target}"
   done
 
-  python3 - "${backup_meta_path}" "${backup_dir}" "${material_dir}" "$@" <<'PY'
+  python3 -I - "${backup_meta_path}" "${backup_dir}" "${material_dir}" "$@" <<'PY'
 import hashlib
 import json
 import pathlib
@@ -1086,7 +1086,7 @@ remote_alpha_es_service_tls_renew_restart_services() {
     fi
   done
 
-  python3 - "${restart_meta_path}" "${overall}" "${statuses[@]}" <<'PY'
+  python3 -I - "${restart_meta_path}" "${overall}" "${statuses[@]}" <<'PY'
 import json
 import pathlib
 import sys
@@ -1129,7 +1129,7 @@ remote_alpha_es_governance_tls_renew_restart_services() {
     overall="fail"
   fi
 
-  python3 - "${restart_meta_path}" "${overall}" "${es_active_status}" "${statuses[@]}" <<'PY'
+  python3 -I - "${restart_meta_path}" "${overall}" "${es_active_status}" "${statuses[@]}" <<'PY'
 import json
 import pathlib
 import sys
@@ -1198,7 +1198,7 @@ remote_alpha_es_service_tls_renew_post_renew_probes() {
   [[ "${ags_result}" == *":pass" ]] || overall="fail"
   [[ "${es_result}" == *":pass" ]] || overall="fail"
 
-  python3 - "${curl_meta_path}" "${overall}" "${ags_result}" "${es_result}" <<'PY'
+  python3 -I - "${curl_meta_path}" "${overall}" "${ags_result}" "${es_result}" <<'PY'
 import json
 import pathlib
 import sys
@@ -1225,7 +1225,7 @@ remote_alpha_es_governance_tls_renew_post_renew_probes() {
   overall="pass"
   [[ "${result}" == *":pass" ]] || overall="fail"
 
-  python3 - "${curl_meta_path}" "${overall}" "${result}" <<'PY'
+  python3 -I - "${curl_meta_path}" "${overall}" "${result}" <<'PY'
 import json
 import pathlib
 import sys
@@ -1312,7 +1312,7 @@ remote_alpha_es_service_tls_renew_main() {
   remote_alpha_es_service_tls_renew_require_command systemctl || return 1
   remote_alpha_es_service_tls_renew_require_command curl || return 1
 
-  if [[ "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["status"])' "${topology_path}")" != "pass" ]]; then
+  if [[ "$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["status"])' "${topology_path}")" != "pass" ]]; then
     remote_alpha_es_service_tls_renew_collect_status "execute_renew" "${REMOTE_ALPHA_SUMMARY_PATH}" "${topology_path}" || true
     return 1
   fi

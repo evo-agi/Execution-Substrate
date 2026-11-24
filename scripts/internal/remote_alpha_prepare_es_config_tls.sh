@@ -158,7 +158,7 @@ remote_alpha_es_config_tls_prep_json_field() {
   local json_path=$1
   local dotted_path=$2
 
-  python3 - "${json_path}" "${dotted_path}" <<'PY'
+  python3 -I - "${json_path}" "${dotted_path}" <<'PY'
 import json
 import sys
 
@@ -237,7 +237,7 @@ remote_alpha_es_config_tls_prep_ds_not_in_docker_group() {
 }
 
 remote_alpha_es_config_tls_prep_service_account_meta() {
-  python3 - "${REMOTE_ALPHA_PREP_USER}" "${REMOTE_ALPHA_PREP_GROUP}" <<'PY'
+  python3 -I - "${REMOTE_ALPHA_PREP_USER}" "${REMOTE_ALPHA_PREP_GROUP}" <<'PY'
 import json
 import subprocess
 import sys
@@ -427,7 +427,7 @@ remote_alpha_es_config_tls_prep_runtime_meta() {
   local config_read_path="${1:-${REMOTE_ALPHA_CONFIG_PATH}}"
   local reported_config_path="${2:-${config_read_path}}"
 
-  python3 - "${config_read_path}" "${REMOTE_ALPHA_BINARY_PATH}" "${reported_config_path}" <<'PY'
+  python3 -I - "${config_read_path}" "${REMOTE_ALPHA_BINARY_PATH}" "${reported_config_path}" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -535,7 +535,7 @@ PY
 }
 
 remote_alpha_es_config_tls_prep_health_env_meta() {
-  python3 - "${REMOTE_ALPHA_HEALTHCHECK_ENV_PATH}" <<'PY'
+  python3 -I - "${REMOTE_ALPHA_HEALTHCHECK_ENV_PATH}" <<'PY'
 import json
 import pathlib
 import sys
@@ -697,7 +697,7 @@ remote_alpha_es_config_tls_prep_capture_config_copy() {
   local source_path=$1
   local destination_path=$2
 
-  python3 - "${source_path}" "${destination_path}" <<'PY'
+  python3 -I - "${source_path}" "${destination_path}" <<'PY'
 from pathlib import Path
 import sys
 
@@ -713,7 +713,7 @@ remote_alpha_es_config_tls_prep_backup_timestamp() {
     return 0
   fi
 
-  python3 - <<'PY'
+  python3 -I - <<'PY'
 from datetime import datetime, timezone
 
 print(datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ"))
@@ -732,7 +732,7 @@ remote_alpha_es_config_tls_prep_create_backup_snapshot() {
   local snapshot_manifest_path=""
 
   backup_timestamp="$(remote_alpha_es_config_tls_prep_backup_timestamp)"
-  backup_dir="$(python3 - "${remote_alpha_es_config_tls_prep_backup_root_dir}" "${backup_timestamp}" <<'PY'
+  backup_dir="$(python3 -I - "${remote_alpha_es_config_tls_prep_backup_root_dir}" "${backup_timestamp}" <<'PY'
 from pathlib import Path
 import sys
 import tempfile
@@ -752,7 +752,7 @@ PY
   snapshot_manifest_path="${backup_dir}/pre-apply-snapshot.json"
   remote_alpha_es_config_tls_prep_capture_config_copy "${source_config_path}" "${config_backup_path}"
 
-  python3 - \
+  python3 -I - \
     "${backup_meta_path}" \
     "${snapshot_manifest_path}" \
     "${backup_dir}" \
@@ -904,7 +904,7 @@ remote_alpha_es_config_tls_prep_prepare_tls_material() {
   egs_client_key_source="$(remote_alpha_es_config_tls_prep_json_field "${runtime_meta_path}" "execution_governance.client_key_file")"
   egs_root_ca_source="$(remote_alpha_es_config_tls_prep_json_field "${runtime_meta_path}" "execution_governance.root_ca_file")"
 
-  python3 - \
+  python3 -I - \
     "${server_cert_source}" "${REMOTE_ALPHA_SERVER_CERT_PATH}" \
     "${server_key_source}" "${REMOTE_ALPHA_SERVER_KEY_PATH}" \
     "${server_ca_source}" "${REMOTE_ALPHA_SERVER_CLIENT_CA_PATH}" \
@@ -952,7 +952,7 @@ remote_alpha_es_config_tls_prep_render_rewritten_config() {
   local source_config_path=$1
   local destination_config_path=$2
 
-  python3 - \
+  python3 -I - \
     "${source_config_path}" \
     "${destination_config_path}" \
     "${REMOTE_ALPHA_SERVER_CERT_PATH}" \
@@ -1008,7 +1008,7 @@ remote_alpha_es_config_tls_prep_rewrite_config() {
   local temp_path="${REMOTE_ALPHA_CONFIG_PATH}.tmp"
 
   remote_alpha_es_config_tls_prep_render_rewritten_config "${REMOTE_ALPHA_CONFIG_PATH}" "${temp_path}"
-  python3 - "${temp_path}" "${REMOTE_ALPHA_CONFIG_PATH}" <<'PY'
+  python3 -I - "${temp_path}" "${REMOTE_ALPHA_CONFIG_PATH}" <<'PY'
 import os
 import sys
 
@@ -1023,7 +1023,7 @@ remote_alpha_es_config_tls_prep_config_rewrite_scope_meta() {
   local before_config_path=$1
   local after_config_path=$2
 
-  python3 - "${before_config_path}" "${after_config_path}" <<'PY'
+  python3 -I - "${before_config_path}" "${after_config_path}" <<'PY'
 import json
 import pathlib
 import sys
@@ -1175,7 +1175,7 @@ remote_alpha_es_config_tls_prep_service_meta() {
     unit_name="${unit_name}.service"
   fi
 
-  python3 - "${service_name}" \
+  python3 -I - "${service_name}" \
     "$(systemctl show "${unit_name}" -p User -p Group -p ExecStart -p FragmentPath -p ActiveState -p SubState 2>/dev/null || true)" \
     "$(remote_alpha_es_config_tls_prep_systemctl_state is-enabled "${unit_name}")" <<'PY'
 import json
@@ -1245,7 +1245,7 @@ remote_alpha_es_config_tls_prep_health_probe_meta() {
     --cert "${operator_cert}" \
     --key "${operator_key}" \
     "${url}" >"${response_path}" 2>"${error_path}"; then
-    python3 - "${url}" "${error_path}" <<'PY'
+    python3 -I - "${url}" "${error_path}" <<'PY'
 import json
 import pathlib
 import sys
@@ -1259,7 +1259,7 @@ PY
     return 1
   fi
 
-  python3 - "${url}" "${response_path}" "${dependency_field}" <<'PY'
+  python3 -I - "${url}" "${response_path}" "${dependency_field}" <<'PY'
 import json
 import pathlib
 import sys
@@ -1297,7 +1297,7 @@ remote_alpha_es_config_tls_prep_contract_probe_meta() {
     --cert "${operator_cert}" \
     --key "${operator_key}" \
     "${url}" >"${response_path}" 2>"${error_path}"; then
-    python3 - "${url}" "${error_path}" <<'PY'
+    python3 -I - "${url}" "${error_path}" <<'PY'
 import json
 import pathlib
 import sys
@@ -1311,7 +1311,7 @@ PY
     return 1
   fi
 
-  python3 - "${url}" "${response_path}" <<'PY'
+  python3 -I - "${url}" "${response_path}" <<'PY'
 import json
 import pathlib
 import sys
@@ -1346,7 +1346,7 @@ remote_alpha_es_config_tls_prep_ownership_meta() {
   config_path="$(remote_alpha_es_config_tls_prep_json_field "${runtime_meta_path}" "config_path")"
   tls_dir="${REMOTE_ALPHA_TLS_DIR}"
 
-  python3 - \
+  python3 -I - \
     "${mode}" \
     "${config_path}" "root:${REMOTE_ALPHA_PREP_GROUP}" "0640" "$(stat -c '%U:%G %a %n' "${config_path}" 2>/dev/null || true)" \
     "${tls_dir}" "root:${REMOTE_ALPHA_PREP_GROUP}" "0710" "$(stat -c '%U:%G %a %n' "${tls_dir}" 2>/dev/null || true)" \
@@ -1436,7 +1436,7 @@ remote_alpha_es_config_tls_prep_write_summary() {
   local backup_meta_path=${22}
   local backup_parent_dir=${23}
 
-  python3 - "${summary_path}" \
+  python3 -I - "${summary_path}" \
     "${source_runtime_meta_path}" \
     "${runtime_meta_path}" \
     "${health_env_meta_path}" \
