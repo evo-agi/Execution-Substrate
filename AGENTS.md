@@ -34,6 +34,7 @@ Additional rules:
 - Do not treat code as design authority for cross-service behavior.
 - If docs and code disagree on factual behavior, code and tests win for current behavior, and the docs must be realigned.
 - If docs disagree on design intent and code does not settle it, surface a design-governance conflict instead of guessing.
+- `.docs/history/plans-record.md`, the closed dated record that moved out of `PLANS.md`, is historical evidence and holds no current authority: where it differs from `PLANS.md` or from an owning `.docs/` contract, they win. It is not part of the read-first path; consult it when a change touches a surface one of its entries names.
 
 ## 4. Required terminology
 
@@ -122,7 +123,7 @@ If a change touches a `Reopened redesign seam`, ensure the redesign is allowed b
 
 After changes:
 
-- update `PLANS.md` when redesign intent, seam status, or active workstream implications changed
+- update `PLANS.md` when redesign intent, seam status, or active workstream implications changed, by editing the section that states them; do not add a dated status entry to `PLANS.md` or to its closed record, and say what the change did in its pull request description instead
 - update `.docs/system_overview/` when architecture, contracts, boundaries, or governance changed
 - update `.docs/execution_lifecycle/` when lifecycle design, contract, or implementation behavior changed
 - ensure docs, tests, and code describe the same current reality

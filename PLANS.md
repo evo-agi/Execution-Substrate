@@ -1,801 +1,119 @@
 # Execution Substrate Current Plan
 
-## Status
+This file holds the current plan: the objective, the ordered plan, the
+decision rules, the scope and active workstreams, the current slices, and the
+reopened seams. `AGENTS.md` ranks it second in authority, and every change
+starts by reading it.
 
-### PR #12 durable admission: Nomad's token on the private path, after PR #31 (2026-11-24)
+How this file is kept:
 
-PR #31 made ES send its Nomad ACL client token on every Nomad request, and
-its guard refuses a Nomad request path outside a builder that sets the
-token. PR #12's reliable-submit operational provider sent its three
-requests to Nomad without one. It now takes ES's token when it is built,
-from the same custody as the current submit client's, cannot be built
-without one, and sets it in the `X-Nomad-Token` header of every request,
-never in the URL. PR #31's guard now covers both Nomad clients, and the fake
-Nomad of the handoff tests refuses any request without the token.
+- Edit the section that states a fact when scope, seam status, sequencing, or
+  design intent changes, so the plan stays current. Do not add dated status
+  entries: say what a change did and why in its pull request description, and
+  let the owning `.docs/` contract hold the precise wording.
+- Cite this file by section heading, never by line number, because its lines
+  move.
+- The dated record that used to open this file moved to
+  [`.docs/history/plans-record.md`](.docs/history/plans-record.md) on 2026-11-24,
+  unreworded: the `Status` entries up to that day, the source publication and
+  selection history of 2026-11-17 and 2026-11-18, and the records of the
+  superseded Remote Alpha operator facade routes P0n and P0r. The record is
+  closed and is historical evidence only: it holds no current authority, and
+  where it differs from this file or from an owning `.docs/` contract, they
+  win. Read it when a change touches a surface one of its entries names.
 
-The provider has no production caller, and wiring it still needs the
-commissioning gate's prerequisites. The gate gains a seventh prerequisite,
-`CP-NOMAD-ACL`: grants and exclusive writing for ES's token in the
-operational namespace, the access-control check before registration, what
-a refused registration means for the claim, and one Nomad identity in ES's
-configuration for both clients. Taking up `trunk_dev` after its PRs #43,
-#42, #34, #31, #38, #44 and #46 brings PR #31's guard test, whose three
-position reads PR #12's position-read test refused; they now read the real
-position. That test file is one more path, so the path ceiling of PR #12
-plus its repairs is 70 files. A driver string that is not valid UTF-8,
-which no caller can send today, is now refused too.
+## Current Planning Objective
 
-This entry changes no public behaviour, request contract or stored format.
-The precise wording is owned by
-[the operational handoff contract](.docs/execution_lifecycle/reliable_submit_operational_handoff.md).
+The repository is no longer in rewrite-by-default mode.
 
-### PR #12 durable admission: repairs after the red-team re-check (2026-11-24)
+The current goal is to keep bounded platform work honest while making reopened seams explicit. Core contracts or boundaries should be re-derived only when `PLANS.md` names them as reopened; otherwise, current implementation, docs, and proof tooling should be treated as bounded platform work to harden rather than rewrite by default.
 
-The red-team's re-check of those repairs found two low defects. Nomad's
-client parses each string of a task's driver configuration with HCL, which
-drops a byte order mark at the start of the string and rewrites it to
-Unicode Normalization Form C. So an argument or a mount target could still
-reach the workload in another form than ES admitted, bound and recorded,
-and two mount targets that differ only in normal form were one path for the
-container. ES now refuses, in each argument and each mount target, a
-leading byte order mark, a string that is not in Normalization Form C, and
-a code point that is not assigned in the Unicode version of its own
-normalization tables, so that a Nomad with tables of a later version leaves
-the string unchanged too. And ES accepted `resources.memory_mb` from 1,
-while Nomad refuses a task with less than 10; on the private path such a
-request took a claim that then stayed ambiguous for good. The request
-validation that both paths share now refuses less than 10. The re-check's
-tests are adopted unchanged, and the smallest request of the third
-red-team's codec test now asks for 10.
+The current plan must prioritize:
 
-The rule imports two packages of `golang.org/x/text`, which the reviewed
-dependency list gains; `go.mod` now requires the module directly, at the
-version it already selected. Taking up `trunk_dev` after its PRs #33, #41,
-#37 and #39 moves one counted test file to `scripts/`, and PR #39's new
-test of `internal/testutil` read an adjusted position in three places,
-which PR #12's position-read test refuses; they now read the real
-position. `go.mod`, the re-check's test file and that test file are three
-more paths, so the path ceiling of PR #12 plus its repairs became 69 files.
+- structural clarity
+- Go-native boundaries
+- explicit package-local ownership
+- reduced dependence on the existing cross-service grammar
+- reduced leakage of one service's DTO or fact model into another service's public shape
 
-This entry changes behaviour: a request with such an argument or mount
-target, or with less than 10 MB of memory, which ES accepted before, is now
-refused with `400 invalid_request` on the ordinary path and with no claim on
-the private path. It changes no stored format. The public request contract
-gains both refusals, which
-[the execution lifecycle contracts](.docs/execution_lifecycle/contracts.md)
-state. The precise wording of the private path is owned by
-[the operational handoff contract](.docs/execution_lifecycle/reliable_submit_operational_handoff.md).
+Current code remains the starting point for any reopened-seam work, not a compatibility promise. Historical references outside this repo, including the Monolith/Python repository, may inform migration context or bounded proof/bootstrap conventions only; they are not current architecture authority.
 
-### PR #12 durable admission: repairs after the third red-team and the guard coverage review (2026-11-23)
+## Ordered Execution Plan
 
-The third red-team found two medium defects. Nomad's client evaluates
-`${...}` and `%{...}` in every string of a task's driver configuration as a
-template, rewrites the escapes `$${` and `%%{`, and replaces `${name}` in
-environment and meta values. So the argv, environment, output id and mount
-targets that ran were not the ones ES admitted, bound and recorded. ES now
-refuses `${`, `%{` and a NUL byte in each of those strings before anything
-is staged or sent: with `400 invalid_request` on the ordinary path, and with
-no claim, no reservation and no POST on the private path, which shares the
-validation. Other control bytes are passed on as written.
-And a private request whose job was too large was admitted, took one of the
-claim slots and one of the reservations, and then answered Integrity
-forever; four of them closed the domain. ES now projects the job and the
-POST body before the claim, with a stage, a job name and a correlation
-value of the lengths every run has, and refuses a request that does not fit
-as malformed, with no claim. The job bound stays measured on the form
-`encoding/json` writes, which is never shorter than the job Nomad's API
-returns.
+Future agents should follow this order unless a later revision to `PLANS.md` changes it explicitly.
 
-The guard coverage review found that a production file could hold
-`//go:cgo_import_dynamic`, which makes a build without cgo load a named
-shared library before `main`, with no import that the guard reads. Every
-non-test Go file of the repository may now hold only the `//go:` directives
-of a reviewed list, today `//go:build` alone. The tests of the red-team and
-the review's proposal are adopted unchanged.
+1. Reset planning authority in `PLANS.md`.
+   This step is complete when the repo no longer treats the old frozen-slice plan as the operative design target.
 
-Taking up `trunk_dev` after its PRs #27 and #29 adds no path. The mount
-target rule is one more production file, the two contracts documents state
-the refusal, and seven test files are new, so the path ceiling of PR #12
-plus its repairs became 66 files.
+2. Execute the next milestone as **ES Admission And Runtime Boundary Realignment**.
+   This is a package made of Workstream A, Workstream B, and Workstream C, with ES as the primary delivery owner. Workstream A and Workstream B are gates that keep ES input contracts honest; Workstream C is the delivered ES milestone.
 
-This entry changes behaviour: a request that holds one of those strings,
-which ES accepted before, is now refused. It changes no stored format. The
-public request contract gains the refusal, which
-[the execution lifecycle contracts](.docs/execution_lifecycle/contracts.md)
-state. The precise wording of the private path is owned by
-[the operational handoff contract](.docs/execution_lifecycle/reliable_submit_operational_handoff.md).
+3. Complete the Workstream A gate first.
+   The shared contract and kernel decision must be explicit enough that ES admission does not inherit accidental shared grammar. This gate is not permission to create a broad new shared kernel, and it is not CP-owned.
 
-### PR #12 durable admission: taking up trunk_dev after its PRs #23 and #22 (2026-11-23)
+4. Complete the Workstream B gate second.
+   AGS and ARS define the artifact publication and retrieval substrate that ES consumes. This gate must make the ES-consumed discovery and payload/evidence ownership explicit without letting CP examples or helper scripts become contract authority.
 
-Since PR #23, every test package of `trunk_dev` runs its tests under a
-temporary directory whose path holds no symbolic link, through a one-line
-`TestMain` in a file of its own, and a test fails for a package without
-one. The admission state package of PR #12 is a new test package, so it
-gets that file. PR #22 added a root test file with two reads of an adjusted
-position, which PR #12's position-read test refuses; they now read the real
-position. The CI's list of environment-only tests gains two lines for tests
-of the handoff: one fails on the runner without its probe binary, and one
-skips itself there. The list's check refuses both lines on `trunk_dev`
-alone, so they come with PR #12. These are two more test files and the
-CI's list, so the path ceiling of PR #12 plus its repairs became 56 files.
+5. Deliver Workstream C third.
+   ES admission, submission, lifecycle projection, retained-result behavior, runtime-profile handling, and runtime-boundary ownership are the primary next milestone delivery. Preserve the accepted CP governed-execution path as bounded compatibility while keeping ES-owned semantics in ES docs.
 
-This entry adds one test file, changes another, changes the CI's list of
-environment-only tests and changes documents. It changes no behaviour, no
-stored format and no public contract. The precise wording is owned by
-[the operational handoff contract](.docs/execution_lifecycle/reliable_submit_operational_handoff.md).
+6. Execute Workstream D fourth.
+   Policy and authorization surfaces should be re-derived once the ES execution shape is clear enough to say what policy inputs and outputs actually belong at runtime.
 
-### PR #12 durable admission: line directives after the sixth audit (2026-11-23)
+7. Execute Workstream E fifth.
+   Lookup/config indirection should be reset only after artifact, execution, and policy contracts have been clarified, because the replacement owner depends on those decisions.
 
-The sixth audit, of the repairs after the red-team, found that the raw
-pointer rule placed each value in the file that a `//line` or `/*line`
-directive names. A file without the `unsafe` import could name a sibling
-file that imports it, above a raw pointer road, and pass the rule. The rule
-and every other guard now read the real position of the code, and a test
-refuses the calls that read an adjusted position in the test files of the
-module. Every non-test Go file of the repository is refused such a
-directive as well; none held one. New subtests hold the rule in a package
-with a sibling file that imports `unsafe`, with and without a directive,
-and show that a directive moves no site of a guard inventory. The guard of
-Workstream A's source terms reads real lines as well; it is one more test
-file, so the path ceiling of PR #12 plus its repairs became 53 files.
+8. Execute Workstream F sixth.
+   Runtime identity handoff should be redesigned after ES, policy, and runtime-config responsibilities are clear. Otherwise path conventions and auth-plan details will re-freeze around current incidental coupling.
 
-This entry changes guard tests and documents only. It changes no
-behaviour, no stored format and no public contract. The precise wording is
-owned by
-[the operational handoff contract](.docs/execution_lifecycle/reliable_submit_operational_handoff.md).
+9. Do scripts, runbooks, deployment glue, and peripheral cleanup only after the core contracts stabilize.
+   Cleanup is valuable, but it should not happen while the architecture-defining surfaces are still moving.
 
-### PR #12 durable admission: repairs after the red-team (2026-11-23)
+This ordering is deliberate:
 
-The red-team of the combined PR #12 at
-`bff8dda37dbf5484afb3b264d4eca38cf6abf118` found that the behaviour holds
-and left one low finding, RT2-1: a production file can import
-`modernc.org/libc`, which the SQLite driver brings into the build, and clear
-the latches of the admission state with its `memset`, with no `reflect`,
-`unsafe` or `C` import. While closing it, two more roads of the same class
-were measured: a value whose type has the underlying type `unsafe.Pointer`
-converts to a pointer of any type in every file, and both
-`golang.org/x/sys/unix.MmapPtr` and the standard library alone, through the
-exported `reflect.Type` of `encoding/json`'s error type, hand one out. The
-guard now holds all three. The import inventory also counts `plugin` and
-every dependency package outside a reviewed list, whose entries are pinned
-to the module and version that was reviewed. A new raw pointer rule refuses
-such a value in a file that does not import `unsafe`. Raw system calls stay
-outside every inventory and are named as part of the limit of the
-operating system.
+- use Workstream A and Workstream B as gates so ES does not inherit accidental shared or publication/storage grammar
+- deliver Workstream C as the next ES-owned program milestone, not as a CP-shaped feature expansion
+- preserve current CP compatibility as a bounded consumer edge while ES-owned contracts remain defined in this repo
+- redesign execution before finalizing policy and lookup consumers
+- redesign runtime identity only after the ES and policy boundaries are explicit
 
-The red-team's tests are adopted as permanent tests: its eleven behaviour
-tests, its test of a second process killed at random instants, its guard
-test of RT2-1, and its three tests of documented limits, which now fail when
-a limit closes or moves without the documents. They are four new test
-files, so the path ceiling of PR #12 plus its repairs became 52 files. A
-comment in the admission state file says that only an untyped nil owner
-gets the closed handle, and the hash pin of that file follows it.
+## Current Decision Rules
 
-This entry changes guard tests, adopted tests, one comment of production
-code and documents. It changes no behaviour, no stored format and no public
-contract. The precise wording is owned by
-[the operational handoff contract](.docs/execution_lifecycle/reliable_submit_operational_handoff.md).
-The bytes of this entry need their own audit before PR #12's merge gate.
+Future agents working in this phase must follow these rules:
 
-### PR #12 durable admission: a limit named after the fifth audit (2026-11-23)
+- Redesign structure before renaming.
+- Break core coupling before cleanup.
+- Prefer package-local ownership over cross-service leakage.
+- Do not preserve an old contract unless it is intentionally retained as a temporary compatibility edge.
+- Document any new invariant in `PLANS.md` and the relevant `.docs/` pages before implementing against it.
+- Do not introduce a new shared kernel casually. Shared code requires explicit ownership and a concrete cross-service reason.
+- Use this repository as the planning authority. Treat the Monolith/Python repository as historical or bounded bootstrap reference only.
+- Surface conflicts instead of working around them.
+- Do not bypass governance, storage, trust, or scheduler boundaries as a shortcut during redesign.
+- Keep capability-sensitive behavior validated by behavior or static resource checks, not by OS labels or fallback branching.
+- Preserve current implementation behavior until a replacement contract is explicitly documented, tested, and implemented.
+- Treat compatibility shims as temporary and track their removal conditions.
+- Do not describe foundational ES boundary and contract work as secondary to the program; it is the current primary ES milestone.
+- Do not let Control Plane documents, probes, or examples define ES core contracts. They may document consumption of accepted ES surfaces only.
+- Preserve current CP compatibility for the governed execution path, including `execution_substrate.runtime_profile` and `control-plane-normal-shell/v1`, unless a coordinated compatibility, drain, migration, or versioning plan is documented first.
 
-A fresh independent audit of the fourth repair
-`bff8dda37dbf5484afb3b264d4eca38cf6abf118` accepted the candidate with one
-low finding in the documents. The entry below says what stays possible
-outside the admission state package, and the owner document lists the limits
-of the guard by name. Neither named one road: code that writes the memory of
-its own process through the operating system. The audit cleared the
-withdrawal latch of a withdrawn Service that way on linux/amd64, and the
-Service's check of current admission answered true again. The function it
-used has no `reflect`, `unsafe` or `C` import and names no protected field,
-and in one form it changes the result of no test. The road is older than the
-package, and no source inventory can hold it in general, because the path
-can be put together at run time, so this entry adds no guard rule. It names
-the limit instead: every production file of the module and every dependency
-is inside the trust boundary of the admission state, and nothing may rely on
-the package boundary against code of lower trust in the same process.
+## Reopened-Seam Exit Criteria
 
-The same audit observed that the forms which must not compile outside the
-package are judged by the type checker of the standard library and not by
-the compiler itself. The owner document now says so.
+The current reopened-seam plan is complete only when all of the following are true:
 
-This entry changes documents and the docs contract test only. It selects
-nothing new and changes no production code and no guard. The precise wording
-is owned by
-[the operational handoff contract](.docs/execution_lifecycle/reliable_submit_operational_handoff.md).
-The bytes of this entry need their own audit, and the red-team review of the
-combined PR #12 is still required.
-
-### PR #12 durable admission: the admission state package (2026-11-22)
-
-The fourth audit left one question open: the typed guard keeps the admission
-state closed by searching source forms, where a design could make a bypass
-fail to compile. The selected answer is to make that change in this
-candidate, before the handoff has a production caller. It is not added to
-the commissioning gate as a seventh prerequisite, because nothing is left
-for a later change to do. This entry moves production code inside the same
-selected design. It changes no behaviour, no stored format and no public
-contract.
-
-The installed view, the withdrawal and supersession latches and the time of
-the last confirmation leave `Service`. They are one unexported struct of a
-new package, `es/admission/internal/admissionstate`, under that package's
-own lock. The package is one production file that imports neither
-`reflect`, `unsafe` nor `C` and performs no I/O. It is internal to
-`es/admission`, so it is not a shared package and no other service can
-import it. A Service holds a handle to its state, made once in `NewService`,
-and a view leaves the package only as a second handle. Each handle is a
-struct with one unexported pointer to an unexported struct. Admission
-content crosses the boundary as plain data and is copied in both directions.
-The admission digest moves with the state and produces the same bytes as
-before.
-
-Outside the package the compiler now refuses what the guard searched for: a
-selection of a field of the state or of a view, a struct type written in
-either shape, and a copy, overwrite or restore of the value. Two things stay
-possible there, a call of an exported function of the package and an
-assignment of the whole handle, and the guard holds both by exact
-inventories: every call site of every exported function, the exported
-surface as a closed list, and every access to the handle field. It holds the
-one file of the package by the SHA-256 of its content. Reflection and
-`unsafe` reach an unexported field of any package, so the module-wide
-`reflect`, `unsafe` and cgo import inventory stays as it is.
-
-The proof seam is narrower than before. No test writes a field of the view
-any more. Tests read the state through one inspection method that no
-production code calls, and they change the policy of a view only by adding
-an evaluator behind the selected built-in set, which can refuse a claim or
-require an input and cannot allow one.
-
-The precise rules are owned by
-[the operational handoff contract](.docs/execution_lifecycle/reliable_submit_operational_handoff.md).
-This candidate requires a fresh independent audit of its complete committed
-bytes, and the red-team review of the combined PR #12 after it.
-
-### PR #12 durable admission: corrections after the fourth audit (2026-11-22)
-
-A fresh independent audit of the third repair
-`faacf16b9d5cd5ddc28b79da5c6c30f2bca6c124` accepted its production code and
-every correction of the third audit, and did not accept the candidate. The
-typed guard read only the packages that the pattern `./...` matches. The go
-command compiles a package from a `testdata` directory, or from a directory
-whose name begins with a dot or an underscore, as soon as another package
-imports it, so the statement of the entry below, that every production
-package and file of the module is read, did not hold for those. This entry
-corrects the candidate inside the same selected design; it selects nothing
-new and changes no production code. The entry above is the production change
-of the same repair.
-
-The guard now chooses what it reads by the directory a package is compiled
-from. It reads every package in the dependency closure of the module's
-packages whose directory lies inside the repository, whatever the directory
-is called and whatever the import path, and it fails on a closure package
-compiled from anywhere but the repository, the Go root and the module cache.
-Its file-set check and its import inventory read every directory of the
-repository except `.git`. Three forms that make the go command compile a
-module from an unread place fail a test: a directive of `go.mod` outside the
-exact list `go`, `module` and `require`, which refuses a `replace` line; a
-workspace file in the repository or above it; and a `go.mod` below the
-repository root. A file that imports `reflect`, `unsafe` or `C` is held in
-the import inventory by the SHA-256 of its content, so a change inside such a
-file is a reviewed change like a new import.
-
-One detail of the cancellation rules is stated and tested: when the deadline
-of a call passes while the provider is asked about the job, the answer is
-`OperationalTimeout` with the stored run, where a cancellation answers
-`OperationalCanceled` with the stored run.
-
-The precise rules are owned by
-[the operational handoff contract](.docs/execution_lifecycle/reliable_submit_operational_handoff.md).
-This candidate requires a fresh independent audit of its complete committed
-bytes, and the red-team review of the combined PR #12 after it.
-
-### PR #12 durable admission: corrections after the third audit (2026-11-22)
-
-A fresh independent audit of the second repair
-`c41e177f0d264318de3d799d8b28e7f494b18c74` accepted its production code and
-every correction of the second audit, and did not accept the candidate. The
-typed guard still missed a protected field written through a generic function
-that another package instantiates, and four low findings showed tests and
-documents short of the code. This entry corrects the candidate inside the same
-selected design; it selects nothing new and changes no production code.
-
-The three escapes of the typed guard found in review (a whole-value
-conversion, a pointer conversion, a generic body) each gave the storage of an
-owning type a second set of field names through a struct type of the same
-shape. The guard now refuses that class by default instead of one more form
-of it. It lists every struct type written in the module whose field names,
-order and embedding equal an owning type's (`whole-mirror`), and every type
-parameter whose constraint reaches an owning type, at its declaration
-(`whole-constrain`). It holds an exact inventory of the type parameters
-declared in a package that declares an owning type. It reads the whole-value
-occurrences of each owning type in every production package of the module,
-not only in the package that declares it, and its file-set check and its
-`reflect`, `unsafe` and cgo import inventory cover every production file of
-the module. The guard remains a search over source forms with named limits,
-not a proof of aliases or dataflow.
-
-A denial that an evaluation returned under a context that ended meanwhile is
-pinned as `OperationalDenied`. The commissioning gate gains a sixth
-prerequisite, `CP-PUBLIC-MAPPING`: the public mapping of the handoff's
-reasons, which includes what a refused first delivery tells its caller, must
-be selected before the handoff or commissioning has a production caller. The
-outcome table now says where a cancelled call still returns the stored run.
-The precise rules are owned by
-[the operational handoff contract](.docs/execution_lifecycle/reliable_submit_operational_handoff.md).
-This candidate requires a fresh independent audit of its complete committed
-bytes, and the red-team review of the combined PR #12 after it.
-
-### PR #12 durable admission: corrections after the second audit (2026-11-22)
-
-A fresh independent audit of the durable-admission candidate
-`b6d2f7787ec8254134cb48fcae0da72bac0fd02c` accepted its production code and
-did not accept the candidate. The typed guard still let a protected field be
-written through a pointer converted away from its owning type, and seven low
-findings showed documents, tests and code apart. This entry corrects the
-candidate inside the same selected design; it selects nothing new.
-
-The typed guard lists a conversion in either direction between an owning type
-(or a pointer to or container of it) and any other type, and an instantiation
-of a generic function or type with such a type argument. A method inventory
-counts a same-named interface or constraint method and its selections as
-indirect references, so a gated entry cannot be reached through an interface
-of the two packages. A file-set check fails when a production file of the two
-packages is compiled for none of the three guarded targets. A cancelled call
-answers `OperationalCanceled` wherever the admission returned no refusal of
-its own. `OperationalDenied` is stated as what it is, the answer of the
-re-judgment of a retained original; a first delivery that ordinary resolution
-refuses stores nothing and answers `OperationalUnavailable`, and what a first
-delivery tells its caller stays with the public mapping, which the
-commissioning gate names as the prerequisite `CP-PUBLIC-MAPPING`. The
-store's admission write gains the COMMIT fault seam the claim writers have.
-The lock statements now say that the three admission operations and the two
-pre-check confirmations hold the custody handle's read lock. The precise
-rules are owned by
-[the operational handoff contract](.docs/execution_lifecycle/reliable_submit_operational_handoff.md).
-This candidate requires a fresh independent audit of its complete committed
-bytes, and the red-team review of the combined PR #12 after it.
-
-### PR #12 durable admission generation, freshness and v1 removal (2026-11-22)
-
-A fresh independent audit and a red-team review of the committed v2 repair
-`e544e0fbe4220dfdd2c2068e3267dcfa454a0cf9` over
-`8058561edc08356c46680c204586b3c7796c0ff3` did not accept it. No production
-hole was found in the candidate's own model, but that model stranded every
-unmarked claim whenever trust, verifier or policy changed, kept a v1 branch
-for originals no production caller could have created, left three admission
-checks unpinned by behaviour, and its typed guard accepted whole-value and
-conversion writes. The owner selected the proper fix on 2026-11-22: amend the
-unmerged migration 5 (decision D-1), add the freshness rule in this repair
-with a 30 second limit (D-2), and delete `operational_local_v1` (D-3). This
-is a **re-derivation** on the reliable-submit **Reopened redesign seam**.
-
-Select one durable **admission row** in schema 5: installation, epoch,
-admission generation, admission digest and an enabled or withdrawn state,
-with its own triggers, created by the amended migration 5. This reverses the
-"No SQL migration" statement of the 2026-11-20 entries for this one purpose;
-migrations 1 to 4, the 47 claim columns, codecs 1 to 4 and every stored
-encoding keep their meaning. Every codec-5 first-effect writer (establish,
-run assignment, intent, pre-stage, stamp and first marker) compares the
-presented **admission token** with that row under the SQLite writer lock, and
-the post-COMMIT release of a run assignment, intent, stamp or first marker
-reads it again; establishment releases nothing and the pre-stage turn is
-followed by the stamp turn, so those two have no re-read. Replacing trust, verifier or policy
-no longer changes the epoch: a restarted process advances the generation,
-in-flight claims are judged again by the new content, and a process holding
-an older token commits no further first-effect write. Withdrawal becomes
-durable and domain-wide. A process must have confirmed its trust with EGS
-less than 30 seconds before every first-effect cut after establishment,
-measured inside that cut's writer turn; establishment samples the
-confirmation just before its turn, and its turn compares the token only. A
-confirmation that differs
-latches the process closed, and a failed confirmation extends nothing. A
-refusal of a retained original by the current rules reports the value-free
-`OperationalDenied`; an absent, fenced, withdrawn, superseded or stale
-authority reports `OperationalUnavailable`, and so does a first delivery that
-ordinary resolution refuses, which stores nothing. Neither discloses a run.
-
-`operational_local_v1` is removed, not retained: no **Temporary compatibility
-edge** remains on this path. The 2026-11-20 and earlier 2026-11-22 entries
-below stay as history and are superseded where they select v1, forbid a
-migration, bind trust or policy replacement to a new epoch, or describe
-withdrawal as local to one Service. Commissioning, advance and withdrawal keep
-zero production callers; a maintained gate names the prerequisites
-(`CP-ROLLBACK`, `CP-EPOCH`, `CP-POLICY-CUSTODY`, `CP-NATIVE`, `CP-RELEASE`,
-`CP-NOMAD-ACL`, `CP-PUBLIC-MAPPING`) that must be answered before one is added. The typed protected-field guard
-now treats conversions as transparent, counts whole-value construction,
-assignment, conversion and declaration of an owning type, and names its
-remaining limits. Public keyed refusal, ordinary unkeyed Submit, what
-`Initialize` does, EGS, the original wire format, receipts, staging, the
-sender and the provider exchange are unchanged and remain **Current
-invariants** or **Bounded slice rules** as before. The precise table, token,
-cuts, deadline, outcomes and test obligations are owned by
-[the operational handoff contract](.docs/execution_lifecycle/reliable_submit_operational_handoff.md).
-This candidate requires a fresh independent audit and red-team review of its
-complete committed bytes before it can resolve the PR #12 finding.
-
-### PR #12 v2 field-access guard completion (2026-11-22)
-
-The consolidated v2 repair below, recovered unchanged as tree
-`433b4891a0e413aff2b0eb6adf316a033a544a24` over
-`8058561edc08356c46680c204586b3c7796c0ff3`, is now a committed draft-PR
-candidate. Writer review found that its typed protected-field access
-classifier still reported range-clause `=` targets, explicit or implicit
-address-of, and writes through a selector, index, slice or dereference chain
-rooted at a protected field as reads. This **Bounded slice rule refinement**
-on the reliable-submit **Reopened redesign seam** classifies those accesses as
-assignment, address or write-through, adds maintained same-site regressions,
-and reconciles the operational handoff contract's §9 path ceiling with the
-repair's five added paths. Production Go code, the operating model, custody
-grammar, durable facts, sender and recovery behavior are unchanged. The
-candidate still requires a fresh independent audit and red-team review of its
-complete committed bytes before it can resolve the PR #12 finding.
-Superseded in part by the entry above: its guard is extended there.
-
-### PR #12 v2 authority and evidence repair (2026-11-20)
-
-The fresh independent audit rejected the unstaged 18-path v2 candidate bound
-to manifest `ebf8e5a48ed2e4b36d7249abee813a70169d8f9bc1c33b5e1b09eb5d7a24a6b6`.
-The rejected predecessor had a source-level repair for eligible v2
-continuations but lacked maintained exact authority inventories and
-discriminating signed-v2/historical-v1 evidence; its persistence owner also
-misattributed strict v1 empty-leaf enforcement to storage. This consolidated
-**Bounded slice rule refinement** on the reliable-submit **Reopened redesign
-seam** adds exact typed guards and independently built complete v1/v2
-wire-and-commitment checks, validly signed association controls, actual retained
-policy-context observation, and assigns the historical empty-leaf check to
-admission. The selected operating model,
-custody grammar, durable facts, sender and recovery behavior remain in force.
-The only permitted production insertion is a nil-default, non-authoritative
-test observation of the completed retained policy context immediately before
-the existing built-in evaluation. This repair is an unstaged writer candidate;
-it does not become independently accepted or resolve the PR finding until a
-new independent audit of its complete final bytes.
-Superseded in part by the 2026-11-22 durable admission generation entry:
-the historical-v1 evidence and the v1 empty-leaf check are removed with v1.
-
-### PR #12 retained-current-admission v2 repair (2026-11-20)
-
-PR #12 published the private schema-5 operational handoff at
-`8058561edc08356c46680c204586b3c7796c0ff3`. Subsequent review comment
-`4644988778` identified an implementation omission: an unmarked retained
-original can proceed to its first effect without consulting the current ES
-admission owner. The earlier source acceptance applies to its published bytes;
-the finding remains unresolved and blocks merge. This is a **Bounded slice rule
-refinement** on the reliable-submit **Reopened redesign seam**. Public keyed
-refusal, ordinary unkeyed Submit, caller-before-lookup, original and receipt
-integrity, and fixture/effect separation remain **Current invariants**.
-
-Select an `operational_local_v2` original carrying the complete signed artifact
-evidence from the same successful ordinary resolution. A one-shot Service-owned
-snapshot of the loaded trust model, provenance verifier and supported built-in
-policy is commissioned for the qualified installation/policy epoch; only
-monotonic local effect withdrawal is mutable within that epoch. Bounded local
-current-admission qualification on the authenticated retained original governs
-unmarked run/intent progression, pre-stage, stamp, first marker, post-COMMIT
-release and final sender entry. The already sealed `operational_local_v1` is a
-**Temporary compatibility edge**: accepted receipts and positive marked
-reconciliation remain readable, while any v1 unmarked first effect refuses
-without resealing. No SQL migration, public/native wiring or policy platform is
-selected. The precise format, locks, outcomes and test obligations are owned by
-[the operational handoff contract](.docs/execution_lifecycle/reliable_submit_operational_handoff.md).
-This unstaged repair candidate requires a new frozen validation generation and a
-fresh independent audit before any additive commit or PR update.
-Superseded in part by the 2026-11-22 durable admission generation entry: the
-v1 **Temporary compatibility edge**, "No SQL migration", the epoch-bound
-snapshot and Service-local withdrawal selected here are no longer in force.
-
-### Pre-stage continuation and transport observation repair (2026-11-20)
-
-Refine the private operational handoff **Bounded slice rule** on the
-reliable-submit **Reopened redesign seam** after the independent rejection of
-manifest `8808e598683923aff485f5d16d2cf1298f7e93b15ce90d7c780a0250b170a58c`.
-An exclusive stage attempt requires the complete successful pre-stage result:
-`OperationalNoChange` and `OperationalReasonNone`. A failed rollback, release or
-observed cancellation may preserve the semantic NoChange observation but stops
-effects and withholds run/receipt without erasing an earlier observed write.
-Maintained proof distinguishes direct exchange-method entry, GetConn and receiver
-ingress. The final owner-protected cancellation sample and its possibly-delivered
-later race remain unchanged. The repair is private, unstaged, runtime-unwired and
-pending a fresh independent source audit; no new architecture reset is selected.
-Structural public keyed refusal and ordinary unkeyed Submit remain **Current
-invariants**.
-
-### Consolidated private operational handoff audit repair (2026-11-20)
-
-Refine the selected private operational handoff **Bounded slice rule** on the
-reliable-submit **Reopened redesign seam** after rejection of manifest
-`e4d58552913ae21118a51603de65924fd04235fabde930800883f2212ff4ceeb`.
-The operational owner governs current qualification, independent write and
-disclosure results, authenticated establishment confirmation, and the final
-protected synchronous entry cut. Qualify the pre-existing claim count on
-operational opening and retain separate logical and local physical old-opener
-witnesses. This selection preserves schemas, encodings, immutable receipts,
-the permanent marker, and the one live sender. Structural public keyed refusal
-and ordinary unkeyed Submit remain **Current invariants**. Independent
-acceptance requires a separate audit of the repaired bytes.
-
-The codec-5 decoder amendment permits only the raw optional-BLOB check in
-`sqliteClaimRow.record` in `sqlite_store.go`. This implements SQL NULL absence
-before phase and fact conversion, retaining the 69-byte operational RunRef
-and 32-byte fact and receipt references. The other codecs, shared scanner,
-migration literals and stored formats retain their existing contracts.
-
-The private composition rechecks stage metadata through held descriptors,
-prepares transport before the owner-protected entry cut, and binds intent,
-stage, marker and positive observation to the authenticated original access.
-The finite result reports current qualification and the observed write
-separately. The local test witnesses and completed generation are tied to
-their exact source in the repair evidence.
-
-### Post-PR #11 operational handoff owner-contract candidate (2026-11-19)
-
-PR #11 completed fixture-only private replay/progress source publication at
-`ae326b0ddc30ec6b35883ee32945c622405b68b6` on official `trunk_dev`, sole
-parent `f1aa8b934cc26c16a966a110c7b408abdaeadce7`, 430-leaf tree
-`e066cd4afa77fcb665f31b69bf00465989f9744e`. Current production source is
-schema 4 and the private progress path is fixture-only. The entries that
-follow record the earlier planning and audit decisions.
-
-Select a candidate **re-derivation of the reliable-submit Reopened redesign
-seam** for the private operational handoff and restart slice. The
-[operational handoff owner contract](.docs/execution_lifecycle/reliable_submit_operational_handoff.md)
-selects schema 5, codec 5 and encoded scope 3, a checked current writer turn,
-a permanent marker and one live sender only from the direct acknowledgement
-of the applied first-marker COMMIT. It selects exclusive staging custody
-without reattachment, positive registration evidence and immutable receipt
-recovery. Target, proof profile and native prerequisites are distinct. This
-candidate includes private implementation and maintained local proof cases on the selected seam. The local SQLite head is schema 5. Local proof validation and fresh independent
-source acceptance remain separate gates.
-Public keyed refusal and unkeyed Submit remain **Current invariants**.
-
-### One allowlist-prefix rule for ARS, AGS, and ES (2026-11-23)
-
-This **Current invariant refinement** makes the allowlist half of the
-existing invariant "caller authentication and narrow SPIFFE allowlist
-authorization remain required" mean one thing at ARS, AGS, and ES. ES refused a too-broad or malformed allowlist prefix at startup, while
-ARS and AGS refused only blank values and loaded prefixes such as `service`,
-`/operator/local/`, `operator/lo cal`, or a full SPIFFE ID. Caller
-authentication hands authorization only canonical paths, so all but the first
-of those could never match, and a one-segment prefix granted every identity
-below it. Each of the three services also kept its own copy of the prefix
-matcher. The rule is now one cross-cutting support package,
-`internal/callerallowlist`, recorded in `.docs/system_overview/contracts.md`
-section 3A: a prefix is the path of a SPIFFE ID that section 3A accepts,
-without its leading slash, with at least two segments; it matches the caller
-path that equals it or continues it after a `/`; and a prefix that fails the
-rule matches nothing. ARS, AGS, and ES refuse such a prefix at startup. The
-package owns no allowlist content and no route: which prefixes each service
-configures, and which routes they open, stay service-local. EGS's fixed
-caller list and CGS `id.conf` are unchanged. Every repo-owned configuration
-already uses canonical two-segment prefixes. In the same change, the root
-guard that keeps caller identity reading inside `internal/callerauth` also
-type-checks every production package for Linux and macOS, so a read of a
-request's TLS state or of a certificate's URI SANs, issuer, or raw extensions
-is caught through a variable, alias, or embedded struct too; and the operator
-healthcheck TLS status tools read the operator certificate's URI SANs from its
-DER encoding instead of OpenSSL's printed text.
-
-### Nomad access control lock (2026-11-23)
-
-ES now submits only to a Nomad that enforces access control (ACLs). ES reads
-a least-privilege client token from `nomad.token_file` at startup (submit,
-read and logs in namespace `es-submit-v1` only), sends it on every Nomad
-request, and before every submit refuses with `503
-execution_runtime_unavailable` unless its token resolves as a client token,
-ACLs are enabled and no anonymous policy exists. Nomad's bootstrap management
-token stays in a root-only file and never reaches ES. Provisioning is
-`scripts/nomad_acl_setup.sh` (namespace, policies, ES and read-only observer
-tokens, `check`, `rotate`); the supported Linux host setup, full-profile
-bring-up, supported-local setup and proof capture, readiness checks and CI's
-real Nomad all run with ACLs on. CI proves a real ACL Nomad refuses a job
-without ES's token and ES refuses a Nomad without the lock. Nomad's client
-now offers only the Docker task driver, through an explicit `plugin "docker"`
-block that refuses privileged containers and allows only the seven
-capabilities the submit path needs; its configuration and data are
-root-owned, and setup, bring-up and readiness refuse a Nomad whose live
-driver set, privileged setting or capability list differ. Known limits:
-Nomad's API is plain HTTP on loopback (Nomad HTTPS with a pinned server key
-is the next part), the lock does not cover the Docker socket, and ES's token
-still expresses job shape (mounts, task user). PR 12's reliable-submit
-operational provider is not yet covered: its change list is in the Nomad ACL
-report.
-
-### One caller authentication rule for the five services (2026-11-23)
-
-This **Current invariant refinement** makes the existing invariant "caller
-authentication and narrow SPIFFE allowlist authorization remain required"
-mean one thing at every service. ARS, AGS, EGS, CGS, and ES each carried
-their own copy of the code that reads the caller's SPIFFE ID from the
-verified client certificate, and the copies had drifted: CGS accepted an
-identity from any trust domain, ARS indexed the verified chain without
-checking it was non-empty, and every service took the first matching URI SAN
-of a certificate with several, passed non-canonical paths (for example a
-trailing slash or a `..` segment) to prefix matching, and accepted a CA
-certificate presented as the caller's leaf. None of them noticed that a
-client certificate expired while its connection stayed busy. The rule is now
-one cross-cutting support package, `internal/callerauth`, whose contract is
-`.docs/system_overview/contracts.md` section 3A: a verified chain that is
-still within its validity period at each request, an end-entity leaf (not a
-CA, no `keyCertSign` or `cRLSign`, as X.509-SVID requires) with exactly one
-URI SAN, a conforming SPIFFE ID with a path, trust domain
-`execution.internal` only, then the bootstrap-issuer refusal. Authorization
-stays service-local. CGS `id.conf` loading refuses principals that no
-authenticated caller could present, and the operator healthcheck TLS status
-tools fail an operator certificate with more than one URI SAN, as ES does.
-The response codes and texts are unchanged; requests that the old copies let
-through or refused with `403` because of a malformed identity, and requests
-on a connection whose client certificate has expired, now get `401`. The CGS
-authorize request and response shape is unchanged. This is not a Workstream
-D policy-input redesign.
-
-### Private replay-progress pre-COMMIT and owner inventory refinement (2026-11-19)
-
-Historical selection state before PR #11 publication.
-
-The latest independent audit rejected manifest
-`0812091529c67f4bc46d0bc343b3dea8595e63a461264e143d51606e581e0c06`.
-This **Bounded slice rule refinement** on the reliable-submit **Reopened redesign
-seam** completes the unpublished opener's pre-COMMIT cleanup routing and aligns
-admission §7.4 with the existing typed synchronization inventory. Persistence
-ADR §15B.5 requires checked nonmigrating readback after safe pool disposition.
-The private scope remains fixture-only and runtime-unwired. Public structural
-reliable-request refusal and unkeyed Submit remain current invariants.
-Operational cross-restart write-uncertainty authority remains outside this
-selection. Independent acceptance of the resulting bytes is a later gate.
-
-### Consolidated private replay-progress repair selected (2026-11-19)
-
-Historical selection state before PR #11 publication.
-
-The fresh read-only audit rejected the thirty-path manifest
-`110cef71ba25f61b70297b37cc5a50a68732d639845e0ac4315d06cedcdbc1e3`
-over PR #10. Select one **Bounded slice rule refinement** on the
-reliable-submit **Reopened redesign seam** in the same unstaged candidate.
-Repair migration opening authority and literal namespace qualification,
-confirmation eligibility and borrow lifetime, current reconciliation
-predicates, definite occupied disposition, fixture terminal assertion
-association and scope-1 permit preflight. Add an external test-only
-admission lost-response witness under the existing no-effect boundary.
-The persistence ADR §15B and submit contract §6B govern the repair.
-The selected operating model, formats and migration literals remain
-the same. Independent acceptance of repaired bytes is a later gate.
-
-## Post-PR #10 source publication and private replay progress contract candidate (2026-11-18)
-
-Historical selection state before PR #11 publication.
-
-PR #10 completed A1 source publication by squash merge on official `trunk_dev`
-at `f1aa8b934cc26c16a966a110c7b408abdaeadce7`, sole parent
-`fb9ae55797d9fcc02863c23fe8d3e43d16eac542`, complete 427-leaf tree
-`8dd27f9acba98ed70d93736bdef8300ef1aba53f`. That tree also identifies the
-preserved local A1 source at `fd2115ca8f44a615627adb08926896a1e052dc30`.
-Source publication grants no deployment, native qualification or public
-reliable-submit authority. The PR #9 and A1 selection section below records
-the previous planning state.
-
-Select private original replay with durable claim progress as one
-**Bounded slice rule extension** on the reliable-submit **Reopened redesign
-seam**. This candidate advances the SQLite head to schema 4, preserves
-immutable private codec 3 in `synthetic_nonoperational_v1` and carries
-historical codec 1/2 compatibility. Codec 4 and independently versioned
-migration 4 use the same ES
-SQLite authority, caller/key occupation, and one original and one attempt.
-The separate `synthetic_progress_nonoperational_v1` scope remains fixture-only,
-runtime-unwired and effect-ineligible at every phase. Public structural
-reliable-request refusal and unkeyed Submit remain current invariants.
-
-The persistence ADR §15B and submit contract §6B own the fixture semantics.
-The reconciled proposal keeps one codec-4 reconciliation observation as
-historical evidence, with a first fixture marker and independent terminal
-evidence for the same run. K1 limits fixture proof to the current row and
-each invocation's own write disposition. A later explicit fixture command
-uses fresh authentication, a new borrow and the exact current revision.
-It cannot resolve an earlier unknown response or supply operational
-permission. The full operational Validated No-Dispatch Evidence requirement
-remains unchanged. A separately reviewed cross-restart authority for
-relevant write dispositions is required before provider wiring. The shared
-count/create allocator serves both fixture publishers, including scope 1.
-The legacy codec-1/2 predicates and the codec-3 reader remain current source.
-Phase 0 is architectural review of the contract and acceptance map. Phase 1
-is the local pooled `loadClaim` cleanup repair and its bound regression. Phase
-2 implements codec, scope, format and schema. Phase 3 composes durable
-successors with authenticated private original replay. Phase 4 validates the
-integrated restart, concurrency, unknown-outcome and no-effect behavior.
-Phase 5 is one fresh independent audit of the integrated source. The exact
-K1 owner contract was selected for bounded implementation. This source
-candidate contains the pooled repair, schema 4, codec 4 and the integrated
-fixture path. Acceptance depends on the source-bound validation and a
-separate independent audit.
-The function-owned `loadClaimFresh` reader and codec-3 callers are outside
-the cleanup prerequisite. No phase selects a standalone documentation or
-reader-only PR. Operational ingress, identity, provider and recovery
-qualification require later decisions.
-
-## Post-PR #9 source publication and A1 read cleanup selection (2026-11-18)
-
-PR #8 completed development acceptance, local source preservation, remote
-source publication, and the squash merge on official `trunk_dev` at
-`2478a24a18852f1abd7d474c0525c46bd2c05e5e`, complete tree
-`e7defd3a0df278ad70762f17f0f2a5b1c14a795b`. This source publication
-is not artifact publication, operational acceptance, deployment, native
-installed-source qualification, or a CI-pass claim. Private codec-3 custody
-remains a **Bounded slice rule** on the reliable-submit **Reopened redesign
-seam**, limited to `synthetic_nonoperational_v1`: runtime-unwired,
-effect-ineligible, and unavailable as public reliable Submit. Public
-structural reliable-request refusal and unkeyed Submit remain in force.
-
-PR #9 completed source publication of O2, the bounded historical codec-1/2
-CAS cleanup refinement, by squash merge on official `trunk_dev` at
-`fb9ae55797d9fcc02863c23fe8d3e43d16eac542`, complete tree
-`be8437c8ce48cbcbed53f60a03810283abbd9235`. The persistence ADR
-retains O2's accepted contract and physical-close evidence limits. Source
-publication does not qualify operational behavior, native installed-source
-behavior, deployment, or public reliable Submit.
-
-A1 original-key read cleanup is the selected source-only **Bounded slice rule
-refinement** on the reliable-submit **Reopened redesign seam**. Its owner rule
-requires request-independent, bounded cleanup or exact-connection disposal
-after read-transaction uncertainty, while preserving paired-key snapshot and
-key-lifecycle behavior. The private path remains limited to
-`synthetic_nonoperational_v1`: runtime-unwired, effect-ineligible, and
-unavailable as public reliable Submit. A1 source work does not itself supply
-independent acceptance or runtime qualification.
-
-## Historical current-remote-base private synthetic replay custody selection (2026-11-17)
-
-At selection, this candidate contained the accepted `d408877545c16ee94968b04eab236da9e3ad6db0`
-private replay-custody delta as its third logical layer on the verified current
-remote base. Private codec-3 custody is a **Bounded slice rule** on the
-**Reopened redesign seam** for reliable-submit canonical binding and replay
-completeness. Its only scope is `synthetic_nonoperational_v1`: source-local,
-runtime-unwired, then-unpublished, effect-ineligible, and unavailable as public
-reliable submit. It introduces no Service.Submit, HTTP, app, configuration,
-provider, staging, deployed key-loader, TTL/GC, backup/restore, or runtime
-wiring change. Public structural reliable-request refusal and unkeyed Submit
-remain in force.
-
-The private source selection keeps original typed intent, the same parsed
-delivery and PB1 recomputation, sealed-file AEAD custody, one-database
-claim/key/grant authority, one-use known-committed pre-Seal permission,
-bounded identity and mode checks, no-follow and fsync behavior, fail-closed
-C1/D1 connection quarantine, permit burn, issuing-store and budget limits,
-fixed redaction, and no-effect decisions. Migration 3 appends to the unchanged
-migration-1/2 literals and hashes. Codec-1/2 generic domains and historical
-compatibility remain; old binaries refuse schema 3. The owner contracts in
-`.docs/execution_lifecycle/` govern the exact shape. The pre-existing
-historical codec-1/2 CAS cleanup concern remains a separate post-publication,
-pre-runtime-wiring hardening tranche, outside that historical candidate and
-selected above as O2.
-
-## Historical current-remote-base PB1 binding selection (2026-11-17)
-
-At selection, this candidate contained the accepted predecessor's private admission binding v1
-source at `1c44483fcb6978125a3c4f11ff168d094200dd4e` for its second
-logical layer. The admission-local HMAC-SHA-256 effective-plan commitment and
-fourteen-category completeness witness remain a **Bounded slice rule** on the
-**Reopened redesign seam** for canonical binding and replay completeness.
-`ES-PRIVATE-ADMISSION-BINDING-V1-20261115-01` was selected on accepted
-integration I. It carries the signature-verified returned mount artifact
-digest and signed payload digest into the private assessment without changing
-legacy admission rejection or acquisition count. There was no production
-caller at PB1; the private replay composer is the only later source-local
-caller selected in that historical candidate.
-The producer is private and runtime-unwired; every assessment remains
-effect-ineligible. Current public structural reliable-request refusal, unkeyed
-Submit, job/handoff/receipt behavior, result authentication, and lifecycle
-authority remain unchanged. This selection adds no public reliable submit,
-schema migration, provider route, or key-custody authority.
-Reliable submit remains unavailable.
-
-## Historical current-remote-base H/C/T foundation selection (2026-11-17)
-
-At selection, this current-base tranche re-derived the reviewed H/C/T foundation tree on official `trunk_dev` `87d262de8748f49197c5bba6020bd5dddc334bc7`. The 2026-11-13 construction snapshot is historical; the preservation-only T commit grants no publication or operational authority and is not part of this branch ancestry. T's one-time checkpoint exception is consumed. The accepted predecessor source, the then-candidate's validation, independent audit, local commit, and remote publication were separate gates. This tranche preserves the remote P0s/P0t dedicated status-only collector and pre-contact renewal hold while retaining the locally selected effect-free existing-host route retirements.
-
-Current unkeyed Submit retains T's admission-owned semantic plan and fixed B2 public/privacy boundaries while using C's post-`prepareAdmission` execution/placement snapshot. That snapshot begins after successful admission and supplies one staging/results pair through the current Submit resolution, materialization, and handoff. It does not atomically capture concurrently mutated configuration, earlier admission/trust/Vault/policy reads, or later Status/Logs/Result requests. Artifact, capability, target, and profile errors precede placement errors. C's archive, mount, custody, authenticated-result and no-repair rules remain the safety baseline. Incomplete leaves and startup probe fixtures remain retained where exact effect-time identity for removal is unproved. Paired-root proof is an active **Bounded slice rule pending integrated review**; whole-root reclamation remains a **Reopened redesign seam**.
-
-The six named existing-host Remote Alpha ES writable-state/service-user helper routes remain fixed effect-free tombstones. Archived v1 claims are a **Temporary compatibility edge** and not current host truth; no v2 replacement or fresh-host provisioning is selected. The operator-facade evidence-compatibility cutoff is separate and does not retire underlying owner-local producer scripts. Supported-local and unrelated Remote Alpha routes remain outside this retirement. At that point, development acceptance, a later commit, operational rollout, and publication were distinct decisions; PR #8 later completed source publication only. Key isolation, topology, capacity, residence, reclamation, and publication gates remain open. Reliable submit remains unavailable and runtime-unwired.
-
+- The new shared kernel or contract layer is settled and explicitly documented.
+- AGS and ARS no longer force the old artifact publication and retrieval choreography by default.
+- ES no longer depends on the current inherited core grammar for its public admission and execution model.
+- EGS and CGS have clearly defined policy and authorization ownership.
+- The workload-zone Vault runtime-config reference and blob surface has a clearly justified long-term owner.
+- Runtime identity and execution handoff have explicit ownership and no unresolved dependency on current incidental path conventions.
+- Any retained compatibility edges are documented as temporary, with removal conditions.
+- `PLANS.md`, `.docs/`, tests, and implemented code agree on the active architecture.
+- Peripheral cleanup can proceed without architectural uncertainty.
+
+Until those conditions are met, reopened seams must stay explicit in `PLANS.md`; outside those seams, treat the repository as bounded platform work rather than rewrite-by-default feature work.
+
+## Document Scope And Current Implementation
 
 This document is the authoritative planning document for the current Execution Substrate workstreams, bounded platform hardening, and explicitly reopened seams.
 
@@ -862,6 +180,1050 @@ Current bounded implementation status:
 - The accepted Remote Alpha retirement/retain-staging tranche retires the six existing-host ES writable-state, ES service-user, ownership, staging, rollback-generation, and old-root-planning helper implementations. Their fixed fail-closed tombstones produce no evidence and the unchanged public wrappers only delegate to those tombstones. Archived v1 artifacts are historical evidence only, no live operator route parses or projects them, and no v2 replacement exists for that retired family. This retirement does not apply to unrelated Remote Alpha Vault, TLS, runtime-identity, governance, operator-healthcheck, recovery, or Vault service-user routes; the unrelated current EGS hardening v2 schema also remains current.
 - ES now retains every exclusively created per-run staging root on every post-claim return. Failed or ambiguous submit, accepted registration, every terminal observation, and every retained-result publication outcome have no automatic whole-root cleanup consequence. Descriptor closure is idempotent, exact operation-local temporary cleanup remains bounded to the object created by that operation, and governed staging reclamation is an ES-owned `Reopened redesign seam`.
 - Fresh-host provisioning is the required direction for future Remote Alpha infrastructure recovery, but no complete supported fresh-host ES provisioner currently exists. Reuse of an old or nonempty host remains blocked unless a separately governed existing-host migration contract is selected. No scheduler-drain or submitter-fence contract exists in this tranche.
+
+## Primary Program Orientation
+
+Execution Substrate is the primary program in this repository.
+
+The current ES work is foundational boundary and contract work, and that is real program delivery: it decides what governed execution can safely admit, run, project, retain, and expose to callers.
+
+Control Plane is an important first non-operator consumer. It improves ergonomics and governance around ES, but it does not define ES core contracts. Control Plane documents may describe how CP consumes accepted ES surfaces; they must not widen ES admission, lifecycle, runtime-profile, runtime-identity, result-retention, or readiness ownership.
+
+Milestone 0 MVP claim freeze is recorded in `.docs/mvp.md`. That document is a
+planning and documentation freeze only: it captures the current MVP claim,
+surface classifications, and explicit non-claims without widening ES contracts
+or promoting proof-harness behavior into architecture.
+
+The next milestone package is **ES Admission And Runtime Boundary Realignment**.
+
+That package is ES-owned. It should deliver a coherent ES milestone by:
+
+- classifying stable ES semantic contracts, temporary compatibility edges, and implementation details/current slice constraints before implementation spreads outward
+- completing only the Workstream A shared-kernel decisions needed to keep ES from inheriting accidental cross-service grammar
+- completing only the Workstream B publication/storage/discoverability decisions needed to make ES input ownership explicit
+- delivering Workstream C as the primary ES admission, submission, lifecycle-projection, retained-result, and runtime-boundary package
+- preserving current CP compatibility for the governed execution path unless an explicit compatibility, drain, migration, or versioning plan is documented
+- keeping the current `execution_substrate.runtime_profile` annotation and `control-plane-normal-shell/v1` profile as accepted bounded compatibility for the next milestone package
+
+Stable semantic contracts for this next package:
+
+- ES owns admission composition, submission handoff, Nomad-backed lifecycle projection, retained opaque result bundles, and runtime handoff boundaries.
+- ES owns the public admission model, prepare model, submit model,
+  Nomad-backed lifecycle projection, retained opaque result bundles,
+  runtime-profile compatibility, runtime-boundary handoff semantics, and
+  bounded runtime identity/workload credential handoff boundaries.
+- Nomad remains authoritative for submitted execution lifecycle; ES must not invent a parallel lifecycle store or scheduler authority.
+- ES may expose a bounded lifecycle projection revision on status responses as an opaque same-run read-coordination fact derived from Nomad observation. Callers may compare equality/change for the same run only. They must not parse or order it, infer scheduler or backend state from it, use it as a write precondition for cancel/result/logs, or treat it as a Nomad identifier or index. It is not evidence of an ES-owned lifecycle store, not a Control Plane workflow version or revision, and not proof of freshness outside the documented same-run status read model.
+- ES may expose a bounded `authority_handoff` read surface on submission/status responses for non-secret runtime authority facts ES actually selected and handed off for a run: effective runtime profile, workload-visible identity endpoint handoff, workload-vault auth metadata, selected workload-zone Vault config reference, and bounded profile credential-location metadata. This surface is read-only evidence of the submitted runtime handoff, not live credential state, lease state, scheduler identity, policy approval state, or a Control Plane lifecycle record.
+- ES must not bypass ARS artifact storage/discoverability, EGS runtime-trust publication, or configured runtime-config ownership to make admission easier.
+- ES-owned retained results remain opaque output bundles and must not become Control Plane checkpoint, review, finalization, or orchestration state.
+- ES-owned runtime identity and workload-credential handoff must remain platform-owned, non-secret, and non-brokering: workloads use the discovered endpoint and workload-Vault metadata; ES does not fetch, mint, store, rotate, parse, or validate Vault or Codex credential material.
+- Control Plane owns orchestration, Temporal workflow state, review,
+  checkpoint, finalization, intervention, and operator-facing control
+  semantics. CP consumes accepted ES surfaces but does not define ES core
+  contracts.
+- IM readiness/profile/support-bundle/provenance artifacts remain
+  evidence/projection/diagnostics only; they do not become ES or CP authority.
+- Maintenance Agent summaries remain scheduler/notifier/local-evidence outputs
+  only and do not define ES route semantics.
+- Caller authentication and narrow SPIFFE allowlist authorization remain required on the governed execution path.
+
+Temporary compatibility edges to preserve explicitly during this package:
+
+- current CP compatibility for AGS publish plus ES prepare, submit, status, logs, result, and cancel over HTTPS+mTLS
+- `GET /v1/executions:contract` as a narrow read-only producer compatibility declaration for the current governed-execution contract, including the mandatory outcome-evidence response surfaces
+- `POST /v1/executions:prepare` as an active bounded preflight surface
+- `invocation.annotations["execution_substrate.runtime_profile"]` and the bounded `control-plane-normal-shell/v1` profile
+- the current `static-script` overlay behavior for that profile
+- `/execution/staged`, `/execution/run`, `/execution/run/result`, and current runtime-identity path conventions
+- the current `authority_handoff` field names and evidence-source labels while the ES request/runtime-profile and runtime-identity seams remain reopened
+- the current additive `outcome_evidence` JSON field and successful logs/result outcome-evidence headers while lifecycle/status/result/log/cancel evidence vocabulary remains bounded to the current Nomad/retained-result slice
+- retained `application/gzip` result bundles keyed by public `run_id`
+- supported-local profile-image durability checks, including the Nomad Docker plugin `gc.image = false` guardrail for enabled local runtime-profile images
+- the ES config/TLS ownership prep bridge where live `es.service` stays
+  `root(default)` while dedicated `root:es` readable config/TLS material is
+  staged for a later ES de-root slice
+
+Implementation details and current slice constraints not to promote into stable architecture:
+
+- host staging roots, bind-mount source paths, `.out/` proof workspaces, generated helper artifacts, and guest `/tmp` scratch
+- the internal Nomad job naming rule `exec-<run_id>`
+- the latest-allocation projection rule, stdout-only log retrieval, single task named `task`, async-only submit, and no-retry/no-reschedule slice, except that the status response may expose an opaque lifecycle projection revision without exposing the underlying selection rule or scheduler IDs
+- proof-only Codex shim behavior and supported-local proof bootstrap details
+- helper scripts and examples as client contracts; the HTTPS API and documented runtime handoff are the client-facing surfaces
+
+## Current-State Facts To Preserve During Redesign
+
+The following are useful current implementation facts and should remain visible to future agents while the redesign is underway:
+
+- The repository currently implements five primary service boundaries: ARS, AGS, EGS, CGS, and ES.
+- The current publication flow is `AGS -> ARS`.
+- The current admission and execution flow is `request -> ES -> EGS / ARS -> Nomad -> Docker`.
+- ES submits to Nomad only with its own least-privilege ACL token in namespace `es-submit-v1`, and only while Nomad enforces ACLs with no anonymous policy; Nomad's management token never reaches ES.
+- ES currently composes startup-owned runtime-config references, ARS, and EGS in its hot path. CGS exists but is not in the current ES hot path.
+- The current primary artifact model crossing AGS, ARS, and ES is aggregate evidence plus payload, with manifest retained as supporting publication data.
+- The repository now also carries a first parallel shared evidence kernel in `internal/contracts/evidence/v1` for the primary `AGS -> ARS -> ES` artifact path, and ES now requires that aggregate evidence on its first-class admission path.
+- ARS currently exposes immutable blob reads plus a smaller runtime-facing discovery record for evidence and payload, while retaining descriptor/manifest support data as secondary publication discoverability.
+- The repository now carries a small shared runtime-config surface in `internal/contracts/runtimeconfig/v1` for the named workload-zone Vault config reference and the current workload-zone Vault config blob schema.
+- ES startup config currently carries the required workload-zone Vault config reference, while ARS remains the blob/discoverability owner for the corresponding runtime-config blob.
+- CGS currently loads explicit subject policy records from startup `id.conf` input and returns bounded authorization decisions through `POST /v1/credential/authorize`.
+- EGS currently publishes a signed runtime-trust payload with signer policy and artifact revocation policy, alongside separate EGS-owned publication metadata.
+- ES currently exposes a narrow read-only producer compatibility declaration at `GET /v1/executions:contract`, a bounded preflight `POST /v1/executions:prepare`, a primary public execution handoff at `POST /v1/executions:submit`, and minimal Nomad-backed lifecycle endpoints whose current `run_id` lookup and projected-allocation rules are explicit ES-internal slice policy rather than public contract.
+- ES status now includes a bounded lifecycle projection fact, `lifecycle_projection`, whose `source` is the current lifecycle authority and whose `revision` is an opaque same-run read-coordination token produced from implementation-private Nomad observation during the status read. Consumers may compare equality/change for the same run only. They must not parse or order it, infer scheduler or backend state from it, use it as a write guard, or treat it as a Nomad identifier or index. This is a read coordination surface for consumers, not a write coordination API or a durable ES run record.
+- ES lifecycle/status/result/log/cancel surfaces now expose a smallest additive `outcome_evidence` descriptor family for facts ES can directly source today: status labels the Nomad observation family behind the projection and references the opaque lifecycle projection token, cancel labels the accepted Nomad stop request without claiming observed termination, logs label successful bodies as current Nomad task stdout, and result labels successful bodies as opaque ES-retained bundles. These descriptors are read-only current-slice evidence labels, not scheduler identifiers, write preconditions, policy truth, credential truth, or a global ES run revision.
+- The producer compatibility declaration names the current governed-execution producer contract and the required status/cancel/logs/result outcome-evidence carriers without proving service health, submit readiness, run existence, credential possession, lifecycle write coordination, policy decisions, or scheduler internals.
+- ES submit/status now include a bounded `authority_handoff` fact for new submissions. It is derived from ES-selected submit-time handoff facts and the submitted runtime spec, and it exposes only non-secret runtime authority facts: selected runtime profile, workload identity endpoint URI/env, workload-vault auth metadata, workload-zone Vault config digest, and the bounded Control Plane normal-shell Codex credential-location metadata when that profile is selected.
+- ES now localizes submit-time payload staging, mount staging, result-directory staging, and runtime-ready package assembly behind one explicit internal execution-package layout; `/execution/staged` and `/execution/run` remain current bounded runtime conventions rather than diffuse helper assumptions.
+- ES currently reserves `/execution/run/result` as the bounded workload-authored terminal output directory for the current `static-script` slice. That convention is active for the retained-result slice, but it remains part of the reopened execution-package/runtime-path surface rather than settled architecture.
+- ES currently retains every exclusively created run-scoped host staging root on every post-claim return. Terminal result capture into the ES-owned result store is independent and never authorizes staging mutation; success, failure, cancellation, loss, ambiguity, absence, publication conflict, and publication failure all retain the same visible staging root.
+- The isolated resolved-plan/custody candidate retains every successfully claimed run-scoped host staging root, including terminal success, while the submitted workload may depend on its bind mounts. Terminal result files remain opaque ES-owned bundles outside staging. This interim retention increases disk use and sensitive-material residence; no automatic whole-root reclamation authority is selected, and acceptance gates remain pending.
+- ES now exposes `GET /v1/executions/{run_id}/result` as a bounded retained-result bundle retrieval surface. The bundle is opaque tar.gz data keyed by `run_id`, not a Control Plane checkpoint, orchestration decision, or ES-owned lifecycle-state record.
+- The primary operator bring-up/check path now distinguishes service health, prepare-ready state, and full submit-ready state instead of treating ES `/health` alone as execution readiness.
+- The current bounded operator hot path now uses the operator SPIFFE identity as the sole caller for AGS publish and ES execution/lifecycle entry surfaces; `service/deployment` no longer defines that current slice.
+- The current shared execution/runtime contract in `internal/contracts/evidence/v1` is now limited to environment allowlist input, required runtime capabilities, `target_platform`, and `network_access`; non-runtime workload metadata no longer defines the live AGS -> ARS -> ES hot path.
+- ES currently injects `EXEC_WORKLOAD_IDENTITY_ENDPOINT` as its bounded workload-visible runtime identity handoff and internally backs the discovered endpoint with a run-scoped ES-owned runtime subtree.
+- ES currently derives its workload-vault handoff from workload-zone vault runtime fields plus a bounded local default auth mode rather than from workload-attribute selector policy.
+- When the workload-zone Vault runtime config carries a non-secret CA bundle, ES stages that trust material into the runtime platform directory, injects `VAULT_CACERT`, and also exposes a staged combined TLS bundle through `SSL_CERT_FILE` for the bounded Control Plane normal-shell Python runner path. This is a workload-facing TLS trust-material handoff, not Vault token brokerage or relaxed verification.
+- ES now also supports one explicit runtime profile selection annotation for the bounded Control Plane normal-shell slice:
+  - `invocation.annotations["execution_substrate.runtime_profile"] = "control-plane-normal-shell/v1"`
+  - the selected profile is enabled only by explicit ES submit config under `execution.runtime_profiles.control_plane_normal_shell`
+  - the profile remains a `static-script` execution-package overlay rather than a package-kind or lifecycle redesign
+  - the profile requires network access, a dedicated configured runtime image, an absolute configured Codex CLI path inside that image, and a configured workload-vault secret path/field for Codex credential material
+  - ES injects only non-secret metadata for that Codex material; the workload uses the existing platform-owned runtime identity endpoint and workload-vault auth env to fetch the material itself
+  - ES does not fetch, mint, broker, store, rotate, parse, or validate Codex tokens
+- The current slice-0 operator path now targets one Linux host/VM, runs ARS/EGS/AGS/ES as containers, keeps Nomad server/client and Docker on that same host, and treats Docker host networking as temporary compatibility scaffolding rather than final control-plane network architecture.
+- The current slice-0 operator path now requires strict client-cert authentication at the hot-path TLS boundary, including `/health`, and ARS now rejects the configured bootstrap issuer on both read and write paths like the rest of the hot path.
+- ARS, AGS, EGS, CGS, and ES authenticate callers through the one shared package `internal/callerauth` (contract: `.docs/system_overview/contracts.md` section 3A). Only a verified client certificate whose chain is still within its validity period at each request, and whose leaf is an end-entity certificate with exactly one URI SAN that is a conforming SPIFFE ID in the trust domain `execution.internal`, identifies a caller; authorization stays in each service.
+- ARS, AGS, and ES check their configured path-prefix allowlists at startup and match callers against them through the one shared package `internal/callerallowlist` (same section 3A): a prefix must be a canonical SPIFFE ID path of at least two segments, and a prefix that fails the rule matches nothing.
+- The current slice-0 operator path records the ES same-path staging proof at bring-up time, while slice `1A` and slice `1B` now separately prove the first bounded strong workload-identity handoff for runtime workloads.
+- The current slice-0 operator path has been functionally proved on a real Linux VM through the real ES -> Nomad -> Docker execution path, and the current supported local reference profile on this Mac is Lima `qemu` + Ubuntu 24.04 arm64 with pre-managed non-`-dev` Nomad and positive natural `cpu.totalcompute`; the previously investigated VMware/aarch64 and Lima `vz` local profiles remain unsupported on this Mac because natural `cpu.totalcompute` stays `0`.
+- The current AGS publish path now distinguishes artifact identity from payload identity: payload bytes remain content-addressed by `payload_digest`, while AGS derives `artifact_digest` from package-facing identity inputs only before registering the runtime-facing discovery record through ARS.
+- The current shared authorization surface inside `internal/contracts/evidence/v1` is now limited to derivation request binding (`derivation_spec_digest`, `output_id`); workload-binding, policy-linkage, producer-trace, and derivation-constraint residue no longer define the active shared kernel.
+
+These facts describe the current repository. They are not, by themselves, decisions that the reset must preserve.
+
+## Explicit Supersession Of Prior Assumptions
+
+The earlier planning assumptions below are now reopened and no longer count as fixed architectural endpoints:
+
+- ARS is no longer treated as a frozen end-state storage and artifact-index boundary.
+- AGS is no longer treated as a frozen end-state publication and fact-assembly boundary.
+- EGS is no longer treated as a frozen end-state runtime-trust boundary.
+- CGS is no longer treated as a frozen end-state authorization boundary.
+- ES is no longer treated as a bounded-but-settled execution boundary.
+- The old `contracts/signing/v2` kernel has now been excised from the active repo, and its former shared-kernel role is superseded by the evidence-native artifact path.
+- The first controlled kernel-migration cut is allowed to add a parallel shared kernel and migrate one bounded path before broader service redesign lands.
+
+More specifically, the redesign phase explicitly reopens or qualifies these previously locked assumptions:
+
+- The current ARS registration, index, and read contract are reopened. The current runtime-facing discovery record, secondary descriptor support path, and discoverability shape remain implementation facts, not fixed architecture.
+- The current AGS publish contract and fact assembly model are reopened. The existing manifest and signed-fact bundle are not presumed to be the enduring publication grammar.
+- The current cross-service contract forms are reopened. Existing wire and package contracts survive only until they are explicitly retained, replaced, or wrapped as temporary compatibility edges.
+- The historical `contracts/signing/v2` package no longer participates in any current code path. The repository now relies on `internal/contracts/evidence/v1` as the only active shared artifact kernel, while the long-term scope of that kernel remains under review.
+- The current ES, ARS, CGS, and EGS interaction model is reopened. Existing call paths and non-call paths are current facts, not architectural endpoints.
+- The current ES public execution and admission shape is reopened. This includes the `:prepare` and `:submit` split, current request and result DTOs, current scheduler receipt model, and current lifecycle projection model.
+- The current runtime identity handoff conventions are reopened. The current path layout, `vault_identity_jwt` handoff shape, and reserved container paths are implementation choices that must now be justified or replaced.
+
+Compatibility with any current contract is allowed only as a temporary and explicit transition tactic. If compatibility is retained, document:
+
+- the reason
+- the scope
+- the removal condition
+
+Do not describe compatibility edges as frozen architecture.
+
+## Architecture-Defining Redesign Scope
+
+### In Scope Now
+
+The first redesign pass is explicitly about the architecture-defining core:
+
+- shared contracts and any shared kernel
+- service API shapes and DTO ownership
+- data model boundaries between services
+- artifact publication, storage, retrieval, verification, and execution flow
+- policy model and trust model ownership
+- authorization model ownership
+- runtime identity and execution handoff
+- package structure where it defines architectural meaning
+- explicit clarification of what remains shared versus service-local
+
+### Out Of Scope For The First Redesign Pass
+
+The following are not primary redesign targets until the core surfaces stabilize:
+
+- Docker scripts
+- runbooks
+- environment polish
+- deployment helper glue
+- superficial renames
+- broad cleanup unrelated to core contract and boundary redesign
+- generic refactors that do not reduce architectural ambiguity
+
+## Redesign Workstreams
+
+### Workstream A - Shared Contract And Kernel Reset
+
+Purpose:
+
+- Re-derive the minimum shared contract surface needed across services.
+- Keep the shared artifact kernel narrow and evidence-owned after excising the historical signing kernel.
+- Stop treating a shared package as the default home for cross-service meaning unless that meaning is truly stable and jointly owned.
+- For the next milestone package, answer only the shared-kernel questions that ES needs to admit and execute governed artifacts without inheriting accidental AGS, ARS, or CP grammar.
+
+Target files and packages:
+
+- `internal/contracts/evidence/v1/`
+- `ags/publish/`
+- `es/admission/`
+- `egs/model/`
+- `ars/index/`
+
+Success condition:
+
+- A documented shared-kernel decision exists.
+- The future shared surface is smaller and intentionally owned.
+- Cross-service semantics that do not need to be shared are moved back toward service-local ownership.
+- Future agents can tell which contracts are kernel-level versus service-level without inferring from package reuse.
+- Future agents can tell which shared-kernel rules are stable ES admission semantics, which are temporary compatibility edges, and which are merely current slice implementation detail.
+
+Current bounded decision status for Milestone 2A.1:
+
+- The Workstream A shared-kernel decision is recorded in `.docs/system_overview/shared_kernel.md`.
+- `internal/contracts/evidence/v1` remains the only active shared artifact evidence kernel for the current `AGS -> ARS -> ES` path, but it is not a standalone service boundary.
+- Kernel-level shared meaning stays limited to package identity, narrow derivation request-binding authorization, narrow execution/runtime claims ES actually enforces, and evidence canonicalization plus `seal` verification.
+- AGS publication claims, ARS discoverability/index shapes, ES public execution/lifecycle grammar, and the long-term workload-zone Vault runtime-config owner remain service-owned or reopened elsewhere; Workstream A does not widen them into the kernel.
+- `internal/contracts/evidence/v1` is not a cross-service semantic dumping ground. Fields, helper DTOs, proof outputs, generated evidence, `.out` workspaces, support bundles, retained bundles, reports, traces, logs, summaries, and proof artifacts do not become shared-kernel authority by proximity to the shared evidence package.
+- Workstream A0 preserves the current `execution_substrate.runtime_profile` annotation and bounded `control-plane-normal-shell/v1` compatibility edge. It does not change the runtime path, runtime-profile selection mechanism, or `static-script` overlay behavior.
+
+Dependencies:
+
+- No upstream workstream dependency beyond this `PLANS.md` reset.
+
+### Workstream B - Artifact Storage And Publication Contract Reset
+
+Purpose:
+
+- Redesign the AGS and ARS contract around publication, runtime-facing discovery records, payload and evidence relationships, and visibility rules.
+- Decide whether the current runtime-facing discovery shape, the secondary descriptor support path, and the current AGS artifact-identity derivation rule survive.
+- Separate storage integrity concerns from publication grammar and from ES consumption needs.
+- Keep the shared evidence grammar narrow: package identity remains separate, shared admission authorization is limited to derivation request binding, and execution/runtime claims remain distinct from non-shared publication or policy residue.
+- For the next milestone package, treat AGS and ARS work as an ES-enabling input-boundary reset: AGS/ARS own publication and discoverability; ES consumes their designed outputs; CP examples or probes do not define that contract.
+
+Target files and packages:
+
+- `ags/api/`
+- `ags/publish/`
+- `ars/api/`
+- `ars/index/`
+- `ars/store/`
+
+Success condition:
+
+- The write and read contract between AGS and ARS is intentional and documented.
+- The artifact discovery model is explicit about what is canonical, what is runtime-discoverable, and what is merely current secondary publication/support implementation detail.
+- Payload versus artifact identity is no longer hidden in convenience assumptions.
+- ES can later consume artifact data through a designed discoverability surface rather than through an inherited tuple shape.
+- CP consumer compatibility can rely on the accepted API path, but CP-specific convenience expectations are not mistaken for AGS/ARS/ES core semantics.
+
+Dependencies:
+
+- Workstream A
+
+Current bounded decision status for Milestone 2B.1:
+
+- The Workstream B publication/storage/discoverability decision is recorded in
+  `.docs/system_overview/artifact_publication_storage.md`.
+- B0 is the docs and docs-contract-test gate for artifact publication,
+  storage, discoverability, payload identity, artifact identity, and
+  compatibility/support shapes. It makes no runtime implementation changes.
+- B1 is the focused code-facing guardrail slice over the same B0 boundary. It
+  adds tests for AGS publication output, ARS runtime-facing discovery, ES
+  admission hot-path consumption, payload/artifact/package identity separation,
+  CP proof/example non-authority, and `control-plane-normal-shell/v1`
+  compatibility. It does not redesign AGS, ARS, or ES runtime behavior.
+- AGS owns publish-time fact assembly, caller-bound publication semantics,
+  aggregate evidence assembly, signing, payload/support upload, and
+  registration into ARS.
+- ARS owns blob storage, content-addressed integrity, artifact registration,
+  runtime-facing discovery records, index behavior, descriptor/manifest support
+  reads, and the ARS-owned read surfaces ES may later consume.
+- The current ARS discovery record remains the canonical runtime-discoverable
+  surface for the current slice. Descriptor/manifest support remains secondary
+  publication detail, and the current index entry shape remains
+  implementation-only/current-slice detail.
+- `claims.package.identity` is the shared-kernel identity surface ES consumes;
+  AGS-owned publication claims and ARS descriptor/manifest/index/support tuples
+  do not become that identity surface.
+- Payload identity and artifact identity remain separate:
+  `payload_digest` identifies payload bytes or payload content identity, while
+  `artifact_digest` identifies artifact/package identity as currently derived
+  from `payload_digest`, `artifact_type`, and `intent_digest`.
+- The current discovery/register JSON shapes are retained only as bounded
+  slice rules, descriptor/manifest/index/support tuples are
+  compatibility/support or implementation-only surfaces unless explicitly
+  migrated, the secondary descriptor support path remains a temporary
+  compatibility edge, and the long-term discovery/index/publication-support
+  model remains reopened.
+- ES must consume artifacts through a designed discoverability surface, not by
+  inheriting ARS support tuple grammar as ES public grammar.
+- CP examples and proof harness artifacts do not define AGS/ARS/ES core
+  semantics; generated evidence, `.out`, support bundles, retained bundles,
+  reports, traces, logs, summaries, and proof artifacts remain
+  evidence/projection only.
+
+### Workstream C - Execution And Admission Reset
+
+Purpose:
+
+- Redesign ES public admission and execution surfaces.
+- Re-derive the preparation and submission boundary, scheduler handoff, and runtime package resolution from the Go codebase rather than from current inherited grammar.
+- Decide what ES should own, what ES should compose, and what ES should stop carrying.
+- Deliver the primary ES milestone package after the Workstream A and B input-boundary gates are explicit enough for ES not to inherit their ambiguities.
+- Preserve the accepted CP governed-execution compatibility edge without letting CP orchestration, review, checkpoint, or finalization assumptions become ES-owned semantics.
+
+Target files and packages:
+
+- `es/api/`
+- `es/admission/`
+- `es/config/`
+- `es/app/`
+- `cmd/es/`
+
+Success condition:
+
+- ES has a clear public model for admission, submission, and lifecycle projection.
+- ES no longer depends on the current inherited artifact and policy grammar by convenience.
+- The remaining shared execution/runtime inputs are intentionally defined rather than passively inherited from upstream publication metadata.
+- Scheduler handoff, payload resolution, and lifecycle projection are described as deliberate ES boundaries.
+- The current CP path, `execution_substrate.runtime_profile`, and `control-plane-normal-shell/v1` remain compatible unless an explicit migration/versioning note says otherwise.
+- Stable semantic contracts, temporary compatibility edges, and implementation details/current slice constraints are classified in `PLANS.md` and the adjacent system/lifecycle docs.
+
+Dependencies:
+
+- Workstream A, as the shared-kernel gate needed for ES admission ownership
+- Workstream B, as the AGS/ARS input-boundary gate needed for ES payload and evidence ownership
+
+Current bounded decision status for Milestone 2C.1:
+
+- C0 is the docs and docs-contract-test gate for ES admission, prepare,
+  submit, lifecycle projection, retained-result ownership, runtime-profile
+  compatibility, runtime handoff, outcome evidence, runtime identity/workload
+  credential handoff boundaries, and Control Plane compatibility.
+- C0 makes no runtime implementation changes.
+- Workstream C implementation must not start until C0 docs and docs-contract
+  tests pass.
+- C1 is the focused code-facing guardrail slice over the accepted C0 model.
+  It adds or strengthens tests for bounded `:prepare` preflight non-effects,
+  ARS discovery/evidence/payload/package-identity consumption, signed evidence
+  and narrow execution/runtime claim enforcement, AGS/ARS support/CP grammar
+  exclusion, payload-digest versus package-identity mismatch separation,
+  current compatibility surfaces, and `authority_handoff`/`outcome_evidence`
+  non-authority. It does not redesign runtime behavior.
+- C2 is the focused tests/docs guardrail slice over the accepted submit and
+  lifecycle-projection boundary. It pins `POST /v1/executions:submit` as the
+  ES-owned async execution handoff through Nomad, keeps the submit receipt
+  bounded and free of Control Plane attempt/review/checkpoint/finalization,
+  intervention, approval, hold/resume/reject, Temporal, or workflow grammar,
+  preserves `authority_handoff` as non-secret handoff evidence only, keeps
+  `lifecycle_projection.source=nomad` with an opaque same-run
+  read-coordination `revision`, preserves status/logs/result/cancel and
+  `control-plane-normal-shell/v1` compatibility, and prevents generated
+  evidence, reports, logs, support bundles, retained bundles, proof artifacts,
+  and maintenance summaries from becoming authority. It does not redesign
+  runtime behavior, retained results, runtime identity, Vault handoff, Nomad
+  integration, or Control Plane behavior.
+- C3 is the focused tests/docs guardrail slice for retained-result and
+  `authority_handoff` boundaries. C3 is guardrail work, not runtime redesign.
+  C3 pins that retained result bundles remain ES-owned opaque output artifacts
+  and that CP may materialize, review, checkpoint, and finalize retained result
+  contents semantically, but CP does not own the retained bundle as run-control
+  state. Retained result references, paths, manifests, archives, `.out`
+  copies, and materialized workspaces are evidence/projection or
+  implementation detail, not orchestration authority.
+  `GET /v1/executions/{run_id}/result` compatibility shape remains unchanged
+  unless an explicit migration/versioning plan exists. `authority_handoff`
+  remains bounded non-secret runtime handoff evidence only.
+  `authority_handoff` never carries or implies live credentials, Vault tokens,
+  Codex credentials, leases, approvals, operator authorization, CP workflow
+  state, scheduler truth, or retained-result authority. Runtime identity/Vault
+  handoff remains workload-side and non-secret; ES does not become a Vault
+  token broker or Codex credential broker. `outcome_evidence` remains bounded
+  evidence/projection; current labels remain compatibility surfaces.
+  `control-plane-normal-shell/v1` and `execution_substrate.runtime_profile`
+  compatibility remain preserved unless an explicit migration/versioning plan
+  exists.
+- C4 is the focused tests/docs guardrail slice for runtime identity and Vault
+  handoff boundaries. C4 is guardrail work, not runtime redesign and not live
+  helper execution. Runtime identity acquisition is workload-side or
+  helper-mediated at runtime, not CP-owned and not IM-owned. ES may stage
+  non-secret runtime identity and Vault configuration metadata, but ES must
+  not mint, fetch, broker, parse, store, rotate, or validate Vault tokens. ES
+  must not record or expose JWT-SVID bodies, SPIFFE JWTs, X.509 SVID bodies,
+  private keys, API keys, proof secrets, root tokens, unseal keys, Vault client
+  tokens, or secret payloads through public DTOs, lifecycle responses,
+  retained-result metadata, summaries, logs, reports, `.out`, support bundles,
+  or proof artifacts. `authority_handoff` may include non-secret
+  credential-location and configuration metadata only. `authority_handoff`
+  must not carry live credentials, leases, approvals, Vault tokens, Codex
+  credentials, JWT-SVIDs, API keys, or scheduler truth. Workload-side Vault
+  auth remains workload-side; Vault owns token, secret, and lease authority.
+  SPIRE owns identity issuance and SVID material. ES must not expose raw SPIRE
+  socket access to workloads as public ES grammar.
+  `EXEC_WORKLOAD_IDENTITY_ENDPOINT` remains the workload-facing identity
+  endpoint contract rather than raw SPIRE socket access. Runtime identity and
+  Vault handoff evidence remains non-authoritative and redacted. CP may
+  consume runtime identity/Vault handoff evidence, but CP does not own
+  credential acquisition, Vault tokens, SPIRE identity issuance, or ES runtime
+  handoff boundaries. IM and Maintenance Agent may report
+  diagnostics/readiness/status, but do not own runtime identity or Vault
+  authority. `control-plane-normal-shell/v1` and
+  `execution_substrate.runtime_profile` compatibility remain preserved unless
+  an explicit migration/versioning plan exists. Existing workload-auth Remote
+  Alpha helpers remain bounded operator/support surfaces, not ES token
+  brokerage or production Vault readiness.
+- C5 is the focused tests/docs guardrail slice for current
+  status/logs/result/cancel compatibility and non-authority posture. C5 is
+  guardrail work, not runtime redesign, live proof, or remote validation.
+  Status remains Nomad-backed lifecycle projection and evidence, not CP
+  workflow truth or ES lifecycle-store truth. Logs remain a bounded current
+  compatibility/evidence surface, not final log architecture, CP run-control
+  truth, or scheduler authority. Result remains opaque ES-retained output
+  delivery, not CP checkpoint, finalization, or review state. Cancel remains a
+  bounded ES/Nomad cancellation handoff, not CP intervention authority,
+  operator approval authority, or Temporal workflow truth. Status/cancel JSON
+  envelopes and successful logs/result headers must exclude CP run-control
+  grammar and live credential/security fields; logs/result bodies remain
+  payload/output surfaces governed by the existing compatibility contract and
+  must not be newly sanitized, interpreted, or promoted into authority.
+- C6 is the focused ES Admission Policy Layer v0 slice. It is a Workstream C
+  admission extension, not the Workstream D CGS/EGS policy-language redesign.
+  It adds a small ES-owned, replaceable policy-evaluation seam in the shared
+  `:prepare`/`:submit` admission path and one built-in selected-pattern
+  static-script content policy to prove the seam. ES remains the final
+  admission-policy gate for ES-bound executions. Control Plane may later
+  preflight or render ES policy decisions, but CP is not the final ES
+  admission gate. IM remains readiness, provenance, and diagnostics only. C6
+  may read bounded payload bytes during `:prepare` only when an enabled ES
+  admission policy requires the ES-visible static-script text input class, and
+  only through the explicit ARS payload digest relationship already discovered
+  and cross-checked by ES admission. C6 must not add OPA/Rego, a DSL, customer
+  regex configuration, CGS `id.conf` reuse, signed policy bundles, an external
+  policy-decision service, durable policy-decision storage, CP prompt/workspace
+  parsing, workspace archive decoding, binary payload inspection, retained
+  bundle scanning, support-bundle scanning, or raw payload/matched-content
+  disclosure.
+- The C6 configurable-input follow-up is a bounded slice refinement of ES
+  Admission Policy Layer v0. It may add ES deployment/admin configuration for
+  inputs to built-in ES admission policies only. The follow-up adds the
+  built-in
+  `execution-substrate.admission.configured-static-script-literal-deny/v1`
+  policy with reason code `configured_static_script_content_denied`, safe
+  message `static script content denied by admission policy`, mode `disabled`
+  or `enforce`, safe entry IDs, a bounded list of literal deny entries, and
+  the fixed input class
+  `static_script_payload_text`. These inputs are ES deployment/admin config
+  only; CP does not define or supply them, IM remains readiness/provenance/
+  diagnostics only, and request payloads cannot carry policy entries. This
+  follow-up must not add evaluator injection, OPA/Rego, a DSL, arbitrary
+  regex/glob/shell-expression config, customer-authored policy bundles, an
+  external evaluator service, CGS `id.conf` reuse, user-defined reason codes,
+  user-defined API messages, CP prompt/workspace parsing, workspace archive
+  decoding, binary payload inspection, or raw configured-literal/matched-
+  content disclosure. Denials remain redacted.
+- C7 is a docs/static-test-only consolidation checkpoint recorded in
+  `.docs/execution_lifecycle/workstream_c7_checkpoint.md`. It records that
+  Workstream A/B gates are satisfied, C0-C6 are present, Remote Alpha
+  operator-healthcheck TLS is paused/blocked due to source-insufficient
+  signer/custody evidence, and next behavior-changing C work must preserve CP
+  compatibility and CP/IM non-authority boundaries. It makes no behavior, API,
+  route, runtime, TLS, CP diagnose, IM refresh, live proof, or route
+  eligibility change.
+- The Workstream C ES public admission/execution model decision is recorded in
+  `.docs/execution_lifecycle/es_execution_admission_model.md`.
+- `GET /v1/executions:contract` and `POST /v1/executions:prepare` remain
+  temporary compatibility edges for the current CP/IM consumer path, while
+  `POST /v1/executions:submit` remains the real ES execution handoff surface.
+- Nomad remains authoritative for submitted execution lifecycle. ES status,
+  logs, and cancel remain bounded read-through projections, and result
+  retrieval remains ES-owned opaque bundle access.
+- ES admission composition remains limited to caller auth/allowlist plus ARS
+  discovery/evidence/payload refs, narrow `internal/contracts/evidence/v1`
+  execution claims, EGS runtime-trust output, the configured workload-zone
+  Vault runtime-config reference/blob, and the ES-owned Admission Policy Layer
+  v0 seam.
+- `invocation.annotations["execution_substrate.runtime_profile"]`,
+  `control-plane-normal-shell/v1`, the current `/execution/...` conventions,
+  the current `authority_handoff` vocabulary, the current `outcome_evidence`
+  vocabulary, and retained `application/gzip` result bundles keyed by `run_id`
+  remain explicit compatibility edges rather than settled architecture.
+
+### Workstream D - Policy And Authorization Reset
+
+Purpose:
+
+- Re-derive policy ownership across EGS and CGS.
+- Decide what belongs to trust publication, what belongs to authorization, and what belongs nowhere in the long-term architecture.
+- Reassess the current `id.conf` policy model, authorize DTO, and remaining policy/trust ownership seams.
+
+Target files and packages:
+
+- `egs/api/`
+- `egs/model/`
+- `egs/sign/`
+- `cgs/api/`
+- `cgs/policy/`
+- `cgs/config/`
+- `cgs/app/`
+
+Success condition:
+
+- Policy publication and authorization ownership are explicit.
+- EGS and CGS no longer carry accidental compatibility behavior without documented ownership.
+- The current `id.conf` and authorize shape are either intentionally retained, replaced, or explicitly downgraded to temporary compatibility edges.
+- ES can consume policy and authorization outputs through designed contracts rather than through legacy compatibility DTOs.
+
+Dependencies:
+
+- Workstream A
+- Workstream C
+
+Current bounded planning direction:
+
+- Treat the current `POST /v1/credential/authorize` request/response shape as a CGS v1 compatibility surface and the current `GET /v1/trust-model` route plus wrapper/payload shape as an EGS v1 compatibility surface.
+- Do not semantically widen either current v1 surface in place. Semantic expansion requires explicit versioning before implementation.
+- Treat `audit.policy_version` and EGS `publication.version` as service-owned audit/publication metadata, not transport/schema/API versioning.
+- Treat `id.conf` as current-CGS-v1 compatibility/config residue rather than as final repo-wide policy language.
+- Preserve ES CGS-independence in D1. If ES later consumes CGS output, it must do so through a separately versioned bounded authorization fact such as allow/deny plus opaque decision reference and expiry rather than by reusing the current CGS v1 shape or `id.conf`-derived subject grammar.
+- D1b is an accepted docs/tests-only slice on that seam: keep the current `POST /v1/credential/authorize` route and wire shape as CGS v1 compatibility, define any future CGS v2 authorize contract only at design level, and require explicit versioning before any behavior change lands.
+- In D1b, a future versioned CGS authorization fact may carry only allow/deny, an opaque decision reference, and expiry or another bounded freshness indicator if justified. Any audit/evaluation metadata on that fact remains non-authoritative outside CGS.
+- That future D1b design must not carry runtime auth plans, Vault token material, JWT-SVIDs, credential payloads, scheduler facts, ES lifecycle/admission facts, runtime-config refs, workload-zone Vault ownership facts, identity-handoff facts, or Control Plane review/approval/checkpoint/finalization semantics.
+- D1b keeps `id.conf` as current-CGS-v1 compatibility/config residue, does not rewrite its grammar or evaluation, and does not expand EGS beyond signer/artifact runtime-trust publication.
+- D1c is an accepted docs/tests-only slice on that seam: keep the current `GET /v1/trust-model` route plus wrapper/payload shape as EGS v1 compatibility, define any future EGS versioned runtime-trust wrapper only at design level, and require explicit wrapper/payload/versioning before any semantic expansion lands.
+- D1c keeps EGS v1 publishing signed `runtime_trust` signer/artifact trust only. EGS publication metadata remains outside the signed runtime-trust payload, and `publication.version` remains service-owned publication metadata rather than trust-contract/schema/API versioning.
+- In D1c, a future versioned EGS trust wrapper must distinguish signed runtime-trust payload facts, unsigned publication/discovery metadata, compatibility routing or API version, and non-authoritative service metadata.
+- That future D1c wrapper design must not carry CGS authorization decisions, Control Plane review/approval/checkpoint/finalization semantics, runtime auth plans, Vault token material, JWT-SVIDs, credential payloads, scheduler truth, ES lifecycle/admission truth, runtime-config refs, workload-zone Vault ownership facts, runtime identity handoff facts, or AGS/ARS artifact-publication authority.
+- D1c keeps ES consuming EGS only for signer/artifact runtime trust, keeps ES consuming no CGS facts, does not reopen the accepted Workstream A/B/C decisions, does not change the Workstream B AGS/ARS artifact publication/storage/discoverability decision or the Workstream C ES admission/runtime public model, and does not settle Workstream E runtime-config ownership or Workstream F runtime-identity handoff.
+- D1d is an accepted docs/tests-only slice on that seam: keep checked-in `cgs/policy/id.conf`, the current CGS v1 subject grammar, and `policy.id_conf_path` as current-CGS-v1 compatibility/config residue only.
+- In D1d, `id.conf` is not a shared policy language, not an ES admission policy input, not an EGS trust input, not a Control Plane review/approval/checkpoint/finalization policy input, and not an Infrastructure Manager readiness/profile/support-bundle authority input.
+- D1d keeps the current CGS v1 subject grammar local to current CGS v1 evaluation, keeps the checked-in `cgs/policy/id.conf` baseline as implementation/config residue rather than future product policy architecture, and keeps `policy.id_conf_path` as a CGS-local current-v1 configuration pointer rather than a repo-wide policy registry.
+- D1d must not move `id.conf` into runtime-config ownership before Workstream E or fold it into runtime-identity handoff before Workstream F.
+- Future policy-input redesign requires explicit Workstream D follow-up and, if it changes CGS semantics, a versioned CGS contract. D1d does not change CGS v1 authorize behavior, does not implement CGS v2, and does not change EGS, ES admission, Workstream E runtime-config ownership, or Workstream F runtime-identity handoff.
+- Workstream D checkpoint: D0-D1d completed the guardrail/design phase. Workstream D remains open; the long-term CGS authorize DTO, future CGS/EGS versioned contracts, and long-term `id.conf`/policy-input model remain reopened seams.
+- Those remaining D seams are non-blocking follow-ups for Workstream E planning. No D2 behavior-changing slice is required before Workstream E planning.
+- D1 does not settle Workstream E runtime-config ownership or Workstream F runtime-identity handoff.
+
+### Workstream E - Lookup And Config Indirection Reset
+
+Purpose:
+
+- Define and adopt an explicit replacement surface for the workload-zone Vault runtime-config reference and blob schema.
+- Move the required workload-zone Vault config-reference guarantee into the replacement owner.
+- Remove ACS from the live runtime path once the replacement surface is real.
+
+Target files and packages:
+
+- `internal/contracts/runtimeconfig/v1`
+- `es/config/`
+- `es/admission/`
+- `es/app/`
+
+Success condition:
+
+- The named workload-zone Vault config reference and blob schema are explicit, shared, and no longer hidden in ES-local parsing.
+- ES consumes the replacement surface directly without a transitional ACS lookup hop.
+- Startup validation guarantees the required workload-zone Vault config reference exists before ES serves traffic.
+- Future agents can tell that workload-zone Vault config semantics live in the runtime-config surface, ARS owns the blob, and ES remains only the consumer.
+
+Dependencies:
+
+- Workstream A
+- Workstream B
+- Workstream C
+- Workstream D
+
+Current docs/tests-only decision status for E0:
+
+- The Workstream E runtime-config ownership decision is recorded in
+  `.docs/system_overview/runtime_config_ownership.md`.
+- E0 is docs/tests-only. It does not change runtime behavior, public DTOs,
+  route handlers, wire shapes, ES admission behavior, runtime identity handoff,
+  Control Plane compatibility, Infrastructure Manager inputs, or M6
+  support-bundle input shapes.
+- Runtime-config semantics are owned by the runtime-config contract surface.
+  The current typed shared schema for workload-zone Vault runtime config is
+  `internal/contracts/runtimeconfig/v1`.
+- ARS owns blob storage and read by digest only. ARS does not own
+  workload-zone Vault runtime-config semantics.
+- ES is the current runtime-config consumer and lookup orchestrator during
+  `:prepare` and `:submit`.
+- ES startup config currently carries the required workload-zone Vault
+  runtime-config reference. That placement is compatibility/config residue on
+  a reopened ownership seam, not the declared final owner.
+- The startup guarantee remains: the required typed runtime-config reference
+  must be configured and validated before ES serves governed execution traffic.
+  This is a reference-availability guarantee, not a new E0 guarantee that the
+  ARS blob has been fetched before startup completes.
+- The digest-only ref shape is active as a temporary compatibility edge and
+  bounded current surface, not final runtime-config architecture.
+- There is no ACS hop in the runtime-config path.
+- Runtime-config does not broker Vault tokens, JWT-SVIDs, secret payloads,
+  leases, Codex credential material, or runtime identity handoff.
+- Optional workload-zone Vault CA trust material remains standard non-secret
+  TLS/env-based trust configuration only.
+- `workload_vault_auth.default_mode` is current ES config residue and bounded
+  current behavior, not a generalized runtime-auth-plan contract.
+- `authority_handoff.runtime_config_refs` is non-secret handoff evidence only,
+  not runtime-config authority or live credential truth.
+- E0 preserves `GET /v1/executions:contract`,
+  `POST /v1/executions:prepare`, `control-plane-normal-shell/v1`, CP
+  compatibility, and M6 support-bundle inputs.
+- E0 keeps CGS authorize output, `id.conf`, `policy.id_conf_path`,
+  `audit.policy_version`, EGS `publication.version`, EGS unsigned publication
+  metadata, AGS `policy_decisions`, ES retained bundles, ES
+  `outcome_evidence`, ES `authority_handoff`, IM profiles, support bundles,
+  logs, traces, reports, `.out` artifacts, and CP
+  review/approval/checkpoint/finalization state outside runtime-config
+  authority.
+- E0 does not settle Workstream F runtime-identity handoff, does not reopen
+  Workstreams A/B/C, does not mark full Workstream D complete, and does not
+  mark full Workstream E complete.
+
+Workstream E guardrail status:
+
+- E0 and E1 are sufficient guardrails before Workstream F planning.
+- Full Workstream E remains open for long-term runtime-config owner,
+  reference/versioning, and `workload_vault_auth.default_mode` follow-ups.
+- Later Workstream E work must not drift into runtime identity handoff,
+  helper behavior, SPIRE/Vault handoff implementation, or Workstream F
+  reserved-path decisions.
+
+### Workstream F - Runtime Identity Handoff Reset
+
+Purpose:
+
+- Redesign the ES-to-runtime identity boundary.
+- Clarify ownership of runtime identity paths, Vault auth handoff, reserved interface conventions, and capability validation.
+- Remove hidden coupling between ES submit behavior, policy surfaces, workload identity selection, and container path conventions.
+- Prove platform-owned runtime identity delivery rather than workload-authored bridging.
+
+Target files and packages:
+
+- `es/admission/runtimeidentity.go`
+- `es/admission/submit.go`
+- `es/config/`
+- `cgs/api/types.go`
+- `cgs/config/`
+- `.docs/system_overview/capability_probing.md`
+- `.docs/execution_lifecycle/`
+
+Success condition:
+
+- Runtime identity handoff has explicit ownership and a documented contract.
+- The current reserved paths survive only if intentionally retained.
+- The handoff contract no longer depends on accidental coupling to current ES DTOs, current CGS authorize output, or current path names.
+- Capability-sensitive validation remains behavior-based and local to validation boundaries.
+- The workload-visible discovery contract remains explicit, but the implementation behind it is platform-owned.
+- The final bounded slice does not depend on workload authors implementing their own identity-serving shim.
+
+Current bounded planning direction:
+
+- Preserve `EXEC_WORKLOAD_IDENTITY_ENDPOINT` as the workload-visible discovery contract unless a later stop-condition justifies reopening it explicitly.
+- Prefer a platform-owned runtime identity companion/bridge injected with the workload allocation over direct workload access to SPIRE internals or ES-owned runtime token minting.
+- Treat the checked-in workload-authored runtime identity reference as example scaffolding only, not as an acceptable final ownership model.
+- Treat the current slice-0 Linux schedulability caveat as an environment qualification issue that should remain explicit, not as a blocker to planning Workstream F.
+- The bounded slice `1A` and slice `1B` implementation is now the same-container runtime helper launched by a platform-owned supervisor inside the workload task.
+- Slice `1A` landed the runtime boundary before useful credential flow:
+  - helper runs as `0:0`
+  - workload runs as fixed `10000:10000`
+  - workload gets no supplemental groups and no privilege-escalation path
+  - the raw SPIRE Workload API socket remains helper-private under `/run/es-runtime-identity/<run_id>/internal/spire-agent.sock`
+  - the workload-visible endpoint remains `EXEC_WORKLOAD_IDENTITY_ENDPOINT=unix:///run/es-runtime-identity/<run_id>/endpoint`
+  - helper readiness is required before workload start and helper death is task-fatal in the first slice
+- Slice `1B` keeps the public endpoint bounded:
+  - support only a platform-defined JWT-SVID retrieval operation for the workload-vault target
+  - reject arbitrary audience passthrough, raw SPIRE parameter passthrough, and X.509 delivery in this slice
+- First-slice workload compatibility is intentionally narrowed:
+  - no root workloads
+  - no arbitrary image-user execution
+  - no shared helper/workload UID
+  - no supplemental groups that collapse the helper/workload boundary
+- Useful credential flow is now proved on top of slice `1A` and slice `1B`:
+  - the helper endpoint remains bounded to the workload-vault target
+  - the workload performs the bounded Vault login flow itself as a client against a proof-scoped real Vault dev/test target
+  - ES provides any workload-zone Vault CA trust material from the resolved runtime config as workload-visible CA files and standard TLS environment, without disabling verification
+  - one secret read is proved through the real ES -> Nomad -> Docker path
+  - the slice still avoids platform-owned Vault token brokerage
+- The bounded `control-plane-normal-shell/v1` runtime profile builds on that same identity boundary:
+  - ES selects the configured profile image for opt-in requests
+  - the repo-owned reference image recipe provides Python, git, narrow shell utilities, and a configured Codex CLI realization at the configured path
+  - the supported-local Nomad baseline disables Nomad Docker image cleanup for enabled local runtime-profile images so a local proof image is not removed merely because a prior successful allocation terminated
+  - the supported-local proof realization uses the proof-only Codex shim at that path, seeds proof-scoped Codex credential material in Vault, proves workload-side credential acquisition through the existing identity endpoint, invokes the shim with stdin prompt input, creates a deterministic workspace mutation, renders a result diff that includes tracked changes and proof-created untracked files, and writes runner-style final-message, diff, stdout/stderr, and workspace-archive artifacts under `/execution/run/result`
+  - the proof fetches and validates the retained ES result bundle for those artifacts
+  - the proof intentionally does not prove real upstream Codex service behavior because this repo cannot own a non-sensitive production Codex credential or external Codex service availability
+- The supported-host follow-through after that credential-flow proof is now landed in bounded form:
+  - keep the current script-managed local Nomad path explicit as bounded fallback/troubleshooting
+  - distinguish supported, bounded-fallback, and unsupported substrate states in operator output and runbooks
+  - use Lima `qemu` + Ubuntu 24.04 arm64 as the current supported local reference host on this Mac
+  - keep the previously investigated VMware/aarch64 and Lima `vz` local profiles explicit as unsupported on this Mac because natural `cpu.totalcompute` stays `0`
+  - use the repo-owned `scripts/72_supported_local_setup.sh` helper plus `scripts/73_supported_local_proof.sh run` for the current supported local proof path instead of the earlier out-of-repo `/tmp` harnesses
+  - keep canonical supported-local host evidence under `.out/es-proof-<id>/`, private host bootstrap scratch outside the repository and evidence directory, and guest `/tmp` as internal Lima scratch when the repo mount is read-only
+- That runtime narrowing is part of the claim-preserving slice boundary, not an accidental compatibility gap. If bounded implementation cannot preserve the helper-only SPIRE channel or the no-privilege-escalation workload launch model, stop and reopen only the runtime shape needed to keep ownership honest.
+
+F0 - Runtime Identity Handoff Ownership Decision:
+
+- F0 is docs/tests-only. It records the current runtime-identity handoff
+  ownership model before any behavior-changing Workstream F implementation.
+- The F0 decision is recorded in
+  `.docs/system_overview/runtime_identity_handoff.md`.
+- Runtime identity handoff is currently ES-selected and platform-delivered.
+  ES owns handoff selection, env injection, reserved path layout, mounts, and
+  Nomad job construction for the current slice.
+- `EXEC_WORKLOAD_IDENTITY_ENDPOINT` is the bounded workload-visible discovery
+  contract. It is not raw SPIRE socket exposure, Vault token brokerage,
+  runtime-config authority, or a secret payload.
+- The runtime supervisor/helper owns the in-task endpoint implementation,
+  helper-private SPIRE traversal, readiness-before-workload, and
+  root-to-workload privilege boundary for the current implementation.
+- SPIRE owns JWT-SVID issuance. Vault owns token, secret, and lease issuance
+  after workload-side login.
+- ES does not broker Vault tokens, Vault secrets, JWT-SVID payloads, leases,
+  Codex credential material, or credential payloads.
+- Current helper/root/Nomad task user/SPIRE traversal/reserved-path surfaces
+  are bounded or compatibility-heavy, not final generalized architecture.
+- Capability validation remains behavior-based and local to validation
+  boundaries, not based on accidental DTO/path coupling.
+- F0 does not change runtime-config ownership from E0/E1, does not consume or
+  promote D seams, does not change CP compatibility or
+  `control-plane-normal-shell/v1`, and does not change M6 support-bundle
+  inputs.
+- F0 keeps CGS authorize output, `id.conf`, `policy.id_conf_path`,
+  `audit.policy_version`, CGS v1/v2 design docs, EGS
+  `publication.version`, EGS unsigned publication metadata, AGS
+  `policy_decisions`, runtime-config refs, `authority_handoff.runtime_config_refs`,
+  ARS blob mechanics, digest-only runtime-config refs,
+  `workload_vault_auth.default_mode`, ES retained bundles,
+  `outcome_evidence`, `authority_handoff`, IM profiles, support bundles,
+  logs, traces, reports, `.out` artifacts, and CP
+  review/approval/checkpoint/finalization state outside runtime-identity and
+  credential authority.
+- F0 does not reopen Workstreams A/B/C, does not mark full Workstream D
+  complete, does not mark full Workstream E complete, and does not mark full
+  Workstream F complete.
+- Full Workstream F remains open for long-term runtime-identity owner,
+  helper/root/task-user, SPIRE selector/traversal, reserved-path, and
+  workload-credential handoff follow-ups.
+- F0 does not claim full ES/runtime de-root, rootless Nomad client,
+  production readiness, production Vault readiness, or generalized remote
+  deployment architecture.
+
+Dependencies:
+
+- Workstream C
+- Workstream D
+- Workstream E
+
+## Remote Alpha Hardening History and Current Retirement
+
+`Temporary compatibility edge`: archived v1 evidence records an earlier Remote
+Supported-Host Alpha hardening exercise. It is historical evidence only and is
+not current host truth, readiness, migration authority, or permission to reuse
+an old or nonempty host. Current ES-owned existing-host writable-state,
+service-user, ownership, staging, rollback-generation, and old-root-planning
+routes are retired through fixed fail-closed tombstones. No v2 replacement is
+defined for that retired ES writable-state/service-user migration family. The
+unrelated current EGS hardening v2 schema remains current.
+
+- AGS is already de-rooted and sealed in this tranche; preserve the landed
+  `ags:ags` service posture and its existing host-local summary/evidence shape.
+- ARS is already de-rooted in this tranche; preserve the landed `ars:ars`
+  service posture, its dedicated TLS/state ownership model, and its existing
+  host-local summary/evidence shape.
+- EGS is already de-rooted in this tranche; preserve the landed `egs:egs`
+  service posture and its existing host-local summary/evidence shape.
+- ES config/TLS prep is applied and productized for the live host.
+- Archived v1 files may record that an earlier host had prepared ES writable
+  roots, ran `es.service` as `User=es`, `Group=es`, `UMask=0027`, and passed
+  bounded checks. Those records do not establish current state, readiness, or
+  apply authority and cannot be refreshed by the retired routes.
+- This tranche does not claim full ES/runtime de-root.
+- The root-start runtime helper, Nomad task `User: "0:0"`, helper-private
+  SPIRE traversal, broad root selector posture, and Vault/workload-zone
+  handoff remain bounded compatibility edges.
+- The long-lived ES startup path keeps
+  `execution.spire_workload_api_socket_path` as a config-shape and submit
+  input only; runtime-helper failure to use that helper-private raw SPIRE path
+  remains explicit and fail closed. The retired helpers no longer prove that
+  host dependency.
+- Old root-era staging/results roots remain preserved as rollback/debug/evidence
+  state until a later explicit cleanup/archive action after the rollback window
+  expires; they must not be recursively re-owned or deleted by inertia.
+- The former old-root cleanup/archive planner is retired. Archived summaries
+  cannot authorize archive, deletion, ownership change, drain, fence, or any
+  other host mutation.
+- This tranche must not change ES public contracts or Control
+  Plane/Infrastructure Manager ownership boundaries.
+- This tranche preserves the direct Mac -> AGS/ES HTTPS+mTLS posture, the
+  current EGS loopback-only dependency path, the landed AGS/ARS service
+  postures, and the no-bridge/no-shared-filesystem remote posture.
+- This tranche may now use one separate operator-owned Vault service-user
+  migration helper. That helper must stay check-only by default, explicit
+  apply only, bounded to Vault host/service hardening, and must not widen into
+  ES public API changes, Nomad task-user changes, SPIRE boundary changes, or
+  Vault token brokerage.
+- This tranche may carry one disposable Remote Alpha Vault reset/rebootstrap
+  operator script for the sealed-and-unrecoverable Shamir-key case. That script
+  must stay dry-run by default, require an interactive TTY plus the exact
+  destructive confirmation phrase before reset, move the existing Vault raft
+  path to a timestamped backup rather than deleting it, run Vault init/unseal
+  only in the operator's interactive terminal, and never persist or relay
+  unseal keys, root tokens, client tokens, TLS private keys, SPIFFE material,
+  API keys, or raw prompts. It is a bounded Alpha recovery helper only; it is
+  not IM automation, Vault production lifecycle, CP/ES proof, submit
+  readiness, runtime-profile readiness, or a broader deployment architecture.
+  The same helper may provide a non-destructive `--unseal-only` path for the
+  case where the operator still has the Shamir unseal key; that mode must not
+  move storage or run Vault init, and must still require an interactive TTY and
+  interactive `vault operator unseal` with no key material on the command line.
+- This tranche is bounded host/service hardening only. Do not widen it into a
+  runtime-boundary redesign or broader proof expansion.
+
+## Milestone 1: Least-Privilege Runtime/Security Boundary Closeout
+
+`Bounded slice rule`: Milestone 1 is named `least-privilege runtime/security
+boundary closeout`.
+
+Archived v1 evidence records a prior long-lived `es.service` service-user
+change to `User=es`, `Group=es`, `UMask=0027`. That historical record is not a
+current invariant, current readiness proof, or migration authority.
+
+Do not call this milestone `rootless everything` or full ES/runtime de-root.
+
+Milestone 1 preserves these current boundaries:
+
+- Nomad remains lifecycle authority after ES submission.
+- ES remains a lifecycle projector, not a parallel scheduler.
+- The raw SPIRE Workload API socket remains helper-private.
+- Workloads see `EXEC_WORKLOAD_IDENTITY_ENDPOINT`, not the raw SPIRE Workload
+  API socket.
+- Workload-side Vault credential acquisition remains preserved.
+- ES does not fetch, mint, broker, store, rotate, parse, or validate Vault
+  tokens.
+- Infrastructure Manager support bundles and readiness/support artifacts remain
+  evidence/projection/diagnostics only. They are not authority and are not
+  governed execution proof by themselves.
+
+Milestone 1 boundary posture matrix:
+
+| Surface | Posture | Rationale | Current evidence | Removal condition | Explicit non-claim |
+| --- | --- | --- | --- | --- | --- |
+| Nomad host client/server substrate | `blocker` | The current supported substrate still depends on a pre-managed non-dev Linux Nomad client/server. Upstream least-privilege guidance is to keep Nomad servers as narrow as feasible, but the Linux Nomad client remains a root-managed isolation boundary today and a rootless client is not the current supported/well-tested repo posture. | Supported-host qualification still requires a pre-managed non-dev Nomad baseline, `scripts/01_bringup.sh check` still treats Nomad readiness as an environment gate, and the landed ES happy paths still hand lifecycle authority to Nomad rather than replacing it. | Revisit only if a later separately documented substrate decision proves a supported client posture that does not depend on an unsupported rootless-client assumption while preserving Nomad as lifecycle authority. | Milestone 1 does not claim a rootless Nomad client or full Nomad least-privilege closeout. |
+| SPIRE raw-socket traversal and selector posture | `accepted MVP compatibility edge` | The workload-visible contract is already narrowed to `EXEC_WORKLOAD_IDENTITY_ENDPOINT`, but the helper-private raw SPIRE path and the broad root selector scope remain explicit compatibility edges rather than a finished least-privilege identity model. | Slice `1A`/`1B` proof, runtime-helper source and tests that keep the raw SPIRE path out of workload env, and the remote runtime-identity helper summary preserve the helper-private boundary. Retired existing-host migration artifacts are historical evidence only and are not current boundary proof. | Revisit only through the later runtime-boundary redesign seam after a narrower helper principal or equivalent traversal model is documented and re-proved. | Workloads do not receive the raw SPIRE Workload API socket, and this milestone does not claim final SPIRE selector least privilege. |
+| Vault workload-side auth / workload-zone handoff | `accepted MVP compatibility edge` | The least-privilege direction is workload-side credential acquisition without ES token brokerage. The repo preserves that handoff boundary; where Vault host posture is operator-owned, the intended direction is a dedicated unprivileged Vault service account rather than root, but Milestone 1 does not widen ES contracts into full remote Vault lifecycle authority. | Useful credential flow completion is already landed, `scripts/remote_alpha_vault_workload_auth_check.sh` records bounded host-local evidence, and the current `authority_handoff` plus `readiness_not_claimed.*` vocabulary already preserve non-brokering, workload-side auth. | Revisit only if a later documented boundary change keeps workload-side auth intact and preserves the no-token-brokerage rule. | ES does not broker Vault tokens, and Vault/readiness summaries do not by themselves prove runtime-profile readiness or governed execution proof. |
+| ES runtime helper | `accepted MVP compatibility edge` | The current helper isolates privileged runtime bootstrap from the long-lived ES service path, but it still starts from root and therefore remains a bounded compatibility edge rather than a full runtime de-root result. | Runtime-helper tests, supported-local proof, helper-death/task-fatal behavior, and the remote runtime-identity helper summary all prove the current fail-closed helper boundary. | Revisit only if a later redesign re-proves equivalent runtime identity delivery, workload launch, and result-path guarantees with a narrower startup privilege model. | Milestone 1 does not claim rootless helper startup or full ES/runtime de-root. |
+| Nomad task user | `accepted MVP compatibility edge` | The current runtime companion still needs task-start `0:0` so it can create the helper-private SPIRE boundary and exec the workload as fixed non-root `10000:10000`. | The landed happy path still uses the current job-spec model, job-spec tests preserve `User: "0:0"`, and the runtime-helper/workload-boundary tests still depend on that task-start contract. | Revisit only as part of a broader runtime-boundary redesign that re-derives helper launch, workload launch, and SPIRE/Vault handoff together. | The current posture is not non-root task launch and not rootless workload orchestration. |
+| Evidence/support artifacts | `accepted MVP compatibility edge` | Privilege-sensitive host evidence collection may still be necessary, but it must stay outside ES/CP authority boundaries and must not backdoor a broader runtime claim. | Remote doctor output, support-bundle summaries, staged-helper records, and apply summaries are all already documented as evidence/projection/provenance only. | Revisit only if later operator tooling reduces privileged collection without weakening the non-authority and non-proof boundary. | Support bundles, readiness reports, and apply summaries are not ES/CP/IM authority and are not governed execution proof by themselves. |
+
+Milestone 1 now also carries one repo-owned Remote Alpha runtime/security
+boundary posture checker as a bounded host-local evidence surface:
+
+- `scripts/remote_alpha_runtime_security_boundary_check.sh`
+- `scripts/internal/remote_alpha_runtime_security_boundary_check.sh`
+
+That checker must default to `check_only`, stay non-mutating, classify the
+current Nomad/runtime-helper/SPIRE/Vault/evidence posture honestly, and fail
+closed if its output contains secret-like material or overclaim text. By
+default it must not SSH, mutate services, change ownership, restart services,
+archive files, or delete anything. It records evidence/projection only; it
+does not change ES submit behavior, runtime-helper behavior, the current Nomad
+task user, the helper-private raw SPIRE boundary, Vault token brokerage, or
+governed execution proof claims. The same evidence surface may record
+non-secret host/runtime/CVE inventory fields, including kernel and package
+versions, Docker/Nomad runtime chain observations, FUSE/fuse-overlayfs,
+Podman/crun, idmapped or `mount_setattr` path observations, and
+vendor-observed CVE readiness classifications for CVE-2026-31431 and
+CVE-2026-31465. CVE readiness classifications are `fixed`, `vulnerable`,
+`not_affected`, `mitigated_not_fixed`, or `unknown`. For CVE-2026-31431,
+`mitigated_not_fixed` may only mean vendor/package evidence still reports a
+vulnerable host while non-mutating local evidence shows `algif_aead` is not
+loaded and modprobe policy blocks autoload. That state is not a kernel patch,
+not proof of production safety, and remains a blocker unless the checker is
+run with an explicit bounded internal Remote Alpha mitigation-risk acceptance
+flag.
+Those fields remain evidence/projection only: they are not service health,
+submit readiness, runtime-profile readiness, governed execution proof, full
+ES/runtime de-root, rootless Nomad client proof, support bundle authority, or
+CVE patch authority. Direct vendor status observation is evidence for CVE
+classification only.
+
+## Current Remote Alpha ES Config/TLS Ownership Prep Slice
+
+`Bounded slice rule`: Remote Supported-Host Alpha may now extend the current
+host-local hardening work with one separate ES config/TLS ownership prep slice.
+
+`Current invariant`: this earlier bounded slice is already applied on the live
+host and remains the source of truth for the dedicated `root:es` readable
+config/TLS model consumed by the current `User=es` long-lived ES service.
+
+- This slice introduces a dedicated ES-readable config ownership model and a
+  dedicated ES-readable TLS directory for the current ES runtime config.
+- This slice may create a narrow dedicated `es:es` prep account only to own
+  readable ES config/TLS material for a later ES de-root step; it must not
+  introduce a shared `execution-substrate` Unix-account model.
+- At apply time, this slice kept the live `es.service` user/group posture
+  unchanged.
+- This slice must not change ES public contracts, the current SPIRE selector
+  posture, current SPIRE socket traversal, Vault/runtime-helper semantics, or
+  Nomad task user model.
+- This slice must not move ES writable state, including staging and retained
+  results ownership.
+- This slice preserves the current AGS, ARS, and EGS service postures plus the
+  direct Mac -> ES HTTPS+mTLS posture.
+- This slice is bounded host-local config/TLS ownership preparation only. Do
+  not widen it into ES de-root, Control Plane or Infrastructure Manager
+  changes, or broader proof reruns; rerun only the small verification needed to
+  validate the ES host-side apply and refresh the non-secret summary.
+
+## Current Remote Alpha Host Network Boundary Slice
+
+`Bounded slice rule`: Remote Supported-Host Alpha may carry one operator-run
+host firewall for the box on the home network, defined in the section
+"Remote Alpha Host Firewall" of
+`.docs/system_overview/remote_supported_host_alpha.md`. It closes findings
+INF-01 (containers reach the home LAN), INF-13 (ES and AGS listeners open to
+the whole LAN) and INF-23 (SSH password login from everywhere, SSH on public
+IPv6) of the 2026-11-23 infrastructure audit, as a short-term bridge until
+the named workload identities, network grants and egress lanes of the
+workload-identity design land.
+
+- Scripts: `scripts/remote_alpha_host_firewall.sh`,
+  `scripts/internal/remote_alpha_host_firewall.sh` and
+  `scripts/internal/remote_alpha_host_firewall.py`. Modes `--plan`
+  (default, read-only), `--apply`, `--confirm`, `--status`, `--probe`,
+  `--rollback`, `--render`.
+- It owns only the nftables tables `inet es_host_firewall` and
+  `bridge es_host_firewall`, its files under
+  `/etc/execution-substrate/host-firewall`, the unit
+  `es-host-firewall.service`, the sshd drop-in
+  `/etc/ssh/sshd_config.d/00-execution-substrate-host-access.conf` and a
+  transient rollback timer. It never touches Docker's, ufw's or other rules,
+  other sshd files, Vault, Nomad or ES, and reads no secrets.
+- One chain in its own table keeps the box's own connections to Vault on the
+  bridge address as their source (an identity snat ahead of Docker's
+  masquerade rule), so the Vault role's bridge-subnet limit sees the box as
+  the bridge address and not as its LAN address. It is the ruleset's only
+  address rewrite.
+- The operator's choices live in the root-owned settings file
+  `/etc/execution-substrate/host-firewall/settings.env`; adding a device that
+  may call ES and AGS is a one-line change there.
+- `--apply` arms an automatic rollback that only `--confirm` from an SSH
+  connection opened after `--apply` cancels.
+- Validation: rendering against a golden ruleset, real-kernel tests in
+  network namespaces, a real-sshd test of the drop-in, fakes for the
+  apply/confirm/rollback order, and a container probe on the box.
+
+`Bounded slice rule`: the same tranche refines the P0q workload-auth
+bootstrap helper (INF-04, INF-05, and the root-token half of INF-06):
+
+- role `service_execution` gets `token_ttl` (default `15m`),
+  `token_max_ttl` (default `30m`) and `token_bound_cidrs` (default
+  `172.17.0.0/16`), validated before any prompt;
+- every earlier version and the metadata of both proof paths are deleted
+  before the new value is written;
+- `REMOTE_ALPHA_BOOTSTRAP_AUTHORITY=unseal-key` replaces a standing root
+  token: the helper makes a root token from the single unseal key share,
+  uses it once for a 15-minute orphan token, revokes it with the next
+  request, and revokes the 15-minute token before it exits; SIGINT,
+  SIGTERM, SIGHUP and SIGQUIT wait until the root token is revoked and
+  Vault's configuration is back, and Ctrl-Z (SIGTSTP, SIGTTIN, SIGTTOU)
+  takes effect only then; core dumps are off before anything is read;
+- `REMOTE_ALPHA_BOOTSTRAP_GENERATE_ROOT_ACCESS=temporary-config` adds
+  `enable_unauthenticated_access = ["generate-root"]` to Vault's
+  configuration only for the generate-root step and puts the file back byte
+  for byte through a reload (Vault 2.x refuses unauthenticated generate-root
+  by default), after the root token is revoked; it refuses a Vault that
+  allows generate-root without the file saying so;
+- with the 15-minute token, the helper counts root tokens that never
+  expire, and `REMOTE_ALPHA_BOOTSTRAP_STANDING_ROOT_TOKENS=revoke` revokes
+  them, which is how a run killed by SIGKILL or a power loss is cleaned up;
+- `REMOTE_ALPHA_BOOTSTRAP_PROOF_VALUE=generate` writes a random value nobody
+  sees, which discards the Codex key.
+
+Its validation adds one test against a real local Vault server (raft, TLS,
+one key share; CI installs Vault 2.2.2). It still runs no live box, SSH or
+sudo. These refinements do not make ES a Vault token broker and do not
+change ES public contracts.
+
+## Future ES Privilege-Boundary Design Track
+
+`Reopened redesign seam`: full ES/runtime de-root beyond the now-landed
+long-lived `es.service` user flip remains a future structural design track.
+
+- This future track covers the long-lived ES service privilege model, Nomad
+  task user model, runtime-helper/supervisor ownership, SPIRE selector posture,
+  SPIRE socket traversal, staging/results ownership, retained-result
+  materialization, and operator maintenance/rollback model as one boundary
+  package rather than as implicit follow-on hardening.
+- Archived v1 evidence records an earlier bounded rollout involving binary
+  parity, stable writable-state preparation, and a long-lived ES service-user
+  change. The ES writable-state, service-user, ownership, staging, rollback,
+  and cleanup-planning helpers from that rollout are now retired and cannot
+  inspect a host, refresh evidence, or authorize another rollout.
+- The privileged-operation matrix, writable-state ownership model, and runtime
+  ownership-normalization document remain design history. They do not define a
+  current existing-host migration contract. Reuse of an old or nonempty host
+  remains blocked without a separately accepted contract.
+- The retained rationale is explicit in the superseded, non-authoritative
+  historical-design sections of
+  `.docs/system_overview/remote_alpha_beta_es_privilege_boundary_assessment.md`,
+  `.docs/system_overview/remote_alpha_beta_es_privileged_operation_matrix.md`,
+  and
+  `.docs/system_overview/remote_alpha_beta_es_runtime_ownership_normalization.md`.
+  Those sections preserve privilege separation, service-user, SPIRE, Vault,
+  ownership-normalization, helper-limit, and compatibility reasoning only;
+  they are not available operator routes and confer no migration, cleanup, or
+  reclamation authority.
+- Post-migration ES/runtime-helper binary refreshes now remain bounded to the
+  current accepted live `User=es`, `Group=es`, `UMask=0027` host slice. The
+  binary-deployment helper is no longer a root-like service-posture surface;
+  any return to a root-era long-lived service identity must happen through a
+  separate rollback/service-user action rather than through binary deployment.
+- The helper-private raw SPIRE socket path remains a privileged runtime
+  dependency and must stay operator-validated rather than being treated as a
+  direct long-lived ES service-user read requirement.
+- Design assessment for Remote Alpha -> Beta may compare alternative
+  architectures, but implementation work must not proceed until the chosen
+  boundary model and required evidence are documented explicitly.
+
+## Retired Existing-Host Actions and Later Infrastructure Seams
+
+The former writable-state preparation, ES service-user migration, generated
+rollback rehearsal, migration staging, and old-root planning actions are
+retired. Their v1 artifacts are historical evidence only. No v1 artifact may
+authorize deployment, migration, drain, reclamation, or mutation, and no v2
+artifact or replacement protocol exists for that retired ES writable-state/
+service-user migration family. This does not describe or retire the unrelated
+current EGS hardening v2 schema.
+
+Fresh-host provisioning is the required recovery direction, but ownership and
+acceptance of a complete supported fresh-host ES provisioner remain unresolved.
+The current repository does not implement one. Old-host migration may return
+only if a real requirement selects a separately governed contract. Scheduler
+drain and submitter fencing likewise remain undefined later seams.
+
+`Reopened redesign seam`: Option C runtime-boundary redesign remains a
+separate architecture track, not a cleanup follow-on.
+
+- Any future work on the root-start runtime helper, Nomad task `User: "0:0"`,
+  helper-private SPIRE traversal, broad root selector posture, or
+  Vault/workload-zone handoff must proceed only as that separately documented
+  redesign track.
+
+`Current invariant`: the completed branch-level milestone does not imply a
+`master` merge.
+
+- Merge remains a human milestone decision after review of the bounded
+  evidence set and governance posture.
 
 ## Cross-Repo Hybrid Integration ADR Pointer
 
@@ -2096,6 +2458,8 @@ The former current-schema checker, its automatic evidence-directory discovery,
 and its safe-field projections are retired with P0g. No empty generic evidence
 parser or dormant compatibility registry remains in the facade.
 
+### Remote Alpha Vault unseal and disposable reset routes (P0i to P0m)
+
 The P0i implementation/self-audit slice may add exactly one secret-sensitive
 `recovery-session` route:
 `scripts/remote_alpha_operator.sh recovery-session vault-unseal-existing
@@ -2296,78 +2660,7 @@ proof/support workflow glue only; it must not make ES a Vault token broker, IM
 a reconciler, CP a recovery authority, or Remote Alpha
 production/deployment/reconciliation architecture.
 
-### Historical P0n workload-auth facade route — superseded and non-authoritative
-
-The following records the former P0n implementation rationale only. It grants
-no current operator route, staging authority, evidence compatibility, or
-Tranche B prerequisite. P0n formerly added one Mac-side post-reset evidence
-route:
-`scripts/remote_alpha_operator.sh recovery-session vault-workload-auth-check
---ssh-target <target> --interactive-tty`. This route exists for the intended
-operator topology where the operator runs the ES operator facade from the Mac,
-the facade stages bounded helper files to the Remote Alpha host, the human
-remains the operator, and secrets never pass through args, env, logs,
-artifacts, or Codex. P0n may validate only with static and fake SSH/SCP tests; it must not
-run live SSH, sudo, Vault, workload-auth checks, reset/unseal, Infrastructure
-Manager refresh, support-bundle collection, CP proof, runtime identity
-generation, or network-dependent integration tests.
-
-P0n must stage only:
-
-- `scripts/remote_alpha_vault_workload_auth_check.sh`
-- `scripts/internal/remote_alpha_vault_workload_auth_check.sh`
-
-It must preserve that public/internal relative layout on the remote host and
-invoke only the staged public workload-auth helper. It may run that helper with
-root through the explicit interactive TTY route when required, using `ssh -tt`
-only because `--interactive-tty` is mandatory. It must not stage
-`scripts/remote_alpha_operator.sh`, reset/unseal helpers, runtime identity
-helpers, service-user helpers, config/TLS helpers, binary deployment helpers,
-bundles, unrelated helpers, or a generic helper dispatcher.
-
-Allowed flags for P0n are only `--help`, `--ssh-target <target>`, and
-`--interactive-tty`. P0n must reject `--host-local`, `--dry-run`,
-`--execute-reset`, `--unseal-only`, `--post-unseal-check`, `--apply`,
-`--interactive-sudo`, `--governed-smoke-command`, workload-auth helper override
-flags, Vault address/role/audience/path/proof-path overrides, SPIFFE ID
-overrides, config path overrides, summary path overrides, container probe image
-overrides, SPIRE socket overrides, arbitrary commands, unknown flags, duplicate
-flags, extra positional arguments, equals-form options, and all secret-like
-arguments including root tokens, unseal keys, client tokens, Vault tokens,
-JWT-SVID payloads, API keys, private keys, passwords, and secret payloads.
-
-P0n keeps the canonical workload-auth evidence artifact on the remote host at
-`/var/tmp/execution-substrate-remote-alpha/vault-workload-auth-summary.json`.
-The operator facade must not copy that summary back to Mac `.out`, print full
-summary JSON, create an operator summary, create generated artifacts, tee, run
-`script`, capture transcripts, write logs, run Infrastructure Manager,
-collect support bundles, run CP proof, run runtime identity generation, run
-reset/unseal, or combine workload-auth evidence with reset/unseal. After remote
-success it may print only non-secret next steps: the remote summary path, a
-recommendation to use `recovery-session --evidence-check` after separately
-collecting IM/local evidence, and printed-only IM refresh/support-bundle
-commands as separate IM evidence/provenance actions. The workload-auth summary
-remains evidence/projection only, not readiness authority, not Vault production
-readiness, not governed execution proof, not ES Vault token brokerage, not IM
-authority, not CP recovery authority, and not Remote Alpha
-production/deployment/reconciliation architecture.
-
-A bounded bugfix/self-audit refinement may extend the same v1 workload-auth
-summary with backward-compatible, safe Vault JWT login failure classification
-when `auth_smoke.vault_login=fail`. The helper may record only class labels,
-HTTP status, error-string count, a `vault_login` failure phase, safe JWT issuer
-expected-source/class labels, safe JWT issuer actual-class labels, and
-`auth_smoke.vault_login_raw_error_recorded=false`; it must not print or persist
-the JWT-SVID, Vault client token, root token, unseal key, proof secret value,
-raw Vault login response body, raw HTTP headers, Authorization header, stack
-trace, or full Vault login JSON. Classification remains bounded triage over the
-host-local evidence artifact, not workload-auth bootstrap, not a claim that a
-specific Vault object is missing unless the class safely supports that, and not
-ES Vault token brokerage.
-The issuer comparison must understand the same `spire-server bundle show
--format spiffe` trust-domain JSON shape used by bootstrap, including
-`trust_domains` maps keyed by bare trust-domain labels, so a parseable
-repo-derived bound issuer does not degrade to `unknown` before classification.
+### Remote Alpha Vault workload-auth bootstrap routes (P0o to P0q)
 
 The P0o combined implementation/self-audit/merge-readiness slice may add exactly
 one safe local/print-only planning surface for a future post-reset Vault
@@ -2783,72 +3076,7 @@ staging of exactly the bootstrap public/internal helper pair, `ssh -tt` only for
 explicit `--interactive-tty`, public helper invocation only, cleanup attempts,
 no transcript/`tee`/`script`, and no copy-back to Mac `.out`.
 
-### Historical P0r runtime-identity facade route — superseded and non-authoritative
-
-The following records the former P0r implementation rationale only. It grants
-no current operator route, staging authority, evidence compatibility, or
-Tranche B prerequisite. P0r formerly added one Mac-side recovery-session
-runtime identity evidence route:
-`scripts/remote_alpha_operator.sh recovery-session runtime-identity-summary
---ssh-target <target> --interactive-tty`. This route is evidence/projection
-only over the existing host-local runtime identity helper summary script. It
-does not settle the reopened runtime-identity handoff seam and does not claim
-runtime-profile readiness, submit readiness, retained-result readiness,
-governed execution proof, CP proof, or production readiness.
-
-P0r may stage only:
-
-- `scripts/remote_alpha_runtime_identity_helper_summary.sh`
-
-It must resolve that helper from `BASH_SOURCE[0]`, stage it to a
-route-specific remote scratch path, invoke only the staged helper over
-`ssh -tt`, and attempt remote staged-helper cleanup by default. It must not
-stage `scripts/remote_alpha_operator.sh`, `scripts/internal/*`, reset/unseal
-helpers, workload-auth helpers, workload-auth bootstrap helpers, service-user
-helpers, config/TLS helpers, binary deployment helpers, bundles, unrelated
-helpers, or a generic helper dispatcher. It must not source helper scripts,
-construct helper paths from user input, use `tee`, run `script`, create
-transcripts, capture stdout/stderr to files, create Mac `.out`, copy summaries
-back to Mac, create an operator summary, call Infrastructure Manager, collect
-support bundles, run CP proof, run reset/unseal, run workload-auth bootstrap or
-check, or run runtime identity generation.
-
-Allowed P0r route flags are only `--help`, `--ssh-target <target>`, and
-`--interactive-tty`. The route must reject `--host-local`, `--dry-run`,
-`--check-only`, `--apply`, `--execute-reset`, `--unseal-only`,
-`--post-unseal-check`, `--execute-bootstrap`, `--prepare-summary-path`,
-`--prepare-config-readability`, `--prepare-spire-bundle-read`,
-`--interactive-sudo`, `--governed-smoke-command`, helper override flags such as
-`--output`, `--runtime-support-path`, `--spire-agent-socket-path`,
-`--spire-server-socket-path`, `--workload-spiffe-id`, and `--audience`,
-arbitrary commands, unknown flags, duplicate flags, extra positional arguments,
-equals-form options, and all secret-like arguments including root tokens,
-unseal keys, client tokens, Vault tokens, JWT-SVID payloads, API keys, private
-keys, passwords, proof secrets, raw identity payloads, and secret payloads.
-
-P0r keeps the canonical runtime identity helper summary on the remote host at
-`/var/tmp/execution-substrate-remote-alpha/runtime-identity-helper-summary.json`.
-The operator facade must not print full summary JSON and must not persist
-JWT-SVIDs, Vault tokens, root tokens, unseal keys, API keys, private keys,
-passwords, proof secrets, raw identity payloads, or secret material. After
-remote success it may print only the canonical remote summary path, a reminder
-that the summary is evidence/projection only and non-authoritative, and
-printed-only next steps such as the local `recovery-session --evidence-check
---runtime-identity-summary <path>` command to use after separate evidence
-collection makes the summary available locally.
-
-P0r validation remains fake/static only. Tests must cover help/plan/inventory
-wording and non-claims; `runtime-identity-summary --help`; missing
-`--ssh-target`; missing `--interactive-tty`; forbidden host-local, dry-run,
-check-only, reset/unseal, workload-auth bootstrap/check, preparation, helper
-override, secret-like, unknown, duplicate, equals-form, and positional inputs;
-fake SSH/SCP staging of exactly the one public runtime identity helper; use of
-`ssh -tt` only for the explicit interactive route; public helper invocation
-only with no helper override flags; cleanup attempts; no transcript/`tee`/`script`;
-no `.out`, operator summary, support bundle, IM, CP proof, reset/unseal,
-workload-auth bootstrap/check, runtime identity generation, generic helper
-dispatch, or `scripts/internal/*`; and preservation of the existing
-reset/workload-auth/readiness route boundaries.
+### Remote Alpha TLS status, renewal and diagnostic routes (P0s to P0v)
 
 `Reopened redesign seam`: the P0s/P0t shared status-and-renewal helper is
 re-derived as one dedicated status-only collector. This is a bounded Remote
@@ -3940,1138 +4168,3 @@ audit, authorization, and repair contract exist;
 topology and operator/local identity renewal authority are documented; binary
 deployment apply and workload-auth bootstrap are not monitor auto-renewal
 routes.
-
-## Remote Alpha Hardening History and Current Retirement
-
-`Temporary compatibility edge`: archived v1 evidence records an earlier Remote
-Supported-Host Alpha hardening exercise. It is historical evidence only and is
-not current host truth, readiness, migration authority, or permission to reuse
-an old or nonempty host. Current ES-owned existing-host writable-state,
-service-user, ownership, staging, rollback-generation, and old-root-planning
-routes are retired through fixed fail-closed tombstones. No v2 replacement is
-defined for that retired ES writable-state/service-user migration family. The
-unrelated current EGS hardening v2 schema remains current.
-
-- AGS is already de-rooted and sealed in this tranche; preserve the landed
-  `ags:ags` service posture and its existing host-local summary/evidence shape.
-- ARS is already de-rooted in this tranche; preserve the landed `ars:ars`
-  service posture, its dedicated TLS/state ownership model, and its existing
-  host-local summary/evidence shape.
-- EGS is already de-rooted in this tranche; preserve the landed `egs:egs`
-  service posture and its existing host-local summary/evidence shape.
-- ES config/TLS prep is applied and productized for the live host.
-- Archived v1 files may record that an earlier host had prepared ES writable
-  roots, ran `es.service` as `User=es`, `Group=es`, `UMask=0027`, and passed
-  bounded checks. Those records do not establish current state, readiness, or
-  apply authority and cannot be refreshed by the retired routes.
-- This tranche does not claim full ES/runtime de-root.
-- The root-start runtime helper, Nomad task `User: "0:0"`, helper-private
-  SPIRE traversal, broad root selector posture, and Vault/workload-zone
-  handoff remain bounded compatibility edges.
-- The long-lived ES startup path keeps
-  `execution.spire_workload_api_socket_path` as a config-shape and submit
-  input only; runtime-helper failure to use that helper-private raw SPIRE path
-  remains explicit and fail closed. The retired helpers no longer prove that
-  host dependency.
-- Old root-era staging/results roots remain preserved as rollback/debug/evidence
-  state until a later explicit cleanup/archive action after the rollback window
-  expires; they must not be recursively re-owned or deleted by inertia.
-- The former old-root cleanup/archive planner is retired. Archived summaries
-  cannot authorize archive, deletion, ownership change, drain, fence, or any
-  other host mutation.
-- This tranche must not change ES public contracts or Control
-  Plane/Infrastructure Manager ownership boundaries.
-- This tranche preserves the direct Mac -> AGS/ES HTTPS+mTLS posture, the
-  current EGS loopback-only dependency path, the landed AGS/ARS service
-  postures, and the no-bridge/no-shared-filesystem remote posture.
-- This tranche may now use one separate operator-owned Vault service-user
-  migration helper. That helper must stay check-only by default, explicit
-  apply only, bounded to Vault host/service hardening, and must not widen into
-  ES public API changes, Nomad task-user changes, SPIRE boundary changes, or
-  Vault token brokerage.
-- This tranche may carry one disposable Remote Alpha Vault reset/rebootstrap
-  operator script for the sealed-and-unrecoverable Shamir-key case. That script
-  must stay dry-run by default, require an interactive TTY plus the exact
-  destructive confirmation phrase before reset, move the existing Vault raft
-  path to a timestamped backup rather than deleting it, run Vault init/unseal
-  only in the operator's interactive terminal, and never persist or relay
-  unseal keys, root tokens, client tokens, TLS private keys, SPIFFE material,
-  API keys, or raw prompts. It is a bounded Alpha recovery helper only; it is
-  not IM automation, Vault production lifecycle, CP/ES proof, submit
-  readiness, runtime-profile readiness, or a broader deployment architecture.
-  The same helper may provide a non-destructive `--unseal-only` path for the
-  case where the operator still has the Shamir unseal key; that mode must not
-  move storage or run Vault init, and must still require an interactive TTY and
-  interactive `vault operator unseal` with no key material on the command line.
-- This tranche is bounded host/service hardening only. Do not widen it into a
-  runtime-boundary redesign or broader proof expansion.
-
-## Milestone 1: Least-Privilege Runtime/Security Boundary Closeout
-
-`Bounded slice rule`: Milestone 1 is named `least-privilege runtime/security
-boundary closeout`.
-
-Archived v1 evidence records a prior long-lived `es.service` service-user
-change to `User=es`, `Group=es`, `UMask=0027`. That historical record is not a
-current invariant, current readiness proof, or migration authority.
-
-Do not call this milestone `rootless everything` or full ES/runtime de-root.
-
-Milestone 1 preserves these current boundaries:
-
-- Nomad remains lifecycle authority after ES submission.
-- ES remains a lifecycle projector, not a parallel scheduler.
-- The raw SPIRE Workload API socket remains helper-private.
-- Workloads see `EXEC_WORKLOAD_IDENTITY_ENDPOINT`, not the raw SPIRE Workload
-  API socket.
-- Workload-side Vault credential acquisition remains preserved.
-- ES does not fetch, mint, broker, store, rotate, parse, or validate Vault
-  tokens.
-- Infrastructure Manager support bundles and readiness/support artifacts remain
-  evidence/projection/diagnostics only. They are not authority and are not
-  governed execution proof by themselves.
-
-Milestone 1 boundary posture matrix:
-
-| Surface | Posture | Rationale | Current evidence | Removal condition | Explicit non-claim |
-| --- | --- | --- | --- | --- | --- |
-| Nomad host client/server substrate | `blocker` | The current supported substrate still depends on a pre-managed non-dev Linux Nomad client/server. Upstream least-privilege guidance is to keep Nomad servers as narrow as feasible, but the Linux Nomad client remains a root-managed isolation boundary today and a rootless client is not the current supported/well-tested repo posture. | Supported-host qualification still requires a pre-managed non-dev Nomad baseline, `scripts/01_bringup.sh check` still treats Nomad readiness as an environment gate, and the landed ES happy paths still hand lifecycle authority to Nomad rather than replacing it. | Revisit only if a later separately documented substrate decision proves a supported client posture that does not depend on an unsupported rootless-client assumption while preserving Nomad as lifecycle authority. | Milestone 1 does not claim a rootless Nomad client or full Nomad least-privilege closeout. |
-| SPIRE raw-socket traversal and selector posture | `accepted MVP compatibility edge` | The workload-visible contract is already narrowed to `EXEC_WORKLOAD_IDENTITY_ENDPOINT`, but the helper-private raw SPIRE path and the broad root selector scope remain explicit compatibility edges rather than a finished least-privilege identity model. | Slice `1A`/`1B` proof, runtime-helper source and tests that keep the raw SPIRE path out of workload env, and the remote runtime-identity helper summary preserve the helper-private boundary. Retired existing-host migration artifacts are historical evidence only and are not current boundary proof. | Revisit only through the later runtime-boundary redesign seam after a narrower helper principal or equivalent traversal model is documented and re-proved. | Workloads do not receive the raw SPIRE Workload API socket, and this milestone does not claim final SPIRE selector least privilege. |
-| Vault workload-side auth / workload-zone handoff | `accepted MVP compatibility edge` | The least-privilege direction is workload-side credential acquisition without ES token brokerage. The repo preserves that handoff boundary; where Vault host posture is operator-owned, the intended direction is a dedicated unprivileged Vault service account rather than root, but Milestone 1 does not widen ES contracts into full remote Vault lifecycle authority. | Useful credential flow completion is already landed, `scripts/remote_alpha_vault_workload_auth_check.sh` records bounded host-local evidence, and the current `authority_handoff` plus `readiness_not_claimed.*` vocabulary already preserve non-brokering, workload-side auth. | Revisit only if a later documented boundary change keeps workload-side auth intact and preserves the no-token-brokerage rule. | ES does not broker Vault tokens, and Vault/readiness summaries do not by themselves prove runtime-profile readiness or governed execution proof. |
-| ES runtime helper | `accepted MVP compatibility edge` | The current helper isolates privileged runtime bootstrap from the long-lived ES service path, but it still starts from root and therefore remains a bounded compatibility edge rather than a full runtime de-root result. | Runtime-helper tests, supported-local proof, helper-death/task-fatal behavior, and the remote runtime-identity helper summary all prove the current fail-closed helper boundary. | Revisit only if a later redesign re-proves equivalent runtime identity delivery, workload launch, and result-path guarantees with a narrower startup privilege model. | Milestone 1 does not claim rootless helper startup or full ES/runtime de-root. |
-| Nomad task user | `accepted MVP compatibility edge` | The current runtime companion still needs task-start `0:0` so it can create the helper-private SPIRE boundary and exec the workload as fixed non-root `10000:10000`. | The landed happy path still uses the current job-spec model, job-spec tests preserve `User: "0:0"`, and the runtime-helper/workload-boundary tests still depend on that task-start contract. | Revisit only as part of a broader runtime-boundary redesign that re-derives helper launch, workload launch, and SPIRE/Vault handoff together. | The current posture is not non-root task launch and not rootless workload orchestration. |
-| Evidence/support artifacts | `accepted MVP compatibility edge` | Privilege-sensitive host evidence collection may still be necessary, but it must stay outside ES/CP authority boundaries and must not backdoor a broader runtime claim. | Remote doctor output, support-bundle summaries, staged-helper records, and apply summaries are all already documented as evidence/projection/provenance only. | Revisit only if later operator tooling reduces privileged collection without weakening the non-authority and non-proof boundary. | Support bundles, readiness reports, and apply summaries are not ES/CP/IM authority and are not governed execution proof by themselves. |
-
-Milestone 1 now also carries one repo-owned Remote Alpha runtime/security
-boundary posture checker as a bounded host-local evidence surface:
-
-- `scripts/remote_alpha_runtime_security_boundary_check.sh`
-- `scripts/internal/remote_alpha_runtime_security_boundary_check.sh`
-
-That checker must default to `check_only`, stay non-mutating, classify the
-current Nomad/runtime-helper/SPIRE/Vault/evidence posture honestly, and fail
-closed if its output contains secret-like material or overclaim text. By
-default it must not SSH, mutate services, change ownership, restart services,
-archive files, or delete anything. It records evidence/projection only; it
-does not change ES submit behavior, runtime-helper behavior, the current Nomad
-task user, the helper-private raw SPIRE boundary, Vault token brokerage, or
-governed execution proof claims. The same evidence surface may record
-non-secret host/runtime/CVE inventory fields, including kernel and package
-versions, Docker/Nomad runtime chain observations, FUSE/fuse-overlayfs,
-Podman/crun, idmapped or `mount_setattr` path observations, and
-vendor-observed CVE readiness classifications for CVE-2026-31431 and
-CVE-2026-31465. CVE readiness classifications are `fixed`, `vulnerable`,
-`not_affected`, `mitigated_not_fixed`, or `unknown`. For CVE-2026-31431,
-`mitigated_not_fixed` may only mean vendor/package evidence still reports a
-vulnerable host while non-mutating local evidence shows `algif_aead` is not
-loaded and modprobe policy blocks autoload. That state is not a kernel patch,
-not proof of production safety, and remains a blocker unless the checker is
-run with an explicit bounded internal Remote Alpha mitigation-risk acceptance
-flag.
-Those fields remain evidence/projection only: they are not service health,
-submit readiness, runtime-profile readiness, governed execution proof, full
-ES/runtime de-root, rootless Nomad client proof, support bundle authority, or
-CVE patch authority. Direct vendor status observation is evidence for CVE
-classification only.
-
-## Current Remote Alpha ES Config/TLS Ownership Prep Slice
-
-`Bounded slice rule`: Remote Supported-Host Alpha may now extend the current
-host-local hardening work with one separate ES config/TLS ownership prep slice.
-
-`Current invariant`: this earlier bounded slice is already applied on the live
-host and remains the source of truth for the dedicated `root:es` readable
-config/TLS model consumed by the current `User=es` long-lived ES service.
-
-- This slice introduces a dedicated ES-readable config ownership model and a
-  dedicated ES-readable TLS directory for the current ES runtime config.
-- This slice may create a narrow dedicated `es:es` prep account only to own
-  readable ES config/TLS material for a later ES de-root step; it must not
-  introduce a shared `execution-substrate` Unix-account model.
-- At apply time, this slice kept the live `es.service` user/group posture
-  unchanged.
-- This slice must not change ES public contracts, the current SPIRE selector
-  posture, current SPIRE socket traversal, Vault/runtime-helper semantics, or
-  Nomad task user model.
-- This slice must not move ES writable state, including staging and retained
-  results ownership.
-- This slice preserves the current AGS, ARS, and EGS service postures plus the
-  direct Mac -> ES HTTPS+mTLS posture.
-- This slice is bounded host-local config/TLS ownership preparation only. Do
-  not widen it into ES de-root, Control Plane or Infrastructure Manager
-  changes, or broader proof reruns; rerun only the small verification needed to
-  validate the ES host-side apply and refresh the non-secret summary.
-
-## Current Remote Alpha Host Network Boundary Slice
-
-`Bounded slice rule`: Remote Supported-Host Alpha may carry one operator-run
-host firewall for the box on the home network, defined in the section
-"Remote Alpha Host Firewall" of
-`.docs/system_overview/remote_supported_host_alpha.md`. It closes findings
-INF-01 (containers reach the home LAN), INF-13 (ES and AGS listeners open to
-the whole LAN) and INF-23 (SSH password login from everywhere, SSH on public
-IPv6) of the 2026-11-23 infrastructure audit, as a short-term bridge until
-the named workload identities, network grants and egress lanes of the
-workload-identity design land.
-
-- Scripts: `scripts/remote_alpha_host_firewall.sh`,
-  `scripts/internal/remote_alpha_host_firewall.sh` and
-  `scripts/internal/remote_alpha_host_firewall.py`. Modes `--plan`
-  (default, read-only), `--apply`, `--confirm`, `--status`, `--probe`,
-  `--rollback`, `--render`.
-- It owns only the nftables tables `inet es_host_firewall` and
-  `bridge es_host_firewall`, its files under
-  `/etc/execution-substrate/host-firewall`, the unit
-  `es-host-firewall.service`, the sshd drop-in
-  `/etc/ssh/sshd_config.d/00-execution-substrate-host-access.conf` and a
-  transient rollback timer. It never touches Docker's, ufw's or other rules,
-  other sshd files, Vault, Nomad or ES, and reads no secrets.
-- One chain in its own table keeps the box's own connections to Vault on the
-  bridge address as their source (an identity snat ahead of Docker's
-  masquerade rule), so the Vault role's bridge-subnet limit sees the box as
-  the bridge address and not as its LAN address. It is the ruleset's only
-  address rewrite.
-- The operator's choices live in the root-owned settings file
-  `/etc/execution-substrate/host-firewall/settings.env`; adding a device that
-  may call ES and AGS is a one-line change there.
-- `--apply` arms an automatic rollback that only `--confirm` from an SSH
-  connection opened after `--apply` cancels.
-- Validation: rendering against a golden ruleset, real-kernel tests in
-  network namespaces, a real-sshd test of the drop-in, fakes for the
-  apply/confirm/rollback order, and a container probe on the box.
-
-`Bounded slice rule`: the same tranche refines the P0q workload-auth
-bootstrap helper (INF-04, INF-05, and the root-token half of INF-06):
-
-- role `service_execution` gets `token_ttl` (default `15m`),
-  `token_max_ttl` (default `30m`) and `token_bound_cidrs` (default
-  `172.17.0.0/16`), validated before any prompt;
-- every earlier version and the metadata of both proof paths are deleted
-  before the new value is written;
-- `REMOTE_ALPHA_BOOTSTRAP_AUTHORITY=unseal-key` replaces a standing root
-  token: the helper makes a root token from the single unseal key share,
-  uses it once for a 15-minute orphan token, revokes it with the next
-  request, and revokes the 15-minute token before it exits; SIGINT,
-  SIGTERM, SIGHUP and SIGQUIT wait until the root token is revoked and
-  Vault's configuration is back, and Ctrl-Z (SIGTSTP, SIGTTIN, SIGTTOU)
-  takes effect only then; core dumps are off before anything is read;
-- `REMOTE_ALPHA_BOOTSTRAP_GENERATE_ROOT_ACCESS=temporary-config` adds
-  `enable_unauthenticated_access = ["generate-root"]` to Vault's
-  configuration only for the generate-root step and puts the file back byte
-  for byte through a reload (Vault 2.x refuses unauthenticated generate-root
-  by default), after the root token is revoked; it refuses a Vault that
-  allows generate-root without the file saying so;
-- with the 15-minute token, the helper counts root tokens that never
-  expire, and `REMOTE_ALPHA_BOOTSTRAP_STANDING_ROOT_TOKENS=revoke` revokes
-  them, which is how a run killed by SIGKILL or a power loss is cleaned up;
-- `REMOTE_ALPHA_BOOTSTRAP_PROOF_VALUE=generate` writes a random value nobody
-  sees, which discards the Codex key.
-
-Its validation adds one test against a real local Vault server (raft, TLS,
-one key share; CI installs Vault 2.2.2). It still runs no live box, SSH or
-sudo. These refinements do not make ES a Vault token broker and do not
-change ES public contracts.
-
-## Future ES Privilege-Boundary Design Track
-
-`Reopened redesign seam`: full ES/runtime de-root beyond the now-landed
-long-lived `es.service` user flip remains a future structural design track.
-
-- This future track covers the long-lived ES service privilege model, Nomad
-  task user model, runtime-helper/supervisor ownership, SPIRE selector posture,
-  SPIRE socket traversal, staging/results ownership, retained-result
-  materialization, and operator maintenance/rollback model as one boundary
-  package rather than as implicit follow-on hardening.
-- Archived v1 evidence records an earlier bounded rollout involving binary
-  parity, stable writable-state preparation, and a long-lived ES service-user
-  change. The ES writable-state, service-user, ownership, staging, rollback,
-  and cleanup-planning helpers from that rollout are now retired and cannot
-  inspect a host, refresh evidence, or authorize another rollout.
-- The privileged-operation matrix, writable-state ownership model, and runtime
-  ownership-normalization document remain design history. They do not define a
-  current existing-host migration contract. Reuse of an old or nonempty host
-  remains blocked without a separately accepted contract.
-- The retained rationale is explicit in the superseded, non-authoritative
-  historical-design sections of
-  `.docs/system_overview/remote_alpha_beta_es_privilege_boundary_assessment.md`,
-  `.docs/system_overview/remote_alpha_beta_es_privileged_operation_matrix.md`,
-  and
-  `.docs/system_overview/remote_alpha_beta_es_runtime_ownership_normalization.md`.
-  Those sections preserve privilege separation, service-user, SPIRE, Vault,
-  ownership-normalization, helper-limit, and compatibility reasoning only;
-  they are not available operator routes and confer no migration, cleanup, or
-  reclamation authority.
-- Post-migration ES/runtime-helper binary refreshes now remain bounded to the
-  current accepted live `User=es`, `Group=es`, `UMask=0027` host slice. The
-  binary-deployment helper is no longer a root-like service-posture surface;
-  any return to a root-era long-lived service identity must happen through a
-  separate rollback/service-user action rather than through binary deployment.
-- The helper-private raw SPIRE socket path remains a privileged runtime
-  dependency and must stay operator-validated rather than being treated as a
-  direct long-lived ES service-user read requirement.
-- Design assessment for Remote Alpha -> Beta may compare alternative
-  architectures, but implementation work must not proceed until the chosen
-  boundary model and required evidence are documented explicitly.
-
-## Retired Existing-Host Actions and Later Infrastructure Seams
-
-The former writable-state preparation, ES service-user migration, generated
-rollback rehearsal, migration staging, and old-root planning actions are
-retired. Their v1 artifacts are historical evidence only. No v1 artifact may
-authorize deployment, migration, drain, reclamation, or mutation, and no v2
-artifact or replacement protocol exists for that retired ES writable-state/
-service-user migration family. This does not describe or retire the unrelated
-current EGS hardening v2 schema.
-
-Fresh-host provisioning is the required recovery direction, but ownership and
-acceptance of a complete supported fresh-host ES provisioner remain unresolved.
-The current repository does not implement one. Old-host migration may return
-only if a real requirement selects a separately governed contract. Scheduler
-drain and submitter fencing likewise remain undefined later seams.
-
-`Reopened redesign seam`: Option C runtime-boundary redesign remains a
-separate architecture track, not a cleanup follow-on.
-
-- Any future work on the root-start runtime helper, Nomad task `User: "0:0"`,
-  helper-private SPIRE traversal, broad root selector posture, or
-  Vault/workload-zone handoff must proceed only as that separately documented
-  redesign track.
-
-`Current invariant`: the completed branch-level milestone does not imply a
-`master` merge.
-
-- Merge remains a human milestone decision after review of the bounded
-  evidence set and governance posture.
-
-## Current Planning Objective
-
-The repository is no longer in rewrite-by-default mode.
-
-The current goal is to keep bounded platform work honest while making reopened seams explicit. Core contracts or boundaries should be re-derived only when `PLANS.md` names them as reopened; otherwise, current implementation, docs, and proof tooling should be treated as bounded platform work to harden rather than rewrite by default.
-
-The current plan must prioritize:
-
-- structural clarity
-- Go-native boundaries
-- explicit package-local ownership
-- reduced dependence on the existing cross-service grammar
-- reduced leakage of one service's DTO or fact model into another service's public shape
-
-Current code remains the starting point for any reopened-seam work, not a compatibility promise. Historical references outside this repo, including the Monolith/Python repository, may inform migration context or bounded proof/bootstrap conventions only; they are not current architecture authority.
-
-## Primary Program Orientation
-
-Execution Substrate is the primary program in this repository.
-
-The current ES work is foundational boundary and contract work, and that is real program delivery: it decides what governed execution can safely admit, run, project, retain, and expose to callers.
-
-Control Plane is an important first non-operator consumer. It improves ergonomics and governance around ES, but it does not define ES core contracts. Control Plane documents may describe how CP consumes accepted ES surfaces; they must not widen ES admission, lifecycle, runtime-profile, runtime-identity, result-retention, or readiness ownership.
-
-Milestone 0 MVP claim freeze is recorded in `.docs/mvp.md`. That document is a
-planning and documentation freeze only: it captures the current MVP claim,
-surface classifications, and explicit non-claims without widening ES contracts
-or promoting proof-harness behavior into architecture.
-
-The next milestone package is **ES Admission And Runtime Boundary Realignment**.
-
-That package is ES-owned. It should deliver a coherent ES milestone by:
-
-- classifying stable ES semantic contracts, temporary compatibility edges, and implementation details/current slice constraints before implementation spreads outward
-- completing only the Workstream A shared-kernel decisions needed to keep ES from inheriting accidental cross-service grammar
-- completing only the Workstream B publication/storage/discoverability decisions needed to make ES input ownership explicit
-- delivering Workstream C as the primary ES admission, submission, lifecycle-projection, retained-result, and runtime-boundary package
-- preserving current CP compatibility for the governed execution path unless an explicit compatibility, drain, migration, or versioning plan is documented
-- keeping the current `execution_substrate.runtime_profile` annotation and `control-plane-normal-shell/v1` profile as accepted bounded compatibility for the next milestone package
-
-Stable semantic contracts for this next package:
-
-- ES owns admission composition, submission handoff, Nomad-backed lifecycle projection, retained opaque result bundles, and runtime handoff boundaries.
-- ES owns the public admission model, prepare model, submit model,
-  Nomad-backed lifecycle projection, retained opaque result bundles,
-  runtime-profile compatibility, runtime-boundary handoff semantics, and
-  bounded runtime identity/workload credential handoff boundaries.
-- Nomad remains authoritative for submitted execution lifecycle; ES must not invent a parallel lifecycle store or scheduler authority.
-- ES may expose a bounded lifecycle projection revision on status responses as an opaque same-run read-coordination fact derived from Nomad observation. Callers may compare equality/change for the same run only. They must not parse or order it, infer scheduler or backend state from it, use it as a write precondition for cancel/result/logs, or treat it as a Nomad identifier or index. It is not evidence of an ES-owned lifecycle store, not a Control Plane workflow version or revision, and not proof of freshness outside the documented same-run status read model.
-- ES may expose a bounded `authority_handoff` read surface on submission/status responses for non-secret runtime authority facts ES actually selected and handed off for a run: effective runtime profile, workload-visible identity endpoint handoff, workload-vault auth metadata, selected workload-zone Vault config reference, and bounded profile credential-location metadata. This surface is read-only evidence of the submitted runtime handoff, not live credential state, lease state, scheduler identity, policy approval state, or a Control Plane lifecycle record.
-- ES must not bypass ARS artifact storage/discoverability, EGS runtime-trust publication, or configured runtime-config ownership to make admission easier.
-- ES-owned retained results remain opaque output bundles and must not become Control Plane checkpoint, review, finalization, or orchestration state.
-- ES-owned runtime identity and workload-credential handoff must remain platform-owned, non-secret, and non-brokering: workloads use the discovered endpoint and workload-Vault metadata; ES does not fetch, mint, store, rotate, parse, or validate Vault or Codex credential material.
-- Control Plane owns orchestration, Temporal workflow state, review,
-  checkpoint, finalization, intervention, and operator-facing control
-  semantics. CP consumes accepted ES surfaces but does not define ES core
-  contracts.
-- IM readiness/profile/support-bundle/provenance artifacts remain
-  evidence/projection/diagnostics only; they do not become ES or CP authority.
-- Maintenance Agent summaries remain scheduler/notifier/local-evidence outputs
-  only and do not define ES route semantics.
-- Caller authentication and narrow SPIFFE allowlist authorization remain required on the governed execution path.
-
-Temporary compatibility edges to preserve explicitly during this package:
-
-- current CP compatibility for AGS publish plus ES prepare, submit, status, logs, result, and cancel over HTTPS+mTLS
-- `GET /v1/executions:contract` as a narrow read-only producer compatibility declaration for the current governed-execution contract, including the mandatory outcome-evidence response surfaces
-- `POST /v1/executions:prepare` as an active bounded preflight surface
-- `invocation.annotations["execution_substrate.runtime_profile"]` and the bounded `control-plane-normal-shell/v1` profile
-- the current `static-script` overlay behavior for that profile
-- `/execution/staged`, `/execution/run`, `/execution/run/result`, and current runtime-identity path conventions
-- the current `authority_handoff` field names and evidence-source labels while the ES request/runtime-profile and runtime-identity seams remain reopened
-- the current additive `outcome_evidence` JSON field and successful logs/result outcome-evidence headers while lifecycle/status/result/log/cancel evidence vocabulary remains bounded to the current Nomad/retained-result slice
-- retained `application/gzip` result bundles keyed by public `run_id`
-- supported-local profile-image durability checks, including the Nomad Docker plugin `gc.image = false` guardrail for enabled local runtime-profile images
-- the ES config/TLS ownership prep bridge where live `es.service` stays
-  `root(default)` while dedicated `root:es` readable config/TLS material is
-  staged for a later ES de-root slice
-
-Implementation details and current slice constraints not to promote into stable architecture:
-
-- host staging roots, bind-mount source paths, `.out/` proof workspaces, generated helper artifacts, and guest `/tmp` scratch
-- the internal Nomad job naming rule `exec-<run_id>`
-- the latest-allocation projection rule, stdout-only log retrieval, single task named `task`, async-only submit, and no-retry/no-reschedule slice, except that the status response may expose an opaque lifecycle projection revision without exposing the underlying selection rule or scheduler IDs
-- proof-only Codex shim behavior and supported-local proof bootstrap details
-- helper scripts and examples as client contracts; the HTTPS API and documented runtime handoff are the client-facing surfaces
-
-## Current-State Facts To Preserve During Redesign
-
-The following are useful current implementation facts and should remain visible to future agents while the redesign is underway:
-
-- The repository currently implements five primary service boundaries: ARS, AGS, EGS, CGS, and ES.
-- The current publication flow is `AGS -> ARS`.
-- The current admission and execution flow is `request -> ES -> EGS / ARS -> Nomad -> Docker`.
-- ES submits to Nomad only with its own least-privilege ACL token in namespace `es-submit-v1`, and only while Nomad enforces ACLs with no anonymous policy; Nomad's management token never reaches ES.
-- ES currently composes startup-owned runtime-config references, ARS, and EGS in its hot path. CGS exists but is not in the current ES hot path.
-- The current primary artifact model crossing AGS, ARS, and ES is aggregate evidence plus payload, with manifest retained as supporting publication data.
-- The repository now also carries a first parallel shared evidence kernel in `internal/contracts/evidence/v1` for the primary `AGS -> ARS -> ES` artifact path, and ES now requires that aggregate evidence on its first-class admission path.
-- ARS currently exposes immutable blob reads plus a smaller runtime-facing discovery record for evidence and payload, while retaining descriptor/manifest support data as secondary publication discoverability.
-- The repository now carries a small shared runtime-config surface in `internal/contracts/runtimeconfig/v1` for the named workload-zone Vault config reference and the current workload-zone Vault config blob schema.
-- ES startup config currently carries the required workload-zone Vault config reference, while ARS remains the blob/discoverability owner for the corresponding runtime-config blob.
-- CGS currently loads explicit subject policy records from startup `id.conf` input and returns bounded authorization decisions through `POST /v1/credential/authorize`.
-- EGS currently publishes a signed runtime-trust payload with signer policy and artifact revocation policy, alongside separate EGS-owned publication metadata.
-- ES currently exposes a narrow read-only producer compatibility declaration at `GET /v1/executions:contract`, a bounded preflight `POST /v1/executions:prepare`, a primary public execution handoff at `POST /v1/executions:submit`, and minimal Nomad-backed lifecycle endpoints whose current `run_id` lookup and projected-allocation rules are explicit ES-internal slice policy rather than public contract.
-- ES status now includes a bounded lifecycle projection fact, `lifecycle_projection`, whose `source` is the current lifecycle authority and whose `revision` is an opaque same-run read-coordination token produced from implementation-private Nomad observation during the status read. Consumers may compare equality/change for the same run only. They must not parse or order it, infer scheduler or backend state from it, use it as a write guard, or treat it as a Nomad identifier or index. This is a read coordination surface for consumers, not a write coordination API or a durable ES run record.
-- ES lifecycle/status/result/log/cancel surfaces now expose a smallest additive `outcome_evidence` descriptor family for facts ES can directly source today: status labels the Nomad observation family behind the projection and references the opaque lifecycle projection token, cancel labels the accepted Nomad stop request without claiming observed termination, logs label successful bodies as current Nomad task stdout, and result labels successful bodies as opaque ES-retained bundles. These descriptors are read-only current-slice evidence labels, not scheduler identifiers, write preconditions, policy truth, credential truth, or a global ES run revision.
-- The producer compatibility declaration names the current governed-execution producer contract and the required status/cancel/logs/result outcome-evidence carriers without proving service health, submit readiness, run existence, credential possession, lifecycle write coordination, policy decisions, or scheduler internals.
-- ES submit/status now include a bounded `authority_handoff` fact for new submissions. It is derived from ES-selected submit-time handoff facts and the submitted runtime spec, and it exposes only non-secret runtime authority facts: selected runtime profile, workload identity endpoint URI/env, workload-vault auth metadata, workload-zone Vault config digest, and the bounded Control Plane normal-shell Codex credential-location metadata when that profile is selected.
-- ES now localizes submit-time payload staging, mount staging, result-directory staging, and runtime-ready package assembly behind one explicit internal execution-package layout; `/execution/staged` and `/execution/run` remain current bounded runtime conventions rather than diffuse helper assumptions.
-- ES currently reserves `/execution/run/result` as the bounded workload-authored terminal output directory for the current `static-script` slice. That convention is active for the retained-result slice, but it remains part of the reopened execution-package/runtime-path surface rather than settled architecture.
-- ES currently retains every exclusively created run-scoped host staging root on every post-claim return. Terminal result capture into the ES-owned result store is independent and never authorizes staging mutation; success, failure, cancellation, loss, ambiguity, absence, publication conflict, and publication failure all retain the same visible staging root.
-- The isolated resolved-plan/custody candidate retains every successfully claimed run-scoped host staging root, including terminal success, while the submitted workload may depend on its bind mounts. Terminal result files remain opaque ES-owned bundles outside staging. This interim retention increases disk use and sensitive-material residence; no automatic whole-root reclamation authority is selected, and acceptance gates remain pending.
-- ES now exposes `GET /v1/executions/{run_id}/result` as a bounded retained-result bundle retrieval surface. The bundle is opaque tar.gz data keyed by `run_id`, not a Control Plane checkpoint, orchestration decision, or ES-owned lifecycle-state record.
-- The primary operator bring-up/check path now distinguishes service health, prepare-ready state, and full submit-ready state instead of treating ES `/health` alone as execution readiness.
-- The current bounded operator hot path now uses the operator SPIFFE identity as the sole caller for AGS publish and ES execution/lifecycle entry surfaces; `service/deployment` no longer defines that current slice.
-- The current shared execution/runtime contract in `internal/contracts/evidence/v1` is now limited to environment allowlist input, required runtime capabilities, `target_platform`, and `network_access`; non-runtime workload metadata no longer defines the live AGS -> ARS -> ES hot path.
-- ES currently injects `EXEC_WORKLOAD_IDENTITY_ENDPOINT` as its bounded workload-visible runtime identity handoff and internally backs the discovered endpoint with a run-scoped ES-owned runtime subtree.
-- ES currently derives its workload-vault handoff from workload-zone vault runtime fields plus a bounded local default auth mode rather than from workload-attribute selector policy.
-- When the workload-zone Vault runtime config carries a non-secret CA bundle, ES stages that trust material into the runtime platform directory, injects `VAULT_CACERT`, and also exposes a staged combined TLS bundle through `SSL_CERT_FILE` for the bounded Control Plane normal-shell Python runner path. This is a workload-facing TLS trust-material handoff, not Vault token brokerage or relaxed verification.
-- ES now also supports one explicit runtime profile selection annotation for the bounded Control Plane normal-shell slice:
-  - `invocation.annotations["execution_substrate.runtime_profile"] = "control-plane-normal-shell/v1"`
-  - the selected profile is enabled only by explicit ES submit config under `execution.runtime_profiles.control_plane_normal_shell`
-  - the profile remains a `static-script` execution-package overlay rather than a package-kind or lifecycle redesign
-  - the profile requires network access, a dedicated configured runtime image, an absolute configured Codex CLI path inside that image, and a configured workload-vault secret path/field for Codex credential material
-  - ES injects only non-secret metadata for that Codex material; the workload uses the existing platform-owned runtime identity endpoint and workload-vault auth env to fetch the material itself
-  - ES does not fetch, mint, broker, store, rotate, parse, or validate Codex tokens
-- The current slice-0 operator path now targets one Linux host/VM, runs ARS/EGS/AGS/ES as containers, keeps Nomad server/client and Docker on that same host, and treats Docker host networking as temporary compatibility scaffolding rather than final control-plane network architecture.
-- The current slice-0 operator path now requires strict client-cert authentication at the hot-path TLS boundary, including `/health`, and ARS now rejects the configured bootstrap issuer on both read and write paths like the rest of the hot path.
-- ARS, AGS, EGS, CGS, and ES authenticate callers through the one shared package `internal/callerauth` (contract: `.docs/system_overview/contracts.md` section 3A). Only a verified client certificate whose chain is still within its validity period at each request, and whose leaf is an end-entity certificate with exactly one URI SAN that is a conforming SPIFFE ID in the trust domain `execution.internal`, identifies a caller; authorization stays in each service.
-- ARS, AGS, and ES check their configured path-prefix allowlists at startup and match callers against them through the one shared package `internal/callerallowlist` (same section 3A): a prefix must be a canonical SPIFFE ID path of at least two segments, and a prefix that fails the rule matches nothing.
-- The current slice-0 operator path records the ES same-path staging proof at bring-up time, while slice `1A` and slice `1B` now separately prove the first bounded strong workload-identity handoff for runtime workloads.
-- The current slice-0 operator path has been functionally proved on a real Linux VM through the real ES -> Nomad -> Docker execution path, and the current supported local reference profile on this Mac is Lima `qemu` + Ubuntu 24.04 arm64 with pre-managed non-`-dev` Nomad and positive natural `cpu.totalcompute`; the previously investigated VMware/aarch64 and Lima `vz` local profiles remain unsupported on this Mac because natural `cpu.totalcompute` stays `0`.
-- The current AGS publish path now distinguishes artifact identity from payload identity: payload bytes remain content-addressed by `payload_digest`, while AGS derives `artifact_digest` from package-facing identity inputs only before registering the runtime-facing discovery record through ARS.
-- The current shared authorization surface inside `internal/contracts/evidence/v1` is now limited to derivation request binding (`derivation_spec_digest`, `output_id`); workload-binding, policy-linkage, producer-trace, and derivation-constraint residue no longer define the active shared kernel.
-
-These facts describe the current repository. They are not, by themselves, decisions that the reset must preserve.
-
-## Explicit Supersession Of Prior Assumptions
-
-The earlier planning assumptions below are now reopened and no longer count as fixed architectural endpoints:
-
-- ARS is no longer treated as a frozen end-state storage and artifact-index boundary.
-- AGS is no longer treated as a frozen end-state publication and fact-assembly boundary.
-- EGS is no longer treated as a frozen end-state runtime-trust boundary.
-- CGS is no longer treated as a frozen end-state authorization boundary.
-- ES is no longer treated as a bounded-but-settled execution boundary.
-- The old `contracts/signing/v2` kernel has now been excised from the active repo, and its former shared-kernel role is superseded by the evidence-native artifact path.
-- The first controlled kernel-migration cut is allowed to add a parallel shared kernel and migrate one bounded path before broader service redesign lands.
-
-More specifically, the redesign phase explicitly reopens or qualifies these previously locked assumptions:
-
-- The current ARS registration, index, and read contract are reopened. The current runtime-facing discovery record, secondary descriptor support path, and discoverability shape remain implementation facts, not fixed architecture.
-- The current AGS publish contract and fact assembly model are reopened. The existing manifest and signed-fact bundle are not presumed to be the enduring publication grammar.
-- The current cross-service contract forms are reopened. Existing wire and package contracts survive only until they are explicitly retained, replaced, or wrapped as temporary compatibility edges.
-- The historical `contracts/signing/v2` package no longer participates in any current code path. The repository now relies on `internal/contracts/evidence/v1` as the only active shared artifact kernel, while the long-term scope of that kernel remains under review.
-- The current ES, ARS, CGS, and EGS interaction model is reopened. Existing call paths and non-call paths are current facts, not architectural endpoints.
-- The current ES public execution and admission shape is reopened. This includes the `:prepare` and `:submit` split, current request and result DTOs, current scheduler receipt model, and current lifecycle projection model.
-- The current runtime identity handoff conventions are reopened. The current path layout, `vault_identity_jwt` handoff shape, and reserved container paths are implementation choices that must now be justified or replaced.
-
-Compatibility with any current contract is allowed only as a temporary and explicit transition tactic. If compatibility is retained, document:
-
-- the reason
-- the scope
-- the removal condition
-
-Do not describe compatibility edges as frozen architecture.
-
-## Architecture-Defining Redesign Scope
-
-### In Scope Now
-
-The first redesign pass is explicitly about the architecture-defining core:
-
-- shared contracts and any shared kernel
-- service API shapes and DTO ownership
-- data model boundaries between services
-- artifact publication, storage, retrieval, verification, and execution flow
-- policy model and trust model ownership
-- authorization model ownership
-- runtime identity and execution handoff
-- package structure where it defines architectural meaning
-- explicit clarification of what remains shared versus service-local
-
-### Out Of Scope For The First Redesign Pass
-
-The following are not primary redesign targets until the core surfaces stabilize:
-
-- Docker scripts
-- runbooks
-- environment polish
-- deployment helper glue
-- superficial renames
-- broad cleanup unrelated to core contract and boundary redesign
-- generic refactors that do not reduce architectural ambiguity
-
-## Redesign Workstreams
-
-### Workstream A - Shared Contract And Kernel Reset
-
-Purpose:
-
-- Re-derive the minimum shared contract surface needed across services.
-- Keep the shared artifact kernel narrow and evidence-owned after excising the historical signing kernel.
-- Stop treating a shared package as the default home for cross-service meaning unless that meaning is truly stable and jointly owned.
-- For the next milestone package, answer only the shared-kernel questions that ES needs to admit and execute governed artifacts without inheriting accidental AGS, ARS, or CP grammar.
-
-Target files and packages:
-
-- `internal/contracts/evidence/v1/`
-- `ags/publish/`
-- `es/admission/`
-- `egs/model/`
-- `ars/index/`
-
-Success condition:
-
-- A documented shared-kernel decision exists.
-- The future shared surface is smaller and intentionally owned.
-- Cross-service semantics that do not need to be shared are moved back toward service-local ownership.
-- Future agents can tell which contracts are kernel-level versus service-level without inferring from package reuse.
-- Future agents can tell which shared-kernel rules are stable ES admission semantics, which are temporary compatibility edges, and which are merely current slice implementation detail.
-
-Current bounded decision status for Milestone 2A.1:
-
-- The Workstream A shared-kernel decision is recorded in `.docs/system_overview/shared_kernel.md`.
-- `internal/contracts/evidence/v1` remains the only active shared artifact evidence kernel for the current `AGS -> ARS -> ES` path, but it is not a standalone service boundary.
-- Kernel-level shared meaning stays limited to package identity, narrow derivation request-binding authorization, narrow execution/runtime claims ES actually enforces, and evidence canonicalization plus `seal` verification.
-- AGS publication claims, ARS discoverability/index shapes, ES public execution/lifecycle grammar, and the long-term workload-zone Vault runtime-config owner remain service-owned or reopened elsewhere; Workstream A does not widen them into the kernel.
-- `internal/contracts/evidence/v1` is not a cross-service semantic dumping ground. Fields, helper DTOs, proof outputs, generated evidence, `.out` workspaces, support bundles, retained bundles, reports, traces, logs, summaries, and proof artifacts do not become shared-kernel authority by proximity to the shared evidence package.
-- Workstream A0 preserves the current `execution_substrate.runtime_profile` annotation and bounded `control-plane-normal-shell/v1` compatibility edge. It does not change the runtime path, runtime-profile selection mechanism, or `static-script` overlay behavior.
-
-Dependencies:
-
-- No upstream workstream dependency beyond this `PLANS.md` reset.
-
-### Workstream B - Artifact Storage And Publication Contract Reset
-
-Purpose:
-
-- Redesign the AGS and ARS contract around publication, runtime-facing discovery records, payload and evidence relationships, and visibility rules.
-- Decide whether the current runtime-facing discovery shape, the secondary descriptor support path, and the current AGS artifact-identity derivation rule survive.
-- Separate storage integrity concerns from publication grammar and from ES consumption needs.
-- Keep the shared evidence grammar narrow: package identity remains separate, shared admission authorization is limited to derivation request binding, and execution/runtime claims remain distinct from non-shared publication or policy residue.
-- For the next milestone package, treat AGS and ARS work as an ES-enabling input-boundary reset: AGS/ARS own publication and discoverability; ES consumes their designed outputs; CP examples or probes do not define that contract.
-
-Target files and packages:
-
-- `ags/api/`
-- `ags/publish/`
-- `ars/api/`
-- `ars/index/`
-- `ars/store/`
-
-Success condition:
-
-- The write and read contract between AGS and ARS is intentional and documented.
-- The artifact discovery model is explicit about what is canonical, what is runtime-discoverable, and what is merely current secondary publication/support implementation detail.
-- Payload versus artifact identity is no longer hidden in convenience assumptions.
-- ES can later consume artifact data through a designed discoverability surface rather than through an inherited tuple shape.
-- CP consumer compatibility can rely on the accepted API path, but CP-specific convenience expectations are not mistaken for AGS/ARS/ES core semantics.
-
-Dependencies:
-
-- Workstream A
-
-Current bounded decision status for Milestone 2B.1:
-
-- The Workstream B publication/storage/discoverability decision is recorded in
-  `.docs/system_overview/artifact_publication_storage.md`.
-- B0 is the docs and docs-contract-test gate for artifact publication,
-  storage, discoverability, payload identity, artifact identity, and
-  compatibility/support shapes. It makes no runtime implementation changes.
-- B1 is the focused code-facing guardrail slice over the same B0 boundary. It
-  adds tests for AGS publication output, ARS runtime-facing discovery, ES
-  admission hot-path consumption, payload/artifact/package identity separation,
-  CP proof/example non-authority, and `control-plane-normal-shell/v1`
-  compatibility. It does not redesign AGS, ARS, or ES runtime behavior.
-- AGS owns publish-time fact assembly, caller-bound publication semantics,
-  aggregate evidence assembly, signing, payload/support upload, and
-  registration into ARS.
-- ARS owns blob storage, content-addressed integrity, artifact registration,
-  runtime-facing discovery records, index behavior, descriptor/manifest support
-  reads, and the ARS-owned read surfaces ES may later consume.
-- The current ARS discovery record remains the canonical runtime-discoverable
-  surface for the current slice. Descriptor/manifest support remains secondary
-  publication detail, and the current index entry shape remains
-  implementation-only/current-slice detail.
-- `claims.package.identity` is the shared-kernel identity surface ES consumes;
-  AGS-owned publication claims and ARS descriptor/manifest/index/support tuples
-  do not become that identity surface.
-- Payload identity and artifact identity remain separate:
-  `payload_digest` identifies payload bytes or payload content identity, while
-  `artifact_digest` identifies artifact/package identity as currently derived
-  from `payload_digest`, `artifact_type`, and `intent_digest`.
-- The current discovery/register JSON shapes are retained only as bounded
-  slice rules, descriptor/manifest/index/support tuples are
-  compatibility/support or implementation-only surfaces unless explicitly
-  migrated, the secondary descriptor support path remains a temporary
-  compatibility edge, and the long-term discovery/index/publication-support
-  model remains reopened.
-- ES must consume artifacts through a designed discoverability surface, not by
-  inheriting ARS support tuple grammar as ES public grammar.
-- CP examples and proof harness artifacts do not define AGS/ARS/ES core
-  semantics; generated evidence, `.out`, support bundles, retained bundles,
-  reports, traces, logs, summaries, and proof artifacts remain
-  evidence/projection only.
-
-### Workstream C - Execution And Admission Reset
-
-Purpose:
-
-- Redesign ES public admission and execution surfaces.
-- Re-derive the preparation and submission boundary, scheduler handoff, and runtime package resolution from the Go codebase rather than from current inherited grammar.
-- Decide what ES should own, what ES should compose, and what ES should stop carrying.
-- Deliver the primary ES milestone package after the Workstream A and B input-boundary gates are explicit enough for ES not to inherit their ambiguities.
-- Preserve the accepted CP governed-execution compatibility edge without letting CP orchestration, review, checkpoint, or finalization assumptions become ES-owned semantics.
-
-Target files and packages:
-
-- `es/api/`
-- `es/admission/`
-- `es/config/`
-- `es/app/`
-- `cmd/es/`
-
-Success condition:
-
-- ES has a clear public model for admission, submission, and lifecycle projection.
-- ES no longer depends on the current inherited artifact and policy grammar by convenience.
-- The remaining shared execution/runtime inputs are intentionally defined rather than passively inherited from upstream publication metadata.
-- Scheduler handoff, payload resolution, and lifecycle projection are described as deliberate ES boundaries.
-- The current CP path, `execution_substrate.runtime_profile`, and `control-plane-normal-shell/v1` remain compatible unless an explicit migration/versioning note says otherwise.
-- Stable semantic contracts, temporary compatibility edges, and implementation details/current slice constraints are classified in `PLANS.md` and the adjacent system/lifecycle docs.
-
-Dependencies:
-
-- Workstream A, as the shared-kernel gate needed for ES admission ownership
-- Workstream B, as the AGS/ARS input-boundary gate needed for ES payload and evidence ownership
-
-Current bounded decision status for Milestone 2C.1:
-
-- C0 is the docs and docs-contract-test gate for ES admission, prepare,
-  submit, lifecycle projection, retained-result ownership, runtime-profile
-  compatibility, runtime handoff, outcome evidence, runtime identity/workload
-  credential handoff boundaries, and Control Plane compatibility.
-- C0 makes no runtime implementation changes.
-- Workstream C implementation must not start until C0 docs and docs-contract
-  tests pass.
-- C1 is the focused code-facing guardrail slice over the accepted C0 model.
-  It adds or strengthens tests for bounded `:prepare` preflight non-effects,
-  ARS discovery/evidence/payload/package-identity consumption, signed evidence
-  and narrow execution/runtime claim enforcement, AGS/ARS support/CP grammar
-  exclusion, payload-digest versus package-identity mismatch separation,
-  current compatibility surfaces, and `authority_handoff`/`outcome_evidence`
-  non-authority. It does not redesign runtime behavior.
-- C2 is the focused tests/docs guardrail slice over the accepted submit and
-  lifecycle-projection boundary. It pins `POST /v1/executions:submit` as the
-  ES-owned async execution handoff through Nomad, keeps the submit receipt
-  bounded and free of Control Plane attempt/review/checkpoint/finalization,
-  intervention, approval, hold/resume/reject, Temporal, or workflow grammar,
-  preserves `authority_handoff` as non-secret handoff evidence only, keeps
-  `lifecycle_projection.source=nomad` with an opaque same-run
-  read-coordination `revision`, preserves status/logs/result/cancel and
-  `control-plane-normal-shell/v1` compatibility, and prevents generated
-  evidence, reports, logs, support bundles, retained bundles, proof artifacts,
-  and maintenance summaries from becoming authority. It does not redesign
-  runtime behavior, retained results, runtime identity, Vault handoff, Nomad
-  integration, or Control Plane behavior.
-- C3 is the focused tests/docs guardrail slice for retained-result and
-  `authority_handoff` boundaries. C3 is guardrail work, not runtime redesign.
-  C3 pins that retained result bundles remain ES-owned opaque output artifacts
-  and that CP may materialize, review, checkpoint, and finalize retained result
-  contents semantically, but CP does not own the retained bundle as run-control
-  state. Retained result references, paths, manifests, archives, `.out`
-  copies, and materialized workspaces are evidence/projection or
-  implementation detail, not orchestration authority.
-  `GET /v1/executions/{run_id}/result` compatibility shape remains unchanged
-  unless an explicit migration/versioning plan exists. `authority_handoff`
-  remains bounded non-secret runtime handoff evidence only.
-  `authority_handoff` never carries or implies live credentials, Vault tokens,
-  Codex credentials, leases, approvals, operator authorization, CP workflow
-  state, scheduler truth, or retained-result authority. Runtime identity/Vault
-  handoff remains workload-side and non-secret; ES does not become a Vault
-  token broker or Codex credential broker. `outcome_evidence` remains bounded
-  evidence/projection; current labels remain compatibility surfaces.
-  `control-plane-normal-shell/v1` and `execution_substrate.runtime_profile`
-  compatibility remain preserved unless an explicit migration/versioning plan
-  exists.
-- C4 is the focused tests/docs guardrail slice for runtime identity and Vault
-  handoff boundaries. C4 is guardrail work, not runtime redesign and not live
-  helper execution. Runtime identity acquisition is workload-side or
-  helper-mediated at runtime, not CP-owned and not IM-owned. ES may stage
-  non-secret runtime identity and Vault configuration metadata, but ES must
-  not mint, fetch, broker, parse, store, rotate, or validate Vault tokens. ES
-  must not record or expose JWT-SVID bodies, SPIFFE JWTs, X.509 SVID bodies,
-  private keys, API keys, proof secrets, root tokens, unseal keys, Vault client
-  tokens, or secret payloads through public DTOs, lifecycle responses,
-  retained-result metadata, summaries, logs, reports, `.out`, support bundles,
-  or proof artifacts. `authority_handoff` may include non-secret
-  credential-location and configuration metadata only. `authority_handoff`
-  must not carry live credentials, leases, approvals, Vault tokens, Codex
-  credentials, JWT-SVIDs, API keys, or scheduler truth. Workload-side Vault
-  auth remains workload-side; Vault owns token, secret, and lease authority.
-  SPIRE owns identity issuance and SVID material. ES must not expose raw SPIRE
-  socket access to workloads as public ES grammar.
-  `EXEC_WORKLOAD_IDENTITY_ENDPOINT` remains the workload-facing identity
-  endpoint contract rather than raw SPIRE socket access. Runtime identity and
-  Vault handoff evidence remains non-authoritative and redacted. CP may
-  consume runtime identity/Vault handoff evidence, but CP does not own
-  credential acquisition, Vault tokens, SPIRE identity issuance, or ES runtime
-  handoff boundaries. IM and Maintenance Agent may report
-  diagnostics/readiness/status, but do not own runtime identity or Vault
-  authority. `control-plane-normal-shell/v1` and
-  `execution_substrate.runtime_profile` compatibility remain preserved unless
-  an explicit migration/versioning plan exists. Existing workload-auth Remote
-  Alpha helpers remain bounded operator/support surfaces, not ES token
-  brokerage or production Vault readiness.
-- C5 is the focused tests/docs guardrail slice for current
-  status/logs/result/cancel compatibility and non-authority posture. C5 is
-  guardrail work, not runtime redesign, live proof, or remote validation.
-  Status remains Nomad-backed lifecycle projection and evidence, not CP
-  workflow truth or ES lifecycle-store truth. Logs remain a bounded current
-  compatibility/evidence surface, not final log architecture, CP run-control
-  truth, or scheduler authority. Result remains opaque ES-retained output
-  delivery, not CP checkpoint, finalization, or review state. Cancel remains a
-  bounded ES/Nomad cancellation handoff, not CP intervention authority,
-  operator approval authority, or Temporal workflow truth. Status/cancel JSON
-  envelopes and successful logs/result headers must exclude CP run-control
-  grammar and live credential/security fields; logs/result bodies remain
-  payload/output surfaces governed by the existing compatibility contract and
-  must not be newly sanitized, interpreted, or promoted into authority.
-- C6 is the focused ES Admission Policy Layer v0 slice. It is a Workstream C
-  admission extension, not the Workstream D CGS/EGS policy-language redesign.
-  It adds a small ES-owned, replaceable policy-evaluation seam in the shared
-  `:prepare`/`:submit` admission path and one built-in selected-pattern
-  static-script content policy to prove the seam. ES remains the final
-  admission-policy gate for ES-bound executions. Control Plane may later
-  preflight or render ES policy decisions, but CP is not the final ES
-  admission gate. IM remains readiness, provenance, and diagnostics only. C6
-  may read bounded payload bytes during `:prepare` only when an enabled ES
-  admission policy requires the ES-visible static-script text input class, and
-  only through the explicit ARS payload digest relationship already discovered
-  and cross-checked by ES admission. C6 must not add OPA/Rego, a DSL, customer
-  regex configuration, CGS `id.conf` reuse, signed policy bundles, an external
-  policy-decision service, durable policy-decision storage, CP prompt/workspace
-  parsing, workspace archive decoding, binary payload inspection, retained
-  bundle scanning, support-bundle scanning, or raw payload/matched-content
-  disclosure.
-- The C6 configurable-input follow-up is a bounded slice refinement of ES
-  Admission Policy Layer v0. It may add ES deployment/admin configuration for
-  inputs to built-in ES admission policies only. The follow-up adds the
-  built-in
-  `execution-substrate.admission.configured-static-script-literal-deny/v1`
-  policy with reason code `configured_static_script_content_denied`, safe
-  message `static script content denied by admission policy`, mode `disabled`
-  or `enforce`, safe entry IDs, a bounded list of literal deny entries, and
-  the fixed input class
-  `static_script_payload_text`. These inputs are ES deployment/admin config
-  only; CP does not define or supply them, IM remains readiness/provenance/
-  diagnostics only, and request payloads cannot carry policy entries. This
-  follow-up must not add evaluator injection, OPA/Rego, a DSL, arbitrary
-  regex/glob/shell-expression config, customer-authored policy bundles, an
-  external evaluator service, CGS `id.conf` reuse, user-defined reason codes,
-  user-defined API messages, CP prompt/workspace parsing, workspace archive
-  decoding, binary payload inspection, or raw configured-literal/matched-
-  content disclosure. Denials remain redacted.
-- C7 is a docs/static-test-only consolidation checkpoint recorded in
-  `.docs/execution_lifecycle/workstream_c7_checkpoint.md`. It records that
-  Workstream A/B gates are satisfied, C0-C6 are present, Remote Alpha
-  operator-healthcheck TLS is paused/blocked due to source-insufficient
-  signer/custody evidence, and next behavior-changing C work must preserve CP
-  compatibility and CP/IM non-authority boundaries. It makes no behavior, API,
-  route, runtime, TLS, CP diagnose, IM refresh, live proof, or route
-  eligibility change.
-- The Workstream C ES public admission/execution model decision is recorded in
-  `.docs/execution_lifecycle/es_execution_admission_model.md`.
-- `GET /v1/executions:contract` and `POST /v1/executions:prepare` remain
-  temporary compatibility edges for the current CP/IM consumer path, while
-  `POST /v1/executions:submit` remains the real ES execution handoff surface.
-- Nomad remains authoritative for submitted execution lifecycle. ES status,
-  logs, and cancel remain bounded read-through projections, and result
-  retrieval remains ES-owned opaque bundle access.
-- ES admission composition remains limited to caller auth/allowlist plus ARS
-  discovery/evidence/payload refs, narrow `internal/contracts/evidence/v1`
-  execution claims, EGS runtime-trust output, the configured workload-zone
-  Vault runtime-config reference/blob, and the ES-owned Admission Policy Layer
-  v0 seam.
-- `invocation.annotations["execution_substrate.runtime_profile"]`,
-  `control-plane-normal-shell/v1`, the current `/execution/...` conventions,
-  the current `authority_handoff` vocabulary, the current `outcome_evidence`
-  vocabulary, and retained `application/gzip` result bundles keyed by `run_id`
-  remain explicit compatibility edges rather than settled architecture.
-
-### Workstream D - Policy And Authorization Reset
-
-Purpose:
-
-- Re-derive policy ownership across EGS and CGS.
-- Decide what belongs to trust publication, what belongs to authorization, and what belongs nowhere in the long-term architecture.
-- Reassess the current `id.conf` policy model, authorize DTO, and remaining policy/trust ownership seams.
-
-Target files and packages:
-
-- `egs/api/`
-- `egs/model/`
-- `egs/sign/`
-- `cgs/api/`
-- `cgs/policy/`
-- `cgs/config/`
-- `cgs/app/`
-
-Success condition:
-
-- Policy publication and authorization ownership are explicit.
-- EGS and CGS no longer carry accidental compatibility behavior without documented ownership.
-- The current `id.conf` and authorize shape are either intentionally retained, replaced, or explicitly downgraded to temporary compatibility edges.
-- ES can consume policy and authorization outputs through designed contracts rather than through legacy compatibility DTOs.
-
-Dependencies:
-
-- Workstream A
-- Workstream C
-
-Current bounded planning direction:
-
-- Treat the current `POST /v1/credential/authorize` request/response shape as a CGS v1 compatibility surface and the current `GET /v1/trust-model` route plus wrapper/payload shape as an EGS v1 compatibility surface.
-- Do not semantically widen either current v1 surface in place. Semantic expansion requires explicit versioning before implementation.
-- Treat `audit.policy_version` and EGS `publication.version` as service-owned audit/publication metadata, not transport/schema/API versioning.
-- Treat `id.conf` as current-CGS-v1 compatibility/config residue rather than as final repo-wide policy language.
-- Preserve ES CGS-independence in D1. If ES later consumes CGS output, it must do so through a separately versioned bounded authorization fact such as allow/deny plus opaque decision reference and expiry rather than by reusing the current CGS v1 shape or `id.conf`-derived subject grammar.
-- D1b is an accepted docs/tests-only slice on that seam: keep the current `POST /v1/credential/authorize` route and wire shape as CGS v1 compatibility, define any future CGS v2 authorize contract only at design level, and require explicit versioning before any behavior change lands.
-- In D1b, a future versioned CGS authorization fact may carry only allow/deny, an opaque decision reference, and expiry or another bounded freshness indicator if justified. Any audit/evaluation metadata on that fact remains non-authoritative outside CGS.
-- That future D1b design must not carry runtime auth plans, Vault token material, JWT-SVIDs, credential payloads, scheduler facts, ES lifecycle/admission facts, runtime-config refs, workload-zone Vault ownership facts, identity-handoff facts, or Control Plane review/approval/checkpoint/finalization semantics.
-- D1b keeps `id.conf` as current-CGS-v1 compatibility/config residue, does not rewrite its grammar or evaluation, and does not expand EGS beyond signer/artifact runtime-trust publication.
-- D1c is an accepted docs/tests-only slice on that seam: keep the current `GET /v1/trust-model` route plus wrapper/payload shape as EGS v1 compatibility, define any future EGS versioned runtime-trust wrapper only at design level, and require explicit wrapper/payload/versioning before any semantic expansion lands.
-- D1c keeps EGS v1 publishing signed `runtime_trust` signer/artifact trust only. EGS publication metadata remains outside the signed runtime-trust payload, and `publication.version` remains service-owned publication metadata rather than trust-contract/schema/API versioning.
-- In D1c, a future versioned EGS trust wrapper must distinguish signed runtime-trust payload facts, unsigned publication/discovery metadata, compatibility routing or API version, and non-authoritative service metadata.
-- That future D1c wrapper design must not carry CGS authorization decisions, Control Plane review/approval/checkpoint/finalization semantics, runtime auth plans, Vault token material, JWT-SVIDs, credential payloads, scheduler truth, ES lifecycle/admission truth, runtime-config refs, workload-zone Vault ownership facts, runtime identity handoff facts, or AGS/ARS artifact-publication authority.
-- D1c keeps ES consuming EGS only for signer/artifact runtime trust, keeps ES consuming no CGS facts, does not reopen the accepted Workstream A/B/C decisions, does not change the Workstream B AGS/ARS artifact publication/storage/discoverability decision or the Workstream C ES admission/runtime public model, and does not settle Workstream E runtime-config ownership or Workstream F runtime-identity handoff.
-- D1d is an accepted docs/tests-only slice on that seam: keep checked-in `cgs/policy/id.conf`, the current CGS v1 subject grammar, and `policy.id_conf_path` as current-CGS-v1 compatibility/config residue only.
-- In D1d, `id.conf` is not a shared policy language, not an ES admission policy input, not an EGS trust input, not a Control Plane review/approval/checkpoint/finalization policy input, and not an Infrastructure Manager readiness/profile/support-bundle authority input.
-- D1d keeps the current CGS v1 subject grammar local to current CGS v1 evaluation, keeps the checked-in `cgs/policy/id.conf` baseline as implementation/config residue rather than future product policy architecture, and keeps `policy.id_conf_path` as a CGS-local current-v1 configuration pointer rather than a repo-wide policy registry.
-- D1d must not move `id.conf` into runtime-config ownership before Workstream E or fold it into runtime-identity handoff before Workstream F.
-- Future policy-input redesign requires explicit Workstream D follow-up and, if it changes CGS semantics, a versioned CGS contract. D1d does not change CGS v1 authorize behavior, does not implement CGS v2, and does not change EGS, ES admission, Workstream E runtime-config ownership, or Workstream F runtime-identity handoff.
-- Workstream D checkpoint: D0-D1d completed the guardrail/design phase. Workstream D remains open; the long-term CGS authorize DTO, future CGS/EGS versioned contracts, and long-term `id.conf`/policy-input model remain reopened seams.
-- Those remaining D seams are non-blocking follow-ups for Workstream E planning. No D2 behavior-changing slice is required before Workstream E planning.
-- D1 does not settle Workstream E runtime-config ownership or Workstream F runtime-identity handoff.
-
-### Workstream E - Lookup And Config Indirection Reset
-
-Purpose:
-
-- Define and adopt an explicit replacement surface for the workload-zone Vault runtime-config reference and blob schema.
-- Move the required workload-zone Vault config-reference guarantee into the replacement owner.
-- Remove ACS from the live runtime path once the replacement surface is real.
-
-Target files and packages:
-
-- `internal/contracts/runtimeconfig/v1`
-- `es/config/`
-- `es/admission/`
-- `es/app/`
-
-Success condition:
-
-- The named workload-zone Vault config reference and blob schema are explicit, shared, and no longer hidden in ES-local parsing.
-- ES consumes the replacement surface directly without a transitional ACS lookup hop.
-- Startup validation guarantees the required workload-zone Vault config reference exists before ES serves traffic.
-- Future agents can tell that workload-zone Vault config semantics live in the runtime-config surface, ARS owns the blob, and ES remains only the consumer.
-
-Dependencies:
-
-- Workstream A
-- Workstream B
-- Workstream C
-- Workstream D
-
-Current docs/tests-only decision status for E0:
-
-- The Workstream E runtime-config ownership decision is recorded in
-  `.docs/system_overview/runtime_config_ownership.md`.
-- E0 is docs/tests-only. It does not change runtime behavior, public DTOs,
-  route handlers, wire shapes, ES admission behavior, runtime identity handoff,
-  Control Plane compatibility, Infrastructure Manager inputs, or M6
-  support-bundle input shapes.
-- Runtime-config semantics are owned by the runtime-config contract surface.
-  The current typed shared schema for workload-zone Vault runtime config is
-  `internal/contracts/runtimeconfig/v1`.
-- ARS owns blob storage and read by digest only. ARS does not own
-  workload-zone Vault runtime-config semantics.
-- ES is the current runtime-config consumer and lookup orchestrator during
-  `:prepare` and `:submit`.
-- ES startup config currently carries the required workload-zone Vault
-  runtime-config reference. That placement is compatibility/config residue on
-  a reopened ownership seam, not the declared final owner.
-- The startup guarantee remains: the required typed runtime-config reference
-  must be configured and validated before ES serves governed execution traffic.
-  This is a reference-availability guarantee, not a new E0 guarantee that the
-  ARS blob has been fetched before startup completes.
-- The digest-only ref shape is active as a temporary compatibility edge and
-  bounded current surface, not final runtime-config architecture.
-- There is no ACS hop in the runtime-config path.
-- Runtime-config does not broker Vault tokens, JWT-SVIDs, secret payloads,
-  leases, Codex credential material, or runtime identity handoff.
-- Optional workload-zone Vault CA trust material remains standard non-secret
-  TLS/env-based trust configuration only.
-- `workload_vault_auth.default_mode` is current ES config residue and bounded
-  current behavior, not a generalized runtime-auth-plan contract.
-- `authority_handoff.runtime_config_refs` is non-secret handoff evidence only,
-  not runtime-config authority or live credential truth.
-- E0 preserves `GET /v1/executions:contract`,
-  `POST /v1/executions:prepare`, `control-plane-normal-shell/v1`, CP
-  compatibility, and M6 support-bundle inputs.
-- E0 keeps CGS authorize output, `id.conf`, `policy.id_conf_path`,
-  `audit.policy_version`, EGS `publication.version`, EGS unsigned publication
-  metadata, AGS `policy_decisions`, ES retained bundles, ES
-  `outcome_evidence`, ES `authority_handoff`, IM profiles, support bundles,
-  logs, traces, reports, `.out` artifacts, and CP
-  review/approval/checkpoint/finalization state outside runtime-config
-  authority.
-- E0 does not settle Workstream F runtime-identity handoff, does not reopen
-  Workstreams A/B/C, does not mark full Workstream D complete, and does not
-  mark full Workstream E complete.
-
-Workstream E guardrail status:
-
-- E0 and E1 are sufficient guardrails before Workstream F planning.
-- Full Workstream E remains open for long-term runtime-config owner,
-  reference/versioning, and `workload_vault_auth.default_mode` follow-ups.
-- Later Workstream E work must not drift into runtime identity handoff,
-  helper behavior, SPIRE/Vault handoff implementation, or Workstream F
-  reserved-path decisions.
-
-### Workstream F - Runtime Identity Handoff Reset
-
-Purpose:
-
-- Redesign the ES-to-runtime identity boundary.
-- Clarify ownership of runtime identity paths, Vault auth handoff, reserved interface conventions, and capability validation.
-- Remove hidden coupling between ES submit behavior, policy surfaces, workload identity selection, and container path conventions.
-- Prove platform-owned runtime identity delivery rather than workload-authored bridging.
-
-Target files and packages:
-
-- `es/admission/runtimeidentity.go`
-- `es/admission/submit.go`
-- `es/config/`
-- `cgs/api/types.go`
-- `cgs/config/`
-- `.docs/system_overview/capability_probing.md`
-- `.docs/execution_lifecycle/`
-
-Success condition:
-
-- Runtime identity handoff has explicit ownership and a documented contract.
-- The current reserved paths survive only if intentionally retained.
-- The handoff contract no longer depends on accidental coupling to current ES DTOs, current CGS authorize output, or current path names.
-- Capability-sensitive validation remains behavior-based and local to validation boundaries.
-- The workload-visible discovery contract remains explicit, but the implementation behind it is platform-owned.
-- The final bounded slice does not depend on workload authors implementing their own identity-serving shim.
-
-Current bounded planning direction:
-
-- Preserve `EXEC_WORKLOAD_IDENTITY_ENDPOINT` as the workload-visible discovery contract unless a later stop-condition justifies reopening it explicitly.
-- Prefer a platform-owned runtime identity companion/bridge injected with the workload allocation over direct workload access to SPIRE internals or ES-owned runtime token minting.
-- Treat the checked-in workload-authored runtime identity reference as example scaffolding only, not as an acceptable final ownership model.
-- Treat the current slice-0 Linux schedulability caveat as an environment qualification issue that should remain explicit, not as a blocker to planning Workstream F.
-- The bounded slice `1A` and slice `1B` implementation is now the same-container runtime helper launched by a platform-owned supervisor inside the workload task.
-- Slice `1A` landed the runtime boundary before useful credential flow:
-  - helper runs as `0:0`
-  - workload runs as fixed `10000:10000`
-  - workload gets no supplemental groups and no privilege-escalation path
-  - the raw SPIRE Workload API socket remains helper-private under `/run/es-runtime-identity/<run_id>/internal/spire-agent.sock`
-  - the workload-visible endpoint remains `EXEC_WORKLOAD_IDENTITY_ENDPOINT=unix:///run/es-runtime-identity/<run_id>/endpoint`
-  - helper readiness is required before workload start and helper death is task-fatal in the first slice
-- Slice `1B` keeps the public endpoint bounded:
-  - support only a platform-defined JWT-SVID retrieval operation for the workload-vault target
-  - reject arbitrary audience passthrough, raw SPIRE parameter passthrough, and X.509 delivery in this slice
-- First-slice workload compatibility is intentionally narrowed:
-  - no root workloads
-  - no arbitrary image-user execution
-  - no shared helper/workload UID
-  - no supplemental groups that collapse the helper/workload boundary
-- Useful credential flow is now proved on top of slice `1A` and slice `1B`:
-  - the helper endpoint remains bounded to the workload-vault target
-  - the workload performs the bounded Vault login flow itself as a client against a proof-scoped real Vault dev/test target
-  - ES provides any workload-zone Vault CA trust material from the resolved runtime config as workload-visible CA files and standard TLS environment, without disabling verification
-  - one secret read is proved through the real ES -> Nomad -> Docker path
-  - the slice still avoids platform-owned Vault token brokerage
-- The bounded `control-plane-normal-shell/v1` runtime profile builds on that same identity boundary:
-  - ES selects the configured profile image for opt-in requests
-  - the repo-owned reference image recipe provides Python, git, narrow shell utilities, and a configured Codex CLI realization at the configured path
-  - the supported-local Nomad baseline disables Nomad Docker image cleanup for enabled local runtime-profile images so a local proof image is not removed merely because a prior successful allocation terminated
-  - the supported-local proof realization uses the proof-only Codex shim at that path, seeds proof-scoped Codex credential material in Vault, proves workload-side credential acquisition through the existing identity endpoint, invokes the shim with stdin prompt input, creates a deterministic workspace mutation, renders a result diff that includes tracked changes and proof-created untracked files, and writes runner-style final-message, diff, stdout/stderr, and workspace-archive artifacts under `/execution/run/result`
-  - the proof fetches and validates the retained ES result bundle for those artifacts
-  - the proof intentionally does not prove real upstream Codex service behavior because this repo cannot own a non-sensitive production Codex credential or external Codex service availability
-- The supported-host follow-through after that credential-flow proof is now landed in bounded form:
-  - keep the current script-managed local Nomad path explicit as bounded fallback/troubleshooting
-  - distinguish supported, bounded-fallback, and unsupported substrate states in operator output and runbooks
-  - use Lima `qemu` + Ubuntu 24.04 arm64 as the current supported local reference host on this Mac
-  - keep the previously investigated VMware/aarch64 and Lima `vz` local profiles explicit as unsupported on this Mac because natural `cpu.totalcompute` stays `0`
-  - use the repo-owned `scripts/72_supported_local_setup.sh` helper plus `scripts/73_supported_local_proof.sh run` for the current supported local proof path instead of the earlier out-of-repo `/tmp` harnesses
-  - keep canonical supported-local host evidence under `.out/es-proof-<id>/`, private host bootstrap scratch outside the repository and evidence directory, and guest `/tmp` as internal Lima scratch when the repo mount is read-only
-- That runtime narrowing is part of the claim-preserving slice boundary, not an accidental compatibility gap. If bounded implementation cannot preserve the helper-only SPIRE channel or the no-privilege-escalation workload launch model, stop and reopen only the runtime shape needed to keep ownership honest.
-
-F0 - Runtime Identity Handoff Ownership Decision:
-
-- F0 is docs/tests-only. It records the current runtime-identity handoff
-  ownership model before any behavior-changing Workstream F implementation.
-- The F0 decision is recorded in
-  `.docs/system_overview/runtime_identity_handoff.md`.
-- Runtime identity handoff is currently ES-selected and platform-delivered.
-  ES owns handoff selection, env injection, reserved path layout, mounts, and
-  Nomad job construction for the current slice.
-- `EXEC_WORKLOAD_IDENTITY_ENDPOINT` is the bounded workload-visible discovery
-  contract. It is not raw SPIRE socket exposure, Vault token brokerage,
-  runtime-config authority, or a secret payload.
-- The runtime supervisor/helper owns the in-task endpoint implementation,
-  helper-private SPIRE traversal, readiness-before-workload, and
-  root-to-workload privilege boundary for the current implementation.
-- SPIRE owns JWT-SVID issuance. Vault owns token, secret, and lease issuance
-  after workload-side login.
-- ES does not broker Vault tokens, Vault secrets, JWT-SVID payloads, leases,
-  Codex credential material, or credential payloads.
-- Current helper/root/Nomad task user/SPIRE traversal/reserved-path surfaces
-  are bounded or compatibility-heavy, not final generalized architecture.
-- Capability validation remains behavior-based and local to validation
-  boundaries, not based on accidental DTO/path coupling.
-- F0 does not change runtime-config ownership from E0/E1, does not consume or
-  promote D seams, does not change CP compatibility or
-  `control-plane-normal-shell/v1`, and does not change M6 support-bundle
-  inputs.
-- F0 keeps CGS authorize output, `id.conf`, `policy.id_conf_path`,
-  `audit.policy_version`, CGS v1/v2 design docs, EGS
-  `publication.version`, EGS unsigned publication metadata, AGS
-  `policy_decisions`, runtime-config refs, `authority_handoff.runtime_config_refs`,
-  ARS blob mechanics, digest-only runtime-config refs,
-  `workload_vault_auth.default_mode`, ES retained bundles,
-  `outcome_evidence`, `authority_handoff`, IM profiles, support bundles,
-  logs, traces, reports, `.out` artifacts, and CP
-  review/approval/checkpoint/finalization state outside runtime-identity and
-  credential authority.
-- F0 does not reopen Workstreams A/B/C, does not mark full Workstream D
-  complete, does not mark full Workstream E complete, and does not mark full
-  Workstream F complete.
-- Full Workstream F remains open for long-term runtime-identity owner,
-  helper/root/task-user, SPIRE selector/traversal, reserved-path, and
-  workload-credential handoff follow-ups.
-- F0 does not claim full ES/runtime de-root, rootless Nomad client,
-  production readiness, production Vault readiness, or generalized remote
-  deployment architecture.
-
-Dependencies:
-
-- Workstream C
-- Workstream D
-- Workstream E
-
-## Ordered Execution Plan
-
-Future agents should follow this order unless a later revision to `PLANS.md` changes it explicitly.
-
-1. Reset planning authority in `PLANS.md`.
-   This step is complete when the repo no longer treats the old frozen-slice plan as the operative design target.
-
-2. Execute the next milestone as **ES Admission And Runtime Boundary Realignment**.
-   This is a package made of Workstream A, Workstream B, and Workstream C, with ES as the primary delivery owner. Workstream A and Workstream B are gates that keep ES input contracts honest; Workstream C is the delivered ES milestone.
-
-3. Complete the Workstream A gate first.
-   The shared contract and kernel decision must be explicit enough that ES admission does not inherit accidental shared grammar. This gate is not permission to create a broad new shared kernel, and it is not CP-owned.
-
-4. Complete the Workstream B gate second.
-   AGS and ARS define the artifact publication and retrieval substrate that ES consumes. This gate must make the ES-consumed discovery and payload/evidence ownership explicit without letting CP examples or helper scripts become contract authority.
-
-5. Deliver Workstream C third.
-   ES admission, submission, lifecycle projection, retained-result behavior, runtime-profile handling, and runtime-boundary ownership are the primary next milestone delivery. Preserve the accepted CP governed-execution path as bounded compatibility while keeping ES-owned semantics in ES docs.
-
-6. Execute Workstream D fourth.
-   Policy and authorization surfaces should be re-derived once the ES execution shape is clear enough to say what policy inputs and outputs actually belong at runtime.
-
-7. Execute Workstream E fifth.
-   Lookup/config indirection should be reset only after artifact, execution, and policy contracts have been clarified, because the replacement owner depends on those decisions.
-
-8. Execute Workstream F sixth.
-   Runtime identity handoff should be redesigned after ES, policy, and runtime-config responsibilities are clear. Otherwise path conventions and auth-plan details will re-freeze around current incidental coupling.
-
-9. Do scripts, runbooks, deployment glue, and peripheral cleanup only after the core contracts stabilize.
-   Cleanup is valuable, but it should not happen while the architecture-defining surfaces are still moving.
-
-This ordering is deliberate:
-
-- use Workstream A and Workstream B as gates so ES does not inherit accidental shared or publication/storage grammar
-- deliver Workstream C as the next ES-owned program milestone, not as a CP-shaped feature expansion
-- preserve current CP compatibility as a bounded consumer edge while ES-owned contracts remain defined in this repo
-- redesign execution before finalizing policy and lookup consumers
-- redesign runtime identity only after the ES and policy boundaries are explicit
-
-## Current Decision Rules
-
-Future agents working in this phase must follow these rules:
-
-- Redesign structure before renaming.
-- Break core coupling before cleanup.
-- Prefer package-local ownership over cross-service leakage.
-- Do not preserve an old contract unless it is intentionally retained as a temporary compatibility edge.
-- Document any new invariant in `PLANS.md` and the relevant `.docs/` pages before implementing against it.
-- Do not introduce a new shared kernel casually. Shared code requires explicit ownership and a concrete cross-service reason.
-- Use this repository as the planning authority. Treat the Monolith/Python repository as historical or bounded bootstrap reference only.
-- Surface conflicts instead of working around them.
-- Do not bypass governance, storage, trust, or scheduler boundaries as a shortcut during redesign.
-- Keep capability-sensitive behavior validated by behavior or static resource checks, not by OS labels or fallback branching.
-- Preserve current implementation behavior until a replacement contract is explicitly documented, tested, and implemented.
-- Treat compatibility shims as temporary and track their removal conditions.
-- Do not describe foundational ES boundary and contract work as secondary to the program; it is the current primary ES milestone.
-- Do not let Control Plane documents, probes, or examples define ES core contracts. They may document consumption of accepted ES surfaces only.
-- Preserve current CP compatibility for the governed execution path, including `execution_substrate.runtime_profile` and `control-plane-normal-shell/v1`, unless a coordinated compatibility, drain, migration, or versioning plan is documented first.
-
-## Reopened-Seam Exit Criteria
-
-The current reopened-seam plan is complete only when all of the following are true:
-
-- The new shared kernel or contract layer is settled and explicitly documented.
-- AGS and ARS no longer force the old artifact publication and retrieval choreography by default.
-- ES no longer depends on the current inherited core grammar for its public admission and execution model.
-- EGS and CGS have clearly defined policy and authorization ownership.
-- The workload-zone Vault runtime-config reference and blob surface has a clearly justified long-term owner.
-- Runtime identity and execution handoff have explicit ownership and no unresolved dependency on current incidental path conventions.
-- Any retained compatibility edges are documented as temporary, with removal conditions.
-- `PLANS.md`, `.docs/`, tests, and implemented code agree on the active architecture.
-- Peripheral cleanup can proceed without architectural uncertainty.
-
-Until those conditions are met, reopened seams must stay explicit in `PLANS.md`; outside those seams, treat the repository as bounded platform work rather than rewrite-by-default feature work.
