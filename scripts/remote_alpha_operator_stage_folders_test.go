@@ -181,24 +181,26 @@ func TestRemoteAlphaOperatorStageCleanupRemovesOnlyItsOwnFolder(t *testing.T) {
 			t.Errorf("%s removed something behind a planted link: %v", tag, err)
 		}
 
-		if os.Geteuid() == 0 {
+		// Another account's folder, open to everyone, so that only the
+		// ownership check keeps cleanup from removing it. Root runs this
+		// directly and other users through sudo -n, as CI does; it skips when
+		// neither works.
+		t.Run(tag+"/foreign", func(t *testing.T) {
 			foreign := filepath.Join(base, "foreign")
-			if err := os.MkdirAll(filepath.Join(foreign, "keep"), 0o755); err != nil {
+			keep := filepath.Join(foreign, "keep")
+			if err := os.MkdirAll(keep, 0o755); err != nil {
 				t.Fatal(err)
 			}
-			for _, path := range []string{foreign, filepath.Join(foreign, "keep")} {
-				if err := os.Chown(path, 65534, 65534); err != nil {
-					t.Fatal(err)
-				}
-			}
+			remoteAlphaOutputDirGive(t, foreign, 65534, "0777")
+			remoteAlphaOutputDirGive(t, keep, 65534, "0755")
 			if output, err := runRemoteAlphaOperatorHeredoc(t, cleanup, foreign); err != nil {
 				t.Errorf("%s failed on a foreign folder: %v\n%s", tag, err, output)
 			}
-			info, err := os.Lstat(filepath.Join(foreign, "keep"))
+			info, err := os.Lstat(keep)
 			if err != nil || info.Sys().(*syscall.Stat_t).Uid != 65534 {
 				t.Errorf("%s removed a folder another account owns: %v", tag, err)
 			}
-		}
+		})
 	}
 }
 
