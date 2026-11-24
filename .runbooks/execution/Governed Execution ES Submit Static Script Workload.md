@@ -1,4 +1,4 @@
-# Runbook: Submit Static Script Workload (v1)
+# Governed Execution ES Submit Static Script Workload
 
 - Version: `v1`
 - Last Updated: `2026-04-09`
