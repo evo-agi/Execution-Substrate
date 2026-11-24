@@ -632,8 +632,8 @@ bypass ES admission. ES therefore submits only to a Nomad that enforces them.
   supported-local setup, and the current user for full-profile bring-up,
   which starts Nomad itself. Otherwise they send nothing. The tool checks the
   socket that accepted its own connection. The setup script checks the
-  listener just before each request, which leaves a short window for a
-  restart in between. `provision` also waits up to 30 s for Nomad to name a
+  listener just before each request or batch of requests, which leaves a
+  short window for a restart in between. `provision` also waits up to 30 s for Nomad to name a
   leader before it bootstraps. HTTPS with a pinned server key (part 2b of the
   lock) replaces this guard. Until then ES's own token and the observer
   token's readiness requests do not get this check.

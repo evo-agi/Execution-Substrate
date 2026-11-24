@@ -495,6 +495,7 @@ docker_ready_for_operator() {
   return 1
 }
 
+# BEGIN nomad_cpu_visibility_diagnostics (the tests run this function on its own)
 report_nomad_cpu_visibility_diagnostics() {
   local arch
   local virt
@@ -574,6 +575,7 @@ PY
       ;;
   esac
 }
+# END nomad_cpu_visibility_diagnostics
 
 qualify_supported_substrate() {
   local leader_path

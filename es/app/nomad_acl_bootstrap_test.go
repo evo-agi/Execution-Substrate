@@ -33,8 +33,8 @@ fi`)
 }
 
 // runSetupNomadACLSnippet runs a snippet with the setup script's
-// nomad_acl_bootstrap functions defined, expecting Nomad's listener to belong
-// to nomadUID.
+// nomad_acl_bootstrap functions and its CPU visibility diagnostics defined,
+// expecting Nomad's listener to belong to nomadUID.
 func runSetupNomadACLSnippet(t *testing.T, addr string, aclDir string, leaderWaitSeconds int, nomadUID int, call string) (string, error) {
 	t.Helper()
 	setup := filepath.Join(executionPlatformRepoRootPath(), "scripts", "70_linux_setup.sh")
@@ -42,6 +42,7 @@ func runSetupNomadACLSnippet(t *testing.T, addr string, aclDir string, leaderWai
 sudo() { "$@"; }
 cleanup_tempfiles() { rm -f "$@"; }
 eval "$(sed -n '/^# BEGIN nomad_acl_bootstrap/,/^# END nomad_acl_bootstrap/p' "$1")"
+eval "$(sed -n '/^# BEGIN nomad_cpu_visibility_diagnostics/,/^# END nomad_cpu_visibility_diagnostics/p' "$1")"
 ` + call
 	command := exec.Command("bash", "-c", snippet, "bash", setup)
 	command.Env = []string{
@@ -366,6 +367,8 @@ func TestNomadACLToolSendsNothingToAPortHolder(t *testing.T) {
 // TestLinuxSetupBootstrapSendsNoSecretToAPortHolder: the setup script's
 // bootstrap and every token-bearing request it makes check that Nomad's user
 // (root on a host) owns the listener first.
+// TestLinuxSetupChecksNomadsListenerBeforeEveryTokenSend pins where the
+// checks sit.
 func TestLinuxSetupBootstrapSendsNoSecretToAPortHolder(t *testing.T) {
 	standIn := startRecordingNomadStandIn(t, func(w http.ResponseWriter, r *http.Request, _ int) {
 		if r.URL.Path == "/v1/status/leader" {
@@ -401,6 +404,27 @@ func TestLinuxSetupBootstrapSendsNoSecretToAPortHolder(t *testing.T) {
 		`nomad_token_curl "$(cat /proc/sys/kernel/random/uuid)" --silent "${NOMAD_HTTP_ADDR}/v1/agent/self"`)
 	if err != nil || len(standIn.requests()) != 1 {
 		t.Fatalf("control: nomad_token_curl did not reach a listener Nomad's user owns: %v output=%s requests=%q", err, output, standIn.requests())
+	}
+
+	// Setup runs the CPU visibility diagnostics when qualification fails,
+	// which can happen after the bootstrap set the management token, for
+	// example because Nomad stopped. They ask Nomad for its nodes with that
+	// token, so they check the listener too. The call is the script's own:
+	// report_nomad_cpu_visibility_diagnostics || true.
+	qualifyToken := newRandomNomadToken()
+	if err := os.WriteFile(filepath.Join(aclDir, "qualify-token"), []byte(qualifyToken), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	diagnostics := `NOMAD_QUALIFY_TOKEN="$(cat "${NOMAD_ACL_DIR}/qualify-token")"
+report_nomad_cpu_visibility_diagnostics || true`
+	standIn.reset()
+	output, err = runSetupNomadACLSnippet(t, standIn.URL, aclDir, 5, notNomads, diagnostics)
+	if err != nil || !strings.Contains(output, "not owned by Nomad's user (uid "+strconv.Itoa(notNomads)+")") || len(standIn.requests()) != 0 {
+		t.Fatalf("the diagnostics sent the management token to a listener another user owns: %v output=%s requests=%q", err, output, standIn.requests())
+	}
+	output, err = runSetupNomadACLSnippet(t, standIn.URL, aclDir, 5, os.Geteuid(), diagnostics)
+	if got := standIn.requests(); err != nil || len(got) == 0 || got[0] != "GET /v1/nodes token="+qualifyToken+" body=" {
+		t.Fatalf("control: the diagnostics did not ask a listener Nomad's user owns for its nodes: %v output=%s requests=%q", err, output, got)
 	}
 }
 
