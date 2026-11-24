@@ -146,8 +146,10 @@ Secret posture:
   Ctrl-Z (SIGTSTP, SIGTTIN, SIGTTOU) waits the same way. SIGKILL or a power
   loss cannot wait; the two checks above find what they leave behind on the
   next run.
-  Core dumps: off (core file limit 0 and, on Linux, not dumpable) before
-  anything is read, so a crash writes no secret to disk.
+  Core dumps: off (core file limit 0, and not dumpable through prctl)
+  before anything is read, so a crash writes no secret to disk. Where
+  either cannot be done (a host without prctl, such as macOS), the helper
+  stops before it reads anything.
   Root tokens, Vault tokens, proof secret values, JWT-SVID payloads, API keys,
   private keys, passwords, and secret payloads are never accepted through CLI
   args, environment variables, files, logs, summaries, reports, .out, support
@@ -470,6 +472,11 @@ PR_GET_DUMPABLE = 3
 PR_SET_DUMPABLE = 4
 
 
+class ProcessStillDumpable(Exception):
+    """prctl(PR_SET_DUMPABLE, 0) is not available here, failed, or did not
+    hold."""
+
+
 def disable_core_dumps():
     """Keep this run's secrets out of core files. The run holds the unseal
     key, the generated root token, the short-lived token and the proof value
@@ -480,17 +487,25 @@ def disable_core_dumps():
     also stops a core_pattern pipe and keeps other processes of the same
     user out of this process's memory (a command the run starts is dumpable
     again once it execs). Both are read back; if either does not hold, the
-    run stops before anything is read."""
+    run stops before anything is read.
+
+    Both are required everywhere: the helper tries them and does not look at
+    the operating system's name. Where prctl does not exist (macOS, for
+    example), the C library has no such symbol and the run stops here. There
+    is no fallback, because the helper only handles real secrets on a host
+    that can do both."""
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     if resource.getrlimit(resource.RLIMIT_CORE) != (0, 0):
         raise OSError("RLIMIT_CORE is not 0")
-    if sys.platform.startswith("linux"):
-        libc = ctypes.CDLL(None, use_errno=True)
-        zero = ctypes.c_ulong(0)
-        if libc.prctl(ctypes.c_int(PR_SET_DUMPABLE), zero, zero, zero, zero) != 0:
-            raise OSError(ctypes.get_errno(), "prctl PR_SET_DUMPABLE failed")
-        if libc.prctl(ctypes.c_int(PR_GET_DUMPABLE), zero, zero, zero, zero) != 0:
-            raise OSError("the process is still dumpable")
+    try:
+        prctl = ctypes.CDLL(None, use_errno=True).prctl
+    except (OSError, AttributeError) as exc:
+        raise ProcessStillDumpable("prctl is not available") from exc
+    zero = ctypes.c_ulong(0)
+    if prctl(ctypes.c_int(PR_SET_DUMPABLE), zero, zero, zero, zero) != 0:
+        raise ProcessStillDumpable("prctl PR_SET_DUMPABLE failed")
+    if prctl(ctypes.c_int(PR_GET_DUMPABLE), zero, zero, zero, zero) != 0:
+        raise ProcessStillDumpable("the process is still dumpable")
 
 
 class VaultAPIError(Exception):
@@ -1634,9 +1649,11 @@ def main():
         set_next_operation("disable_core_dumps")
         try:
             disable_core_dumps()
+        except ProcessStillDumpable:
+            raise_failure("disable_core_dumps", "core_dumps_not_disabled", message_class="process_still_dumpable")
         except (OSError, ValueError, AttributeError):
             raise_failure("disable_core_dumps", "core_dumps_not_disabled", message_class="core_dump_limit_failed")
-        set_status("disable_core_dumps", "pass", rlimit_core=0, dumpable=not sys.platform.startswith("linux"))
+        set_status("disable_core_dumps", "pass", rlimit_core=0, dumpable=False)
         validate_choices()
         preflight_temporary_generate_root_access()
         token_limits = validate_role_token_limits()

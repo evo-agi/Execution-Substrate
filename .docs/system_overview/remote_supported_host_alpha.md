@@ -3122,11 +3122,14 @@ Bootstrap authority:
 Signals and interrupted runs:
 
 - before it reads anything, the helper turns core dumps off
-  (`RLIMIT_CORE` 0, which the commands it starts inherit, and, on Linux,
-  `PR_SET_DUMPABLE` 0, which also stops a `core_pattern` pipe such as
-  systemd-coredump), and it stops (phase `disable_core_dumps`) if either
-  does not hold. So a crash while the unseal key or a token is in memory
-  writes no core file
+  (`RLIMIT_CORE` 0, which the commands it starts inherit, and
+  `PR_SET_DUMPABLE` 0 through `prctl`, which also stops a `core_pattern`
+  pipe such as systemd-coredump), and it stops (phase `disable_core_dumps`)
+  if either does not hold. It reads both back and does not look at the
+  operating system's name: on a host without `prctl`, such as macOS, it
+  stops there with `core_dumps_not_disabled` (message class
+  `process_still_dumpable`), and there is no fallback. So a crash while the
+  unseal key or a token is in memory writes no core file
 - from before generate-root until the root token is revoked and Vault's
   configuration is back, SIGINT, SIGTERM, SIGHUP and SIGQUIT are blocked;
   the reload command inherits that, so Ctrl-C does not cut a reload short.
