@@ -16,19 +16,27 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"execution-substrate/internal/testutil"
 )
+
+// mustRead, compactText, docSection, compactDocSection, assertContainsAll
+// and assertContainsNone are the helpers of package testutil, under the
+// names these tests use. The tests in scripts/ use them too.
 
 func mustRead(t *testing.T, path string) string {
 	t.Helper()
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read %s: %v", path, err)
-	}
-	return string(data)
+	return testutil.Read(t, path)
 }
 
 func compactText(text string) string {
-	return strings.Join(strings.Fields(text), " ")
+	return testutil.Compact(text)
+}
+
+// remoteAlphaOperatorScriptPath is the path of the Remote Alpha operator
+// script.
+func remoteAlphaOperatorScriptPath() string {
+	return testutil.Path("scripts/remote_alpha_operator.sh")
 }
 
 func authorityHierarchyLines(t *testing.T) []string {
@@ -80,25 +88,12 @@ func assertDocIncludesAuthorityHierarchy(t *testing.T, doc string, label string)
 
 func docSection(t *testing.T, doc string, start string, end string) string {
 	t.Helper()
-
-	startIndex := strings.Index(doc, start)
-	if startIndex == -1 {
-		t.Fatalf("document section start %q not found", start)
-	}
-	section := doc[startIndex:]
-	if end == "" {
-		return section
-	}
-	endIndex := strings.Index(section, end)
-	if endIndex == -1 {
-		t.Fatalf("document section end %q not found after %q", end, start)
-	}
-	return section[:endIndex]
+	return testutil.Section(t, doc, start, end)
 }
 
 func compactDocSection(t *testing.T, doc string, start string, end string) string {
 	t.Helper()
-	return compactText(docSection(t, doc, start, end))
+	return testutil.CompactSection(t, doc, start, end)
 }
 
 func markedDocSection(t *testing.T, label string, doc string, start string, end string) string {
@@ -140,22 +135,12 @@ func compactMarkedDocSection(t *testing.T, label string, doc string, start strin
 
 func assertContainsAll(t *testing.T, label string, text string, required ...string) {
 	t.Helper()
-
-	for _, phrase := range required {
-		if !strings.Contains(text, phrase) {
-			t.Fatalf("%s missing %q", label, phrase)
-		}
-	}
+	testutil.ContainsAll(t, label, text, required...)
 }
 
 func assertContainsNone(t *testing.T, label string, text string, forbidden ...string) {
 	t.Helper()
-
-	for _, phrase := range forbidden {
-		if strings.Contains(text, phrase) {
-			t.Fatalf("%s must not contain %q", label, phrase)
-		}
-	}
+	testutil.ContainsNone(t, label, text, forbidden...)
 }
 
 var trancheB1ForbiddenDocumentationClaims = []string{
