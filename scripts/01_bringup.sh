@@ -158,8 +158,10 @@ provision_bringup_nomad_acl() {
     mkdir -p -m 0700 "$(dirname "${es_token_file}")"
   fi
   wait_for_nomad_leader "${READY_TIMEOUT_SECONDS}" || return 1
+  # This profile started Nomad itself, as the current user.
   if ! python3 -I "$(nomad_acl_tool)" provision \
     --addr "${NOMAD_ADDR}" \
+    --nomad-uid "$(id -u)" \
     --management-token-file "${acl_dir}/management-token" \
     --es-token-file "${es_token_file}" \
     --es-token-owner "${es_owner}" \

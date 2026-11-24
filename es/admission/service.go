@@ -21,13 +21,19 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	arsapi "execution-substrate/ars/api"
 	egsmodel "execution-substrate/egs/model"
+	"execution-substrate/es/admission/internal/admissionstate"
 	esconfig "execution-substrate/es/config"
 	evidencev1 "execution-substrate/internal/contracts/evidence/v1"
 	runtimeconfigv1 "execution-substrate/internal/contracts/runtimeconfig/v1"
 	"execution-substrate/internal/observability"
+
+	"golang.org/x/text/unicode/norm"
+	"golang.org/x/text/unicode/rangetable"
 )
 
 const (
@@ -113,6 +119,18 @@ type Service struct {
 
 	mu         sync.RWMutex
 	trustModel *egsmodel.RuntimeTrustPolicy
+	// Private operational authority is commissioned only by the unwired handoff.
+	// trustModelVerified and trustModelOwner say that this Service loaded and
+	// verified its trust model itself; Service.mu protects them.
+	trustModelVerified bool
+	trustModelOwner    *Service
+	// operational is the handle of the admission state: the installed view,
+	// the withdrawal and supersession latches and the confirmation time. The
+	// state lives in the package admissionstate behind its own lock, and
+	// NewService sets the handle once. A Service made without NewService holds
+	// the zero handle, which is closed.
+	operational      admissionstate.State
+	operationalProof *operationalAdmissionProofHooks
 }
 
 type dependencyClient struct {
@@ -157,10 +175,13 @@ type discoveredArtifact struct {
 }
 
 type preparedArtifact struct {
+	privateExecutionValue
 	manifest       Manifest
 	payloadDigest  string
 	targetPlatform string
 	networkAccess  bool
+	// Owned full signed record from the same successful artifact admission.
+	provenanceRecord string
 }
 
 type preparedAdmission struct {
@@ -251,7 +272,7 @@ func NewService(cfg esconfig.Config) (*Service, error) {
 		}
 	}
 
-	return &Service{
+	service := &Service{
 		cfg:                        cfg,
 		resultAuth:                 resultAuth,
 		workloadZoneVaultConfigRef: workloadZoneVaultConfigRef,
@@ -261,7 +282,9 @@ func NewService(cfg esconfig.Config) (*Service, error) {
 		provenanceVerifier:         provenanceVerifier,
 		nomadClient:                nomadClient,
 		admissionPolicyEvaluator:   admissionPolicyEvaluatorFromConfig(cfg.AdmissionPolicy),
-	}, nil
+	}
+	service.operational = admissionstate.New(service)
+	return service, nil
 }
 
 func validateExecutionRuntimeInputs(cfg esconfig.ExecutionConfig) error {
@@ -286,42 +309,64 @@ func validateSPIREWorkloadAPISocketPathConfigShape(path string) error {
 }
 
 func (s *Service) Initialize(ctx context.Context) error {
+	if s.operational.Commissioned() {
+		return fmt.Errorf("private operational authority is already commissioned or withdrawn")
+	}
+	normalized, err := s.fetchVerifiedTrustModel(ctx)
+	if err != nil {
+		return err
+	}
+
+	// Service.mu is held across this question and the write below. An install
+	// holds it too, so no view is installed between the two.
+	s.mu.Lock()
+	if s.operational.Commissioned() {
+		s.mu.Unlock()
+		return fmt.Errorf("private operational authority was commissioned during trust load")
+	}
+	s.trustModel = &normalized
+	s.trustModelVerified = true
+	s.trustModelOwner = s
+	s.mu.Unlock()
+
+	return nil
+}
+
+// fetchVerifiedTrustModel requests the signed runtime trust model from EGS,
+// verifies its envelope and returns the normalized policy. It reads and
+// changes no Service state; Initialize and the private operational
+// confirmation are its only callers.
+func (s *Service) fetchVerifiedTrustModel(ctx context.Context) (egsmodel.RuntimeTrustPolicy, error) {
 	requestCtx, cancel := context.WithTimeout(ctx, s.egsClient.client.Timeout)
 	defer cancel()
 
 	response, err := s.egsClient.get(requestCtx, "/v1/trust-model")
 	if err != nil {
-		return fmt.Errorf("fetch trust model: %w", err)
+		return egsmodel.RuntimeTrustPolicy{}, fmt.Errorf("fetch trust model: %w", err)
 	}
 	defer response.Body.Close()
 
 	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("fetch trust model: unexpected status %d", response.StatusCode)
+		return egsmodel.RuntimeTrustPolicy{}, fmt.Errorf("fetch trust model: unexpected status %d", response.StatusCode)
 	}
 
 	var payload signedRuntimeTrustResponse
 	if err := decodeBoundedJSONResponse(response, &payload); err != nil {
-		return fmt.Errorf("decode trust model response: %w", err)
+		return egsmodel.RuntimeTrustPolicy{}, fmt.Errorf("decode trust model response: %w", err)
 	}
 	if err := payload.RuntimeTrust.Validate(); err != nil {
-		return fmt.Errorf("validate trust model: %w", err)
+		return egsmodel.RuntimeTrustPolicy{}, fmt.Errorf("validate trust model: %w", err)
 	}
 
 	canonical, err := payload.RuntimeTrust.CanonicalBytes()
 	if err != nil {
-		return fmt.Errorf("canonicalize trust model: %w", err)
+		return egsmodel.RuntimeTrustPolicy{}, fmt.Errorf("canonicalize trust model: %w", err)
 	}
 	if err := s.verifyTrustModelEnvelope(payload, canonical); err != nil {
-		return fmt.Errorf("verify trust model: %w", err)
+		return egsmodel.RuntimeTrustPolicy{}, fmt.Errorf("verify trust model: %w", err)
 	}
 
-	normalized := payload.RuntimeTrust.Normalized()
-
-	s.mu.Lock()
-	s.trustModel = &normalized
-	s.mu.Unlock()
-
-	return nil
+	return payload.RuntimeTrust.Normalized(), nil
 }
 
 func (s *Service) Health(ctx context.Context) HealthSnapshot {
@@ -437,7 +482,18 @@ func (s *Service) prepareArtifact(ctx context.Context, req PrepareRequest, trust
 	if err != nil {
 		return preparedArtifact{}, err
 	}
-	return s.prepareArtifactFromDiscovery(req, trustModel, discovery)
+	artifact, err := s.prepareArtifactFromDiscovery(req, trustModel, discovery)
+	if err != nil {
+		return preparedArtifact{}, err
+	}
+	// The successful ordinary resolution owns the exact typed record it used.
+	// This carrier is inert for ordinary Submit and never enters its plan. A
+	// record that cannot be represented leaves the carrier empty: ordinary
+	// Prepare and Submit proceed, and the private builder refuses an empty one.
+	if fullRecord, marshalErr := json.Marshal(discovery.evidence); marshalErr == nil {
+		artifact.provenanceRecord = string(fullRecord)
+	}
+	return artifact, nil
 }
 
 func (s *Service) currentTrustModel() *egsmodel.RuntimeTrustPolicy {
@@ -631,7 +687,6 @@ func (s *Service) prepareArtifactFromEvidenceRecord(trustModel egsmodel.RuntimeT
 	if err := enforceTrustModel(trustModel, evidence.Seal.KeyID, artifactDigest); err != nil {
 		return preparedArtifact{}, err
 	}
-
 	return preparedArtifact{
 		manifest:       manifestFromEvidence(evidence),
 		payloadDigest:  strings.TrimSpace(discovery.Payload.Digest),
@@ -762,8 +817,8 @@ func validatePrepareRequest(req *PrepareRequest) *Error {
 		if req.Resources.CPU <= 0 {
 			return &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "resources.cpu must be greater than 0"}
 		}
-		if req.Resources.MemoryMB <= 0 {
-			return &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "resources.memory_mb must be greater than 0"}
+		if req.Resources.MemoryMB < nomadMinimumMemoryMB {
+			return &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: fmt.Sprintf("resources.memory_mb must be at least %d, the least memory Nomad registers a task with", nomadMinimumMemoryMB)}
 		}
 	}
 
@@ -780,6 +835,63 @@ func validatePrepareRequest(req *PrepareRequest) *Error {
 	return nil
 }
 
+// nomadPassesAsWritten reports whether Nomad hands s to the workload exactly
+// as written. Nomad's client evaluates "${...}" and "%{...}" in every string of
+// a task's driver configuration (the arguments and the mounts) as an HCL
+// template, with the node's attributes and metadata, the task's environment
+// and a set of functions, and rewrites the escapes "$${" and "%%{". It replaces
+// "${name}" in every environment and meta value with a node attribute or an
+// environment value. A NUL byte cannot reach a process at all. So a request
+// string that ES places in a Nomad job holds none of these, or the workload
+// would run with values that ES never admitted, or never start once ES has
+// accepted it.
+func nomadPassesAsWritten(s string) bool {
+	return !strings.Contains(s, "${") && !strings.Contains(s, "%{") && strings.IndexByte(s, 0) < 0
+}
+
+const nomadEvaluatedText = `must not contain "${", "%{" or a NUL byte, which Nomad would not pass on as written`
+
+// nomadKeepsDriverString reports whether Nomad's client leaves s, a string of a
+// task's driver configuration (an argument or a mount target), unchanged on
+// its way to the workload, apart from the templates nomadPassesAsWritten
+// refuses. The client parses each such string with HCL, whose template
+// scanner drops a byte order mark (U+FEFF) at its start, and holds the result
+// as a cty string, which is rewritten to Unicode Normalization Form C. So s
+// must not begin with U+FEFF and must be in NFC. ES judges NFC by its own
+// tables, of Unicode version norm.Version. A Nomad built with tables of a
+// later version could normalize a code point that ES's tables do not know, so
+// s also holds only code points assigned in norm.Version. Unicode's
+// normalization stability policy then keeps s unchanged by every later
+// version. ES writes the job with encoding/json, which writes U+FFFD in place
+// of each byte that is not valid UTF-8, so s must also be valid UTF-8. Nomad
+// leaves environment keys and values and meta values as they are, so this
+// applies to the driver configuration only.
+func nomadKeepsDriverString(s string) bool {
+	if !utf8.ValidString(s) || strings.HasPrefix(s, "\ufeff") || !norm.NFC.IsNormalString(s) {
+		return false
+	}
+	for _, r := range s {
+		if r >= utf8.RuneSelf && (nomadNormalizationAssigned == nil || !unicode.Is(nomadNormalizationAssigned, r)) {
+			return false
+		}
+	}
+	return true
+}
+
+// nomadNormalizationAssigned holds the code points assigned in the Unicode
+// version of ES's normalization tables. If x/text has no table of assigned
+// code points for that version it is nil, and nomadKeepsDriverString then
+// refuses every string that is not ASCII.
+var nomadNormalizationAssigned = rangetable.Assigned(norm.Version)
+
+const nomadRewrittenText = "must be in Unicode Normalization Form C, use only code points assigned in Unicode " + norm.Version + " and not begin with a byte order mark, or Nomad would not pass it on as written"
+
+// nomadMinimumMemoryMB is the least memory Nomad registers a task with
+// (Nomad v2.1.1, structs.MinResources and Resources.MeetsMinResources). A
+// request below it would be accepted, claimed and staged, and then refused by
+// Nomad for good.
+const nomadMinimumMemoryMB = 10
+
 func validateInvocationAgainstManifest(invocation ArtifactInvocation, manifest Manifest) *Error {
 	if manifest.ArtifactDigest != invocation.ArtifactDigest {
 		return &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "artifact digest mismatch between request and manifest"}
@@ -787,11 +899,25 @@ func validateInvocationAgainstManifest(invocation ArtifactInvocation, manifest M
 	if len(invocation.Argv) > 100 {
 		return &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "invocation.argv exceeds the maximum supported count"}
 	}
+	if !nomadPassesAsWritten(invocation.OutputID) {
+		return &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "invocation.output_id " + nomadEvaluatedText}
+	}
+	for _, arg := range invocation.Argv {
+		if !nomadPassesAsWritten(arg) {
+			return &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "invocation.argv " + nomadEvaluatedText}
+		}
+		if !nomadKeepsDriverString(arg) {
+			return &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "invocation.argv " + nomadRewrittenText}
+		}
+	}
 	allowedEnv := make(map[string]struct{}, len(manifest.RuntimeInterface.EnvironmentVariables))
 	for _, key := range manifest.RuntimeInterface.EnvironmentVariables {
 		allowedEnv[strings.TrimSpace(key)] = struct{}{}
 	}
-	for key := range invocation.Env {
+	for key, value := range invocation.Env {
+		if !nomadPassesAsWritten(key) || !nomadPassesAsWritten(value) {
+			return &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "invocation.env " + nomadEvaluatedText}
+		}
 		if isReservedRuntimeEnvKey(key) {
 			return &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: fmt.Sprintf("environment key is reserved for runtime identity or control-plane use: %s", key)}
 		}

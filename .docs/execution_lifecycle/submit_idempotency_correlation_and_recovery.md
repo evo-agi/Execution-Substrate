@@ -960,6 +960,48 @@ fixed result. Fixture references cannot convert to operational RunRefs or
 public receipts. Public structural reliable-request refusal and unkeyed
 Submit stay in force.
 
+### 6C. Selected operational handoff and receipt-only recovery
+
+PR #12's current-admission repair makes operational originals
+`operational_local_v2` with exact retained signed evidence from one ordinary
+resolution; `operational_local_v1` is removed and refused. Only an unmarked
+claim presented by a process whose admission token equals the enabled durable
+admission row, and whose trust was confirmed with EGS inside the deadline,
+can progress toward its first effect. Replacing trust, verifier or policy
+advances the admission generation in the same epoch: a retained claim is
+judged again by the new content, and one it denies is refused as denied until
+a later generation allows it. For every original, a committed accepted receipt is verified from the authenticated historical original and
+exact current caller/eligible ACTIVE or RETIRED original key pair, independently
+of current trust, verifier, policy, admission generation, withdrawal, resolver,
+staging and provider. A marked
+claim without a receipt may reconcile only verified positive registration and
+record its immutable receipt; it cannot create another sender or POST. Wrong,
+missing, revoked or mixed keys and unauthorized callers remain nondisclosing
+refusals. A refused unmarked first-effect cut withholds run/receipt and
+reports denied or unavailable while its
+earlier acknowledged or uncertain write disposition remains accurate. A retry
+that attempts no cut, such as recovery or a stamped-but-unmarked retry,
+returns the stored run to its authenticated original caller and sends no
+trust request.
+
+The [Operational Handoff](reliable_submit_operational_handoff.md) defines the private candidate codec-5 original, exact
+caller scoping, private result projections and two distinct authorization
+paths. Current exact caller authorization precedes lookup. First effects
+require current admission and an exact ACTIVE key pair. Accepted replay
+verifies an equivalent qualified retained original and immutable receipt with
+the exact ACTIVE or RETIRED pair. The receipt-only path consumes retained facts
+and current caller authorization. Mutable execution admission, current
+resolution, staging and provider access are excluded from that path.
+§6B continues to govern the completed private fixture.
+In the candidate, receipt recovery recomputes the retained marker projection
+and receipt MAC. Concurrent qualified receipt observations return the same
+verified winning receipt. This records provider registration only.
+The private projection reflects the current qualified cut. A denied or
+unverified pre-stage cut withholds the assigned run. A losing establishment
+preserves conflict or the qualified current winner as specified in the
+operational owner table. Write disposition survives a cleanup denial.
+Claim-scoped public lifecycle authorization remains a later qualification.
+
 ## 7. Narrow Durable Correlation Semantics
 
 Reliable keyed submit requires ES-owned durable recovery evidence sufficient to survive ES restart.

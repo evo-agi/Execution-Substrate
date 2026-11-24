@@ -4,7 +4,11 @@
 ES submits Nomad jobs with one least-privilege ACL client token. This tool is
 the one place that sets that up and checks it. It talks to a loopback Nomad
 HTTP address only, never prints or passes a token on a command line, and
-reads and writes token files with fixed custody rules.
+reads and writes token files with fixed custody rules. Before it sends
+anything on a connection, it asks the kernel which user owns the socket that
+accepted it, and refuses unless that is Nomad's user (--nomad-uid, default
+root): while Nomad is down any local account can hold its port, and must not
+receive a token or a bootstrap secret.
 
   provision  Bootstrap Nomad's ACL system when needed (the operator keeps the
              management token in a root-only file), create the ES namespace
@@ -29,11 +33,16 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import functools
+import http.client
+import ipaddress
 import json
 import os
 import re
+import socket
 import stat
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -62,6 +71,8 @@ OBSERVER_POLICY_RULES = (
 TOKEN_PATTERN = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\Z", re.ASCII)
 MAX_RESPONSE_BYTES = 1 << 20
 HTTP_TIMEOUT_SECONDS = 10
+DEFAULT_LEADER_WAIT_SECONDS = 30
+PROC_NET_TCP = (("/proc/net/tcp", True), ("/proc/net/tcp6", False))
 DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 FILE_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC
 
@@ -84,8 +95,96 @@ class Refusal(Exception):
 # --- HTTP -------------------------------------------------------------------
 
 
+def _proc_net_endpoint(text: str):
+    """Decode a /proc/net/tcp{,6} address: hex words in host byte order, then
+    a hex port. An IPv4-mapped IPv6 address is returned as IPv4."""
+    address_hex, port_hex = text.split(":")
+    raw = bytes.fromhex(address_hex)
+    packed = b"".join(
+        int.from_bytes(raw[i : i + 4], "big").to_bytes(4, sys.byteorder) for i in range(0, len(raw), 4)
+    )
+    address = ipaddress.ip_address(packed)
+    if address.version == 6 and address.ipv4_mapped is not None:
+        address = address.ipv4_mapped
+    return address, int(port_hex, 16)
+
+
+def _endpoint(sockaddr):
+    address = ipaddress.ip_address(sockaddr[0])
+    if address.version == 6 and address.ipv4_mapped is not None:
+        address = address.ipv4_mapped
+    return address, sockaddr[1]
+
+
+def _accepting_socket_owners(sock: socket.socket) -> set[int]:
+    """The owners of the socket(s) on the other end of this loopback
+    connection, from the kernel's TCP tables. The server side of a connection
+    is owned by the user that owns the listening socket, whether it is still
+    a pending request or already accepted."""
+    ours = _endpoint(sock.getsockname())
+    theirs = _endpoint(sock.getpeername())
+    owners: set[int] = set()
+    for path, required in PROC_NET_TCP:
+        try:
+            with open(path, encoding="ascii") as handle:
+                lines = handle.read().splitlines()[1:]
+        except OSError:
+            if required:
+                raise Refusal(f"cannot read {path} to see who holds Nomad's port; no request was sent") from None
+            continue
+        for line in lines:
+            fields = line.split()
+            if len(fields) < 8:
+                continue
+            if _proc_net_endpoint(fields[1]) == theirs and _proc_net_endpoint(fields[2]) == ours:
+                owners.add(int(fields[7]))
+    return owners
+
+
+def require_nomads_socket(sock: socket.socket, nomad_uid: int, base: str) -> None:
+    owners: set[int] = set()
+    for _ in range(20):
+        owners = _accepting_socket_owners(sock)
+        if owners:
+            break
+        time.sleep(0.01)
+    if owners != {nomad_uid}:
+        found = ", ".join(str(owner) for owner in sorted(owners)) or "nobody the kernel lists"
+        raise Refusal(
+            f"the process listening on {base} runs as uid {found}, not Nomad's uid {nomad_uid}: "
+            "another local account may hold Nomad's port while Nomad is down; nothing was sent"
+        )
+
+
+class _NomadsConnection(http.client.HTTPConnection):
+    """An HTTP connection that sends nothing until the kernel shows that
+    Nomad's user owns the accepting socket."""
+
+    def __init__(self, *args, nomad_uid: int, base: str, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._nomad_uid = nomad_uid
+        self._base = base
+
+    def connect(self) -> None:
+        super().connect()
+        try:
+            require_nomads_socket(self.sock, self._nomad_uid, self._base)
+        except BaseException:
+            self.close()
+            raise
+
+
+class _NomadsHTTPHandler(urllib.request.HTTPHandler):
+    def __init__(self, nomad_uid: int, base: str) -> None:
+        super().__init__()
+        self._connection = functools.partial(_NomadsConnection, nomad_uid=nomad_uid, base=base)
+
+    def http_open(self, req):
+        return self.do_open(self._connection, req)
+
+
 class Nomad:
-    def __init__(self, address: str) -> None:
+    def __init__(self, address: str, nomad_uid: int = 0) -> None:
         parsed = urllib.parse.urlsplit(address)
         host = parsed.hostname or ""
         if (
@@ -101,10 +200,12 @@ class Nomad:
             raise Refusal("nomad address must be http://127.0.0.1:<port> or http://[::1]:<port>")
         self.base = address.rstrip("/")
         # Never follow redirects and never use a proxy: a token must reach
-        # only the loopback Nomad named here.
+        # only the loopback Nomad named here, and only once the kernel shows
+        # that Nomad's user owns the socket that accepted the connection.
         self.opener = urllib.request.build_opener(
             urllib.request.ProxyHandler({}),
             _NoRedirect(),
+            _NomadsHTTPHandler(nomad_uid, self.base),
         )
 
     def request(self, method: str, path: str, token: str | None = None, body=None):
@@ -316,13 +417,44 @@ def token_self(nomad: Nomad, token: str | None):
 
 
 def require_acl_enabled(nomad: Nomad) -> None:
-    status, document = token_self(nomad, None)
+    status, payload = nomad.request("GET", "/v1/acl/token/self", None)
+    document = None
+    if status == 200:
+        try:
+            document = json.loads(payload)
+        except ValueError:
+            raise Refusal("nomad GET /v1/acl/token/self returned a body that is not JSON") from None
     if status == 200 and isinstance(document, dict) and document.get("AccessorID") == "acls-disabled":
         raise Refusal(
             "nomad ACLs are disabled: add `acl { enabled = true }` to the Nomad agent configuration and restart Nomad"
         )
     if status != 200 or not isinstance(document, dict) or document.get("AccessorID") != "anonymous":
-        raise Refusal(f"nomad did not answer as an ACL-enabled agent (GET /v1/acl/token/self returned HTTP {status})")
+        raise Refusal(
+            "nomad did not answer as an ACL-enabled agent "
+            f"(GET /v1/acl/token/self returned HTTP {status}: {_text(payload)})"
+        )
+
+
+def wait_for_leader(nomad: Nomad, seconds: int) -> None:
+    """Nomad bootstraps ACLs only with a leader. It answers "" while it elects
+    one and an error while it has none; only a named leader counts."""
+    deadline = time.monotonic() + seconds
+    while True:
+        status, payload = nomad.request("GET", "/v1/status/leader", None)
+        leader = None
+        if status == 200:
+            try:
+                leader = json.loads(payload)
+            except ValueError:
+                leader = None
+        if isinstance(leader, str) and leader.strip():
+            return
+        if time.monotonic() >= deadline:
+            raise Refusal(
+                f"nomad has no leader after {seconds}s (GET /v1/status/leader returned HTTP {status}: "
+                f"{_text(payload)}); rerun once Nomad has elected one"
+            )
+        time.sleep(1)
 
 
 def require_management(nomad: Nomad, token: str) -> None:
@@ -334,26 +466,41 @@ def require_management(nomad: Nomad, token: str) -> None:
 def bootstrap_or_load_management(nomad: Nomad, path: str) -> str:
     if file_exists_no_follow(path):
         token = read_token_file(path, "management token file")
-        require_management(nomad, token)
-        return token
+        status, document = token_self(nomad, token)
+        if status == 200 and isinstance(document, dict) and document.get("Type") == "management":
+            return token
+        # Nomad does not know the saved secret. An earlier bootstrap may have
+        # failed before Nomad installed it (no leader yet, a lost response), so
+        # offer it again: Nomad accepts it only while ACLs are not bootstrapped.
+        return _bootstrap(nomad, path, token, created=False)
     secret = str(uuid.uuid4())
     # The secret is on disk before Nomad sees it, so a lost response never
     # loses the management token.
     write_token_file(path, "management token file", secret, os.geteuid(), os.getegid(), 0o600, replace=False)
+    return _bootstrap(nomad, path, secret, created=True)
+
+
+def _bootstrap(nomad: Nomad, path: str, secret: str, created: bool) -> str:
     status, payload = nomad.request("POST", "/v1/acl/bootstrap", None, {"BootstrapSecret": secret})
     if status == 200:
         require_management(nomad, secret)
         print("nomad acl: bootstrapped; management token kept in the management token file")
         return secret
     if status == 400 and b"bootstrap already done" in payload.lower():
-        remove_token_file(path)
+        if created:
+            remove_token_file(path)
+            raise Refusal(
+                "nomad ACLs were already bootstrapped by someone else and the management token file is absent: "
+                "put that management token into the file (mode 0600, owned by this user) or follow Nomad's "
+                "ACL bootstrap reset procedure, then rerun"
+            )
         raise Refusal(
-            "nomad ACLs were already bootstrapped by someone else and the management token file is absent: "
-            "put that management token into the file (mode 0600, owned by this user) or follow Nomad's "
-            "ACL bootstrap reset procedure, then rerun"
+            "the management token file does not hold a working Nomad management token and nomad ACLs were "
+            "already bootstrapped: put the management token into the file (mode 0600, owned by this user) or "
+            "follow Nomad's ACL bootstrap reset procedure, then rerun"
         )
     raise Refusal(
-        f"nomad ACL bootstrap returned HTTP {status}: {_text(payload)}; the generated management token was kept "
+        f"nomad ACL bootstrap returned HTTP {status}: {_text(payload)}; the management token was kept "
         "in the management token file, so a rerun can finish or reuse it"
     )
 
@@ -641,7 +788,7 @@ def require_designed_policy(nomad: Nomad, token: str, name: str, rules: str, req
 
 
 def command_provision(args) -> None:
-    nomad = Nomad(args.addr)
+    nomad = Nomad(args.addr, args.nomad_uid)
     es_uid, es_gid = parse_owner(args.es_token_owner)
     observer_owner = None
     if args.observer_token_file:
@@ -652,6 +799,7 @@ def command_provision(args) -> None:
     if len(set(paths)) != len(paths):
         raise Refusal("the management, ES and observer token files must be different files")
 
+    wait_for_leader(nomad, args.leader_wait_seconds)
     require_acl_enabled(nomad)
     management = bootstrap_or_load_management(nomad, args.management_token_file)
     require_no_anonymous_policy(nomad)
@@ -707,7 +855,7 @@ def _probe_plan_body() -> dict:
 
 
 def command_check(args) -> None:
-    nomad = Nomad(args.addr)
+    nomad = Nomad(args.addr, args.nomad_uid)
     require_acl_enabled(nomad)
     require_no_anonymous_policy(nomad)
 
@@ -794,21 +942,38 @@ def command_check(args) -> None:
     )
 
 
+NOMAD_UID_HELP = "uid that Nomad's HTTP listener runs as; nothing is sent to a listener owned by any other user (default 0)"
+
+
+def _non_negative_int(text: str) -> int:
+    if not re.fullmatch(r"[0-9]{1,10}", text, re.ASCII):
+        raise argparse.ArgumentTypeError("must be a non-negative integer")
+    return int(text)
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="nomad_acl.py", description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
 
     provision = sub.add_parser("provision")
     provision.add_argument("--addr", required=True)
+    provision.add_argument("--nomad-uid", type=_non_negative_int, default=0, help=NOMAD_UID_HELP)
     provision.add_argument("--management-token-file", required=True)
     provision.add_argument("--es-token-file", required=True)
     provision.add_argument("--es-token-owner", required=True, help="<uid>:<gid> of the user ES runs as")
     provision.add_argument("--observer-token-file")
     provision.add_argument("--observer-token-owner", help="<uid>:<gid> of the operator who runs readiness checks")
     provision.add_argument("--rotate", action="store_true", help="replace the ES and observer tokens")
+    provision.add_argument(
+        "--leader-wait-seconds",
+        type=_non_negative_int,
+        default=DEFAULT_LEADER_WAIT_SECONDS,
+        help="how long to wait for Nomad to name a leader before bootstrapping (default 30)",
+    )
 
     check = sub.add_parser("check")
     check.add_argument("--addr", required=True)
+    check.add_argument("--nomad-uid", type=_non_negative_int, default=0, help=NOMAD_UID_HELP)
     check.add_argument("--es-token-file", required=True)
     check.add_argument("--es-token-owner", help="<uid>:<gid> expected to own the ES token file (default: current user)")
     check.add_argument("--observer-token-file")
