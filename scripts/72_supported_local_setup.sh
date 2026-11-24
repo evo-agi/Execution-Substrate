@@ -10,6 +10,7 @@ else
 fi
 source "${SCRIPT_DIR}/internal/supported_local_retained_result_auth.sh"
 source "${SCRIPT_DIR}/internal/spire_release.sh"
+source "${SCRIPT_DIR}/internal/nomad_acl.sh"
 ES_ROOTS_HELPER="${SCRIPT_DIR}/internal/supported_local_execution_roots.py"
 ES_ROOTS_PROFILE="service-root-v1"
 
@@ -46,6 +47,11 @@ ALLOW_CONTROL_PLANE_CALLER="${SUPPORTED_LOCAL_ALLOW_CONTROL_PLANE:-0}"
 RETAINED_RESULT_AUTH_STORE_ID="${SUPPORTED_LOCAL_RETAINED_RESULT_AUTH_STORE_ID:-}"
 RETAINED_RESULT_AUTH_KEY_ID="${SUPPORTED_LOCAL_RETAINED_RESULT_AUTH_KEY_ID:-}"
 RETAINED_RESULT_AUTH_KEY_FILE="${SUPPORTED_LOCAL_RETAINED_RESULT_AUTH_KEY_FILE:-}"
+# Nomad stays on loopback; only its HTTP port can differ from 4646 (a test
+# that starts its own Nomad uses another one).
+SUPPORTED_LOCAL_NOMAD_PORT="${SUPPORTED_LOCAL_NOMAD_PORT:-4646}"
+SUPPORTED_LOCAL_NOMAD_ADDR="http://127.0.0.1:${SUPPORTED_LOCAL_NOMAD_PORT}"
+NOMAD_ACL_DIR="${SUPPORTED_LOCAL_NOMAD_ACL_DIR:-/etc/execution-substrate/nomad-acl}"
 GO_REQUIRED_VERSION="go1.26.5"
 
 ARS_PORT=$((PORT_BASE + 2))
@@ -117,7 +123,17 @@ Optional environment variables:
   SUPPORTED_LOCAL_RETAINED_RESULT_AUTH_STORE_ID=<stable non-secret identifier>
   SUPPORTED_LOCAL_RETAINED_RESULT_AUTH_KEY_ID=<stable non-secret identifier>
   SUPPORTED_LOCAL_RETAINED_RESULT_AUTH_KEY_FILE=/external/private/keys/key
+  SUPPORTED_LOCAL_NOMAD_ACL_DIR=/etc/execution-substrate/nomad-acl
+  SUPPORTED_LOCAL_NOMAD_PORT=4646   Nomad HTTP port on 127.0.0.1
   SUPPORTED_LOCAL_ES_ROOTS_PROFILE=service-root-v1   only accepted profile
+
+Nomad must enforce access control (ACLs): scripts/70_linux_setup.sh enables
+and bootstraps them and keeps the management token in the directory named by
+SUPPORTED_LOCAL_NOMAD_ACL_DIR. Setup then runs scripts/nomad_acl_setup.sh as
+root (sudo -n) to keep or issue ES's submit token (es-token, owned by root,
+because ES runs as root in this profile) and a read-only observer token
+(observer-token, owned by the user running setup). es.json names es-token as
+nomad.token_file and env.sh exports NOMAD_TOKEN_FILE=<observer-token>.
 EOF
 }
 
@@ -163,6 +179,27 @@ preflight_supported_local_setup_retained_result_auth() {
     "${proof_dir}" \
     "${proof_dir}/es-staging" \
     "${proof_dir}/es-results"
+}
+
+# Refuse before any effect unless the token directory is placed outside the
+# proof scopes and the host's Nomad enforces ACLs with no anonymous policy.
+preflight_supported_local_setup_nomad_acl() {
+  local proof_dir="${1:-${PROOF_DIR}}"
+  if [[ ! "${SUPPORTED_LOCAL_NOMAD_PORT}" =~ ^[1-9][0-9]{0,4}$ ]] || (( SUPPORTED_LOCAL_NOMAD_PORT > 65535 )); then
+    echo "supported-local Nomad port must be a TCP port number" >&2
+    return 1
+  fi
+  # The SPIRE socket directory is bind-mounted into every workload.
+  nomad_acl_validate_dir_placement \
+    "${NOMAD_ACL_DIR}" \
+    "${proof_dir}" \
+    "${proof_dir}/es-staging" \
+    "${proof_dir}/es-results" \
+    "$(dirname -- "${proof_dir}/spire-agent/public/api.sock")" || return 1
+  if ! NOMAD_ADDR="${SUPPORTED_LOCAL_NOMAD_ADDR}" nomad_acl_state_check >/dev/null; then
+    echo "supported-local Nomad does not enforce access control; run scripts/70_linux_setup.sh as root, which enables and bootstraps Nomad ACLs" >&2
+    return 1
+  fi
 }
 
 preflight_supported_local_setup_execution_roots() {
@@ -219,6 +256,46 @@ provision_supported_local_execution_roots() {
     echo "supported-local execution roots invalid" >&2
     return 1
   fi
+}
+
+# Keep or issue ES's submit token and the observer token. The script is
+# idempotent: a working token is kept, so a running ES is not disturbed.
+provision_supported_local_nomad_acl() {
+  local observer_user
+  local -a command
+
+  observer_user="$(id -un)"
+  command=(
+    env
+    "NOMAD_ADDR=${SUPPORTED_LOCAL_NOMAD_ADDR}"
+    "NOMAD_ACL_DIR=${NOMAD_ACL_DIR}"
+    "ES_USER=root"
+    "OBSERVER_USER=${observer_user}"
+    bash "${SCRIPT_DIR}/nomad_acl_setup.sh" provision
+  )
+  if (( EUID != 0 )); then
+    command=(sudo -n "${command[@]}")
+  fi
+  if ! "${command[@]}"; then
+    echo "supported-local Nomad access control provisioning failed" >&2
+    return 1
+  fi
+}
+
+# The observer token can read the agent. Refuse a Nomad whose drivers or
+# Docker plugin limits are not the supported ones before any proof effect.
+verify_supported_local_nomad_runtime_posture() {
+  local agent_path
+  local status=0
+
+  agent_path="$(mktemp)"
+  if ! NOMAD_ADDR="${SUPPORTED_LOCAL_NOMAD_ADDR}" NOMAD_TOKEN_FILE="${NOMAD_ACL_DIR}/observer-token" \
+      nomad_api_get "/v1/agent/self" "${agent_path}" || ! nomad_runtime_posture_check "${agent_path}"; then
+    echo "supported-local Nomad does not limit its drivers the supported way; run scripts/70_linux_setup.sh as root, then rerun this setup" >&2
+    status=1
+  fi
+  rm -f "${agent_path}"
+  return "${status}"
 }
 
 write_supported_local_execution_root_evidence() {
@@ -1158,7 +1235,9 @@ write_runtime_blob_and_configs() {
     "${ES_HOST}" \
     "${RETAINED_RESULT_AUTH_STORE_ID}" \
     "${RETAINED_RESULT_AUTH_KEY_ID}" \
-    "${RETAINED_RESULT_AUTH_KEY_FILE}"
+    "${RETAINED_RESULT_AUTH_KEY_FILE}" \
+    "${NOMAD_ACL_DIR}/es-token" \
+    "${SUPPORTED_LOCAL_NOMAD_ADDR}"
 import hashlib
 import json
 import os
@@ -1193,6 +1272,8 @@ es_host = sys.argv[25]
 result_auth_store_id = sys.argv[26]
 result_auth_key_id = sys.argv[27]
 result_auth_key_file = sys.argv[28]
+nomad_token_file = sys.argv[29]
+nomad_base_url = sys.argv[30]
 allow_control_plane = os.environ.get("SUPPORTED_LOCAL_ALLOW_CONTROL_PLANE", "0").strip().lower() in {"1", "true", "yes"}
 operator_and_maybe_control_plane = ["operator/local"]
 if allow_control_plane:
@@ -1309,7 +1390,7 @@ es_cfg = {
         "workload_identity_binding": {"algorithm": "ed25519", "key_id": "ags-key-1", "public_key_hex": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737"},
     },
     "workload_vault_auth": {"default_mode": "vault_identity_jwt"},
-    "nomad": {"base_url": "http://127.0.0.1:4646", "datacenter": "dc1", "timeout_seconds": 5},
+    "nomad": {"base_url": nomad_base_url, "datacenter": "dc1", "timeout_seconds": 5, "token_file": nomad_token_file},
     "execution": {
         "staging_root_dir": str(staging_root),
         "results_root_dir": str(results_root),
@@ -1363,7 +1444,8 @@ export ARS_URL="https://${ARS_HOST}:${ARS_PORT}"
 export EGS_URL="https://${EGS_HOST}:${EGS_PORT}"
 export AGS_URL="https://${AGS_HOST}:${AGS_PORT}"
 export ES_URL="https://${ES_HOST}:${ES_PORT}"
-export NOMAD_ADDR="http://127.0.0.1:4646"
+export NOMAD_ADDR="${SUPPORTED_LOCAL_NOMAD_ADDR}"
+export NOMAD_TOKEN_FILE="${NOMAD_ACL_DIR}/observer-token"
 export ARS_RESOLVE="${ARS_HOST}:${ARS_PORT}:127.0.0.1"
 export EGS_RESOLVE="${EGS_HOST}:${EGS_PORT}:127.0.0.1"
 export AGS_RESOLVE="${AGS_HOST}:${AGS_PORT}:127.0.0.1"
@@ -1407,6 +1489,7 @@ setup() {
   supported_local_setup_repair_test_sentinel
   preflight_supported_local_setup_retained_result_auth
   preflight_supported_local_setup_execution_roots
+  preflight_supported_local_setup_nomad_acl
   preflight_supported_local_setup_spire_pin
 
   local vault_public_host
@@ -1451,6 +1534,9 @@ setup() {
   mkdir -- "${PROOF_DIR}"
   mkdir -p "${PROOF_DIR}/tls" "${PROOF_DIR}/ars-storage" "${PROOF_DIR}/bin" "${PROOF_DIR}/logs" "${PROOF_DIR}/workdirs" "${PROOF_DIR}/downloads" "${PROOF_DIR}/spire"
   provision_supported_local_execution_roots
+  echo "==> keeping or issuing Nomad tokens for ES and readiness checks"
+  provision_supported_local_nomad_acl
+  verify_supported_local_nomad_runtime_posture
 
   build_codex_runtime_profile_image
   prepare_runtime_support_binary

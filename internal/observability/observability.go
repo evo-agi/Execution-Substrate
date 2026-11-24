@@ -120,6 +120,12 @@ func WrapRoundTripper(service string, dependency string, propagateTrace bool, ba
 	}
 }
 
+// Unwrap returns the round tripper that carries the requests, so a caller
+// can check the transport a dependency client really uses.
+func (t *loggingRoundTripper) Unwrap() http.RoundTripper {
+	return t.baseRoundTripper
+}
+
 func (w *statusCapturingResponseWriter) WriteHeader(statusCode int) {
 	w.statusCode = statusCode
 	w.ResponseWriter.WriteHeader(statusCode)

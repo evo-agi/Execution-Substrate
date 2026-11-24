@@ -177,6 +177,16 @@ func TestRetainedResultAuditF1RenderedConfigConstructsConfiguredService(t *testi
 	if err := os.WriteFile(keyPath, keyBytes, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// The renderer names <acl dir>/es-token as nomad.token_file; setup's
+	// provisioning step (not run here) keeps or issues that token.
+	nomadACLDir := filepath.Join(workspace, "nomad-acl")
+	if err := os.Mkdir(nomadACLDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	nomadTokenPath := filepath.Join(nomadACLDir, "es-token")
+	if err := os.WriteFile(nomadTokenPath, []byte(testNomadToken+"\n"), 0o400); err != nil {
+		t.Fatal(err)
+	}
 	vaultCAPath := filepath.Join(proofDir, "tls", "vault-dev", "vault-ca.pem")
 	if err := os.MkdirAll(filepath.Dir(vaultCAPath), 0o700); err != nil {
 		t.Fatal(err)
@@ -210,6 +220,7 @@ write_env_file "$SUPPORTED_LOCAL_PROOF_DIR/env.sh"`, "bash", script)
 		"SUPPORTED_LOCAL_RETAINED_RESULT_AUTH_STORE_ID=stable_store",
 		"SUPPORTED_LOCAL_RETAINED_RESULT_AUTH_KEY_ID=stable_key",
 		"SUPPORTED_LOCAL_RETAINED_RESULT_AUTH_KEY_FILE="+keyPath,
+		"SUPPORTED_LOCAL_NOMAD_ACL_DIR="+nomadACLDir,
 	)
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("production setup renderer failed: %v output=%s", err, output)
@@ -232,6 +243,10 @@ write_env_file "$SUPPORTED_LOCAL_PROOF_DIR/env.sh"`, "bash", script)
 	if !bytes.Contains(envBytes, []byte("export SUPPORTED_LOCAL_ES_ROOTS_PROFILE=\"service-root-v1\"")) ||
 		!bytes.Contains(envBytes, []byte("export ES_CONFIG=\""+filepath.Join(proofDir, "es.json")+"\"")) {
 		t.Fatal("renderer env does not select the same supported-local config and profile")
+	}
+	if rendered.Nomad.TokenFile != nomadTokenPath ||
+		!bytes.Contains(envBytes, []byte("export NOMAD_TOKEN_FILE=\""+filepath.Join(nomadACLDir, "observer-token")+"\"")) {
+		t.Fatal("renderer does not name ES's Nomad token and the observer token from the selected ACL directory")
 	}
 	for _, root := range []string{stage, results} {
 		info, err := os.Lstat(root)
@@ -282,6 +297,9 @@ write_env_file "$SUPPORTED_LOCAL_PROOF_DIR/env.sh"`, "bash", script)
 		}
 		if bytes.Contains(payload, keyBytes) {
 			return fmt.Errorf("generated proof asset contains synthetic raw key bytes")
+		}
+		if bytes.Contains(payload, []byte(testNomadToken)) {
+			return fmt.Errorf("generated proof asset contains the Nomad token")
 		}
 		return nil
 	}); err != nil {
@@ -552,6 +570,10 @@ func newExecutionRootStartupTestConfig(t *testing.T, stagingRoot string, results
 	if err := os.WriteFile(resultKeyPath, bytes.Repeat([]byte{0x53}, 32), 0o600); err != nil {
 		t.Fatalf("write synthetic result auth fixture: %v", err)
 	}
+	nomadTokenPath := filepath.Join(configDir, "nomad-token")
+	if err := os.WriteFile(nomadTokenPath, []byte(testNomadToken+"\n"), 0o400); err != nil {
+		t.Fatalf("write synthetic nomad token fixture: %v", err)
+	}
 	publicKey, _, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		t.Fatalf("generate verifier key: %v", err)
@@ -604,6 +626,7 @@ func newExecutionRootStartupTestConfig(t *testing.T, stagingRoot string, results
 			BaseURL:        "http://127.0.0.1:4646",
 			Datacenter:     "dc1",
 			TimeoutSeconds: 1,
+			TokenFile:      nomadTokenPath,
 		},
 		Execution: esconfig.ExecutionConfig{
 			StagingRootDir:             stagingRoot,
@@ -611,7 +634,7 @@ func newExecutionRootStartupTestConfig(t *testing.T, stagingRoot string, results
 			RetainedResultAuth:         esconfig.RetainedResultAuthConfig{StoreID: "test_store", KeyID: "test_key", KeyFile: resultKeyPath},
 			BaseImage:                  "alpine:3.20",
 			RuntimeSupportBinary:       runtimeSupportPath,
-			SPIREWorkloadAPISocketPath: filepath.Join(configDir, "spire-agent.sock"),
+			SPIREWorkloadAPISocketPath: filepath.Join(configDir, "spire", "spire-agent.sock"),
 		},
 	}
 }
