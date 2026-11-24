@@ -839,7 +839,7 @@ echo "   \"$CLONE_DIR/.runbooks/execution/Governed Execution ES Submit Runtime I
 echo "3. Keep the legacy compatibility runbook only for older reference-bridge validation:"
 echo "   \"$CLONE_DIR/.runbooks/execution/Governed Execution ES Submit Runtime Identity Reference Workload.md\""
 echo "4. Lock Nomad so only ES can submit: run 'sudo \"$CLONE_DIR/scripts/nomad_acl_setup.sh\"' (ES_USER=<ES's user> if ES does not run as root), set nomad.token_file in ES's config to ${NOMAD_ACL_DIR}/es-token, and export NOMAD_TOKEN_FILE=${NOMAD_ACL_DIR}/observer-token for readiness checks."
-echo "   Start the Go platform with explicit configs and TLS material. After every Nomad start, run 'sudo \"$CLONE_DIR/scripts/nomad_acl_setup.sh\" placement' (ES_CONFIG=<ES's config> if not /etc/execution-substrate/es.json): it checks that Nomad can place ES's jobs."
+echo "   Start the Go platform with explicit configs and TLS material. After every Nomad start, run 'sudo \"$CLONE_DIR/scripts/nomad_acl_setup.sh\" placement' with the same ES_USER and OBSERVER_USER as above (and ES_CONFIG=<ES's config> if not /etc/execution-substrate/es.json): it checks that Nomad can place ES's jobs."
 echo "5. Verify the VM still reports nomad-startup-mode: pre-managed, submit-ready-mode: natural, and supported-environment: supported through scripts/01_bringup.sh check."
 echo "6. Treat script-managed local Nomad startup and any compute override as bounded fallback/troubleshooting, not the supported Linux environment story."
 echo "7. Use the repo-owned proof bootstrap to start the proof-scoped Vault dev/test target used by the runbook."

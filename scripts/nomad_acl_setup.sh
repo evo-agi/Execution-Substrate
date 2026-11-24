@@ -37,6 +37,9 @@ set -euo pipefail
 #                   node state the servers kept from before it does not count
 #   NOMAD_PLACEMENT_WAIT_SECONDS  placement: default 60
 #
+# check, rotate and placement need the ES_USER and OBSERVER_USER that
+# provision used: check and placement refuse token files that other users
+# own, and rotate gives the new token files to the users named.
 # ES reads its token only at startup: restart ES after `rotate`.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -49,7 +52,7 @@ OBSERVER_USER="${OBSERVER_USER:-${SUDO_USER:-root}}"
 NOMAD_USER="${NOMAD_USER:-root}"
 
 usage() {
-  sed -n '4,40p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '4,43p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 owner_of_user() {

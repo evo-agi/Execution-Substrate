@@ -88,7 +88,8 @@ func newFullReadinessFixture(t *testing.T) *fullReadinessFixture {
 			http.NotFound(w, r)
 			return
 		}
-		_, _ = w.Write([]byte(`{"Attributes":{"cpu.totalcompute":"4000"},"Drivers":{"docker":{"Healthy":true}}}`))
+		_, _ = w.Write([]byte(`{"Attributes":{"cpu.totalcompute":"4000"},"Drivers":{"docker":{"Healthy":true}},` +
+			`"NodeResources":{"Networks":[{"Mode":"host","Device":"lo","CIDR":"127.0.0.1/32","IP":"127.0.0.1"}]}}`))
 	}))
 	t.Cleanup(server.Close)
 	config := filepath.Join(proof, "es.json")

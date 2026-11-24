@@ -7359,7 +7359,9 @@ its output then goes to the journal, and its summary to the backup folder.
    `OBSERVER_USER=root`: it bootstraps the ACLs, creates the `es-submit-v1`
    namespace and the policies, writes the token files under
    `/etc/execution-substrate/nomad-acl`, and checks the lock. Pass the same
-   `ES_USER` and `OBSERVER_USER` to a later `check` or `rotate`. It then
+   `ES_USER` and `OBSERVER_USER` to a later `check`, `rotate` or
+   `placement`: `check` and `placement` refuse token files that other users
+   own, and `rotate` gives the new token files to the users named. It then
    runs `nomad_acl_setup.sh placement` with `ES_CONFIG` the box's
    `es.json`, `NOMAD_STARTED_AT` the time just before the Nomad start and
    `NOMAD_PLACEMENT_WAIT_SECONDS=120`: within 120 seconds the restarted node

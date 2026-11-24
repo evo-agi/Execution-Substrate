@@ -724,8 +724,10 @@ bypass ES admission. ES therefore submits only to a Nomad that enforces them.
   `nomad.datacenter` names in ES's config (`ES_CONFIG`, default
   `/etc/execution-substrate/es.json`); each plan must place its one
   allocation. A plan registers nothing, and the check never uses the
-  management token. The Remote Alpha upgrade script runs it after it
-  restarts Nomad.
+  management token. Like `check` and `rotate`, it needs the `ES_USER` and
+  `OBSERVER_USER` that provisioned the tokens, because it refuses token
+  files owned by anyone else. The Remote Alpha upgrade script runs it after
+  it restarts Nomad.
 - **Rotation needs an ES restart**: ES reads its token only at startup, and a
   container bind mount keeps the old file, so restart ES after `rotate`.
 - **Bring-up and proof paths**: `BRINGUP_PROFILE=full scripts/01_bringup.sh
