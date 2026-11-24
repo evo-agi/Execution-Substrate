@@ -1693,3 +1693,241 @@ func TestUserIdentityDefaultLayoutIsTheBox(t *testing.T) {
 		t.Fatal("the wrapper is not executable")
 	}
 }
+
+// userIdentityDirDigest names every entry under dir with its mode and, for a
+// regular file, its SHA-256, so a refused run can be shown to change nothing.
+func userIdentityDirDigest(t *testing.T, dir string) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	err := filepath.WalkDir(dir, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		info, err := os.Lstat(path)
+		if err != nil {
+			return err
+		}
+		value := info.Mode().String()
+		if info.Mode().IsRegular() {
+			sum := sha256.Sum256(mustReadUserIdentityFile(t, path))
+			value += " " + hex.EncodeToString(sum[:])
+		}
+		rel, _ := filepath.Rel(dir, path)
+		out[rel] = value
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+func userIdentityPrivateKey(t *testing.T, path string) *rsa.PrivateKey {
+	t.Helper()
+	block, _ := pem.Decode(mustReadUserIdentityFile(t, path))
+	if block == nil {
+		t.Fatalf("%s holds no PEM block", path)
+	}
+	if key, err := x509.ParsePKCS8PrivateKey(block.Bytes); err == nil {
+		if rsaKey, ok := key.(*rsa.PrivateKey); ok {
+			return rsaKey
+		}
+		t.Fatalf("%s is not an RSA key", path)
+	}
+	key, err := x509.ParsePKCS1PrivateKey(block.Bytes)
+	if err != nil {
+		t.Fatalf("%s: %v", path, err)
+	}
+	return key
+}
+
+// TestUserIdentityInstallRefusesCertificatesOffTheProfile signs, with the
+// user CA's own key, certificates that each break one rule of the leaf
+// profile. install refuses each with its reason and leaves the caller
+// directory as it was, and check flags such a certificate once it is in
+// place. A certificate on the profile, made the same way, is installed.
+func TestUserIdentityInstallRefusesCertificatesOffTheProfile(t *testing.T) {
+	requireUserIdentityOpenSSL3(t)
+	b := newUserIdentityBox(t)
+	b.mint("claude")
+	dir := b.callerDir("claude")
+	ca := parseUserIdentityPEMCert(t, mustReadUserIdentityFile(t, filepath.Join(b.userCADir, "ca-cert.pem")))
+	caKey := userIdentityPrivateKey(t, filepath.Join(b.userCADir, "ca-key.pem"))
+	callerPub := userIdentityPrivateKey(t, filepath.Join(dir, "key.pem")).Public()
+	id, _ := url.Parse("spiffe://execution.internal/user/claude")
+	other, _ := url.Parse("spiffe://execution.internal/user/other")
+	serial := int64(1000)
+	sign := func(t *testing.T, edit func(*x509.Certificate), pub any) string {
+		t.Helper()
+		serial++
+		template := &x509.Certificate{
+			SerialNumber:          big.NewInt(serial),
+			Subject:               pkix.Name{CommonName: "claude"},
+			NotBefore:             time.Now().Add(-time.Minute),
+			NotAfter:              time.Now().Add(60 * 24 * time.Hour), // past check's 14-day warning
+			KeyUsage:              x509.KeyUsageDigitalSignature,
+			ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+			BasicConstraintsValid: true,
+			URIs:                  []*url.URL{id},
+		}
+		if edit != nil {
+			edit(template)
+		}
+		if pub == nil {
+			pub = callerPub
+		}
+		der, err := x509.CreateCertificate(rand.Reader, template, ca, pub, caKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(b.root, fmt.Sprintf("profile-%d.crt", serial))
+		writeUserIdentityFile(t, path, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o644)
+		return path
+	}
+	otherKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name string
+		edit func(*x509.Certificate)
+		pub  any
+		want string
+	}{
+		{"serverAuth instead of clientAuth", func(c *x509.Certificate) { c.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth} }, nil,
+			"extended key usage is not exactly clientAuth"},
+		{"clientAuth and serverAuth", func(c *x509.Certificate) {
+			c.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth}
+		}, nil, "extended key usage is not exactly clientAuth"},
+		{"no extended key usage", func(c *x509.Certificate) { c.ExtKeyUsage = nil }, nil, "extended key usage missing"},
+		{"CA:TRUE", func(c *x509.Certificate) { c.IsCA = true }, nil, "basic constraints are not CA:FALSE"},
+		{"no basic constraints", func(c *x509.Certificate) { c.BasicConstraintsValid = false }, nil, "basic constraints missing or not critical"},
+		{"keyEncipherment too", func(c *x509.Certificate) { c.KeyUsage |= x509.KeyUsageKeyEncipherment }, nil,
+			"key usage is not exactly digitalSignature"},
+		{"no key usage", func(c *x509.Certificate) { c.KeyUsage = 0 }, nil, "key usage missing or not critical"},
+		{"an organization in the subject", func(c *x509.Certificate) { c.Subject.Organization = []string{"x"} }, nil, "subject is"},
+		{"another name in the subject", func(c *x509.Certificate) { c.Subject.CommonName = "other" }, nil, "subject is"},
+		{"a second URI", func(c *x509.Certificate) { c.URIs = []*url.URL{id, other} }, nil, "subject alternative names are not exactly"},
+		{"a DNS name too", func(c *x509.Certificate) { c.DNSNames = []string{"claude.example"} }, nil, "subject alternative names are not exactly"},
+		{"no subject alternative name", func(c *x509.Certificate) { c.URIs = nil }, nil, "subject alternative name missing"},
+		{"an extra extension", func(c *x509.Certificate) {
+			c.ExtraExtensions = []pkix.Extension{{Id: asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 99999, 1}, Value: []byte{0x05, 0x00}}}
+		}, nil, "unexpected extensions"},
+		{"expired", func(c *x509.Certificate) {
+			c.NotBefore, c.NotAfter = time.Now().Add(-48*time.Hour), time.Now().Add(-24*time.Hour)
+		}, nil, "not valid now"},
+		{"not yet valid", func(c *x509.Certificate) { c.NotBefore = time.Now().Add(time.Hour) }, nil, "not valid now"},
+		{"another key", nil, &otherKey.PublicKey, "does not match the local key"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := sign(t, tc.edit, tc.pub)
+			before := userIdentityDirDigest(t, dir)
+			run := b.caller("install", "--name", "claude", "--cert", path)
+			if run.code != 1 || run.result() != "refused" || !strings.Contains(run.message(), tc.want) {
+				t.Fatalf("install: want refused with %q\n%s", tc.want, run)
+			}
+			requireSameUserIdentitySnapshot(t, before, userIdentityDirDigest(t, dir), "refused install")
+		})
+	}
+
+	// check judges the installed certificate by the same profile.
+	good := sign(t, nil, nil)
+	b.mustOK(b.caller("install", "--name", "claude", "--cert", good), "install of a certificate on the profile")
+	b.mustOK(b.caller("check", "--name", "claude"), "check")
+	writeUserIdentityFile(t, filepath.Join(dir, "cert.pem"),
+		mustReadUserIdentityFile(t, sign(t, func(c *x509.Certificate) { c.IsCA = true }, nil)), 0o644)
+	run := b.caller("check", "--name", "claude")
+	var detail string
+	if run.doc != nil {
+		for _, c := range run.doc["checks"].([]any) {
+			if check := c.(map[string]any); check["name"] == "certificate" && check["state"] == "fail" {
+				detail, _ = check["detail"].(string)
+			}
+		}
+	}
+	if run.code != 1 || !strings.Contains(detail, "basic constraints are not CA:FALSE") {
+		t.Fatalf("check of a CA:TRUE certificate: %s", run)
+	}
+}
+
+// TestUserIdentityRefusesACAOffTheProfile replaces the user CA certificate
+// with one made from the same key but without the right name constraint,
+// and updates the registry to name it, so only the CA profile check can stop
+// it. Every box mode that reads the CA refuses, and nothing changes.
+func TestUserIdentityRefusesACAOffTheProfile(t *testing.T) {
+	requireUserIdentityOpenSSL3(t)
+	for _, tc := range []struct {
+		name string
+		edit func(*x509.Certificate)
+		want string
+	}{
+		{"no name constraints", func(c *x509.Certificate) {}, "name constraints missing or not critical"},
+		{"another trust domain", func(c *x509.Certificate) {
+			c.PermittedURIDomains = []string{"other.example"}
+			c.PermittedDNSDomainsCritical = true
+		}, "name constraints do not permit exactly URI:execution.internal"},
+		{"pathlen 1", func(c *x509.Certificate) {
+			c.MaxPathLen, c.MaxPathLenZero = 1, false
+			c.PermittedURIDomains = []string{"execution.internal"}
+			c.PermittedDNSDomainsCritical = true
+		}, "basic constraints are not CA:TRUE, pathlen:0"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b := newUserIdentityBox(t)
+			b.mint("claude")
+			certPath := filepath.Join(b.userCADir, "ca-cert.pem")
+			old := parseUserIdentityPEMCert(t, mustReadUserIdentityFile(t, certPath))
+			caKey := userIdentityPrivateKey(t, filepath.Join(b.userCADir, "ca-key.pem"))
+			template := &x509.Certificate{
+				SerialNumber:          big.NewInt(4242),
+				Subject:               old.Subject,
+				NotBefore:             old.NotBefore,
+				NotAfter:              old.NotAfter,
+				IsCA:                  true,
+				BasicConstraintsValid: true,
+				MaxPathLenZero:        true,
+				KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
+				SubjectKeyId:          old.SubjectKeyId,
+			}
+			tc.edit(template)
+			der, err := x509.CreateCertificate(rand.Reader, template, template, &caKey.PublicKey, caKey)
+			if err != nil {
+				t.Fatal(err)
+			}
+			info, err := os.Stat(certPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			writeUserIdentityFile(t, certPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), info.Mode().Perm())
+			registryPath := filepath.Join(b.userCADir, "registry.json")
+			var registry map[string]any
+			if err := json.Unmarshal(mustReadUserIdentityFile(t, registryPath), &registry); err != nil {
+				t.Fatal(err)
+			}
+			sum := sha256.Sum256(der)
+			registry["ca"].(map[string]any)["sha256"] = hex.EncodeToString(sum[:])
+			data, err := json.MarshalIndent(registry, "", "  ")
+			if err != nil {
+				t.Fatal(err)
+			}
+			writeUserIdentityFile(t, registryPath, append(data, '\n'), 0o600)
+
+			before := b.snapshot()
+			csr := filepath.Join(b.root, "claude.csr")
+			for _, args := range [][]string{
+				{"allow", "--name", "claude", "--apply"},
+				{"issue", "--name", "claude", "--csr", csr, "--out", filepath.Join(b.root, "again.crt"), "--apply"},
+				{"revoke", "--name", "claude", "--apply"},
+			} {
+				run := b.box(args...)
+				if run.code != 1 || run.result() != "refused" || !strings.Contains(run.message(), tc.want) {
+					t.Fatalf("%v: want refused with %q\n%s", args, tc.want, run)
+				}
+			}
+			requireSameUserIdentitySnapshot(t, before, b.snapshot(), "refused modes")
+			if status := b.box("status"); status.code != 1 || !strings.Contains(status.stdout, tc.want) {
+				t.Fatalf("status: want %q\n%s", tc.want, status)
+			}
+		})
+	}
+}
