@@ -27,15 +27,15 @@ flowchart LR
         Task["Docker container<br/>runs the workload"]
     end
 
-    Publisher -->|"1 publish"| AGS
+    Publisher -->|"publish"| AGS
     AGS -->|"store"| ARS
-    Caller -->|"2 prepare, submit<br/>4 status, logs,<br/>result, cancel"| ES
-    ES -->|"read package<br/>and evidence"| ARS
-    ES -->|"read trust<br/>at startup"| EGS
-    ES -->|"3 submit job"| Nomad
+    Caller -->|"prepare<br/>submit<br/>status<br/>logs<br/>result<br/>cancel"| ES
+    ES -->|"read package<br/>read evidence"| ARS
+    ES -->|"read trust (at startup)"| EGS
+    ES -->|"submit job"| Nomad
     Nomad --> Task
     SPIRE -.->|"identity"| Task
-    Vault -.->|"secrets, after<br/>it logs in"| Task
+    Vault -.->|"secrets"| Task
 ```
 
 ARS is the Artifact Registry Service, AGS the Artifact Governance Service, EGS
