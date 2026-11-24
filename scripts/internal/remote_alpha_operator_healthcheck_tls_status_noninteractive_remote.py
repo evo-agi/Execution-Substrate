@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import ctypes
 import datetime as dt
 import errno
 import hashlib
 import json
 import os
 import re
+import resource
 import selectors
 import signal
 import subprocess
@@ -37,7 +39,17 @@ MAX_COMMAND_STDERR_BYTES = 8192
 MAX_COMMAND_STDIN_BYTES = 65536
 COMMAND_TIMEOUT_SECONDS = 10.0
 COMMAND_TERMINATION_GRACE_SECONDS = 1.0
+DESCENDANT_DRAIN_SECONDS = 2.0
 READ_CHUNK_SIZE = 16384
+MAX_CHILDREN_LIST_BYTES = 65536
+DESCENDANT_REAPS_PER_ROUND = 64
+PR_SET_CHILD_SUBREAPER = 36
+PR_SET_PDEATHSIG = 1
+# The process limit of the fixed child: with RLIMIT_NPROC (0, 0) the kernel
+# refuses an unprivileged fixed child every new process and thread. Root, and
+# so the command of the fixed sudo path, is not bound by it. Tests of the
+# drain set None, which stands for such a descendant.
+FIXED_CHILD_PROCESS_LIMIT: int | None = 0
 
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 FORBIDDEN_PATTERNS = [
@@ -145,6 +157,228 @@ def request_process_group_kill(proc: subprocess.Popen[bytes]) -> None:
             pass
 
 
+class DescendantCapabilityUnavailable(Exception):
+    """The descendant containment cannot be proved on this host."""
+
+
+def _set_child_subreaper() -> None:
+    libc = ctypes.CDLL(None, use_errno=True)
+    prctl = libc.prctl
+    if prctl(ctypes.c_int(PR_SET_CHILD_SUBREAPER), ctypes.c_ulong(1), ctypes.c_ulong(0),
+             ctypes.c_ulong(0), ctypes.c_ulong(0)) != 0:
+        raise OSError(ctypes.get_errno(), "prctl")
+
+
+def _read_children_file(path: str) -> str:
+    fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC)
+    try:
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            chunk = os.read(fd, READ_CHUNK_SIZE)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > MAX_CHILDREN_LIST_BYTES:
+                raise OSError(errno.EOVERFLOW, "children list")
+            chunks.append(chunk)
+    finally:
+        os.close(fd)
+    return b"".join(chunks).decode("ascii")
+
+
+class DescendantBackend:
+    """Fixed kernel operations of the descendant drain; tests inject a deterministic backend."""
+
+    def __init__(self) -> None:
+        self.set_child_subreaper = _set_child_subreaper
+        self.listdir = os.listdir
+        self.read_children = _read_children_file
+        self.waitid = os.waitid
+        self.waitpid = os.waitpid
+        self.kill = os.kill
+        self.fork = os.fork
+        self.pipe = os.pipe
+        self.read = os.read
+        self.write = os.write
+        self.close = os.close
+        self.exit = os._exit
+        self.monotonic = time.monotonic
+        self.sleep = time.sleep
+
+
+DESCENDANT_CAPABILITY_READY = False
+
+
+def own_children(backend: DescendantBackend) -> set[int]:
+    """The process IDs of this process's children, as the kernel lists them.
+
+    The list only selects processes to signal. It never proves an absence.
+    """
+    pids: set[int] = set()
+    for task in backend.listdir("/proc/self/task"):
+        for word in backend.read_children("/proc/self/task/%s/children" % task).split():
+            pid = int(word)
+            if pid <= 0:
+                raise ValueError("children list")
+            pids.add(pid)
+    return pids
+
+
+def _reap_ended_child(pid: int, direct: subprocess.Popen[bytes] | None, backend: DescendantBackend) -> bool:
+    """Reap one child that waitid reported as ended. True when it is reaped.
+
+    The fixed child, while it is not yet reaped, is reaped only through its
+    own process handle, so that the handle keeps its true status.
+    """
+    try:
+        if direct is not None and pid == direct.pid and child_returncode(direct) is None:
+            return direct.poll() is not None
+        reaped, _status = backend.waitpid(pid, os.WNOHANG)
+        return reaped == pid
+    except Exception:
+        return False
+
+
+def _kill_own_children(backend: DescendantBackend) -> None:
+    try:
+        pids = own_children(backend)
+    except Exception:
+        return
+    for pid in sorted(pids):
+        try:
+            backend.kill(pid, signal.SIGKILL)
+        except Exception:
+            # PermissionError is a root descendant of the fixed sudo path. It
+            # is reported through the bound, never ended here.
+            pass
+
+
+def drain_descendants(
+    direct: subprocess.Popen[bytes] | None = None,
+    backend: DescendantBackend | None = None,
+) -> bool:
+    """Kill and reap every child of this process until the kernel reports none.
+
+    The collector is a child subreaper, so every orphaned descendant of a fixed
+    command, in any process group, session, or user, is its child. True only
+    when waitid reports that no child is left; nothing else proves it. Every
+    signalled process is an unreaped child of this process, so its process ID
+    is still reserved. False when that answer does not come within the bound.
+    """
+    if backend is None:
+        backend = DescendantBackend()
+    deadline = backend.monotonic() + DESCENDANT_DRAIN_SECONDS
+    pause = 0.0005
+    while True:
+        for _ in range(DESCENDANT_REAPS_PER_ROUND):
+            try:
+                ended = backend.waitid(os.P_ALL, 0, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+            except ChildProcessError:
+                return True
+            except Exception:
+                break
+            if ended is None or not _reap_ended_child(ended.si_pid, direct, backend):
+                break
+        _kill_own_children(backend)
+        if backend.monotonic() >= deadline:
+            return False
+        backend.sleep(pause)
+        pause = min(pause * 2, 0.05)
+
+
+def _descendant_probe_member(report_w: int, hold_r: int, backend: DescendantBackend) -> None:
+    """Fixed code of the probe child; never returns.
+
+    It starts one grandchild that ends only when the hold pipe reports end of
+    input, reports the grandchild's process ID, and ends.
+    """
+    code = 1
+    try:
+        grandchild = backend.fork()
+        if grandchild == 0:
+            try:
+                backend.close(report_w)
+                backend.read(hold_r, 1)
+            except BaseException:
+                pass
+            backend.exit(0)
+        backend.write(report_w, str(grandchild).encode("ascii"))
+        code = 0
+    except BaseException:
+        pass
+    backend.exit(code)
+
+
+def validate_descendant_capability(backend: DescendantBackend | None = None) -> None:
+    """Prove by behavior that this process adopts, kills, and reaps orphaned descendants.
+
+    The collector must have no child when it starts. It becomes a child
+    subreaper, a fixed probe child starts a fixed grandchild that never ends
+    by itself and then ends, the grandchild must be listed among this
+    process's children, and the drain must kill and reap it and then find no
+    child left. Raise DescendantCapabilityUnavailable on any other outcome.
+    """
+    global DESCENDANT_CAPABILITY_READY
+    DESCENDANT_CAPABILITY_READY = False
+    try:
+        if backend is None:
+            backend = DescendantBackend()
+        backend.waitid(os.P_ALL, 0, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+    except ChildProcessError:
+        pass
+    except Exception:
+        raise DescendantCapabilityUnavailable("probe_failed") from None
+    else:
+        # A child that this process did not start is never signalled.
+        raise DescendantCapabilityUnavailable("child_present")
+    report_r = report_w = hold_r = hold_w = -1
+    middle = -1
+    failure: str | None = None
+    try:
+        backend.set_child_subreaper()
+        report_r, report_w = backend.pipe()
+        hold_r, hold_w = backend.pipe()
+        middle = backend.fork()
+        if middle == 0:
+            try:
+                backend.close(report_r)
+                backend.close(hold_w)
+                _descendant_probe_member(report_w, hold_r, backend)
+            finally:
+                backend.exit(1)
+        backend.close(report_w)
+        report_w = -1
+        backend.close(hold_r)
+        hold_r = -1
+        waited, status = backend.waitpid(middle, 0)
+        if waited != middle or not os.WIFEXITED(status) or os.WEXITSTATUS(status) != 0:
+            failure = "probe_child"
+        else:
+            raw = backend.read(report_r, 32)
+            grandchild = int(raw.decode("ascii")) if raw.isdigit() else -1
+            if grandchild <= 0 or grandchild not in own_children(backend):
+                failure = "not_adopted"
+            elif not drain_descendants(None, backend):
+                failure = "not_drained"
+    except Exception:
+        failure = "probe_failed"
+    finally:
+        for fd in (report_r, report_w, hold_r, hold_w):
+            if fd >= 0:
+                try:
+                    backend.close(fd)
+                except Exception:
+                    failure = failure or "probe_close"
+        if failure is not None and middle > 0:
+            # The hold pipe is closed, so the grandchild ends by itself; the
+            # drain only reaps what is left.
+            drain_descendants(None, backend)
+    if failure is not None:
+        raise DescendantCapabilityUnavailable(failure)
+    DESCENDANT_CAPABILITY_READY = True
+
+
 def wait_for_child_exit(proc: subprocess.Popen[bytes], grace_seconds: float) -> bool:
     deadline = time.monotonic() + max(0.0, grace_seconds)
     while True:
@@ -222,8 +456,65 @@ def read_pipe_chunk(fileobj: object, chunk_size: int) -> PipeReadResult:
 
 
 def run_command(args: tuple[str, ...], input_bytes: bytes | None = None) -> CommandResult:
+    """Run one fixed command, then drain every descendant it left.
+
+    No fixed command starts before the descendant capability probe has set
+    the capability flag. On every path, after the fixed child is handled as
+    before, the drain must prove that this process has no child left. An
+    unproved drain makes the command a runtime failure, whatever it returned,
+    and clears the flag, so that every later command is refused before its
+    spawn.
+    """
+    global DESCENDANT_CAPABILITY_READY
     if input_bytes is not None and len(input_bytes) > MAX_COMMAND_STDIN_BYTES:
         return CommandResult(returncode=125, stdout=b"", stderr=b"", overflow=True)
+    if not DESCENDANT_CAPABILITY_READY:
+        return CommandResult(returncode=125, stdout=b"", stderr=b"", runtime_failed=True)
+    spawned: list[subprocess.Popen[bytes]] = []
+    proved = False
+    try:
+        result = supervise_fixed_child(args, input_bytes, spawned)
+    finally:
+        try:
+            proved = drain_descendants(spawned[0] if spawned else None)
+        except Exception:
+            proved = False
+        if not proved:
+            DESCENDANT_CAPABILITY_READY = False
+    if not proved:
+        return CommandResult(returncode=125, stdout=b"", stderr=b"", runtime_failed=True)
+    return result
+
+
+def fixed_child_setup(parent: int) -> Callable[[], None]:
+    """What the fixed child runs between its fork and its exec.
+
+    It asks the kernel to kill the fixed child when the collector's thread
+    ends, then proves that the collector was still its parent after that
+    request, and then sets its process limit. An exec of a set-user-ID
+    program such as sudo clears the parent-death signal. Any failure fails
+    the spawn.
+    """
+    prctl = ctypes.CDLL(None, use_errno=True).prctl
+    limit = FIXED_CHILD_PROCESS_LIMIT
+
+    def setup() -> None:
+        if prctl(ctypes.c_int(PR_SET_PDEATHSIG), ctypes.c_ulong(signal.SIGKILL), ctypes.c_ulong(0),
+                 ctypes.c_ulong(0), ctypes.c_ulong(0)) != 0:
+            raise OSError(ctypes.get_errno(), "prctl")
+        if os.getppid() != parent:
+            raise OSError(errno.ESRCH, "collector ended")
+        if limit is not None:
+            resource.setrlimit(resource.RLIMIT_NPROC, (limit, limit))
+
+    return setup
+
+
+def supervise_fixed_child(
+    args: tuple[str, ...],
+    input_bytes: bytes | None,
+    spawned: list[subprocess.Popen[bytes]],
+) -> CommandResult:
     try:
         proc = subprocess.Popen(
             list(args),
@@ -233,9 +524,14 @@ def run_command(args: tuple[str, ...], input_bytes: bytes | None = None) -> Comm
             shell=False,
             env=CHILD_ENV,
             start_new_session=True,
+            preexec_fn=fixed_child_setup(os.getpid()),
         )
     except OSError:
         return CommandResult(returncode=127, stdout=b"", stderr=b"")
+    except subprocess.SubprocessError:
+        # The setup between fork and exec failed; the command did not run.
+        return CommandResult(returncode=125, stdout=b"", stderr=b"", runtime_failed=True)
+    spawned.append(proc)
 
     try:
         selector = selectors.DefaultSelector()
@@ -1391,6 +1687,7 @@ def main(argv: list[str]) -> int:
         return emit(safe_failure_payload("", "remote_status_unavailable"))
 
     try:
+        validate_descendant_capability()
         payload = collect_status()
         payload["collector_sha256"] = collector_sha256
         return emit(payload)

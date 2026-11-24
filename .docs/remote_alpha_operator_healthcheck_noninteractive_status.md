@@ -420,6 +420,10 @@ remote host:
 - maximum intentional child stdin: `65536` bytes
 - child wall-clock timeout: `10` seconds
 - child termination grace: `1` second
+- descendant drain bound: `2` seconds
+- ended descendants reaped between two kill rounds of the drain: at most `64`
+- children list read per collector thread: at most `65536` bytes
+- process limit of the fixed child: `RLIMIT_NPROC` set to `(0, 0)`
 - file and pipe chunk size: `16384` bytes
 
 Fixed TLS files are hashed in bounded chunks. Child stdout and stderr are
@@ -427,6 +431,80 @@ drained concurrently while the child runs; timeout or overflow terminates the
 child process group where available, waits for the grace interval, kills if
 still running, reaps, closes descriptors/selectors, discards raw output, and
 returns only a typed result.
+
+`Bounded slice rule` descendant containment: the process-group signals above
+reach only a descendant that stays in the fixed child's process group, and
+only on timeout, overflow, or an error while the fixed child itself still
+runs. A descendant that closes its output and outlives a normal completion,
+that holds the output until the timeout after the fixed child ended, or that
+leaves the group with `setsid` or `setpgid` is reached by none of them. The
+collector therefore accounts for every descendant through the kernel instead:
+
+- Before any status input is read, the collector makes itself a child
+  subreaper (`prctl(PR_SET_CHILD_SUBREAPER)`), so that every orphaned
+  descendant of a fixed command becomes its child, whatever its process
+  group, session, or user. It proves that by behavior in a descendant
+  capability probe: it must have no child of its own when it starts; one
+  fixed internal probe child starts one fixed internal grandchild that never
+  ends by itself and then ends; the grandchild must then be listed among the
+  collector's own children, the drain below must kill and reap it, and
+  `waitid` must then report that no child is left. Any other outcome, a
+  Python or C library without `prctl`, and a host without
+  `/proc/self/task/<tid>/children` emit the existing
+  `remote_status_unavailable` document before any status input is read and
+  before any fixed command. The decision is by behavior, never by an OS
+  label, a kernel version, or the caller's user ID. No fixed command runs
+  without a successful probe.
+- Between its fork and its exec, the fixed child asks the kernel with
+  `prctl(PR_SET_PDEATHSIG)` to kill it when the collector's thread ends,
+  proves that the collector is still its parent after that request, and sets
+  its own process limit `RLIMIT_NPROC` to `(0, 0)`. The kernel then refuses an
+  unprivileged fixed child every new process and every new thread, so it can
+  have no descendant, and a collector that is killed takes it along unless
+  the program itself undoes that request. A failure of that setup means that
+  the command does not run, and it is a runtime failure. The limit is the fixed child's own and does not change the
+  collector's.
+- After every fixed command, on every path, once the fixed child is reaped
+  exactly as before, the collector drains its descendants: it lists its own
+  children from `/proc/self/task/<tid>/children`, sends each one `SIGKILL`,
+  reaps every child that has ended, the fixed child only through its own
+  process handle, and repeats until `waitid` reports that the collector has
+  no child left. That answer is the kernel's statement that no descendant of
+  the command remains. The list only selects the processes to kill and never
+  proves an absence. Every signalled process is an unreaped child of the
+  collector, so its process ID cannot be reused under the signal.
+- When that answer does not come within the descendant drain bound, the
+  command is a runtime failure, whatever it returned, and its check reports
+  `remote_status_unavailable` as any other runtime failure does. A drain never
+  turns a failure into a success, and no command falls back to the
+  process-group signals alone. An unproved drain also clears the capability
+  flag, so every later fixed command of the invocation is refused before its
+  spawn as a runtime failure.
+
+Limits this rule states and does not remove: root is not bound by the
+process limit, and the exec of a set-user-ID program such as `sudo` clears
+the parent-death request. So the root command of the fixed `sudo -n` path,
+and every fixed command when the SSH target is root, can start descendants,
+and only the drain contains them; an unprivileged collector cannot end a
+root descendant of the fixed `sudo -n` path, because `sudo` cannot forward
+`SIGKILL`; it detects such a descendant, reports the check unavailable, and
+the descendant outlives the collector. The fixed child's program can undo its
+own parent-death request; a changed binary that does so outlives a killed
+collector, as one process that the process limit still keeps from starting
+any other. Where only the drain contains
+descendants, it ends them by repeated kills of the collector's own children,
+not by one step, and descendants that only wait can outlast its bound: a
+chain in which each process is the parent of the next gives the collector
+one more child per round, a herd whose children list is longer than one read
+is not killed in that round, and a backlog of ended children uses up the
+reaps of each round while a relay moves on. The bound turns each of them
+into a reported failure: the command is a runtime failure, the capability
+flag is cleared, and no command returns success while a descendant still
+lives. Those descendants then outlive the collector. A process that a host
+service starts on a descendant's behalf is no descendant. The fixed
+`openssl`, `sha256sum`, and `stat` commands start no process, so the process
+limit costs them nothing; these rules matter only for a changed binary on
+the host.
 
 ## 9. Remote Privilege Posture
 
@@ -459,6 +537,14 @@ paths, no caller values, no shell, no glob, no command substitution, no
 install/chmod/chown/cp/mv/rm/tee operation. If noninteractive fixed privilege
 is unavailable, the collector emits a valid internal protocol result with
 `failure_class=noninteractive_auth_required` and no raw sudo output.
+
+A fixed command run through `sudo -n` runs as root and stays inside the
+descendant containment of section 8 with its stated limit: neither the
+process limit nor the parent-death request binds it, and the collector
+detects a root descendant that outlives the command and reports the check
+unavailable, but cannot end it. No root-side runner, such as `unshare`
+started through `sudo`, is used, because it would need a host sudo grant for
+a general process launcher.
 
 ## 10. Final Route Schema
 
@@ -628,6 +714,10 @@ P0v implementation validation in this tranche is local/static/fake only:
 - fake SSH/process tests;
 - protocol validation tests;
 - remote collector tests with fake runners and temporary fixtures;
+- descendant containment tests: a deterministic backend in place of the kernel
+  operations on every host, and real processes as an unprivileged user on a
+  Linux host that can make the collector a child subreaper, which skip with an
+  explicit reason only when the attempt is refused;
 - docs-contract tests;
 - P0u compatibility tests;
 - full Go test and vet runs.

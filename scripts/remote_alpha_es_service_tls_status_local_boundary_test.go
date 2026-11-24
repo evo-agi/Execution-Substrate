@@ -319,14 +319,16 @@ func remoteAlphaESStatusBoundaryFault(text string) string {
 
 // The guard judges a script that holds one of these names: the three
 // functions of the boundary, the capability flag, the probe and its backend
-// class, the two pidfd primitives, and the cleanup owner with the two
-// functions below it. remoteAlphaESStatusBoundaryNamePins holds one refused
+// class, the two pidfd primitives, the cleanup owner with the two functions
+// below it, and the PID namespace of a fixed command with the namespace part
+// of the probe. remoteAlphaESStatusBoundaryNamePins holds one refused
 // script for each name, so that a name cannot leave this list unnoticed.
 var remoteAlphaESStatusBoundaryNames = []string{
 	"scan_group_members", "signal_same_group_members", "read_proc_identity",
 	"PROCESS_CAPABILITY_READY", "validate_process_capability", "ProcessCapabilityBackend",
 	"pidfd_open", "pidfd_send_signal",
 	"own_child_until_proved", "terminate_child", "prove_group_absent",
+	"ChildNamespace", "validate_child_namespace",
 }
 
 var remoteAlphaESStatusNamesBoundary = regexp.MustCompile(strings.Join(remoteAlphaESStatusBoundaryNames, "|"))
@@ -338,7 +340,14 @@ func remoteAlphaESStatusGuardVerdict(text string) (judged bool, fault string) {
 	if !remoteAlphaESStatusNamesBoundary.MatchString(text) {
 		return false, ""
 	}
-	return true, remoteAlphaESStatusBoundaryFault(text)
+	if fault := remoteAlphaESStatusBoundaryFault(text); fault != "" {
+		return true, fault
+	}
+	// The namespace rule reads only a script that names the namespace pair.
+	if strings.Contains(text, "ChildNamespace") || strings.Contains(text, "validate_child_namespace") {
+		return true, remoteAlphaESStatusNamespaceFault(text)
+	}
+	return true, ""
 }
 
 // The samples of the guard's own tests spell the names of the list in
@@ -347,7 +356,8 @@ func remoteAlphaESStatusGuardVerdict(text string) (judged bool, fault string) {
 var remoteAlphaESStatusSampleNames = strings.NewReplacer("SCAN", "scan_group_members", "SIGNAL", "signal_same_group_members",
 	"IDENTITY", "read_proc_identity", "PROBE", "validate_process_capability", "READY", "PROCESS_CAPABILITY_READY",
 	"BACKEND", "ProcessCapabilityBackend", "PIDFD_OPEN", "pidfd_open", "PIDFD_SEND", "pidfd_send_signal",
-	"OWNER", "own_child_until_proved", "TERMINATE", "terminate_child", "HOLD", "prove_group_absent")
+	"OWNER", "own_child_until_proved", "TERMINATE", "terminate_child", "HOLD", "prove_group_absent",
+	"CHILD_NS", "ChildNamespace", "NS_PROBE", "validate_child_namespace")
 
 // One script for each name of the list. Each holds that name and no other
 // name of the list, and the guard refuses each. So a name that is taken out
@@ -365,6 +375,8 @@ var remoteAlphaESStatusBoundaryNamePins = map[string]string{
 	"own_child_until_proved":      "m.OWNER(proc)\n",
 	"terminate_child":             "m.TERMINATE(proc)\n",
 	"prove_group_absent":          "seen=module.HOLD(pgid)\n",
+	"ChildNamespace":              "module.CHILD_NS=type(\"x\",(),{})\n",
+	"validate_child_namespace":    "module.NS_PROBE=lambda: None\n",
 }
 
 func TestRemoteAlphaESServiceTLSStatusLocalBoundaryPinsItsNames(t *testing.T) {
@@ -392,6 +404,22 @@ func TestRemoteAlphaESServiceTLSStatusLocalBoundaryPinsItsNames(t *testing.T) {
 	}
 }
 
+// The PID namespace of a fixed command and the namespace part of the
+// capability probe are replaced together or not at all. A fixture with only
+// one of them replaced is neither a local fixture nor a test of the
+// containment.
+func remoteAlphaESStatusNamespaceFault(text string) string {
+	namespace := remoteAlphaESStatusReplaces(text, "", "ChildNamespace")
+	probe := remoteAlphaESStatusReplaces(text, "", "validate_child_namespace")
+	switch {
+	case namespace && !probe:
+		return "replaces the PID namespace of the fixed command and leaves the namespace part of the capability probe real"
+	case probe && !namespace:
+		return "replaces the namespace part of the capability probe and leaves the PID namespace of the fixed command real"
+	}
+	return ""
+}
+
 func TestRemoteAlphaESServiceTLSStatusLocalBoundaryIsInjectedWhole(t *testing.T) {
 	scripts, unresolved := remoteAlphaESStatusFixtureScripts(t)
 	for _, script := range unresolved {
@@ -399,8 +427,11 @@ func TestRemoteAlphaESServiceTLSStatusLocalBoundaryIsInjectedWhole(t *testing.T)
 			t.Errorf("%s: a fixture script that names the process boundary is joined from a part that this guard cannot resolve", script)
 		}
 	}
-	shared, judged, whole, probeStandIns, probeStandInsWhole := 0, 0, 0, 0, 0
+	shared, judged, whole, probeStandIns, probeStandInsWhole, namespaceStandIns := 0, 0, 0, 0, 0, 0
 	for _, script := range scripts {
+		if strings.Contains(script.text, remoteAlphaESStatusLocalChildNamespace) && script.text != remoteAlphaESStatusLocalChildNamespace {
+			namespaceStandIns++
+		}
 		seen, fault := remoteAlphaESStatusGuardVerdict(script.text)
 		if !seen {
 			continue
@@ -428,8 +459,8 @@ func TestRemoteAlphaESServiceTLSStatusLocalBoundaryIsInjectedWhole(t *testing.T)
 			t.Errorf("%s: fixture script %s", script, fault)
 		}
 	}
-	t.Logf("%d scripts name the process boundary, %d use the shared local boundary, %d replace the whole boundary, %d replace the probe (%d with the whole boundary, %d without)",
-		judged, shared, whole, probeStandIns+probeStandInsWhole, probeStandInsWhole, probeStandIns)
+	t.Logf("%d scripts name the process boundary or the namespace pair, %d use the shared local boundary, %d replace the whole boundary, %d replace the probe (%d with the whole boundary, %d without), %d use the shared namespace stand-in",
+		judged, shared, whole, probeStandIns+probeStandInsWhole, probeStandInsWhole, probeStandIns, namespaceStandIns)
 	// The guard must have seen the fixtures. The numbers are floors, so that
 	// a new fixture does not have to change them, and a guard that no longer
 	// sees the fixtures fails. A floor goes down only together with a fixture
@@ -532,6 +563,36 @@ func TestRemoteAlphaESServiceTLSStatusLocalBoundaryIsInjectedWhole(t *testing.T)
 	if judged, fault := remoteAlphaESStatusGuardVerdict(remoteAlphaESStatusLocalProcessBoundary); !judged || fault != "" {
 		t.Errorf("the shared local boundary: judged=%v, fault %q", judged, fault)
 	}
+
+	// The namespace pair, judged as the scan above judges a script.
+	if namespaceStandIns < remoteAlphaESStatusNamespaceStandInFloor {
+		t.Errorf("guard saw %d scripts with the shared namespace stand-in; want at least %d", namespaceStandIns, remoteAlphaESStatusNamespaceStandInFloor)
+	}
+	for _, tc := range []struct {
+		name, text string
+		refused    bool
+	}{
+		{"neither", "module.OPENSSL=str(child)\n", false},
+		{"both", "m.CHILD_NS=standin\nm.NS_PROBE=lambda: None\n", false},
+		{"both as entries", "namespace[\"CHILD_NS\"] = fake\nnamespace[\"NS_PROBE\"] = fake\n", false},
+		{"used and not replaced", "namespace=module.CHILD_NS(backend)\nmodule.NS_PROBE(backend)\n", false},
+		{"compared and not replaced", "same=module.CHILD_NS==kept\n", false},
+		{"namespace alone", "module.CHILD_NS=type(\"x\",(),{})\n", true},
+		{"probe part alone", "module.NS_PROBE=lambda: None\n", true},
+		{"namespace entry alone", "namespace[\"CHILD_NS\"] = fake\n", true},
+		{"patched probe part alone", "mock.patch.object(module,\"NS_PROBE\",fake)\n", true},
+		{"probe part with the namespace only used", "module.NS_PROBE=lambda: None\nmodule.CHILD_NS()\n", true},
+		{"namespace alone beside the whole boundary", "m.SCAN=scan\nm.SIGNAL=send\nm.IDENTITY=identity\nm.CHILD_NS=standin\n", true},
+		{"both beside the whole boundary", "m.SCAN=scan\nm.SIGNAL=send\nm.IDENTITY=identity\nm.CHILD_NS=standin\nm.NS_PROBE=lambda: None\n", false},
+	} {
+		judged, fault := remoteAlphaESStatusGuardVerdict(names.Replace(tc.text))
+		if (judged && fault != "") != tc.refused {
+			t.Errorf("namespace rule on %q: judged=%v, fault %q, want refused=%v", tc.name, judged, fault, tc.refused)
+		}
+	}
+	if judged, fault := remoteAlphaESStatusGuardVerdict(remoteAlphaESStatusLocalChildNamespace); !judged || fault != "" {
+		t.Errorf("the shared namespace stand-in: judged=%v, fault %q", judged, fault)
+	}
 }
 
 // The number of fixture scripts that replace the probe and not the whole
@@ -581,8 +642,12 @@ print(json.dumps({"named":{name:sorted(named[name]) for name in wanted},"undefin
 		"verify_chain":             {"collect", "diagnose_first_rejection"},
 		"cert_metadata":            {"cert_role"},
 		"run_fixed":                {"cert_metadata", "cert_role", "key_pair", "verify_chain"},
+		// run_fixed opens the PID namespace of the fixed command and runs it
+		// inside, through _run_fixed_in_namespace.
+		"_run_fixed_in_namespace": {"run_fixed"},
+		"ChildNamespace":          {"_run_fixed_in_namespace", "run_fixed", "validate_child_namespace"},
 		// From the fixed command to the boundary.
-		"own_child_until_proved":    {"run_fixed"},
+		"own_child_until_proved":    {"_run_fixed_in_namespace"},
 		"terminate_child":           {"own_child_until_proved"},
 		"prove_group_absent":        {"own_child_until_proved", "terminate_child"},
 		"scan_group_members":        {"ProcessCapabilityBackend", "prove_group_absent", "signal_same_group_members", "terminate_child"},
@@ -591,6 +656,8 @@ print(json.dumps({"named":{name:sorted(named[name]) for name in wanted},"undefin
 		// The probe and its backend.
 		"validate_process_capability": {"diagnostic_main", "main"},
 		"ProcessCapabilityBackend":    {"validate_process_capability"},
+		// The namespace part of the probe, which only the probe runs.
+		"validate_child_namespace": {"validate_process_capability"},
 	}
 	var names []string
 	for name := range want {
@@ -643,6 +710,10 @@ print(json.dumps({"named":{name:sorted(named[name]) for name in wanted},"undefin
 		t.Errorf("the capability flag is written in %v, and the guard's rule was written for <module>, diagnostic_main and main", got.WritesFlag)
 	}
 }
+
+// The number of fixture scripts that hold the shared namespace stand-in. It
+// is a floor, as the two numbers above.
+const remoteAlphaESStatusNamespaceStandInFloor = 36
 
 // runRemoteAlphaESStatusLocalBoundaryProbe runs one Python child that loads
 // only the source-controlled collector and returns its exit status and
@@ -824,7 +895,7 @@ func TestRemoteAlphaESServiceTLSStatusLocalFixtureFailsBounded(t *testing.T) {
 
 func TestRemoteAlphaESServiceTLSStatusLocalBoundaryDocumentsContract(t *testing.T) {
 	doc := mustRead(t, filepath.Join(executionSubstrateRepoRoot, ".docs", "system_overview", "capability_probing.md"))
-	section := compactDocSection(t, doc, "Root-package tests of the Remote Alpha TLS status collector", "")
+	section := compactDocSection(t, doc, "Tests of the Remote Alpha TLS status collector in `scripts/`", "")
 	for _, want := range []string{
 		"two kinds of fixture, and never a mixture",
 		"skips with an explicit reason when that read is refused",
