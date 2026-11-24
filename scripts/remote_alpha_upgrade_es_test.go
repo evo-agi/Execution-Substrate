@@ -265,3 +265,121 @@ func TestRemoteAlphaUpgradeESProvisionKey(t *testing.T) {
 		}
 	})
 }
+
+func TestRemoteAlphaUpgradeESBackupAndRestore(t *testing.T) {
+	root := t.TempDir()
+	config := filepath.Join(root, "es.json")
+	unit := filepath.Join(root, "es.service")
+	binary := filepath.Join(root, "es")
+	absent := filepath.Join(root, "es-token")
+	files := map[string]struct {
+		data []byte
+		mode os.FileMode
+	}{
+		config: {[]byte(`{"old":true}` + "\n"), 0o640},
+		unit:   {[]byte("[Service]\nUser=es\n"), 0o644},
+		binary: {[]byte("\x7fELF old binary"), 0o755},
+	}
+	for path, f := range files {
+		if err := os.WriteFile(path, f.data, f.mode); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(path, f.mode); err != nil {
+			t.Fatal(err)
+		}
+	}
+	backup := filepath.Join(root, "backup")
+	args := []string{"backup", "--backup-dir", backup}
+	for _, p := range []string{config, unit, binary, absent} {
+		args = append(args, "--path", p)
+	}
+	stdout, stderr, code := runUpgradeESPython(t, args...)
+	if code != 0 || !strings.Contains(stdout, `"files": 4`) {
+		t.Fatalf("backup: exit %d, %q %q", code, stdout, stderr)
+	}
+	if st, err := os.Stat(backup); err != nil || st.Mode().Perm() != 0o700 {
+		t.Fatalf("backup directory mode: %v %v", st.Mode(), err)
+	}
+	// A second backup into the same directory refuses rather than mixing.
+	if _, _, code := runUpgradeESPython(t, args...); code == 0 {
+		t.Fatal("a second backup into an existing directory succeeded")
+	}
+
+	// The upgrade changes the files: new content, new mode, a link in place
+	// of the unit, and a new token file.
+	if err := os.WriteFile(config, []byte(`{"new":true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.Chmod(config, 0o600)
+	_ = os.Remove(unit)
+	if err := os.Symlink(binary, unit); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(binary, []byte("\x7fELF new binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(absent, []byte("token"), 0o400); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, stderr, code = runUpgradeESPython(t, "restore", "--backup-dir", backup)
+	if code != 0 {
+		t.Fatalf("restore: exit %d, %q", code, stderr)
+	}
+	var report struct {
+		Restored []struct {
+			Path    string `json:"path"`
+			Changed bool   `json:"changed"`
+		} `json:"restored"`
+		AbsentAtBackup []string `json:"absent_at_backup"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Restored) != 3 || len(report.AbsentAtBackup) != 1 || report.AbsentAtBackup[0] != absent {
+		t.Fatalf("restore report: %s", stdout)
+	}
+	for path, f := range files {
+		st, err := os.Lstat(path)
+		if err != nil || !st.Mode().IsRegular() || st.Mode().Perm() != f.mode {
+			t.Fatalf("%s after restore: %v %v", path, st.Mode(), err)
+		}
+		if got, _ := os.ReadFile(path); !bytes.Equal(got, f.data) {
+			t.Fatalf("%s after restore holds %q", path, got)
+		}
+	}
+	if _, err := os.Stat(absent); err != nil {
+		t.Fatalf("restore removed a file that was absent at backup time: %v", err)
+	}
+
+	// A second restore changes nothing.
+	stdout, _, code = runUpgradeESPython(t, "restore", "--backup-dir", backup)
+	if code != 0 || strings.Contains(stdout, `"changed": true`) {
+		t.Fatalf("second restore: exit %d, %q", code, stdout)
+	}
+
+	// A tampered copy stops the restore before anything is written.
+	if err := os.WriteFile(config, []byte(`{"new":true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	copies, _ := filepath.Glob(filepath.Join(backup, "files", "*-es"))
+	if len(copies) != 1 {
+		t.Fatalf("binary copy: %v", copies)
+	}
+	if err := os.WriteFile(copies[0], []byte("tampered"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, stderr, code = runUpgradeESPython(t, "restore", "--backup-dir", backup)
+	if code != 1 || !strings.Contains(stderr, "does not match its manifest") {
+		t.Fatalf("tampered restore: exit %d, %q", code, stderr)
+	}
+	if got, _ := os.ReadFile(config); string(got) != `{"new":true}` {
+		t.Fatal("a refused restore wrote a file")
+	}
+
+	// A backup directory others can read is refused.
+	_ = os.Chmod(backup, 0o755)
+	if _, stderr, code := runUpgradeESPython(t, "restore", "--backup-dir", backup); code != 1 || !strings.Contains(stderr, "0700") {
+		t.Fatalf("open backup directory: exit %d, %q", code, stderr)
+	}
+}

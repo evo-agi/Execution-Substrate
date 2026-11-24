@@ -2,11 +2,14 @@
 """Remote Alpha ES upgrade: the pieces that do not depend on the host.
 
 This file is the implementation behind scripts/remote_alpha_upgrade_es.sh.
-This first part holds the two pure steps the upgrade is built on:
+It holds the host-independent steps the upgrade is built on:
 
   migrate-config  add the keys current ES requires to an older es.json
   provision-key   create the retained-result key file, or accept an
                   existing one that already meets ES's rules
+  backup          copy named files, with owner, mode and SHA-256, into a
+                  new root-only backup directory
+  restore         put every file of such a backup back exactly
 
 Both refuse anything they do not recognise rather than guess. Neither
 prints key material.
@@ -14,6 +17,7 @@ prints key material.
 
 import argparse
 import errno
+import hashlib
 import json
 import os
 import stat
@@ -229,6 +233,167 @@ def provision_key(key_file, owner_uid, owner_gid, create_parent=True, dry_run=Fa
         os.close(parent_fd)
 
 
+BACKUP_MANIFEST = "manifest.json"
+BACKUP_SCHEMA = "execution-substrate.remote-alpha.es-upgrade-backup.v1"
+
+
+def sha256_bytes(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def read_regular_file(path):
+    """(data, stat) of a regular file, opened without following a link."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise Refusal(f"{path} is a symbolic link")
+        raise
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise Refusal(f"{path} is not a regular file")
+        chunks = []
+        while True:
+            chunk = os.read(fd, 1 << 20)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        return b"".join(chunks), st
+    finally:
+        os.close(fd)
+
+
+def atomic_replace(path, data, uid, gid, mode):
+    """Replace path with data, owner and mode in one rename.
+
+    The new file is written next to the old one, synced, and renamed over
+    it; the directory is synced after. A symbolic link at path is
+    replaced, never followed."""
+    parent, name = os.path.split(path)
+    tmp = os.path.join(parent, f".{name}.es-upgrade.{os.getpid()}")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try:
+        view = memoryview(data)
+        while view:
+            view = view[os.write(fd, view):]
+        if os.geteuid() == 0:
+            os.fchown(fd, uid, gid)
+        os.fchmod(fd, mode)
+        os.fsync(fd)
+    except BaseException:
+        os.close(fd)
+        os.unlink(tmp)
+        raise
+    os.close(fd)
+    os.rename(tmp, path)
+    dir_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
+
+
+def file_record(path):
+    try:
+        data, st = read_regular_file(path)
+    except FileNotFoundError:
+        return {"path": path, "exists": False}, None
+    return {
+        "path": path,
+        "exists": True,
+        "sha256": sha256_bytes(data),
+        "size": len(data),
+        "mode": format(stat.S_IMODE(st.st_mode), "04o"),
+        "uid": st.st_uid,
+        "gid": st.st_gid,
+    }, data
+
+
+def backup_files(backup_dir, paths):
+    """Copy each path into a new backup directory and write its manifest.
+
+    The directory must not exist yet; it is created 0700. A path that does
+    not exist is recorded as absent. Returns the manifest."""
+    if len(set(paths)) != len(paths) or not all(clean_absolute(p) for p in paths):
+        raise Refusal("backup paths must be distinct clean absolute paths")
+    os.mkdir(backup_dir, 0o700)
+    os.chmod(backup_dir, 0o700)
+    files_dir = os.path.join(backup_dir, "files")
+    os.mkdir(files_dir, 0o700)
+    entries = []
+    for index, path in enumerate(paths):
+        record, data = file_record(path)
+        if data is not None:
+            copy = f"{index:02d}-{os.path.basename(path)}"
+            fd = os.open(os.path.join(files_dir, copy), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(data)
+                handle.flush()
+                os.fsync(handle.fileno())
+            record["copy"] = copy
+        entries.append(record)
+    manifest = {"schema": BACKUP_SCHEMA, "files": entries}
+    fd = os.open(os.path.join(backup_dir, BACKUP_MANIFEST), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write(json.dumps(manifest, indent=2) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    return manifest
+
+
+def load_backup(backup_dir):
+    st = os.lstat(backup_dir)
+    if not stat.S_ISDIR(st.st_mode) or stat.S_IMODE(st.st_mode) != 0o700 or st.st_uid != os.geteuid():
+        raise Refusal("the backup directory must be a 0700 directory owned by the user running the restore")
+    data, _ = read_regular_file(os.path.join(backup_dir, BACKUP_MANIFEST))
+    manifest = json.loads(data)
+    if manifest.get("schema") != BACKUP_SCHEMA:
+        raise Refusal("the backup manifest has an unknown schema")
+    for entry in manifest["files"]:
+        if not entry["exists"]:
+            continue
+        copy, _ = read_regular_file(os.path.join(backup_dir, "files", entry["copy"]))
+        if sha256_bytes(copy) != entry["sha256"] or len(copy) != entry["size"]:
+            raise Refusal(f"the backup copy of {entry['path']} does not match its manifest")
+    return manifest
+
+
+def restore_files(backup_dir):
+    """Put every backed-up file back with its bytes, owner and mode.
+
+    The whole backup is verified before anything is written. Files that
+    were absent at backup time are left as they are and reported."""
+    manifest = load_backup(backup_dir)
+    restored, left = [], []
+    for entry in manifest["files"]:
+        if not entry["exists"]:
+            left.append(entry["path"])
+            continue
+        try:
+            current, _ = file_record(entry["path"])
+        except Refusal:
+            current = {}  # a link or a non-file now stands there: replace it
+        same = all(current.get(k) == entry[k] for k in ("exists", "sha256", "mode", "uid", "gid"))
+        if not same:
+            copy, _ = read_regular_file(os.path.join(backup_dir, "files", entry["copy"]))
+            atomic_replace(entry["path"], copy, entry["uid"], entry["gid"], int(entry["mode"], 8))
+        after, _ = file_record(entry["path"])
+        if after.get("sha256") != entry["sha256"] or after.get("mode") != entry["mode"]:
+            raise Refusal(f"{entry['path']} does not match its backup after the restore")
+        restored.append({"path": entry["path"], "changed": not same})
+    return {"restored": restored, "absent_at_backup": left}
+
+
+def cmd_backup(args):
+    manifest = backup_files(args.backup_dir, args.path)
+    print(json.dumps({"backup_dir": args.backup_dir, "files": len(manifest["files"])}))
+
+
+def cmd_restore(args):
+    print(json.dumps(restore_files(args.backup_dir)))
+
+
 def cmd_migrate_config(args):
     with open(args.input, encoding="utf-8") as handle:
         doc = json.load(handle)
@@ -270,6 +435,15 @@ def main(argv):
     pk.add_argument("--owner-gid", type=int, required=True)
     pk.add_argument("--dry-run", action="store_true")
     pk.set_defaults(func=cmd_provision_key)
+
+    bk = sub.add_parser("backup")
+    bk.add_argument("--backup-dir", required=True)
+    bk.add_argument("--path", action="append", required=True)
+    bk.set_defaults(func=cmd_backup)
+
+    rs = sub.add_parser("restore")
+    rs.add_argument("--backup-dir", required=True)
+    rs.set_defaults(func=cmd_restore)
 
     args = parser.parse_args(argv)
     try:
