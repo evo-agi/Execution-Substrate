@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"execution-substrate/es/admission"
+	"execution-substrate/internal/callerallowlist"
 	"execution-substrate/internal/callerauth"
 	"execution-substrate/internal/httpx"
 	"execution-substrate/internal/observability"
@@ -268,14 +269,7 @@ func (s *Server) authorizeExecutionCaller(w http.ResponseWriter, r *http.Request
 	if !ok {
 		return false
 	}
-	authorized := false
-	for _, prefix := range s.allowedPathPrefixes {
-		if matchesAuthorizedPathPrefix(caller.ID().Path(), prefix) {
-			authorized = true
-			break
-		}
-	}
-	if !authorized {
+	if !callerallowlist.MatchesAny(caller.ID(), s.allowedPathPrefixes) {
 		httpx.WriteText(w, http.StatusForbidden, "Caller not authorized for this operation")
 		return false
 	}
@@ -310,17 +304,6 @@ func parseLifecycleRequest(requestPath string) (runID string, action string, ok 
 		return "", "", false
 	}
 	return runID, action, true
-}
-
-func matchesAuthorizedPathPrefix(path string, prefix string) bool {
-	normalizedPath := strings.Trim(path, "/")
-	normalizedPrefix := strings.Trim(prefix, "/")
-
-	if normalizedPath == "" || normalizedPrefix == "" {
-		return false
-	}
-
-	return normalizedPath == normalizedPrefix || strings.HasPrefix(normalizedPath, normalizedPrefix+"/")
 }
 
 func label(ok bool, healthy string, unhealthy string) string {

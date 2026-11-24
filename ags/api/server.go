@@ -3,9 +3,9 @@ package api
 import (
 	"context"
 	"net/http"
-	"strings"
 
 	"execution-substrate/ags/publish"
+	"execution-substrate/internal/callerallowlist"
 	"execution-substrate/internal/callerauth"
 	"execution-substrate/internal/httpx"
 	"execution-substrate/internal/observability"
@@ -81,14 +81,7 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 		Path:     authenticated.ID().Path(),
 		SPIFFEID: authenticated.ID().String(),
 	}
-	authorized := false
-	for _, prefix := range s.allowedPathPrefixes {
-		if matchesAuthorizedPathPrefix(caller.Path, prefix) {
-			authorized = true
-			break
-		}
-	}
-	if !authorized {
+	if !callerallowlist.MatchesAny(authenticated.ID(), s.allowedPathPrefixes) {
 		httpx.WriteText(w, http.StatusForbidden, "Caller not authorized for this operation")
 		return
 	}
@@ -114,17 +107,6 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 	}
 
 	httpx.WriteJSON(w, http.StatusOK, result)
-}
-
-func matchesAuthorizedPathPrefix(path string, prefix string) bool {
-	normalizedPath := strings.Trim(path, "/")
-	normalizedPrefix := strings.Trim(prefix, "/")
-
-	if normalizedPath == "" || normalizedPrefix == "" {
-		return false
-	}
-
-	return normalizedPath == normalizedPrefix || strings.HasPrefix(normalizedPath, normalizedPrefix+"/")
 }
 
 func label(ok bool, healthy string, unhealthy string) string {

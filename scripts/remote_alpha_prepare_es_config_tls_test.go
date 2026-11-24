@@ -293,7 +293,7 @@ func TestRemoteAlphaESConfigTLSPrepPassWritesSummaryAndRewritesConfig(t *testing
 	originalConfig := fmt.Sprintf(`{
   "authorization": {
     "allowed_spiffe_path_prefixes": [
-      "operator"
+      "operator/local"
     ]
   },
   "dependencies": {
@@ -1413,7 +1413,7 @@ func TestRemoteAlphaESConfigTLSPrepRecordsDSSecurityWarningsWithoutFailing(t *te
 	if err := os.WriteFile(esConfigPath, []byte(fmt.Sprintf(`{
   "authorization": {
     "allowed_spiffe_path_prefixes": [
-      "operator"
+      "operator/local"
     ]
   },
   "dependencies": {
