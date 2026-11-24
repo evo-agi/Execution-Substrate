@@ -257,7 +257,9 @@ These labels are intentionally different. A contract may be live today, relied o
   equals a configured prefix or starts with that prefix followed by `/`.
 - ES startup config validation keeps those prefixes narrow. Each configured
   prefix must be a relative SPIFFE path prefix with at least two non-empty path
-  segments, no leading or trailing slash, and no `.` or `..` segment.
+  segments, no leading or trailing slash, and no `.` or `..` segment, and
+  every segment uses only the SPIFFE ID path characters, under the
+  allowlist-prefix rule in `.docs/system_overview/contracts.md` section 3A.
 - Single-segment prefixes such as `service` or `operator`, root-like prefixes
   such as `/`, and traversal-like prefixes are rejected because exact-or-subpath
   matching would make them broad namespace grants.
