@@ -42,3 +42,21 @@ func TestESRoutesApplyTheSharedCallerAuthenticationRule(t *testing.T) {
 		}
 	}
 }
+
+// ES matches execution callers with the shared allowlist rule: a configured
+// prefix that fails it matches nothing, even when a server is built with it
+// directly instead of from a checked configuration. The old matcher trimmed
+// slashes and took a one-segment prefix as a parent of every path below it.
+func TestESAllowlistPrefixThatFailsTheSharedRuleMatchesNothing(t *testing.T) {
+	var producerContractCalls int
+	service := fakeLifecycleService{producerContractCalls: &producerContractCalls}
+	server := NewServer(service, "bootstrap-ca", []string{"service", "/service/control-plane", "service/control-plane/"}, func() bool { return true })
+	state := callerauthtest.State(callerauthtest.Certificate(t, callerauthtest.RuntimeIssuer, callerauthtest.SPIFFEID("service/control-plane")))
+	response := callerauthtest.Serve(t, server.Handler(), http.MethodGet, "/v1/executions:contract", "", state)
+	if response.Code != http.StatusForbidden || response.Body.String() != "Caller not authorized for this operation" {
+		t.Fatalf("contract as service/control-plane: %d %q", response.Code, response.Body.String())
+	}
+	if producerContractCalls != 0 {
+		t.Fatalf("the caller reached the service %d times", producerContractCalls)
+	}
+}

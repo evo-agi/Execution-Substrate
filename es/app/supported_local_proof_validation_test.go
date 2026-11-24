@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -54,9 +55,39 @@ func TestSupportedLocalSetupScriptBootstrapsRealSPIREAndVaultDevTarget(t *testin
 		t.Fatalf("mkdir fake bin dir: %v", err)
 	}
 	writeFakeCommand(t, filepath.Join(fakeBinDir, "docker"))
+
+	// Setup refuses a Nomad that does not enforce ACLs, then runs
+	// scripts/nomad_acl_setup.sh as root to bootstrap it and issue the ES and
+	// observer tokens. This Nomad has ACLs on and nothing else yet. The token
+	// directory and its root-owned files are removed through the same root
+	// access setup used.
+	requireNomadBinary(t)
+	if os.Geteuid() != 0 {
+		if output, err := exec.Command("sudo", "-n", "true").CombinedOutput(); err != nil {
+			t.Skipf("supported-local setup provisions Nomad tokens as root and needs root or passwordless sudo: %v: %s", err, strings.TrimSpace(string(output)))
+		}
+	}
+	nomad := startNomadHarnessWithOptions(t, newExecutionWorkspaceTempDir(t, "supported-local-nomad-"), nomadHarnessOptions{aclUnbootstrapped: true, leaderOnly: true})
+	t.Cleanup(nomad.stop)
+	nomadPort := strings.TrimPrefix(nomad.baseURL(), "http://127.0.0.1:")
+	nomadACLDir := filepath.Join(rootDir, "nomad-acl")
+	t.Cleanup(func() {
+		remove := exec.Command("rm", "-rf", "--", nomadACLDir)
+		if os.Geteuid() != 0 {
+			remove = exec.Command("sudo", "-n", "rm", "-rf", "--", nomadACLDir)
+		}
+		if output, err := remove.CombinedOutput(); err != nil {
+			t.Errorf("remove the Nomad token directory: %v: %s", err, output)
+		}
+	})
 	writeFakeCommand(t, filepath.Join(fakeBinDir, "nomad"))
 
 	vaultPort := reserveTCPPort(t)
+	// The test's Nomad runs as the test's user, not as root.
+	nomadUser, err := user.Current()
+	if err != nil {
+		t.Fatal(err)
+	}
 	command := exec.Command(filepath.Join(repoRoot, "scripts", "72_supported_local_setup.sh"), "setup")
 	command.Dir = repoRoot
 	command.Env = append(os.Environ(),
@@ -71,6 +102,9 @@ func TestSupportedLocalSetupScriptBootstrapsRealSPIREAndVaultDevTarget(t *testin
 		"SUPPORTED_LOCAL_VAULT_BIND_ADDRESS=127.0.0.1",
 		"SUPPORTED_LOCAL_VAULT_PUBLIC_HOST=127.0.0.1",
 		"SUPPORTED_LOCAL_VAULT_PORT="+strconv.Itoa(vaultPort),
+		"SUPPORTED_LOCAL_NOMAD_PORT="+nomadPort,
+		"SUPPORTED_LOCAL_NOMAD_USER="+nomadUser.Username,
+		"SUPPORTED_LOCAL_NOMAD_ACL_DIR="+nomadACLDir,
 	)
 	if spireTarball := strings.TrimSpace(os.Getenv("SUPPORTED_LOCAL_TEST_SPIRE_TARBALL")); spireTarball != "" {
 		command.Env = append(command.Env, "SUPPORTED_LOCAL_PREBUILT_SPIRE_TARBALL="+spireTarball)
@@ -252,6 +286,48 @@ func TestSupportedLocalSetupScriptBootstrapsRealSPIREAndVaultDevTarget(t *testin
 
 	assertSupportedLocalVaultBlobAlignment(t, proofDir, managed)
 	assertSupportedLocalSPIRERuntimeAlignment(t, proofDir, managed)
+	assertSupportedLocalNomadLock(t, proofDir, nomad, nomadACLDir)
+}
+
+// Setup bootstrapped the test Nomad, pointed ES at its own token and the
+// operator environment at the observer token, which can read but not submit.
+func assertSupportedLocalNomadLock(t *testing.T, proofDir string, nomad *nomadHarness, aclDir string) {
+	t.Helper()
+	configBytes, err := os.ReadFile(filepath.Join(proofDir, "es.json"))
+	if err != nil {
+		t.Fatalf("read es config: %v", err)
+	}
+	var payload struct {
+		Nomad struct {
+			BaseURL   string `json:"base_url"`
+			TokenFile string `json:"token_file"`
+		} `json:"nomad"`
+	}
+	if err := json.Unmarshal(configBytes, &payload); err != nil {
+		t.Fatalf("decode es config: %v", err)
+	}
+	if payload.Nomad.BaseURL != nomad.baseURL() || payload.Nomad.TokenFile != filepath.Join(aclDir, "es-token") {
+		t.Fatalf("es.json nomad block = %+v", payload.Nomad)
+	}
+	env, err := os.ReadFile(filepath.Join(proofDir, "env.sh"))
+	if err != nil {
+		t.Fatalf("read env.sh: %v", err)
+	}
+	observerTokenFile := filepath.Join(aclDir, "observer-token")
+	if !strings.Contains(string(env), `export NOMAD_TOKEN_FILE="`+observerTokenFile+`"`) ||
+		!strings.Contains(string(env), `export NOMAD_ADDR="`+nomad.baseURL()+`"`) {
+		t.Fatalf("env.sh does not name the test Nomad and its observer token:\n%s", env)
+	}
+	observerToken := readNomadTokenFile(t, observerTokenFile)
+	if status, body := nomadRawRequest(t, http.MethodGet, nomad.baseURL()+"/v1/nodes", observerToken, nil); status != http.StatusOK {
+		t.Fatalf("observer token could not read nodes: HTTP %d %s", status, body)
+	}
+	if status, body := nomadRawRequest(t, http.MethodPost, nomad.baseURL()+"/v1/jobs?namespace="+nomadACLNamespace, observerToken, nomadACLProbeJob(t, "observer-submit", nomadACLNamespace)); status != http.StatusForbidden {
+		t.Fatalf("observer token could submit: HTTP %d %s", status, body)
+	}
+	if status, body := nomadRawRequest(t, http.MethodGet, nomad.baseURL()+"/v1/nodes", "", nil); status != http.StatusForbidden {
+		t.Fatalf("a request without a token could read nodes: HTTP %d %s", status, body)
+	}
 }
 
 // newSupportedLocalProofWorkspace returns a fresh workspace for the proof

@@ -2205,6 +2205,7 @@ const trancheB1DefaultNomadJobGolden = `{
       "run_id": "<RUN_ID>"
     },
     "Name": "<JOB_ID>",
+    "Namespace": "es-submit-v1",
     "TaskGroups": [
       {
         "Count": 1,
@@ -2356,6 +2357,7 @@ const trancheB2ControlPlaneNormalShellNomadJobGolden = `{
       "run_id": "<RUN_ID>"
     },
     "Name": "<JOB_ID>",
+    "Namespace": "es-submit-v1",
     "TaskGroups": [
       {
         "Count": 1,
@@ -2542,9 +2544,11 @@ func newResolvedPlanNomadClient(t *testing.T, handler http.Handler) *nomadClient
 	if err != nil {
 		t.Fatal("parse test Nomad URL failed")
 	}
+	handler = nomadAccessControlTestHandler(t, handler)
 	return &nomadClient{
 		baseURL:    baseURL,
 		datacenter: "dc1",
+		token:      testNomadToken,
 		client: &http.Client{Transport: resolvedPlanRoundTripper(func(request *http.Request) (*http.Response, error) {
 			recorder := httptest.NewRecorder()
 			handler.ServeHTTP(recorder, request)

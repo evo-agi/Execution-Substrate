@@ -108,3 +108,20 @@ func TestARSAuthorizationStaysLocalAfterAuthentication(t *testing.T) {
 		t.Fatalf("unauthorized callers reached the store or index %d times", calls.count())
 	}
 }
+
+// ARS matches read callers with the shared allowlist rule: a configured
+// prefix that fails it matches nothing, even when a server is built with it
+// directly instead of from a checked configuration. The old matcher trimmed
+// slashes and took a one-segment prefix as a parent of every path below it.
+func TestARSAllowlistPrefixThatFailsTheSharedRuleMatchesNothing(t *testing.T) {
+	calls := &counter{}
+	server := api.NewServer(countingStore{calls}, countingIndex{calls}, []string{"service", "/service/execution", "service/execution/"}, testBootstrapIssuer, func() bool { return true })
+	state := callerauthtest.State(callerauthtest.Certificate(t, callerauthtest.RuntimeIssuer, callerauthtest.SPIFFEID("service/execution")))
+	response := callerauthtest.Serve(t, server.Handler(), http.MethodGet, "/v1/blobs/"+testDigest+":bytes", "", state)
+	if response.Code != http.StatusForbidden || response.Body.String() != "Caller not authorized for this operation" {
+		t.Fatalf("read as service/execution: %d %q", response.Code, response.Body.String())
+	}
+	if calls.count() != 0 {
+		t.Fatalf("the caller reached the store or index %d times", calls.count())
+	}
+}

@@ -4,7 +4,7 @@ import "crypto/sha256"
 
 const (
 	sqliteClaimStoreApplicationID = 1163088467
-	sqliteClaimStoreSchemaVersion = 4
+	sqliteClaimStoreSchemaVersion = 5
 	sqliteDefaultBusyTimeoutMS    = 5000
 	sqliteDefaultMaxOpenConns     = 4
 )
@@ -356,6 +356,11 @@ END;
 		version: 4,
 		name:    "private original replay and fixture claim progress",
 		sql:     sqliteMigration4SQL,
+	},
+	{
+		version: 5,
+		name:    "private operational submit handoff",
+		sql:     sqliteMigration5SQL,
 	},
 }
 

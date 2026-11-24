@@ -471,7 +471,7 @@ type nomadJobSummary struct {
 func (n *nomadHarness) fetchJob(t *testing.T, jobID string) nomadJobSummary {
 	t.Helper()
 
-	response, err := (&http.Client{Timeout: 2 * time.Second}).Get(n.addr + "/v1/job/" + jobID)
+	response, err := n.httpClient(2 * time.Second).Get(n.addr + "/v1/job/" + jobID)
 	if err != nil {
 		t.Fatalf("fetch job %s: %v", jobID, err)
 	}
@@ -487,7 +487,7 @@ func (n *nomadHarness) fetchJob(t *testing.T, jobID string) nomadJobSummary {
 func (n *nomadHarness) waitForJobTerminalStatus(t *testing.T, jobID string) nomadJobSummary {
 	t.Helper()
 
-	client := &http.Client{Timeout: 2 * time.Second}
+	client := n.httpClient(2 * time.Second)
 	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
 		response, err := client.Get(n.addr + "/v1/job/" + jobID)

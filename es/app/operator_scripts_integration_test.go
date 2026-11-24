@@ -257,6 +257,8 @@ func TestBringupScriptUpCheckDownFullProfile(t *testing.T) {
 			BaseURL:        "http://127.0.0.1:" + itoa(t, nomadHTTPPort),
 			Datacenter:     "dc1",
 			TimeoutSeconds: 5,
+			// Bring-up writes this token after it starts Nomad and before ES.
+			TokenFile: filepath.Join(rootDir, "nomad-es-token", "es-token"),
 		},
 		Execution: esconfig.ExecutionConfig{
 			StagingRootDir:             filepath.Join(rootDir, "es-stage"),
@@ -276,18 +278,18 @@ func TestBringupScriptUpCheckDownFullProfile(t *testing.T) {
 	nomadConfig := []byte(strings.TrimSpace(`
 data_dir = "`+nomadDataDir+`"
 bind_addr = "127.0.0.1"
+acl {
+  enabled = true
+}
 server {
   enabled = true
   bootstrap_expect = 1
 }
 client {
   enabled = true
-  options = {
-    "docker.cleanup.image" = "false"
-    "docker.volumes.enabled" = "true"
-  }
+`+supportedNomadClientOptions+`
 }
-ports {
+`+supportedNomadDockerPluginBlock+`ports {
   http = `+itoa(t, nomadHTTPPort)+`
   rpc  = `+itoa(t, nomadRPCPort)+`
   serf = `+itoa(t, nomadSerfPort)+`
@@ -391,6 +393,9 @@ advertise {
 	if !strings.Contains(string(checkOutput), "nomad: leader=") {
 		t.Fatalf("expected nomad readiness in bringup check output, got %s", string(checkOutput))
 	}
+	if !strings.Contains(string(checkOutput), supportedNomadPostureLine) {
+		t.Fatalf("expected the Docker-only, limited Nomad posture in bringup check output, got %s", string(checkOutput))
+	}
 	if !strings.Contains(string(checkOutput), "prepare-ready: true") || !strings.Contains(string(checkOutput), "submit-ready: true") {
 		t.Fatalf("expected explicit prepare-ready and submit-ready output, got %s", string(checkOutput))
 	}
@@ -439,9 +444,11 @@ advertise {
 	if strings.TrimSpace(runtimeIdentityResult.Summary.RunID) == "" {
 		t.Fatalf("expected runtime identity execution loop run_id, got %+v output=%s", runtimeIdentityResult.Summary, string(runtimeIdentityOutput))
 	}
+	assertBringupNomadACLMaterial(t, bringupDir, esCfg.Nomad.TokenFile)
 	assertNomadBindSourcesUnderStagingRoot(
 		t,
 		"http://127.0.0.1:"+itoa(t, nomadHTTPPort),
+		filepath.Join(bringupDir, "nomad-acl", "observer-token"),
 		runtimeIdentityResult.Summary.RunID,
 		esCfg.Execution.StagingRootDir,
 		filepath.Dir(esCfg.Execution.SPIREWorkloadAPISocketPath),
@@ -712,7 +719,7 @@ func TestRuntimeProfileImageReadinessRequiresNomadDockerImageCleanupDisabled(t *
 		t.Fatalf("mkdir fake bin dir: %v", err)
 	}
 	fakeCurlPath := writeBytesFile(t, fakeBinDir, "curl", []byte(`#!/bin/sh
-printf '%s\n' '{"config":{"Client":{"Options":{"docker.volumes.enabled":"true"}}}}'
+printf '%s\n' '{"config":{"Client":{"Options":{"docker.cleanup.image":"false"}},"Plugins":[{"Name":"docker","Config":{"volumes":{"enabled":true},"gc":{"image":true}}}]}}'
 `))
 	if err := os.Chmod(fakeCurlPath, 0o755); err != nil {
 		t.Fatalf("chmod fake curl: %v", err)
@@ -724,6 +731,7 @@ printf '%s\n' '{"config":{"Client":{"Options":{"docker.volumes.enabled":"true"}}
 		"PATH="+fakeBinDir+string(os.PathListSeparator)+os.Getenv("PATH"),
 		"ES_CONFIG="+esConfigPath,
 		"NOMAD_ADDR=http://127.0.0.1:4646",
+		"NOMAD_TOKEN_FILE="+writeFakeNomadObserverTokenFile(t, rootDir),
 	)
 
 	output, err := cmd.CombinedOutput()
@@ -731,7 +739,7 @@ printf '%s\n' '{"config":{"Client":{"Options":{"docker.volumes.enabled":"true"}}
 		t.Fatalf("expected missing nomad docker image cleanup guardrail to fail, got output=%s", string(output))
 	}
 	text := string(output)
-	if !strings.Contains(text, "runtime profile image durability: missing nomad client option docker.cleanup.image=false") {
+	if !strings.Contains(text, "runtime profile image durability: missing nomad docker plugin setting gc.image = false") {
 		t.Fatalf("expected missing docker cleanup guardrail output, got %s", text)
 	}
 	if !strings.Contains(text, "execution-substrate/control-plane-normal-shell:supported-local") {
@@ -758,27 +766,36 @@ func TestRuntimeProfileImageReadinessAcceptsNomadDockerImageCleanupDisabled(t *t
 	if err := os.MkdirAll(fakeBinDir, 0o755); err != nil {
 		t.Fatalf("mkdir fake bin dir: %v", err)
 	}
-	fakeCurlPath := writeBytesFile(t, fakeBinDir, "curl", []byte(`#!/bin/sh
-printf '%s\n' '{"config":{"Client":{"Options":{"docker.cleanup.image":"false","docker.volumes.enabled":"true"}}}}'
-`))
-	if err := os.Chmod(fakeCurlPath, 0o755); err != nil {
-		t.Fatalf("chmod fake curl: %v", err)
-	}
+	tokenFile := writeFakeNomadObserverTokenFile(t, rootDir)
+	// Nomad 2.1 reports the plugin's gc block as an object, Nomad 2.0 as a
+	// list holding one object; both shapes pass.
+	for name, agentSelf := range map[string]string{
+		"object (Nomad 2.1)":           `{"config":{"Plugins":[{"Name":"docker","Config":{"volumes":{"enabled":true},"gc":{"image":false}}}]}}`,
+		"one-element list (Nomad 2.0)": `{"config":{"Plugins":[{"Name":"docker","Config":{"volumes":[{"enabled":true}],"gc":[{"image":false}]}}]}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			fakeCurlPath := writeBytesFile(t, fakeBinDir, "curl", []byte("#!/bin/sh\nprintf '%s\\n' '"+agentSelf+"'\n"))
+			if err := os.Chmod(fakeCurlPath, 0o755); err != nil {
+				t.Fatalf("chmod fake curl: %v", err)
+			}
 
-	cmd := exec.Command("bash", "-c", `source scripts/internal/bringup.sh; check_runtime_profile_image_gc_policy_once "$ES_CONFIG"`)
-	cmd.Dir = repoRoot
-	cmd.Env = append(os.Environ(),
-		"PATH="+fakeBinDir+string(os.PathListSeparator)+os.Getenv("PATH"),
-		"ES_CONFIG="+esConfigPath,
-		"NOMAD_ADDR=http://127.0.0.1:4646",
-	)
+			cmd := exec.Command("bash", "-c", `source scripts/internal/bringup.sh; check_runtime_profile_image_gc_policy_once "$ES_CONFIG"`)
+			cmd.Dir = repoRoot
+			cmd.Env = append(os.Environ(),
+				"PATH="+fakeBinDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+				"ES_CONFIG="+esConfigPath,
+				"NOMAD_ADDR=http://127.0.0.1:4646",
+				"NOMAD_TOKEN_FILE="+tokenFile,
+			)
 
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("expected disabled nomad docker image cleanup guardrail to pass: %v output=%s", err, string(output))
-	}
-	if !strings.Contains(string(output), "runtime profile image durability: nomad docker.cleanup.image=false") {
-		t.Fatalf("expected docker cleanup guardrail output, got %s", string(output))
+			output, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("expected disabled nomad docker image cleanup guardrail to pass: %v output=%s", err, string(output))
+			}
+			if !strings.Contains(string(output), "runtime profile image durability: nomad docker plugin gc.image=false") {
+				t.Fatalf("expected docker cleanup guardrail output, got %s", string(output))
+			}
+		})
 	}
 }
 
@@ -893,13 +910,20 @@ func TestHealthCheckScriptRejectsPreManagedDevNomad(t *testing.T) {
 		switch r.URL.Path {
 		case "/v1/status/leader":
 			_ = json.NewEncoder(w).Encode("127.0.0.1:4647")
+		case "/v1/acl/token/self":
+			// An ACL-enforcing Nomad answers a request without a token as
+			// the anonymous token.
+			_ = json.NewEncoder(w).Encode(map[string]any{"AccessorID": "anonymous", "Name": "Anonymous Token", "Type": "client"})
+		case "/v1/acl/policy/anonymous":
+			http.NotFound(w, r)
 		case "/v1/agent/self":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"config": map[string]any{
 					"DevMode":    true,
 					"Datacenter": "dc1",
 					"Server":     map[string]any{"Enabled": true},
-					"Client":     map[string]any{"Enabled": true},
+					"Client":     map[string]any{"Enabled": true, "Options": map[string]any{"driver.allowlist": "docker"}},
+					"Plugins":    supportedNomadDockerPluginAgentConfig(),
 				},
 			})
 		case "/v1/nodes":
@@ -957,6 +981,7 @@ func TestHealthCheckScriptRejectsPreManagedDevNomad(t *testing.T) {
 		"nomad": map[string]any{
 			"base_url":   nomadServer.URL,
 			"datacenter": "dc1",
+			"token_file": writeFakeNomadTokenFile(t, rootDir),
 		},
 		"execution": map[string]any{
 			"staging_root_dir":               stagingRootDir,
@@ -989,6 +1014,7 @@ func TestHealthCheckScriptRejectsPreManagedDevNomad(t *testing.T) {
 		"AGS_URL=https://"+stack.fixture.agsServerName+":"+agsPort,
 		"ES_URL=https://"+stack.fixture.esServerName+":"+esPort,
 		"NOMAD_ADDR="+nomadServer.URL,
+		"NOMAD_TOKEN_FILE="+writeFakeNomadObserverTokenFile(t, rootDir),
 		"ARS_RESOLVE="+stack.fixture.arsServerName+":"+arsPort+":"+arsHost,
 		"EGS_RESOLVE="+stack.fixture.egsServerName+":"+egsPort+":"+egsHost,
 		"AGS_RESOLVE="+stack.fixture.agsServerName+":"+agsPort+":"+agsHost,
@@ -1069,7 +1095,9 @@ func TestLinuxSetupScriptDocumentsSupportedProfileGuardrails(t *testing.T) {
 		"tries to qualify the repo's narrow supported Linux profile",
 		"systemd is required for the supported Linux profile",
 		"Installing supported single-node Nomad service config",
-		`"docker.cleanup.image" = "false"`,
+		`"driver.allowlist" = "docker"`,
+		"allow_privileged = false",
+		"gc {\n      image = false\n    }",
 		"root-managed nomad.service",
 		"ready node(s) still report cpu.totalcompute=0 under the root-managed non-dev service",
 		"SMBIOS processor Current Speed is not usable on this host",
@@ -1871,8 +1899,9 @@ func TestExampleNomadConfigDisablesDockerImageCleanup(t *testing.T) {
 
 	text := string(body)
 	for _, snippet := range []string{
-		`"docker.cleanup.image" = "false"`,
-		`"docker.volumes.enabled" = "true"`,
+		supportedNomadDockerPluginBlock,
+		supportedNomadClientOptions,
+		"acl {\n  enabled = true\n}",
 	} {
 		if !strings.Contains(text, snippet) {
 			t.Fatalf("expected %q in example nomad config, got %s", snippet, text)
@@ -3931,11 +3960,11 @@ func assertBringupServicesRunAsOperator(t *testing.T, bringupDir, arsRootDir, in
 	}
 }
 
-func assertNomadBindSourcesUnderStagingRoot(t *testing.T, nomadAddr string, runID string, stagingRoot string, allowedExternalSources ...string) {
+func assertNomadBindSourcesUnderStagingRoot(t *testing.T, nomadAddr string, nomadTokenFile string, runID string, stagingRoot string, allowedExternalSources ...string) {
 	t.Helper()
 
 	cmd := exec.Command("nomad", "job", "inspect", "-json", "exec-"+runID)
-	cmd.Env = append(os.Environ(), "NOMAD_ADDR="+nomadAddr)
+	cmd.Env = append(os.Environ(), nomadCLIEnv(t, nomadAddr, nomadTokenFile)...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("inspect nomad job: %v output=%s", err, string(output))
