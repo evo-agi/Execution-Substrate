@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S python3 -I
 """Remote Alpha ES upgrade: the pieces that do not depend on the host.
 
 This file is the implementation behind scripts/remote_alpha_upgrade_es.sh.
