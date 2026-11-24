@@ -14374,7 +14374,12 @@ func operationalV2AssuranceOwnerRule(owner string) bool {
 		strings.Contains(owner, "It adds exactly one more path, a test file:\nA/workstream_a_guardrails_test.go") &&
 		strings.Contains(owner, "HEAD ceiling for PR #12 plus its repairs was 53 files") &&
 		strings.Contains(owner, "HEAD ceiling for PR #12 plus its repairs was 56 files") &&
-		strings.Contains(owner, "HEAD ceiling for PR #12 plus its repairs is 66 files") &&
+		strings.Contains(owner, "HEAD ceiling for PR #12 plus its repairs was 66 files") &&
+		strings.Contains(owner, "HEAD ceiling for PR #12 plus its repairs is 69 files") &&
+		strings.Contains(owner, "`trunk_dev` after its PRs #33, #41, #37 and #39, are a further owner\nreconciliation at this gate.") &&
+		strings.Contains(owner, "remote_alpha_es_service_tls_status_local_boundary_test.go, which keeps its\ncount there.") &&
+		strings.Contains(owner, "It adds exactly three more paths, the module file and two test files:\ngo.mod, which makes `golang.org/x/text` a direct requirement at the version\nalready selected, A/nomad_request_strings_redteam31_finding_test.go\n(new), the re-check's tests, and internal/testutil/testutil_test.go, whose\nthree position reads now ignore line directives.") &&
+		strings.Contains(owner, "packages of `golang.org/x/text` that the rule imports, in\nA/workstream_c_guardrails_test.go, which is already counted.") &&
 		strings.Contains(owner, "test of those lengths are in A/workstream_c_guardrails_test.go and\nI/operational_handoff_test.go, which are already counted.") &&
 		strings.Contains(owner, "owner reconciliation at this gate. Taking up `trunk_dev` adds no path.") &&
 		strings.Contains(owner, "It adds exactly ten more paths, one production file, two\ndocuments and seven test files:\nA/mounts.go, whose mount target rule refuses those strings") &&
@@ -14509,9 +14514,18 @@ func TestNomadEvaluatedRequestStringsContract(t *testing.T) {
 		"`invocation.output_id`, every `argv` element, every environment key and value, and every mount target path must not contain `${`, `%{` or a NUL byte.",
 		"rewrites the escapes `$${` and `%%{`, and replaces `${name}` in environment and meta values",
 		"ES refuses such a request with `400 invalid_request` before anything is staged or sent",
-		"Other control bytes are passed on as written.")
+		"Other control bytes are passed on as written.",
+		"Every `argv` element and every mount target path must also be in Unicode Normalization Form C, must hold only code points that are assigned in the Unicode version of ES's normalization tables (today 15.0.0), and must not begin with a byte order mark (U+FEFF).",
+		"which drops a byte order mark at the start of a string and holds every string in Normalization Form C",
+		"two mount targets that differ only in normal form would be one path for the container",
+		"A string that holds only assigned code points and is in Normalization Form C stays unchanged under every later version of the normalization tables.",
+		"Environment keys and values and `invocation.output_id` are not parsed that way and are not held to this rule.",
+		"CPU must be greater than zero and `memory_mb` must be at least 10, the least memory Nomad registers a task with.")
+	assertContainsNone(t, "execution lifecycle request contract", lifecycle,
+		"both CPU and memory must be greater than zero")
 	assertContainsAll(t, "system overview invocation shape", overview,
-		"(`output_id`, each `argv` element, each `env` key and value, and each mount `target_path`) must not contain `${`, `%{` or a NUL byte")
+		"(`output_id`, each `argv` element, each `env` key and value, and each mount `target_path`) must not contain `${`, `%{` or a NUL byte",
+		"Each `argv` element and each mount `target_path` must also be in Unicode Normalization Form C, hold only code points assigned in the Unicode version of ES's normalization tables and not begin with a byte order mark")
 }
 
 func TestOperationalSubmitHandoffCurrentAdmissionV2Contract(t *testing.T) {
@@ -14548,7 +14562,12 @@ func TestOperationalSubmitHandoffCurrentAdmissionV2Contract(t *testing.T) {
 		"ceiling for PR #12 plus its repairs was 52 files",
 		"HEAD ceiling for PR #12 plus its repairs was 53 files",
 		"HEAD ceiling for PR #12 plus its repairs was 56 files",
-		"HEAD ceiling for PR #12 plus its repairs is 66 files",
+		"HEAD ceiling for PR #12 plus its repairs was 66 files",
+		"HEAD ceiling for PR #12 plus its repairs is 69 files",
+		"`trunk_dev` after its PRs #33, #41, #37 and #39, are a further owner\nreconciliation at this gate.",
+		"remote_alpha_es_service_tls_status_local_boundary_test.go, which keeps its\ncount there.",
+		"It adds exactly three more paths, the module file and two test files:\ngo.mod, which makes `golang.org/x/text` a direct requirement at the version\nalready selected, A/nomad_request_strings_redteam31_finding_test.go\n(new), the re-check's tests, and internal/testutil/testutil_test.go, whose\nthree position reads now ignore line directives.",
+		"packages of `golang.org/x/text` that the rule imports, in\nA/workstream_c_guardrails_test.go, which is already counted.",
 		"owner reconciliation at this gate. Taking up `trunk_dev` adds no path.",
 		"It adds exactly ten more paths, one production file, two\ndocuments and seven test files:\nA/mounts.go, whose mount target rule refuses those strings",
 		".docs/execution_lifecycle/contracts.md and\n.docs/system_overview/contracts.md, which state the refusal",
@@ -14576,7 +14595,13 @@ func TestOperationalSubmitHandoffCurrentAdmissionV2Contract(t *testing.T) {
 		"The admission state package of PR #12 is a new test package, so it\ngets that file",
 		"CI's list, so the path ceiling of PR #12 plus its repairs became 56 files",
 		"PR #12 durable admission: repairs after the third red-team and the guard coverage review",
-		"the refusal, and seven test files are new, so the path ceiling of PR #12\nplus its repairs is 66 files",
+		"the refusal, and seven test files are new, so the path ceiling of PR #12\nplus its repairs became 66 files",
+		"PR #12 durable admission: repairs after the red-team re-check",
+		"more paths, so the path ceiling of PR #12 plus its repairs is 69 files.",
+		"Taking up `trunk_dev` after its PRs #33, #41,\n#37 and #39 moves one counted test file to `scripts/`",
+		"which PR #12's position-read test refuses; they now read the real\nposition.",
+		"The re-check's\ntests are adopted unchanged",
+		"This entry changes behaviour: a request with such an argument or mount\ntarget, or with less than 10 MB of memory, which ES accepted before, is now\nrefused",
 		"Taking up `trunk_dev` after its PRs #27 and #29 adds no path.",
 		"no claim, no reservation and no POST on the private path, which shares the\nvalidation",
 		"This entry changes behaviour: a request that holds one of those strings,\nwhich ES accepted before, is now refused.",
@@ -14837,7 +14862,12 @@ func TestOperationalSubmitHandoffCurrentAdmissionV2RejectsUnsafeMutants(t *testi
 		{"MissingAdoptedTestsCeiling", "aggregate HEAD ceiling for PR #12 plus its repairs was 52 files"},
 		{"MissingSixthAuditCeiling", "HEAD ceiling for PR #12 plus its repairs was 53 files"},
 		{"MissingTrunkDevCeiling", "HEAD ceiling for PR #12 plus its repairs was 56 files"},
-		{"MissingThirdRedTeamCeiling", "HEAD ceiling for PR #12 plus its repairs is 66 files"},
+		{"MissingThirdRedTeamCeiling", "HEAD ceiling for PR #12 plus its repairs was 66 files"},
+		{"MissingRedTeamRecheckCeiling", "HEAD ceiling for PR #12 plus its repairs is 69 files"},
+		{"MissingRedTeamRecheckTrunkDevPRs", "`trunk_dev` after its PRs #33, #41, #37 and #39, are a further owner\nreconciliation at this gate."},
+		{"MissingRedTeamRecheckMovedPath", "remote_alpha_es_service_tls_status_local_boundary_test.go, which keeps its\ncount there."},
+		{"MissingRedTeamRecheckPaths", "It adds exactly three more paths, the module file and two test files:\ngo.mod, which makes `golang.org/x/text` a direct requirement at the version\nalready selected, A/nomad_request_strings_redteam31_finding_test.go\n(new), the re-check's tests, and internal/testutil/testutil_test.go, whose\nthree position reads now ignore line directives."},
+		{"MissingRedTeamRecheckReviewedList", "packages of `golang.org/x/text` that the rule imports, in\nA/workstream_c_guardrails_test.go, which is already counted."},
 		{"MissingThirdRedTeamCountedTests", "test of those lengths are in A/workstream_c_guardrails_test.go and\nI/operational_handoff_test.go, which are already counted."},
 		{"MissingThirdRedTeamNoTrunkDevPath", "owner reconciliation at this gate. Taking up `trunk_dev` adds no path."},
 		{"MissingThirdRedTeamMountsPath", "It adds exactly ten more paths, one production file, two\ndocuments and seven test files:\nA/mounts.go, whose mount target rule refuses those strings"},
@@ -14959,7 +14989,12 @@ func TestOperationalSubmitHandoffCurrentAdmissionV2RejectsUnsafeMutants(t *testi
 		{"CeilingNotRaisedForAdoptedTests", "aggregate HEAD ceiling for PR #12 plus its repairs was 52 files", "aggregate HEAD ceiling for PR #12 plus its repairs was 48 files"},
 		{"CeilingNotRaisedForSixthAudit", "HEAD ceiling for PR #12 plus its repairs was 53 files", "HEAD ceiling for PR #12 plus its repairs was 52 files"},
 		{"CeilingNotRaisedForTrunkDev", "HEAD ceiling for PR #12 plus its repairs was 56 files", "HEAD ceiling for PR #12 plus its repairs was 55 files"},
-		{"CeilingNotRaisedForThirdRedTeam", "HEAD ceiling for PR #12 plus its repairs is 66 files", "HEAD ceiling for PR #12 plus its repairs is 56 files"},
+		{"CeilingNotRaisedForThirdRedTeam", "HEAD ceiling for PR #12 plus its repairs was 66 files", "HEAD ceiling for PR #12 plus its repairs was 56 files"},
+		{"CeilingNotRaisedForRedTeamRecheck", "HEAD ceiling for PR #12 plus its repairs is 69 files", "HEAD ceiling for PR #12 plus its repairs is 66 files"},
+		{"RedTeamRecheckModulePathUnnamed", "It adds exactly three more paths, the module file and two test files:\ngo.mod, which makes `golang.org/x/text` a direct requirement at the version\nalready selected", "It adds exactly one more path, a test file:\nnone"},
+		{"RedTeamRecheckTestPathUnnamed", "A/nomad_request_strings_redteam31_finding_test.go\n(new), the re-check's tests,", "and the re-check's tests,"},
+		{"RedTeamRecheckTestutilPathUnnamed", "and internal/testutil/testutil_test.go, whose\nthree position reads now ignore line directives.", "and no other file."},
+		{"RedTeamRecheckMovedPathUncounted", "which keeps its\ncount there.", "which no longer\ncounts."},
 		{"ThirdRedTeamMountsPathUnnamed", "It adds exactly ten more paths, one production file, two\ndocuments and seven test files:\nA/mounts.go, whose mount target rule refuses those strings", "It adds no path"},
 		{"ThirdRedTeamAdoptedTestsUnnamed", "A/reliable_submit_operational_admission_redteam3_test.go (new),\nA/reliable_submit_operational_admission_redteam3_codec_test.go (new),\nA/reliable_submit_operational_admission_redteam3_finding_test.go (new),\nA/reliable_submit_operational_admission_redteam3_fuzz_test.go (new) and\nA/reliable_submit_operational_admission_redteam3_process_test.go (new)", "and the red-team's tests"},
 		{"JobBoundCanonicalAgain", "Job0 ≤65536\nbytes as Go's `encoding/json` writes it", "Canonical Job0 ≤65536\nbytes"},

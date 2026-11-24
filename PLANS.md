@@ -2,6 +2,43 @@
 
 ## Status
 
+### PR #12 durable admission: repairs after the red-team re-check (2026-11-24)
+
+The red-team's re-check of those repairs found two low defects. Nomad's
+client parses each string of a task's driver configuration with HCL, which
+drops a byte order mark at the start of the string and rewrites it to
+Unicode Normalization Form C. So an argument or a mount target could still
+reach the workload in another form than ES admitted, bound and recorded,
+and two mount targets that differ only in normal form were one path for the
+container. ES now refuses, in each argument and each mount target, a
+leading byte order mark, a string that is not in Normalization Form C, and
+a code point that is not assigned in the Unicode version of its own
+normalization tables, so that a Nomad with tables of a later version leaves
+the string unchanged too. And ES accepted `resources.memory_mb` from 1,
+while Nomad refuses a task with less than 10; on the private path such a
+request took a claim that then stayed ambiguous for good. The request
+validation that both paths share now refuses less than 10. The re-check's
+tests are adopted unchanged, and the smallest request of the third
+red-team's codec test now asks for 10.
+
+The rule imports two packages of `golang.org/x/text`, which the reviewed
+dependency list gains; `go.mod` now requires the module directly, at the
+version it already selected. Taking up `trunk_dev` after its PRs #33, #41,
+#37 and #39 moves one counted test file to `scripts/`, and PR #39's new
+test of `internal/testutil` read an adjusted position in three places,
+which PR #12's position-read test refuses; they now read the real
+position. `go.mod`, the re-check's test file and that test file are three
+more paths, so the path ceiling of PR #12 plus its repairs is 69 files.
+
+This entry changes behaviour: a request with such an argument or mount
+target, or with less than 10 MB of memory, which ES accepted before, is now
+refused with `400 invalid_request` on the ordinary path and with no claim on
+the private path. It changes no stored format. The public request contract
+gains both refusals, which
+[the execution lifecycle contracts](.docs/execution_lifecycle/contracts.md)
+state. The precise wording of the private path is owned by
+[the operational handoff contract](.docs/execution_lifecycle/reliable_submit_operational_handoff.md).
+
 ### PR #12 durable admission: repairs after the third red-team and the guard coverage review (2026-11-23)
 
 The third red-team found two medium defects. Nomad's client evaluates
@@ -32,7 +69,7 @@ the review's proposal are adopted unchanged.
 Taking up `trunk_dev` after its PRs #27 and #29 adds no path. The mount
 target rule is one more production file, the two contracts documents state
 the refusal, and seven test files are new, so the path ceiling of PR #12
-plus its repairs is 66 files.
+plus its repairs became 66 files.
 
 This entry changes behaviour: a request that holds one of those strings,
 which ES accepted before, is now refused. It changes no stored format. The

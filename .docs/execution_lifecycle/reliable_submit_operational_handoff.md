@@ -1720,7 +1720,33 @@ A/reliable_submit_operational_admission_redteam3_codec_test.go (new),
 A/reliable_submit_operational_admission_redteam3_finding_test.go (new),
 A/reliable_submit_operational_admission_redteam3_fuzz_test.go (new) and
 A/reliable_submit_operational_admission_redteam3_process_test.go (new). With
-them the aggregate HEAD ceiling for PR #12 plus its repairs is 66 files.
+them the aggregate HEAD ceiling for PR #12 plus its repairs was 66 files.
+
+The repairs after the red-team re-check of those repairs, with taking up
+`trunk_dev` after its PRs #33, #41, #37 and #39, are a further owner
+reconciliation at this gate.
+Nomad's client parses each string of a task's driver configuration with
+HCL, which drops a byte order mark at the start of the string and holds it
+in Unicode Normalization Form C. So the shared invocation validation and the
+mount target rule refuse, in each argument and each mount target, a leading
+byte order mark, a string that is not in that form and a code point that is
+not assigned in the Unicode version of ES's normalization tables, which
+every later version of those tables then leaves unchanged. Nomad registers
+no task with less than 10 MB of memory, so the shared request validation
+refuses less. The reviewed list of dependency packages gains the two
+packages of `golang.org/x/text` that the rule imports, in
+A/workstream_c_guardrails_test.go, which is already counted.
+PR #39 moved the tests of the scripts from the repository root to
+scripts/, among them the counted
+remote_alpha_es_service_tls_status_local_boundary_test.go, which keeps its
+count there. It added internal/testutil/testutil_test.go, whose three
+problem reports read a position that PR #12's position-read test refuses.
+It adds exactly three more paths, the module file and two test files:
+go.mod, which makes `golang.org/x/text` a direct requirement at the version
+already selected, A/nomad_request_strings_redteam31_finding_test.go
+(new), the re-check's tests, and internal/testutil/testutil_test.go, whose
+three position reads now ignore line directives. With them the
+aggregate HEAD ceiling for PR #12 plus its repairs is 69 files.
 Any further file again requires separate owner reconciliation.
 
 The seal-permit guard follows the shared reservation writer
