@@ -7096,18 +7096,21 @@ Every Python run that a script under `scripts/` starts, the remote alpha
 scripts and the supported-local ones alike, starts in isolated mode:
 `python3 -I`, and `#!/usr/bin/env -S python3 -I` as the first line of a
 Python file. Without `-I`, Python puts the current folder (for a file, the
-file's folder) first on `sys.path` and reads `PYTHONPATH`, `PYTHONSTARTUP`
-and the user's site-packages. A root run started from a folder that another
-account can write would then import that account's module in place of a
-standard one. The scripts' Python uses only the standard library, so
-isolated mode changes nothing else.
+file's folder) first on `sys.path` and reads `PYTHONPATH`, the other
+`PYTHON*` variables and the user's site-packages. A root run started from a
+folder that another account can write would then import that account's
+module in place of a standard one. The scripts' Python uses only the
+standard library, so isolated mode changes nothing else.
 
 `TestScriptsStartPythonInIsolatedMode` fails on every mention of Python
-under `scripts/` that is not followed by `-I`. The only exceptions are
+under `scripts/` that is not followed by `-I`. A child that a script's
+Python starts with `sys.executable` counts too: `"-I"` must be the next
+item of its argument list. The only exceptions are
 mentions that run nothing: a `command -v` or `require_command` check, the
 commands printed for the operator to run in the Infrastructure Manager
 checkout on the Mac (they need `PYTHONPATH=src`), an image, package or
-field name, and a message. The test lists each one with its reason.
+field name, and a message. The test lists each one with its reason. A line
+that occurs more than once is listed once for each occurrence.
 
 ## Non-Goals
 

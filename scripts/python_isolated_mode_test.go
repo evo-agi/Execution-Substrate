@@ -11,21 +11,25 @@ import (
 
 // Every Python run in scripts/ starts in isolated mode (-I). Without it,
 // Python puts the current folder (or the script's folder) first on sys.path
-// and reads PYTHONPATH, PYTHONSTARTUP and the user's site-packages. A root
-// run started from a folder another account can write would then import that
-// account's base64.py or json.py instead of the standard module. -I turns all
-// of that off. (Audit 16 of PR #51, O16-2.)
+// and reads PYTHONPATH, the other PYTHON* variables and the user's
+// site-packages. A root run started from a folder another account can write
+// would then import that account's base64.py or json.py instead of the
+// standard module. -I turns all of that off. (Audit 16 of PR #51, O16-2.)
 //
 // The check is on the text: every word python, python3 or python3.N in a file
 // under scripts/, other than a Go test file, is followed by " -I" (a shell
-// run, "#!/usr/bin/env -S python3 -I") or by `", "-I"` (a Python or Go list).
-// The exceptions are mentions that run nothing: an argument to `command -v`
-// or to a *require_command(s) function, and the exact lines listed in
-// pythonMentionsThatRunNothing, each with its reason.
+// run, "#!/usr/bin/env -S python3 -I") or by `", "-I"` (a Python or Go list),
+// and every sys.executable (a child started from Python) is followed by
+// `, "-I"`. The exceptions are mentions that run nothing: an argument to
+// `command -v` or to a *require_command(s) function, and the exact lines
+// listed in pythonMentionsThatRunNothing, each with its reason.
 
 // pythonMentionsThatRunNothing lists, by file, exact lines (without leading
-// and trailing space) that name Python but do not start it. Every entry must
-// still be found, so the list cannot keep a line that has gone.
+// and trailing space) that name Python but do not start it. A line that
+// occurs more than once is listed once for each occurrence, and the file
+// must have it exactly that many times: the list cannot keep a line that has
+// gone, and a new line that happens to equal a listed one (a new run that
+// starts with `python3 \`, say) is not covered by the old entry.
 var pythonMentionsThatRunNothing = map[string][]string{
 	// A package name in the apt-get install list, and the label printed
 	// before the version (the run after the label has -I).
@@ -45,8 +49,12 @@ var pythonMentionsThatRunNothing = map[string][]string{
 	// Commands printed for the operator to run on the Mac, in the
 	// Infrastructure Manager checkout. They need PYTHONPATH=src, which -I
 	// would ignore, and run that repository's own code, not these scripts.
+	// remote_alpha_operator.sh prints each of its two commands from two
+	// places.
 	"scripts/remote_alpha_operator.sh": {
 		`printf 'PYTHONPATH=src python3 -m infra_manager.cli remote-alpha-live-refresh \\\n'`,
+		`printf 'PYTHONPATH=src python3 -m infra_manager.cli remote-alpha-live-refresh \\\n'`,
+		`printf 'PYTHONPATH=src python3 -m infra_manager.cli remote-alpha-live-support-bundle \\\n'`,
 		`printf 'PYTHONPATH=src python3 -m infra_manager.cli remote-alpha-live-support-bundle \\\n'`,
 	},
 	"scripts/remote_alpha_reset_disposable_vault.sh": {
@@ -97,6 +105,29 @@ func pythonWords(line string) [][2]int {
 	}
 }
 
+// pythonExecutableWords returns the [start, end) offsets of every
+// sys.executable in line. A child started with it is a Python run too, and
+// it does not inherit -I from its parent.
+func pythonExecutableWords(line string) [][2]int {
+	var words [][2]int
+	for i := 0; ; {
+		j := strings.Index(line[i:], "sys.executable")
+		if j < 0 {
+			return words
+		}
+		start := i + j
+		end := start + len("sys.executable")
+		if (start == 0 || !pythonWordByte(line[start-1])) && (end == len(line) || !pythonWordByte(line[end])) {
+			words = append(words, [2]int{start, end})
+		}
+		i = end
+	}
+}
+
+// pythonExecutableIsolated matches what must follow sys.executable: "-I" as
+// the next item of the argument list.
+var pythonExecutableIsolated = regexp.MustCompile(`^ *, *(?:"-I"|'-I')`)
+
 // pythonRunIsIsolated reports whether the word that ends at end is followed
 // by -I as its first option.
 func pythonRunIsIsolated(line string, end int) bool {
@@ -120,12 +151,14 @@ func nonIsolatedPythonRuns(text string, allowed map[string]bool) (lines []int, i
 	for number, raw := range strings.Split(text, "\n") {
 		line := strings.TrimSpace(raw)
 		words := pythonWords(line)
-		if len(words) == 0 {
+		executables := pythonExecutableWords(line)
+		if len(words) == 0 && len(executables) == 0 {
 			continue
 		}
 		if allowed[line] {
 			continue
 		}
+		bad := false
 		for _, word := range words {
 			if pythonRunIsIsolated(line, word[1]) {
 				isolated++
@@ -134,8 +167,18 @@ func nonIsolatedPythonRuns(text string, allowed map[string]bool) (lines []int, i
 			if pythonMentionRunsNothing(line, word[0]) {
 				continue
 			}
-			lines = append(lines, number+1)
+			bad = true
 			break
+		}
+		for _, word := range executables {
+			if pythonExecutableIsolated.MatchString(line[word[1]:]) {
+				isolated++
+				continue
+			}
+			bad = true
+		}
+		if bad {
+			lines = append(lines, number+1)
 		}
 	}
 	return lines, isolated
@@ -143,7 +186,7 @@ func nonIsolatedPythonRuns(text string, allowed map[string]bool) (lines []int, i
 
 func TestScriptsStartPythonInIsolatedMode(t *testing.T) {
 	root := filepath.Join(executionSubstrateRepoRoot, "scripts")
-	used := map[string]map[string]bool{}
+	seen := map[string]map[string]int{}
 	isolatedRuns := 0
 	files := 0
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
@@ -176,10 +219,10 @@ func TestScriptsStartPythonInIsolatedMode(t *testing.T) {
 		}
 		for _, line := range lines {
 			if allowed[strings.TrimSpace(line)] {
-				if used[rel] == nil {
-					used[rel] = map[string]bool{}
+				if seen[rel] == nil {
+					seen[rel] = map[string]int{}
 				}
-				used[rel][strings.TrimSpace(line)] = true
+				seen[rel][strings.TrimSpace(line)]++
 			}
 		}
 		return nil
@@ -188,9 +231,13 @@ func TestScriptsStartPythonInIsolatedMode(t *testing.T) {
 		t.Fatalf("walk %s: %v", root, err)
 	}
 	for rel, entries := range pythonMentionsThatRunNothing {
+		listed := map[string]int{}
 		for _, line := range entries {
-			if !used[rel][line] {
-				t.Errorf("pythonMentionsThatRunNothing lists a line that %s no longer has; delete the entry:\n  %s", rel, line)
+			listed[line]++
+		}
+		for line, want := range listed {
+			if got := seen[rel][line]; got != want {
+				t.Errorf("pythonMentionsThatRunNothing lists this line of %s %d time(s), but the file has it %d time(s); list each occurrence once, and only for a line that runs nothing:\n  %s", rel, want, got, line)
 			}
 		}
 	}
@@ -232,6 +279,9 @@ func TestScriptsPythonIsolatedModeCheckFindsEachForm(t *testing.T) {
 		`cmd := exec.Command("python3", "-c", script)`,
 		`python3 -Im json.tool`,
 		`require_command python3 && python3 - <<'PY'`,
+		`subprocess.run([sys.executable, script], check=True)`,
+		`child = subprocess.Popen([sys.executable, "-B", "-I", "-c", code])`,
+		`subprocess.run([sys.executable, "-I", "-c", code]); subprocess.run([sys.executable, path])`,
 	}
 	for _, line := range flagged {
 		if bad, _ := nonIsolatedPythonRuns(line, nil); len(bad) != 1 {
@@ -256,6 +306,9 @@ func TestScriptsPythonIsolatedModeCheckFindsEachForm(t *testing.T) {
 		`PYTHONPATH=src`,
 		`import pythonic`,
 		`# typed by a person: see mypython3 and python3x`,
+		`subprocess.run([sys.executable, "-I", script], check=True)`,
+		`child = subprocess.Popen([sys.executable,'-I','-c',code])`,
+		`my_sys.executables = []`,
 	}
 	for _, line := range accepted {
 		if bad, _ := nonIsolatedPythonRuns(line, nil); len(bad) != 0 {

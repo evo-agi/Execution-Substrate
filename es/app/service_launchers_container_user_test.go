@@ -105,9 +105,10 @@ func TestServiceLaunchersContainerUser(t *testing.T) {
 		// checkCreatedRoot requires the storage root to exist afterwards,
 		// owned by the caller.
 		checkCreatedRoot bool
-		// pythonHook, when set, runs the launcher's python3 with a
-		// sitecustomize that changes how ACLs can be read: "no-acl-reads"
-		// removes os.getxattr, as on hosts other than Linux, and
+		// pythonHook, when set, runs the launcher's python3 with a hook
+		// module from a minimal virtual environment's site-packages (see
+		// writeTestPythonHook) that changes how ACLs can be read:
+		// "no-acl-reads" removes os.getxattr, as on hosts other than Linux, and
 		// "acl-read-error" makes it fail with EACCES. The check no longer
 		// reads ACLs, so neither may change its outcome.
 		pythonHook string
