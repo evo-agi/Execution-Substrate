@@ -167,10 +167,12 @@ const (
 
 // fixtureGit runs git in dir with neither the system's nor the user's
 // config, and a fixed author, committer and time, so that a commit of the
-// same files always has the same name.
+// same files always has the same name. Automatic maintenance is off: newer
+// git (2.56 on the macOS runner) starts it detached after a commit, and it
+// would add and remove files in .git while a test reads or checks them.
 func fixtureGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
-	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	cmd := exec.Command("git", append([]string{"-C", dir, "-c", "maintenance.auto=false", "-c", "gc.auto=0"}, args...)...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL="+os.DevNull,
 		"GIT_AUTHOR_NAME=fixture", "GIT_AUTHOR_EMAIL=fixture@example.invalid", "GIT_AUTHOR_DATE=1700000000 +0000",
