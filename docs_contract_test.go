@@ -70,22 +70,6 @@ func authorityHierarchyLines(t *testing.T) []string {
 	return nil
 }
 
-func assertDocIncludesAuthorityHierarchy(t *testing.T, doc string, label string) {
-	t.Helper()
-
-	lastIndex := -1
-	for _, required := range authorityHierarchyLines(t) {
-		idx := strings.Index(doc, required)
-		if idx == -1 {
-			t.Fatalf("%s missing authority phrase %q", label, required)
-		}
-		if idx <= lastIndex {
-			t.Fatalf("%s authority phrase %q is out of order", label, required)
-		}
-		lastIndex = idx
-	}
-}
-
 func docSection(t *testing.T, doc string, start string, end string) string {
 	t.Helper()
 	return testutil.Section(t, doc, start, end)
@@ -4298,23 +4282,6 @@ func TestReliableSubmitPersistenceAndConcurrencyADRDocsContract(t *testing.T) {
 	)
 }
 
-func TestSystemOverviewAuthorityHeadersFollowRepoHierarchy(t *testing.T) {
-	for _, doc := range []struct {
-		label string
-		path  string
-	}{
-		{label: "system contracts doc", path: ".docs/system_overview/contracts.md"},
-		{label: "system boundaries doc", path: ".docs/system_overview/boundaries.md"},
-		{label: "hybrid integration architecture ADR", path: ".docs/system_overview/hybrid_integration_architecture_adr.md"},
-	} {
-		text := mustRead(t, doc.path)
-		assertDocIncludesAuthorityHierarchy(t, text, doc.label)
-		if !strings.Contains(text, "Authority for this document follows the repo-wide authority hierarchy:") {
-			t.Fatalf("%s missing repo-wide authority preface", doc.label)
-		}
-	}
-}
-
 func TestHybridIntegrationArchitectureADRDocsContract(t *testing.T) {
 	assertStaleTargetRelationshipExamples(t)
 
@@ -4841,14 +4808,6 @@ func TestWorkstreamASharedKernelDecisionIsDocumented(t *testing.T) {
 	artifactPublication := compactText(mustRead(t, ".docs/system_overview/artifact_publication_storage.md"))
 	artifactHygiene := compactText(mustRead(t, ".docs/system_overview/artifact_hygiene.md"))
 
-	assertDocIncludesAuthorityHierarchy(t, sharedKernel, "shared-kernel decision doc")
-	if !strings.Contains(sharedKernel, "Authority for this document follows the repo-wide authority hierarchy:") {
-		t.Fatalf("shared-kernel decision doc missing authority preface")
-	}
-	if strings.Contains(sharedKernel, "Authority for this document is, in order: 1. `PLANS.md`") {
-		t.Fatalf("shared-kernel decision doc must not define a conflicting authority order that omits AGENTS.md")
-	}
-
 	for _, required := range []string{
 		"Workstream A shared-contract and shared-kernel decision",
 		"`internal/contracts/evidence/v1` is the only active shared artifact evidence kernel",
@@ -4985,11 +4944,6 @@ func TestWorkstreamBArtifactPublicationStorageDecisionIsDocumented(t *testing.T)
 	arsBoundarySection := compactDocSection(t, boundariesRaw, "## 6. ARS boundary", "## 7. AGS boundary")
 	lifecyclePrepareSection := compactDocSection(t, lifecycleRaw, "## 5. Prepare contract", "## 6. Submit contract")
 	designPreparationSection := compactDocSection(t, designRaw, "### 5.1 Preparation phase", "### 5.2 Submission phase")
-
-	assertDocIncludesAuthorityHierarchy(t, decisionRaw, "artifact publication/storage decision doc")
-	if !strings.Contains(decision, "Authority for this document follows the repo-wide authority hierarchy:") {
-		t.Fatalf("artifact publication/storage decision doc missing authority preface")
-	}
 
 	for _, required := range []string{
 		"Workstream B artifact publication/storage/discoverability decision",
@@ -5292,11 +5246,6 @@ func TestWorkstreamCESExecutionAdmissionModelDecisionIsDocumented(t *testing.T) 
 	publicSurfaceSection := compactDocSection(t, decisionRaw, "### 4A. Public execution surfaces", "### 4B. Admission, handoff, and projection ownership surfaces")
 	compatibilitySection := compactDocSection(t, decisionRaw, "### 4C. Temporary compatibility edge metadata", "### 4D. Current relationship map")
 
-	assertDocIncludesAuthorityHierarchy(t, decisionRaw, "workstream C execution-admission decision doc")
-	if !strings.Contains(decision, "Authority for this document follows the repo-wide authority hierarchy:") {
-		t.Fatalf("workstream C execution-admission decision doc missing authority preface")
-	}
-
 	for _, required := range []string{
 		"Workstream C ES public admission/execution model decision",
 		"Workstream D policy/authorization redesign",
@@ -5423,7 +5372,6 @@ func TestWorkstreamC7CheckpointDocsContract(t *testing.T) {
 	remoteAlpha := compactText(mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md"))
 	runbook := compactText(mustRead(t, ".docs/supported_local_cp_consumer_runbook.md"))
 
-	assertDocIncludesAuthorityHierarchy(t, checkpointRaw, "workstream C7 checkpoint doc")
 	assertContainsAll(t, "Workstream C7 checkpoint status", checkpoint,
 		"Workstream C7 consolidation checkpoint",
 		"`Docs-only checkpoint`",
@@ -7029,11 +6977,6 @@ func TestWorkstreamERuntimeConfigOwnershipDecisionIsDocumented(t *testing.T) {
 	implementationApp := compactDocSection(t, implementationRaw, "## 5. Application wiring", "## 6. Prepare path implementation")
 	implementationPrepare := compactDocSection(t, implementationRaw, "## 6. Prepare path implementation", "## 7. Submit path implementation")
 
-	assertDocIncludesAuthorityHierarchy(t, decisionRaw, "runtime-config ownership decision doc")
-	if !strings.Contains(decision, "Authority for this document follows the repo-wide authority hierarchy:") {
-		t.Fatalf("runtime-config ownership decision doc missing authority preface")
-	}
-
 	assertContainsAll(t, "PLANS Workstream D checkpoint remains open", workstreamD,
 		"D0-D1d completed the guardrail/design phase.",
 		"Workstream D remains open;",
@@ -7256,11 +7199,6 @@ func TestWorkstreamFRuntimeIdentityHandoffOwnershipDecisionIsDocumented(t *testi
 	lifecycleRuntimeIdentity := compactDocSection(t, lifecycleContractsRaw, "## 14. Runtime identity and lifecycle edge", "## 15. Bounded slice rules")
 	authorityHandoffContract := compactDocSection(t, lifecycleContractsRaw, "### Authority handoff read surface", "### Error contract")
 	implementationRuntimeIdentity := compactDocSection(t, implementationRaw, "## 9. Runtime identity and mount implementation", "## 10. Filesystem and local side effects")
-
-	assertDocIncludesAuthorityHierarchy(t, decisionRaw, "runtime-identity handoff ownership decision doc")
-	if !strings.Contains(decision, "Authority for this document follows the repo-wide authority hierarchy:") {
-		t.Fatalf("runtime-identity handoff ownership decision doc missing authority preface")
-	}
 
 	assertContainsAll(t, "PLANS Workstream F F0 status", workstreamF,
 		"F0 - Runtime Identity Handoff Ownership Decision",

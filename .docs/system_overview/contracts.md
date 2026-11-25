@@ -6,14 +6,6 @@ This document inventories the current cross-service contracts in the Go reposito
 
 A system contract, for this document, is any rule, DTO, route, shared payload, or ownership boundary that crosses service or runtime boundaries and that another component can rely on.
 
-Authority for this document follows the repo-wide authority hierarchy:
-
-1. `AGENTS.md` for agent operating rules
-2. `PLANS.md` for allowed redesign work, active workstreams, priorities, and reopened seams
-3. `.docs/system_overview/*` for architecture, contracts, boundaries, and change-governance rules
-4. `.docs/execution_lifecycle/*` for lifecycle design, contract, and implementation guidance
-5. current Go code and tests for factual implemented behavior
-
 This document describes the repo's active cross-service behavior in the current bounded platform phase. A contract may be active today without being treated as a permanent endpoint.
 
 When existing prose disagrees with code or tests, prefer code and tests.

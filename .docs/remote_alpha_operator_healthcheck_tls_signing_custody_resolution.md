@@ -41,11 +41,8 @@ incident in
 does not unblock or widen P0u and provides no reusable signer or route;
 `unsupported_signing_topology` remains the reusable-route result.
 
-Authority follows the repository hierarchy in `AGENTS.md`: `PLANS.md`,
-`.docs/system_overview/*`, route-specific `.docs/` records, and then current
-code/tests for factual implemented behavior. IM, CP, Maintenance Agent, and
-Bridge documents are references for non-ES owner boundaries only; they do not
-create ES signing authority.
+IM, CP, Maintenance Agent, and Bridge documents are references for non-ES
+owner boundaries only; they do not create ES signing authority.
 
 Current reusable P0u resolution verdict: blocked. No current ES source satisfies
 the signer authority and custody evidence gate below, so no reusable replacement, renewal,

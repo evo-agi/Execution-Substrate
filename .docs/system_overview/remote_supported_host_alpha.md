@@ -322,10 +322,9 @@ For Remote Alpha 0.3:
 
 ## Future ES-Owned Remote Alpha Operator Facade
 
-The route rules for P0i to P0v at `PLANS.md`'s rank are in
-`.docs/standing_rules/remote_alpha_operator_routes.md`; `AGENTS.md` section 3
-ranks that file with `PLANS.md`. The sections below hold the detailed route
-contracts.
+The standing route rules for P0i to P0v are in
+`.docs/standing_rules/remote_alpha_operator_routes.md`. The sections below hold
+the detailed route contracts.
 
 `Bounded slice rule`: a future ES-owned Remote Alpha operator facade is allowed
 only as a bounded MVP proof/support helper plus evidence/projection outputs

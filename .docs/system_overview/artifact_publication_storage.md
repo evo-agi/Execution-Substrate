@@ -16,14 +16,6 @@ artifact path. It does not settle:
 - Workstream F runtime-identity redesign
 - Control Plane orchestration, review, checkpoint, or finalization semantics
 
-Authority for this document follows the repo-wide authority hierarchy:
-
-1. `AGENTS.md` for agent operating rules
-2. `PLANS.md` for allowed redesign work, active workstreams, priorities, and reopened seams
-3. `.docs/system_overview/*` for architecture, contracts, boundaries, and change-governance rules
-4. `.docs/execution_lifecycle/*` for lifecycle design, contract, and implementation guidance
-5. current Go code and tests for factual implemented behavior
-
 If this document disagrees with current code and tests on implemented behavior,
 the code and tests win and this document must be realigned.
 

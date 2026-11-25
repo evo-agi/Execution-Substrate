@@ -30,14 +30,6 @@ route/API behavior changed by C7. C7 adds no route, API shape, runtime profile,
 admission policy, scheduler behavior, signer option, renewal eligibility, CP
 diagnostic behavior, IM profile lineage behavior, or MA scheduling eligibility.
 
-Authority for this document follows the repo-wide authority hierarchy:
-
-1. `AGENTS.md` for agent operating rules
-2. `PLANS.md` for allowed redesign work, active workstreams, priorities, and reopened seams
-3. `.docs/system_overview/*` for architecture, contracts, boundaries, and change-governance rules
-4. `.docs/execution_lifecycle/*` for lifecycle design, contract, and implementation guidance
-5. current Go code and tests for factual implemented behavior
-
 ## 1. Checkpoint Summary
 
 Workstream C7 is a docs/static-test-only consolidation checkpoint. It records

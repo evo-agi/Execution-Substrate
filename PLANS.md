@@ -1,9 +1,8 @@
 # Execution Substrate Current Plan
 
-This file holds the current plan: the objective, the ordered plan, the
-decision rules, the scope and active workstreams, the current slices, and the
-reopened seams. `AGENTS.md` ranks it second in authority, and every change
-starts by reading it.
+This file holds the current plan, its intent and order: the objective, the
+ordered plan, the decision rules, the scope and active workstreams, the current
+slices, and the reopened seams.
 
 How this file is kept:
 
@@ -11,6 +10,13 @@ How this file is kept:
   design intent changes, so the plan stays current. Do not add dated status
   entries: say what a change did and why in its pull request description, and
   let the owning `.docs/` contract hold the precise wording.
+- Put a standing rule in the file that owns it, not here. The standing rules
+  that used to sit in this file moved, unreworded, to `.docs/standing_rules/`:
+  [`execution_admission_and_custody.md`](.docs/standing_rules/execution_admission_and_custody.md)
+  holds the Workstream C admission and custody rules, and
+  [`remote_alpha_operator_routes.md`](.docs/standing_rules/remote_alpha_operator_routes.md)
+  holds the Remote Alpha operator route rules P0i to P0v. Edit a rule there, in
+  place.
 - Cite this file by section heading, never by line number, because its lines
   move.
 - The dated record that used to open this file moved to
@@ -1276,7 +1282,6 @@ The standing Workstream C admission, material, custody, proof and
 startup-probe rules, with the outside-observer Stage A slice and the
 reliable-submit tranche status, are in
 [`.docs/standing_rules/execution_admission_and_custody.md`](.docs/standing_rules/execution_admission_and_custody.md).
-They keep this file's authority (`AGENTS.md` section 3).
 
 ### Current paired-root custody and acceptance scope
 
@@ -1618,7 +1623,6 @@ The current route rules for the Remote Alpha operator facade, P0i to P0m
 (Vault unseal and disposable reset), P0o to P0q (Vault workload-auth bootstrap)
 and P0s to P0v (TLS status, renewal and diagnostics), are in
 [`.docs/standing_rules/remote_alpha_operator_routes.md`](.docs/standing_rules/remote_alpha_operator_routes.md).
-They keep this file's authority (`AGENTS.md` section 3).
 
 ### Remote Alpha access contract v1 — Tranche A
 

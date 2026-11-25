@@ -52,10 +52,6 @@ separate IM contract. Handoff failure leaves the ES incident
 `CONSUMED_OPEN_INCIDENT`; it neither revokes ES acceptance nor automatically
 rolls back the accepted host TLS set.
 
-Authority follows the repository hierarchy in `AGENTS.md`: `PLANS.md`,
-`.docs/system_overview/*`, route-specific `.docs/` design records, and then
-current code/tests for factual implemented behavior.
-
 ## 1. Current Source-Grounded Use
 
 Operator-healthcheck TLS is the host-local operator client TLS scope used by

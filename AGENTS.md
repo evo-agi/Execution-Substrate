@@ -30,6 +30,7 @@ Use authority in this order:
 
 Additional rules:
 
+- This section is the one place that states the authority order and the rank of a file in it. Other documents say what they govern; they do not restate the order, their own rank, or another file's rank.
 - Do not use `README.md` as design authority.
 - Do not treat code as design authority for cross-service behavior.
 - If docs and code disagree on factual behavior, code and tests win for current behavior, and the docs must be realigned.

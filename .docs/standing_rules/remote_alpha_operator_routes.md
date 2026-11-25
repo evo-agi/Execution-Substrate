@@ -6,9 +6,7 @@ to P0v. They moved here unreworded from the `PLANS.md` section
 `8129b82d79b5700049621b6d4e95b6bf37ada7ac`, so that `PLANS.md` holds intent and
 order.
 
-They keep the authority they had in `PLANS.md`: `AGENTS.md` section 3 ranks
-the files in `.docs/standing_rules/` with `PLANS.md`, second, and only their
-location changed. The detailed route contracts are in
+The detailed route contracts are in
 `.docs/system_overview/remote_supported_host_alpha.md`.
 
 Edit a rule here in place when it changes. Do not add dated status entries:

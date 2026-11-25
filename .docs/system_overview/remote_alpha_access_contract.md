@@ -8,14 +8,6 @@ a profile validator, access-status emitter, live route, local profile store,
 host provisioning, scheduled check, or restoration step. The schemas below
 are target contracts, not outputs currently emitted by ES.
 
-Authority follows the repository order:
-
-1. `AGENTS.md` for agent operating rules
-2. `PLANS.md` for allowed redesign work and reopened seams
-3. `.docs/system_overview/*` for architecture, contracts, and boundaries
-4. `.docs/execution_lifecycle/*` for lifecycle guidance
-5. current Go code and tests for factual implemented behavior
-
 `Reopened redesign seam`: `PLANS.md` opens the absent ES access-profile and
 access-status surface for this contract-only decision. Tranche A fixes the v1
 schema envelope, field ownership, role separation, fail-closed safety intent,

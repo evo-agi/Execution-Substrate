@@ -25,10 +25,9 @@ The authoritative Workstream C classification of ES public execution surfaces,
 admission composition, compatibility edges, and reopened seams lives in
 `es_execution_admission_model.md`.
 
-The Workstream C admission and custody rules at `PLANS.md`'s rank are in
-`.docs/standing_rules/execution_admission_and_custody.md`; `AGENTS.md` section
-3 ranks that file with `PLANS.md`. This file holds the detailed lifecycle
-contract for them.
+The standing Workstream C admission and custody rules are in
+`.docs/standing_rules/execution_admission_and_custody.md`. This file holds the
+detailed lifecycle contract for them.
 
 The target submit idempotency, correlation and recovery contract seam is in
 `submit_idempotency_correlation_and_recovery.md`. Its public/operational rules
