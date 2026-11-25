@@ -1372,6 +1372,13 @@ func TestRemoteAlphaUpgradeESCheckRefusesWhatItWasNotWrittenFor(t *testing.T) {
 			}
 			h.modules = clone
 		}, "payload", string(filepath.Separator) + "clone" + string(filepath.Separator) + ".git is not a folder, so git would read the objects of a folder it names"},
+		{"the clone has no .git", func(h *upgradeHost) {
+			clone := filepath.Join(h.t.TempDir(), "clone")
+			if err := os.Mkdir(clone, 0o755); err != nil {
+				h.t.Fatal(err)
+			}
+			h.modules = clone
+		}, "payload", string(filepath.Separator) + "clone" + string(filepath.Separator) + ".git does not exist"},
 		{"the clone's git takes its objects from a commondir", func(h *upgradeHost) {
 			// The repository commondir names holds the commit and is the
 			// stand-in root's alone, and the payload is clean, so only the
@@ -2273,8 +2280,9 @@ func TestRemoteAlphaUpgradeESBuildRefusals(t *testing.T) {
 
 // fakeGo stands in for the Go toolchain in the build tests. It reads its
 // settings from fake-go.conf beside it (the environment build gives it
-// holds none of the test's): FAKE_GOVERSION and FAKE_GOROOT for `go env
-// GOVERSION GOROOT` (with FAKE_BREAK_WORK=1, `go env` also moves the
+// holds none of the test's): FAKE_GOVERSION, FAKE_GOROOT and
+// FAKE_GONOPROXY for `go env GOVERSION GOROOT GONOPROXY` (with
+// FAKE_BREAK_WORK=1, `go env` also moves the
 // private folder that holds its HOME aside, to moved-<name>, and puts a file
 // in its place, which build then cannot remove as a folder; it refuses any
 // HOME that is not in such a folder), FAKE_VERIFY_EXIT for `go mod verify`,
@@ -2306,7 +2314,7 @@ case "$1" in
         *) echo "fake go: HOME $HOME is not in a private build folder" >&2; exit 2 ;;
       esac
     fi
-    [[ "$2 $3" == "GOVERSION GOROOT" ]] && printf '%s\n%s\n' "$FAKE_GOVERSION" "$FAKE_GOROOT" ;;
+    [[ "$2 $3 $4" == "GOVERSION GOROOT GONOPROXY" ]] && printf '%s\n%s\n%s\n' "$FAKE_GOVERSION" "$FAKE_GOROOT" "$FAKE_GONOPROXY" ;;
   mod) [[ "$2" == verify ]] && echo "fake verify" && exit "$FAKE_VERIFY_EXIT" ;;
   build) [[ "$2 $3 $4" == "-trimpath -buildvcs=true -o" ]] || { echo "fake go: unexpected build flags: $*" >&2; exit 2; }
     printf 'binary of %s\n' "$6" > "$5" ;;
@@ -2322,7 +2330,8 @@ esac
 // private folders build makes for one build.
 var (
 	buildGoSettings = []string{"CGO_ENABLED=0", "GIT_CONFIG_GLOBAL=" + os.DevNull, "GIT_CONFIG_NOSYSTEM=1", "GIT_NO_REPLACE_OBJECTS=1", "GOARCH=amd64",
-		"GOENV=off", "GOFLAGS=-mod=readonly", "GOOS=linux", "GOTOOLCHAIN=local", "GOVCS=*:off", "GOWORK=off", "PATH=/usr/bin:/bin"}
+		"GOENV=off", "GOFLAGS=-mod=readonly", "GOOS=linux", "GOPROXY=https://proxy.golang.org", "GOTOOLCHAIN=local", "GOVCS=*:off", "GOWORK=off",
+		"PATH=/usr/bin:/bin"}
 	buildPrivateFolders = []string{"GOCACHE", "GOMODCACHE", "GOPATH", "GOTMPDIR", "HOME", "TMPDIR"}
 )
 
@@ -2370,7 +2379,7 @@ func buildRepo(t *testing.T) (repo, script, goBin, commit string) {
 func writeFakeGoConf(t *testing.T, goBin, head string, settings map[string]string) {
 	t.Helper()
 	conf := map[string]string{"FAKE_GOVERSION": "go1.26.5", "FAKE_GOROOT": filepath.Join(filepath.Dir(filepath.Dir(goBin)), "goroot"),
-		"FAKE_VERIFY_EXIT": "0", "FAKE_REVISION": head, "FAKE_MODIFIED": "false",
+		"FAKE_GONOPROXY": "", "FAKE_VERIFY_EXIT": "0", "FAKE_REVISION": head, "FAKE_MODIFIED": "false",
 		"FAKE_MODULES": `\tmod\texecution-substrate\t(devel)\t\n\t` + strings.TrimSuffix(cleanDep, "\n") + `\n`}
 	for k, v := range settings {
 		conf[k] = v
@@ -2422,7 +2431,9 @@ func fakeGoEnv(t *testing.T, goBin, command string) map[string]string {
 // name them in XDG_CONFIG_HOME and XDG_CACHE_HOME: git must not run the
 // hook and Go must not use that cache (red-team audit 33, A33-1). build
 // runs a copy of the toolchain that only the test user can change, since
-// the one a CI runner offers may be writable by any account.
+// the one a CI runner offers may be writable by any account. Last, that
+// copy's go.env names a private module, whose toolchain build must refuse
+// (red-team audit 35, A35-1).
 func TestRemoteAlphaUpgradeESBuildIgnoresAGoWorkAbove(t *testing.T) {
 	pathGo, err := exec.LookPath("go")
 	if err != nil {
@@ -2602,6 +2613,31 @@ func TestRemoteAlphaUpgradeESBuildIgnoresAGoWorkAbove(t *testing.T) {
 		if first != second {
 			t.Errorf("%s built in %s differs from %s built in %s", name, repo, name, filepath.Join(again, "repo"))
 		}
+	}
+
+	// GOPRIVATE in the toolchain's go.env makes Go fetch the modules it
+	// names from the servers their paths name, whatever GOPROXY says, and
+	// build cannot override it with an empty value, so build must refuse
+	// that toolchain (red-team audit 35, A35-1).
+	goEnv, err := os.OpenFile(filepath.Join(goroot, "go.env"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := goEnv.WriteString("GOPRIVATE=example.com/private\n"); err != nil {
+		goEnv.Close()
+		t.Fatal(err)
+	}
+	if err := goEnv.Close(); err != nil {
+		t.Fatal(err)
+	}
+	private := exec.Command("python3", "-I", filepath.Join(again, "repo", "scripts", "internal", "remote_alpha_upgrade_es.py"),
+		"build", "--out", filepath.Join(again, "payload-private"), "--commit", head, "--go", goBin)
+	private.Dir = again
+	if output, err := private.CombinedOutput(); err == nil || !strings.Contains(string(output), "makes Go fetch the modules 'example.com/private' from their own servers") {
+		t.Fatalf("build with GOPRIVATE in the toolchain's go.env: %v\n%s", err, output)
+	}
+	if leftovers, _ := filepath.Glob(filepath.Join(again, "es-upgrade-build-*")); len(leftovers) != 0 {
+		t.Fatalf("build left its private folder: %v", leftovers)
 	}
 }
 
@@ -2802,6 +2838,12 @@ func TestRemoteAlphaUpgradeESBuildChecksToolchainCheckoutAndBuildInfo(t *testing
 		{name: "a Go toolchain others can write", prepare: func(t *testing.T, repo, goBin, out string) {
 			writable(filepath.Join(goroot(goBin), "pkg", "tool"), 0o777)
 		}, says: "can change the Go toolchain "},
+		{name: "a Go toolchain whose go.env names modules to fetch from their own servers", fake: map[string]string{"FAKE_GONOPROXY": "example.com/private"},
+			// GOPRIVATE or GONOPROXY in the toolchain's go.env would make Go
+			// fetch those modules from the servers their paths name, not
+			// from the module proxy, whatever GOPROXY says (red-team audit
+			// 35, A35-1).
+			says: "makes Go fetch the modules 'example.com/private' from their own servers, not from https://proxy.golang.org (GOPRIVATE or GONOPROXY in its go.env)"},
 		{name: "a payload folder in a folder others can write", out: func(t *testing.T) string {
 			dir := filepath.Join(t.TempDir(), "open")
 			if err := os.Mkdir(dir, 0o755); err != nil {

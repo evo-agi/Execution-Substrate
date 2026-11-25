@@ -530,6 +530,13 @@ GIT_ENV = {"PATH": BUILD_PATH, "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": 
 # against the commit's go.sum.
 BUILD_PASSED_VARIABLES = ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "NO_PROXY", "no_proxy",
                           "SSL_CERT_FILE", "SSL_CERT_DIR")
+# The one place build's Go fetches modules from. With "direct" after it, as
+# the toolchain's go.env has it, a module the proxy does not have would make
+# Go look the module's path up on the server the path names, whose go-import
+# tag can send Go to any server to download it over the module proxy
+# protocol, which GOVCS cannot forbid (red-team audit 35, A35-1). Without
+# it, such a module fails the build.
+BUILD_GOPROXY = "https://proxy.golang.org"
 SUPPORTED_GO_VERSION = "go1.26.5"
 SUMMARY_SCHEMA = "execution-substrate.remote-alpha.es-upgrade-summary.v2"
 LEADER_WAIT_SECONDS = 90
@@ -1106,7 +1113,9 @@ def commit_module_pins(repo, commit, owners, env):
     itself, as build requires (red-team audit 34, A34-2)."""
     git_dir = os.path.join(repo, ".git")
     problems = folders_above_problems(git_dir, (0,) + tuple(owners))
-    if not os.path.lexists(git_dir) or not stat.S_ISDIR(os.lstat(git_dir).st_mode):
+    if not os.path.lexists(git_dir):
+        problems.append(f"{git_dir} does not exist")
+    elif not stat.S_ISDIR(os.lstat(git_dir).st_mode):
         problems.append(f"{git_dir} is not a folder, so git would read the objects of a folder it names")
     else:
         problems += tree_problems(git_dir, owners)
@@ -1984,14 +1993,16 @@ def cmd_build(args):
     Go reads a go.work from any folder above the module; no go env file;
     a private HOME, so git reads no user config and Go's caches are not
     under the user's home or an inherited XDG_CACHE_HOME; Go's telemetry
-    off, so Go starts no child that outlives its command; no VCS tool for
-    fetching modules (GOVCS), so modules come only through the module
-    proxy; a fresh build cache and temporary folder, removed afterwards,
-    whether the build succeeds or not (a refusal says when the removal
-    failed); and a fresh module cache unless --module-cache names a checked
-    one, which `go mod verify` checks first. Go checks every module against
-    the commit's go.sum, and each binary's build info is compared with the
-    commit's go.mod and go.sum."""
+    off, so Go starts no child that outlives its command; modules fetched
+    only from proxy.golang.org (GOPROXY with no "direct", and a refusal
+    when the toolchain's go.env names modules to fetch from their own
+    servers), and no git or other VCS tool to fetch one (GOVCS); a fresh
+    build cache and temporary folder, removed afterwards, whether the build
+    succeeds or not (a refusal says when the removal failed); and a fresh
+    module cache unless --module-cache names a checked one, which `go mod
+    verify` checks first. Go checks every module against the commit's
+    go.sum, and each binary's build info is compared with the commit's
+    go.mod and go.sum."""
     os.umask(0o022)
     owners = (0, os.geteuid())
     repo = os.path.realpath(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -2078,20 +2089,30 @@ def build_payload(args, repo, out_dir, go, module_cache, owners, work):
                GOPATH=folders["gopath"], GOMODCACHE=module_cache or folders["go-mod"],
                GOWORK="off", GOENV="off", GOFLAGS="-mod=readonly", GOTOOLCHAIN="local",
                CGO_ENABLED="0", GOOS="linux", GOARCH="amd64",
-               # Modules come only through the module proxy: a proxy that
-               # answers "not found" cannot make Go fetch from a server of
-               # its choosing with git or another VCS tool ("direct" in the
-               # toolchain's GOPROXY), as the operator (red-team audit 34,
-               # O34-1).
+               # Modules come only from BUILD_GOPROXY, in place of the
+               # toolchain's "https://proxy.golang.org,direct" (red-team
+               # audit 35, A35-1).
+               GOPROXY=BUILD_GOPROXY,
+               # And should Go ever fetch a module directly, it runs no git
+               # or other VCS tool to do it, as the operator (red-team
+               # audit 34, O34-1).
                GOVCS="*:off")
-    reported = run([go, "env", "GOVERSION", "GOROOT"], env=env, check=True).stdout.splitlines()
-    version, goroot = (reported + ["", ""])[:2]
+    # GONOPROXY is the one setting left that makes Go fetch a module from
+    # its own server rather than GOPROXY's, "direct" or not. Go takes it,
+    # or GOPRIVATE in its place, from the toolchain's go.env when the
+    # environment does not set it, and an empty value in the environment
+    # does not override go.env, so build asks Go what it will use.
+    reported = run([go, "env", "GOVERSION", "GOROOT", "GONOPROXY"], env=env, check=True).stdout.splitlines()
+    version, goroot, noproxy = (reported + ["", "", ""])[:3]
     if version != SUPPORTED_GO_VERSION:
         raise Refusal(f"the build needs {SUPPORTED_GO_VERSION}, found {version}")
     goroot = os.path.realpath(goroot)
     problems = folders_above_problems(goroot, owners) + tree_problems(goroot, owners)
     if problems:
         raise changeable_refusal(owners, f"the Go toolchain {goroot}", problems)
+    if noproxy:
+        raise Refusal(f"the Go toolchain {goroot} makes Go fetch the modules {noproxy!r} from their own servers, not "
+                      f"from {BUILD_GOPROXY} (GOPRIVATE or GONOPROXY in its go.env)")
     head = run(["git", "-C", repo, "rev-parse", "HEAD"], env=env, check=True).stdout.strip()
     if head != args.commit:
         raise Refusal(f"the checkout is at {head}, not {args.commit}")
