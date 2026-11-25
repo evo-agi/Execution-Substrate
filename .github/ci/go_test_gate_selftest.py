@@ -36,10 +36,11 @@ in a throwaway module exactly as the workflow runs it. A stand-in for sudo
 comes first on PATH there; it writes down its arguments and runs the command
 as the current user, so the checks need no privilege and prove none.
 
-The last group reads ../workflows/go.yml beside this file. It holds that file
-as a whole by its SHA-256, so every edit of the workflow has to change the
-value in this file in the same change, and it checks some properties of the
-workflow that the gate's guarantees depend on.
+The last two groups read ../workflows/go.yml and ../workflows/go-macos.yml
+beside this file. Each holds its file as a whole by its SHA-256, so every
+edit of a workflow has to change its value in this file in the same change,
+and checks some properties of the workflow that the gate's guarantees
+depend on.
 """
 
 import hashlib
@@ -59,6 +60,10 @@ WORKFLOW = os.path.join(HERE, os.pardir, "workflows", "go.yml")
 # SHA-256 of that file as it was last reviewed. See
 # test_the_workflow_file_is_the_text_that_was_reviewed.
 WORKFLOW_SHA256 = "618f13cbb26bb0c5181453e1840cae1d419148d4d97083ca5b1f6b6247f9a05c"
+# The workflow that runs the gate on macOS, and its SHA-256 as it was last
+# reviewed. See MacOSWorkflowKeepsWhatTheGateDependsOn.
+MACOS_WORKFLOW = os.path.join(HERE, os.pardir, "workflows", "go-macos.yml")
+MACOS_WORKFLOW_SHA256 = "c1bf72a6b7313f891cc8bcaf4ab8fb2ebe1488d3143c616e399071fe41ac45d7"
 
 PASS = "pass"
 FAIL = "fail"
@@ -2808,6 +2813,8 @@ class GateRefusesAListItCannotTakeLiterally(GateCase):
             ["gate", "list.txt", "extra"],
             ["gate", "{list}", "extra"],
             ["still-failing", "{list}", "{list}"],
+            ["gate", "{list}", "./b", "./c"],
+            ["still-failing", "{list}", "./...", "extra"],
         ):
             with self.subTest(arguments=arguments):
                 status, ran, output = run_gate("gate", BASE, "", arguments=arguments)
@@ -2823,6 +2830,140 @@ class GateRefusesAListItCannotTakeLiterally(GateCase):
                 )
                 self.assertEqual(status, 2, output)
                 self.assertEqual(ran, set(), output)
+
+
+# A module whose packages lie at two depths, for the checks of PACKAGES. The
+# packages a and d hold a test that fails, so a run that reaches either of
+# them without a line for it fails.
+NESTED = {
+    "a": {"TestListed": FAIL, "TestPortable": PASS},
+    "b": {"TestB": PASS},
+    "b/c": {"TestC": PASS, "TestSkips": SKIP},
+    "d": {"TestD": FAIL, "TestDPortable": PASS},
+}
+
+
+class GateCoversOnlyTheNamedPackages(unittest.TestCase):
+    """PACKAGES limits both modes to the packages that it names."""
+
+    def test_the_gate_runs_exactly_the_packages_that_the_pattern_names(self):
+        status, ran, output = run_gate(
+            "gate",
+            NESTED,
+            "skips-itself synth/b/c TestSkips\n",
+            arguments=["gate", "{list}", "./b/..."],
+        )
+        self.assertEqual(status, 0, output)
+        self.assertEqual(ran, {"synth/b.TestB", "synth/b/c.TestC", "synth/b/c.TestSkips"}, output)
+        self.assertIn("+ go list ./b/...\n", output)
+        self.assertNotIn("+ go list ./...\n", output)
+        self.assertIn("test gate passed: 2 packages, 0 of them with skipped entries", output)
+
+    def test_a_pattern_without_the_dots_names_one_package(self):
+        status, ran, output = run_gate("gate", NESTED, "", arguments=["gate", "{list}", "./b"])
+        self.assertEqual(status, 0, output)
+        self.assertEqual(ran, {"synth/b.TestB"}, output)
+        self.assertIn("test gate passed: 1 packages", output)
+
+    def test_without_the_pattern_and_with_the_whole_module_every_package_runs(self):
+        listing = "synth/a TestListed\nsynth/d TestD\nskips-itself synth/b/c TestSkips\n"
+        everything = {
+            "synth/a.TestPortable",
+            "synth/b.TestB",
+            "synth/b/c.TestC",
+            "synth/b/c.TestSkips",
+            "synth/d.TestDPortable",
+        }
+        for arguments in (["gate", "{list}"], ["gate", "{list}", "./..."]):
+            with self.subTest(arguments=arguments):
+                status, ran, output = run_gate("gate", NESTED, listing, arguments=arguments)
+                self.assertEqual(status, 0, output)
+                self.assertEqual(ran, everything, output)
+                self.assertIn("+ go list ./...\n", output)
+                self.assertIn("test gate passed: 4 packages", output)
+        # The packages outside a pattern are the ones that would fail.
+        status, ran, output = run_gate("gate", NESTED, "", arguments=["gate", "{list}"])
+        self.assertEqual(status, 1, output)
+
+    def test_listed_tests_still_fail_judges_the_entries_inside_the_pattern(self):
+        status, ran, output = run_gate(
+            "still-failing", NESTED, "synth/d TestD\n", arguments=["still-failing", "{list}", "./d"]
+        )
+        self.assertEqual(status, 0, output)
+        self.assertEqual(ran, {"synth/d.TestD"}, output)
+        self.assertEqual(ran.whole, {"synth/d.TestD", "synth/d.TestDPortable"}, output)
+        self.assertIn("+ go list ./d\n", output)
+        self.assertIn("all 1 listed tests still fail on this host", output)
+
+    def test_a_line_for_a_package_outside_the_pattern_is_refused(self):
+        for mode in ("gate", "still-failing"):
+            for listing in ("synth/a TestListed\n", "skips-itself synth/b/c TestSkips\n"):
+                with self.subTest(mode=mode, listing=listing):
+                    status, ran, output = run_gate(
+                        mode, NESTED, listing, arguments=[mode, "{list}", "./d"]
+                    )
+                    self.assertEqual(status, 2, output)
+                    self.assertEqual(ran, set(), output)
+                    self.assertRegex(
+                        output,
+                        r"(?m)^::error::test gate list: listed package is not a package that "
+                        r"\./d names: synth/(a|b/c)$",
+                    )
+
+    def test_a_pattern_that_names_no_package_fails_with_no_test_run(self):
+        for mode in ("gate", "still-failing"):
+            for pattern, reason in (
+                # A directory that holds no Go package.
+                ("./notes/...", "go list ./notes/... named no package"),
+                # A directory that does not exist.
+                ("./none/...", "go list ./none/... failed"),
+                ("./none", "go list ./none failed"),
+            ):
+                with self.subTest(mode=mode, pattern=pattern):
+                    status, ran, output = run_gate(
+                        mode,
+                        NESTED,
+                        "",
+                        files={"notes/notes.txt": "no Go here\n"},
+                        arguments=[mode, "{list}", pattern],
+                    )
+                    self.assertEqual(status, 1, output)
+                    self.assertEqual(ran, set(), output)
+                    self.assertIn("::error::test gate: " + reason, output)
+                    self.assertNotIn("+ go test", output)
+
+    def test_a_pattern_that_is_not_a_relative_one_is_refused_before_any_go_command(self):
+        for pattern in (
+            "",
+            "...",
+            "./",
+            "all",
+            "std",
+            "synth/b",
+            "b/...",
+            "/b/...",
+            "../b",
+            "./../b",
+            "./b/../d",
+            "./.b",
+            "./-b",
+            "-run=x",
+            "./b c",
+            "./b//c",
+            "./b/",
+            "./b/c...",
+            "./b/....",
+            "./b\n",
+        ):
+            for mode in ("gate", "still-failing"):
+                with self.subTest(mode=mode, pattern=pattern):
+                    status, ran, output = run_gate(
+                        mode, NESTED, "", arguments=[mode, "{list}", pattern]
+                    )
+                    self.assertEqual(status, 2, output)
+                    self.assertEqual(ran, set(), output)
+                    self.assertIn("::error::test gate list: usage: ", output)
+                    self.assertNotIn("+ go ", output)
 
 
 class ListedTestsMustStillFail(GateCase):
@@ -4083,6 +4224,70 @@ class WorkflowKeepsWhatTheGateDependsOn(unittest.TestCase):
         commands = [line[len("run: "):] for line in self.lines if line.startswith("run: ")]
         vets = [command for command in commands if "go vet" in command]
         self.assertEqual(vets, ["go vet ./...", "GOOS=darwin GOARCH=arm64 go vet ./..."])
+
+    def test_the_go_build_cache_is_not_restored(self):
+        self.assertIn("cache: false", self.lines)
+        self.assertEqual([line for line in self.lines if line.startswith("cache:")], ["cache: false"])
+
+
+class MacOSWorkflowKeepsWhatTheGateDependsOn(unittest.TestCase):
+    """The workflow that runs the gate on macOS, for the packages that its
+    TESTED_PACKAGES names, with a list of its own."""
+
+    @classmethod
+    def setUpClass(cls):
+        with open(MACOS_WORKFLOW, "rb") as handle:
+            cls.raw = handle.read()
+        cls.lines = [line.strip() for line in cls.raw.decode("utf-8").split("\n")]
+
+    def test_the_workflow_file_is_the_text_that_was_reviewed(self):
+        # As for go.yml: the checks below read single lines, so the file is
+        # held as a whole.
+        found = hashlib.sha256(self.raw).hexdigest()
+        self.assertEqual(
+            found,
+            MACOS_WORKFLOW_SHA256,
+            "%s is not the text that was reviewed. If the edit is intended, review the "
+            "whole file and set MACOS_WORKFLOW_SHA256 in %s to %s"
+            % (os.path.normpath(MACOS_WORKFLOW), os.path.basename(__file__), found),
+        )
+
+    def test_every_action_is_pinned_to_a_full_commit_sha(self):
+        uses = [line for line in self.lines if line.startswith(("uses:", "- uses:"))]
+        self.assertTrue(uses)
+        for line in uses:
+            with self.subTest(line=line):
+                self.assertRegex(line, r"^(- )?uses: [\w.-]+/[\w./-]+@[0-9a-f]{40} # v\S+$")
+
+    def test_the_three_gate_commands_are_present_in_order_for_the_named_packages(self):
+        commands = [line[len("run: "):] for line in self.lines if line.startswith("run: ")]
+        gate_commands = [command for command in commands if "go_test_gate" in command]
+        self.assertEqual(
+            gate_commands,
+            [
+                "python3 -I -B .github/ci/go_test_gate_selftest.py",
+                'python3 -I -B .github/ci/go_test_gate.py gate "$ENVIRONMENT_ONLY_TESTS" '
+                '"$TESTED_PACKAGES"',
+                'python3 -I -B .github/ci/go_test_gate.py still-failing '
+                '"$ENVIRONMENT_ONLY_TESTS" "$TESTED_PACKAGES"',
+            ],
+        )
+        self.assertEqual(commands[-1], gate_commands[-1])
+        self.assertIn(
+            "ENVIRONMENT_ONLY_TESTS: .github/ci/environment-only-tests-macos.txt", self.lines
+        )
+        self.assertIn("TESTED_PACKAGES: ./scripts/...", self.lines)
+        for line in self.lines:
+            # As for go.yml: no line in the plain style allows a step to fail
+            # or makes one conditional.
+            self.assertFalse(line.startswith(("continue-on-error:", "if:", "- if:")), line)
+
+    def test_it_runs_on_macos_and_calls_no_sudo(self):
+        self.assertIn("runs-on: macos-26", self.lines)
+        self.assertEqual([line for line in self.lines if line.startswith("runs-on:")],
+                         ["runs-on: macos-26"])
+        commands = [line[len("run: "):] for line in self.lines if line.startswith("run: ")]
+        self.assertEqual([command for command in commands if "sudo" in command], [])
 
     def test_the_go_build_cache_is_not_restored(self):
         self.assertIn("cache: false", self.lines)

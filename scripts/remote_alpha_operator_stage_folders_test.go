@@ -415,7 +415,7 @@ exec "${fake}" "$@"
 // copy and the run step: the run step refuses to run anything from it.
 func TestRemoteAlphaOperatorRoutesRefuseAStageFolderThatIsNoLongerPrivate(t *testing.T) {
 	changes := map[string]string{
-		"open":   `chmod 0755 -- "${stage}"`,
+		"open":   `chmod 0755 "${stage}"`,
 		"linked": `if [[ ! -L "${stage}" ]]; then mv -- "${stage}" "${stage}.moved"; ln -s -- "${stage}.moved" "${stage}"; fi`,
 	}
 	for change, script := range changes {

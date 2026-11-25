@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"syscall"
 	"testing"
@@ -56,6 +57,24 @@ func rootPathStat(t *testing.T, path string) rootPathState {
 		state.bytes = string(data)
 	}
 	return state
+}
+
+// rootPathOwnerName returns the name of the account that owns path, without
+// following a link, as the stat of the host prints it: GNU stat takes -c and
+// the stat of macOS takes -f.
+func rootPathOwnerName(t *testing.T, path string) string {
+	t.Helper()
+	format := []string{"-c", "%U"}
+	if runtime.GOOS == "darwin" {
+		format = []string{"-f", "%Su"}
+	}
+	cmd := exec.Command("stat", append(format, path)...)
+	cmd.Dir = executionSubstrateRepoRoot
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("stat %s: %v", path, err)
+	}
+	return strings.TrimSpace(string(out))
 }
 
 func rootPathChown(t *testing.T, owner rootPathOwner, paths ...string) {
@@ -426,22 +445,13 @@ func TestRemoteAlphaResetDisposableVaultRefusesUnsafeRaftStates(t *testing.T) {
 		}
 	})
 
-	ownerName := func(t *testing.T, path string) string {
-		cmd := exec.Command("stat", "-c", "%U", path)
-		cmd.Dir = executionSubstrateRepoRoot
-		out, err := cmd.Output()
-		if err != nil {
-			t.Fatalf("stat %s: %v", path, err)
-		}
-		return strings.TrimSpace(string(out))
-	}
 	check := func(t *testing.T, path, user string) (string, error) {
 		return vaultResetShell(t, false, fmt.Sprintf("require_vault_owned_raft_dir %q %q && echo accepted", path, user))
 	}
 	t.Run("raft directory of the Vault account", func(t *testing.T) {
 		t.Parallel()
 		f := newVaultRaftFixture(t)
-		if output, err := check(t, f.raft, ownerName(t, f.raft)); err != nil || !strings.Contains(output, "accepted") {
+		if output, err := check(t, f.raft, rootPathOwnerName(t, f.raft)); err != nil || !strings.Contains(output, "accepted") {
 			t.Fatalf("a raft directory of the Vault account was refused: %v\n%s", err, output)
 		}
 	})
@@ -457,7 +467,7 @@ func TestRemoteAlphaResetDisposableVaultRefusesUnsafeRaftStates(t *testing.T) {
 		t.Parallel()
 		f := newVaultRaftFixture(t)
 		replaceWithSymlink(t, f.victim, f.raft)
-		output, err := check(t, f.raft, ownerName(t, f.victim))
+		output, err := check(t, f.raft, rootPathOwnerName(t, f.victim))
 		if err == nil || !strings.Contains(output, "Vault raft path is a symbolic link") {
 			t.Fatalf("a raft path that is a link was accepted: %v\n%s", err, output)
 		}
@@ -1050,13 +1060,7 @@ func TestRemoteAlphaResetDisposableVaultNeverFollowsALinkAboveTheRaftDirectory(t
 	rootPathChown(t, owner, vaultBase, inner, raft)
 	victimBefore, unitBefore := rootPathStat(t, victim), rootPathStat(t, unit)
 
-	cmd := exec.Command("stat", "-c", "%U", raft)
-	cmd.Dir = executionSubstrateRepoRoot
-	name, err := cmd.Output()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if output, err := vaultResetShell(t, false, fmt.Sprintf("require_vault_owned_raft_dir %q %q && echo accepted", raft, strings.TrimSpace(string(name)))); err != nil || !strings.Contains(output, "accepted") {
+	if output, err := vaultResetShell(t, false, fmt.Sprintf("require_vault_owned_raft_dir %q %q && echo accepted", raft, rootPathOwnerName(t, raft))); err != nil || !strings.Contains(output, "accepted") {
 		t.Fatalf("the check before the confirmation refused the real raft directory: %v\n%s", err, output)
 	}
 	// While the operator reads the confirmation prompt.

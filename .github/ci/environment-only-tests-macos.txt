@@ -1,0 +1,206 @@
+# Tests of the packages that .github/workflows/go-macos.yml gates that cannot
+# pass on its macOS runner for host reasons, not code reasons, and tests that
+# skip themselves on it.
+#
+# The format and the rules are those of environment-only-tests.txt beside
+# this file, which .github/ci/go_test_gate.py reads and documents. The
+# workflow passes the gate the package pattern in TESTED_PACKAGES, and every
+# line here must name a package that the pattern names. The step "Test" of
+# that workflow skips the entries and runs everything else in those
+# packages. The step "Listed tests still fail" fails the run when an entry
+# passes, skips itself or does not run on that runner, so a change that
+# makes a listed test pass on macOS has to delete its line in the same
+# change.
+#
+# The entries come first in this file, and the lines for tests that skip
+# themselves after them, under their own heading.
+#
+# The way to shorten this list is to port a test so that it passes on a
+# macOS runner without weakening it.
+
+# Remote Alpha operator-host tests in the scripts package.
+
+# The test process must run as the account named "ds", and the runner has no
+# such account. The first two tests are listed whole for the reason that
+# environment-only-tests.txt gives for them: the TLS status bootstrap refuses
+# a caller that is not "ds" at its first identity check, so a subtest that
+# expects a refusal passes without reaching the check it is named for.
+execution-substrate/scripts TestRemoteAlphaESServiceTLSStatusFailureWitnessBootstrapOwnedTerminal
+execution-substrate/scripts TestRemoteAlphaESServiceTLSStatusRootLoadedStageCustody
+execution-substrate/scripts TestRemoteAlphaESServiceTLSStatusStageFIFOSubstitution
+execution-substrate/scripts TestRemoteAlphaOperatorRecoverySessionESTLSStatusStageFIFORefusal
+execution-substrate/scripts TestRemoteAlphaP0tGrammarDiagnosticBootstrapLifecycleComposition
+execution-substrate/scripts TestRemoteAlphaP0tGrammarDiagnosticPriorReaderCloseSuppression
+execution-substrate/scripts TestRemoteAlphaP0tGrammarDiagnosticV2VersionedBootstrap
+
+# On macOS, /var and /tmp are symbolic links to /private/var and
+# /private/tmp. The box helpers that these tests run check every folder on
+# the way to an output or backup folder and refuse a symbolic link there.
+# The helpers run only on the box, where /var and /tmp are folders. The first
+# four tests use a default folder under /var/tmp. The last two expect a
+# refusal that names /var/tmp or /var/log, and get the refusal for the link
+# /var first; the other subtests of the second one pass.
+execution-substrate/scripts TestRemoteAlphaESBinaryDeploymentCheckOnlyIsDefaultAndNonMutating
+execution-substrate/scripts TestRemoteAlphaESConfigTLSPrepRecordsDSSecurityWarningsWithoutFailing
+execution-substrate/scripts TestRemoteAlphaESConfigTLSPrepRejectsPreexistingBroadPrepAccount
+execution-substrate/scripts TestRemoteAlphaVaultServiceUserMigrationApplyRequiresReadyPreflight
+execution-substrate/scripts TestRemoteAlphaOutputDirRefusesASharedStickyFolderAsTheArtifactFolder
+execution-substrate/scripts TestRemoteAlphaVaultServiceUserMigrationPlanRefusesPathsOutsideVault/log_file_in_a_shared_system_directory
+
+# The output folder check opens each folder with O_PATH, which needs no read
+# permission on it. macOS has no O_PATH, so the check falls back to O_RDONLY
+# and cannot open a folder that it may not read, which these tests expect it
+# to check. The second test runs the check inside the summary-path prepare
+# command of scripts/remote_alpha_operator.sh, a box command, through a fake
+# ssh on the host.
+execution-substrate/scripts TestRemoteAlphaOutputDirChecksFoldersItCannotRead
+execution-substrate/scripts TestRemoteAlphaOperatorPrepareSummaryPathHandsOverAnUnreadableFolder
+
+# These tests run the summary-path prepare command of
+# scripts/remote_alpha_operator.sh through a fake ssh on the host, with a
+# summary folder that the helper user cannot write. The command hands that
+# folder over with 'chmod 0750 -- "${summary_dir}"' at
+# scripts/remote_alpha_operator.sh:997, which is the chmod of GNU coreutils.
+# The chmod of macOS takes its first operand as the mode and every later one
+# as a file, "--" included, so the command stops with
+# summary_parent_chmod_failed. The command runs only on the box.
+execution-substrate/scripts TestRemoteAlphaOperatorRecoverySessionVaultWorkloadAuthBootstrapPrepareSummaryPathUsesBoundedRemoteCommand
+execution-substrate/scripts TestRemoteAlphaOperatorRecoverySessionVaultWorkloadAuthBootstrapPrepareRunsBeforeHelperExecution
+
+# The box helper that these tests run, require_vault_owned_raft_dir in
+# scripts/remote_alpha_reset_disposable_vault.sh:410, reads the owner of the
+# raft directory with "sudo stat -c '%U'", which is the stat of GNU
+# coreutils. The stat of macOS has no -c. The helper runs only on the box.
+# The tests themselves read the owner with the stat of the host. The other
+# subtests of the second test pass.
+execution-substrate/scripts TestRemoteAlphaResetDisposableVaultNeverFollowsALinkAboveTheRaftDirectory
+execution-substrate/scripts TestRemoteAlphaResetDisposableVaultRefusesUnsafeRaftStates/raft_directory_of_the_Vault_account
+
+# The TLS status collector accepts the malformed-PEM refusal of LibreSSL
+# only in the exact form, source path included, that the /usr/bin/openssl
+# of one macOS build prints (LIBRESSL_PEM_ERROR_PATH in
+# scripts/internal/remote_alpha_es_tls_status.py). The /usr/bin/openssl of
+# the runner does not print that form, so the collector reports
+# unexpected_openssl_grammar for a malformed certificate. On the box the
+# collector runs OpenSSL 3, whose form it accepts. The other subtests of the
+# second test pass.
+execution-substrate/scripts TestRemoteAlphaESServiceTLSStatusOpenSSLGrammar
+execution-substrate/scripts TestRemoteAlphaESServiceTLSStatusCollectionTypedFailures/malformed_cert
+
+# The test builds esconfigcheck for the host and reads its build information
+# with go_build_info of the ES upgrade helper, which reads the 64-bit
+# little-endian ELF files of the box and refuses anything else. On macOS the
+# build is a Mach-O file.
+execution-substrate/scripts TestRemoteAlphaUpgradeESReadsGoBuildInfoLikeGoVersion
+
+
+# Tests that skip themselves on the runner.
+#
+# The rules of environment-only-tests.txt for these lines hold here: the
+# tests that skip themselves on the runner must be exactly the tests named
+# below, and a line has to go when its test no longer skips itself there.
+# The step "Listed tests pass as root" of go.yml reads only
+# environment-only-tests.txt, and this workflow has no such step, so this
+# workflow does not run the lines below as root. Those of them that
+# environment-only-tests.txt also names run as root on Linux in go.yml.
+# Each group says what its tests need that the runner does not have.
+
+# Interfaces of the Linux kernel that macOS does not have. The TLS status
+# collector and its stage run only on the box. The first five tests need PID
+# namespaces (os.unshare, os.setns and os.CLONE_NEWPID), the next four read
+# /proc, the next five need os.waitid, which the Python of macOS does not
+# offer, and the two firewall subtests read /proc/net/tcp.
+skips-itself execution-substrate/scripts TestRemoteAlphaESServiceTLSStatusChildNamespaceRealCollectorDeath
+skips-itself execution-substrate/scripts TestRemoteAlphaESServiceTLSStatusChildNamespaceRealDeafAnchor
+skips-itself execution-substrate/scripts TestRemoteAlphaESServiceTLSStatusChildNamespaceRealDescendants
+skips-itself execution-substrate/scripts TestRemoteAlphaESServiceTLSStatusChildNamespaceRealKernel
+skips-itself execution-substrate/scripts TestRemoteAlphaESServiceTLSStatusChildNamespaceRealSiblings
+skips-itself execution-substrate/scripts TestRemoteAlphaESServiceTLSStatusChildNamespaceAnchorProcess
+skips-itself execution-substrate/scripts TestRemoteAlphaESServiceTLSStatusProcessIdentityLiveProcesses
+skips-itself execution-substrate/scripts TestRemoteAlphaESServiceTLSStatusProcessIdentityThreadExecStaysPresent
+skips-itself execution-substrate/scripts TestRemoteAlphaESServiceTLSStatusUnrelatedProcessNameDoesNotHoldCleanup
+skips-itself execution-substrate/scripts TestRemoteAlphaOperatorHealthcheckTLSStatusNoninteractiveDescendantRealCollectorDeath
+skips-itself execution-substrate/scripts TestRemoteAlphaOperatorHealthcheckTLSStatusNoninteractiveDescendantRealCrowd
+skips-itself execution-substrate/scripts TestRemoteAlphaOperatorHealthcheckTLSStatusNoninteractiveDescendantRealKernel
+skips-itself execution-substrate/scripts TestRemoteAlphaOperatorHealthcheckTLSStatusNoninteractiveDescendantRealProbeRefusesAChild
+skips-itself execution-substrate/scripts TestRemoteAlphaOperatorHealthcheckTLSStatusNoninteractiveDescendantRealProcessLimit
+skips-itself execution-substrate/scripts TestRemoteAlphaHostFirewallHostVaultSource/ipv4
+skips-itself execution-substrate/scripts TestRemoteAlphaHostFirewallHostVaultSource/ipv6
+
+# The host firewall's real-kernel and real-sshd tests, for the reason that
+# environment-only-tests.txt gives: the first three build network namespaces
+# and load nftables, the fourth runs sshd -t, and all four need root. The
+# runner runs the tests without root.
+skips-itself execution-substrate/scripts TestRemoteAlphaHostFirewallRealKernelApplyConfirmRollback
+skips-itself execution-substrate/scripts TestRemoteAlphaHostFirewallRealKernelBridgeIsolation
+skips-itself execution-substrate/scripts TestRemoteAlphaHostFirewallRealKernelTraffic
+skips-itself execution-substrate/scripts TestRemoteAlphaHostFirewallSSHDDropInWithRealSSHD
+
+# Tests against a real SPIRE and a real Vault. go.yml installs the pinned
+# Linux releases on its runner; this workflow does not, and the SPIRE
+# release is a Linux build.
+skips-itself execution-substrate/scripts TestRemoteAlphaSPIREAgentPinAgainstRealSPIRE
+skips-itself execution-substrate/scripts TestRemoteAlphaSPIREAgentRecoverAgainstRealSPIRE
+skips-itself execution-substrate/scripts TestRemoteAlphaVaultWorkloadAuthBootstrapSignalsWithRealVault
+skips-itself execution-substrate/scripts TestRemoteAlphaVaultWorkloadAuthBootstrapUnsealKeyWithRealVault
+
+# The Vault workload-auth bootstrap helper makes its process not dumpable
+# with prctl before it reads anything, and stops on a host where it cannot.
+# macOS has no prctl, so each of these tests skips itself. The helper runs
+# only on the box.
+skips-itself execution-substrate/scripts TestRemoteAlphaVaultWorkloadAuthBootstrapConfigLoadFailureWritesSafeSummaryBeforePrompts
+skips-itself execution-substrate/scripts TestRemoteAlphaVaultWorkloadAuthBootstrapConfigUnreadablePreflightFailsBeforePrompts
+skips-itself execution-substrate/scripts TestRemoteAlphaVaultWorkloadAuthBootstrapFakeVaultWritesExpectedObjectsAndSafeSummary
+skips-itself execution-substrate/scripts TestRemoteAlphaVaultWorkloadAuthBootstrapIgnoresNonJWTSVIDRSAKeys
+skips-itself execution-substrate/scripts TestRemoteAlphaVaultWorkloadAuthBootstrapPreflightFailsBeforePromptsAndVaultWrites
+skips-itself execution-substrate/scripts TestRemoteAlphaVaultWorkloadAuthBootstrapPreflightSucceedsWhenSummaryPathIsPreparedWritable
+skips-itself execution-substrate/scripts TestRemoteAlphaVaultWorkloadAuthBootstrapPromptUnavailableWritesSafeSummaryWithoutSecretValues
+skips-itself execution-substrate/scripts TestRemoteAlphaVaultWorkloadAuthBootstrapRefusesWhenTheProcessStaysDumpable/unchanged
+skips-itself execution-substrate/scripts TestRemoteAlphaVaultWorkloadAuthBootstrapRejectsInvalidChoicesBeforePromptsAndVaultWrites/authority
+skips-itself execution-substrate/scripts TestRemoteAlphaVaultWorkloadAuthBootstrapRejectsInvalidChoicesBeforePromptsAndVaultWrites/authority_partial
+skips-itself execution-substrate/scripts TestRemoteAlphaVaultWorkloadAuthBootstrapRejectsInvalidChoicesBeforePromptsAndVaultWrites/proof_value
+skips-itself execution-substrate/scripts TestRemoteAlphaVaultWorkloadAuthBootstrapRejectsInvalidChoicesBeforePromptsAndVaultWrites/standing_root_tokens
+skips-itself execution-substrate/scripts TestRemoteAlphaVaultWorkloadAuthBootstrapRejectsInvalidChoicesBeforePromptsAndVaultWrites/standing_root_tokens_revoke_needs_unseal_key
+skips-itself execution-substrate/scripts TestRemoteAlphaVaultWorkloadAuthBootstrapRejectsInvalidRoleTokenLimitsBeforePromptsAndVaultWrites/cidr_empty
+skips-itself execution-substrate/scripts TestRemoteAlphaVaultWorkloadAuthBootstrapRejectsInvalidRoleTokenLimitsBeforePromptsAndVaultWrites/cidr_everything
+skips-itself execution-substrate/scripts TestRemoteAlphaVaultWorkloadAuthBootstrapRejectsInvalidRoleTokenLimitsBeforePromptsAndVaultWrites/cidr_invalid
+skips-itself execution-substrate/scripts TestRemoteAlphaVaultWorkloadAuthBootstrapRejectsInvalidRoleTokenLimitsBeforePromptsAndVaultWrites/max_ttl_above_ceiling
+skips-itself execution-substrate/scripts TestRemoteAlphaVaultWorkloadAuthBootstrapRejectsInvalidRoleTokenLimitsBeforePromptsAndVaultWrites/max_ttl_not_duration
+skips-itself execution-substrate/scripts TestRemoteAlphaVaultWorkloadAuthBootstrapRejectsInvalidRoleTokenLimitsBeforePromptsAndVaultWrites/ttl_above_max
+skips-itself execution-substrate/scripts TestRemoteAlphaVaultWorkloadAuthBootstrapRejectsInvalidRoleTokenLimitsBeforePromptsAndVaultWrites/ttl_not_duration
+skips-itself execution-substrate/scripts TestRemoteAlphaVaultWorkloadAuthBootstrapRejectsInvalidRoleTokenLimitsBeforePromptsAndVaultWrites/ttl_zero
+skips-itself execution-substrate/scripts TestRemoteAlphaVaultWorkloadAuthBootstrapSelectsValidationKeysForWorkloadTrustDomain
+skips-itself execution-substrate/scripts TestRemoteAlphaVaultWorkloadAuthBootstrapSpireBundlePreflightFailsBeforePromptsAndVaultWrites
+skips-itself execution-substrate/scripts TestRemoteAlphaVaultWorkloadAuthBootstrapStandingRootTokens/report
+skips-itself execution-substrate/scripts TestRemoteAlphaVaultWorkloadAuthBootstrapStandingRootTokens/revoke
+skips-itself execution-substrate/scripts TestRemoteAlphaVaultWorkloadAuthBootstrapTemporaryGenerateRootAccess/as_configured_refused
+skips-itself execution-substrate/scripts TestRemoteAlphaVaultWorkloadAuthBootstrapTemporaryGenerateRootAccess/config_already_mentions_the_setting
+skips-itself execution-substrate/scripts TestRemoteAlphaVaultWorkloadAuthBootstrapTemporaryGenerateRootAccess/enables_generates_revokes_the_root_token_then_restores
+skips-itself execution-substrate/scripts TestRemoteAlphaVaultWorkloadAuthBootstrapTemporaryGenerateRootAccess/needs_unseal_key_authority
+skips-itself execution-substrate/scripts TestRemoteAlphaVaultWorkloadAuthBootstrapTemporaryGenerateRootAccess/no_final_newline
+skips-itself execution-substrate/scripts TestRemoteAlphaVaultWorkloadAuthBootstrapTemporaryGenerateRootAccess/reload_fails
+skips-itself execution-substrate/scripts TestRemoteAlphaVaultWorkloadAuthBootstrapTemporaryGenerateRootAccess/reload_has_no_effect
+skips-itself execution-substrate/scripts TestRemoteAlphaVaultWorkloadAuthBootstrapTemporaryGenerateRootAccess/restore_reload_fails
+skips-itself execution-substrate/scripts TestRemoteAlphaVaultWorkloadAuthBootstrapTemporaryGenerateRootAccess/restore_reload_has_no_effect
+skips-itself execution-substrate/scripts TestRemoteAlphaVaultWorkloadAuthBootstrapTemporaryGenerateRootAccess/vault_open_but_file_clean
+skips-itself execution-substrate/scripts TestRemoteAlphaVaultWorkloadAuthBootstrapTemporaryGenerateRootAccess/vault_opens_after_preflight
+skips-itself execution-substrate/scripts TestRemoteAlphaVaultWorkloadAuthBootstrapUnexpectedExceptionAfterPreflightWritesSafeSummary
+skips-itself execution-substrate/scripts TestRemoteAlphaVaultWorkloadAuthBootstrapUnsealKeyAuthorityFailures/attempt_already_running
+skips-itself execution-substrate/scripts TestRemoteAlphaVaultWorkloadAuthBootstrapUnsealKeyAuthorityFailures/attempt_started_after_preflight
+skips-itself execution-substrate/scripts TestRemoteAlphaVaultWorkloadAuthBootstrapUnsealKeyAuthorityFailures/configuration_fails
+skips-itself execution-substrate/scripts TestRemoteAlphaVaultWorkloadAuthBootstrapUnsealKeyAuthorityFailures/create_orphan_and_root_revoke_fail
+skips-itself execution-substrate/scripts TestRemoteAlphaVaultWorkloadAuthBootstrapUnsealKeyAuthorityFailures/create_orphan_fails
+skips-itself execution-substrate/scripts TestRemoteAlphaVaultWorkloadAuthBootstrapUnsealKeyAuthorityFailures/more_than_one_key_share
+skips-itself execution-substrate/scripts TestRemoteAlphaVaultWorkloadAuthBootstrapUnsealKeyAuthorityFailures/root_revoke_fails
+skips-itself execution-substrate/scripts TestRemoteAlphaVaultWorkloadAuthBootstrapUnsealKeyAuthorityFailures/standing_root_token_check_fails
+skips-itself execution-substrate/scripts TestRemoteAlphaVaultWorkloadAuthBootstrapUnsealKeyAuthorityFailures/wrong_unseal_key
+skips-itself execution-substrate/scripts TestRemoteAlphaVaultWorkloadAuthBootstrapUnsealKeyAuthorityRevokesGeneratedTokens
+skips-itself execution-substrate/scripts TestRemoteAlphaVaultWorkloadAuthBootstrapVaultAPIFailuresWriteSafePhaseSummary/jwt_auth_config
+skips-itself execution-substrate/scripts TestRemoteAlphaVaultWorkloadAuthBootstrapVaultAPIFailuresWriteSafePhaseSummary/jwt_auth_mount
+skips-itself execution-substrate/scripts TestRemoteAlphaVaultWorkloadAuthBootstrapVaultAPIFailuresWriteSafePhaseSummary/kv_v2_mount
+skips-itself execution-substrate/scripts TestRemoteAlphaVaultWorkloadAuthBootstrapVaultAPIFailuresWriteSafePhaseSummary/proof_secret_codex_runtime_profile
+skips-itself execution-substrate/scripts TestRemoteAlphaVaultWorkloadAuthBootstrapVaultAPIFailuresWriteSafePhaseSummary/proof_secret_prior_versions
+skips-itself execution-substrate/scripts TestRemoteAlphaVaultWorkloadAuthBootstrapVaultAPIFailuresWriteSafePhaseSummary/proof_secret_runtime_identity_vault_login
+skips-itself execution-substrate/scripts TestRemoteAlphaVaultWorkloadAuthBootstrapVaultAPIFailuresWriteSafePhaseSummary/runtime_identity_policy
+skips-itself execution-substrate/scripts TestRemoteAlphaVaultWorkloadAuthBootstrapVaultAPIFailuresWriteSafePhaseSummary/service_execution_role
+skips-itself execution-substrate/scripts TestRemoteAlphaVaultWorkloadAuthBootstrapWritesAllValidationKeysForWorkloadTrustDomain
