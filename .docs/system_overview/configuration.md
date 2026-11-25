@@ -721,8 +721,12 @@ bypass ES admission. ES therefore submits only to a Nomad that enforces them.
   otherwise it refuses with `503 execution_runtime_unavailable` ("execution
   runtime access control check failed").
 - **Observer token**: a read-only client token (policy `es-observer-v1`:
-  agent and node read, `read-job` and `read-logs` in `es-submit-v1`) for
-  readiness and evidence checks. Operator scripts read it from the file named
+  agent and node read, `list-jobs`, `read-job` and `read-logs` in
+  `es-submit-v1`) for readiness and evidence checks. It can list and inspect
+  ES's jobs and read their logs, and cannot submit, plan, stop or scale
+  them. `check` requires these exact rules, so on a host provisioned before
+  `list-jobs` was added, `check` refuses until `provision` runs again and
+  rewrites the policy (the tokens are kept). Operator scripts read it from the file named
   by `NOMAD_TOKEN_FILE` and pass it to curl through a configuration on a file
   descriptor, to Python by file, and to the nomad CLI through its
   environment, never on a command line. The observer token cannot submit.

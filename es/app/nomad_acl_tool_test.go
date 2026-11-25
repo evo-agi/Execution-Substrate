@@ -169,7 +169,7 @@ func TestNomadACLToolAsksNomadWhichGrantsCanSubmit(t *testing.T) {
 	}
 	for _, widened := range []struct{ policy, rules string }{
 		{"es-observer-v1", "agent {\n  policy = \"read\"\n}\nnode {\n  policy = \"read\"\n}\n" +
-			"namespace \"es-submit-v1\" {\n  capabilities = [\"read-job\", \"read-logs\", \"scale-job\", \"alloc-exec\", \"alloc-lifecycle\"]\n}\n"},
+			"namespace \"es-submit-v1\" {\n  capabilities = [\"list-jobs\", \"read-job\", \"read-logs\", \"scale-job\", \"alloc-exec\", \"alloc-lifecycle\"]\n}\n"},
 		{"es-submit-v1", "namespace \"es-submit-v1\" {\n  capabilities = [\"submit-job\", \"read-job\", \"read-logs\", \"alloc-exec\", \"alloc-node-exec\"]\n}\n" +
 			"host_volume \"*\" {\n  policy = \"write\"\n}\n"},
 	} {
@@ -349,7 +349,7 @@ const (
 	// The rules nomad_acl.py writes for ES's and the observer's policies.
 	toolESPolicyRules       = "namespace \"es-submit-v1\" {\n  capabilities = [\"submit-job\", \"read-job\", \"read-logs\"]\n}\n"
 	toolObserverPolicyRules = "agent {\n  policy = \"read\"\n}\nnode {\n  policy = \"read\"\n}\n" +
-		"namespace \"es-submit-v1\" {\n  capabilities = [\"read-job\", \"read-logs\"]\n}\n"
+		"namespace \"es-submit-v1\" {\n  capabilities = [\"list-jobs\", \"read-job\", \"read-logs\"]\n}\n"
 )
 
 func (f *fakeNomadForACLCheck) ServeHTTP(w http.ResponseWriter, r *http.Request) {

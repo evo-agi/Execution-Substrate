@@ -75,11 +75,15 @@ ES_POLICY_RULES = (
     '  capabilities = ["submit-job", "read-job", "read-logs"]\n'
     "}\n"
 )
+# The observer reads: it lists and inspects ES's jobs and reads their logs
+# (list-jobs is its own capability; read-job does not imply it), and it
+# reads the agent and the nodes for readiness. It cannot submit, plan,
+# stop or exec.
 OBSERVER_POLICY_RULES = (
     'agent {\n  policy = "read"\n}\n'
     'node {\n  policy = "read"\n}\n'
     'namespace "' + NAMESPACE + '" {\n'
-    '  capabilities = ["read-job", "read-logs"]\n'
+    '  capabilities = ["list-jobs", "read-job", "read-logs"]\n'
     "}\n"
 )
 

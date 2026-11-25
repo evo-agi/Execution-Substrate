@@ -421,6 +421,67 @@ func TestRealNomadRefusesJobsWithoutTheESToken(t *testing.T) {
 	}
 }
 
+// TestRealNomadObserverListsButCannotChangeESJobs: the observer token lists
+// and inspects ES's jobs (Nomad's list-jobs is its own capability, not part
+// of read-job) and reads nodes, and it still cannot register, plan, stop or
+// scale a job, or list jobs outside ES's namespace.
+func TestRealNomadObserverListsButCannotChangeESJobs(t *testing.T) {
+	harness := startACLTestNomad(t, nomadHarnessOptions{})
+	esToken := readNomadTokenFile(t, harness.esTokenFile)
+	observerToken := readNomadTokenFile(t, harness.observerTokenFile)
+	const jobID = "observer-visible"
+	jobPath := "/v1/job/" + jobID + "?namespace=" + nomadACLNamespace
+	if status, body := nomadRawRequest(t, http.MethodPost, harness.addr+"/v1/jobs?namespace="+nomadACLNamespace, esToken, nomadACLProbeJob(t, jobID, nomadACLNamespace)); status != http.StatusOK {
+		t.Fatalf("ES token could not register in %s: HTTP %d %s", nomadACLNamespace, status, body)
+	}
+	t.Cleanup(func() {
+		nomadRawRequest(t, http.MethodDelete, harness.addr+jobPath+"&purge=true", esToken, nil)
+	})
+
+	status, body := nomadRawRequest(t, http.MethodGet, harness.addr+"/v1/jobs?namespace="+nomadACLNamespace, observerToken, nil)
+	var listed []struct {
+		ID string `json:"ID"`
+	}
+	if status != http.StatusOK || json.Unmarshal([]byte(body), &listed) != nil || len(listed) != 1 || listed[0].ID != jobID {
+		t.Fatalf("observer token could not list ES's jobs: HTTP %d %s", status, body)
+	}
+	if status, body := nomadRawRequest(t, http.MethodGet, harness.addr+jobPath, observerToken, nil); status != http.StatusOK {
+		t.Fatalf("observer token could not read ES's job: HTTP %d %s", status, body)
+	}
+	// The nomad CLI lists with the same token, as operators do on a host.
+	command := exec.Command("nomad", "job", "status", "-namespace="+nomadACLNamespace)
+	command.Env = nomadCLIEnv(t, harness.addr, harness.tls.caFile, harness.observerTokenFile)
+	if output, err := command.CombinedOutput(); err != nil || !strings.Contains(string(output), jobID) {
+		t.Fatalf("nomad job status with the observer token: %v output=%s", err, output)
+	}
+
+	for _, request := range []struct {
+		name   string
+		method string
+		path   string
+		body   []byte
+	}{
+		{"list jobs in the default namespace", http.MethodGet, "/v1/jobs?namespace=default", nil},
+		{"register a job", http.MethodPost, "/v1/jobs?namespace=" + nomadACLNamespace, nomadACLProbeJob(t, "observer-register", nomadACLNamespace)},
+		{"plan a job", http.MethodPost, "/v1/job/" + jobID + "/plan?namespace=" + nomadACLNamespace, nomadACLProbeJob(t, jobID, nomadACLNamespace)},
+		{"stop ES's job", http.MethodDelete, jobPath, nil},
+		{"scale ES's job", http.MethodPost, "/v1/job/" + jobID + "/scale?namespace=" + nomadACLNamespace,
+			mustMarshalJSON(t, map[string]any{"Count": 2, "Target": map[string]string{"Group": "probe"}})},
+	} {
+		if status, body := nomadRawRequest(t, request.method, harness.addr+request.path, observerToken, request.body); status != http.StatusForbidden {
+			t.Errorf("observer token could %s: HTTP %d %s", request.name, status, body)
+		}
+	}
+	if got := strings.Join(nomadJobIDsInEveryNamespace(t, harness), ","); got != nomadACLNamespace+"/"+jobID {
+		t.Fatalf("jobs in every namespace = %q, want only ES's job", got)
+	}
+
+	if output, err := runNomadACLTool(t, "check", "--addr", harness.addr, "--ca-file", harness.tls.caFile,
+		"--es-token-file", harness.esTokenFile, "--observer-token-file", harness.observerTokenFile); err != nil {
+		t.Fatalf("nomad_acl.py check failed on the provisioned Nomad: %v output=%s", err, output)
+	}
+}
+
 // runNomadACLTool runs the tool. Test Nomads run as the test's own user, so
 // provision, check and placement get --nomad-uid with that uid unless args
 // name one.
