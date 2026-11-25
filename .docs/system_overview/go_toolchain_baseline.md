@@ -160,6 +160,12 @@ step fails when a run stops and no listed test reported a failure as it
 stopped: a test that is not listed, or the time limit of `go test`, stopped
 it. It also fails the run when the run of an entry for a subtest starts
 another test under the path of that entry.
+Every `go test` of the gate that runs tests gives each test binary a time
+limit of 20 minutes instead of the default of 10 of `go test`: the slowest
+package has reached that default on a slow runner, and runners differ by up to
+half in speed. A test binary that runs longer panics with the stacks of its
+goroutines inside the job's own limit of 90 minutes, so the log shows where it
+hung.
 `.github/ci/go_test_gate_selftest.py` checks these behaviors on every run before
 the tests. It also holds the workflow file by its SHA-256, so every edit of the
 workflow has to change that value in the same change.

@@ -59,7 +59,7 @@ ROOT_STEP = os.path.join(HERE, "go_test_as_root.py")
 WORKFLOW = os.path.join(HERE, os.pardir, "workflows", "go.yml")
 # SHA-256 of that file as it was last reviewed. See
 # test_the_workflow_file_is_the_text_that_was_reviewed.
-WORKFLOW_SHA256 = "fa3d88b7af2ed16a159a6ebfcebb79ecc31436e65c2ec25a40a25e917b4c9d29"
+WORKFLOW_SHA256 = "618f13cbb26bb0c5181453e1840cae1d419148d4d97083ca5b1f6b6247f9a05c"
 # The workflow that runs the gate on macOS, and its SHA-256 as it was last
 # reviewed. See MacOSWorkflowKeepsWhatTheGateDependsOn.
 MACOS_WORKFLOW = os.path.join(HERE, os.pardir, "workflows", "go-macos.yml")
@@ -256,9 +256,18 @@ FAILING_LIST_GO = STAND_IN_GO % ('[ "$1" = list ]', 1)
 # "go test -list" fails, and every other "go test" is untouched.
 FAILING_TEST_LIST_GO = STAND_IN_GO % ('[ "$1" = test ] && [ "$2" = -list ]', 1)
 # The real go command with a time limit of five seconds for every test binary.
+# A -timeout on the command line, as the gate passes one, wins over GOFLAGS,
+# so the stand-in also puts five seconds in its place.
 SHORT_TIME_LIMIT_GO = """#!/bin/sh
 GOFLAGS="${GOFLAGS:+$GOFLAGS }-timeout=5s"
 export GOFLAGS
+for argument do
+    shift
+    case "$argument" in
+        -timeout=*) argument=-timeout=5s ;;
+    esac
+    set -- "$@" "$argument"
+done
 exec "$GATE_SELFTEST_GO" "$@"
 """
 # "go test -json" writes one line that is not JSON before its events.
@@ -1038,7 +1047,17 @@ class GateCase(unittest.TestCase):
         self.assertEqual(got_ran, ran, output)
         if whole is not None:
             self.assertEqual(got_ran.whole, whole, output)
+        self.time_limited(output)
         return output
+
+    def time_limited(self, output):
+        """Require every go test of the gate that runs tests to give each test
+        binary the gate's time limit of 20 minutes, not go test's default.
+        Return how many such go tests the gate started."""
+        runs = re.findall(r"(?m)^\+ (?:\S+=\S+ )*go test -json(.*)$", output)
+        for rest in runs:
+            self.assertTrue(rest.startswith(" -timeout=20m -count=1 "), output)
+        return len(runs)
 
     def refused(self, listing, reason, packages=BASE, files=None, before_any_go_command=False):
         """The list is refused in both modes, for the stated reason, with no test run."""
@@ -1099,8 +1118,8 @@ class GateCase(unittest.TestCase):
 
     def package_runs(self, output, *commands):
         """Require exactly the given runs of whole packages, in that order. A
-        command is what follows "go test -json -count=1 "."""
-        found = re.findall(r"(?m)^\+ go test -json -count=1 ((?!-run ).*)$", output)
+        command is what follows "go test -json -timeout=20m -count=1 "."""
+        found = re.findall(r"(?m)^\+ go test -json -timeout=20m -count=1 ((?!-run ).*)$", output)
         self.assertEqual(found, list(commands), output)
         self.assertEqual(output.count("::group::Run of "), len(commands), output)
 
@@ -1210,7 +1229,7 @@ class GateCase(unittest.TestCase):
         What the gate wrote for those runs must be gone when it has ended.
         """
         runs = re.findall(
-            r"(?m)^\+ GO_TEST_GATE_SKIPPED_NAMES=(\S+) go test -json -count=1 "
+            r"(?m)^\+ GO_TEST_GATE_SKIPPED_NAMES=(\S+) go test -json -timeout=20m -count=1 "
             r"-overlay (\S+) -skip \S+ (\S+)$",
             output,
         )
@@ -1650,6 +1669,26 @@ class GateSkipsExactlyTheListedSubtest(GateCase):
         self.assertIn(
             "synth/a: TestP/reg ran without the listed custody; beside it ran: nothing\n", output
         )
+
+
+class GateGivesEveryTestBinaryItsTimeLimit(GateCase):
+    # Every go test of the gate that runs tests passes -timeout=20m, so go
+    # test's default of 10 minutes does not stop a slow package. check()
+    # holds every run of every case to that. This case has each kind of run
+    # of the mode gate; the runs of the mode still-failing are matched with
+    # the limit in package_runs and in the go test of each entry.
+    def test_every_run_of_the_gate_has_the_time_limit(self):
+        packages = {"a": {"TestPreflight": PREFLIGHT, "TestPortable": PASS}, "b": {"TestOther": PASS}}
+        output = self.check(
+            packages,
+            LISTED_SUBTEST,
+            0,
+            PREFLIGHT_RAN | {"synth/a.TestPortable", "synth/b.TestOther"},
+        )
+        self.observed(output, "synth/a")
+        # The run of synth/a with its entry skipped, its observed run, and
+        # the run of the package without entries.
+        self.assertEqual(self.time_limited(output), 3, output)
 
 
 class GateShowsEveryTestItSkipped(GateCase):
@@ -2976,7 +3015,7 @@ class ListedTestsMustStillFail(GateCase):
         )
         # One go test for each entry, also for two entries of one package.
         self.assertEqual(
-            re.findall(r"(?m)^\+ go test -json -count=1 -run (\S+) (\S+)$", output),
+            re.findall(r"(?m)^\+ go test -json -timeout=20m -count=1 -run (\S+) (\S+)$", output),
             [
                 ("'^TestListed$'", "synth/a"),
                 ("'^TestPreflight$/^rejects_missing_tool$'", "synth/a"),

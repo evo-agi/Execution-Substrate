@@ -205,6 +205,19 @@ USAGE = (
 # The actions with which "go test -json" reports the end of a test.
 VERDICTS = ("pass", "fail", "skip")
 
+# The time limit that every go test of the gate that runs tests gives each
+# test binary, in place of go test's default of 10 minutes. A test binary
+# that runs longer panics with the stacks of its goroutines and the names of
+# the tests still running. The slowest package, execution-substrate/es/app,
+# took 393 to 432 seconds on most runs of 2026-11-24 and 25 and 578 seconds
+# on a slower runner; on a slower one still, with about 20 seconds of new
+# tests, it reached the default. Runners differ by up to half in speed, so
+# 20 minutes, about twice the slowest run seen, holds that spread with room
+# for the package to grow. A hung test binary still stops within 20 minutes,
+# inside the job's own time limit in the workflow, so the log shows where it
+# hung.
+TIME_LIMIT = "20m"
+
 # The observed run. See "The observed run" above.
 #
 # The Go version whose testing package was read for it, and the SHA-256 of
@@ -431,7 +444,7 @@ def said(outputs):
 
 
 def go_test_json(arguments, variables=None):
-    """Run "go test -json" with the given arguments.
+    """Run "go test -json" with the gate's TIME_LIMIT and the given arguments.
 
     Writes to the log what plain "go test" would: everything that belongs to
     no test, and the output of every top-level test that does not end with
@@ -439,7 +452,7 @@ def go_test_json(arguments, variables=None):
     for every package that go test reported on, by import path. variables
     holds environment variables to set for this command alone.
     """
-    command = ["go", "test", "-json"] + arguments
+    command = ["go", "test", "-json", "-timeout=" + TIME_LIMIT] + arguments
     show(command, variables)
     environment = None
     if variables:
