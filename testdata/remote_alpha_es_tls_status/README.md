@@ -31,7 +31,7 @@ private keys, host/account metadata, scratch paths, and all unrelated native
 rows. The two original key-match private inputs were not exported and are not
 reconstructed. This fixture supports exactly two command-specific malformed
 failures and the six coupled verification alternatives documented in
-`PLANS.md` and `.docs/system_overview/remote_supported_host_alpha.md`; other
+`.docs/standing_rules/remote_alpha_operator_routes.md` and `.docs/system_overview/remote_supported_host_alpha.md`; other
 responses remain incomplete. It is not production material, a status result,
 P0t qualification, or authority for target contact and service action.
 

@@ -716,7 +716,7 @@ func TestRemoteAlphaESServiceTLSStatusFailureWitnessSourceBoundary(t *testing.T)
 
 func TestRemoteAlphaESServiceTLSStatusFailureWitnessDocumentsContract(t *testing.T) {
 	for _, path := range []string{
-		"PLANS.md",
+		standingRouteRulesPath,
 		".docs/system_overview/remote_supported_host_alpha.md",
 		".docs/system_overview/remote_alpha_access_contract.md",
 		".docs/system_overview/artifact_hygiene.md",

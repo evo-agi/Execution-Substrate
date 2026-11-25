@@ -25,6 +25,11 @@ The authoritative Workstream C classification of ES public execution surfaces,
 admission composition, compatibility edges, and reopened seams lives in
 `es_execution_admission_model.md`.
 
+The Workstream C admission and custody rules at `PLANS.md`'s rank are in
+`.docs/standing_rules/execution_admission_and_custody.md`; `AGENTS.md` section
+3 ranks that file with `PLANS.md`. This file holds the detailed lifecycle
+contract for them.
+
 The target submit idempotency, correlation and recovery contract seam is in
 `submit_idempotency_correlation_and_recovery.md`. Its public/operational rules
 remain target-only. Its bounded private codec-3 synthetic custody is source
@@ -1059,7 +1064,7 @@ key, retention, architecture and final acceptance gates remain open.
 ### Development-source foundation and acceptance boundaries
 
 The 2026-11-13 `DEVELOPMENT_SOURCE_FOUNDATION_ACCEPTED` disposition in
-`PLANS.md` binds the exact authenticated Review-22 implementation archive and
+`.docs/standing_rules/execution_admission_and_custody.md` binds the exact authenticated Review-22 implementation archive and
 canonical source manifest to the accepted source reviews, selected linux/amd64
 and linux/arm64 N1-N5 native programme, and bounded original-byte Review-17
 proof contribution. The documentation-only successor preserves the reviewed

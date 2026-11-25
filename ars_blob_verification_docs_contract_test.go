@@ -176,7 +176,7 @@ func TestARSBlobVerificationIsStatedWhereDocsDescribeARSReads(t *testing.T) {
 			absent: []string{"ES does not rely on ARS integrity for the bytes it reads"},
 		},
 		{
-			path: "PLANS.md",
+			path: standingAdmissionRulesPath,
 			required: []string{
 				"ES does not rely on ARS for their integrity: every ARS blob read by digest is hashed by ES and used only when it equals the requested digest",
 			},

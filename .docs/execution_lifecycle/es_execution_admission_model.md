@@ -678,7 +678,7 @@ no durable lifecycle or retry authority. The selected native Linux and
 test-owned installed-source evidence is accepted under its original source
 and command identities. Actual running-deployment topology, key exposure and
 capacity/residence enforcement remain environment-bound operational/rollout
-gates. `PLANS.md` and the lifecycle contract own the development-source and
+gates. `.docs/standing_rules/execution_admission_and_custody.md` and the lifecycle contract own the development-source and
 local-preservation distinction; no admission or Submit authority changes here.
 
 ### Private replay progress candidate classification
