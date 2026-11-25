@@ -1044,6 +1044,8 @@ cases=(
     ("key_object_for_a_certificate",False,"certificate",1,b"",refusal("certificate",expecting=b":Expecting: ANY PRIVATE KEY\n")),
     ("certificate_object_for_a_key",False,"key",1,b"",refusal("key",expecting=b":Expecting: TRUSTED CERTIFICATE\n")),
     ("extra_line",False,"certificate",1,b"",refusal("certificate")+b"warning\n"),
+    ("leading_line",False,"certificate",1,b"",b"warning\n"+refusal("certificate")),
+    ("line_between_the_two",False,"certificate",1,b"",refusal("certificate",line=b"unable to load certificate\nwarning\n")),
     ("missing_newline",False,"certificate",1,b"",refusal("certificate")[:-1]),
     ("other_source_file",False,"certificate",1,b"",refusal("certificate",apple.replace(b"pem_lib.c",b"pem_info.c"))),
     ("other_source_folder",False,"certificate",1,b"",refusal("certificate",apple.replace(b"/crypto/pem/",b"/crypto/x509/"))),
@@ -1084,7 +1086,7 @@ print(json.dumps(results,sort_keys=True))
 	if err := json.Unmarshal(output, &results); err != nil {
 		t.Fatalf("LibreSSL location result: %v\n%s", err, output)
 	}
-	if len(results) != 46 {
+	if len(results) != 48 {
 		t.Fatalf("LibreSSL location checks missing: %v", results)
 	}
 	for name, ok := range results {
