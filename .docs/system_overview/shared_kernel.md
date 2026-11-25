@@ -1,6 +1,6 @@
 # Shared Contract And Kernel Decision
 
-## 1. Purpose and authority
+## 1. Purpose and scope
 
 This document records the bounded Workstream A shared-contract and shared-kernel
 decision for Milestone 2A.1.
@@ -10,17 +10,6 @@ the current `AGS -> ARS -> ES` governed artifact path. It does not settle the
 broader Workstream B publication/discoverability redesign, the Workstream C ES
 public execution redesign, the Workstream E runtime-config ownership redesign,
 or the Workstream F runtime-identity redesign.
-
-Authority for this document follows the repo-wide authority hierarchy:
-
-1. `AGENTS.md` for agent operating rules
-2. `PLANS.md` for allowed redesign work, active workstreams, priorities, and reopened seams
-3. `.docs/system_overview/*` for architecture, contracts, boundaries, and change-governance rules
-4. `.docs/execution_lifecycle/*` for lifecycle design, contract, and implementation guidance
-5. current Go code and tests for factual implemented behavior
-
-If this document disagrees with current code and tests on implemented behavior,
-the code and tests win and this document must be realigned.
 
 ## 2. Decision summary
 

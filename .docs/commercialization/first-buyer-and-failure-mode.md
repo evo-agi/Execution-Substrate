@@ -15,9 +15,9 @@ bundle, workflow report, generated profile, proof artifact, or `.out` material
 authoritative.
 
 The primary guardrail is
-[`claim-ledger.md`](claim-ledger.md). Allowed wording, forbidden wording,
-required qualifiers, evidence classes, and source gaps in that ledger control
-this document. Buyer language here is a working commercialization hypothesis
+[`claim-ledger.md`](claim-ledger.md). This document uses that ledger's allowed
+and forbidden wording, required qualifiers, evidence classes, and source gaps.
+Buyer language here is a working commercialization hypothesis
 until validated by external research or customer discovery.
 
 Sources inspected for this artifact include Execution Substrate

@@ -4,14 +4,6 @@ Status: accepted current-status and migration-boundary record; strategic target 
 
 This is the canonical cross-repository current-status and migration-boundary record for the current Post-Phase-E alignment. It records current implementation facts, preserved compatibility, and reopened target seams only. It is not the complete target operating model. It does not enable real write, real Codex execution, remote maintenance, ES submit, CP diagnose, IM refresh, live proof, connector-triggered execution, worker dispatch, scheduler behavior, queue consumption, Coordinator provisioning, receipt provisioning, or publication.
 
-Authority for this document follows the repo-wide authority hierarchy:
-
-1. `AGENTS.md` for agent operating rules
-2. `PLANS.md` for allowed redesign work, active workstreams, priorities, and reopened seams
-3. `.docs/system_overview/*` for architecture, contracts, boundaries, and change-governance rules
-4. `.docs/execution_lifecycle/*` for lifecycle design, contract, and implementation guidance
-5. current Go code and tests for factual implemented behavior
-
 ## ES Classification
 
 This ADR is an accepted current-status and migration-boundary record for a reopened cross-repo integration seam. Strategic target statements in this ADR are not implementation claims. This record does not reopen accepted ES Workstream A/B/C planning boundaries, and it does not displace the ES Admission And Runtime Boundary Realignment track.

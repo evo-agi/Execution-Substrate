@@ -1,6 +1,6 @@
 # Remote Alpha Operator Healthcheck TLS Noninteractive Status Contract
 
-## 0. Purpose, Authority, And Status
+## 0. Purpose And Status
 
 This document defines the implemented ES-owned noninteractive, read-only
 operator-healthcheck TLS status route for Remote Alpha.
@@ -18,17 +18,6 @@ Status:
 - `Current invariant`: no fallback emitter is allowed. The local Python
   runtime is the sole final route-schema emitter.
 - `Current invariant`: `scheduled_execution_allowed=false`.
-
-Authority for this document follows the repo-wide authority hierarchy:
-
-1. `AGENTS.md` for agent operating rules
-2. `PLANS.md` for allowed redesign work, active workstreams, priorities, and reopened seams
-3. `.docs/system_overview/*` for architecture, contracts, boundaries, and change-governance rules
-4. `.docs/execution_lifecycle/*` for lifecycle design, contract, and implementation guidance
-5. current Go code and tests for factual implemented behavior
-
-If this document disagrees with current code and tests on implemented behavior,
-code and tests win for current behavior and this document must be realigned.
 
 ## 1. Active Route
 

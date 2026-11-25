@@ -1,6 +1,6 @@
 # Remote Alpha Operator-Healthcheck TLS Signer/Custody Decision Record
 
-## 0. Purpose, Authority, And Status
+## 0. Purpose And Status
 
 This decision record compares signer-authority and private-key custody models
 for future Remote Alpha operator-healthcheck client TLS replacement.
@@ -46,11 +46,8 @@ incident in
 does not unblock or widen P0u and provides no reusable signer or route;
 `unsupported_signing_topology` remains the reusable-route result.
 
-Authority follows the repository hierarchy in `AGENTS.md`: `PLANS.md`,
-`.docs/system_overview/*`, route-specific `.docs/` design records, and then
-current code/tests for factual implemented behavior. Related IM, CP,
-Maintenance Agent, and Bridge docs are references for non-ES owner boundaries
-only; they do not create ES signing authority.
+Related IM, CP, Maintenance Agent, and Bridge docs are references for non-ES
+owner boundaries only; they do not create ES signing authority.
 
 ## 1. Decision Outcome
 
