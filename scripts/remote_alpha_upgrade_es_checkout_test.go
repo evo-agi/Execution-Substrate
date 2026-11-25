@@ -89,17 +89,7 @@ func (c *upgradeClone) run(python, hostRoot, owner string, args ...string) (stri
 	}
 	cmd := exec.Command("python3", append(argv, args...)...)
 	cmd.Dir = c.t.TempDir()
-	var env []string
-	for _, entry := range os.Environ() {
-		if !strings.HasPrefix(entry, "ES_UPGRADE_TEST_") && !strings.HasPrefix(entry, "PATH=") {
-			env = append(env, entry)
-		}
-	}
-	env = append(env, "PATH="+c.bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	if owner != "" {
-		env = append(env, "ES_UPGRADE_TEST_CHECKOUT_OWNER="+owner)
-	}
-	cmd.Env = env
+	cmd.Env = c.env(owner)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()
@@ -114,9 +104,46 @@ func (c *upgradeClone) run(python, hostRoot, owner string, args ...string) (stri
 	return stdout.String(), stderr.String(), code
 }
 
+// env is the test process's environment without ES_UPGRADE_TEST_*, with
+// the stand-in systemctl first on PATH and, unless owner is "", the uid the
+// guard checks for.
+func (c *upgradeClone) env(owner string) []string {
+	var env []string
+	for _, entry := range os.Environ() {
+		if !strings.HasPrefix(entry, "ES_UPGRADE_TEST_") && !strings.HasPrefix(entry, "PATH=") {
+			env = append(env, entry)
+		}
+	}
+	env = append(env, "PATH="+c.bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if owner != "" {
+		env = append(env, "ES_UPGRADE_TEST_CHECKOUT_OWNER="+owner)
+	}
+	return env
+}
+
 func (c *upgradeClone) check(owner string) (string, string, int) {
 	c.t.Helper()
 	return c.run(c.python, c.host, owner, "check", "--payload", filepath.Join(c.host, "payload"), "--commit", upgradeTestCommit)
+}
+
+// wrapper starts check through the shell wrapper at path, as an operator
+// does, with the same environment as run.
+func (c *upgradeClone) wrapper(path, owner string) (string, string, int) {
+	c.t.Helper()
+	cmd := exec.Command(path, "--host-root", c.host, "check", "--payload", filepath.Join(c.host, "payload"), "--commit", upgradeTestCommit)
+	cmd.Dir = c.t.TempDir()
+	cmd.Env = c.env(owner)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	code := 0
+	if err := cmd.Run(); err != nil {
+		exitErr, ok := err.(*exec.ExitError)
+		if !ok {
+			c.t.Fatalf("wrapper %s: %v", path, err)
+		}
+		code = exitErr.ExitCode()
+	}
+	return stdout.String(), stderr.String(), code
 }
 
 func (c *upgradeClone) chmod(path string, mode os.FileMode) {
@@ -211,6 +238,20 @@ func TestRemoteAlphaUpgradeESRefusesACloneOthersCanChange(t *testing.T) {
 			c.chmod(c.base, 0o777)
 			return c.base + " is writable by its group or others (0777) without the sticky bit"
 		}},
+		{"a folder above the clone that only others can write", func(c *upgradeClone) string {
+			c.chmod(c.base, 0o757)
+			return c.base + " is writable by its group or others (0757) without the sticky bit"
+		}},
+		{"a sticky folder under scripts that anyone can write", func(c *upgradeClone) string {
+			// The sticky bit keeps others from replacing an entry, not from
+			// adding one, so under scripts it does not help.
+			dir := filepath.Join(c.scripts, "lib")
+			if err := os.Mkdir(dir, 0o755); err != nil {
+				c.t.Fatal(err)
+			}
+			c.chmod(dir, 0o777|os.ModeSticky)
+			return dir + " is writable by its group or others (1777)"
+		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -226,6 +267,23 @@ func TestRemoteAlphaUpgradeESRefusesACloneOthersCanChange(t *testing.T) {
 		c.chmod(c.base, 0o777|os.ModeSticky)
 		stdout, stderr, _ := c.check(uid)
 		passed(t, "sticky folder", stdout, stderr)
+	})
+
+	t.Run("a folder under scripts the guard cannot read", func(t *testing.T) {
+		// What the guard cannot list, it cannot vouch for. Root can list any
+		// folder, so this happens only under a test --host-root.
+		if os.Getuid() == 0 {
+			t.Skip("root can list any folder")
+		}
+		c := newUpgradeClone(t)
+		dir := filepath.Join(c.scripts, "sealed")
+		if err := os.Mkdir(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		c.chmod(dir, 0o300)
+		t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+		stdout, stderr, code := c.check(uid)
+		refused(t, "check", stdout, stderr, code, dir+": Permission denied")
 	})
 
 	t.Run("files of another owner", func(t *testing.T) {
@@ -283,6 +341,39 @@ func TestRemoteAlphaUpgradeESRefusesACloneOthersCanChange(t *testing.T) {
 			refused(t, "rollback on a host", stdout, stderr, code, c.root+" belongs to uid "+uid)
 		}
 	})
+
+	t.Run("through the wrapper, a clone only the owner can change passes", func(t *testing.T) {
+		c := newUpgradeClone(t)
+		stdout, stderr, _ := c.wrapper(filepath.Join(c.scripts, "remote_alpha_upgrade_es.sh"), uid)
+		passed(t, "wrapper", stdout, stderr)
+	})
+
+	t.Run("through the wrapper, a clone reached through a symbolic link is refused", func(t *testing.T) {
+		// The documented entry point is the wrapper. It must hand the guard
+		// the path it was started from, not the resolved one.
+		c := newUpgradeClone(t)
+		alias := filepath.Join(c.base, "alias")
+		if err := os.Symlink(c.root, alias); err != nil {
+			t.Fatal(err)
+		}
+		stdout, stderr, code := c.wrapper(filepath.Join(alias, "scripts", "remote_alpha_upgrade_es.sh"), uid)
+		refused(t, "wrapper", stdout, stderr, code, filepath.Join(alias, "scripts")+" is reached through a symbolic link ("+c.scripts+")")
+	})
+
+	// Not "/tmp/..": on macOS /tmp is a link and that names /private.
+	for _, spelling := range []string{"//", "/.", "/..", "/usr/.."} {
+		t.Run("--host-root "+spelling+" is the host", func(t *testing.T) {
+			// Another spelling of "/" must not turn on test mode, which would
+			// turn the guard off while every path is the host's.
+			c := newUpgradeClone(t)
+			c.chmod(c.python, 0o664)
+			stdout, stderr, code := c.run(c.python, spelling, "", "check", "--payload", filepath.Join(c.host, "payload"), "--commit", upgradeTestCommit)
+			refused(t, "check", stdout, stderr, code, c.python+" is writable by its group or others (0664)")
+			if !strings.Contains(stderr, "someone other than root") {
+				t.Fatalf("--host-root %s must be the host, where the refusal names root:\n%s", spelling, stderr)
+			}
+		})
+	}
 
 	t.Run("build is not guarded", func(t *testing.T) {
 		// build runs unprivileged in the operator's own clone, before it is

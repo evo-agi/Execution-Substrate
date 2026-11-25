@@ -1844,7 +1844,10 @@ def main(argv):
     if args.host_root != "/" and not os.path.isabs(args.host_root):
         print("remote alpha ES upgrade refused: --host-root must be absolute", file=sys.stderr)
         return 2
-    HOST_ROOT = args.host_root
+    # Another spelling of "/" ("//", "/.", "/tmp/..") is the host, not a test
+    # root: test mode would otherwise turn off the checkout guard and allow
+    # the test overrides while every path is the host's.
+    HOST_ROOT = os.path.realpath(args.host_root)
     try:
         if args.command in CHECKOUT_GUARDED:
             require_root_only_checkout()

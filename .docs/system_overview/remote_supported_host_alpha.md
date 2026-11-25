@@ -7311,9 +7311,11 @@ each first refuses, changing nothing, unless no account but root can change
 that code: every folder from `/` down to the clone's `scripts` belongs to
 root and is writable by neither its group nor others, unless it has the
 sticky bit (as `/tmp` has); everything under `scripts` belongs to root, is a
-folder or a regular file, and is writable by neither its group nor others;
-and no symbolic link leads to or sits under `scripts`. `check` also refuses
-a payload that is not root's. Run
+folder or a regular file, and is writable by neither its group nor others
+(the sticky bit does not help there); and no symbolic link leads to or sits
+under `scripts`. The wrapper hands the upgrade the path it was started from,
+symbolic links kept, so that the last rule holds for the path the operator
+typed. `check` also refuses a payload that is not root's. Run
 `apply` under `systemd-run` so that a dropped SSH session does not stop it;
 its output then goes to the journal, and its summary to the backup folder.
 
@@ -7466,9 +7468,12 @@ real `nomad_tls_issue`: hosts of every refused shape, each named part by
 part; payload binaries whose Go build info names another commit, another Go
 or a modified build; payload files of another owner or group; a clone that
 another account could change (a file or folder writable by its group or
-others, one of another owner, a folder above the clone writable by others
-without the sticky bit, a symbolic link under `scripts` or on the way to
-it), for `check`, `apply` and `rollback`; a validation
+others, one of another owner, a folder above the clone writable by its
+group or others without the sticky bit, a sticky folder under `scripts`
+that anyone can write, a symbolic link under `scripts` or on the way to
+it, also when started through the wrapper), for `check`, `apply` and
+`rollback`, and the guard on for root when the host is named another way
+(`//`, `/.`); a validation
 warning about unreadable TLS files; failures at each step after the backup;
 damaged backups; an `apply` whose terminal hangs up and one whose output
 pipe closes; and `build` with a fake Go against a dirty checkout and build
