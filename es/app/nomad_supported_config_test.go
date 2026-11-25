@@ -3,9 +3,11 @@ package app_test
 import (
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +18,17 @@ import (
 const supportedNomadClientOptions = `  options = {
     "driver.allowlist" = "docker"
   }`
+
+// supportedNomadClientNetworkInterface pins the node's host network to
+// loopback in the supported Nomad configuration. ES jobs ask for no ports, so
+// they need only a host-mode network to exist; loopback exists on Wi-Fi and on
+// a cable alike, while a wired-port pin leaves none when the cable is out and
+// no pin leaves Nomad unable to start without a default route.
+const supportedNomadClientNetworkInterface = `  network_interface = "lo"`
+
+// nomadNetworkInterfaceSetting matches every network_interface setting in a
+// Nomad config, wherever it stands.
+var nomadNetworkInterfaceSetting = regexp.MustCompile(`(?m)^\s*network_interface\s*=`)
 
 // supportedNomadDockerPluginBlock is the Docker plugin block of the supported
 // Nomad configuration, byte for byte as scripts/70_linux_setup.sh and
@@ -94,6 +107,11 @@ func TestSupportedNomadDockerLimitsMatchSetupExampleAndTests(t *testing.T) {
 		if !strings.Contains(client, supportedNomadClientOptions+"\n") {
 			t.Fatalf("%s client block does not enable only the Docker driver:\n%s", rel, client)
 		}
+		// Wi-Fi or cable: the host network comes from loopback, never from a
+		// named wired or wireless port.
+		if len(nomadNetworkInterfaceSetting.FindAllString(text, -1)) != 1 || !strings.Contains(client, "\n"+supportedNomadClientNetworkInterface+"\n") {
+			t.Fatalf("%s client block does not pin the host network to loopback, and only there:\n%s", rel, client)
+		}
 		for _, stale := range []string{`"docker.cleanup.image"`, `"docker.volumes.enabled"`, "allow_privileged = true", `"raw_exec"`} {
 			if strings.Contains(text, stale) {
 				t.Fatalf("%s still names %s", rel, stale)
@@ -104,6 +122,78 @@ func TestSupportedNomadDockerLimitsMatchSetupExampleAndTests(t *testing.T) {
 	witness := supportedNomadDockerPluginBlockWithTaskNameLabel()
 	if strings.Count(witness, `extra_labels = ["task_name"]`) != 1 || strings.Replace(witness, "    extra_labels = [\"task_name\"]\n", "", 1) != supportedNomadDockerPluginBlock {
 		t.Fatal("the witness profile changes more than the task-name label")
+	}
+}
+
+// The setup script's qualify step reads each ready node's detail with the
+// qualify token and, like bring-up readiness, refuses a node without a
+// host-mode network: a client pinned to a wired port whose cable is out has
+// only a bridge network, and Nomad cannot place any ES job there.
+func TestLinuxSetupQualifyRequiresAHostNetwork(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join(executionPlatformRepoRoot(t), "scripts", "70_linux_setup.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const opener = `python3 -I - <<'PY' "${NOMAD_HTTP_ADDR}" "${leader_path}" "${agent_path}" "${nodes_path}"` + "\n"
+	text := string(body)
+	if strings.Count(text, opener) != 1 {
+		t.Fatalf("70_linux_setup.sh holds %d qualify programs, want 1", strings.Count(text, opener))
+	}
+	program := text[strings.Index(text, opener)+len(opener):]
+	end := strings.Index(program, "\nPY\n")
+	if end < 0 {
+		t.Fatal("the qualify program does not end")
+	}
+	program = program[:end+1]
+
+	const qualifyToken = "9d934051-6f7e-4a81-b2c3-d4e5f6a7b8c9"
+	for _, test := range []struct {
+		name     string
+		networks any
+		want     string
+		refused  bool
+	}{
+		{"loopback host network", fakeNomadLoopbackHostNetworks, "schedulable_nodes=1 fixture:cpu.totalcompute=4000", false},
+		{"bridge network only", []map[string]any{{"Mode": "bridge", "Device": "nomad"}},
+			"nomad: no ready client nodes with positive cpu.totalcompute, healthy docker driver and a host-mode network; fixture=no-host-network", true},
+		{"no networks reported", nil,
+			"nomad: no ready client nodes with positive cpu.totalcompute, healthy docker driver and a host-mode network; fixture=no-host-network", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/v1/node/node-1" || r.Header.Get("X-Nomad-Token") != qualifyToken {
+					w.WriteHeader(http.StatusForbidden)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"Attributes":    map[string]any{"cpu.totalcompute": "4000"},
+					"Drivers":       map[string]any{"docker": map[string]any{"Healthy": true}},
+					"NodeResources": map[string]any{"Networks": test.networks},
+				})
+			}))
+			defer server.Close()
+			dir := t.TempDir()
+			files := map[string]string{
+				"leader.json": `"127.0.0.1:4647"`,
+				"agent.json":  `{"config":{"DevMode":false}}`,
+				"nodes.json":  `[{"ID":"node-1","Name":"fixture","Status":"ready"}]`,
+			}
+			for name, content := range files {
+				if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			command := exec.Command("python3", "-I", "-", server.URL,
+				filepath.Join(dir, "leader.json"), filepath.Join(dir, "agent.json"), filepath.Join(dir, "nodes.json"))
+			command.Dir = dir
+			command.Stdin = strings.NewReader(program)
+			command.Env = []string{"PATH=" + os.Getenv("PATH"), "NOMAD_TOKEN=" + qualifyToken}
+			output, err := command.CombinedOutput()
+			if (err != nil) != test.refused || !strings.Contains(string(output), test.want) {
+				t.Fatalf("qualify on a node with %s: %v output=%s", test.name, err, output)
+			}
+		})
 	}
 }
 
@@ -293,6 +383,20 @@ func TestRealNomadOffersOnlyTheLimitedDockerDriver(t *testing.T) {
 	}
 	if docker := node.Drivers["docker"]; !docker.Detected || !docker.Healthy {
 		t.Fatal("node does not offer a healthy Docker driver")
+	}
+
+	// The supported client config pins the node's host network to loopback,
+	// and the operators' placement check passes on it: ES's job shapes
+	// (network mode none and bridge, no Nomad network block) plan with ES's
+	// token in ES's namespace.
+	esConfig := filepath.Join(t.TempDir(), "es.json")
+	if err := os.WriteFile(esConfig, mustMarshalJSON(t, map[string]any{"nomad": map[string]any{"datacenter": "dc1"}}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if output, err := runNomadACLTool(t, "placement", "--addr", harness.addr, "--es-token-file", harness.esTokenFile,
+		"--observer-token-file", harness.observerTokenFile, "--es-config", esConfig, "--wait-seconds", "30"); err != nil ||
+		!strings.Contains(output, "nomad placement: ok (host-mode network on ") {
+		t.Fatalf("placement check on the supported client config: %v output=%s", err, output)
 	}
 
 	job := func(id string, driver string, config map[string]any) []byte {

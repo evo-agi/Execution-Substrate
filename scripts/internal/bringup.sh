@@ -378,13 +378,30 @@ for node in ready_nodes:
     if docker.get("Healthy") is not True:
         reasons.append(f"{node_name}=docker:{docker.get('HealthDescription') or 'unhealthy'}")
         continue
+    # ES's jobs (network mode none, or bridge, and no Nomad network block)
+    # need a host-mode network on the node; without one, every plan fails
+    # with "missing network".
+    networks = (detail.get("NodeResources") or {}).get("Networks") or []
+    if not any(isinstance(network, dict) and network.get("Mode") == "host" for network in networks):
+        reasons.append(f"{node_name}=no-host-network")
+        continue
 
     schedulable.append((node_name, cpu_total_compute))
 
 if not schedulable:
-    print("nomad: no ready client nodes with positive cpu.totalcompute and healthy docker driver", file=sys.stderr)
+    print(
+        "nomad: no ready client nodes with positive cpu.totalcompute, healthy docker driver and a host-mode network",
+        file=sys.stderr,
+    )
     if reasons:
         print("nomad: " + ", ".join(reasons), file=sys.stderr)
+        if any(reason.endswith("=no-host-network") for reason in reasons):
+            print(
+                "nomad: a node takes its host network from the interface its client's network_interface names, or "
+                'from the default route\'s; pin network_interface = "lo" (scripts/70_linux_setup.sh), which holds on '
+                "Wi-Fi and on a cable alike",
+                file=sys.stderr,
+            )
         if all("=cpu.totalcompute:0" in reason for reason in reasons):
             print(
                 "nomad: this host is not naturally self-schedulable for slice-0 bring-up; rerun only with explicit NOMAD_CLIENT_CPU_TOTAL_COMPUTE as a bounded troubleshooting override",
