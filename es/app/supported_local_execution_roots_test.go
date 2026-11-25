@@ -154,7 +154,7 @@ case "$url" in
   "$ROOT_SERVER_URL"/v1/acl/policy/anonymous)
     printf '404' ;;
   "$ROOT_SERVER_URL"/v1/agent/self)
-    printf '{"config":{"DevMode":false,"Client":{"Options":{"driver.allowlist":"docker"}},"Plugins":[{"Name":"docker","Config":{"allow_privileged":%s,"allow_caps":["chown","dac_override","fowner","kill","setgid","setuid","setpcap"],"volumes":{"enabled":true},"gc":{"image":false}}}],"TLSConfig":{"EnableHTTP":true,"EnableRPC":true,"TLSMinVersion":"tls13","VerifyServerHostname":true,"RPCUpgradeMode":false}}}\n' "${ROOT_AGENT_ALLOW_PRIVILEGED:-false}" ;;
+    printf '{"config":{"DevMode":false,"Client":{"Options":{"driver.allowlist":"docker"}},"Plugins":[{"Name":"docker","Config":{"allow_privileged":%s,"allow_caps":["chown","dac_override","fowner","kill","setgid","setuid","setpcap"],"volumes":{"enabled":true},"gc":{"image":false}}}],"TLSConfig":{"EnableHTTP":true,"EnableRPC":true,"TLSMinVersion":"tls13","VerifyServerHostname":true,"RPCUpgradeMode":false}},"stats":{"serf":{"encrypted":"true"}}}\n' "${ROOT_AGENT_ALLOW_PRIVILEGED:-false}" ;;
   "$ROOT_SERVER_URL"/v1/nodes)
     printf '[{"ID":"node-1","Name":"fixture","Status":"ready"}]\n' ;;
   *) printf 'unexpected curl URL\n' >> "$ROOT_EVENTS"; exit 97 ;;

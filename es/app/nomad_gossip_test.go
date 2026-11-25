@@ -1,0 +1,439 @@
+package app_test
+
+import (
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"strconv"
+	"strings"
+	"syscall"
+	"testing"
+	"time"
+)
+
+// Red-team RT60-1 of ES PR #60: without a gossip key, Nomad's serf port
+// accepts any process that reaches it as a peer, so a local account could
+// start its own Nomad server, join, and be listed as a member and a raft
+// non-voter. scripts/70_linux_setup.sh now writes a keyring into Nomad's data
+// directory before Nomad starts, and the readiness checks refuse a Nomad that
+// does not encrypt its gossip.
+
+// nomadGossipSetupFunctions runs a shell snippet with the setup script's
+// nomad_gossip functions defined (and nothing else from the script).
+func nomadGossipSetupFunctions(snippet string, args ...string) (string, error) {
+	setup := filepath.Join(executionPlatformRepoRootPath(), "scripts", "70_linux_setup.sh")
+	command := exec.Command("bash", append([]string{"-c",
+		`set -euo pipefail; eval "$(sed -n '/^# BEGIN nomad_gossip/,/^# END nomad_gossip/p' "$1")"; shift; ` + snippet,
+		"bash", setup}, args...)...)
+	command.Env = []string{"PATH=" + os.Getenv("PATH")}
+	output, err := command.CombinedOutput()
+	return string(output), err
+}
+
+// nomadGossipKeyringPath is where Nomad reads its gossip keyring.
+func nomadGossipKeyringPath(dataDir string) string {
+	return filepath.Join(dataDir, "server", "serf.keyring")
+}
+
+// issueNomadGossipKeyring writes a keyring into dataDir with the setup
+// script's own nomad_gossip_issue, so every test Nomad runs as hosts do.
+func issueNomadGossipKeyring(dataDir string) error {
+	if output, err := nomadGossipSetupFunctions(`nomad_gossip_issue "$1"`, nomadGossipKeyringPath(dataDir)); err != nil {
+		return fmt.Errorf("issue nomad gossip keyring: %v: %s", err, strings.TrimSpace(output))
+	}
+	return nil
+}
+
+var nomadGossipIssuedKeyring = regexp.MustCompile(`^\["([A-Za-z0-9+/]{43}=)"\]$`)
+
+// readIssuedNomadGossipKey returns the one key of a keyring
+// nomad_gossip_issue wrote, failing unless the file has exactly that form.
+func readIssuedNomadGossipKey(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	match := nomadGossipIssuedKeyring.FindSubmatch(data)
+	if match == nil {
+		t.Fatalf("keyring is not one base64 key in a JSON list: %q", data)
+	}
+	key, err := base64.StdEncoding.DecodeString(string(match[1]))
+	if err != nil || len(key) != 32 {
+		t.Fatalf("keyring key is not 32 bytes of base64: %v (%d bytes)", err, len(key))
+	}
+	return string(match[1])
+}
+
+func requireFileMode(t *testing.T, path string, want os.FileMode) {
+	t.Helper()
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != want {
+		t.Fatalf("%s has mode %04o, want %04o", path, got, want)
+	}
+	if uid := info.Sys().(*syscall.Stat_t).Uid; int(uid) != os.Getuid() {
+		t.Fatalf("%s belongs to uid %d, want %d", path, uid, os.Getuid())
+	}
+}
+
+func TestLinuxSetupIssuesANomadGossipKeyring(t *testing.T) {
+	dataDir := t.TempDir()
+	keyring := nomadGossipKeyringPath(dataDir)
+	if err := issueNomadGossipKeyring(dataDir); err != nil {
+		t.Fatal(err)
+	}
+	// Nomad creates <data_dir>/server 0700; the issuer does the same when
+	// it writes first.
+	requireFileMode(t, filepath.Dir(keyring), 0o700)
+	requireFileMode(t, keyring, 0o600)
+	first := readIssuedNomadGossipKey(t, keyring)
+	if output, err := nomadGossipSetupFunctions(`nomad_gossip_keyring_ok "$1"`, keyring); err != nil {
+		t.Fatalf("the issued keyring fails nomad_gossip_keyring_ok: %v %s", err, output)
+	}
+
+	// A second issue replaces the keyring with a new key and leaves no
+	// temporary file behind.
+	if err := issueNomadGossipKeyring(dataDir); err != nil {
+		t.Fatal(err)
+	}
+	requireFileMode(t, keyring, 0o600)
+	if second := readIssuedNomadGossipKey(t, keyring); second == first {
+		t.Fatal("a second nomad_gossip_issue kept the old key")
+	}
+	entries, err := os.ReadDir(filepath.Dir(keyring))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "serf.keyring" {
+		t.Fatalf("the keyring's folder holds %v, want only serf.keyring", entries)
+	}
+
+	// An existing folder is used as it is.
+	other := t.TempDir()
+	if err := os.Mkdir(filepath.Join(other, "server"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := issueNomadGossipKeyring(other); err != nil {
+		t.Fatal(err)
+	}
+	readIssuedNomadGossipKey(t, nomadGossipKeyringPath(other))
+}
+
+func TestLinuxSetupChecksTheNomadGossipKeyring(t *testing.T) {
+	key := func(n int) string { return base64.StdEncoding.EncodeToString(make([]byte, n)) }
+	write := func(t *testing.T, content string, mode os.FileMode) string {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), "serf.keyring")
+		if err := os.WriteFile(path, []byte(content), mode); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(path, mode); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	sound := `["` + key(32) + `"]`
+	for _, test := range []struct {
+		name  string
+		path  func(t *testing.T) string
+		sound bool
+	}{
+		{"one 32-byte key", func(t *testing.T) string { return write(t, sound, 0o600) }, true},
+		{"two 32-byte keys", func(t *testing.T) string { return write(t, `["`+key(32)+`","`+key(32)+`"]`, 0o600) }, true},
+		{"spaced JSON", func(t *testing.T) string { return write(t, "[\n  \""+key(32)+"\"\n]\n", 0o600) }, true},
+		{"missing", func(t *testing.T) string { return filepath.Join(t.TempDir(), "serf.keyring") }, false},
+		{"readable by others", func(t *testing.T) string { return write(t, sound, 0o644) }, false},
+		{"read-only", func(t *testing.T) string { return write(t, sound, 0o400) }, false},
+		{"a folder", func(t *testing.T) string {
+			path := filepath.Join(t.TempDir(), "serf.keyring")
+			if err := os.Mkdir(path, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			return path
+		}, false},
+		{"a symbolic link to a sound keyring", func(t *testing.T) string {
+			target := write(t, sound, 0o600)
+			link := filepath.Join(t.TempDir(), "serf.keyring")
+			if err := os.Symlink(target, link); err != nil {
+				t.Fatal(err)
+			}
+			return link
+		}, false},
+		{"not JSON", func(t *testing.T) string { return write(t, key(32), 0o600) }, false},
+		{"an object", func(t *testing.T) string { return write(t, `{"key":"`+key(32)+`"}`, 0o600) }, false},
+		{"an empty list", func(t *testing.T) string { return write(t, `[]`, 0o600) }, false},
+		{"a 16-byte key", func(t *testing.T) string { return write(t, `["`+key(16)+`"]`, 0o600) }, false},
+		{"a key that is not base64", func(t *testing.T) string { return write(t, `["not a key!"]`, 0o600) }, false},
+		// A lenient decoder would drop the "*" and find 32 bytes.
+		{"a key with a character outside base64", func(t *testing.T) string {
+			return write(t, `["`+key(32)[:10]+"*"+key(32)[10:]+`"]`, 0o600)
+		}, false},
+		{"a number", func(t *testing.T) string { return write(t, `[32]`, 0o600) }, false},
+		{"a sound key, then a short one", func(t *testing.T) string { return write(t, `["`+key(32)+`","`+key(24)+`"]`, 0o600) }, false},
+		{"empty", func(t *testing.T) string { return write(t, ``, 0o600) }, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			output, err := nomadGossipSetupFunctions(`nomad_gossip_keyring_ok "$1"`, test.path(t))
+			if (err == nil) != test.sound {
+				t.Fatalf("nomad_gossip_keyring_ok: sound=%v, want %v: %s", err == nil, test.sound, output)
+			}
+		})
+	}
+
+	t.Run("a keyring of another owner", func(t *testing.T) {
+		// On a host the check runs as root, who can read anyone's keyring,
+		// so only the owner check refuses one root does not own. The test
+		// runs the check as root: directly, or through passwordless sudo
+		// against a keyring the test user owns.
+		path := write(t, sound, 0o600)
+		var output []byte
+		var err error
+		switch {
+		case os.Getuid() == 0:
+			if err := os.Chown(path, 65534, 65534); err != nil {
+				t.Fatal(err)
+			}
+			var text string
+			text, err = nomadGossipSetupFunctions(`nomad_gossip_keyring_ok "$1"`, path)
+			output = []byte(text)
+		case exec.Command("sudo", "-n", "true").Run() == nil:
+			setup := filepath.Join(executionPlatformRepoRootPath(), "scripts", "70_linux_setup.sh")
+			output, err = exec.Command("sudo", "-n", "env", "PATH="+os.Getenv("PATH"), "bash", "-c",
+				`set -euo pipefail; eval "$(sed -n '/^# BEGIN nomad_gossip/,/^# END nomad_gossip/p' "$1")"; nomad_gossip_keyring_ok "$2"`,
+				"bash", setup, path).CombinedOutput()
+		default:
+			t.Skip("needs root or passwordless sudo to check the keyring as root")
+		}
+		if err == nil {
+			t.Fatalf("root accepted a keyring it does not own: %s", output)
+		}
+	})
+}
+
+// installNomadGossipKeyring runs the setup script's
+// install_nomad_gossip_keyring for a data directory, with sudo standing in
+// for itself, and returns NOMAD_CONFIG_CHANGED and NOMAD_GOSSIP_ISSUED.
+func installNomadGossipKeyring(t *testing.T, dataDir string) (string, string) {
+	t.Helper()
+	body, err := os.ReadFile(filepath.Join(executionPlatformRepoRoot(t), "scripts", "70_linux_setup.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(body)
+	start := strings.Index(text, "\n# BEGIN nomad_gossip")
+	install := strings.Index(text, "\ninstall_nomad_gossip_keyring() {\n")
+	if start < 0 || install < start {
+		t.Fatal("70_linux_setup.sh has no nomad_gossip region followed by install_nomad_gossip_keyring")
+	}
+	end := strings.Index(text[install:], "\n}\n")
+	if end < 0 {
+		t.Fatal("install_nomad_gossip_keyring does not end")
+	}
+	functions := text[start : install+end+3]
+	script := "set -euo pipefail\nsudo() { \"$@\"; }\n" + functions +
+		"NOMAD_GOSSIP_KEYRING=\"$1/server/serf.keyring\"\nNOMAD_CONFIG_CHANGED=0\nNOMAD_GOSSIP_ISSUED=0\n" +
+		"install_nomad_gossip_keyring >&2\nprintf '%s %s' \"${NOMAD_CONFIG_CHANGED}\" \"${NOMAD_GOSSIP_ISSUED}\"\n"
+	command := exec.Command("bash", "-c", script, "bash", dataDir)
+	command.Env = []string{"PATH=" + os.Getenv("PATH")}
+	var stdout, stderr strings.Builder
+	command.Stdout, command.Stderr = &stdout, &stderr
+	if err := command.Run(); err != nil {
+		t.Fatalf("install_nomad_gossip_keyring: %v %s", err, stderr.String())
+	}
+	changed, issued, _ := strings.Cut(stdout.String(), " ")
+	return changed, issued
+}
+
+func TestLinuxSetupKeepsASoundNomadGossipKeyringAndReplacesAnUnsoundOne(t *testing.T) {
+	dataDir := t.TempDir()
+	keyring := nomadGossipKeyringPath(dataDir)
+
+	if changed, issued := installNomadGossipKeyring(t, dataDir); changed != "1" || issued != "1" {
+		t.Fatalf("no keyring: NOMAD_CONFIG_CHANGED=%s NOMAD_GOSSIP_ISSUED=%s, want 1 1 (Nomad must restart to read it)", changed, issued)
+	}
+	first := readIssuedNomadGossipKey(t, keyring)
+
+	if changed, issued := installNomadGossipKeyring(t, dataDir); changed != "0" || issued != "0" {
+		t.Fatalf("sound keyring: NOMAD_CONFIG_CHANGED=%s NOMAD_GOSSIP_ISSUED=%s, want 0 0", changed, issued)
+	}
+	if kept := readIssuedNomadGossipKey(t, keyring); kept != first {
+		t.Fatal("a sound keyring was replaced")
+	}
+
+	if err := os.Chmod(keyring, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if changed, issued := installNomadGossipKeyring(t, dataDir); changed != "1" || issued != "1" {
+		t.Fatalf("keyring others can read: NOMAD_CONFIG_CHANGED=%s NOMAD_GOSSIP_ISSUED=%s, want 1 1", changed, issued)
+	}
+	requireFileMode(t, keyring, 0o600)
+	if replaced := readIssuedNomadGossipKey(t, keyring); replaced == first {
+		t.Fatal("a keyring others could read kept its key")
+	}
+}
+
+// The setup writes the keyring into Nomad's data directory, under the
+// root-only data directory it creates, before the config that starts or
+// restarts Nomad, and no key appears in nomad.hcl.
+func TestLinuxSetupWritesTheNomadGossipKeyringBeforeNomadStarts(t *testing.T) {
+	root := executionPlatformRepoRoot(t)
+	body, err := os.ReadFile(filepath.Join(root, "scripts", "70_linux_setup.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(body)
+	if !strings.Contains(text, "\nNOMAD_GOSSIP_KEYRING=\"${NOMAD_DATA_DIR}/server/serf.keyring\"\n") {
+		t.Fatal("70_linux_setup.sh does not keep the gossip keyring where Nomad reads it")
+	}
+	start := strings.Index(text, "\ninstall_nomad_service_config() {\n")
+	if start < 0 {
+		t.Fatal("70_linux_setup.sh has no install_nomad_service_config")
+	}
+	service := text[start : start+strings.Index(text[start:], "\n}\n")]
+	dataDir := strings.Index(service, `sudo install -d -o root -g root -m 0700 "${NOMAD_DATA_DIR}"`)
+	install := strings.Index(service, "\n  install_nomad_gossip_keyring\n")
+	config := strings.Index(service, `sudo tee "${NOMAD_CONFIG_PATH}"`)
+	if dataDir < 0 || install < dataDir || config < install {
+		t.Fatalf("install_nomad_service_config must create the data directory, then write the keyring, then the config (offsets %d %d %d)", dataDir, install, config)
+	}
+	for _, rel := range []string{filepath.Join("scripts", "70_linux_setup.sh"), filepath.Join(".examples", "config", "nomad.hcl")} {
+		data, err := os.ReadFile(filepath.Join(root, rel))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if regexp.MustCompile(`(?m)^\s*encrypt\s*=`).Match(data) {
+			t.Fatalf("%s names a gossip key; Nomad reads it from the keyring", rel)
+		}
+	}
+}
+
+// A real Nomad started with the keyring the setup writes encrypts its
+// gossip, and a Nomad server without the key cannot join it.
+func TestRealNomadRefusesAGossipPeerWithoutTheKey(t *testing.T) {
+	harness := startACLTestNomad(t, nomadHarnessOptions{})
+
+	members := func() []string {
+		status, body := nomadRawRequest(t, http.MethodGet, harness.addr+"/v1/agent/members", harness.managementToken, nil)
+		if status != http.StatusOK {
+			t.Fatalf("agent members: HTTP %d %s", status, body)
+		}
+		var answer struct {
+			Members []struct {
+				Name string `json:"Name"`
+			} `json:"Members"`
+		}
+		if err := json.Unmarshal([]byte(body), &answer); err != nil {
+			t.Fatal(err)
+		}
+		var names []string
+		for _, member := range answer.Members {
+			names = append(names, member.Name)
+		}
+		return names
+	}
+	if got := members(); len(got) != 1 {
+		t.Fatalf("the harness Nomad lists %v before the rogue starts, want only itself", got)
+	}
+
+	rootDir := newExecutionWorkspaceTempDir(t, "nomad-rogue-")
+	ports := make([]int, 3)
+	for i := range ports {
+		port, err := reserveTCPPortValue()
+		if err != nil {
+			t.Fatal(err)
+		}
+		ports[i] = port
+	}
+	config := fmt.Sprintf(`data_dir = %q
+bind_addr = "127.0.0.1"
+ports {
+  http = %d
+  rpc  = %d
+  serf = %d
+}
+advertise {
+  http = "127.0.0.1:%d"
+  rpc  = "127.0.0.1:%d"
+  serf = "127.0.0.1:%d"
+}
+client {
+  enabled = false
+}
+server {
+  enabled = true
+  server_join {
+    retry_join     = [%q]
+    retry_interval = "1s"
+  }
+}
+`, filepath.Join(rootDir, "data"), ports[0], ports[1], ports[2], ports[0], ports[1], ports[2], harness.serfAddr)
+	configPath := filepath.Join(rootDir, "rogue.hcl")
+	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	logPath := filepath.Join(rootDir, "rogue.log")
+	logFile, err := os.Create(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rogue := exec.Command("nomad", "agent", "-config="+configPath)
+	rogue.Stdout, rogue.Stderr = logFile, logFile
+	if err := rogue.Start(); err != nil {
+		t.Fatal(err)
+	}
+	_ = logFile.Close()
+	t.Cleanup(func() {
+		_ = rogue.Process.Signal(os.Interrupt)
+		done := make(chan struct{})
+		go func() { _ = rogue.Wait(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			_ = rogue.Process.Kill()
+			<-done
+		}
+	})
+
+	// The rogue's own log says why each join fails; wait for that, then the
+	// harness must still list only itself.
+	const refusal = "remote state is encrypted and encryption is not configured"
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		data, _ := os.ReadFile(logPath)
+		if strings.Contains(string(data), refusal) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the rogue Nomad never logged %q:\n%s", refusal, data)
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	if got := members(); len(got) != 1 {
+		t.Fatalf("a Nomad without the gossip key joined: the harness lists %v", got)
+	}
+
+	status, body := nomadRawRequest(t, http.MethodGet, harness.addr+"/v1/agent/self", harness.managementToken, nil)
+	if status != http.StatusOK {
+		t.Fatalf("agent self: HTTP %d %s", status, body)
+	}
+	var self struct {
+		Stats struct {
+			Serf map[string]any `json:"serf"`
+		} `json:"stats"`
+	}
+	if err := json.Unmarshal([]byte(body), &self); err != nil {
+		t.Fatal(err)
+	}
+	// The checks compare with the string Nomad reports.
+	if got, ok := self.Stats.Serf["encrypted"].(string); !ok || got != strconv.FormatBool(true) {
+		t.Fatalf("the harness Nomad reports stats.serf.encrypted %#v, want the string \"true\"", self.Stats.Serf["encrypted"])
+	}
+}

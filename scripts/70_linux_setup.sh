@@ -94,6 +94,9 @@ NOMAD_HTTP_ADDR="${NOMAD_HTTP_ADDR:-https://127.0.0.1:4646}"
 # nomad_tls_issue). Readers trust only this CA; ES also pins the server key.
 NOMAD_TLS_DIR="${NOMAD_CONFIG_DIR}/tls"
 NOMAD_CACERT="${NOMAD_TLS_DIR}/ca.pem"
+# Nomad's gossip (serf) traffic is encrypted with the key in this keyring,
+# which Nomad reads itself (see nomad_gossip_issue); nomad.hcl names no key.
+NOMAD_GOSSIP_KEYRING="${NOMAD_DATA_DIR}/server/serf.keyring"
 NOMAD_MANAGED_MARKER="# Managed by Execution Substrate scripts/70_linux_setup.sh for the single-node workload-zone baseline."
 # The supported Nomad enforces ACLs: ES submits only with its own token and
 # refuses a Nomad that accepts jobs without one. This script bootstraps the
@@ -109,6 +112,7 @@ NOMAD_LEADER_WAIT_SECONDS=30
 NOMAD_SERVICE_UID=0
 NOMAD_CONFIG_CHANGED=0
 NOMAD_TLS_ISSUED=0
+NOMAD_GOSSIP_ISSUED=0
 NOMAD_QUALIFY_TOKEN=""
 GO_REQUIRED_VERSION="go1.26.5"
 GO_DOWNLOAD_BASE_URL="https://go.dev/dl"
@@ -374,6 +378,85 @@ install_nomad_tls_material() {
   NOMAD_CONFIG_CHANGED=1
 }
 
+# BEGIN nomad_gossip (the tests run these functions on their own)
+# Nomad's gossip key. Without one, Nomad's serf port accepts any process that
+# reaches it as a peer: a local account can start its own Nomad server, join,
+# and be listed as a member and a raft non-voter (red-team RT60-1). Nomad
+# reads the key from <data_dir>/server/serf.keyring, a JSON list of base64
+# AES keys whose first is in use, when it starts. Written there before Nomad
+# starts, the keyring is the only copy of the key, and nomad.hcl stays free
+# of secrets.
+
+# nomad_gossip_issue <keyring>: write a keyring holding one new 32-byte key,
+# mode 0600 and owned by the user who runs it (root on a host), replacing any
+# keyring there. The folder is created 0700 if it is missing.
+nomad_gossip_issue() {
+  local keyring=$1
+  local dir
+  local tmp
+  local key
+
+  dir="$(dirname "${keyring}")"
+  if [[ ! -d "${dir}" ]]; then
+    (umask 077 && mkdir -p "${dir}") || return 1
+  fi
+  key="$(openssl rand -base64 32)" || return 1
+  [[ "${key}" =~ ^[A-Za-z0-9+/]{43}=$ ]] || return 1
+  # mktemp creates the file 0600; the key goes in only once that is checked.
+  tmp="$(umask 077 && mktemp "${dir}/.serf.keyring.XXXXXX")" || return 1
+  if [[ "$(stat -c '%a' "${tmp}")" != "600" ]] || ! printf '["%s"]' "${key}" >"${tmp}" || ! mv -f "${tmp}" "${keyring}"; then
+    rm -f "${tmp}"
+    return 1
+  fi
+}
+
+# nomad_gossip_keyring_ok <keyring>: succeed when <keyring> is a regular file
+# owned by the user who runs it, mode 0600, holding a JSON list of one or
+# more base64 32-byte keys.
+nomad_gossip_keyring_ok() {
+  local keyring=$1
+
+  [[ -f "${keyring}" && ! -L "${keyring}" && -O "${keyring}" ]] || return 1
+  [[ "$(stat -c '%a' "${keyring}")" == "600" ]] || return 1
+  python3 -I - "${keyring}" <<'PY'
+import base64
+import binascii
+import json
+import sys
+
+try:
+    with open(sys.argv[1], encoding="utf-8") as handle:
+        keys = json.load(handle)
+    sound = isinstance(keys, list) and len(keys) > 0 and all(
+        isinstance(key, str) and len(base64.b64decode(key, validate=True)) == 32 for key in keys
+    )
+except (OSError, ValueError, binascii.Error):
+    sound = False
+raise SystemExit(0 if sound else 1)
+PY
+}
+
+# nomad_gossip_as_root <function> <args...>: run one of the functions above as
+# root, so Nomad's gossip key is created and read only by root.
+nomad_gossip_as_root() {
+  sudo bash -c "set -euo pipefail; $(declare -f nomad_gossip_issue nomad_gossip_keyring_ok); \"\$@\"" nomad-gossip "$@"
+}
+# END nomad_gossip
+
+# Keep Nomad's gossip keyring while it is sound; otherwise write a new one and
+# restart Nomad, which then encrypts its gossip. A single server has no peer
+# that still needs the old key.
+install_nomad_gossip_keyring() {
+  if nomad_gossip_as_root nomad_gossip_keyring_ok "${NOMAD_GOSSIP_KEYRING}"; then
+    echo "nomad gossip: keeping the keyring in ${NOMAD_GOSSIP_KEYRING}"
+    return 0
+  fi
+  echo "==> Writing Nomad's gossip keyring in ${NOMAD_GOSSIP_KEYRING}"
+  nomad_gossip_as_root nomad_gossip_issue "${NOMAD_GOSSIP_KEYRING}"
+  NOMAD_GOSSIP_ISSUED=1
+  NOMAD_CONFIG_CHANGED=1
+}
+
 install_nomad_service_config() {
   local backup_suffix
 
@@ -385,6 +468,7 @@ install_nomad_service_config() {
   sudo install -d -o root -g root -m 0700 "${NOMAD_DATA_DIR}"
   sudo install -d -o root -g root -m 0755 "${NOMAD_TLS_DIR}"
   install_nomad_tls_material
+  install_nomad_gossip_keyring
 
   if sudo test -f "${NOMAD_CONFIG_PATH}" && ! sudo grep -Fq "${NOMAD_MANAGED_MARKER}" "${NOMAD_CONFIG_PATH}"; then
     backup_suffix="$(date +%Y%m%d%H%M%S)"
@@ -407,6 +491,8 @@ acl {
 server {
   enabled = true
   bootstrap_expect = 1
+  # Gossip is encrypted with the key in ${NOMAD_GOSSIP_KEYRING}, which this
+  # script writes (root, 0600) and Nomad reads when it starts.
 }
 
 client {
@@ -818,6 +904,11 @@ agent = json.loads(pathlib.Path(sys.argv[3]).read_text(encoding="utf-8"))
 config = agent.get("config") or {}
 if config.get("DevMode") is True:
     raise SystemExit("nomad: agent reports DevMode=true; this VM is not a supported profile")
+# Nomad reports "true" or "false", as a string.
+stats = agent.get("stats") if isinstance(agent.get("stats"), dict) else {}
+serf = stats.get("serf") if isinstance(stats.get("serf"), dict) else {}
+if serf.get("encrypted") != "true":
+    raise SystemExit("nomad: the agent does not encrypt its gossip; it reads the keyring this script writes only when it starts")
 
 nodes = json.loads(pathlib.Path(sys.argv[4]).read_text(encoding="utf-8"))
 ready = [node for node in nodes if node.get("Status") == "ready"]
@@ -860,7 +951,7 @@ if not schedulable:
     raise SystemExit(reason)
 
 details = ", ".join(f"{name}:cpu.totalcompute={cpu}" for name, cpu in schedulable)
-print(f"nomad: leader={leader} mode=non-dev ready_nodes={len(ready)} schedulable_nodes={len(schedulable)} {details}")
+print(f"nomad: leader={leader} mode=non-dev gossip=encrypted ready_nodes={len(ready)} schedulable_nodes={len(schedulable)} {details}")
 PY
   then
     cleanup_tempfiles "${leader_path}" "${agent_path}" "${nodes_path}"
@@ -1009,6 +1100,7 @@ echo "- That Nomad config enables ACLs; the bootstrap management token is in ${N
 echo "- That Nomad config disables Docker image cleanup so local runtime-profile images survive completed allocations for repeated supported-local client runs."
 echo "- That Nomad config enables only the Docker driver, refuses privileged containers and allows only the capabilities ES's runtime helper uses; it and Nomad's data directory are root-owned."
 echo "- That Nomad config serves its API and RPC over TLS 1.3 only, with a certificate this script issued in ${NOMAD_TLS_DIR} (key root-only; the CA's key was destroyed after signing). A rerun keeps it until fewer than ${NOMAD_TLS_RENEW_DAYS} days remain, then issues a new one: update nomad.server_spki_sha256 and restart ES after that."
+echo "- Nomad encrypts its gossip with a key this script wrote to ${NOMAD_GOSSIP_KEYRING} (root-only), so no process without the key can join it as a peer. A rerun keeps the keyring while it is sound."
 echo "- If supported-substrate qualification failed above, do not treat this VM as supported yet."
 echo "- If nomad.service could not start or remain healthy, fix that with root-managed host investigation instead of falling back to a user-started Nomad proof."
 echo "- Some proof VMs may still need manual root investigation or bounded fallback when Nomad fingerprinting leaves cpu.totalcompute at 0."
@@ -1016,6 +1108,9 @@ echo "- A host that still reports cpu.totalcompute=0 under the root-managed non-
 echo "- The workload-visible Vault address must be reachable from bridge-networked containers."
 if [[ "${NOMAD_TLS_ISSUED}" == "1" ]]; then
   echo "- This run issued a new Nomad certificate: its key pin is ${NOMAD_SERVER_SPKI_SHA256}. Put it in nomad.server_spki_sha256 and restart ES."
+fi
+if [[ "${NOMAD_GOSSIP_ISSUED}" == "1" ]]; then
+  echo "- This run wrote a new gossip keyring and restarted Nomad."
 fi
 if [[ "${DOCKER_GROUP_CHANGED}" == "1" ]]; then
   echo "- Docker group membership changed for ${CURRENT_USER}; log out and back in before running repo scripts without sudo."

@@ -2657,6 +2657,8 @@ type nomadHarness struct {
 	managementToken   string
 	esTokenFile       string
 	observerTokenFile string
+	// serfAddr is where the harness Nomad listens for gossip.
+	serfAddr string
 }
 
 type nomadAllocationSummary struct {
@@ -2769,6 +2771,11 @@ func startNomadHarnessForCapabilityProbeWithOptions(rootDir string, opts nomadHa
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
 		return nil, fmt.Sprintf("mkdir nomad data dir: %v", err)
 	}
+	// Every real Nomad these tests start encrypts its gossip with a keyring
+	// the setup script's own nomad_gossip_issue wrote before it started.
+	if err := issueNomadGossipKeyring(dataDir); err != nil {
+		return nil, err.Error()
+	}
 	// Every real Nomad these tests start serves HTTPS and RPC over TLS 1.3
 	// only, with a certificate the setup script's own issuer wrote.
 	tlsMaterial, err := issueNomadTLSMaterial(filepath.Join(rootDir, "nomad-tls"))
@@ -2841,6 +2848,7 @@ advertise {
 		cmd:        cmd,
 		outputPath: outputPath,
 		aclEnabled: !opts.aclDisabled,
+		serfAddr:   fmt.Sprintf("127.0.0.1:%d", serfPort),
 	}
 	if reason := harness.waitLeaderResult(15 * time.Second); reason != "" {
 		harness.stop()

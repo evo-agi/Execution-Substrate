@@ -86,6 +86,13 @@ func supportedNomadTLSAgentConfig() map[string]any {
 	}
 }
 
+// supportedNomadAgentStats is the stats block an agent that encrypts its
+// gossip reports in /v1/agent/self, reduced to the field the posture check
+// reads. Nomad reports stats.serf.encrypted as a string.
+func supportedNomadAgentStats() map[string]any {
+	return map[string]any{"serf": map[string]any{"encrypted": "true"}}
+}
+
 // extractNomadBlock returns the top-level block that starts with header, up
 // to and including its closing brace at the start of a line.
 func extractNomadBlock(t *testing.T, text string, header string) string {
@@ -166,17 +173,29 @@ func TestLinuxSetupQualifyRequiresAHostNetwork(t *testing.T) {
 	program = program[:end+1]
 
 	const qualifyToken = "9d934051-6f7e-4a81-b2c3-d4e5f6a7b8c9"
+	const encryptedAgent = `{"config":{"DevMode":false},"stats":{"serf":{"encrypted":"true"}}}`
 	for _, test := range []struct {
 		name     string
+		agent    string
 		networks any
 		want     string
 		refused  bool
 	}{
-		{"loopback host network", fakeNomadLoopbackHostNetworks, "schedulable_nodes=1 fixture:cpu.totalcompute=4000", false},
-		{"bridge network only", []map[string]any{{"Mode": "bridge", "Device": "nomad"}},
+		{"loopback host network", encryptedAgent, fakeNomadLoopbackHostNetworks, "mode=non-dev gossip=encrypted ready_nodes=1 schedulable_nodes=1 fixture:cpu.totalcompute=4000", false},
+		{"bridge network only", encryptedAgent, []map[string]any{{"Mode": "bridge", "Device": "nomad"}},
 			"nomad: no ready client nodes with positive cpu.totalcompute, healthy docker driver and a host-mode network; fixture=no-host-network", true},
-		{"no networks reported", nil,
+		{"no networks reported", encryptedAgent, nil,
 			"nomad: no ready client nodes with positive cpu.totalcompute, healthy docker driver and a host-mode network; fixture=no-host-network", true},
+		// Red-team RT60-1: the keyring the setup writes takes effect only
+		// when Nomad starts, so qualification asks the running agent.
+		{"gossip not encrypted", `{"config":{"DevMode":false},"stats":{"serf":{"encrypted":"false"}}}`, fakeNomadLoopbackHostNetworks,
+			"nomad: the agent does not encrypt its gossip", true},
+		{"no serf stats", `{"config":{"DevMode":false}}`, fakeNomadLoopbackHostNetworks,
+			"nomad: the agent does not encrypt its gossip", true},
+		{"stats not an object", `{"config":{"DevMode":false},"stats":["serf"]}`, fakeNomadLoopbackHostNetworks,
+			"nomad: the agent does not encrypt its gossip", true},
+		{"serf stats not an object", `{"config":{"DevMode":false},"stats":{"serf":"true"}}`, fakeNomadLoopbackHostNetworks,
+			"nomad: the agent does not encrypt its gossip", true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			server, material := startNomadTLSStandIn(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -194,7 +213,7 @@ func TestLinuxSetupQualifyRequiresAHostNetwork(t *testing.T) {
 			dir := t.TempDir()
 			files := map[string]string{
 				"leader.json": `"127.0.0.1:4647"`,
-				"agent.json":  `{"config":{"DevMode":false}}`,
+				"agent.json":  test.agent,
 				"nodes.json":  `[{"ID":"node-1","Name":"fixture","Status":"ready"}]`,
 			}
 			for name, content := range files {
@@ -256,7 +275,7 @@ func runNomadRuntimePostureCheck(t *testing.T, agentSelf any) (string, error) {
 	return strings.TrimSpace(string(output)), err
 }
 
-const supportedNomadPostureLine = "nomad: drivers=docker docker_privileged=refused docker_caps=chown,dac_override,fowner,kill,setgid,setpcap,setuid tls=1.3"
+const supportedNomadPostureLine = "nomad: drivers=docker docker_privileged=refused docker_caps=chown,dac_override,fowner,kill,setgid,setpcap,setuid tls=1.3 gossip=encrypted"
 
 // The posture check accepts the supported agent and refuses each loosening of
 // the driver allowlist or the Docker plugin limits.
@@ -271,7 +290,16 @@ func TestNomadRuntimePostureCheckRefusesLoosenedDockerLimits(t *testing.T) {
 		if edit != nil {
 			edit(config, plugins[0]["Config"].(map[string]any))
 		}
-		return map[string]any{"config": config}
+		return map[string]any{"config": config, "stats": supportedNomadAgentStats()}
+	}
+	gossip := func(serf any) map[string]any {
+		document := agent(nil)
+		if serf == nil {
+			delete(document, "stats")
+		} else {
+			document["stats"] = map[string]any{"serf": serf}
+		}
+		return document
 	}
 	if output, err := runNomadRuntimePostureCheck(t, agent(nil)); err != nil || output != supportedNomadPostureLine {
 		t.Fatalf("supported agent refused: %v %s", err, output)
@@ -300,6 +328,12 @@ func TestNomadRuntimePostureCheckRefusesLoosenedDockerLimits(t *testing.T) {
 		{"server names not verified", agent(func(c, _ map[string]any) { c["TLSConfig"].(map[string]any)["VerifyServerHostname"] = false }), "TLS 1.3 only"},
 		{"RPC upgrade mode", agent(func(c, _ map[string]any) { c["TLSConfig"].(map[string]any)["RPCUpgradeMode"] = true }), "TLS 1.3 only"},
 		{"no TLS settings", agent(func(c, _ map[string]any) { delete(c, "TLSConfig") }), "TLS 1.3 only"},
+		{"gossip not encrypted", gossip(map[string]any{"encrypted": "false"}), "must encrypt its gossip"},
+		{"gossip encryption as a boolean", gossip(map[string]any{"encrypted": true}), "must encrypt its gossip"},
+		{"no serf stats", gossip(map[string]any{}), "must encrypt its gossip"},
+		{"no stats", gossip(nil), "must encrypt its gossip"},
+		{"stats not an object", func() map[string]any { document := agent(nil); document["stats"] = []any{"serf"}; return document }(), "must encrypt its gossip"},
+		{"serf stats not an object", gossip("true"), "must encrypt its gossip"},
 		{"unreadable answer", "{not json", "the agent configuration could not be read"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
