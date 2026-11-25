@@ -93,6 +93,24 @@ execution-substrate/scripts TestRemoteAlphaESServiceTLSStatusCollectionTypedFail
 # build is a Mach-O file.
 execution-substrate/scripts TestRemoteAlphaUpgradeESReadsGoBuildInfoLikeGoVersion
 
+# The ES upgrade issues Nomad's TLS material and then checks it with
+# nomad_tls_material_ok of scripts/70_linux_setup.sh, the setup's own check,
+# which reads the server key's mode with "stat -c '%a'", the stat of GNU
+# coreutils. The stat of macOS has no -c, so the check fails for any
+# material: every apply rolls back with "its material fails the setup's
+# nomad_tls_material_ok", and check calls a host with Nomad's TLS directory
+# "present, but its material fails". The setup script and the upgrade run
+# only on the Linux box. The tests below each reach that check with material
+# it should accept. The subtest "the TLS key is readable by others" of the
+# first test expects the check to refuse, so it passes on macOS, though not
+# for the reason it is named for; go.yml runs all of them.
+execution-substrate/scripts TestRemoteAlphaUpgradeESCheckRefusesWhatItWasNotWrittenFor/TLS_material_was_issued_but_nothing_else_moved
+execution-substrate/scripts TestRemoteAlphaUpgradeESApply
+execution-substrate/scripts TestRemoteAlphaUpgradeESApplyRollsBackOnFailure
+execution-substrate/scripts TestRemoteAlphaUpgradeESApplyRollsBackWhenInterrupted
+execution-substrate/scripts TestRemoteAlphaUpgradeESRollbackFailuresAreReported
+execution-substrate/scripts TestRemoteAlphaUpgradeESApplySurvivesALostSession
+
 
 # Tests that skip themselves on the runner.
 #
