@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -2280,8 +2281,9 @@ func TestRemoteAlphaUpgradeESBuildRefusals(t *testing.T) {
 
 // fakeGo stands in for the Go toolchain in the build tests. It reads its
 // settings from fake-go.conf beside it (the environment build gives it
-// holds none of the test's): FAKE_GOVERSION, FAKE_GOROOT and
-// FAKE_GONOPROXY for `go env GOVERSION GOROOT GONOPROXY` (with
+// holds none of the test's): for `go env -json GOVERSION GOROOT GONOPROXY`
+// FAKE_GO_ENV_JSON, which writeFakeGoConf makes from FAKE_GOVERSION,
+// FAKE_GOROOT and FAKE_GONOPROXY unless a test gives it (with
 // FAKE_BREAK_WORK=1, `go env` also moves the
 // private folder that holds its HOME aside, to moved-<name>, and puts a file
 // in its place, which build then cannot remove as a folder; it refuses any
@@ -2314,7 +2316,7 @@ case "$1" in
         *) echo "fake go: HOME $HOME is not in a private build folder" >&2; exit 2 ;;
       esac
     fi
-    [[ "$2 $3 $4" == "GOVERSION GOROOT GONOPROXY" ]] && printf '%s\n%s\n%s\n' "$FAKE_GOVERSION" "$FAKE_GOROOT" "$FAKE_GONOPROXY" ;;
+    [[ "$2 $3 $4 $5" == "-json GOVERSION GOROOT GONOPROXY" ]] && printf '%s\n' "$FAKE_GO_ENV_JSON" ;;
   mod) [[ "$2" == verify ]] && echo "fake verify" && exit "$FAKE_VERIFY_EXIT" ;;
   build) [[ "$2 $3 $4" == "-trimpath -buildvcs=true -o" ]] || { echo "fake go: unexpected build flags: $*" >&2; exit 2; }
     printf 'binary of %s\n' "$6" > "$5" ;;
@@ -2375,7 +2377,9 @@ func buildRepo(t *testing.T) (repo, script, goBin, commit string) {
 }
 
 // writeFakeGoConf writes the fake go's settings: defaults for a clean
-// build of head, then settings.
+// build of head, then settings. FAKE_GOVERSION, FAKE_GOROOT and
+// FAKE_GONOPROXY become the JSON answer FAKE_GO_ENV_JSON, as Go encodes
+// it, unless settings give that answer itself.
 func writeFakeGoConf(t *testing.T, goBin, head string, settings map[string]string) {
 	t.Helper()
 	conf := map[string]string{"FAKE_GOVERSION": "go1.26.5", "FAKE_GOROOT": filepath.Join(filepath.Dir(filepath.Dir(goBin)), "goroot"),
@@ -2384,6 +2388,16 @@ func writeFakeGoConf(t *testing.T, goBin, head string, settings map[string]strin
 	for k, v := range settings {
 		conf[k] = v
 	}
+	if _, given := conf["FAKE_GO_ENV_JSON"]; !given {
+		answer, err := json.Marshal(map[string]string{"GOVERSION": conf["FAKE_GOVERSION"], "GOROOT": conf["FAKE_GOROOT"], "GONOPROXY": conf["FAKE_GONOPROXY"]})
+		if err != nil {
+			t.Fatal(err)
+		}
+		conf["FAKE_GO_ENV_JSON"] = string(answer)
+	}
+	delete(conf, "FAKE_GOVERSION")
+	delete(conf, "FAKE_GOROOT")
+	delete(conf, "FAKE_GONOPROXY")
 	keys := make([]string, 0, len(conf))
 	for k := range conf {
 		keys = append(keys, k)
@@ -2618,26 +2632,30 @@ func TestRemoteAlphaUpgradeESBuildIgnoresAGoWorkAbove(t *testing.T) {
 	// GOPRIVATE in the toolchain's go.env makes Go fetch the modules it
 	// names from the servers their paths name, whatever GOPROXY says, and
 	// build cannot override it with an empty value, so build must refuse
-	// that toolchain (red-team audit 35, A35-1).
-	goEnv, err := os.OpenFile(filepath.Join(goroot, "go.env"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
+	// that toolchain (red-team audit 35, A35-1), also when the value starts
+	// with a vertical tab and a comma, which Go keeps and skips while it
+	// still names the module after it (red-team audit 36, A36-2).
+	stockEnv, err := os.ReadFile(filepath.Join(goroot, "go.env"))
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		t.Fatal(err)
 	}
-	if _, err := goEnv.WriteString("GOPRIVATE=example.com/private\n"); err != nil {
-		goEnv.Close()
-		t.Fatal(err)
-	}
-	if err := goEnv.Close(); err != nil {
-		t.Fatal(err)
-	}
-	private := exec.Command("python3", "-I", filepath.Join(again, "repo", "scripts", "internal", "remote_alpha_upgrade_es.py"),
-		"build", "--out", filepath.Join(again, "payload-private"), "--commit", head, "--go", goBin)
-	private.Dir = again
-	if output, err := private.CombinedOutput(); err == nil || !strings.Contains(string(output), "makes Go fetch the modules 'example.com/private' from their own servers") {
-		t.Fatalf("build with GOPRIVATE in the toolchain's go.env: %v\n%s", err, output)
-	}
-	if leftovers, _ := filepath.Glob(filepath.Join(again, "es-upgrade-build-*")); len(leftovers) != 0 {
-		t.Fatalf("build left its private folder: %v", leftovers)
+	for i, private := range []struct{ value, shown string }{
+		{"example.com/private", "'example.com/private'"},
+		{"\v,example.com/private", `'\x0b,example.com/private'`},
+	} {
+		if err := os.WriteFile(filepath.Join(goroot, "go.env"), append(append([]byte{}, stockEnv...), "\nGOPRIVATE="+private.value+"\n"...), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		refused := exec.Command("python3", "-I", filepath.Join(again, "repo", "scripts", "internal", "remote_alpha_upgrade_es.py"),
+			"build", "--out", filepath.Join(again, fmt.Sprintf("payload-private-%d", i)), "--commit", head, "--go", goBin)
+		refused.Dir = again
+		want := "sets GONOPROXY or GOPRIVATE to " + private.shown + " in its go.env, which makes Go fetch the modules it names from their own servers"
+		if output, err := refused.CombinedOutput(); err == nil || !strings.Contains(string(output), want) {
+			t.Fatalf("build with GOPRIVATE=%q in the toolchain's go.env: %v\n%s", private.value, err, output)
+		}
+		if leftovers, _ := filepath.Glob(filepath.Join(again, "es-upgrade-build-*")); len(leftovers) != 0 {
+			t.Fatalf("build left its private folder: %v", leftovers)
+		}
 	}
 }
 
@@ -2841,9 +2859,24 @@ func TestRemoteAlphaUpgradeESBuildChecksToolchainCheckoutAndBuildInfo(t *testing
 		{name: "a Go toolchain whose go.env names modules to fetch from their own servers", fake: map[string]string{"FAKE_GONOPROXY": "example.com/private"},
 			// GOPRIVATE or GONOPROXY in the toolchain's go.env would make Go
 			// fetch those modules from the servers their paths name, not
-			// from the module proxy, whatever GOPROXY says (red-team audit
-			// 35, A35-1).
-			says: "makes Go fetch the modules 'example.com/private' from their own servers, not from https://proxy.golang.org (GOPRIVATE or GONOPROXY in its go.env)"},
+			// through the module proxy, whatever GOPROXY says (red-team
+			// audit 35, A35-1).
+			says: "sets GONOPROXY or GOPRIVATE to 'example.com/private' in its go.env, which makes Go fetch the modules it names from their own servers, not through https://proxy.golang.org; build refuses any value there"},
+		// Go keeps a vertical tab, a carriage return or U+2028 in the value
+		// and splits its pattern list only at commas, so each of these
+		// still names example.com/private; a reader of go env's lines
+		// would take them for line ends and see nothing (red-team audit 36,
+		// A36-2).
+		{name: "a36: GONOPROXY after a vertical tab and a comma", fake: map[string]string{"FAKE_GONOPROXY": "\v,example.com/private"},
+			says: `sets GONOPROXY or GOPRIVATE to '\x0b,example.com/private' in its go.env, which makes Go fetch the modules it names`},
+		{name: "a36: GONOPROXY after a carriage return and a comma", fake: map[string]string{"FAKE_GONOPROXY": "\r,example.com/private"},
+			says: `sets GONOPROXY or GOPRIVATE to '\r,example.com/private' in its go.env, which makes Go fetch the modules it names`},
+		{name: "a36: GONOPROXY after a line separator and a comma", fake: map[string]string{"FAKE_GONOPROXY": "\u2028,example.com/private"},
+			says: `sets GONOPROXY or GOPRIVATE to '\u2028,example.com/private' in its go.env, which makes Go fetch the modules it names`},
+		{name: "go env -json leaves out GONOPROXY", fake: map[string]string{"FAKE_GO_ENV_JSON": `{"GOROOT": "/nowhere", "GOVERSION": "go1.26.5"}`},
+			says: "go env -json did not report GOVERSION, GOROOT, GONOPROXY: "},
+		{name: "go env answers in lines, not JSON", fake: map[string]string{"FAKE_GO_ENV_JSON": "go1.26.5\n/nowhere\n"},
+			says: "go env -json did not report GOVERSION, GOROOT, GONOPROXY: 'go1.26.5\\n/nowhere'"},
 		{name: "a payload folder in a folder others can write", out: func(t *testing.T) string {
 			dir := filepath.Join(t.TempDir(), "open")
 			if err := os.Mkdir(dir, 0o755); err != nil {

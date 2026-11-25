@@ -530,13 +530,18 @@ GIT_ENV = {"PATH": BUILD_PATH, "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": 
 # against the commit's go.sum.
 BUILD_PASSED_VARIABLES = ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "NO_PROXY", "no_proxy",
                           "SSL_CERT_FILE", "SSL_CERT_DIR")
-# The one place build's Go fetches modules from. With "direct" after it, as
-# the toolchain's go.env has it, a module the proxy does not have would make
-# Go look the module's path up on the server the path names, whose go-import
-# tag can send Go to any server to download it over the module proxy
-# protocol, which GOVCS cannot forbid (red-team audit 35, A35-1). Without
-# it, such a module fails the build.
+# The one module proxy build's Go is told to fetch modules through, and
+# nothing else. With "direct" after it, as the toolchain's go.env has it, a
+# module the proxy does not have would make Go look the module's path up on
+# the server the path names, whose go-import tag can send Go to any server
+# to download it over the module proxy protocol, which GOVCS cannot forbid
+# (red-team audit 35, A35-1). Without it, such a module fails the build. The
+# proxy itself may answer a download with a redirect to its own storage
+# (storage.googleapis.com), which Go follows (red-team audit 36, A36-1);
+# go.sum checks every byte, wherever they come from.
 BUILD_GOPROXY = "https://proxy.golang.org"
+# What build asks go env for, as JSON.
+BUILD_GO_ENV_KEYS = ("GOVERSION", "GOROOT", "GONOPROXY")
 SUPPORTED_GO_VERSION = "go1.26.5"
 SUMMARY_SCHEMA = "execution-substrate.remote-alpha.es-upgrade-summary.v2"
 LEADER_WAIT_SECONDS = 90
@@ -1994,7 +1999,8 @@ def cmd_build(args):
     a private HOME, so git reads no user config and Go's caches are not
     under the user's home or an inherited XDG_CACHE_HOME; Go's telemetry
     off, so Go starts no child that outlives its command; modules fetched
-    only from proxy.golang.org (GOPROXY with no "direct", and a refusal
+    only through the module proxy at proxy.golang.org, which may redirect a
+    download to its own storage (GOPROXY with no "direct", and a refusal
     when the toolchain's go.env names modules to fetch from their own
     servers), and no git or other VCS tool to fetch one (GOVCS); a fresh
     build cache and temporary folder, removed afterwards, whether the build
@@ -2089,30 +2095,43 @@ def build_payload(args, repo, out_dir, go, module_cache, owners, work):
                GOPATH=folders["gopath"], GOMODCACHE=module_cache or folders["go-mod"],
                GOWORK="off", GOENV="off", GOFLAGS="-mod=readonly", GOTOOLCHAIN="local",
                CGO_ENABLED="0", GOOS="linux", GOARCH="amd64",
-               # Modules come only from BUILD_GOPROXY, in place of the
+               # Modules come only through BUILD_GOPROXY, in place of the
                # toolchain's "https://proxy.golang.org,direct" (red-team
-               # audit 35, A35-1).
+               # audits 35 and 36, A35-1 and A36-1).
                GOPROXY=BUILD_GOPROXY,
                # And should Go ever fetch a module directly, it runs no git
                # or other VCS tool to do it, as the operator (red-team
                # audit 34, O34-1).
                GOVCS="*:off")
     # GONOPROXY is the one setting left that makes Go fetch a module from
-    # its own server rather than GOPROXY's, "direct" or not. Go takes it,
-    # or GOPRIVATE in its place, from the toolchain's go.env when the
+    # its own server rather than through GOPROXY, "direct" or not. Go takes
+    # it, or GOPRIVATE in its place, from the toolchain's go.env when the
     # environment does not set it, and an empty value in the environment
-    # does not override go.env, so build asks Go what it will use.
-    reported = run([go, "env", "GOVERSION", "GOROOT", "GONOPROXY"], env=env, check=True).stdout.splitlines()
-    version, goroot, noproxy = (reported + ["", "", ""])[:3]
+    # does not override go.env, so build asks Go what it will use. It asks
+    # for JSON: plain go env prints each value as it is, and a value can
+    # hold a carriage return, a vertical tab or U+2028, which a reader of
+    # lines takes for a line end while Go keeps them in its pattern list
+    # (red-team audit 36, A36-2).
+    answer = run([go, "env", "-json", *BUILD_GO_ENV_KEYS], env=env, check=True).stdout
+    try:
+        reported = json.loads(answer)
+    except ValueError:
+        reported = None
+    if not isinstance(reported, dict) or not all(isinstance(reported.get(key), str) for key in BUILD_GO_ENV_KEYS):
+        raise Refusal(f"go env -json did not report {', '.join(BUILD_GO_ENV_KEYS)}: {answer.strip()[:300]!r}")
+    version, goroot, noproxy = (reported[key] for key in BUILD_GO_ENV_KEYS)
     if version != SUPPORTED_GO_VERSION:
         raise Refusal(f"the build needs {SUPPORTED_GO_VERSION}, found {version}")
     goroot = os.path.realpath(goroot)
     problems = folders_above_problems(goroot, owners) + tree_problems(goroot, owners)
     if problems:
         raise changeable_refusal(owners, f"the Go toolchain {goroot}", problems)
+    # Any value is refused, even one Go would read as no pattern at all, so
+    # no reading of Go's pattern list can differ from Go's.
     if noproxy:
-        raise Refusal(f"the Go toolchain {goroot} makes Go fetch the modules {noproxy!r} from their own servers, not "
-                      f"from {BUILD_GOPROXY} (GOPRIVATE or GONOPROXY in its go.env)")
+        raise Refusal(f"the Go toolchain {goroot} sets GONOPROXY or GOPRIVATE to {noproxy!r} in its go.env, which makes "
+                      f"Go fetch the modules it names from their own servers, not through {BUILD_GOPROXY}; build "
+                      f"refuses any value there")
     head = run(["git", "-C", repo, "rev-parse", "HEAD"], env=env, check=True).stdout.strip()
     if head != args.commit:
         raise Refusal(f"the checkout is at {head}, not {args.commit}")

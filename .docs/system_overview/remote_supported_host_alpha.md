@@ -7317,16 +7317,18 @@ Operator interface:
     `/usr/bin:/bin`; `GOWORK=off` (Go would otherwise read a `go.work`
     from any folder above the clone, and a `go.work` can put any folder in
     place of a dependency, unchecked by `go.sum`), `GOENV=off` (no go env
-    file), `GOPROXY=https://proxy.golang.org` with no `direct` after it
-    (Go fetches modules only from `proxy.golang.org`: a module the proxy
-    does not have fails the build, where `direct` would make Go look the
-    module's path up on the server the path names, whose `go-import` tag
-    can send Go to any server; and build refuses a toolchain whose
-    `go.env` sets `GOPRIVATE` or `GONOPROXY`, which would make Go fetch
-    the modules they name from their own servers), `GOVCS=*:off` (Go runs
-    no git or other VCS tool to fetch a module), and no other `GO*`
-    variable; git reads neither the system's nor your config
-    (`GIT_CONFIG_NOSYSTEM=1`,
+    file), `GOPROXY=https://proxy.golang.org` with no `direct` after it (Go
+    fetches modules only through the module proxy at `proxy.golang.org`: a
+    module the proxy does not have fails the build, where `direct` would
+    make Go look the module's path up on the server the path names, whose
+    `go-import` tag can send Go to any server. The proxy serves some large
+    downloads by a redirect to its own storage on `storage.googleapis.com`,
+    which Go follows, and `go.sum` checks every byte wherever it comes from.
+    build refuses a toolchain whose `go.env` sets `GOPRIVATE` or `GONOPROXY`
+    to any value, as `go env -json` reports it, since either makes Go fetch
+    the modules it names from their own servers), `GOVCS=*:off` (Go runs no
+    git or other VCS tool to fetch a module), and no other `GO*` variable;
+    git reads neither the system's nor your config (`GIT_CONFIG_NOSYSTEM=1`,
     `GIT_CONFIG_GLOBAL=/dev/null`), so a hook in a config that
     `XDG_CONFIG_HOME` names never runs, and it reads the objects a commit
     names, not what `refs/replace` puts in their place
@@ -7343,7 +7345,7 @@ Operator interface:
     after the command has ended (red-team audit 34);
   - the module cache is a fresh private folder too, so every build
     downloads the modules (about 60 MB of zips, about 400 MB once
-    extracted) from `proxy.golang.org`, unless `--module-cache` names a
+    extracted) through `proxy.golang.org`, unless `--module-cache` names a
     cache to keep: build makes it (`0700`) if it does not exist, takes an
     existing one only under the rule above, and runs `go mod verify` on
     it first, which checks
@@ -7621,7 +7623,10 @@ commit, a modified build, another program or another main module or shows
 any of those modules, a commit whose `go.mod` replaces a module, a clone,
 a `.git` file, a `go` command, a toolchain, a payload folder's parent or a
 module cache that others can change, a toolchain whose `go.env` names
-modules to fetch from their own servers, a symbolic link in the clone, a
+modules to fetch from their own servers (also after a vertical tab, a
+carriage return or U+2028 and a comma, which Go keeps in the value), a `go
+env -json` answer without `GONOPROXY` or not JSON, a symbolic link in the
+clone, a
 clone without its own `.git`, a module cache in the clone and one that
 `go mod verify` refuses, and a refusal after which the private folder
 cannot be removed, which the refusal names; `build` with an environment of
@@ -7640,8 +7645,9 @@ clean build of the commit, runs no hook and leaves that cache folder
 empty, and a second clone of the commit, built through a wrapper that lists
 Go's telemetry folder after each go command (only the mode file `build`
 wrote), gives the same bytes, and `build` refuses that copy of Go once its
-`go.env` sets `GOPRIVATE`; and `esconfigcheck` built from no module but the
-repository's own.
+`go.env` sets `GOPRIVATE`, also to a value that starts with a vertical tab
+and a comma; and `esconfigcheck` built from no module but the repository's
+own.
 `TestRemoteAlphaUpgradeESMovesARealNomadToHTTPS` runs `check`, `apply`, the
 in-place check and `rollback` against a real Nomad agent started on the
 box's own `nomad.hcl` (with a data folder, free ports and the TLS paths under
