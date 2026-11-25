@@ -140,7 +140,7 @@ exit 7
 	if strings.TrimSpace(result.Summary.NextStep) == "" {
 		t.Fatalf("expected next_step guidance, got %+v", result.Summary)
 	}
-	if !strings.Contains(result.Summary.NextStep, ".runbooks/system/v1_bringup.md") {
+	if !strings.Contains(result.Summary.NextStep, ".runbooks/system/Governed Execution ES System Bring-Up.md") {
 		t.Fatalf("expected troubleshooting matrix reference in next_step, got %+v", result.Summary)
 	}
 	if !strings.Contains(result.Summary.NextStep, "scripts/70_diagnostics.sh --run-id <run_id>") {
