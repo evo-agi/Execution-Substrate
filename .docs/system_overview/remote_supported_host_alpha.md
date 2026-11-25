@@ -4001,14 +4001,17 @@ exit zero, empty stderr, and exactly
 `/dev/stdin: OK\n` on stdout. A generic nonzero status never
 means malformed certificate, malformed key, or failed chain.
 
-The admitted malformed-material response is the fixture-proven LibreSSL
-3.3.6 tuple: exit 1, empty stdout, and exactly two stderr lines. For `x509`,
-the first is `unable to load certificate`; for `pkey`, it is
+The admitted malformed-material response has the shape first observed with
+LibreSSL 3.3.6 on macOS: exit 1, empty stdout, and exactly two stderr lines.
+For `x509`, the first is `unable to load certificate`; for `pkey`, it is
 `unable to load key`. The second is a decimal thread identifier followed by
-`:error:09FFF06C:PEM routines:CRYPTO_internal:no start line:`, the fixed
-Apple LibreSSL build-path suffix
-`/Sources/libressl/libressl-3.3/crypto/pem/pem_lib.c:694:Expecting:`, and
-respectively `TRUSTED CERTIFICATE` or `ANY PRIVATE KEY`, then one newline.
+`:error:09FFF06C:PEM routines:CRYPTO_internal:no start line:`, the source
+location, `:Expecting: `, and respectively `TRUSTED CERTIFICATE` or
+`ANY PRIVATE KEY`, then one newline. The source location is the path of
+`crypto/pem/pem_lib.c` in the Apple build that made `/usr/bin/openssl`, a
+colon and a decimal line number. That path differs from one Apple build to the
+next, so the collector fixes only its form: absolute, ending in
+`/crypto/pem/pem_lib.c`, with no colon or control character in it.
 The target 3.0.13 observation additionally admits exactly two command-kind
 specific malformed tuples. For the fixed certificate metadata command, exit
 1, empty stdout and stderr exactly
