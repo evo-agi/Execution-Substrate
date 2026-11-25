@@ -214,8 +214,8 @@ VERDICTS = ("pass", "fail", "skip")
 # tests, it reached the default. Runners differ by up to half in speed, so
 # 20 minutes, about twice the slowest run seen, holds that spread with room
 # for the package to grow. A hung test binary still stops within 20 minutes,
-# inside the job's own time limit in the workflow, so the log shows where it
-# hung.
+# inside the job's own time limit in each workflow that runs the gate, so
+# the log shows where it hung.
 TIME_LIMIT = "20m"
 
 # The observed run. See "The observed run" above.

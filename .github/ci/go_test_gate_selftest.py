@@ -63,7 +63,7 @@ WORKFLOW_SHA256 = "618f13cbb26bb0c5181453e1840cae1d419148d4d97083ca5b1f6b6247f9a
 # The workflow that runs the gate on macOS, and its SHA-256 as it was last
 # reviewed. See MacOSWorkflowKeepsWhatTheGateDependsOn.
 MACOS_WORKFLOW = os.path.join(HERE, os.pardir, "workflows", "go-macos.yml")
-MACOS_WORKFLOW_SHA256 = "e02ada067ae7314874bb286354d5a8e176635d505c553095c4b920e68debebd2"
+MACOS_WORKFLOW_SHA256 = "c1bf72a6b7313f891cc8bcaf4ab8fb2ebe1488d3143c616e399071fe41ac45d7"
 
 PASS = "pass"
 FAIL = "fail"
