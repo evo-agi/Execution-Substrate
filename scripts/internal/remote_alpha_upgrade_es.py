@@ -618,6 +618,105 @@ def root_ids():
     return (os.getuid(), os.getgid()) if test_mode() else (0, 0)
 
 
+# The commands that run as root on the host. Each runs code from this
+# checkout as root: this file, and the setup's nomad_tls functions,
+# nomad_acl_setup.sh with nomad_acl.py, and nomad_tls_identity.py next to it.
+CHECKOUT_GUARDED = ("check", "apply", "rollback")
+
+
+def checkout_owner():
+    """The uid that alone may be able to change the checkout: root on a host.
+    Under a test --host-root the guard runs only when a test names the uid in
+    ES_UPGRADE_TEST_CHECKOUT_OWNER, and None means it does not run."""
+    if not test_mode():
+        return 0
+    value = os.environ.get("ES_UPGRADE_TEST_CHECKOUT_OWNER")
+    return int(value) if value else None
+
+
+def checkout_problems(scripts_dir, owner):
+    """Why someone other than owner could change the code this upgrade runs
+    as root, or [] when nobody else can. Every folder from / down to
+    scripts_dir must belong to root or owner and be writable by neither its
+    group nor others, unless it has the sticky bit (as /tmp has), which lets
+    no one move or replace another's entry. Everything under scripts_dir
+    must belong to owner, be a folder or a regular file, and be writable by
+    neither its group nor others. No symbolic link counts: one could point
+    anywhere."""
+    problems = []
+    real = os.path.realpath(scripts_dir)
+    if real != scripts_dir:
+        problems.append(f"{scripts_dir} is reached through a symbolic link ({real})")
+        return problems
+    path = real
+    while True:
+        parent = os.path.dirname(path)
+        if parent == path:
+            break
+        path = parent
+        try:
+            st = os.lstat(path)
+        except OSError as exc:
+            problems.append(f"{path}: {exc.strerror}")
+            continue
+        mode = stat.S_IMODE(st.st_mode)
+        if not stat.S_ISDIR(st.st_mode):
+            problems.append(f"{path} is not a folder")
+            continue
+        if st.st_uid not in (0, owner):
+            problems.append(f"{path} belongs to uid {st.st_uid}")
+        if mode & 0o022 and not mode & stat.S_ISVTX:
+            problems.append(f"{path} is writable by its group or others ({mode:04o}) without the sticky bit")
+
+    def entry(path):
+        try:
+            st = os.lstat(path)
+        except OSError as exc:
+            problems.append(f"{path}: {exc.strerror}")
+            return
+        mode = stat.S_IMODE(st.st_mode)
+        if stat.S_ISLNK(st.st_mode):
+            problems.append(f"{path} is a symbolic link")
+            return
+        if not (stat.S_ISDIR(st.st_mode) or stat.S_ISREG(st.st_mode)):
+            problems.append(f"{path} is neither a folder nor a regular file")
+            return
+        if st.st_uid != owner:
+            problems.append(f"{path} belongs to uid {st.st_uid}")
+        if mode & 0o022:
+            problems.append(f"{path} is writable by its group or others ({mode:04o})")
+
+    entry(real)
+
+    def walk_error(exc):
+        problems.append(f"{exc.filename}: {exc.strerror}")
+
+    for top, dirs, files in os.walk(real, onerror=walk_error):
+        dirs.sort()
+        for name in sorted(dirs) + sorted(files):
+            entry(os.path.join(top, name))
+    return problems
+
+
+def require_root_only_checkout():
+    """Refuse unless nobody but root (under a test --host-root, the uid the
+    test names) can change this checkout: red-team RT60-2. The operator hands
+    the clone to root before check (the contract's chown and chmod); this
+    makes that step a precondition the script checks every time."""
+    owner = checkout_owner()
+    if owner is None:
+        return
+    problems = checkout_problems(SCRIPTS_DIR, owner)
+    if problems:
+        who = "root" if owner == 0 else f"uid {owner}"
+        shown = "; ".join(problems[:20])
+        more = f" (and {len(problems) - 20} more)" if len(problems) > 20 else ""
+        raise Refusal(
+            f"someone other than {who} can change the code this upgrade runs as root: {shown}{more}; "
+            f"hand the clone to root first (chown -R root:root and chmod -R go-w); nothing was changed"
+        )
+
+
 def user_ids(name):
     if test_mode():
         return os.getuid(), os.getgid()
@@ -1747,6 +1846,8 @@ def main(argv):
         return 2
     HOST_ROOT = args.host_root
     try:
+        if args.command in CHECKOUT_GUARDED:
+            require_root_only_checkout()
         args.func(args)
     except Refusal as exc:
         say(f"remote alpha ES upgrade refused: {exc}", sys.stderr)
