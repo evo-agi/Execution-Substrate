@@ -257,7 +257,7 @@ For a minimal active system, `runtime_trust.signer_policy.allowed_signers` must 
 - `verification.derivation_attestation.*`
 - `verification.workload_identity_binding.*`
 - `workload_vault_auth.default_mode`
-- `nomad.base_url`, `nomad.datacenter`, `nomad.timeout_seconds`, `nomad.token_file` when submit is enabled
+- `nomad.base_url`, `nomad.server_name`, `nomad.root_ca_file`, `nomad.server_spki_sha256`, `nomad.datacenter`, `nomad.timeout_seconds`, `nomad.token_file` when submit is enabled (see [Nomad HTTPS](#nomad-https))
 - `execution.staging_root_dir`, `execution.results_root_dir`, `execution.base_image` when submit is enabled
 - `execution.runtime_profiles.control_plane_normal_shell.*` only when the bounded Control Plane normal-shell runtime profile is enabled
 
@@ -334,7 +334,8 @@ For a minimal active system, `runtime_trust.signer_policy.allowed_signers` must 
   ES runtime config selected by `$ES_CONFIG` for supported-local runs or
   `/etc/execution-substrate/es.json` on Remote Alpha/systemd hosts.
 - for full end-to-end execution verification, include:
-  - `nomad.base_url`
+  - `nomad.base_url` (`https://<loopback IP>:<port>`)
+  - `nomad.server_name`, `nomad.root_ca_file` and `nomad.server_spki_sha256`
   - `nomad.datacenter`
   - `nomad.token_file`
   - `execution.staging_root_dir`
@@ -500,7 +501,7 @@ they were not passed or waived.
 - The primary bring-up/check path distinguishes:
   - service health: ARS, EGS, AGS, and ES public health surfaces
   - prepare-ready: service health plus successful workload-zone Vault runtime-config blob verification through ARS, including structural validation of any supplied Vault CA bundle
-  - submit-ready: prepare-ready plus ES submit config present (including a `nomad.token_file` that is a regular 0400/0600 file), Docker available, required enabled runtime-profile images present, Nomad leader present, Nomad enforcing ACLs with no anonymous policy (read with the observer token named by `NOMAD_TOKEN_FILE`), and at least one ready Nomad client node that exposes positive `cpu.totalcompute`, a healthy Docker driver and a host-mode network
+  - submit-ready: prepare-ready plus ES submit config present (including a `nomad.token_file` that is a regular 0400/0600 file), Nomad presenting the pinned certificate over TLS 1.3 with at least 14 days of validity left, Docker available, required enabled runtime-profile images present, Nomad leader present, Nomad enforcing ACLs with no anonymous policy (read with the observer token named by `NOMAD_TOKEN_FILE`), and at least one ready Nomad client node that exposes positive `cpu.totalcompute`, a healthy Docker driver and a host-mode network
 
 Minimal vault-auth example:
 
@@ -532,12 +533,13 @@ separately selected fresh-host setup contract, but a
 complete supported fresh-host ES provisioner is not currently implemented.
 Reuse of an old or nonempty host remains blocked without a separately governed
 existing-host migration contract. One such contract exists, for one host:
-`scripts/remote_alpha_upgrade_es.sh` moves the Remote Alpha box's ES from its
-`74748063` build to one named commit, adding `nomad.token_file` and
-`execution.retained_result_auth` to its `es.json`, and locks its Nomad. It
-refuses any other host shape; see
-`.docs/system_overview/remote_supported_host_alpha.md`, section "Remote ES
-Upgrade And Nomad Lock".
+`scripts/remote_alpha_upgrade_es.sh` moves the Remote Alpha box's ES from the
+`16cbf739` build that ES PR #54's upgrade installed to one named commit,
+issuing Nomad's TLS material, putting Nomad's API and RPC behind TLS 1.3 and
+adding the Nomad TLS keys to its `es.json`. On a box it already moved it
+only verifies; it refuses any other host shape and names what each part
+looks like; see `.docs/system_overview/remote_supported_host_alpha.md`,
+section "Remote ES Upgrade And Nomad HTTPS".
 
 ## CGS
 
@@ -592,7 +594,7 @@ These are not configured through the Go service config files, but they are requi
 
 The current host-qualification boundary for the supported Linux environment is defined in [supported_linux_host_qualification.md](supported_linux_host_qualification.md).
 
-- reachable at the `es.nomad.base_url`
+- reachable over HTTPS (TLS 1.3 only) at `es.nomad.base_url`, presenting the certificate ES pins; see [Nomad HTTPS](#nomad-https) below
 - configured for the target datacenter in `es.nomad.datacenter`
 - Docker driver available, and the only driver the client enables: `client.options["driver.allowlist"] = "docker"` (every ES task runs through its runtime helper on the Docker driver)
 - an explicit `plugin "docker"` block that refuses privileged containers (`allow_privileged = false`) and allows only the capabilities ES's runtime helper uses to prepare a run and drop to the workload user: `allow_caps = ["chown", "dac_override", "fowner", "kill", "setgid", "setuid", "setpcap"]` (each one is needed: removing any one fails the real Nomad and Docker submit tests)
@@ -607,9 +609,61 @@ The current host-qualification boundary for the supported Linux environment is d
 - the operator readiness path now inspects `GET /v1/agent/self` and rejects `config.DevMode=true`; `nomad agent -dev` is unsupported for the slice-0 supported-environment claim even if it reports healthy Docker and positive compute
 - when Nomad uses the Docker driver on Linux, HashiCorp's Docker driver guidance treats root-managed Nomad as the compatible mode for CPU-core / NUMA-aware behavior; user-managed Nomad startup may still be useful for bounded proof and troubleshooting, but it is not the supported-environment baseline
 - access control (ACLs) enabled with `acl { enabled = true }` and bootstrapped, with no anonymous policy; see [Nomad access control](#nomad-access-control) below
+- readiness also refuses a Nomad whose agent does not serve HTTP and RPC over TLS 1.3 with server names verified (`tls=1.3` on the posture line)
 - if a Linux proof host exposes `cpu.totalcompute=0` because Nomad CPU fingerprinting fails, the bounded slice-0 operator path can provide `NOMAD_CLIENT_CPU_TOTAL_COMPUTE` as a temporary client override for that host; this is deployment troubleshooting, not a new cross-service contract
   - when this override is active, the operator path must surface that host as `submit-ready-mode: bounded-override (...)` rather than implying natural schedulability
   - if the override is absent and the host remains at `cpu.totalcompute=0`, the current bring-up path now fails explicitly instead of claiming submit-ready
+
+### Nomad HTTPS
+
+ES, the operator scripts and the nomad CLI reach Nomad only over TLS 1.3, and
+ES sends its token only to the Nomad whose server key it pins.
+
+- **Nomad config**: a `tls` block with `http = true`, `rpc = true`,
+  `tls_min_version = "tls13"`, `verify_server_hostname = true` and
+  `verify_https_client = false` (clients authenticate with ACL tokens, not
+  certificates), naming `ca_file`, `cert_file` and `key_file` in
+  `/etc/nomad.d/tls`. `scripts/70_linux_setup.sh` writes it, and
+  `.examples/config/nomad.hcl` shows it.
+- **Certificate**: `scripts/70_linux_setup.sh` issues it into
+  `/etc/nomad.d/tls` (root-owned, 0755): `ca.pem` and `server.pem` 0644,
+  `server-key.pem` 0600. Keys are ECDSA P-256. The server certificate names
+  `server.global.nomad`, `localhost`, `127.0.0.1` and `::1`, is valid for 825
+  days, and is signed by a CA (path length 0) whose key is deleted right
+  after signing, so no other certificate can chain to `ca.pem`. Later runs
+  keep sound material with at least 30 days left; otherwise they issue a new
+  CA, key and certificate, restart Nomad and print the new pin.
+- **ES config**: `nomad.base_url` is `https://<loopback IP>:<port>` (an IP
+  literal, no user, path, query or fragment); `nomad.server_name` is the DNS
+  name in the certificate (`server.global.nomad`); `nomad.root_ca_file` is
+  the absolute path of `ca.pem`; `nomad.server_spki_sha256` is the lowercase
+  hex SHA-256 of the server certificate's SubjectPublicKeyInfo. At startup ES
+  reads the CA file (a regular file of at most 1 MiB holding only PEM
+  certificates). On every connection it requires TLS 1.3, verifies the chain
+  against that CA alone for `nomad.server_name`, and then requires the pinned
+  key: any other certificate, even one the same CA signed, fails the
+  handshake before ES sends its token, and submit refuses with `503
+  execution_runtime_unavailable` ("execution runtime is unavailable"),
+  creating no run. The setup script prints all four
+  values; `python3 scripts/internal/nomad_tls_identity.py pin
+  https://127.0.0.1:4646 /etc/nomad.d/tls/ca.pem server.global.nomad` prints
+  the pin of the running Nomad.
+- **Scripts**: `NOMAD_ADDR=https://127.0.0.1:4646` and
+  `NOMAD_CACERT=/etc/nomad.d/tls/ca.pem`. The shell helpers and the Python
+  tools refuse an address that is not `https://` and a CA file that is
+  missing or a symbolic link, require TLS 1.3, and trust only that CA (no
+  system CAs), with no proxy and no redirects. The nomad CLI reads the same
+  two variables.
+- **Readiness**: submit readiness runs `nomad_tls_identity.py check` once
+  Nomad is ready. It makes ES's own checks against the running Nomad (TLS
+  1.3, CA, name, pin), sends no request, requires `nomad.base_url` to be
+  `NOMAD_ADDR`, and refuses a certificate with fewer than 14 days left
+  (`nomad tls: tls=1.3 server_name=... key=pinned expires=...
+  days_left=...`).
+- **After a new certificate**: set `nomad.server_spki_sha256` to the new pin
+  and restart ES. `scripts/72_supported_local_setup.sh` observes the pin from
+  the running Nomad (after its certificate verified under
+  `SUPPORTED_LOCAL_NOMAD_CACERT`) and writes it into `es.json`.
 
 ### Nomad access control
 
@@ -631,19 +685,22 @@ bypass ES admission. ES therefore submits only to a Nomad that enforces them.
   lost or holds another token, both scripts refuse and leave an existing
   file as it is; recovery is Nomad's ACL bootstrap reset procedure, done by
   hand.
-- **Port holder guard (interim)**: while Nomad is down, any local account
-  can listen on its port. Before the setup script and the ACL tool send a
-  token or a bootstrap secret, they check in the kernel's TCP tables that
-  the socket belongs to Nomad's user: root for `nomad.service`; `NOMAD_USER`
-  for `scripts/nomad_acl_setup.sh`, `SUPPORTED_LOCAL_NOMAD_USER` for
-  supported-local setup, and the current user for full-profile bring-up,
-  which starts Nomad itself. Otherwise they send nothing. The tool checks the
-  socket that accepted its own connection. The setup script checks the
+- **Port holder guard (second guard)**: while Nomad is down, any local
+  account can listen on its port. HTTPS stops such a holder from passing
+  for Nomad: it has no certificate from Nomad's CA and cannot read Nomad's
+  server key, and ES also pins that key. As a second guard, before the
+  setup script and the ACL tool send a token or a bootstrap secret, they
+  check in the kernel's TCP tables that the socket belongs to Nomad's user:
+  root for `nomad.service`; `NOMAD_USER` for `scripts/nomad_acl_setup.sh`,
+  `SUPPORTED_LOCAL_NOMAD_USER` for supported-local setup, and the current
+  user for full-profile bring-up, which starts Nomad itself. Otherwise they
+  send nothing. The tool checks the socket that accepted its own
+  connection, before the TLS handshake. The setup script checks the
   listener just before each request or batch of requests, which leaves a
-  short window for a restart in between. `provision` also waits up to 30 s
-  for Nomad to name a leader before it bootstraps. HTTPS with a pinned
-  server key (part 2b of the lock) replaces this guard. Until then ES's own
-  token and the observer token's readiness requests do not get this check.
+  short window for a restart in between, and TLS covers that window.
+  `provision` also waits up to 30 s for Nomad to name a leader before it
+  bootstraps. ES's own requests and the observer token's readiness requests
+  rely on TLS (and, for ES, the pin) alone.
 - **ES token** (`nomad.token_file`): a client token with only policy
   `es-submit-v1` (`submit-job`, `read-job`, `read-logs` in namespace
   `es-submit-v1`). It cannot read nodes or the agent, write policies or
@@ -665,8 +722,12 @@ bypass ES admission. ES therefore submits only to a Nomad that enforces them.
   otherwise it refuses with `503 execution_runtime_unavailable` ("execution
   runtime access control check failed").
 - **Observer token**: a read-only client token (policy `es-observer-v1`:
-  agent and node read, `read-job` and `read-logs` in `es-submit-v1`) for
-  readiness and evidence checks. Operator scripts read it from the file named
+  agent and node read, `list-jobs`, `read-job` and `read-logs` in
+  `es-submit-v1`) for readiness and evidence checks. It can list and inspect
+  ES's jobs and read their logs, and cannot submit, plan, stop or scale
+  them. `check` requires these exact rules, so on a host provisioned before
+  `list-jobs` was added, `check` refuses until `provision` runs again and
+  rewrites the policy (the tokens are kept). Operator scripts read it from the file named
   by `NOMAD_TOKEN_FILE` and pass it to curl through a configuration on a file
   descriptor, to Python by file, and to the nomad CLI through its
   environment, never on a command line. The observer token cannot submit.
@@ -710,7 +771,9 @@ bypass ES admission. ES therefore submits only to a Nomad that enforces them.
   Grants outside namespaces stay operator power the check does not judge:
   for example `node` write can drain the node and so stop ES's allocations.
   The tool behind it is `scripts/internal/nomad_acl.py`; it talks only to a
-  loopback Nomad address, with no proxy and no redirects.
+  loopback Nomad HTTPS address over TLS 1.3, trusting only the CA given by
+  `--ca-file` (`NOMAD_CACERT` in the wrapper), with no proxy and no
+  redirects.
 - **Placement check**: `sudo scripts/nomad_acl_setup.sh placement` proves
   what no ACL check sees: that Nomad can place ES's jobs. With the observer
   token it waits (`NOMAD_PLACEMENT_WAIT_SECONDS`, default 60) for a ready,
@@ -734,20 +797,22 @@ bypass ES admission. ES therefore submits only to a Nomad that enforces them.
   up` starts its own Nomad with ACLs, provisions it before ES starts (ES needs
   its token at startup), and exports the observer token for its checks.
   `scripts/72_supported_local_setup.sh` refuses before any effect unless the
-  host's Nomad enforces ACLs, then runs `scripts/nomad_acl_setup.sh` through
-  `sudo -n` (ES token owned by root, because ES runs as root in the
-  `service-root-v1` profile), writes `nomad.token_file` into `es.json`, and
-  exports `NOMAD_TOKEN_FILE` in `env.sh`. The directory is
+  host's Nomad presents a certificate from `SUPPORTED_LOCAL_NOMAD_CACERT`
+  (default `/etc/nomad.d/tls/ca.pem`) and enforces ACLs, then runs
+  `scripts/nomad_acl_setup.sh` through `sudo -n` (ES token owned by root,
+  because ES runs as root in the `service-root-v1` profile), writes
+  `nomad.token_file` and Nomad's HTTPS identity (server name, CA file and the
+  observed pin) into `es.json`, and exports `NOMAD_TOKEN_FILE` and
+  `NOMAD_CACERT` in `env.sh`. The directory is
   `SUPPORTED_LOCAL_NOMAD_ACL_DIR`, which must lie outside the proof, staging,
   results and SPIRE socket directories. `SUPPORTED_LOCAL_NOMAD_PORT` (default
   4646) names the loopback port of the host's Nomad.
 
 Known limits of this lock:
 
-- Nomad's HTTP API is plain HTTP on loopback. A local process that binds
-  `127.0.0.1:4646` while Nomad is down could receive ES's token from ES's
-  next request. Nomad HTTPS with a server key ES pins is the follow-up that
-  closes this.
+- A local process that binds `127.0.0.1:4646` while Nomad is down gets no
+  token: without Nomad's server key it cannot complete a handshake ES or the
+  scripts accept. Root can read that key, and root is trusted on the host.
 - The lock governs Nomad's API, not Docker. Root and members of the `docker`
   group can start containers directly and are outside it.
 - ES's submit token still controls job shape within the Docker limits. The

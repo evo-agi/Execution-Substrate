@@ -571,6 +571,7 @@ sudo() { [[ "$1" == -n && "$2" == true ]]; }
 go() { printf 'unexpected go %s\n' "$*" >> "$ROOT_EVENTS"; return 97; }
 curl() { printf 'unexpected curl\n' >> "$ROOT_EVENTS"; return 97; }
 nomad_acl_state_check() { :; }
+observe_supported_local_nomad_server_key() { :; }
 docker() { printf 'unexpected docker\n' >> "$ROOT_EVENTS"; return 97; }
 nomad() { printf 'unexpected nomad\n' >> "$ROOT_EVENTS"; return 97; }
 vault() { printf 'unexpected vault\n' >> "$ROOT_EVENTS"; return 97; }
@@ -600,6 +601,7 @@ stop_background_process() { printf 'first effect\n' >> "$ROOT_EVENTS"; exit 97; 
 			"SUPPORTED_LOCAL_VAULT_ROOT_TOKEN=synthetic-token",
 			"SUPPORTED_LOCAL_VAULT_SECRET_VALUE=synthetic-value",
 			"SUPPORTED_LOCAL_CODEX_CREDENTIAL_VALUE=synthetic-value",
+			"SUPPORTED_LOCAL_NOMAD_CACERT=" + writeUnusedNomadCACertFile(workspace),
 			"ROOT_EVENTS=" + events,
 		}, overrides...)...)
 		recorded, readErr := os.ReadFile(events)

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
 	"fmt"
@@ -255,6 +256,66 @@ func newOperationalTestReceiver(t *testing.T, mode string) (*operationalReceiver
 		t.Fatal(err)
 	}
 	return r, s, target, sha256.Sum256(s.Certificate().RawSubjectPublicKeyInfo)
+}
+
+// TestOperationalProviderSendsItsTokenOnlyOverTLS13 shows that the
+// provider, like ES's ordinary Nomad client, completes no handshake with a
+// Nomad that offers only TLS 1.2, even one with the pinned key, so its token
+// and request never leave ES; the same Nomad offering TLS 1.3 gets the request.
+func TestOperationalProviderSendsItsTokenOnlyOverTLS13(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		maxVersion uint16
+		delivered  bool
+	}{
+		{"TLS 1.3", tls.VersionTLS13, true},
+		{"TLS 1.2 only", tls.VersionTLS12, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var requests atomic.Int32
+			server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests.Add(1)
+				if r.TLS == nil || r.TLS.Version != tls.VersionTLS13 || r.Header.Get(nomadTokenHeader) != testNomadToken {
+					t.Errorf("request over TLS %v with token %t", r.TLS, r.Header.Get(nomadTokenHeader) == testNomadToken)
+				}
+				w.WriteHeader(http.StatusTeapot)
+			}))
+			server.TLS = &tls.Config{MaxVersion: tc.maxVersion}
+			server.StartTLS()
+			defer server.Close()
+			target, err := netip.ParseAddrPort(strings.TrimPrefix(server.URL, "https://"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			roots := x509.NewCertPool()
+			roots.AddCert(server.Certificate())
+			template := operationalProofTemplate(t)
+			realm := operationalRealm{
+				host: "127.0.0.1", port: target.Port(), region: "global",
+				spki:     sha256.Sum256(server.Certificate().RawSubjectPublicKeyInfo),
+				template: sha256.Sum256(operationalFrame([]byte("ESOHJTPL1"), template)),
+			}
+			provider, err := newOperationalLoopbackProvider(realm, target, roots, template, testNomadToken)
+			if err != nil {
+				t.Fatal(err)
+			}
+			prepared, err := provider.prepareRegister(context.Background(), []byte("{}"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer prepared.cancel()
+			response, reason := provider.exchange(prepared, 4096)
+			if tc.delivered {
+				if reason != reliablesubmit.OperationalHTTPRefusal || response.status != http.StatusTeapot || requests.Load() != 1 {
+					t.Fatalf("reason=%v status=%d requests=%d", reason, response.status, requests.Load())
+				}
+				return
+			}
+			if reason != reliablesubmit.OperationalIO || response.status != 0 || requests.Load() != 0 {
+				t.Fatalf("a TLS 1.2-only Nomad: reason=%v status=%d requests=%d", reason, response.status, requests.Load())
+			}
+		})
+	}
 }
 
 func TestOperationalHandoffProviderExchange(t *testing.T) {

@@ -6,9 +6,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -107,9 +110,21 @@ type ConfiguredStaticScriptLiteralDenyEntryConfig struct {
 }
 
 type NomadConfig struct {
-	BaseURL        string `json:"base_url"`
-	Datacenter     string `json:"datacenter"`
-	TimeoutSeconds int    `json:"timeout_seconds"`
+	// BaseURL is Nomad's HTTPS API on loopback: https://<loopback IP>:<port>.
+	// ES dials exactly this address and uses no proxy.
+	BaseURL string `json:"base_url"`
+	// ServerName is the DNS name in Nomad's HTTPS server certificate that ES
+	// verifies, for example server.global.nomad.
+	ServerName string `json:"server_name"`
+	// RootCAFile names the PEM file of the CA that issued Nomad's HTTPS
+	// server certificate.
+	RootCAFile string `json:"root_ca_file"`
+	// ServerSPKISHA256 is the lowercase hex SHA-256 of the server
+	// certificate's SubjectPublicKeyInfo. ES refuses a Nomad that presents
+	// any other key, even one the CA signed.
+	ServerSPKISHA256 string `json:"server_spki_sha256"`
+	Datacenter       string `json:"datacenter"`
+	TimeoutSeconds   int    `json:"timeout_seconds"`
 	// TokenFile names the file that holds ES's Nomad ACL client token (the
 	// token's SecretID). ES reads it once at startup and sends it on every
 	// Nomad request. The token itself never appears in this config.
@@ -431,12 +446,18 @@ func (c NomadConfig) Validate(field string) error {
 	if strings.TrimSpace(c.BaseURL) == "" {
 		return fmt.Errorf("%s.base_url is required", field)
 	}
-	parsed, err := url.Parse(c.BaseURL)
-	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
-		return fmt.Errorf("%s.base_url must be a valid absolute URL", field)
+	if err := validateNomadBaseURL(c.BaseURL); err != nil {
+		return fmt.Errorf("%s.base_url %w", field, err)
 	}
-	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return fmt.Errorf("%s.base_url must use http or https", field)
+	if !isNomadServerName(c.ServerName) {
+		return fmt.Errorf("%s.server_name must be the DNS name in Nomad's HTTPS server certificate (for example server.global.nomad)", field)
+	}
+	if c.RootCAFile == "" || !filepath.IsAbs(c.RootCAFile) || filepath.Clean(c.RootCAFile) != c.RootCAFile ||
+		strings.TrimSpace(c.RootCAFile) != c.RootCAFile || strings.ContainsRune(c.RootCAFile, 0) {
+		return fmt.Errorf("%s.root_ca_file must be a clean absolute path", field)
+	}
+	if !isLowerHexSHA256(c.ServerSPKISHA256) {
+		return fmt.Errorf("%s.server_spki_sha256 must be the lowercase hex SHA-256 of Nomad's server public key (64 characters)", field)
 	}
 	if strings.TrimSpace(c.Datacenter) == "" {
 		return fmt.Errorf("%s.datacenter is required", field)
@@ -452,6 +473,67 @@ func (c NomadConfig) Validate(field string) error {
 		return fmt.Errorf("%s.token_file must have a non-root parent directory", field)
 	}
 	return nil
+}
+
+// validateNomadBaseURL accepts only https://<loopback IP literal>:<port>
+// with no user, path, query or fragment: Nomad's API stays on loopback, and
+// ES never resolves a name to reach it.
+func validateNomadBaseURL(raw string) error {
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Scheme != "https" || parsed.Opaque != "" || parsed.User != nil ||
+		(parsed.Path != "" && parsed.Path != "/") || parsed.RawPath != "" || parsed.RawQuery != "" ||
+		parsed.ForceQuery || parsed.Fragment != "" || parsed.RawFragment != "" {
+		return fmt.Errorf("must be https://<loopback IP>:<port> with no path, query or fragment")
+	}
+	host, port, err := net.SplitHostPort(parsed.Host)
+	if err != nil || port == "" {
+		return fmt.Errorf("must name an explicit port")
+	}
+	if number, err := strconv.ParseUint(port, 10, 16); err != nil || number == 0 || strconv.FormatUint(number, 10) != port {
+		return fmt.Errorf("must name a port from 1 to 65535")
+	}
+	addr, err := netip.ParseAddr(host)
+	if err != nil || addr.Zone() != "" || !addr.Unmap().IsLoopback() || addr.String() != host {
+		return fmt.Errorf("must name a loopback IP address, not a host name")
+	}
+	return nil
+}
+
+// isNomadServerName accepts a lowercase DNS name of dot-separated labels
+// (letters, digits and inner hyphens, 1 to 63 characters each), at most 253
+// characters, that is not an IP address.
+func isNomadServerName(name string) bool {
+	if name == "" || len(name) > 253 {
+		return false
+	}
+	if _, err := netip.ParseAddr(name); err == nil {
+		return false
+	}
+	for _, label := range strings.Split(name, ".") {
+		if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for i := 0; i < len(label); i++ {
+			b := label[i]
+			if !(b >= 'a' && b <= 'z') && !(b >= '0' && b <= '9') && b != '-' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func isLowerHexSHA256(value string) bool {
+	if len(value) != 64 {
+		return false
+	}
+	for i := 0; i < len(value); i++ {
+		b := value[i]
+		if !(b >= '0' && b <= '9') && !(b >= 'a' && b <= 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // validateNomadTokenFilePlacement keeps the Nomad token file outside ES's
@@ -676,6 +758,9 @@ func (c Config) ShutdownTimeout() time.Duration {
 
 func (c Config) SubmitConfigured() bool {
 	return strings.TrimSpace(c.Nomad.BaseURL) != "" ||
+		c.Nomad.ServerName != "" ||
+		c.Nomad.RootCAFile != "" ||
+		c.Nomad.ServerSPKISHA256 != "" ||
 		strings.TrimSpace(c.Nomad.Datacenter) != "" ||
 		c.Nomad.TimeoutSeconds != 0 ||
 		c.Nomad.TokenFile != "" ||

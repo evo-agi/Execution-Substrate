@@ -93,6 +93,25 @@ execution-substrate/scripts TestRemoteAlphaESServiceTLSStatusCollectionTypedFail
 # build is a Mach-O file.
 execution-substrate/scripts TestRemoteAlphaUpgradeESReadsGoBuildInfoLikeGoVersion
 
+# The ES upgrade issues Nomad's TLS material and then checks it with
+# nomad_tls_material_ok of scripts/70_linux_setup.sh, the setup's own check,
+# which reads the server key's mode with "stat -c '%a'", the stat of GNU
+# coreutils. The stat of macOS has no -c, so the check fails for any
+# material: every apply rolls back with "its material fails the setup's
+# nomad_tls_material_ok", and check calls a host with Nomad's TLS directory
+# "present, but its material fails". The setup script and the upgrade run
+# only on the Linux box. The tests below each reach that check with material
+# it should accept. The first is listed whole: its subtest "the TLS key is
+# readable by others" expects the check to refuse, so on macOS it passes
+# without reaching the key-mode check it is named for, as stat -c fails
+# first. go.yml runs all of them.
+execution-substrate/scripts TestRemoteAlphaUpgradeESCheckRefusesWhatItWasNotWrittenFor
+execution-substrate/scripts TestRemoteAlphaUpgradeESApply
+execution-substrate/scripts TestRemoteAlphaUpgradeESApplyRollsBackOnFailure
+execution-substrate/scripts TestRemoteAlphaUpgradeESApplyRollsBackWhenInterrupted
+execution-substrate/scripts TestRemoteAlphaUpgradeESRollbackFailuresAreReported
+execution-substrate/scripts TestRemoteAlphaUpgradeESApplySurvivesALostSession
+
 
 # Tests that skip themselves on the runner.
 #
@@ -143,6 +162,12 @@ skips-itself execution-substrate/scripts TestRemoteAlphaSPIREAgentPinAgainstReal
 skips-itself execution-substrate/scripts TestRemoteAlphaSPIREAgentRecoverAgainstRealSPIRE
 skips-itself execution-substrate/scripts TestRemoteAlphaVaultWorkloadAuthBootstrapSignalsWithRealVault
 skips-itself execution-substrate/scripts TestRemoteAlphaVaultWorkloadAuthBootstrapUnsealKeyWithRealVault
+
+# The ES upgrade against a real Nomad, which the test starts on the box's own
+# nomad.hcl. That config's client settings are Linux's, so the test skips
+# itself on any other system before it looks for the nomad binary and
+# passwordless sudo. The upgrade runs only on the box. go.yml runs the test.
+skips-itself execution-substrate/scripts TestRemoteAlphaUpgradeESMovesARealNomadToHTTPS
 
 # The Vault workload-auth bootstrap helper makes its process not dumpable
 # with prctl before it reads anything, and stops on a host where it cannot.

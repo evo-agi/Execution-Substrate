@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -28,11 +27,23 @@ func proofBoundaryHelper(t *testing.T, name string) string {
 
 func runProofPython(t *testing.T, helper string, input []byte, args ...string) ([]byte, error) {
 	t.Helper()
+	return runProofPythonWithEnv(t, helper, input, nil, args...)
+}
+
+func runProofPythonWithEnv(t *testing.T, helper string, input []byte, env []string, args ...string) ([]byte, error) {
+	t.Helper()
 	command := exec.Command("python3", append([]string{proofBoundaryHelper(t, helper)}, args...)...)
 	command.Dir = executionPlatformRepoRoot(t)
 	command.Stdin = bytes.NewReader(input)
-	command.Env = append(os.Environ(), "PYTHONDONTWRITEBYTECODE=1")
+	command.Env = append(append(os.Environ(), "PYTHONDONTWRITEBYTECODE=1"), env...)
 	return command.CombinedOutput()
+}
+
+// fetchProofNodeDetails runs fetch-node-details against url, trusting caFile
+// as Nomad's CA.
+func fetchProofNodeDetails(t *testing.T, caFile string, url string, path string) ([]byte, error) {
+	t.Helper()
+	return runProofPythonWithEnv(t, "supported_local_proof_projection.py", nil, []string{"NOMAD_CACERT=" + caFile}, "fetch-node-details", url, path)
 }
 
 func requireNoProofCanary(t *testing.T, data []byte) {
@@ -97,7 +108,7 @@ func TestSupportedLocalProofNodeDetailLoopbackAdmission(t *testing.T) {
 	var requests atomic.Int64
 	var redirected atomic.Int64
 	var redirect atomic.Bool
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server, nomadTLS := startNomadTLSStandIn(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
 		if redirect.Load() && r.URL.Path == "/v1/nodes" {
 			w.Header().Set("Location", "/redirected")
@@ -116,10 +127,14 @@ func TestSupportedLocalProofNodeDetailLoopbackAdmission(t *testing.T) {
 			http.NotFound(w, r)
 		}
 	}))
-	defer server.Close()
+	other, err := issueNomadTLSMaterial(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	caFile := nomadTLS.caFile
 	project := func(url string) ([]byte, error) {
 		path := filepath.Join(t.TempDir(), "node-details-safe.json")
-		output, err := runProofPython(t, "supported_local_proof_projection.py", nil, "fetch-node-details", url, path)
+		output, err := fetchProofNodeDetails(t, caFile, url, path)
 		if err != nil {
 			if _, statErr := os.Lstat(path); !os.IsNotExist(statErr) {
 				t.Fatal("failed node fetch published partial output")
@@ -143,17 +158,18 @@ func TestSupportedLocalProofNodeDetailLoopbackAdmission(t *testing.T) {
 		t.Fatalf("fixed node detail projection mismatch: %v", projected)
 	}
 	baseRequests := requests.Load()
-	port := strings.TrimPrefix(server.URL, "http://127.0.0.1:")
+	port := strings.TrimPrefix(server.URL, "https://127.0.0.1:")
 	for _, bad := range []string{
-		"http://user:password@127.0.0.1:" + port,
-		"http://localhost:" + port,
-		"http://127.0.0.1:" + port + "@localhost:" + port,
+		"http://127.0.0.1:" + port,
+		"https://user:password@127.0.0.1:" + port,
+		"https://localhost:" + port,
+		"https://127.0.0.1:" + port + "@localhost:" + port,
 		server.URL + "?token=" + proofAPIKeyCanary,
 		server.URL + "#fragment",
 		server.URL + "/v1",
-		"http://127.0.0.1:99999",
-		"http://127.0.0.1.:" + port,
-		"http://127.0.0.1:0" + port,
+		"https://127.0.0.1:99999",
+		"https://127.0.0.1.:" + port,
+		"https://127.0.0.1:0" + port,
 	} {
 		if output, err := project(bad); err == nil || bytes.Contains(output, []byte(proofAPIKeyCanary)) {
 			t.Fatalf("unsafe node URL accepted or leaked canary: %q", bad)
@@ -161,6 +177,50 @@ func TestSupportedLocalProofNodeDetailLoopbackAdmission(t *testing.T) {
 		if requests.Load() != baseRequests {
 			t.Fatal("rejected node URL contacted the synthetic server")
 		}
+	}
+	// Only Nomad's CA is trusted: without it, or with another CA, the
+	// handshake or the setup fails before any request. A Nomad offering only
+	// TLS 1.2 is refused too.
+	for _, ca := range []string{"", filepath.Join(t.TempDir(), "missing.pem"), other.caFile} {
+		caFile = ca
+		if output, err := project(server.URL); err == nil || requests.Load() != baseRequests {
+			t.Fatalf("node fetch with CA %q was not refused before any request: %v output=%q", ca, err, output)
+		}
+	}
+	caFile = nomadTLS.caFile
+	// NOMAD_CACERT has to name Nomad's CA file itself, by an absolute path.
+	// Empty (Python would then trust the system's store, which SSL_CERT_FILE
+	// points at Nomad's CA here), relative to the working directory, or a
+	// symbolic link, the fetch is refused before any request, though each
+	// would lead to Nomad's CA.
+	relativeCA, err := filepath.Rel(executionPlatformRepoRoot(t), nomadTLS.caFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	linkedCA := filepath.Join(t.TempDir(), "ca-link.pem")
+	if err := os.Symlink(nomadTLS.caFile, linkedCA); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name string
+		env  []string
+	}{
+		{"NOMAD_CACERT empty", []string{"NOMAD_CACERT=", "SSL_CERT_FILE=" + nomadTLS.caFile}},
+		{"NOMAD_CACERT relative", []string{"NOMAD_CACERT=" + relativeCA}},
+		{"NOMAD_CACERT a symbolic link", []string{"NOMAD_CACERT=" + linkedCA}},
+	} {
+		path := filepath.Join(t.TempDir(), "node-details-safe.json")
+		output, err := runProofPythonWithEnv(t, "supported_local_proof_projection.py", nil, test.env, "fetch-node-details", server.URL, path)
+		if err == nil || requests.Load() != baseRequests {
+			t.Fatalf("%s: node fetch was not refused before any request: %v output=%q", test.name, err, output)
+		}
+		if _, statErr := os.Lstat(path); !os.IsNotExist(statErr) {
+			t.Fatalf("%s: refused node fetch published output", test.name)
+		}
+	}
+	tls12 := httptestTLS12Server(t, nomadTLS, server.Config.Handler)
+	if output, err := project(tls12.URL); err == nil || requests.Load() != baseRequests {
+		t.Fatalf("node fetch from a TLS 1.2 Nomad was not refused before any request: %v output=%q", err, output)
 	}
 	redirect.Store(true)
 	if output, err := project(server.URL); err == nil || bytes.Contains(output, []byte(proofSecretCanary)) || redirected.Load() != 0 {
@@ -171,7 +231,7 @@ func TestSupportedLocalProofNodeDetailLoopbackAdmission(t *testing.T) {
 func TestSupportedLocalProofNodeDetailAggregateBounds(t *testing.T) {
 	var aggregate atomic.Bool
 	var detailRequests atomic.Int64
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server, nomadTLS := startNomadTLSStandIn(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/nodes" {
 			count := 129
 			if aggregate.Load() {
@@ -187,16 +247,15 @@ func TestSupportedLocalProofNodeDetailAggregateBounds(t *testing.T) {
 		detailRequests.Add(1)
 		fmt.Fprintf(w, `{"Attributes":{"cpu.totalcompute":"2000"},"Meta":{"padding":%q}}`, strings.Repeat("x", 3<<20))
 	}))
-	defer server.Close()
 	path := filepath.Join(t.TempDir(), "node-details-safe.json")
-	if output, err := runProofPython(t, "supported_local_proof_projection.py", nil, "fetch-node-details", server.URL, path); err == nil || bytes.Contains(output, []byte(proofSecretCanary)) {
+	if output, err := fetchProofNodeDetails(t, nomadTLS.caFile, server.URL, path); err == nil || bytes.Contains(output, []byte(proofSecretCanary)) {
 		t.Fatal("node count above bound was accepted")
 	}
 	if detailRequests.Load() != 0 {
 		t.Fatal("over-count node list caused detail requests")
 	}
 	aggregate.Store(true)
-	if output, err := runProofPython(t, "supported_local_proof_projection.py", nil, "fetch-node-details", server.URL, path); err == nil || bytes.Contains(output, []byte(proofSecretCanary)) {
+	if output, err := fetchProofNodeDetails(t, nomadTLS.caFile, server.URL, path); err == nil || bytes.Contains(output, []byte(proofSecretCanary)) {
 		t.Fatal("aggregate node bytes above bound were accepted")
 	}
 	if detailRequests.Load() != 3 {

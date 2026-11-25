@@ -1,6 +1,7 @@
 package app_test
 
 import (
+	"crypto/tls"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -24,9 +25,9 @@ import (
 // runSetupNomadACLBootstrap runs the setup script's bootstrap_nomad_acl on its
 // own, with sudo running its command as the test user, whose uid the test
 // Nomads run as. aclDir must exist.
-func runSetupNomadACLBootstrap(t *testing.T, addr string, aclDir string, leaderWaitSeconds int) (string, error) {
+func runSetupNomadACLBootstrap(t *testing.T, addr string, caFile string, aclDir string, leaderWaitSeconds int) (string, error) {
 	t.Helper()
-	return runSetupNomadACLSnippet(t, addr, aclDir, leaderWaitSeconds, os.Geteuid(), `bootstrap_nomad_acl
+	return runSetupNomadACLSnippet(t, addr, caFile, aclDir, leaderWaitSeconds, os.Geteuid(), `bootstrap_nomad_acl
 if [[ "${NOMAD_QUALIFY_TOKEN}" == "$(cat "${NOMAD_ACL_MANAGEMENT_TOKEN_FILE}")" ]]; then
   echo "qualify token is the saved management token"
 fi`)
@@ -34,8 +35,9 @@ fi`)
 
 // runSetupNomadACLSnippet runs a snippet with the setup script's
 // nomad_acl_bootstrap functions and its CPU visibility diagnostics defined,
-// expecting Nomad's listener to belong to nomadUID.
-func runSetupNomadACLSnippet(t *testing.T, addr string, aclDir string, leaderWaitSeconds int, nomadUID int, call string) (string, error) {
+// expecting Nomad's listener to belong to nomadUID and its certificate to
+// come from caFile's CA.
+func runSetupNomadACLSnippet(t *testing.T, addr string, caFile string, aclDir string, leaderWaitSeconds int, nomadUID int, call string) (string, error) {
 	t.Helper()
 	setup := filepath.Join(executionPlatformRepoRootPath(), "scripts", "70_linux_setup.sh")
 	snippet := `set -euo pipefail
@@ -48,6 +50,7 @@ eval "$(sed -n '/^# BEGIN nomad_cpu_visibility_diagnostics/,/^# END nomad_cpu_vi
 	command.Env = []string{
 		"PATH=" + os.Getenv("PATH"),
 		"NOMAD_HTTP_ADDR=" + addr,
+		"NOMAD_CACERT=" + caFile,
 		"NOMAD_ACL_DIR=" + aclDir,
 		"NOMAD_ACL_MANAGEMENT_TOKEN_FILE=" + filepath.Join(aclDir, "management-token"),
 		"NOMAD_LEADER_WAIT_SECONDS=" + strconv.Itoa(leaderWaitSeconds),
@@ -98,7 +101,7 @@ func TestLinuxSetupBootstrapsNomadACLOnlyOnceNomadNamesALeader(t *testing.T) {
 	leaderAnswers := 0
 	namedAfter := -1 // -1: never name a leader
 	var bootstrapSecret string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server, material := startNomadTLSStandIn(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		defer mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
@@ -128,7 +131,6 @@ func TestLinuxSetupBootstrapsNomadACLOnlyOnceNomadNamesALeader(t *testing.T) {
 			http.NotFound(w, r)
 		}
 	}))
-	t.Cleanup(server.Close)
 	snapshot := func() []string {
 		mu.Lock()
 		defer mu.Unlock()
@@ -138,7 +140,7 @@ func TestLinuxSetupBootstrapsNomadACLOnlyOnceNomadNamesALeader(t *testing.T) {
 	// Nomad never names a leader: the bounded wait gives up and nothing else
 	// happens.
 	aclDir := newNomadACLDir(t)
-	output, err := runSetupNomadACLBootstrap(t, server.URL, aclDir, 2)
+	output, err := runSetupNomadACLBootstrap(t, server.URL, material.caFile, aclDir, 2)
 	if err == nil || !strings.Contains(output, "nomad: no leader within 2s, so ACLs cannot be bootstrapped") {
 		t.Fatalf("bootstrap went on without a named leader: %v output=%s", err, output)
 	}
@@ -156,7 +158,7 @@ func TestLinuxSetupBootstrapsNomadACLOnlyOnceNomadNamesALeader(t *testing.T) {
 	mu.Lock()
 	log, leaderAnswers, namedAfter = nil, 0, 2
 	mu.Unlock()
-	output, err = runSetupNomadACLBootstrap(t, server.URL, aclDir, 10)
+	output, err = runSetupNomadACLBootstrap(t, server.URL, material.caFile, aclDir, 10)
 	if err != nil || !strings.Contains(output, "nomad acl: bootstrapped") || !strings.Contains(output, "qualify token is the saved management token") {
 		t.Fatalf("bootstrap failed once Nomad named a leader: %v output=%s", err, output)
 	}
@@ -178,18 +180,18 @@ func TestLinuxSetupBootstrapFinishesWithItsSavedSecret(t *testing.T) {
 	aclDir := newNomadACLDir(t)
 	secret := writeUnissuedManagementToken(t, aclDir)
 
-	output, err := runSetupNomadACLBootstrap(t, harness.addr, aclDir, 30)
+	output, err := runSetupNomadACLBootstrap(t, harness.addr, harness.tls.caFile, aclDir, 30)
 	if err != nil || !strings.Contains(output, "nomad acl: bootstrapped") || !strings.Contains(output, "qualify token is the saved management token") {
 		t.Fatalf("bootstrap did not finish with the saved secret: %v output=%s", err, output)
 	}
 	requireNomadManagementToken(t, "setup bootstrap", harness, secret)
-	output, err = runSetupNomadACLBootstrap(t, harness.addr, aclDir, 30)
+	output, err = runSetupNomadACLBootstrap(t, harness.addr, harness.tls.caFile, aclDir, 30)
 	if err != nil || !strings.Contains(output, "nomad acl: enforced") {
 		t.Fatalf("a rerun did not keep the management token: %v output=%s", err, output)
 	}
 
 	stranger := writeUnissuedManagementToken(t, aclDir)
-	output, err = runSetupNomadACLBootstrap(t, harness.addr, aclDir, 30)
+	output, err = runSetupNomadACLBootstrap(t, harness.addr, harness.tls.caFile, aclDir, 30)
 	if err == nil || !strings.Contains(output, "ACLs were bootstrapped before") {
 		t.Fatalf("bootstrap accepted a saved secret on a Nomad bootstrapped with another: %v output=%s", err, output)
 	}
@@ -209,7 +211,7 @@ func TestNomadACLToolRetriesABootstrapThatNeverTookEffect(t *testing.T) {
 	secret := writeUnissuedManagementToken(t, aclDir)
 	owner := strconv.Itoa(os.Geteuid()) + ":" + strconv.Itoa(os.Getegid())
 	provision := func() (string, error) {
-		return runNomadACLTool(t, "provision", "--addr", harness.addr,
+		return runNomadACLTool(t, "provision", "--addr", harness.addr, "--ca-file", harness.tls.caFile,
 			"--management-token-file", filepath.Join(aclDir, "management-token"),
 			"--es-token-file", filepath.Join(aclDir, "es-token"), "--es-token-owner", owner)
 	}
@@ -248,19 +250,30 @@ func TestNomadACLToolRetriesABootstrapThatNeverTookEffect(t *testing.T) {
 	}
 }
 
-// recordingNomadStandIn is a plain-HTTP stand-in on loopback, run by the test's
-// own user. answer handles each request after it is logged; the log keeps
-// every request's path, token header and body.
+// recordingNomadStandIn is a TLS 1.3 stand-in on loopback with a certificate
+// from fresh Nomad TLS material, run by the test's own user. answer handles
+// each request after it is logged; the log keeps every request's path, token
+// header and body. hellos counts the TLS handshakes clients began.
 type recordingNomadStandIn struct {
 	*httptest.Server
-	mu  sync.Mutex
-	log []string
+	material nomadTLSMaterial
+	mu       sync.Mutex
+	log      []string
+	hellos   atomic.Int32
 }
 
 func startRecordingNomadStandIn(t *testing.T, answer func(w http.ResponseWriter, r *http.Request, seen int)) *recordingNomadStandIn {
 	t.Helper()
-	standIn := &recordingNomadStandIn{}
-	standIn.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	material, err := issueNomadTLSMaterial(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	certificate, err := tls.LoadX509KeyPair(material.certFile, material.keyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	standIn := &recordingNomadStandIn{material: material}
+	standIn.Server = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		standIn.mu.Lock()
 		standIn.log = append(standIn.log, r.Method+" "+r.URL.Path+" token="+r.Header.Get("X-Nomad-Token")+" body="+string(body))
@@ -269,6 +282,15 @@ func startRecordingNomadStandIn(t *testing.T, answer func(w http.ResponseWriter,
 		w.Header().Set("Content-Type", "application/json")
 		answer(w, r, seen)
 	}))
+	standIn.TLS = &tls.Config{
+		MinVersion:   tls.VersionTLS13,
+		Certificates: []tls.Certificate{certificate},
+		GetConfigForClient: func(*tls.ClientHelloInfo) (*tls.Config, error) {
+			standIn.hellos.Add(1)
+			return nil, nil
+		},
+	}
+	standIn.StartTLS()
 	t.Cleanup(standIn.Close)
 	return standIn
 }
@@ -283,12 +305,16 @@ func (s *recordingNomadStandIn) reset() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.log = nil
+	s.hellos.Store(0)
 }
 
 // TestNomadACLToolSendsNothingToAPortHolder: while Nomad is down any local
-// account can listen on its port. The tool asks the kernel who owns the
-// socket that accepted its connection and sends nothing unless that is
-// Nomad's user: no management token, no bootstrap secret, not even a question.
+// account can listen on its port. TLS keeps a holder without Nomad's server
+// key from passing for Nomad; as a second guard the tool asks the kernel who
+// owns the socket that accepted its connection and sends nothing unless that
+// is Nomad's user: no management token, no bootstrap secret, not even a TLS
+// handshake. This stand-in holds a certificate from the CA the tool trusts, so
+// only the owner check stops it.
 func TestNomadACLToolSendsNothingToAPortHolder(t *testing.T) {
 	standIn := startRecordingNomadStandIn(t, func(w http.ResponseWriter, r *http.Request, _ int) {
 		switch r.URL.Path {
@@ -305,7 +331,7 @@ func TestNomadACLToolSendsNothingToAPortHolder(t *testing.T) {
 	aclDir := newNomadACLDir(t)
 	management := filepath.Join(aclDir, "management-token")
 	provision := func(nomadUID string) (string, error) {
-		return runNomadACLTool(t, "provision", "--nomad-uid", nomadUID, "--addr", standIn.URL, "--leader-wait-seconds", "1",
+		return runNomadACLTool(t, "provision", "--nomad-uid", nomadUID, "--addr", standIn.URL, "--ca-file", standIn.material.caFile, "--leader-wait-seconds", "1",
 			"--management-token-file", management,
 			"--es-token-file", filepath.Join(aclDir, "es-token"), "--es-token-owner", owner)
 	}
@@ -316,6 +342,9 @@ func TestNomadACLToolSendsNothingToAPortHolder(t *testing.T) {
 		}
 		if got := standIn.requests(); len(got) != 0 {
 			t.Fatalf("%s: the port holder received %q", label, got)
+		}
+		if got := standIn.hellos.Load(); got != 0 {
+			t.Fatalf("%s: the port holder saw %d TLS handshake(s)", label, got)
 		}
 	}
 
@@ -331,7 +360,7 @@ func TestNomadACLToolSendsNothingToAPortHolder(t *testing.T) {
 	output, err = provision(notNomads)
 	refused("provision with a saved token", output, err)
 	esToken := writeFakeNomadTokenFile(t, t.TempDir())
-	output, err = runNomadACLTool(t, "check", "--nomad-uid", notNomads, "--addr", standIn.URL,
+	output, err = runNomadACLTool(t, "check", "--nomad-uid", notNomads, "--addr", standIn.URL, "--ca-file", standIn.material.caFile,
 		"--es-token-file", esToken, "--management-token-file", management)
 	refused("check", output, err)
 
@@ -340,14 +369,14 @@ func TestNomadACLToolSendsNothingToAPortHolder(t *testing.T) {
 	// holder is the test's user and root comes from passwordless sudo.
 	if os.Geteuid() != 0 && exec.Command("sudo", "-n", "true").Run() == nil {
 		output, err := exec.Command("sudo", "-n", "python3", "-I", nomadACLToolPath(), "provision",
-			"--addr", standIn.URL, "--leader-wait-seconds", "1",
+			"--addr", standIn.URL, "--ca-file", standIn.material.caFile, "--leader-wait-seconds", "1",
 			"--management-token-file", filepath.Join(aclDir, "root-management-token"),
 			"--es-token-file", filepath.Join(aclDir, "root-es-token"), "--es-token-owner", "0:0").CombinedOutput()
 		if err == nil || !strings.Contains(string(output), "runs as uid "+strconv.Itoa(os.Geteuid())+", not Nomad's uid 0") {
 			t.Fatalf("root's run did not refuse a port the test's user holds: %v output=%s", err, output)
 		}
-		if got := standIn.requests(); len(got) != 0 {
-			t.Fatalf("root's run sent the port holder %q", got)
+		if got := standIn.requests(); len(got) != 0 || standIn.hellos.Load() != 0 {
+			t.Fatalf("root's run sent the port holder %q (%d TLS handshake(s))", got, standIn.hellos.Load())
 		}
 		if _, err := os.Lstat(filepath.Join(aclDir, "root-management-token")); !os.IsNotExist(err) {
 			t.Fatalf("root's run saved a management token for a listener that is not Nomad's: %v", err)
@@ -379,7 +408,7 @@ func TestLinuxSetupBootstrapSendsNoSecretToAPortHolder(t *testing.T) {
 	})
 	notNomads := os.Geteuid() + 1
 	aclDir := newNomadACLDir(t)
-	output, err := runSetupNomadACLSnippet(t, standIn.URL, aclDir, 5, notNomads, "bootstrap_nomad_acl")
+	output, err := runSetupNomadACLSnippet(t, standIn.URL, standIn.material.caFile, aclDir, 5, notNomads, "bootstrap_nomad_acl")
 	if err == nil || !strings.Contains(output, "not owned by Nomad's user (uid "+strconv.Itoa(notNomads)+")") {
 		t.Fatalf("bootstrap did not refuse a listener another user owns: %v output=%s", err, output)
 	}
@@ -395,12 +424,12 @@ func TestLinuxSetupBootstrapSendsNoSecretToAPortHolder(t *testing.T) {
 	// The qualification requests send the management token through
 	// nomad_token_curl, which checks too.
 	standIn.reset()
-	output, err = runSetupNomadACLSnippet(t, standIn.URL, aclDir, 5, notNomads,
+	output, err = runSetupNomadACLSnippet(t, standIn.URL, standIn.material.caFile, aclDir, 5, notNomads,
 		`nomad_token_curl "$(cat /proc/sys/kernel/random/uuid)" --silent "${NOMAD_HTTP_ADDR}/v1/agent/self"`)
 	if err == nil || !strings.Contains(output, "not owned by Nomad's user") || len(standIn.requests()) != 0 {
 		t.Fatalf("nomad_token_curl sent a token to a listener another user owns: %v output=%s requests=%q", err, output, standIn.requests())
 	}
-	output, err = runSetupNomadACLSnippet(t, standIn.URL, aclDir, 5, os.Geteuid(),
+	output, err = runSetupNomadACLSnippet(t, standIn.URL, standIn.material.caFile, aclDir, 5, os.Geteuid(),
 		`nomad_token_curl "$(cat /proc/sys/kernel/random/uuid)" --silent "${NOMAD_HTTP_ADDR}/v1/agent/self"`)
 	if err != nil || len(standIn.requests()) != 1 {
 		t.Fatalf("control: nomad_token_curl did not reach a listener Nomad's user owns: %v output=%s requests=%q", err, output, standIn.requests())
@@ -418,11 +447,11 @@ func TestLinuxSetupBootstrapSendsNoSecretToAPortHolder(t *testing.T) {
 	diagnostics := `NOMAD_QUALIFY_TOKEN="$(cat "${NOMAD_ACL_DIR}/qualify-token")"
 report_nomad_cpu_visibility_diagnostics || true`
 	standIn.reset()
-	output, err = runSetupNomadACLSnippet(t, standIn.URL, aclDir, 5, notNomads, diagnostics)
+	output, err = runSetupNomadACLSnippet(t, standIn.URL, standIn.material.caFile, aclDir, 5, notNomads, diagnostics)
 	if err != nil || !strings.Contains(output, "not owned by Nomad's user (uid "+strconv.Itoa(notNomads)+")") || len(standIn.requests()) != 0 {
 		t.Fatalf("the diagnostics sent the management token to a listener another user owns: %v output=%s requests=%q", err, output, standIn.requests())
 	}
-	output, err = runSetupNomadACLSnippet(t, standIn.URL, aclDir, 5, os.Geteuid(), diagnostics)
+	output, err = runSetupNomadACLSnippet(t, standIn.URL, standIn.material.caFile, aclDir, 5, os.Geteuid(), diagnostics)
 	if got := standIn.requests(); err != nil || len(got) == 0 || got[0] != "GET /v1/nodes token="+qualifyToken+" body=" {
 		t.Fatalf("control: the diagnostics did not ask a listener Nomad's user owns for its nodes: %v output=%s requests=%q", err, output, got)
 	}
@@ -452,7 +481,7 @@ func TestNomadACLToolWaitsForANamedLeader(t *testing.T) {
 	aclDir := newNomadACLDir(t)
 	management := filepath.Join(aclDir, "management-token")
 	provision := func() (string, error) {
-		return runNomadACLTool(t, "provision", "--addr", standIn.URL, "--leader-wait-seconds", "2",
+		return runNomadACLTool(t, "provision", "--addr", standIn.URL, "--ca-file", standIn.material.caFile, "--leader-wait-seconds", "2",
 			"--management-token-file", management,
 			"--es-token-file", filepath.Join(aclDir, "es-token"), "--es-token-owner", owner)
 	}

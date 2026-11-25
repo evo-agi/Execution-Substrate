@@ -37,8 +37,11 @@ Required for up:
 
 Required additionally for full profile:
   NOMAD_CONFIG
-  NOMAD_ADDR                          http://127.0.0.1:<port>
+  NOMAD_ADDR                          https://127.0.0.1:<port> (Nomad serves HTTPS only)
+  NOMAD_CACERT                        Nomad's CA certificate; scripts trust only this CA
   ES_CONFIG with nomad.token_file     where bring-up writes ES's Nomad token
+  ES_CONFIG nomad TLS fields          base_url = NOMAD_ADDR, server_name, root_ca_file and
+                                      server_spki_sha256 (the key Nomad's certificate holds)
 
 Optional for full profile:
   NOMAD_TOKEN_FILE=/abs/path          read-only Nomad token for readiness checks;
@@ -109,6 +112,7 @@ require_bringup_common_env() {
     require_command nomad
     require_readable_env NOMAD_CONFIG
     require_env NOMAD_ADDR
+    require_readable_env NOMAD_CACERT
     verify_es_submit_config_enabled "${ES_CONFIG}"
   fi
 }
@@ -132,6 +136,7 @@ require_bringup_check_env() {
 
   if [[ "${profile}" == "full" ]]; then
     require_env NOMAD_ADDR
+    require_readable_env NOMAD_CACERT
     verify_es_submit_config_enabled "${ES_CONFIG}"
   fi
 }
@@ -161,6 +166,7 @@ provision_bringup_nomad_acl() {
   # This profile started Nomad itself, as the current user.
   if ! python3 -I "$(nomad_acl_tool)" provision \
     --addr "${NOMAD_ADDR}" \
+    --ca-file "${NOMAD_CACERT}" \
     --nomad-uid "$(id -u)" \
     --management-token-file "${acl_dir}/management-token" \
     --es-token-file "${es_token_file}" \

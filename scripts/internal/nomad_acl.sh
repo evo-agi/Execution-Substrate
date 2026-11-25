@@ -7,8 +7,10 @@
 #
 # A token is read from its file and handed to curl through a configuration on
 # a file descriptor, so it never appears on a command line. Requests to Nomad
-# use no proxy and follow no redirect, so a token reaches only the loopback
-# Nomad. This file has no top-level effects.
+# go only to an https:// NOMAD_ADDR over TLS 1.3, trust only the CA in
+# NOMAD_CACERT (Nomad's own CA, see scripts/70_linux_setup.sh), use no proxy
+# and follow no redirect, so a token reaches only the loopback Nomad. This
+# file has no top-level effects.
 
 NOMAD_ACL_NAMESPACE="es-submit-v1"
 
@@ -33,6 +35,21 @@ nomad_token_from_file() {
   printf '%s' "${token}"
 }
 
+# nomad_curl <curl args...>: run curl for a request to Nomad: HTTPS only,
+# TLS 1.3, only NOMAD_CACERT trusted (no system CAs), no proxy. curl follows
+# no redirect unless asked to.
+nomad_curl() {
+  if [[ "${NOMAD_ADDR:-}" != https://* ]]; then
+    echo "nomad: NOMAD_ADDR must be Nomad's https:// address (got ${NOMAD_ADDR:-<unset>})" >&2
+    return 1
+  fi
+  if [[ -z "${NOMAD_CACERT:-}" || -L "${NOMAD_CACERT}" || ! -f "${NOMAD_CACERT}" || ! -r "${NOMAD_CACERT}" ]]; then
+    echo "nomad: NOMAD_CACERT must name Nomad's CA certificate file (for example /etc/nomad.d/tls/ca.pem)" >&2
+    return 1
+  fi
+  curl --noproxy '*' --proto =https --tlsv1.3 --cacert "${NOMAD_CACERT}" --capath /dev/null "$@"
+}
+
 # nomad_api_get <api-path> <output-file>: GET ${NOMAD_ADDR}<api-path> with the
 # token from NOMAD_TOKEN_FILE.
 nomad_api_get() {
@@ -45,7 +62,7 @@ nomad_api_get() {
     return 1
   fi
   token="$(nomad_token_from_file "${NOMAD_TOKEN_FILE}")" || return 1
-  curl --noproxy '*' --fail-with-body --silent --show-error \
+  nomad_curl --fail-with-body --silent --show-error \
     --config <(printf 'header = "X-Nomad-Token: %s"\n' "${token}") \
     "${NOMAD_ADDR}${api_path}" >"${output_path}"
 }
@@ -57,7 +74,7 @@ nomad_acl_state_check() {
   local anonymous_status
 
   self_path="$(mktemp)"
-  if ! curl --noproxy '*' --fail-with-body --silent --show-error "${NOMAD_ADDR}/v1/acl/token/self" >"${self_path}"; then
+  if ! nomad_curl --fail-with-body --silent --show-error "${NOMAD_ADDR}/v1/acl/token/self" >"${self_path}"; then
     rm -f "${self_path}"
     echo "nomad: ACL self request failed for ${NOMAD_ADDR}/v1/acl/token/self" >&2
     return 1
@@ -90,7 +107,7 @@ PY
   fi
   rm -f "${self_path}"
 
-  anonymous_status="$(curl --noproxy '*' --silent --output /dev/null --write-out '%{http_code}' "${NOMAD_ADDR}/v1/acl/policy/anonymous")" || anonymous_status="000"
+  anonymous_status="$(nomad_curl --silent --output /dev/null --write-out '%{http_code}' "${NOMAD_ADDR}/v1/acl/policy/anonymous")" || anonymous_status="000"
   if [[ "${anonymous_status}" != "404" ]]; then
     echo "nomad: an anonymous ACL policy exists or could not be checked (HTTP ${anonymous_status}); ES refuses to submit while requests without a token hold capabilities" >&2
     return 1
@@ -101,7 +118,8 @@ PY
 # nomad_runtime_posture_check <agent-self-json>: refuse unless the agent
 # described by a /v1/agent/self answer enables only the Docker driver and
 # limits the Docker plugin the supported way: privileged containers refused,
-# and only capabilities ES's runtime helper uses (audit INF-02). Reading
+# and only capabilities ES's runtime helper uses (audit INF-02); and serves
+# HTTPS and RPC over TLS 1.3 only, verifying server names. Reading
 # /v1/agent/self needs the observer token.
 nomad_runtime_posture_check() {
   python3 -I - "$1" <<'PY'
@@ -146,10 +164,26 @@ else:
             + ")"
         )
         capabilities = []
+tls = config.get("TLSConfig") if isinstance(config.get("TLSConfig"), dict) else {}
+if not (
+    tls.get("EnableHTTP") is True
+    and tls.get("EnableRPC") is True
+    and tls.get("TLSMinVersion") == "tls13"
+    and tls.get("VerifyServerHostname") is True
+    and tls.get("RPCUpgradeMode") is False
+):
+    problems.append(
+        "Nomad must serve HTTPS and RPC over TLS 1.3 only and verify server names "
+        '(tls { http = true, rpc = true, tls_min_version = "tls13", verify_server_hostname = true })'
+    )
 if problems:
     print("nomad: " + "; ".join(problems), file=sys.stderr)
     raise SystemExit(1)
-print("nomad: drivers=docker docker_privileged=refused docker_caps=" + ",".join(sorted(c.lower() for c in capabilities)))
+print(
+    "nomad: drivers=docker docker_privileged=refused docker_caps="
+    + ",".join(sorted(c.lower() for c in capabilities))
+    + " tls=1.3"
+)
 PY
 }
 

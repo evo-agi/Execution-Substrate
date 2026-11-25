@@ -210,19 +210,35 @@ func TestRetainedResultAuditF1RenderedConfigConstructsConfiguredService(t *testi
 		}
 	}
 	script := filepath.Join("..", "..", "scripts", "72_supported_local_setup.sh")
-	command := exec.Command("/bin/bash", "-c", `source "$1"
+	// The preflight observes the pin from the running Nomad; here the test
+	// sets it, and the renderer refuses to write es.json without one.
+	nomadPKI := newTestNomadPKI(t)
+	_, nomadPin := nomadPKI.serverCert(t, testNomadServerCertOptions{})
+	render := func(pin string) ([]byte, error) {
+		command := exec.Command("/bin/bash", "-c", `source "$1"
+SUPPORTED_LOCAL_NOMAD_SERVER_SPKI_SHA256="$TEST_NOMAD_PIN"
 preflight_supported_local_setup_retained_result_auth
 write_runtime_blob_and_configs "$SUPPORTED_LOCAL_PROOF_DIR" "https://127.0.0.1:18460" "jwt" "service_execution" "vault" "execution-substrate/control-plane-normal-shell:supported-local" "/usr/local/bin/codex" "proof-secrets/data/codex-runtime-profile" "api_key"
 write_env_file "$SUPPORTED_LOCAL_PROOF_DIR/env.sh"`, "bash", script)
-	command.Env = append(os.Environ(),
-		"SUPPORTED_LOCAL_PROOF_DIR="+proofDir,
-		"SUPPORTED_LOCAL_RUNTIME_SUPPORT_BINARY="+fixture.Execution.RuntimeSupportBinary,
-		"SUPPORTED_LOCAL_RETAINED_RESULT_AUTH_STORE_ID=stable_store",
-		"SUPPORTED_LOCAL_RETAINED_RESULT_AUTH_KEY_ID=stable_key",
-		"SUPPORTED_LOCAL_RETAINED_RESULT_AUTH_KEY_FILE="+keyPath,
-		"SUPPORTED_LOCAL_NOMAD_ACL_DIR="+nomadACLDir,
-	)
-	if output, err := command.CombinedOutput(); err != nil {
+		command.Env = append(os.Environ(),
+			"SUPPORTED_LOCAL_PROOF_DIR="+proofDir,
+			"SUPPORTED_LOCAL_RUNTIME_SUPPORT_BINARY="+fixture.Execution.RuntimeSupportBinary,
+			"SUPPORTED_LOCAL_RETAINED_RESULT_AUTH_STORE_ID=stable_store",
+			"SUPPORTED_LOCAL_RETAINED_RESULT_AUTH_KEY_ID=stable_key",
+			"SUPPORTED_LOCAL_RETAINED_RESULT_AUTH_KEY_FILE="+keyPath,
+			"SUPPORTED_LOCAL_NOMAD_ACL_DIR="+nomadACLDir,
+			"SUPPORTED_LOCAL_NOMAD_CACERT="+nomadPKI.caFile,
+			"TEST_NOMAD_PIN="+pin,
+		)
+		return command.CombinedOutput()
+	}
+	if output, err := render(""); err == nil || !bytes.Contains(output, []byte("supported-local Nomad server key pin is missing")) {
+		t.Fatalf("renderer wrote ES config without a Nomad key pin: %v output=%s", err, output)
+	}
+	if _, err := os.Lstat(filepath.Join(proofDir, "es.json")); !os.IsNotExist(err) {
+		t.Fatalf("refused render left es.json: %v", err)
+	}
+	if output, err := render(nomadPin); err != nil {
 		t.Fatalf("production setup renderer failed: %v output=%s", err, output)
 	}
 	data, err := os.ReadFile(filepath.Join(proofDir, "es.json"))
@@ -243,6 +259,11 @@ write_env_file "$SUPPORTED_LOCAL_PROOF_DIR/env.sh"`, "bash", script)
 	if !bytes.Contains(envBytes, []byte("export SUPPORTED_LOCAL_ES_ROOTS_PROFILE=\"service-root-v1\"")) ||
 		!bytes.Contains(envBytes, []byte("export ES_CONFIG=\""+filepath.Join(proofDir, "es.json")+"\"")) {
 		t.Fatal("renderer env does not select the same supported-local config and profile")
+	}
+	if rendered.Nomad.BaseURL != "https://127.0.0.1:4646" || rendered.Nomad.ServerName != testNomadServerName ||
+		rendered.Nomad.RootCAFile != nomadPKI.caFile || rendered.Nomad.ServerSPKISHA256 != nomadPin ||
+		!bytes.Contains(envBytes, []byte("export NOMAD_CACERT=\""+nomadPKI.caFile+"\"")) {
+		t.Fatalf("renderer did not write Nomad's HTTPS identity: %+v", rendered.Nomad)
 	}
 	if rendered.Nomad.TokenFile != nomadTokenPath ||
 		!bytes.Contains(envBytes, []byte("export NOMAD_TOKEN_FILE=\""+filepath.Join(nomadACLDir, "observer-token")+"\"")) {
@@ -574,6 +595,8 @@ func newExecutionRootStartupTestConfig(t *testing.T, stagingRoot string, results
 	if err := os.WriteFile(nomadTokenPath, []byte(testNomadToken+"\n"), 0o400); err != nil {
 		t.Fatalf("write synthetic nomad token fixture: %v", err)
 	}
+	nomadPKI := newTestNomadPKI(t)
+	_, nomadPin := nomadPKI.serverCert(t, testNomadServerCertOptions{})
 	publicKey, _, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		t.Fatalf("generate verifier key: %v", err)
@@ -623,10 +646,13 @@ func newExecutionRootStartupTestConfig(t *testing.T, stagingRoot string, results
 		},
 		WorkloadVaultAuth: esconfig.WorkloadVaultAuthConfig{DefaultMode: esconfig.WorkloadVaultAuthModeVaultIdentityJWT},
 		Nomad: esconfig.NomadConfig{
-			BaseURL:        "http://127.0.0.1:4646",
-			Datacenter:     "dc1",
-			TimeoutSeconds: 1,
-			TokenFile:      nomadTokenPath,
+			BaseURL:          "https://127.0.0.1:4646",
+			ServerName:       testNomadServerName,
+			RootCAFile:       nomadPKI.caFile,
+			ServerSPKISHA256: nomadPin,
+			Datacenter:       "dc1",
+			TimeoutSeconds:   1,
+			TokenFile:        nomadTokenPath,
 		},
 		Execution: esconfig.ExecutionConfig{
 			StagingRootDir:             stagingRoot,

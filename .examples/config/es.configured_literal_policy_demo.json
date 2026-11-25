@@ -80,7 +80,10 @@
     "default_mode": "vault_identity_jwt"
   },
   "nomad": {
-    "base_url": "http://127.0.0.1:4646",
+    "base_url": "https://127.0.0.1:4646",
+    "server_name": "server.global.nomad",
+    "root_ca_file": "/etc/nomad.d/tls/ca.pem",
+    "server_spki_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
     "datacenter": "dc1",
     "timeout_seconds": 5,
     "token_file": "/external/private/nomad-acl/es-token"

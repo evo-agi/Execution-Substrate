@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -354,7 +353,7 @@ func startResolvedPlanCustodyHermeticStack(t *testing.T, handler http.Handler) *
 	resultAuth := newSubmitStackSyntheticRetainedResultAuth(t, rootDir)
 	fixture := newTLSFixture(t)
 	var nomad *nomadHarness
-	nomadServer := httptest.NewServer(lockedFakeNomadHandler(handler))
+	nomadServer, nomadTLS := startNomadTLSStandIn(t, lockedFakeNomadHandler(handler))
 	nomadBaseURL := nomadServer.URL
 	nomadTokenFile := writeFakeNomadTokenFile(t, rootDir)
 	runtimeSupportBinary := buildResolvedPlanCustodyHermeticRuntimeSupport(t, rootDir)
@@ -600,12 +599,7 @@ func startResolvedPlanCustodyHermeticStack(t *testing.T, handler http.Handler) *
 		WorkloadVaultAuth: esconfig.WorkloadVaultAuthConfig{
 			DefaultMode: esconfig.WorkloadVaultAuthModeVaultIdentityJWT,
 		},
-		Nomad: esconfig.NomadConfig{
-			BaseURL:        nomadBaseURL,
-			Datacenter:     "dc1",
-			TimeoutSeconds: 5,
-			TokenFile:      nomadTokenFile,
-		},
+		Nomad: nomadTLS.esNomadConfig(nomadBaseURL, nomadTokenFile),
 		Execution: esconfig.ExecutionConfig{
 			StagingRootDir:             stagingRoot,
 			ResultsRootDir:             resultsRoot,
