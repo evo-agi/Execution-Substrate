@@ -3763,7 +3763,14 @@ func setupFakeRemoteAlphaWorkloadAuthBootstrapHarness(t *testing.T) *fakeRemoteA
 	t.Helper()
 
 	tmpDir := t.TempDir()
-	remoteRoot, err := os.MkdirTemp("/tmp", "es-ra-bootstrap-")
+	// A root under /tmp keeps the fake host's paths short. It is made under
+	// the real path of /tmp: on macOS /tmp is a symbolic link to
+	// /private/tmp, and the output folder check refuses a link on the way.
+	shortTmp, err := filepath.EvalSymlinks("/tmp")
+	if err != nil {
+		t.Fatalf("resolve /tmp: %v", err)
+	}
+	remoteRoot, err := os.MkdirTemp(shortTmp, "es-ra-bootstrap-")
 	if err != nil {
 		t.Fatalf("mkdir short fake remote root: %v", err)
 	}

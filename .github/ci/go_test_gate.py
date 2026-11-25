@@ -3,8 +3,8 @@
 
 Usage, from the module root:
 
-    python3 -I -B .github/ci/go_test_gate.py gate LIST
-    python3 -I -B .github/ci/go_test_gate.py still-failing LIST
+    python3 -I -B .github/ci/go_test_gate.py gate LIST [PACKAGES]
+    python3 -I -B .github/ci/go_test_gate.py still-failing LIST [PACKAGES]
 
 LIST is a text file naming the tests that cannot pass on a CI runner for host
 reasons. It has two kinds of lines. An entry names a test that fails on the
@@ -31,7 +31,8 @@ further part of a test path the same plus "-", so an entry can never act as
 a regular expression. A line applies only to the package it names, and it
 stands for one test or one subtest of it:
 
-  - the package must be a package of this module;
+  - the package must be a package of this module, and one that PACKAGES
+    names when it is given;
   - go test must list the top-level test name exactly once for that package.
     A name defined in both the internal and the external test package of one
     directory is listed twice, and one entry would skip both;
@@ -47,8 +48,21 @@ stands for one test or one subtest of it:
     subtest it names. It must not name an entry, lie inside one or hold
     one: what lies inside an entry does not run in the gate.
 
+PACKAGES, when given, limits both modes to the packages that it names. It
+is a package pattern relative to the module root: "./...", or "./" and one
+or more directory names joined by "/", optionally with "/..." at the end,
+such as ./scripts/... . A directory name holds only ASCII letters, digits,
+"_", "-" and ".", starts with a letter, a digit or "_" and has no two "."
+in a row, so the pattern stays inside the module, cannot be read as a flag
+and has no "..." but the one at its end. The modes then work on exactly
+the packages that "go list PACKAGES" prints, as they otherwise work on
+those of "go list ./...", and every line of LIST must name one of them.
+The workflow for macOS uses it to gate only the packages whose tests are
+meant to run on macOS. Without PACKAGES the modes work on the whole module.
+
 gate
-    Checks the list, then runs every package of the module. A package with
+    Checks the list, then runs every package of the module, or every
+    package that PACKAGES names. A package with
     entries runs on its own with its own entries skipped. All other packages
     run with nothing skipped. For every package the gate then checks what
     go test reported:
@@ -163,7 +177,8 @@ import tempfile
 # also hold "-"), so it has no meaning as a regular expression beyond its own
 # text.
 # The package is accepted only if it is exactly one of the import paths that
-# "go list ./..." prints, so it cannot be a package pattern either.
+# "go list ./..." (or "go list PACKAGES") prints, so it cannot be a package
+# pattern either.
 ENTRY = re.compile(
     r"([A-Za-z0-9_][A-Za-z0-9_./-]*) (Test[A-Za-z0-9_]+(?:/[A-Za-z0-9_-]+)*)"
 )
@@ -173,6 +188,19 @@ SELF_SKIP = "skips-itself"
 SKIP_LINE = re.compile(re.escape(SELF_SKIP) + " " + ENTRY.pattern)
 
 MODES = ("gate", "still-failing")
+
+# PACKAGES: "./..." or "./" and directory names joined by "/", optionally
+# with "/..." at the end. See "PACKAGES" above.
+WHOLE_MODULE = "./..."
+DIRECTORY_NAME = r"[A-Za-z0-9_](?:[A-Za-z0-9_-]|\.(?!\.))*"
+PACKAGES = re.compile(
+    r"\./(?:\.\.\.|%(name)s(?:/%(name)s)*(?:/\.\.\.)?)" % {"name": DIRECTORY_NAME}
+)
+
+USAGE = (
+    "usage: go_test_gate.py gate|still-failing LIST [PACKAGES], where PACKAGES is a "
+    "package pattern relative to the module root, such as ./scripts/..."
+)
 
 # The actions with which "go test -json" reports the end of a test.
 VERDICTS = ("pass", "fail", "skip")
@@ -186,8 +214,8 @@ VERDICTS = ("pass", "fail", "skip")
 # tests, it reached the default. Runners differ by up to half in speed, so
 # 20 minutes, about twice the slowest run seen, holds that spread with room
 # for the package to grow. A hung test binary still stops within 20 minutes,
-# inside the job's own time limit in the workflow, so the log shows where it
-# hung.
+# inside the job's own time limit in each workflow that runs the gate, so
+# the log shows where it hung.
 TIME_LIMIT = "20m"
 
 # The observed run. See "The observed run" above.
@@ -497,16 +525,17 @@ def one(runs, package):
     return runs.get(package) or Run()
 
 
-def module_packages():
-    """Return every package import path of the module in the current directory."""
-    status, output = capture(["go", "list", "./..."])
+def module_packages(pattern):
+    """Return the import path of every package that the pattern names in the
+    module in the current directory."""
+    status, output = capture(["go", "list", pattern])
     if status != 0:
-        raise GoError("go list ./... failed")
+        raise GoError("go list %s failed" % pattern)
     packages = [line for line in output.split("\n") if line != ""]
     if not packages:
-        raise GoError("go list ./... named no package")
+        raise GoError("go list %s named no package" % pattern)
     if len(set(packages)) != len(packages):
-        raise GoError("go list ./... named a package twice")
+        raise GoError("go list %s named a package twice" % pattern)
     return packages
 
 
@@ -523,13 +552,13 @@ def top_level_tests(package):
     return [line for line in output.split("\n") if line.startswith("Test")]
 
 
-def check_list(grouped, declared, packages):
+def check_list(grouped, declared, packages, pattern):
     """Check the lines against the module. Raise ListError on a wrong line.
 
     grouped holds the entries and declared the lines for tests that skip
-    themselves, both by package. Returns, for each package with a line, the
-    top-level test names of its test binary, or None where that binary could
-    not be listed.
+    themselves, both by package. packages are the packages that the pattern
+    names. Returns, for each package with a line, the top-level test names
+    of its test binary, or None where that binary could not be listed.
     """
     lines = {}
     for kind in (grouped, declared):
@@ -537,7 +566,11 @@ def check_list(grouped, declared, packages):
             lines.setdefault(package, []).extend(paths)
     for package in lines:
         if package not in packages:
-            raise ListError("listed package is not a package of this module: %s" % package)
+            if pattern == WHOLE_MODULE:
+                raise ListError("listed package is not a package of this module: %s" % package)
+            raise ListError(
+                "listed package is not a package that %s names: %s" % (pattern, package)
+            )
     listings = {}
     for package, paths in lines.items():
         listed = top_level_tests(package)
@@ -765,11 +798,11 @@ def observed_run(package, paths, skips, listed, overlay, record, list_path):
     return problems
 
 
-def gate(entries, skips, list_path):
-    packages = module_packages()
+def gate(entries, skips, list_path, pattern):
+    packages = module_packages(pattern)
     grouped = by_package(entries)
     declared = by_package(skips)
-    listings = check_list(grouped, declared, packages)
+    listings = check_list(grouped, declared, packages, pattern)
 
     scratch = None
     if any("/" in path for _, path in entries):
@@ -989,10 +1022,10 @@ def in_the_run_of_its_package(package, paths):
         left = [path for path, _ in later]
 
 
-def still_failing(entries, skips, list_path):
-    packages = module_packages()
+def still_failing(entries, skips, list_path, pattern):
+    packages = module_packages(pattern)
     grouped = by_package(entries)
-    listings = check_list(grouped, by_package(skips), packages)
+    listings = check_list(grouped, by_package(skips), packages, pattern)
 
     stale = []
     together = []
@@ -1083,12 +1116,15 @@ def still_failing(entries, skips, list_path):
 
 
 def main(arguments):
-    if len(arguments) != 2 or arguments[0] not in MODES:
-        raise ListError("usage: go_test_gate.py gate|still-failing LIST")
+    if len(arguments) not in (2, 3) or arguments[0] not in MODES:
+        raise ListError(USAGE)
+    pattern = arguments[2] if len(arguments) == 3 else WHOLE_MODULE
+    if PACKAGES.fullmatch(pattern) is None:
+        raise ListError(USAGE)
     entries, skips = read_entries(arguments[1])
     if arguments[0] == "gate":
-        return gate(entries, skips, arguments[1])
-    return still_failing(entries, skips, arguments[1])
+        return gate(entries, skips, arguments[1], pattern)
+    return still_failing(entries, skips, arguments[1], pattern)
 
 
 if __name__ == "__main__":
