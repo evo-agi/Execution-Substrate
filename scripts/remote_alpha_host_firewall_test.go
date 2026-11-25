@@ -90,7 +90,9 @@ func hostFirewallSSHDFixture(t *testing.T, dir string) map[string]string {
 // need the real sshd: first value wins, Include globs are expanded in place,
 // a Match Address block (exact addresses only) ends at the end of its file.
 // FAKE_SSHD_T_FAIL makes -t fail; FAKE_SSHD_WRONG_FOR=<config> makes -T on
-// that config report passwords on for every address.
+// that config report passwords on for every address. It runs under Bash 3.2,
+// the /bin/bash of macOS, so it keeps the three settings it reports in an
+// indexed array and lowers case with tr.
 const hostFirewallFakeSSHD = `#!/bin/bash
 mode="" config="" spec=""
 while [[ $# -gt 0 ]]; do
@@ -117,27 +119,36 @@ expand() {
   done <"$1"
   echo "#END-OF-FILE"
 }
-declare -A global=() inmatch=()
+lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+keys=(passwordauthentication kbdinteractiveauthentication x11forwarding)
+slot() {
+  local i
+  for i in 0 1 2; do [[ "$1" == "${keys[i]}" ]] && { echo "$i"; return; }; done
+}
+global=() inmatch=()
 in_match=0 matched=0
 while IFS= read -r line; do
   [[ "$line" == "#END-OF-FILE" ]] && { in_match=0; continue; }
   line="${line#"${line%%[![:space:]]*}"}"
   [[ -z "$line" || "$line" == \#* ]] && continue
-  key=${line%%[[:space:]]*}; key=${key,,}; value=${line#*[[:space:]]}; value=${value,,}
+  key=$(lower "${line%%[[:space:]]*}"); value=$(lower "${line#*[[:space:]]}")
   if [[ "$key" == match ]]; then
     in_match=1; matched=0
     IFS=, read -ra nets <<<"${value#address }"
     for n in "${nets[@]}"; do [[ "$n" == "$addr" || "$n" == "$addr/32" || "$n" == "$addr/128" ]] && matched=1; done
     continue
   fi
+  i=$(slot "$key")
+  [[ -z "$i" ]] && continue
   if (( in_match )); then
-    (( matched )) && [[ -z "${inmatch[$key]+x}" ]] && inmatch[$key]=$value
+    (( matched )) && [[ -z "${inmatch[i]+x}" ]] && inmatch[i]=$value
     continue
   fi
-  [[ -z "${global[$key]+x}" ]] && global[$key]=$value
+  [[ -z "${global[i]+x}" ]] && global[i]=$value
 done < <(expand "$config")
-for k in passwordauthentication kbdinteractiveauthentication x11forwarding; do
-  v=${inmatch[$k]:-${global[$k]:-yes}}
+for i in 0 1 2; do
+  k=${keys[i]}
+  v=${inmatch[i]:-${global[i]:-yes}}
   [[ -n "${FAKE_SSHD_WRONG_FOR:-}" && "$config" == "$FAKE_SSHD_WRONG_FOR" && "$k" == passwordauthentication ]] && v=yes
   echo "$k $v"
 done

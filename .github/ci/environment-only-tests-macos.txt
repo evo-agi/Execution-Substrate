@@ -37,20 +37,15 @@ execution-substrate/scripts TestRemoteAlphaP0tGrammarDiagnosticV2VersionedBootst
 # /private/tmp. The box helpers that these tests run check every folder on
 # the way to an output or backup folder and refuse a symbolic link there.
 # The helpers run only on the box, where /var and /tmp are folders. The first
-# four tests use a default folder under /var/tmp. The next two expect a
+# four tests use a default folder under /var/tmp. The last two expect a
 # refusal that names /var/tmp or /var/log, and get the refusal for the link
-# /var first; the other subtests of the second one pass. The last four put
-# their fake host under /tmp.
+# /var first; the other subtests of the second one pass.
 execution-substrate/scripts TestRemoteAlphaESBinaryDeploymentCheckOnlyIsDefaultAndNonMutating
 execution-substrate/scripts TestRemoteAlphaESConfigTLSPrepRecordsDSSecurityWarningsWithoutFailing
 execution-substrate/scripts TestRemoteAlphaESConfigTLSPrepRejectsPreexistingBroadPrepAccount
 execution-substrate/scripts TestRemoteAlphaVaultServiceUserMigrationApplyRequiresReadyPreflight
 execution-substrate/scripts TestRemoteAlphaOutputDirRefusesASharedStickyFolderAsTheArtifactFolder
 execution-substrate/scripts TestRemoteAlphaVaultServiceUserMigrationPlanRefusesPathsOutsideVault/log_file_in_a_shared_system_directory
-execution-substrate/scripts TestRemoteAlphaOperatorPrepareSummaryPathHandsOverAnUnreadableFolder
-execution-substrate/scripts TestRemoteAlphaOperatorPrepareSummaryPathRefusesASummaryLink
-execution-substrate/scripts TestRemoteAlphaOperatorRecoverySessionVaultWorkloadAuthBootstrapPrepareRunsBeforeHelperExecution
-execution-substrate/scripts TestRemoteAlphaOperatorRecoverySessionVaultWorkloadAuthBootstrapPrepareSummaryPathUsesBoundedRemoteCommand
 
 # The output folder check opens each folder with O_PATH, which needs no read
 # permission on it. macOS has no O_PATH, so the check falls back to O_RDONLY
@@ -58,35 +53,12 @@ execution-substrate/scripts TestRemoteAlphaOperatorRecoverySessionVaultWorkloadA
 # to check.
 execution-substrate/scripts TestRemoteAlphaOutputDirChecksFoldersItCannotRead
 
-# The fake sshd of these tests starts with #!/bin/bash and uses associative
-# arrays and ${name,,}, which need Bash 4. The /bin/bash of macOS is Bash
-# 3.2. All subtests of these tests fail.
-execution-substrate/scripts TestRemoteAlphaHostFirewallApplyConfirmRollbackOrderWithFakes
-execution-substrate/scripts TestRemoteAlphaHostFirewallApplyFailuresLeaveNoUnconfirmedMarker
-execution-substrate/scripts TestRemoteAlphaHostFirewallApplyRefusesOtherBridgesAndContainerIPv6
-execution-substrate/scripts TestRemoteAlphaHostFirewallApplyRestoresAfterAFailedDropInInstall
-execution-substrate/scripts TestRemoteAlphaHostFirewallInstallsFilesDurably
-execution-substrate/scripts TestRemoteAlphaHostFirewallStatusChecksTheTablesAreLoaded
-execution-substrate/scripts TestRemoteAlphaHostFirewallStatusRefusesEmptyInstalledRulesetAfterCrash
-execution-substrate/scripts TestRemoteAlphaHostFirewallUnconfirmedApplyRecords
-
-# The tests read a folder's owner with "stat -c %U", which is the stat of GNU
-# coreutils. The stat of macOS has no -c. The other subtests of the second
-# test pass.
+# The box helper's require_vault_owned_raft_dir reads the owner of the raft
+# directory with "stat -c %U", which is the stat of GNU coreutils. The stat
+# of macOS has no -c. The helper runs only on the box. The other subtests of
+# the second test pass.
 execution-substrate/scripts TestRemoteAlphaResetDisposableVaultNeverFollowsALinkAboveTheRaftDirectory
 execution-substrate/scripts TestRemoteAlphaResetDisposableVaultRefusesUnsafeRaftStates/raft_directory_of_the_Vault_account
-execution-substrate/scripts TestRemoteAlphaResetDisposableVaultRefusesUnsafeRaftStates/raft_path_is_a_link
-
-# The fake copy command of the "open" subtests runs chmod with "--" after the
-# mode. The chmod of macOS reads options only before the mode, so it takes
-# "--" for a file name and fails, and the fake copy fails before the run step
-# that the test is about. The six "linked" subtests pass.
-execution-substrate/scripts TestRemoteAlphaOperatorRoutesRefuseAStageFolderThatIsNoLongerPrivate/open/operator-healthcheck-tls-renew
-execution-substrate/scripts TestRemoteAlphaOperatorRoutesRefuseAStageFolderThatIsNoLongerPrivate/open/operator-healthcheck-tls-status
-execution-substrate/scripts TestRemoteAlphaOperatorRoutesRefuseAStageFolderThatIsNoLongerPrivate/open/vault-reset-disposable-dry-run
-execution-substrate/scripts TestRemoteAlphaOperatorRoutesRefuseAStageFolderThatIsNoLongerPrivate/open/vault-reset-disposable-execute
-execution-substrate/scripts TestRemoteAlphaOperatorRoutesRefuseAStageFolderThatIsNoLongerPrivate/open/vault-unseal-existing
-execution-substrate/scripts TestRemoteAlphaOperatorRoutesRefuseAStageFolderThatIsNoLongerPrivate/open/vault-workload-auth-bootstrap
 
 # The TLS status collector accepts the malformed-PEM refusal of LibreSSL
 # only in the exact form, source path included, that the /usr/bin/openssl
