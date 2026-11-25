@@ -7285,7 +7285,9 @@ Scripts:
 Operator interface:
 
 - `scripts/remote_alpha_upgrade_es.sh build --out <dir> --commit <sha>`,
-  unprivileged, in a fresh clone checked out at `<sha>`. It requires Go
+  unprivileged, in a fresh clone checked out at `<sha>` that only you and
+  root can change (run `chmod -R go-w` on it if your umask lets your group
+  write; see the wrapper's check below). It requires Go
   `go1.26.5` (`/usr/local/go/bin/go` by default; `--go` names another), a
   clean checkout and an output folder outside it. It builds `es`,
   `es-runtime-support` and `esconfigcheck` for linux/amd64 with
@@ -7313,10 +7315,29 @@ root and is writable by neither its group nor others, unless it has the
 sticky bit (as `/tmp` has); everything under `scripts` belongs to root, is a
 folder or a regular file, and is writable by neither its group nor others
 (the sticky bit does not help there); and no symbolic link leads to or sits
-under `scripts`. The wrapper hands the upgrade the path it was started from,
-symbolic links kept, so that the last rule holds for the path the operator
-typed; it refuses a path with `..`, whose folder the kernel and `cd` can
-read differently after a symbolic link, and its `cd` ignores `CDPATH`.
+under `scripts`.
+
+The wrapper `scripts/remote_alpha_upgrade_es.sh` checks on its own, for
+every command (`build` too, since root installs what it builds), before any
+of the clone's code runs. It finds that code by the physical path of the
+file it was started as: the start path read from the kernel's working
+folder (never an inherited `PWD`, never `CDPATH`), with every symbolic link
+resolved, as the kernel did when it opened the wrapper. It refuses, running
+nothing of the clone, unless no account but root (for a run by another
+user: root and that user) can change that code: every folder from `/` down
+to the wrapper's folder belongs to one of them and is writable by neither
+its group nor others unless it has the sticky bit; the wrapper's folder,
+its `internal` folder, the wrapper and `internal/remote_alpha_upgrade_es.py`
+belong to one of them, are not symbolic links and are writable by neither
+group nor others (the sticky bit does not help there). It then refuses a
+start path that is not that physical path: a symbolic link to the wrapper,
+or a path through one. A hard link to the wrapper in another folder makes
+that folder the wrapper's folder, which must then pass on its own. It also
+refuses a path with `..`, whose folder the kernel and a reading of the text
+can tell apart after a symbolic link. Only then does it run
+`internal/remote_alpha_upgrade_es.py` by the physical path, with Python's
+`-I` (no `PYTHON*` variables, user site folder or current folder on the
+import path), so the upgrade's own checks above see the clone's real path.
 `check` also refuses a payload that is not root's. Run
 `apply` under `systemd-run` so that a dropped SSH session does not stop it;
 its output then goes to the journal, and its summary to the backup folder.
@@ -7473,10 +7494,20 @@ another account could change (a file or folder writable by its group or
 others, one of another owner, a folder above the clone writable by its
 group or others without the sticky bit, a sticky folder under `scripts`
 that anyone can write, a symbolic link under `scripts` or on the way to
-it, also when started through the wrapper), for `check`, `apply` and
-`rollback`; the wrapper refusing a path with `..` (also one whose `..`
-follows a symbolic link to inside the clone) and going to its own folder
-whatever `CDPATH` says; and the guard on for root when the host is named
+it), for `check`, `apply` and `rollback`; the wrapper refusing, with the
+upgrade's own guard off and before any of the clone's Python runs, code of
+another account, an upgrade file, the wrapper, its folder (with the sticky
+bit too) or its `internal` folder writable by group or others, a folder
+above the clone that only others can write, an `internal` folder that is a
+symbolic link, `build` from such a clone, and, through `sudo`, a clone of
+the user running `sudo`; the wrapper refusing a symbolic link to it (beside
+it, and in a shared sticky folder that holds another
+`internal/remote_alpha_upgrade_es.py`, which never runs), a hard link to it
+in such a folder, a path through a symbolic link, and a path with `..`
+(leading, too, from a folder entered through a symbolic link into the
+clone, and one whose `..` follows such a link); the wrapper going to its
+own folder whatever an inherited `PWD`, `CDPATH` or `PYTHONPATH` says, and
+taking a leading `//` for `/`; and the guard on for root when the host is named
 another way (`//`, `/.`, a symbolic link to `/`); a validation
 warning about unreadable TLS files; failures at each step after the backup;
 damaged backups; an `apply` whose terminal hangs up and one whose output
