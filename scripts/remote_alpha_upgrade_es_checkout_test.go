@@ -130,9 +130,16 @@ func (c *upgradeClone) check(owner string) (string, string, int) {
 // does, with the same environment as run.
 func (c *upgradeClone) wrapper(path, owner string) (string, string, int) {
 	c.t.Helper()
+	return c.wrapperIn(c.t.TempDir(), path, owner)
+}
+
+// wrapperIn is wrapper started from the folder dir, with extra environment
+// entries.
+func (c *upgradeClone) wrapperIn(dir, path, owner string, extra ...string) (string, string, int) {
+	c.t.Helper()
 	cmd := exec.Command(path, "--host-root", c.host, "check", "--payload", filepath.Join(c.host, "payload"), "--commit", upgradeTestCommit)
-	cmd.Dir = c.t.TempDir()
-	cmd.Env = c.env(owner)
+	cmd.Dir = dir
+	cmd.Env = append(c.env(owner), extra...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	code := 0
@@ -358,6 +365,71 @@ func TestRemoteAlphaUpgradeESRefusesACloneOthersCanChange(t *testing.T) {
 		}
 		stdout, stderr, code := c.wrapper(filepath.Join(alias, "scripts", "remote_alpha_upgrade_es.sh"), uid)
 		refused(t, "wrapper", stdout, stderr, code, filepath.Join(alias, "scripts")+" is reached through a symbolic link ("+c.scripts+")")
+	})
+
+	// The kernel resolves a ".." after following the link before it; cd -L
+	// drops it with that link's name. Here the kernel reads the clone's own
+	// wrapper, while cd -L would lead to a folder that holds another
+	// internal/remote_alpha_upgrade_es.py, which root would run before any
+	// check. The wrapper refuses any path with "..".
+	t.Run("through the wrapper, a path with .. after a symbolic link is refused", func(t *testing.T) {
+		c := newUpgradeClone(t)
+		decoy := filepath.Join(c.base, "decoy")
+		if err := os.MkdirAll(filepath.Join(decoy, "internal"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(decoy, "internal", "remote_alpha_upgrade_es.py"), []byte("print('the decoy ran')\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(filepath.Join(c.scripts, "internal"), filepath.Join(decoy, "alias")); err != nil {
+			t.Fatal(err)
+		}
+		path := decoy + "/alias/../remote_alpha_upgrade_es.sh" // not filepath.Join, which drops the ".."
+		stdout, stderr, code := c.wrapper(path, uid)
+		if code != 1 || stdout != "" || !strings.Contains(stderr, `start it by a path without ".." (`+path+`); nothing was changed`) {
+			t.Fatalf("want the wrapper's refusal of %s, got exit %d\nstdout %s\nstderr %s", path, code, stdout, stderr)
+		}
+	})
+
+	t.Run("through the wrapper, a path with .. is refused", func(t *testing.T) {
+		c := newUpgradeClone(t)
+		path := c.scripts + "/internal/../remote_alpha_upgrade_es.sh"
+		stdout, stderr, code := c.wrapper(path, uid)
+		if code != 1 || stdout != "" || !strings.Contains(stderr, `start it by a path without ".."`) {
+			t.Fatalf("want the wrapper's refusal of %s, got exit %d\nstdout %s\nstderr %s", path, code, stdout, stderr)
+		}
+	})
+
+	t.Run("through the wrapper, CDPATH does not choose the folder", func(t *testing.T) {
+		// Started as scripts/remote_alpha_upgrade_es.sh from the clone, the
+		// wrapper's cd takes a relative folder, which CDPATH could send
+		// elsewhere.
+		c := newUpgradeClone(t)
+		elsewhere := filepath.Join(c.base, "elsewhere")
+		if err := os.MkdirAll(filepath.Join(elsewhere, "scripts", "internal"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(elsewhere, "scripts", "internal", "remote_alpha_upgrade_es.py"), []byte("print('elsewhere ran')\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		stdout, stderr, _ := c.wrapperIn(c.root, "scripts/remote_alpha_upgrade_es.sh", uid, "CDPATH="+elsewhere)
+		passed(t, "wrapper with CDPATH", stdout, stderr)
+	})
+
+	t.Run("--host-root through a symbolic link to / is the host", func(t *testing.T) {
+		// Canonicalising the text alone ("//" to "/") would leave a link to
+		// "/" in test mode, with the guard off.
+		c := newUpgradeClone(t)
+		link := filepath.Join(c.base, "host")
+		if err := os.Symlink("/", link); err != nil {
+			t.Fatal(err)
+		}
+		c.chmod(c.python, 0o664)
+		stdout, stderr, code := c.run(c.python, link, "", "check", "--payload", filepath.Join(c.host, "payload"), "--commit", upgradeTestCommit)
+		refused(t, "check", stdout, stderr, code, c.python+" is writable by its group or others (0664)")
+		if !strings.Contains(stderr, "someone other than root") {
+			t.Fatalf("--host-root %s must be the host, where the refusal names root:\n%s", link, stderr)
+		}
 	})
 
 	// Not "/tmp/..": on macOS /tmp is a link and that names /private.

@@ -9,10 +9,20 @@
 # "Remote ES Upgrade And Nomad HTTPS".
 set -euo pipefail
 
-# The folder as it was named, symbolic links kept (pwd -L): check, apply and
-# rollback refuse a clone reached through a symbolic link, and resolving the
-# path here would hide the link from them.
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -L)"
+# check, apply and rollback refuse a clone reached through a symbolic link,
+# so the upgrade must see the path this file was read from. A ".." breaks
+# that: the kernel resolves it after following any link before it, while
+# cd -L drops it with the name before it, so the two can be different
+# folders. Such a path is refused here, before anything else runs.
+case "/${BASH_SOURCE[0]}/" in
+  */../*)
+    echo "remote alpha ES upgrade refused: start it by a path without \"..\" (${BASH_SOURCE[0]}); nothing was changed" >&2
+    exit 1 ;;
+esac
+# The folder as it was named, symbolic links kept (pwd -L); resolving them
+# here would hide them from the upgrade. CDPATH is cleared so that cd goes
+# only to that folder.
+SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -L)"
 # -I: ignore PYTHON* variables, the user site directory and the script's
 # directory on the import path. -B: write no bytecode next to the script.
 exec /usr/bin/python3 -I -B "${SCRIPT_DIR}/internal/remote_alpha_upgrade_es.py" "$@"

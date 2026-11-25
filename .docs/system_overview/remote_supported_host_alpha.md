@@ -7315,7 +7315,9 @@ folder or a regular file, and is writable by neither its group nor others
 (the sticky bit does not help there); and no symbolic link leads to or sits
 under `scripts`. The wrapper hands the upgrade the path it was started from,
 symbolic links kept, so that the last rule holds for the path the operator
-typed. `check` also refuses a payload that is not root's. Run
+typed; it refuses a path with `..`, whose folder the kernel and `cd` can
+read differently after a symbolic link, and its `cd` ignores `CDPATH`.
+`check` also refuses a payload that is not root's. Run
 `apply` under `systemd-run` so that a dropped SSH session does not stop it;
 its output then goes to the journal, and its summary to the backup folder.
 
@@ -7472,8 +7474,10 @@ others, one of another owner, a folder above the clone writable by its
 group or others without the sticky bit, a sticky folder under `scripts`
 that anyone can write, a symbolic link under `scripts` or on the way to
 it, also when started through the wrapper), for `check`, `apply` and
-`rollback`, and the guard on for root when the host is named another way
-(`//`, `/.`); a validation
+`rollback`; the wrapper refusing a path with `..` (also one whose `..`
+follows a symbolic link to inside the clone) and going to its own folder
+whatever `CDPATH` says; and the guard on for root when the host is named
+another way (`//`, `/.`, a symbolic link to `/`); a validation
 warning about unreadable TLS files; failures at each step after the backup;
 damaged backups; an `apply` whose terminal hangs up and one whose output
 pipe closes; and `build` with a fake Go against a dirty checkout and build
