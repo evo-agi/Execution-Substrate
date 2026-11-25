@@ -49,9 +49,23 @@ execution-substrate/scripts TestRemoteAlphaVaultServiceUserMigrationPlanRefusesP
 
 # The output folder check opens each folder with O_PATH, which needs no read
 # permission on it. macOS has no O_PATH, so the check falls back to O_RDONLY
-# and cannot open a folder that it may not read, which this test expects it
-# to check.
+# and cannot open a folder that it may not read, which these tests expect it
+# to check. The second test runs the check inside the summary-path prepare
+# command of scripts/remote_alpha_operator.sh, a box command, through a fake
+# ssh on the host.
 execution-substrate/scripts TestRemoteAlphaOutputDirChecksFoldersItCannotRead
+execution-substrate/scripts TestRemoteAlphaOperatorPrepareSummaryPathHandsOverAnUnreadableFolder
+
+# These tests run the summary-path prepare command of
+# scripts/remote_alpha_operator.sh through a fake ssh on the host, with a
+# summary folder that the helper user cannot write. The command hands that
+# folder over with 'chmod 0750 -- "${summary_dir}"' at
+# scripts/remote_alpha_operator.sh:997, which is the chmod of GNU coreutils.
+# The chmod of macOS takes its first operand as the mode and every later one
+# as a file, "--" included, so the command stops with
+# summary_parent_chmod_failed. The command runs only on the box.
+execution-substrate/scripts TestRemoteAlphaOperatorRecoverySessionVaultWorkloadAuthBootstrapPrepareSummaryPathUsesBoundedRemoteCommand
+execution-substrate/scripts TestRemoteAlphaOperatorRecoverySessionVaultWorkloadAuthBootstrapPrepareRunsBeforeHelperExecution
 
 # The box helper that these tests run, require_vault_owned_raft_dir in
 # scripts/remote_alpha_reset_disposable_vault.sh:410, reads the owner of the
