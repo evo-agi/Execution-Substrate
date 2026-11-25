@@ -511,6 +511,25 @@ PAYLOAD_FILES = ("es", "es-runtime-support", "esconfigcheck")
 # info, not only in provenance.json. esconfigcheck is a checker the upgrade
 # runs, not something it installs.
 STAMPED_PAYLOAD_FILES = ("es", "es-runtime-support")
+# The package each payload file is built from, below the module's path.
+PAYLOAD_PACKAGES = {"es": "cmd/es", "es-runtime-support": "cmd/es-runtime-support",
+                    "esconfigcheck": "scripts/internal/esconfigcheck"}
+# The commands build runs, and the git that reads a commit's go.mod and
+# go.sum, take nothing from the environment but what is set here (red-team
+# audit 33, A33-1). PATH holds only root's folders, where git is. git reads
+# only the repository's own config: neither the system's nor the user's
+# (XDG_CONFIG_HOME, ~/.gitconfig), where another account's hook could wait.
+# It reads the objects a commit names, not what refs/replace puts in their
+# place.
+BUILD_PATH = "/usr/bin:/bin"
+GIT_ENV = {"PATH": BUILD_PATH, "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
+           "GIT_NO_REPLACE_OBJECTS": "1"}
+# The only variables build passes on from its own environment: what Go's
+# module download needs to reach the module proxy from behind a proxy.
+# None of them can change what is compiled, since Go checks every module
+# against the commit's go.sum.
+BUILD_PASSED_VARIABLES = ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "NO_PROXY", "no_proxy",
+                          "SSL_CERT_FILE", "SSL_CERT_DIR")
 SUPPORTED_GO_VERSION = "go1.26.5"
 SUMMARY_SCHEMA = "execution-substrate.remote-alpha.es-upgrade-summary.v2"
 LEADER_WAIT_SECONDS = 90
@@ -634,21 +653,13 @@ def checkout_owner():
     return int(value) if value else None
 
 
-def checkout_problems(scripts_dir, owner):
-    """Why someone other than owner could change the code this upgrade runs
-    as root, or [] when nobody else can. Every folder from / down to
-    scripts_dir must belong to root or owner and be writable by neither its
-    group nor others, unless it has the sticky bit (as /tmp has), which lets
-    no one move or replace another's entry. Everything under scripts_dir
-    must belong to owner, be a folder or a regular file, and be writable by
-    neither its group nor others. No symbolic link counts: one could point
-    anywhere."""
+def folders_above_problems(path, owners):
+    """Why someone other than owners could move or replace what path names,
+    or [] when nobody else can: every folder from / down to path's parent
+    must belong to one of owners and be writable by neither its group nor
+    others, unless it has the sticky bit (as /tmp has), which lets no one
+    move or replace another's entry."""
     problems = []
-    real = os.path.realpath(scripts_dir)
-    if real != scripts_dir:
-        problems.append(f"{scripts_dir} is reached through a symbolic link ({real})")
-        return problems
-    path = real
     while True:
         parent = os.path.dirname(path)
         if parent == path:
@@ -663,39 +674,66 @@ def checkout_problems(scripts_dir, owner):
         if not stat.S_ISDIR(st.st_mode):
             problems.append(f"{path} is not a folder")
             continue
-        if st.st_uid not in (0, owner):
+        if st.st_uid not in owners:
             problems.append(f"{path} belongs to uid {st.st_uid}")
         if mode & 0o022 and not mode & stat.S_ISVTX:
             problems.append(f"{path} is writable by its group or others ({mode:04o}) without the sticky bit")
+    return problems
+
+
+def tree_problems(top, owners):
+    """Why someone other than owners could change top or anything under it,
+    or [] when nobody else can: top and everything under it must belong to
+    one of owners, be a folder or a regular file, and be writable by neither
+    its group nor others. No symbolic link counts: one could point
+    anywhere."""
+    problems = []
 
     def entry(path):
         try:
             st = os.lstat(path)
         except OSError as exc:
             problems.append(f"{path}: {exc.strerror}")
-            return
+            return False
         mode = stat.S_IMODE(st.st_mode)
         if stat.S_ISLNK(st.st_mode):
             problems.append(f"{path} is a symbolic link")
-            return
+            return False
         if not (stat.S_ISDIR(st.st_mode) or stat.S_ISREG(st.st_mode)):
             problems.append(f"{path} is neither a folder nor a regular file")
-            return
-        if st.st_uid != owner:
+            return False
+        if st.st_uid not in owners:
             problems.append(f"{path} belongs to uid {st.st_uid}")
         if mode & 0o022:
             problems.append(f"{path} is writable by its group or others ({mode:04o})")
+        return stat.S_ISDIR(st.st_mode)
 
-    entry(real)
+    if not entry(top):
+        return problems
 
     def walk_error(exc):
         problems.append(f"{exc.filename}: {exc.strerror}")
 
-    for top, dirs, files in os.walk(real, onerror=walk_error):
+    for path, dirs, files in os.walk(top, onerror=walk_error):
         dirs.sort()
         for name in sorted(dirs) + sorted(files):
-            entry(os.path.join(top, name))
+            entry(os.path.join(path, name))
     return problems
+
+
+def checkout_problems(scripts_dir, owner):
+    """Why someone other than owner could change the code this upgrade runs
+    as root, or [] when nobody else can. Every folder from / down to
+    scripts_dir must belong to root or owner and be writable by neither its
+    group nor others, unless it has the sticky bit (as /tmp has), which lets
+    no one move or replace another's entry. Everything under scripts_dir
+    must belong to owner, be a folder or a regular file, and be writable by
+    neither its group nor others. No symbolic link counts: one could point
+    anywhere."""
+    real = os.path.realpath(scripts_dir)
+    if real != scripts_dir:
+        return [f"{scripts_dir} is reached through a symbolic link ({real})"]
+    return folders_above_problems(real, (0, owner)) + tree_problems(real, (owner,))
 
 
 def require_root_only_checkout():
@@ -1004,28 +1042,129 @@ def go_build_info(blob):
     return version, [line[len("build\t"):] for line in lines if line.startswith("build\t")]
 
 
-def go_module_problems(lines):
+def go_mod_requires(text):
+    """(module path, {path: version}) of a go.mod: its module line and every
+    require. A go.mod that replaces a module, whose code go.sum then does
+    not pin, is refused, as is any line this does not read."""
+    module, requires, block = None, {}, None
+    for number, raw in enumerate(text.splitlines(), 1):
+        fields = raw.split("//", 1)[0].split()
+        if not fields:
+            continue
+        if block is not None:
+            if fields == [")"]:
+                block = None
+                continue
+            verb, args = block, fields
+        elif fields[1:] == ["("]:
+            block = fields[0]
+            continue
+        else:
+            verb, args = fields[0], fields[1:]
+        if verb == "replace":
+            raise Refusal("the commit's go.mod replaces a module, and build and check take only modules that go.sum pins")
+        if verb == "module" and len(args) == 1 and module is None:
+            module = args[0]
+        elif verb == "require" and len(args) == 2 and args[0] not in requires:
+            requires[args[0]] = args[1]
+        elif verb not in ("go", "toolchain", "godebug", "exclude", "retract", "tool", "ignore"):
+            raise Refusal(f"line {number} of the commit's go.mod is not read here: {raw.strip()!r}")
+    if module is None:
+        raise Refusal("the commit's go.mod names no module")
+    return module, requires
+
+
+def go_sum_hashes(text):
+    """{(path, version): {hash}} of a go.sum's h1 hashes of module code (not
+    the /go.mod lines). h1 is the only kind Go writes; a hash of any other
+    kind pins nothing here until someone has looked at what it means."""
+    hashes = {}
+    for number, raw in enumerate(text.splitlines(), 1):
+        fields = raw.split()
+        if not fields:
+            continue
+        if len(fields) != 3:
+            raise Refusal(f"line {number} of the commit's go.sum is not read here: {raw.strip()!r}")
+        path, version, hash_ = fields
+        if not version.endswith("/go.mod") and hash_.startswith("h1:"):
+            hashes.setdefault((path, version), set()).add(hash_)
+    return hashes
+
+
+def commit_module_pins(repo, commit, owners, env):
+    """What a build of commit may hold, read from the commit's own go.mod
+    and go.sum in the git objects of the clone repo (red-team audit 33,
+    A33-2): the module's path, the version go.mod requires of each
+    dependency, and the hashes go.sum holds. Only owners may be able to
+    change those objects: the clone's .git must be a folder that belongs to
+    them, with nothing that makes git read objects from elsewhere, and git
+    runs with env (GIT_ENV), so it reads only that repository's config."""
+    git_dir = os.path.join(repo, ".git")
+    problems = folders_above_problems(git_dir, (0,) + tuple(owners)) + tree_problems(git_dir, owners)
+    for rel in ("commondir", "objects/info/alternates", "objects/info/http-alternates"):
+        if os.path.lexists(os.path.join(git_dir, rel)):
+            problems.append(f"{git_dir}/{rel} exists, which makes git read objects from elsewhere")
+    if problems:
+        shown = "; ".join(problems[:20])
+        more = f" (and {len(problems) - 20} more)" if len(problems) > 20 else ""
+        raise Refusal(f"the commit's go.mod and go.sum are not in git objects that only "
+                      f"{' and '.join(f'uid {uid}' for uid in owners)} can change: {shown}{more}")
+    git = ["git", "--git-dir=" + git_dir]
+    found = run(git + ["rev-parse", "--verify", "--quiet", commit + "^{commit}"], env=env)
+    if found.returncode != 0 or found.stdout.strip() != commit:
+        raise Refusal(f"the clone {repo} does not hold the commit {commit}")
+    files = {name: run(git + ["cat-file", "blob", f"{commit}:{name}"], env=env, check=True).stdout
+             for name in ("go.mod", "go.sum")}
+    module, requires = go_mod_requires(files["go.mod"])
+    return {"module": module, "requires": requires, "sums": go_sum_hashes(files["go.sum"])}
+
+
+def go_module_problems(lines, pins, package):
     """Why the module lines of a binary's build info (path, mod, dep and =>
-    lines, as `go version -m` shows them without its leading tab) show code
-    other than what the commit's go.mod and go.sum pin, or [] when they do
-    not. A replaced module leaves a "=>" line (a replace in a go.work or
-    go.mod) and a dep line without its go.sum hash; a module that a go.work
-    put in place of a dependency leaves a dep line with the version
-    "(devel)" and no hash; a -mod=vendor build leaves dep lines with the
-    version and an empty hash. This go.mod has no replace and build ignores
-    any go.work and vendor folder, so a clean build leaves none of them;
-    red-team audit 32, A32-1."""
+    lines, as `go version -m` shows them without its leading tab) show a
+    program other than package, or code other than what the commit's go.mod
+    and go.sum pin (pins, from commit_module_pins), or [] when they do not.
+    Each dependency must have the version go.mod requires and a hash go.sum
+    holds for that version: a module a go.work raised to another version, a
+    module a go.work put in place of a dependency (the version "(devel)"),
+    vendored code (an empty hash) and any hash of another kind are refused.
+    A replaced module leaves a "=>" line, and the commit's go.mod replaces
+    nothing (commit_module_pins refuses one that does), so any is refused.
+    Red-team audits 32 (A32-1) and 33 (A33-2)."""
     problems = []
+    seen = set()
     for line in lines:
         fields = line.split("\t")
-        if fields[0] == "=>":
-            problems.append("a replaced module (" + " ".join(f for f in fields[1:] if f) + ")")
-        elif fields[0] == "dep" and (len(fields) < 4 or not fields[3].startswith("h1:")):
-            problems.append("a dependency without its go.sum hash (" + " ".join(f for f in fields[1:] if f) + ")")
+        kind, shown = fields[0], " ".join(f for f in fields[1:] if f)
+        seen.add(kind)
+        if kind in ("go", "build"):
+            continue
+        if kind == "path":
+            if fields[1:] != [package]:
+                problems.append(f"the program {shown}, not {package}")
+        elif kind == "mod":
+            if len(fields) < 2 or fields[1] != pins["module"]:
+                problems.append(f"the main module {shown}, not {pins['module']}")
+        elif kind == "dep":
+            path, version, hash_ = (fields[1:] + ["", "", ""])[:3]
+            wanted = pins["requires"].get(path)
+            if wanted is None:
+                problems.append(f"the dependency {shown}, which the commit's go.mod does not require")
+            elif version != wanted:
+                problems.append(f"the dependency {shown}, where the commit's go.mod requires {wanted}")
+            elif len(fields) != 4 or hash_ not in pins["sums"].get((path, version), ()):
+                problems.append(f"the dependency {shown} without a hash the commit's go.sum holds for it")
+        elif kind == "=>":
+            problems.append(f"a replaced module ({shown})")
+        else:
+            problems.append(f"a module line Go does not write ({line})")
+    for kind, what in (("path", "no program path"), ("mod", "no main module")):
+        if kind not in seen:
+            problems.append(what)
     return problems
 
 
-def check_build_stamp(name, blob, commit):
+def check_build_stamp(name, blob, commit, pins):
     """Refuse a binary whose own build info does not name a clean build of
     commit with the supported Go, from the modules the commit pins."""
     version, lines = go_modinfo(blob)
@@ -1034,16 +1173,25 @@ def check_build_stamp(name, blob, commit):
         raise Refusal(f"the payload file {name} is not, by its own Go build info, a clean {SUPPORTED_GO_VERSION} build of "
                       f"{commit}: Go {version!r}, vcs.revision {settings.get('vcs.revision')!r}, "
                       f"vcs.modified {settings.get('vcs.modified')!r}")
-    check_build_modules(name, lines, commit)
+    check_build_modules(name, lines, commit, pins)
 
 
-def check_build_modules(name, lines, commit):
-    """Refuse a binary whose build info shows a module other than what the
-    commit's go.mod and go.sum pin."""
-    problems = go_module_problems(lines)
+def check_build_modules(name, lines, commit, pins):
+    """Refuse a binary whose build info shows a program other than its
+    payload file's, or a module other than what the commit's go.mod and
+    go.sum pin."""
+    problems = go_module_problems(lines, pins, pins["module"] + "/" + PAYLOAD_PACKAGES[name])
     if problems:
         raise Refusal(f"the payload file {name} was not built from the modules {commit} pins, by its own Go build info: "
                       + "; ".join(problems))
+
+
+def module_repo():
+    """The clone that holds the commit's go.mod and go.sum: this checkout.
+    Under a test --host-root, ES_UPGRADE_TEST_MODULE_REPO may name another."""
+    if test_mode() and os.environ.get("ES_UPGRADE_TEST_MODULE_REPO"):
+        return os.environ["ES_UPGRADE_TEST_MODULE_REPO"]
+    return os.path.dirname(SCRIPTS_DIR)
 
 
 def owned_by_root(st):
@@ -1058,8 +1206,9 @@ def load_payload(payload_dir, commit):
     or others, so no other account can change them after the check. Every
     file's SHA-256 must match provenance.json, which must name the commit,
     and each installed binary must name it in its own Go build info and
-    show there no module other than what the commit's go.mod and go.sum
-    pin."""
+    show there its own program and no module other than what the commit's
+    go.mod and go.sum pin, as this checkout's git objects hold them, which
+    only root can change."""
     if not valid_commit(commit):
         raise Refusal("the commit must be a full lower-case 40-character SHA-1")
     st = os.lstat(payload_dir)
@@ -1073,6 +1222,7 @@ def load_payload(payload_dir, commit):
         raise Refusal(f"the payload was built from {prov.get('commit')!r}, not the named commit {commit!r}")
     if prov.get("go_version") != SUPPORTED_GO_VERSION or prov.get("vcs_modified") is not False:
         raise Refusal("the payload was not built with the supported Go toolchain from a clean checkout")
+    pins = commit_module_pins(module_repo(), commit, (root_ids()[0],), GIT_ENV)
     for name in PAYLOAD_FILES:
         blob, fst = read_regular_file(os.path.join(payload_dir, name))
         if fst.st_mode & 0o022 or not owned_by_root(fst):
@@ -1080,7 +1230,7 @@ def load_payload(payload_dir, commit):
         if sha256_bytes(blob) != prov.get("sha256", {}).get(name):
             raise Refusal(f"the payload file {name} does not match its provenance")
         if name in STAMPED_PAYLOAD_FILES:
-            check_build_stamp(name, blob, commit)
+            check_build_stamp(name, blob, commit, pins)
     return prov
 
 
@@ -1795,55 +1945,146 @@ def cmd_rollback(args):
         raise Refusal("ES and AGS do not all answer 200 after the rollback")
 
 
+def changeable_refusal(owners, what, problems):
+    shown = "; ".join(problems[:20])
+    more = f" (and {len(problems) - 20} more)" if len(problems) > 20 else ""
+    return Refusal(f"someone other than root and uid {owners[1]} can change {what}: {shown}{more}; build takes only "
+                   f"what root and uid {owners[1]} alone can change (chmod -R go-w, in folders that only they can change)")
+
+
+def remove_build_folder(top):
+    """Remove a private folder build made, with everything in it. Go makes
+    the folders of a module cache read-only."""
+    for path, dirs, _ in os.walk(top):
+        for name in dirs:
+            sub = os.path.join(path, name)
+            if stat.S_ISDIR(os.lstat(sub).st_mode):
+                os.chmod(sub, 0o700)
+    shutil.rmtree(top)
+
+
 def cmd_build(args):
-    """Build the payload from this checkout (unprivileged)."""
-    repo = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    out_dir = os.path.abspath(args.out)
+    """Build the payload from this checkout (unprivileged).
+
+    The build takes nothing that an account other than root and the user
+    running it can change (red-team audits 32 and 33, A32-1 and A33-1):
+    the clone, .git included; the Go toolchain; the folders the payload
+    goes in; and the module cache, when --module-cache names one. Go and
+    git get no setting from the environment but proxy and CA variables,
+    which cannot change what is compiled: a fixed PATH; GOWORK=off, since
+    Go reads a go.work from any folder above the module; no go env file;
+    a private HOME, so git reads no user config and Go's caches are not
+    under the user's home or an inherited XDG_CACHE_HOME; a fresh build
+    cache and temporary folder, removed afterwards; and a fresh module
+    cache unless --module-cache names a checked one, which `go mod verify`
+    checks first. Go checks every module against the commit's go.sum, and
+    each binary's build info is compared with the commit's go.mod and
+    go.sum."""
+    os.umask(0o022)
+    owners = (0, os.geteuid())
+    repo = os.path.realpath(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+    out_dir = os.path.realpath(args.out)
     if out_dir == repo or out_dir.startswith(repo + os.sep):
         raise Refusal("the payload directory must be outside the checkout, which must stay clean")
     if not valid_commit(args.commit):
         raise Refusal("the commit must be a full lower-case 40-character SHA-1")
-    go = args.go
-    # Only these Go settings apply (red-team audit 32, A32-1). Go reads a
-    # go.work from any folder above the module unless GOWORK=off, and a
-    # go.work can put any folder in place of a dependency, unchecked by
-    # go.sum; the go env file (GOENV) and other GO* variables can change
-    # where modules, the standard library and cached builds come from. So
-    # no GO* variable is taken from the environment, the go env file is not
-    # read, and the module and build caches are in their default places
-    # under the operator's home.
-    env = {key: value for key, value in os.environ.items() if not key.startswith("GO")}
-    env.update(GOWORK="off", GOENV="off", GOFLAGS="-mod=readonly", GOTOOLCHAIN="local",
-               CGO_ENABLED="0", GOOS="linux", GOARCH="amd64")
-    version = run([go, "env", "GOVERSION"], env=env, check=True).stdout.strip()
-    if version != SUPPORTED_GO_VERSION:
-        raise Refusal(f"the build needs {SUPPORTED_GO_VERSION}, found {version}")
-    head = run(["git", "-C", repo, "rev-parse", "HEAD"], check=True).stdout.strip()
-    if head != args.commit:
-        raise Refusal(f"the checkout is at {head}, not {args.commit}")
-    if run(["git", "-C", repo, "status", "--porcelain"], check=True).stdout.strip():
-        raise Refusal("the checkout has uncommitted or untracked files")
-    os.mkdir(out_dir, 0o755)
-    sums = {}
-    for name, pkg in (("es", "./cmd/es"), ("es-runtime-support", "./cmd/es-runtime-support"),
-                      ("esconfigcheck", "./scripts/internal/esconfigcheck")):
-        out = os.path.join(out_dir, name)
-        proc = run([go, "build", "-buildvcs=true", "-o", out, pkg], cwd=repo, env=env, timeout=900)
-        if proc.returncode != 0:
-            raise Refusal(f"go build {pkg} failed: {proc.stderr.strip()[:400]}")
-        info = run([go, "version", "-m", out], env=env, check=True).stdout
-        if f"vcs.revision={args.commit}" not in info or "vcs.modified=false" not in info:
-            raise Refusal(f"{name} does not carry the commit as a clean build")
-        problems = go_module_problems([line[1:] for line in info.splitlines() if line.startswith("\t")])
+    go = os.path.realpath(args.go)
+    module_cache = os.path.realpath(args.module_cache) if args.module_cache else None
+    clone_problems = folders_above_problems(repo, owners) + tree_problems(repo, owners)
+    git_dir = os.path.join(repo, ".git")
+    if not os.path.lexists(git_dir) or not stat.S_ISDIR(os.lstat(git_dir).st_mode):
+        # Without its own .git, git and Go would take the repository of a
+        # folder above the clone, with config nothing here checked.
+        clone_problems.append(f"{git_dir} is not a folder")
+    for what, problems in (
+            ("the clone build compiles", clone_problems),
+            ("the go command build runs", folders_above_problems(go, owners) + tree_problems(go, owners)),
+            ("the folder the payload goes in", folders_above_problems(out_dir, owners))):
         if problems:
-            raise Refusal(f"{name} was not built from the modules the commit pins: " + "; ".join(problems))
-        blob, _ = read_regular_file(out)
-        sums[name] = sha256_bytes(blob)
+            raise changeable_refusal(owners, what, problems)
+    if module_cache is not None:
+        if module_cache == repo or module_cache.startswith(repo + os.sep):
+            raise Refusal("the module cache must be outside the checkout, which must stay clean")
+        problems = folders_above_problems(module_cache, owners)
+        if not problems and not os.path.lexists(module_cache):
+            os.mkdir(module_cache, 0o700)
+        problems = problems or tree_problems(module_cache, owners)
+        if problems:
+            raise changeable_refusal(owners, "the module cache", problems)
+
+    work = tempfile.mkdtemp(prefix="es-upgrade-build-", dir=os.path.dirname(out_dir))
+    try:
+        sums, version = build_payload(args, repo, out_dir, go, module_cache, owners, work)
+    except BaseException:
+        try:
+            remove_build_folder(work)
+        except OSError:
+            pass
+        raise
+    try:
+        remove_build_folder(work)
+    except OSError as exc:
+        raise Refusal(f"the build's private folder {work} could not be removed ({exc}); no provenance was written")
     prov = {"commit": args.commit, "go_version": version, "vcs_modified": False, "sha256": sums,
             "built_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
     with open(os.path.join(out_dir, "provenance.json"), "x", encoding="utf-8") as handle:
         handle.write(json.dumps(prov, indent=2, sort_keys=True) + "\n")
     say(json.dumps(prov, indent=2, sort_keys=True))
+
+
+def build_payload(args, repo, out_dir, go, module_cache, owners, work):
+    folders = {name: os.path.join(work, name) for name in ("home", "tmp", "go-build", "gopath", "go-mod")}
+    for path in folders.values():
+        os.mkdir(path, 0o700)
+    env = {key: os.environ[key] for key in BUILD_PASSED_VARIABLES if key in os.environ}
+    env.update(GIT_ENV)
+    env.update(HOME=folders["home"], TMPDIR=folders["tmp"], GOTMPDIR=folders["tmp"], GOCACHE=folders["go-build"],
+               GOPATH=folders["gopath"], GOMODCACHE=module_cache or folders["go-mod"],
+               GOWORK="off", GOENV="off", GOFLAGS="-mod=readonly", GOTOOLCHAIN="local",
+               CGO_ENABLED="0", GOOS="linux", GOARCH="amd64")
+    reported = run([go, "env", "GOVERSION", "GOROOT"], env=env, check=True).stdout.splitlines()
+    version, goroot = (reported + ["", ""])[:2]
+    if version != SUPPORTED_GO_VERSION:
+        raise Refusal(f"the build needs {SUPPORTED_GO_VERSION}, found {version}")
+    goroot = os.path.realpath(goroot)
+    problems = folders_above_problems(goroot, owners) + tree_problems(goroot, owners)
+    if problems:
+        raise changeable_refusal(owners, f"the Go toolchain {goroot}", problems)
+    head = run(["git", "-C", repo, "rev-parse", "HEAD"], env=env, check=True).stdout.strip()
+    if head != args.commit:
+        raise Refusal(f"the checkout is at {head}, not {args.commit}")
+    status = run(["git", "-C", repo, "status", "--porcelain", "--ignored", "--untracked-files=all"], env=env, check=True)
+    if status.stdout.strip():
+        raise Refusal("the checkout has uncommitted, untracked or ignored files")
+    pins = commit_module_pins(repo, args.commit, owners, env)
+    if module_cache is not None:
+        verified = run([go, "mod", "verify"], cwd=repo, env=env, timeout=900)
+        if verified.returncode != 0:
+            raise Refusal(f"go mod verify refused the module cache {module_cache}: "
+                          f"{(verified.stderr or verified.stdout).strip()[:400]}")
+    os.mkdir(out_dir, 0o755)
+    sums = {}
+    for name in PAYLOAD_FILES:
+        out = os.path.join(out_dir, name)
+        package = PAYLOAD_PACKAGES[name]
+        # -trimpath keeps the clone's, the toolchain's and the module cache's
+        # folders out of the binary, so two builds of one commit give the
+        # same bytes wherever they run, and anyone can check a payload by
+        # building it again.
+        proc = run([go, "build", "-trimpath", "-buildvcs=true", "-o", out, "./" + package],
+                   cwd=repo, env=env, timeout=900)
+        if proc.returncode != 0:
+            raise Refusal(f"go build ./{package} failed: {proc.stderr.strip()[:400]}")
+        info = run([go, "version", "-m", out], env=env, check=True).stdout
+        if f"vcs.revision={args.commit}" not in info or "vcs.modified=false" not in info:
+            raise Refusal(f"{name} does not carry the commit as a clean build")
+        problems = go_module_problems([line[1:] for line in info.splitlines() if line.startswith("\t")],
+                                      pins, pins["module"] + "/" + package)
+        if problems:
+            raise Refusal(f"{name} was not built from the modules the commit pins: " + "; ".join(problems))
+        blob, _ = read_regular_file(out)
+        sums[name] = sha256_bytes(blob)
+    return sums, version
 
 
 def main(argv):
@@ -1888,6 +2129,7 @@ def main(argv):
     bd.add_argument("--out", required=True)
     bd.add_argument("--commit", required=True)
     bd.add_argument("--go", default="/usr/local/go/bin/go")
+    bd.add_argument("--module-cache")
     bd.set_defaults(func=cmd_build)
 
     args = parser.parse_args(argv)
