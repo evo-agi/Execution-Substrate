@@ -1040,6 +1040,8 @@ cases=(
     ("certificate_refusal_for_a_key",False,"key",1,b"",refusal("certificate")),
     ("other_first_line",False,"certificate",1,b"",refusal("certificate",line=b"unable to load key\n")),
     ("missing_first_line",False,"certificate",1,b"",refusal("certificate",line=b"")),
+    ("missing_second_line",False,"certificate",1,b"",b"unable to load certificate\n"),
+    ("no_stderr",False,"certificate",1,b"",b""),
     ("certificate_first_line_for_a_key",False,"key",1,b"",refusal("key",line=b"unable to load certificate\n")),
     ("key_object_for_a_certificate",False,"certificate",1,b"",refusal("certificate",expecting=b":Expecting: ANY PRIVATE KEY\n")),
     ("certificate_object_for_a_key",False,"key",1,b"",refusal("key",expecting=b":Expecting: TRUSTED CERTIFICATE\n")),
@@ -1086,7 +1088,7 @@ print(json.dumps(results,sort_keys=True))
 	if err := json.Unmarshal(output, &results); err != nil {
 		t.Fatalf("LibreSSL location result: %v\n%s", err, output)
 	}
-	if len(results) != 48 {
+	if len(results) != 50 {
 		t.Fatalf("LibreSSL location checks missing: %v", results)
 	}
 	for name, ok := range results {
