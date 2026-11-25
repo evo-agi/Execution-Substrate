@@ -334,4 +334,3 @@ These seams are active today and intentionally not fixed.
 - Move ownership and non-ownership detail into `.docs/system_overview/boundaries.md`.
 - Do not describe a seam as settled unless `PLANS.md` says it is settled.
 - Document deliberate absences explicitly instead of implying them.
-- If code and tests disagree with this file, update this file to match reality.

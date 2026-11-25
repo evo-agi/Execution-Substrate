@@ -1,6 +1,6 @@
 # Remote Alpha Operator-Authorized Operator-Healthcheck TLS Replacement Design
 
-## 0. Purpose, Authority, And Status
+## 0. Purpose And Status
 
 This document defines a design-only, ES-owned path for a future
 operator-authorized replacement of Remote Alpha operator-healthcheck TLS public
@@ -51,10 +51,6 @@ effect. Profile replacement follows ES acceptance and runs only under that
 separate IM contract. Handoff failure leaves the ES incident
 `CONSUMED_OPEN_INCIDENT`; it neither revokes ES acceptance nor automatically
 rolls back the accepted host TLS set.
-
-Authority follows the repository hierarchy in `AGENTS.md`: `PLANS.md`,
-`.docs/system_overview/*`, route-specific `.docs/` design records, and then
-current code/tests for factual implemented behavior.
 
 ## 1. Current Source-Grounded Use
 

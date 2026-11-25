@@ -183,13 +183,13 @@ High-level layout:
 
 ## Where To Start
 
-This section is an index for contributors and coding agents. Use the README as a navigation entrypoint only. For architecture, contracts, boundaries, lifecycle semantics, and redesign intent, defer to the authoritative docs below. Where this README and those docs disagree, the docs win.
+This section is an index for contributors and coding agents. Use the README as a navigation entrypoint only. For architecture, contracts, boundaries, lifecycle semantics, and redesign intent, read the docs below.
 
 The repository is operating as a bounded platform with explicit reopened
 seams. The current system is coherent and implemented. Some
 architecture-defining seams remain intentionally reopened in `PLANS.md`, but
-rewrite-by-default is no longer the operating stance. Authoritative design
-intent lives in `PLANS.md` and `.docs/`, not in the README.
+rewrite-by-default is no longer the operating stance. Design intent lives in
+`PLANS.md` and `.docs/`.
 
 Read these in order:
 
@@ -206,8 +206,8 @@ Read these in order:
 
 Supporting references:
 
-- `.docs/standing_rules/` for the standing rules that moved out of `PLANS.md` and keep its authority: [the Workstream C admission and custody rules](.docs/standing_rules/execution_admission_and_custody.md) and [the Remote Alpha operator route rules P0i to P0v](.docs/standing_rules/remote_alpha_operator_routes.md)
-- [.docs/history/plans-record.md](.docs/history/plans-record.md) for the closed dated record that moved out of `PLANS.md` on 2026-11-24 (status entries and selection history); it is historical evidence with no current authority, so read it only when a change touches a surface it names
+- `.docs/standing_rules/` for the standing rules that moved out of `PLANS.md`: [the Workstream C admission and custody rules](.docs/standing_rules/execution_admission_and_custody.md) and [the Remote Alpha operator route rules P0i to P0v](.docs/standing_rules/remote_alpha_operator_routes.md)
+- [.docs/history/plans-record.md](.docs/history/plans-record.md) for the closed dated record that moved out of `PLANS.md` on 2026-11-24 (status entries and selection history); it is historical evidence, so read it only when a change touches a surface it names
 - [.docs/system_overview/configuration.md](.docs/system_overview/configuration.md) for current config requirements
 - [.docs/system_overview/observability.md](.docs/system_overview/observability.md) for observability rules
 - [.docs/system_overview/capability_probing.md](.docs/system_overview/capability_probing.md) for capability-sensitive validation rules

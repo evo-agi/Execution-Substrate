@@ -141,11 +141,30 @@ func TestPlansOpensWithTheCurrentPlan(t *testing.T) {
 	}
 	intro := plans[:strings.Index(plans, plansOpeningSections[0])]
 	assertContainsAll(t, "PLANS.md introduction", compactText(intro),
+		"This file holds the current plan, its intent and order:",
+		"Put a standing rule in the file that owns it, not here.",
+		"[`execution_admission_and_custody.md`]("+standingAdmissionRulesPath+") holds the Workstream C admission and custody rules",
+		"[`remote_alpha_operator_routes.md`]("+standingRouteRulesPath+") holds the Remote Alpha operator route rules P0i to P0v",
 		"Do not add dated status entries",
 		"Cite this file by section heading, never by line number",
 		"("+plansRecordPath+")",
-		"The record is closed and is historical evidence only: it holds no current authority, and where it differs from this file or from an owning `.docs/` contract, they win.",
+		"The record is closed and is historical evidence only. Read it when a change touches a surface one of its entries names.",
+		"Two standing-rule sections are still here and are to move the same way: \"Current paired-root custody and acceptance scope\" and \"Remote Alpha access contract v1 — Tranche A\".",
 	)
+	// The opening names the standing-rule sections still in this file. When
+	// one moves out, this fails until the opening says so.
+	headings := map[string]bool{}
+	for _, heading := range markdownHeadingTitles(plans) {
+		headings[heading] = true
+	}
+	for _, heading := range []string{
+		"### Current paired-root custody and acceptance scope",
+		"### Remote Alpha access contract v1 — Tranche A",
+	} {
+		if !headings[heading] {
+			t.Errorf("PLANS.md no longer has %q; update the opening, which names it as a standing-rule section still here", heading)
+		}
+	}
 }
 
 // TestPlansHoldsNoDatedStatusEntries keeps the status log from coming back:
@@ -243,14 +262,15 @@ func TestPlansRecordIsNamedWhereAgentsStart(t *testing.T) {
 	)
 	assertContainsAll(t, "README plan record reference", mustRead(t, "README.md"),
 		"[.docs/history/plans-record.md](.docs/history/plans-record.md)",
-		"historical evidence with no current authority",
+		"it is historical evidence, so read it only when a change touches a surface it names",
 	)
 }
 
 // TestStandingRulesKeepPlansAuthority pins where the standing rules that
 // moved out of PLANS.md live, and that they keep its rank: AGENTS.md says so,
-// each file says so in its header, PLANS.md and the owning contract point at
-// it, and no section is held in two places.
+// and only AGENTS.md (TestAuthorityOrderIsStatedOnlyInAgents keeps the rank
+// out of every other document); PLANS.md and the owning contract point at
+// each file, and no section is held in two places.
 func TestStandingRulesKeepPlansAuthority(t *testing.T) {
 	assertContainsAll(t, "AGENTS.md standing rules", compactText(mustRead(t, "AGENTS.md")),
 		"The files in `"+standingRulesDir+"` hold standing rules that moved unreworded out of `PLANS.md`: `execution_admission_and_custody.md` holds the Workstream C admission and custody rules, and `remote_alpha_operator_routes.md` holds the Remote Alpha operator route rules P0i to P0v. They keep `PLANS.md`'s authority, second in the list above: only their location changed, and the rules above apply to them as they apply to `PLANS.md`.",
@@ -258,7 +278,7 @@ func TestStandingRulesKeepPlansAuthority(t *testing.T) {
 		"update the `"+standingRulesDir+"` file in place when a standing rule it holds changed, also without a dated status entry",
 	)
 	if lines := authorityHierarchyLines(t); lines[1] != "2. `PLANS.md` for allowed redesign work, active workstreams, priorities, and reopened seams" {
-		t.Fatalf("AGENTS.md authority line 2 is %q; the standing rules share that rank, so it must stay", lines[1])
+		t.Fatalf("the second entry of the AGENTS.md authority order is %q; the standing rules share that rank, so it must stay", lines[1])
 	}
 	readme := mustRead(t, "README.md")
 
@@ -280,16 +300,26 @@ func TestStandingRulesKeepPlansAuthority(t *testing.T) {
 		plansHeadings[heading] = true
 	}
 	for _, rule := range []struct {
-		path, owner, pointer string
-		sections             int
+		path, owner, pointer, ownerPointer, ownerNamed string
+		sections                                       int
 	}{
-		{standingAdmissionRulesPath, ".docs/execution_lifecycle/contracts.md", "### Workstream C admission and custody rules", 1},
-		{standingRouteRulesPath, ".docs/system_overview/remote_supported_host_alpha.md", "### Remote Alpha operator facade route rules (P0i to P0v)", 3},
+		{
+			standingAdmissionRulesPath, ".docs/execution_lifecycle/contracts.md", "### Workstream C admission and custody rules",
+			"The standing Workstream C admission and custody rules are in `" + standingAdmissionRulesPath + "`. This file holds the detailed lifecycle contract for them.",
+			"The detailed lifecycle contract for these rules is `.docs/execution_lifecycle/contracts.md`.",
+			1,
+		},
+		{
+			standingRouteRulesPath, ".docs/system_overview/remote_supported_host_alpha.md", "### Remote Alpha operator facade route rules (P0i to P0v)",
+			"The standing route rules for P0i to P0v are in `" + standingRouteRulesPath + "`. The sections below hold the detailed route contracts.",
+			"The detailed route contracts are in `.docs/system_overview/remote_supported_host_alpha.md`.",
+			3,
+		},
 	} {
 		text := mustRead(t, rule.path)
 		assertContainsAll(t, rule.path+" header", compactText(text),
 			"They moved here unreworded from the `PLANS.md` section",
-			"They keep the authority they had in `PLANS.md`: `AGENTS.md` section 3 ranks the files in `"+standingRulesDir+"` with `PLANS.md`, second, and only their location changed.",
+			rule.ownerNamed,
 			"Edit a rule here in place when it changes. Do not add dated status entries",
 			"Cite this file by section heading, never by line number.",
 		)
@@ -303,7 +333,6 @@ func TestStandingRulesKeepPlansAuthority(t *testing.T) {
 		}
 		assertContainsAll(t, "PLANS.md pointer to "+rule.path, compactText(pointer),
 			"["+"`"+rule.path+"`"+"]("+rule.path+")",
-			"They keep this file's authority (`AGENTS.md` section 3).",
 		)
 
 		sections := 0
@@ -321,7 +350,7 @@ func TestStandingRulesKeepPlansAuthority(t *testing.T) {
 		}
 
 		assertContainsAll(t, rule.owner+" pointer to "+rule.path, compactText(mustRead(t, rule.owner)),
-			"`"+rule.path+"`; `AGENTS.md` section 3 ranks that file with `PLANS.md`.",
+			rule.ownerPointer,
 		)
 		if !strings.Contains(readme, "]("+rule.path+")") {
 			t.Errorf("README.md does not link %s", rule.path)
@@ -411,7 +440,7 @@ func TestStandingRulesPinEachOtherwiseUncheckedRule(t *testing.T) {
 }
 
 var (
-	plansCitedFile          = `(?:PLANS\.md|standing_rules/[A-Za-z0-9_]+\.md)`
+	plansCitedFile          = `(?:PLANS\.md|AGENTS\.md|standing_rules/[A-Za-z0-9_]+\.md)`
 	plansCitedFileName      = regexp.MustCompile(plansCitedFile)
 	plansInlineLineCitation = regexp.MustCompile(plansCitedFile + "`?" + `(?::|#L)\d`)
 	plansWordLineCitation   = regexp.MustCompile(`(?i)` + plansCitedFile + `[^|\n]{0,40}?\blines?\s+\d`)
@@ -419,8 +448,8 @@ var (
 	lineRange               = regexp.MustCompile(`\d\s*[-–]\s*L?\d`)
 )
 
-// plansLineCitations returns the lines of text that cite PLANS.md or a
-// standing rule file by line number: the file name followed by a colon and a
+// plansLineCitations returns the lines of text that cite PLANS.md, AGENTS.md
+// or a standing rule file by line number: the file name followed by a colon and a
 // number, by "#L" and a number, or (within 40 characters) by "line" or
 // "lines" and a number; or a table row whose cell names one of those files
 // and a later cell holds only line numbers and ranges, at least one of them
@@ -450,8 +479,8 @@ func plansLineCitations(text string) []int {
 }
 
 // TestPlansIsCitedBySectionNotLine refuses line-number citations of
-// PLANS.md and of the standing rule files in every text file of the
-// repository: their lines move with every edit.
+// PLANS.md, of AGENTS.md and of the standing rule files in every text file
+// of the repository: their lines move with every edit.
 func TestPlansIsCitedBySectionNotLine(t *testing.T) {
 	files := repositoryTextFiles(t)
 	names := make([]string, 0, len(files))
@@ -465,7 +494,7 @@ func TestPlansIsCitedBySectionNotLine(t *testing.T) {
 			markdown++
 		}
 		for _, line := range plansLineCitations(string(files[name])) {
-			t.Errorf("%s:%d cites PLANS.md or a standing rule file by line number; cite its section heading instead", name, line)
+			t.Errorf("%s:%d cites PLANS.md, AGENTS.md or a standing rule file by line number; cite its section heading instead", name, line)
 		}
 	}
 	if markdown < 40 {
@@ -537,9 +566,9 @@ func TestPlansGuardsFindEachKindOfProblem(t *testing.T) {
 		}
 	}
 
-	// The refused examples spell the file names through {P} and {S}, so that
-	// this file does not itself hold the citations the repository-wide check
-	// refuses.
+	// The refused examples spell the file names through {P}, {A} and {S}, so
+	// that this file does not itself hold the citations the repository-wide
+	// check refuses.
 	for _, example := range []string{
 		"See {P}:12.",
 		"See `{P}`:12-20.",
@@ -552,8 +581,12 @@ func TestPlansGuardsFindEachKindOfProblem(t *testing.T) {
 		"See `.docs/{S}`:12.",
 		"See .docs/{S} lines 12-20.",
 		"| `.docs/{S}` | 12-20 |",
+		"ES `{A}:153-159`",
+		"| `{A}` | `21-36`, `38-65` | Why |",
+		"See {A} lines 21-36.",
 	} {
 		text := strings.ReplaceAll(example, "{P}", "PLANS"+".md")
+		text = strings.ReplaceAll(text, "{A}", "AGENTS"+".md")
 		text = strings.ReplaceAll(text, "{S}", "standing_rules/remote_alpha_operator_routes"+".md")
 		if got := plansLineCitations(text); len(got) != 1 {
 			t.Errorf("plansLineCitations(%q) = %v, want one citation", text, got)
@@ -564,6 +597,8 @@ func TestPlansGuardsFindEachKindOfProblem(t *testing.T) {
 		"| `PLANS.md` | [§ Primary Program Orientation](PLANS.md#primary-program-orientation) | Why |",
 		"| A1 | claim | ES `PLANS.md` § Primary Program Orientation | 2026 |",
 		"update `PLANS.md` when redesign scope changes",
+		"| `AGENTS.md` | Sections 3 to 5, 7 and 10 to 12, cited by section because its lines move | Why |",
+		"ES `AGENTS.md` section 12; ES `.docs/system_overview/capability_probing.md:1-16`",
 	} {
 		if got := plansLineCitations(text); len(got) != 0 {
 			t.Errorf("plansLineCitations(%q) = %v, want none", text, got)

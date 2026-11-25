@@ -661,7 +661,6 @@ These seams are live today and intentionally not fixed.
 - Move concrete execution-path behavior into `.docs/execution_lifecycle/implementation.md`.
 - Do not present a bounded slice rule as a permanent invariant without support.
 - Do not omit active public surfaces from the design description just because they are bounded.
-- If code and tests disagree with this file, update this file to match reality.
 - Any lifecycle rule treated as fixed must also stay aligned with `PLANS.md`.
 
 ## 14. Current root-custody refinement
