@@ -169,6 +169,23 @@ def _set_child_subreaper() -> None:
         raise OSError(ctypes.get_errno(), "prctl")
 
 
+def _parent_death_request() -> Callable[[], int]:
+    """Resolve, in the collector, the fixed child's parent-death request.
+
+    The returned call asks the kernel to kill the calling process with
+    SIGKILL when the thread that started it ends, and returns what prctl
+    returned. It is resolved before the fork, so that the fixed child only
+    calls it.
+    """
+    prctl = ctypes.CDLL(None, use_errno=True).prctl
+
+    def request() -> int:
+        return prctl(ctypes.c_int(PR_SET_PDEATHSIG), ctypes.c_ulong(signal.SIGKILL), ctypes.c_ulong(0),
+                     ctypes.c_ulong(0), ctypes.c_ulong(0))
+
+    return request
+
+
 def _read_children_file(path: str) -> str:
     fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC)
     try:
@@ -188,10 +205,11 @@ def _read_children_file(path: str) -> str:
 
 
 class DescendantBackend:
-    """Fixed kernel operations of the descendant drain; tests inject a deterministic backend."""
+    """Fixed kernel operations of the descendant containment; tests inject a deterministic backend."""
 
     def __init__(self) -> None:
         self.set_child_subreaper = _set_child_subreaper
+        self.parent_death_request = _parent_death_request
         self.listdir = os.listdir
         self.read_children = _read_children_file
         self.waitid = os.waitid
@@ -493,14 +511,14 @@ def fixed_child_setup(parent: int) -> Callable[[], None]:
     ends, then proves that the collector was still its parent after that
     request, and then sets its process limit. An exec of a set-user-ID
     program such as sudo clears the parent-death signal. Any failure fails
-    the spawn.
+    the spawn. The request comes from the descendant backend and is resolved
+    here, in the collector, before the fork.
     """
-    prctl = ctypes.CDLL(None, use_errno=True).prctl
+    request_parent_death = DescendantBackend().parent_death_request()
     limit = FIXED_CHILD_PROCESS_LIMIT
 
     def setup() -> None:
-        if prctl(ctypes.c_int(PR_SET_PDEATHSIG), ctypes.c_ulong(signal.SIGKILL), ctypes.c_ulong(0),
-                 ctypes.c_ulong(0), ctypes.c_ulong(0)) != 0:
+        if request_parent_death() != 0:
             raise OSError(ctypes.get_errno(), "prctl")
         if os.getppid() != parent:
             raise OSError(errno.ESRCH, "collector ended")
@@ -516,6 +534,11 @@ def supervise_fixed_child(
     spawned: list[subprocess.Popen[bytes]],
 ) -> CommandResult:
     try:
+        setup = fixed_child_setup(os.getpid())
+    except Exception:
+        # The fixed child's setup could not be prepared; the command did not run.
+        return CommandResult(returncode=125, stdout=b"", stderr=b"", runtime_failed=True)
+    try:
         proc = subprocess.Popen(
             list(args),
             stdin=subprocess.PIPE if input_bytes is not None else subprocess.DEVNULL,
@@ -524,7 +547,7 @@ def supervise_fixed_child(
             shell=False,
             env=CHILD_ENV,
             start_new_session=True,
-            preexec_fn=fixed_child_setup(os.getpid()),
+            preexec_fn=setup,
         )
     except OSError:
         return CommandResult(returncode=127, stdout=b"", stderr=b"")
