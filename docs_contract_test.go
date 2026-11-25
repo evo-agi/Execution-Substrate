@@ -619,7 +619,7 @@ func TestTrancheAFilesystemAndResourceCustodyDocsContract(t *testing.T) {
 	writableState := compactText(mustRead(t, ".docs/system_overview/remote_alpha_beta_es_writable_state_ownership.md"))
 	normalization := compactText(mustRead(t, ".docs/system_overview/remote_alpha_beta_es_runtime_ownership_normalization.md"))
 	linuxQualification := compactDocSection(t, mustRead(t, ".docs/system_overview/supported_linux_host_qualification.md"), "### Tranche A filesystem-custody validation posture", "## 4. Explicit Disqualifiers")
-	runbook := compactText(mustRead(t, ".runbooks/system/v1_bringup.md"))
+	runbook := compactText(mustRead(t, ".runbooks/system/Governed Execution ES System Bring-Up.md"))
 
 	assertContainsAll(t, "Tranche A plan limits and retained custody", admissionRules,
 		"The selected Tranche A filesystem/resource-custody refinement",
@@ -13579,7 +13579,7 @@ func TestRetainedResultAuditF2CurrentClaimedRootRetentionDocs(t *testing.T) {
 		strings.Contains(recovery, "may clean staging because submitted was not confirmed") {
 		t.Fatal("recovery contract misstates current unkeyed retention")
 	}
-	runbook := section(".runbooks/system/v1_bringup.md", "| Failure class |", "The collector accepts")
+	runbook := section(".runbooks/system/Governed Execution ES System Bring-Up.md", "| Failure class |", "The collector accepts")
 	for _, required := range []string{"every successfully claimed", "terminal success", "descriptor close does not delete"} {
 		if !strings.Contains(runbook, required) {
 			t.Fatalf("bring-up runbook missing retention rule %q", required)
@@ -13590,7 +13590,7 @@ func TestRetainedResultAuditF2CurrentClaimedRootRetentionDocs(t *testing.T) {
 			t.Fatalf("bring-up runbook retains contradictory rule %q", forbidden)
 		}
 	}
-	loop := section(".runbooks/system/v1_bringup.md", "Because that helper waits for terminal status", "Keep host qualification and smoke proof distinct:")
+	loop := section(".runbooks/system/Governed Execution ES System Bring-Up.md", "Because that helper waits for terminal status", "Keep host qualification and smoke proof distinct:")
 	if !strings.Contains(loop, "retains every successfully claimed staging root") ||
 		strings.Contains(loop, "best-effort removes that staging root") {
 		t.Fatal("bring-up execution-loop passage misstates current retention")
@@ -13644,7 +13644,7 @@ func TestStartupProbeUseAgreementDocsContract(t *testing.T) {
 		{standingAdmissionRulesPath, []string{"`STARTUP-PROBE-USE-AGREEMENT-01` (bounded slice rule)", "staging refuses any mode outside it, so a new staging mode cannot skip the probe", "only the second rename proves the primitive", "ES also never changes the owning user of a directory it opened by name", "`staging probe directory does not belong to the execution roots' owning user`", "The probe retains 13 entries per start", "ES also refuses to start on a staging file system that cannot keep those modes although submissions without governed mounts would work there", "ES starts only where every submission it accepts can be staged", "a bindfs mount with `--create-for-user`, is refused although it started before this rule"}},
 		{".docs/system_overview/capability_probing.md", []string{"Staging refuses any mode the probe does not stage.", "a results file system whose rename accepts no flags refuses startup instead of losing every result", "it never changes an owning user", "prove the results no-replace rename both ways", "a staging file system that cannot keep them refuses startup even though submissions without governed mounts would work there"}},
 		{".docs/execution_lifecycle/implementation.md", []string{"(`probeStagedEntries`)", "(`probeRetainedResultFiles`)", "(`requireOpenedDirectoryOwnedByRootsUser`)", "onto an existing name, which must fail with `EEXIST`", "startup refuses a staging file system that cannot keep them even when no submission would use governed mounts"}},
-		{".runbooks/system/v1_bringup.md", []string{"the file system under the roots stores the modes ES gives files and directories, gives regular files the same device as directories, and supports the no-replace rename", "`no-replace rename to a free result name is unavailable`", "ES refuses such a file system even if your submissions never use governed mounts"}},
+		{".runbooks/system/Governed Execution ES System Bring-Up.md", []string{"the file system under the roots stores the modes ES gives files and directories, gives regular files the same device as directories, and supports the no-replace rename", "`no-replace rename to a free result name is unavailable`", "ES refuses such a file system even if your submissions never use governed mounts"}},
 		{"es/admission/staging_custody.go", []string{"so a mode cannot reach staging without reaching the startup probe", "is not proved by the startup probe", "gives somebody else's directory to the roots' owner."}},
 	}
 	for _, check := range checks {
@@ -13703,7 +13703,7 @@ func TestNestedStagingOwnerProbeDocsContract(t *testing.T) {
 		{standingAdmissionRulesPath, []string{"`NESTED-STAGING-OWNER-PROBE-01` (bounded slice rule)", "as staging does inside each claimed run staging root", "inherited a group it is not a member of from a setgid parent directory", "`nested staging directory ownership is unavailable`"}},
 		{".docs/system_overview/capability_probing.md", []string{"creates a `nested` directory inside its staging probe directory", "as staging does inside each claimed run staging root", "`nested staging directory ownership is unavailable`", "roots that inherit another group from a setgid parent directory refuse startup instead of failing at the first submission"}},
 		{".docs/execution_lifecycle/implementation.md", []string{"(`probeNestedStagingDirectory`)", "`stagingCustody.ensureDirectory` does the same inside each claimed run staging root", "`nested staging directory ownership is unavailable`", "the nested staging probe above refuses them"}},
-		{".runbooks/system/v1_bringup.md", []string{"or inherited from a setgid parent directory; the inherited case is reported as `nested staging directory ownership is unavailable`"}},
+		{".runbooks/system/Governed Execution ES System Bring-Up.md", []string{"or inherited from a setgid parent directory; the inherited case is reported as `nested staging directory ownership is unavailable`"}},
 		{"es/admission/execution_roots.go", []string{"roots.probeNestedStagingDirectory(stagingFD, owner)", `nestedStagingProbeName, stableStageDirMode, owner, "nested staging directory")`, `fmt.Errorf("%s ownership is unavailable: %w", label, err)`}},
 	}
 	for _, check := range checks {
@@ -13716,7 +13716,7 @@ func TestNestedStagingOwnerProbeDocsContract(t *testing.T) {
 	}
 	// The known gap these documents described before the probe existed must
 	// not come back.
-	for _, path := range []string{".runbooks/system/v1_bringup.md", ".docs/execution_lifecycle/implementation.md", ".docs/system_overview/capability_probing.md"} {
+	for _, path := range []string{".runbooks/system/Governed Execution ES System Bring-Up.md", ".docs/execution_lifecycle/implementation.md", ".docs/system_overview/capability_probing.md"} {
 		assertContainsNone(t, path+" stale setgid-inherited group gap", compactText(mustRead(t, path)),
 			"inherit another group from a setgid parent directory are not refused",
 			"do not yet catch roots that inherit another group",
@@ -15242,7 +15242,7 @@ func TestARSStorageCheckDocsContract(t *testing.T) {
 			"the check passes the first such signal on to its probe and waits until the probe has removed its files and ended, however often it is signalled again",
 			"can leave at most one batch of its empty `.ars-storage-check.*` files, those of 256 directories",
 		}},
-		{".runbooks/system/v1_bringup.md", []string{
+		{".runbooks/system/Governed Execution ES System Bring-Up.md", []string{
 			"`storage.root_dir` and `storage.index_file` are absolute paths written in normal form",
 			"so the refusal prints the form to write instead",
 			"finds its file again by listing each storage directory",

@@ -812,4 +812,4 @@ Route based on the first failed boundary. Do not over-classify a later symptom u
 7. If the workload starts, inspect logs for endpoint/Vault/trust-material failures before treating the issue as submit readiness.
 8. If retained result fetch fails, distinguish `result_unavailable` from `result_not_found`, then check whether the workload wrote result files under `/execution/run/result`.
 
-Use `.runbooks/system/v1_bringup.md` for the broader operator troubleshooting matrix and diagnostics collection. This runbook is the ES-side CP consumer overlay for that same accepted supported-local surface.
+Use `.runbooks/system/Governed Execution ES System Bring-Up.md` for the broader operator troubleshooting matrix and diagnostics collection. This runbook is the ES-side CP consumer overlay for that same accepted supported-local surface.

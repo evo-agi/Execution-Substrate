@@ -1087,7 +1087,7 @@ func TestHealthCheckScriptRejectsNomadNodeWithoutHostNetwork(t *testing.T) {
 
 func TestBringupRunbookTroubleshootingMatrixListsCurrentFailureCategories(t *testing.T) {
 	repoRoot := executionPlatformRepoRoot(t)
-	runbookPath := filepath.Join(repoRoot, ".runbooks", "system", "v1_bringup.md")
+	runbookPath := filepath.Join(repoRoot, ".runbooks", "system", "Governed Execution ES System Bring-Up.md")
 
 	body, err := os.ReadFile(runbookPath)
 	if err != nil {
@@ -1096,7 +1096,8 @@ func TestBringupRunbookTroubleshootingMatrixListsCurrentFailureCategories(t *tes
 
 	text := string(body)
 	requiredSnippets := []string{
-		"## 5. Operator Troubleshooting Matrix",
+		"## What do the failures mean?",
+		"This is the operator troubleshooting matrix that the operator-facing scripts point to.",
 		"caller authorization / credential failure",
 		"trust / evidence / admission failure",
 		"runtime-config reference or blob failure",
@@ -2370,7 +2371,7 @@ func TestPublishScriptCategorizesAuthorizationFailure(t *testing.T) {
 	if !strings.Contains(text, "Caller not authorized for this operation") {
 		t.Fatalf("expected caller authorization message, got %s", text)
 	}
-	if !strings.Contains(text, ".runbooks/system/v1_bringup.md") {
+	if !strings.Contains(text, ".runbooks/system/Governed Execution ES System Bring-Up.md") {
 		t.Fatalf("expected troubleshooting matrix reference, got %s", text)
 	}
 	if !strings.Contains(text, "scripts/70_diagnostics.sh --category auth") {
@@ -2422,7 +2423,7 @@ func TestPrepareScriptCategorizesRuntimeConfigFailure(t *testing.T) {
 	if !strings.Contains(text, "service code: workload_zone_vault_unavailable") {
 		t.Fatalf("expected workload-zone vault error code, got %s", text)
 	}
-	if !strings.Contains(text, ".runbooks/system/v1_bringup.md") {
+	if !strings.Contains(text, ".runbooks/system/Governed Execution ES System Bring-Up.md") {
 		t.Fatalf("expected troubleshooting matrix reference, got %s", text)
 	}
 	if !strings.Contains(text, "scripts/70_diagnostics.sh --category runtime-config") {
@@ -2474,7 +2475,7 @@ func TestSubmitScriptCategorizesSubstrateFailure(t *testing.T) {
 	if !strings.Contains(text, "service code: execution_runtime_unavailable") && !strings.Contains(text, "service code: submission_failed") {
 		t.Fatalf("expected runtime availability or submission failure code, got %s", text)
 	}
-	if !strings.Contains(text, ".runbooks/system/v1_bringup.md") {
+	if !strings.Contains(text, ".runbooks/system/Governed Execution ES System Bring-Up.md") {
 		t.Fatalf("expected troubleshooting matrix reference, got %s", text)
 	}
 	if !strings.Contains(text, "scripts/70_diagnostics.sh --category substrate") {
@@ -2534,7 +2535,7 @@ exit 7
 	if !strings.Contains(text, "exit_code=7") {
 		t.Fatalf("expected exit code guidance in lifecycle output, got %s", text)
 	}
-	if !strings.Contains(text, ".runbooks/system/v1_bringup.md") {
+	if !strings.Contains(text, ".runbooks/system/Governed Execution ES System Bring-Up.md") {
 		t.Fatalf("expected troubleshooting matrix reference, got %s", text)
 	}
 	if !strings.Contains(text, "scripts/70_diagnostics.sh --run-id <run_id>") {

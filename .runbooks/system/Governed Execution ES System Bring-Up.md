@@ -1,10 +1,8 @@
-# Runbook: Governed System Bring-up (v1)
+# Governed Execution ES System Bring-Up
 
-- Version: `v1`
-- Last Updated: `2026-04-13`
-- Compatible System Version: `Execution Substrate current working tree`
+## What is it?
 
-## 1. Objective
+This runbook brings up the Execution Substrate stack on one Linux host or VM: ARS, EGS, AGS and ES in containers, with Nomad and Docker under them. It checks that the stack is ready, runs a first workload, and says what to do when a step fails.
 
 Bring up the current bounded governed system through one operator path and verify the live execution slice:
 
@@ -29,9 +27,9 @@ The readiness vocabulary for that primary path is now:
 - `submit-ready` also requires Nomad to enable only the Docker driver, with its Docker plugin refusing privileged containers and allowing only ES's runtime-helper capabilities
 - for enabled local runtime-profile images, `submit-ready` also requires Nomad Docker image garbage collection to be disabled through the Docker plugin's `gc { image = false }`, because the supported-local CP normal-shell proof image is local runtime material rather than a pullable product registry image
 
-For the ES-side supported-local Control Plane consumer story, including the real CP-facing API surface, `control-plane-normal-shell/v1`, workload-visible identity/Vault/trust-material handoff, retained-result meaning, and ownership boundaries, use [supported_local_cp_consumer_runbook.md](../../.docs/supported_local_cp_consumer_runbook.md).
+When an operator-facing script fails, it points at this runbook. Its section [What do the failures mean?](#what-do-the-failures-mean) is the operator troubleshooting matrix.
 
-## 2. Prerequisites
+## What do I need?
 
 ### Required software
 
@@ -75,7 +73,28 @@ That helper does **not** override host-admin reality:
 - if the root-managed non-`-dev` service is up but the node still reports `cpu.totalcompute=0`, inspect host capability by behavior: no readable `cpufreq` sysfs files, no `/proc/cpuinfo` `cpu MHz`, and SMBIOS processor `Current Speed: Unknown` means the guest is not exposing the CPU-frequency data Nomad needs for natural schedulability
 - on the current Apple Silicon Mac, Lima `qemu` + Ubuntu 24.04 arm64 now qualifies under the real `nomad.service` path without override, while the investigated Ubuntu 24.04 VMware/aarch64 and Lima `vz` Ubuntu 24.04 arm64 local profiles remain unsupported because natural `cpu.totalcompute` stays `0`
 
-### Required config files
+### Required data assumptions
+
+The current bounded system still assumes:
+
+- ES startup config includes `runtime_config.workload_zone_vault_config_ref.digest`
+- ARS already contains the workload-zone Vault JSON blob referenced by that digest
+- EGS TrustModel `allowed_signers` includes the AGS signer key ID
+- ES verification keys match EGS and AGS signing keys
+- ES `workload_vault_auth.default_mode` is `vault_identity_jwt`
+- ES `nomad` and `execution` sections are configured for real `:submit`
+- Nomad Docker bind mounts are enabled
+- single-node loopback Nomad configs set explicit `advertise` addresses for `http`, `rpc`, and `serf`
+- Nomad configs pin the client's host network to loopback with `client { network_interface = "lo" }`, so the host works on Wi-Fi or a cable and assumes neither. ES's jobs need a host-mode network on the node: pinned to a wired port, the node has none while the cable is out and every job fails to place (`missing network`); unpinned, Nomad does not start while there is no default route. After every Nomad start, `sudo scripts/nomad_acl_setup.sh placement` checks that ES's job shapes plan with ES's token
+- the configured ES base image is available or pullable
+- any enabled `control-plane-normal-shell/v1` profile image is present in the Docker daemon used by Nomad before submit-ready is claimed
+- Nomad Docker image cleanup is disabled for local runtime-profile image durability when that profile is enabled
+
+## How to use it?
+
+Run all commands from the root of an Execution-Substrate checkout. Use one shell: the scripts read the variables that steps 1 to 3 export. The output to expect is taken from the scripts in this repository; Test Evidence says what has been run.
+
+### 1. Export the config files
 
 Export absolute paths:
 
@@ -105,34 +124,7 @@ placeholders. Existing retained data requires the original stable identifiers
 and key; no automatic lost-key recovery, rotation, or old-result adoption is
 provided.
 
-On the current supported local reference host on this Mac, you do not need the earlier out-of-repo `/tmp` harnesses. The canonical supported-local proof path is now:
-
-```bash
-scripts/73_supported_local_proof.sh run
-```
-
-That repo-owned wrapper creates the canonical proof workspace under `.out/es-proof-<id>/`, packages the bounded runtime-identity Vault-login workload, removes stale proof-owned guest `/tmp/es-proof-*` scratch from earlier wrapper runs, stages a fresh snapshot of the current host worktree into guest proof bootstrap scratch, invokes the guest-side `scripts/72_supported_local_setup.sh setup` from that staged snapshot, runs the supported-host qualification sequence, runs the higher-value useful credential-flow proof, and collects the resulting guest evidence back into that canonical workspace.
-
-On this Mac, the wrapper still uses guest `/tmp/es-proof-<id>` plus `/tmp/es-proof-<id>.bootstrap` internally because Lima mounts the repo tree read-only inside the current `qemu` guest and that mounted view is not the repo-owned proof source of truth. Those guest paths are proof-owned transient implementation detail: the wrapper stages a fresh repo snapshot into the bootstrap scratch before the run, cleans stale proof-owned guest scratch before a new run, and removes the current guest scratch after a successful host evidence copy. The canonical proof workspace is the host-side `.out/es-proof-<id>/`.
-
-The repo also carries a native-Linux bootstrap validation at `go test ./es/app -run TestSupportedLocalSetupScriptBootstrapsRealSPIREAndVaultDevTarget -count=1`, but that test is not the canonical supported-local validation path on this Mac. The supported-local closure proof here is the wrapper run above because it stages and exercises a fresh host-worktree snapshot inside the guest and records the canonical evidence under `.out/es-proof-<id>/`.
-
-For the current full-profile script path, `scripts/01_bringup.sh up` still starts Nomad itself from `NOMAD_CONFIG`. Treat that path as bounded fallback/troubleshooting scaffolding, not as the clean supported-environment story for Linux.
-
-Optional bounded slice-0 override for proof hosts where Nomad CPU fingerprinting fails:
-
-```bash
-export NOMAD_CLIENT_CPU_TOTAL_COMPUTE="2000"
-```
-
-Use this only when Nomad otherwise reports `cpu.totalcompute=0` on the proof node. `scripts/06_start_nomad.sh` converts it into a transient client override for the current bring-up run; it is deployment troubleshooting, not a new platform contract.
-
-When this override is active, the current operator path surfaces that explicitly:
-
-- `scripts/01_bringup.sh up` and `scripts/01_bringup.sh check` report `submit-ready-mode: bounded-override (...)`
-- successful execution in that mode is still a bounded slice-0 proof, not evidence that the host is naturally schedulable without the override
-
-### Required TLS material for API calls and bring-up verification
+### 2. Export the TLS material for API calls and bring-up verification
 
 Export a CA bundle and a client cert/key that authenticate as:
 
@@ -155,7 +147,7 @@ export ARS_READ_KEY="/abs/path/execution-client-key.pem"
 
 The current repo-owned AGS and ES configs keep `authorization.allowed_spiffe_path_prefixes=["operator/local"]`, so the operator identity above remains the right credential for the documented helper path even though those services now authorize callers from configured SPIFFE path prefixes rather than from hard-coded caller checks.
 
-### Required service URLs
+### 3. Export the service URLs
 
 Adjust these to match your environment:
 
@@ -184,32 +176,25 @@ export AGS_RESOLVE="server.artifact-governance.internal:8444:127.0.0.1"
 export ES_RESOLVE="server.execution.internal:8445:127.0.0.1"
 ```
 
-### Required data assumptions
+### 4. Bring up the stack
 
-The current bounded system still assumes:
+Use one of the paths below: the proof wrapper on the supported local reference host, the supported-host qualification path where Nomad already runs as a pre-managed service, the full execution profile when the repo is to start Nomad itself, or the prepare-only profile.
 
-- ES startup config includes `runtime_config.workload_zone_vault_config_ref.digest`
-- ARS already contains the workload-zone Vault JSON blob referenced by that digest
-- EGS TrustModel `allowed_signers` includes the AGS signer key ID
-- ES verification keys match EGS and AGS signing keys
-- ES `workload_vault_auth.default_mode` is `vault_identity_jwt`
-- ES `nomad` and `execution` sections are configured for real `:submit`
-- Nomad Docker bind mounts are enabled
-- single-node loopback Nomad configs set explicit `advertise` addresses for `http`, `rpc`, and `serf`
-- Nomad configs pin the client's host network to loopback with `client { network_interface = "lo" }`, so the host works on Wi-Fi or a cable and assumes neither. ES's jobs need a host-mode network on the node: pinned to a wired port, the node has none while the cable is out and every job fails to place (`missing network`); unpinned, Nomad does not start while there is no default route. After every Nomad start, `sudo scripts/nomad_acl_setup.sh placement` checks that ES's job shapes plan with ES's token
-- the configured ES base image is available or pullable
-- any enabled `control-plane-normal-shell/v1` profile image is present in the Docker daemon used by Nomad before submit-ready is claimed
-- Nomad Docker image cleanup is disabled for local runtime-profile image durability when that profile is enabled
+#### On the supported local reference host: the proof wrapper
 
-CGS is not required for this bring-up runbook because it is not part of the current ES hot path.
+On the current supported local reference host on this Mac, you do not need the earlier out-of-repo `/tmp` harnesses. The canonical supported-local proof path is now:
 
-## 3. Primary Bring-up Path
+```bash
+scripts/73_supported_local_proof.sh run
+```
 
-Run all commands from:
+That repo-owned wrapper creates the canonical proof workspace under `.out/es-proof-<id>/`, packages the bounded runtime-identity Vault-login workload, removes stale proof-owned guest `/tmp/es-proof-*` scratch from earlier wrapper runs, stages a fresh snapshot of the current host worktree into guest proof bootstrap scratch, invokes the guest-side `scripts/72_supported_local_setup.sh setup` from that staged snapshot, runs the supported-host qualification sequence, runs the higher-value useful credential-flow proof, and collects the resulting guest evidence back into that canonical workspace.
 
-`.`
+On this Mac, the wrapper still uses guest `/tmp/es-proof-<id>` plus `/tmp/es-proof-<id>.bootstrap` internally because Lima mounts the repo tree read-only inside the current `qemu` guest and that mounted view is not the repo-owned proof source of truth. Those guest paths are proof-owned transient implementation detail: the wrapper stages a fresh repo snapshot into the bootstrap scratch before the run, cleans stale proof-owned guest scratch before a new run, and removes the current guest scratch after a successful host evidence copy. The canonical proof workspace is the host-side `.out/es-proof-<id>/`.
 
-### Supported-host qualification path
+The repo also carries a native-Linux bootstrap validation at `go test ./es/app -run TestSupportedLocalSetupScriptBootstrapsRealSPIREAndVaultDevTarget -count=1`, but that test is not the canonical supported-local validation path on this Mac. The supported-local closure proof here is the wrapper run above because it stages and exercises a fresh host-worktree snapshot inside the guest and records the canonical evidence under `.out/es-proof-<id>/`.
+
+#### Supported-host qualification path
 
 Use this when Nomad is already running as the packaged pre-managed non-`-dev` service and you want the repo proof path to preserve that fact:
 
@@ -239,9 +224,9 @@ The current guest-side helper is intentionally narrow:
 - it seeds the bounded workload-zone Vault runtime fields used by ES, including the proof-scoped real Vault dev/test target for the current runtime-identity Vault-login workload
 - it does not broaden the slice beyond the bounded workload-vault login and one-secret-read proof
 
-For CP consumer-specific diagnosis, do not infer extra ES ownership from this helper. Use the canonical ES-side CP consumer runbook linked above.
+For CP consumer-specific diagnosis, do not infer extra ES ownership from this helper. Use the canonical ES-side CP consumer runbook, [supported_local_cp_consumer_runbook.md](../../.docs/supported_local_cp_consumer_runbook.md).
 
-### Full execution profile
+#### Full execution profile
 
 Use this when you intentionally want the repo to manage a local Nomad process for the current real execution slice:
 
@@ -279,11 +264,13 @@ Note:
 - a green `submit-ready` result is not the whole support claim by itself; the operator output also reports `nomad-startup-mode`, `supported-environment`, and `submit-ready-mode`
 - because this profile starts Nomad itself, it remains bounded fallback even when it becomes submit-ready
 
-Successful output ends with:
+Successful output includes:
 
 ```text
 bring-up complete
 ```
+
+followed by the profile, the readiness it reached, the state directory and the next commands to run.
 
 The script writes PID files and logs under:
 
@@ -291,7 +278,22 @@ The script writes PID files and logs under:
 "${BRINGUP_DIR:-.tmp/bringup}"
 ```
 
-### Prepare-only profile
+For the current full-profile script path, `scripts/01_bringup.sh up` still starts Nomad itself from `NOMAD_CONFIG`. Treat that path as bounded fallback/troubleshooting scaffolding, not as the clean supported-environment story for Linux.
+
+Optional bounded slice-0 override for proof hosts where Nomad CPU fingerprinting fails:
+
+```bash
+export NOMAD_CLIENT_CPU_TOTAL_COMPUTE="2000"
+```
+
+Use this only when Nomad otherwise reports `cpu.totalcompute=0` on the proof node. `scripts/06_start_nomad.sh` converts it into a transient client override for the current bring-up run; it is deployment troubleshooting, not a new platform contract.
+
+When this override is active, the current operator path surfaces that explicitly:
+
+- `scripts/01_bringup.sh up` and `scripts/01_bringup.sh check` report `submit-ready-mode: bounded-override (...)`
+- successful execution in that mode is still a bounded slice-0 proof, not evidence that the host is naturally schedulable without the override
+
+#### Prepare-only profile
 
 If you want only bounded preflight `:prepare` and not real submit/lifecycle:
 
@@ -306,7 +308,7 @@ Prepare-only still requires Docker because the hot-path control plane now runs i
 
 In this profile, successful bring-up proves `prepare-ready` only. `submit-ready` is intentionally skipped because `:submit` and lifecycle are out of scope for `prepare-only`.
 
-## 4. Readiness Verification
+### 5. Check readiness
 
 Re-run readiness checks at any time with:
 
@@ -370,7 +372,94 @@ For `prepare-only`, success still means:
 - the workload-zone Vault blob named by `runtime_config.workload_zone_vault_config_ref.digest` is readable through ARS and validates structurally, including any supplied Vault CA bundle
 - `submit-ready` is reported as skipped for that profile
 
-## 5. Operator Troubleshooting Matrix
+### 6. Run a first execution
+
+After bring-up succeeds, the preferred bounded end-to-end proof on the current supported local reference host on this Mac is:
+
+```bash
+scripts/73_supported_local_proof.sh run
+```
+
+This path still proves the one-host Linux substrate and same-path staging contract directly, and it now makes the bounded useful credential flow the canonical higher-value governed proof on that already-qualified host. The first platform-owned runtime identity boundary remains active through the real ES -> Nomad -> Docker path: same-container supervisor/helper, helper-private SPIRE channel, fixed non-root workload launch, and helper-death/task-fatal behavior are all active in the current slice.
+
+For the underlying credential-flow details, use [.runbooks/execution/Governed Execution ES Submit Runtime Identity Vault Login Workload.md](../execution/Governed%20Execution%20ES%20Submit%20Runtime%20Identity%20Vault%20Login%20Workload.md).
+
+That bounded proof has now also been exercised on a supported local host on the current Apple Silicon Mac through Lima `qemu` + Ubuntu 24.04 arm64 under a pre-managed non-`-dev` Nomad service with natural `cpu.totalcompute`. The previously investigated Ubuntu 24.04 VMware/aarch64 and Lima `vz` Ubuntu 24.04 arm64 local profiles remain unsupported on this Mac because the real service path still leaves natural `cpu.totalcompute=0`.
+
+On Linux, keep the supported-environment story narrow and explicit:
+
+- `supported`: pre-managed non-`-dev` Nomad already running on the host/VM, Docker healthy, and at least one ready node exposes positive `cpu.totalcompute` without override; on this Mac, Lima `qemu` + Ubuntu 24.04 arm64 is the known supported local reference profile
+- `bounded-fallback`: the current script-managed local Nomad path, or any run that needs `NOMAD_CLIENT_CPU_TOTAL_COMPUTE`
+- `unsupported`: Docker unhealthy, Nomad `DevMode=true`, no Nomad leader, no ready Docker-capable node, or `cpu.totalcompute=0` without explicit bounded override; on this Mac, the investigated Ubuntu 24.04 VMware/aarch64 and Lima `vz` Ubuntu 24.04 arm64 local profiles are currently in this bucket
+
+The wrapper runs that workload through `scripts/60_execute_loop.sh`, the operator's one-command smoke path, which `scripts/01_bringup.sh up` also suggests after a full-profile bring-up.
+
+That helper drives:
+
+- AGS publish
+- ES `:prepare`
+- ES `:submit`
+- ES `status`
+- ES `logs`
+
+and writes a structured summary plus captured logs to a per-run work directory.
+
+Because that helper waits for terminal status and then reads logs, it also
+exercises retained staging: ES attempts retained-result capture from
+`/execution/run/result` while leaving `execution.staging_root_dir/<run_id>` in
+place. Result success, absence, conflict, or failure has no staging-mutation
+consequence.
+Because that helper waits for terminal status and then reads logs, it can
+exercise retained-result capture from `/execution/run/result`. The isolated
+candidate retains every successfully claimed staging root after terminal
+success as well as failure, cancellation, loss, or ambiguous registration.
+This interim rule increases disk use and sensitive-material residence; no
+reclamation authority is selected.
+
+Keep host qualification and smoke proof distinct:
+
+- if `scripts/60_execute_loop.sh` fails but `BRINGUP_PROFILE=full scripts/01_bringup.sh check` still reports `supported-environment: supported`, treat that first as workload/runtime troubleshooting rather than as proof that the host lost qualification
+- only relabel the host itself if the supported-host checks regress
+- the current supported local proof path is repo-owned; no out-of-repo `/tmp` harness is required for the qualification or the canonical useful credential-flow proof sequence
+
+If you want the manual publish/prepare/submit breakdown instead, use:
+
+- [.runbooks/execution/Governed Execution ES Submit Static Script Workload.md](../execution/Governed%20Execution%20ES%20Submit%20Static%20Script%20Workload.md)
+- [.runbooks/execution/Governed Execution ES Submit Runtime Identity Reference Workload.md](../execution/Governed%20Execution%20ES%20Submit%20Runtime%20Identity%20Reference%20Workload.md)
+
+### 7. Shut down
+
+Stop all managed processes with:
+
+```bash
+scripts/01_bringup.sh down
+```
+
+Expect `bring-up processes stopped`.
+
+This stops, in order:
+
+- Nomad
+- ES
+- AGS
+- EGS
+- ARS
+
+### 8. Start one service at a time (manual fallback)
+
+If you need foreground manual startup for one service at a time, the direct wrappers remain available:
+
+- `scripts/02_start_ars.sh`
+- `scripts/03_start_egs.sh`
+- `scripts/04_start_ags.sh`
+- `scripts/05_start_es.sh`
+- `scripts/06_start_nomad.sh`
+
+Those scripts still require the same explicit config env vars, but they no longer define the primary operator path for the current slice.
+
+## What do the failures mean?
+
+This is the operator troubleshooting matrix that the operator-facing scripts point to.
 
 Use this matrix after an operator-facing helper already surfaced one of the bounded failure categories. Keep `scripts/01_bringup.sh check` and `scripts/10_health_check.sh` as the readiness source of truth. Later helpers should point back here rather than inventing a second readiness story.
 
@@ -434,83 +523,24 @@ an accepted alias for the execution category. The category now covers every
 observable post-submit outcome; the legacy label does not imply that only
 failed executions retain staging.
 
-## 6. First Execution Verification
+## Notes
 
-After bring-up succeeds, the preferred bounded end-to-end proof on the current supported local reference host on this Mac is:
+- For the ES-side supported-local Control Plane consumer story, including the real CP-facing API surface, `control-plane-normal-shell/v1`, workload-visible identity/Vault/trust-material handoff, retained-result meaning, and ownership boundaries, use [supported_local_cp_consumer_runbook.md](../../.docs/supported_local_cp_consumer_runbook.md).
 
-```bash
-scripts/73_supported_local_proof.sh run
-```
+- CGS is not required for this bring-up runbook because it is not part of the current ES hot path.
 
-This path still proves the one-host Linux substrate and same-path staging contract directly, and it now makes the bounded useful credential flow the canonical higher-value governed proof on that already-qualified host. The first platform-owned runtime identity boundary remains active through the real ES -> Nomad -> Docker path: same-container supervisor/helper, helper-private SPIRE channel, fixed non-root workload launch, and helper-death/task-fatal behavior are all active in the current slice.
+## Test Evidence
 
-For the underlying credential-flow details, use [.runbooks/execution/Governed Execution ES Submit Runtime Identity Vault Login Workload.md](../execution/Governed%20Execution%20ES%20Submit%20Runtime%20Identity%20Vault%20Login%20Workload.md).
+- **Automated, in CI on every pull request:** the Linux job "build, vet and test" runs the `es/app` integration tests against real Docker and a real Nomad agent. `TestBringupScriptUpCheckDownFullProfile` runs `scripts/01_bringup.sh up`, `check` and `down` with the full profile. `TestHealthCheckScriptPrepareOnlyReportsSubmitSkipped`, `TestHealthCheckScriptRejectsPreManagedDevNomad` and `TestHealthCheckScriptRejectsNomadNodeWithoutHostNetwork` check the readiness report of step 5. `TestExecuteLoopScriptSuccessAndDeterministicDigests` runs `scripts/60_execute_loop.sh` end to end. `TestBringupRunbookTroubleshootingMatrixListsCurrentFailureCategories` and this repository's docs tests check that the matrix and the rules quoted here are still in this file.
+- **Not run:** the steps above, as written, were not run end to end when this runbook was renamed and restructured into this layout on 2026-11-25; no step's commands changed then.
 
-That bounded proof has now also been exercised on a supported local host on the current Apple Silicon Mac through Lima `qemu` + Ubuntu 24.04 arm64 under a pre-managed non-`-dev` Nomad service with natural `cpu.totalcompute`. The previously investigated Ubuntu 24.04 VMware/aarch64 and Lima `vz` Ubuntu 24.04 arm64 local profiles remain unsupported on this Mac because the real service path still leaves natural `cpu.totalcompute=0`.
+## History
 
-On Linux, keep the supported-environment story narrow and explicit:
-
-- `supported`: pre-managed non-`-dev` Nomad already running on the host/VM, Docker healthy, and at least one ready node exposes positive `cpu.totalcompute` without override; on this Mac, Lima `qemu` + Ubuntu 24.04 arm64 is the known supported local reference profile
-- `bounded-fallback`: the current script-managed local Nomad path, or any run that needs `NOMAD_CLIENT_CPU_TOTAL_COMPUTE`
-- `unsupported`: Docker unhealthy, Nomad `DevMode=true`, no Nomad leader, no ready Docker-capable node, or `cpu.totalcompute=0` without explicit bounded override; on this Mac, the investigated Ubuntu 24.04 VMware/aarch64 and Lima `vz` Ubuntu 24.04 arm64 local profiles are currently in this bucket
-
-That helper drives:
-
-- AGS publish
-- ES `:prepare`
-- ES `:submit`
-- ES `status`
-- ES `logs`
-
-and writes a structured summary plus captured logs to a per-run work directory.
-
-Because that helper waits for terminal status and then reads logs, it also
-exercises retained staging: ES attempts retained-result capture from
-`/execution/run/result` while leaving `execution.staging_root_dir/<run_id>` in
-place. Result success, absence, conflict, or failure has no staging-mutation
-consequence.
-Because that helper waits for terminal status and then reads logs, it can
-exercise retained-result capture from `/execution/run/result`. The isolated
-candidate retains every successfully claimed staging root after terminal
-success as well as failure, cancellation, loss, or ambiguous registration.
-This interim rule increases disk use and sensitive-material residence; no
-reclamation authority is selected.
-
-Keep host qualification and smoke proof distinct:
-
-- if `scripts/60_execute_loop.sh` fails but `BRINGUP_PROFILE=full scripts/01_bringup.sh check` still reports `supported-environment: supported`, treat that first as workload/runtime troubleshooting rather than as proof that the host lost qualification
-- only relabel the host itself if the supported-host checks regress
-- the current supported local proof path is repo-owned; no out-of-repo `/tmp` harness is required for the qualification or the canonical useful credential-flow proof sequence
-
-If you want the manual publish/prepare/submit breakdown instead, use:
-
-- [.runbooks/execution/Governed Execution ES Submit Static Script Workload.md](../execution/Governed%20Execution%20ES%20Submit%20Static%20Script%20Workload.md)
-- [.runbooks/execution/Governed Execution ES Submit Runtime Identity Reference Workload.md](../execution/Governed%20Execution%20ES%20Submit%20Runtime%20Identity%20Reference%20Workload.md)
-
-## 7. Shutdown
-
-Stop all managed processes with:
-
-```bash
-scripts/01_bringup.sh down
-```
-
-This stops, in order:
-
-- Nomad
-- ES
-- AGS
-- EGS
-- ARS
-
-## 8. Manual Fallback
-
-If you need foreground manual startup for one service at a time, the direct wrappers remain available:
-
-- `scripts/02_start_ars.sh`
-- `scripts/03_start_egs.sh`
-- `scripts/04_start_ags.sh`
-- `scripts/05_start_es.sh`
-- `scripts/06_start_nomad.sh`
-
-Those scripts still require the same explicit config env vars, but they no longer define the primary operator path for the current slice.
+- **2026-04-13:** version `v1` of this runbook, last updated on this date before it came into this repository (from its former header).
+- **2026-04-19:** came into this repository as `v1_bringup.md` (PR #1).
+- **2026-11-18:** retained staging: every successfully claimed run root is retained, through terminal success (PR #8).
+- **2026-11-22:** ES runs in its container as your numeric UID and primary GID, and refuses to start on roots, key files and config files it could not use (PR #18).
+- **2026-11-23:** ES refuses roots whose file system staging or retention cannot use (PR #20); ARS, EGS and AGS run as you too, and bring-up checks ARS's storage before any service starts (PR #19); the workload runbooks' links follow their new names (PR #37); Nomad enables only the Docker driver, with privileged containers refused (PR #31); AGS and ES authorize callers from configured SPIFFE path prefixes (PR #38).
+- **2026-11-24:** Nomad's client host network is pinned to loopback, and `sudo scripts/nomad_acl_setup.sh placement` checks after every Nomad start that ES's jobs can be placed (PR #57).
+- **2026-11-25:** Nomad over HTTPS: `NOMAD_ADDR` is `https://127.0.0.1:4646`, `NOMAD_CACERT` is required, and ES pins Nomad's key (PR #60).
+- **2026-11-25:** renamed from `v1_bringup.md` to `Governed Execution ES System Bring-Up.md`, and restructured into the layout of the project's other runbooks (What is it?, What do I need?, How to use it? with numbered steps and the output to expect, What do the failures mean?, Notes, Test Evidence, History). The former "Operator Troubleshooting Matrix" is now "What do the failures mean?"; the proof wrapper, the full-profile Nomad note and the CPU override moved from "Required config files" into step 4. The scripts, tests and docs that name this file now use the new name. No command changed. Three sentences were corrected: a full-profile bring-up does not end with `bring-up complete` but prints a few lines after it; step 6 now names `scripts/60_execute_loop.sh` as the helper whose actions it lists; and step 4's pointer to the CP consumer runbook, which said "linked above", now links it, because that link moved to Notes.
