@@ -292,7 +292,7 @@ run. The historical proof does not establish real upstream Codex behavior,
 actual running-deployment topology or key isolation. Later source/native
 evidence retains its separate identities and limits; there is no automatic
 proof inheritance or default repeat without a concrete unaccepted interaction
-for a selected operational claim. `PLANS.md` and the lifecycle contract own
+for a selected operational claim. `.docs/standing_rules/execution_admission_and_custody.md` and the lifecycle contract own
 the development evidence and environment-bound rollout distinction.
 
 ## 3. Ownership boundaries

@@ -277,12 +277,14 @@ func TestResolvedExecutionPlanExtractionDocsContract(t *testing.T) {
 	recoveryNonClaims := compactDocSection(t, recoveryRaw, "## 15. Explicit Non-Claims", "## 16. Required-Before-Implementation Gates")
 	persistence := compactText(mustRead(t, ".docs/execution_lifecycle/reliable_submit_persistence_and_concurrency.md"))
 
-	assertContainsAll(t, "resolved-plan tranche in PLANS.md", plans,
+	assertContainsAll(t, "resolved-plan tranche in the admission standing rules", compactText(mustRead(t, standingAdmissionRulesPath)),
 		"one private `resolvedExecutionPlan`",
 		"Successful return from that effectful read resolver is the freeze point",
 		"The private `resolvedExecutionPlan` is admitted semantic truth",
 		"Semantic-plan equality across qualified host contexts proves admitted-semantic equality only",
 		"Every post-claim return closes descriptors and retains the visible run root",
+	)
+	assertContainsAll(t, "resolved-plan foundation limits in PLANS.md", plans,
 		"does not select or implement canonical effective-plan encoding, `PlanBinding`, a complete effective-plan witness, durable material or replay-envelope custody",
 	)
 	assertContainsAll(t, "resolved-plan system boundary", boundaries,
@@ -433,7 +435,7 @@ func TestTrancheB1SemanticOwnershipDocsContract(t *testing.T) {
 		start string
 		end   string
 	}{
-		{"PLANS B1 owning section", "PLANS.md", "Tranche B1, `ES-B1-SEMANTIC-OWNERSHIP-COMMAND`", "The opened parent and root identities remain"},
+		{"admission standing rules B1 owning section", standingAdmissionRulesPath, "Tranche B1, `ES-B1-SEMANTIC-OWNERSHIP-COMMAND`", "The opened parent and root identities remain"},
 		{"contracts B1 owning section", ".docs/execution_lifecycle/contracts.md", "### Request contract", "### Tranche A resource and filesystem custody contract"},
 		{"design B1 owning section", ".docs/execution_lifecycle/design.md", "The `resolved-execution-plan-extraction-foundation` now derives", "Header-only reliable-submit opt-in is rejected"},
 		{"admission-model B1 owning section", ".docs/execution_lifecycle/es_execution_admission_model.md", "- The selected `resolved-execution-plan-extraction-foundation`", "- C3 is the focused tests/docs guardrail slice"},
@@ -508,7 +510,7 @@ func trancheB2DocumentationContradiction(section string) string {
 
 func TestTrancheB2PrivacyIndependentAssuranceDocsContract(t *testing.T) {
 	paths := []string{
-		"PLANS.md",
+		standingAdmissionRulesPath,
 		".docs/system_overview/boundaries.md",
 		".docs/system_overview/contracts.md",
 		".docs/execution_lifecycle/design.md",
@@ -606,7 +608,7 @@ func TestTrancheB2DocumentationNegativeGuardMutants(t *testing.T) {
 }
 
 func TestTrancheAFilesystemAndResourceCustodyDocsContract(t *testing.T) {
-	plans := compactText(mustRead(t, "PLANS.md"))
+	admissionRules := compactText(mustRead(t, standingAdmissionRulesPath))
 	contracts := compactText(mustRead(t, ".docs/execution_lifecycle/contracts.md"))
 	design := compactText(mustRead(t, ".docs/execution_lifecycle/design.md"))
 	implementation := compactText(mustRead(t, ".docs/execution_lifecycle/implementation.md"))
@@ -619,7 +621,7 @@ func TestTrancheAFilesystemAndResourceCustodyDocsContract(t *testing.T) {
 	linuxQualification := compactDocSection(t, mustRead(t, ".docs/system_overview/supported_linux_host_qualification.md"), "### Tranche A filesystem-custody validation posture", "## 4. Explicit Disqualifiers")
 	runbook := compactText(mustRead(t, ".runbooks/system/v1_bringup.md"))
 
-	assertContainsAll(t, "Tranche A plan limits and retained custody", plans,
+	assertContainsAll(t, "Tranche A plan limits and retained custody", admissionRules,
 		"The selected Tranche A filesystem/resource-custody refinement",
 		"opens a fresh independent directory description at position zero",
 		"reads entries incrementally one at a time",
@@ -710,7 +712,7 @@ func TestTrancheAFilesystemAndResourceCustodyDocsContract(t *testing.T) {
 		"Historical Tranche A sequencing allowed a fresh read-only audit",
 		"while native Linux remained pending",
 		"does not impose a blanket native pre-commit gate on local source preservation or integration",
-		"`PLANS.md` and `.docs/execution_lifecycle/contracts.md`",
+		"`.docs/standing_rules/execution_admission_and_custody.md` and `.docs/execution_lifecycle/contracts.md`",
 		"governed Ubuntu 24.04 linux/amd64 for Remote Alpha and governed Ubuntu 24.04 linux/arm64 for supported-local",
 		"`openat2` with beneath, no-magic-link, no-symlink, and no-cross-device resolution",
 		"`renameat2(RENAME_NOREPLACE)` collision behavior",
@@ -732,7 +734,7 @@ func TestTrancheAFilesystemAndResourceCustodyDocsContract(t *testing.T) {
 		"retained staging is not proof that Nomad accepted the job, and absence of staging is not proof that no provider effect occurred",
 		"no current automatic whole-run-root reclamation path exists",
 	)
-	assertContainsNone(t, "removed whole-root cleanup vocabulary", plans+" "+contracts+" "+implementation+" "+configuration+" "+writableState+" "+normalization,
+	assertContainsNone(t, "removed whole-root cleanup vocabulary", compactText(mustRead(t, "PLANS.md"))+" "+admissionRules+" "+contracts+" "+implementation+" "+configuration+" "+writableState+" "+normalization,
 		".execution-substrate-stage-claim-v1",
 		"no-replace quarantine rename is the cleanup commit point",
 		"Only marker-bearing roots",
@@ -833,7 +835,7 @@ func TestESExecutionAdmissionModelFinalAuditRepairContract(t *testing.T) {
 	assertContainsAll(t, "bounded scanner prefix guard", remoteAlpha,
 		"A separate prefix check requires those scanner calls to be the first two nontrivia statements of `parse_args`, in privacy-first order.",
 	)
-	assertContainsNone(t, "final-audit repair docs reject stale acceptance claims", plans+" "+configuration+" "+capabilities+" "+design+" "+contracts+" "+implementation+" "+admissionModel+" "+remoteAlpha,
+	assertContainsNone(t, "final-audit repair docs reject stale acceptance claims", plansAndStandingRules(t)+" "+configuration+" "+capabilities+" "+design+" "+contracts+" "+implementation+" "+admissionModel+" "+remoteAlpha,
 		"the running-deployment observation is complete",
 		"local modeled tests prove mounted bind compatibility",
 		"local validation waives native Linux validation",
@@ -2068,6 +2070,7 @@ func TestSubmitIdempotencyCorrelationAndRecoveryDocsContract(t *testing.T) {
 		"later Coordinator consumer mapping",
 	)
 	plansPointer := compactDocSection(t, mustRead(t, "PLANS.md"), "## Cross-Repo Hybrid Integration ADR Pointer", "## Highest-Priority Backlog Entry")
+	admissionRules := compactText(mustRead(t, standingAdmissionRulesPath))
 	contractsSubmitTarget := compactDocSection(t, mustRead(t, ".docs/execution_lifecycle/contracts.md"), "### Target reliable keyed-submit contract", "## 7. Status contract")
 	designPressure := compactDocSection(t, mustRead(t, ".docs/execution_lifecycle/design.md"), "## 9A. Submit Idempotency And Recovery Pressure", "## 10. Runtime identity and lifecycle interaction")
 	implementationAbsenceRaw := markedDocSection(t, "implementation keyed recovery absence",
@@ -2082,7 +2085,7 @@ func TestSubmitIdempotencyCorrelationAndRecoveryDocsContract(t *testing.T) {
 		label string
 		text  string
 	}{
-		{label: "PLANS submit recovery tranche", text: plansPointer},
+		{label: "admission standing rules submit recovery tranche", text: admissionRules},
 		{label: "contracts submit recovery target", text: contractsSubmitTarget},
 		{label: "design submit recovery pressure", text: designPressure},
 		{label: "implementation keyed recovery absence", text: implementationAbsence},
@@ -2098,6 +2101,20 @@ func TestSubmitIdempotencyCorrelationAndRecoveryDocsContract(t *testing.T) {
 		)
 	}
 	assertContainsAll(t, "PLANS submit recovery tranche", plansPointer,
+		"unwired",
+		"`reliable-submit-durable-same-operation-replay-repair`",
+		"source tranche is implemented inside the private durable source",
+		"recognizes the current latest committed mutation before stale-revision and inactive-state refusal",
+		"SQLite schema v2 persists the descriptor for codec-2 rows",
+		"preserves migrated v1 rows as legacy/unbound",
+		"caller-to-ES response loss",
+		"ES-to-Nomad registration-response uncertainty",
+		"prevent duplicate semantic execution from transport redelivery",
+		"current no-key submit compatibility path",
+		"`control-plane-normal-shell/v1`",
+		"prohibition on a broad ES lifecycle store",
+	)
+	assertContainsAll(t, "admission standing rules submit recovery tranche", admissionRules,
 		"ES-owned documentation seam",
 		"The first source-bearing reliable-submit tranche initially added the admission-local pure Go model and tests",
 		"The current source-bearing persistence tranche extends that same private package with a backend-neutral claim-store port",
@@ -2118,11 +2135,6 @@ func TestSubmitIdempotencyCorrelationAndRecoveryDocsContract(t *testing.T) {
 		"private same-package durable-record codec",
 		"revision/CAS semantics",
 		"durable provider-effect intent before external I/O",
-		"`reliable-submit-durable-same-operation-replay-repair`",
-		"source tranche is implemented inside the private durable source",
-		"recognizes the current latest committed mutation before stale-revision and inactive-state refusal",
-		"SQLite schema v2 persists the descriptor for codec-2 rows",
-		"preserves migrated v1 rows as legacy/unbound",
 		"does not add global ES configuration, production runtime wiring",
 		"public opt-in/versioning posture",
 		"current outer producer-contract v1 identity",
@@ -2133,12 +2145,7 @@ func TestSubmitIdempotencyCorrelationAndRecoveryDocsContract(t *testing.T) {
 		"producer-declaration preflight plus in-band request discrimination",
 		"reject header-only opt-in",
 		"forbid silent downgrade",
-		"caller-to-ES response loss",
-		"ES-to-Nomad registration-response uncertainty",
-		"prevent duplicate semantic execution from transport redelivery",
-		"current no-key submit compatibility path",
 		"`control-plane-normal-shell/v1`",
-		"prohibition on a broad ES lifecycle store",
 	)
 	providerEffectWarning := "Current non-confirmation returns the existing `submission_failed` behavior and retains the complete staging root; that is not a reliable proof that no provider effect was accepted"
 	assertContainsAll(t, "implementation keyed recovery absence", implementationAbsence,
@@ -2343,6 +2350,7 @@ func TestReliableSubmitPureModelDocsAndSourceContract(t *testing.T) {
 	designPressure := compactDocSection(t, mustRead(t, ".docs/execution_lifecycle/design.md"), "## 9A. Submit Idempotency And Recovery Pressure", "## 10. Runtime identity and lifecycle interaction")
 	implementationAbsence := compactDocSection(t, mustRead(t, ".docs/execution_lifecycle/implementation.md"), "**Current keyed-recovery absence**", "## 8. Lifecycle projection implementation")
 	plansPointer := compactDocSection(t, mustRead(t, "PLANS.md"), "## Cross-Repo Hybrid Integration ADR Pointer", "## Highest-Priority Backlog Entry")
+	admissionRules := compactText(mustRead(t, standingAdmissionRulesPath))
 
 	assertContainsAll(t, "reliable submit pure model package placement", target,
 		"The source-bearing reliable-submit package is now present as the admission-local internal Go package `es/admission/internal/reliablesubmit`",
@@ -2402,6 +2410,13 @@ func TestReliableSubmitPureModelDocsAndSourceContract(t *testing.T) {
 		"no second unused abstraction tranche may be layered on top without a concrete consumer",
 	)
 	assertContainsAll(t, "reliable submit pure model plans", plansPointer,
+		"unwired",
+		"`reliable-submit-durable-same-operation-replay-repair`",
+		"source tranche is implemented inside the private durable source",
+		"SQLite schema v2 persists the descriptor for codec-2 rows",
+		"preserves migrated v1 rows as legacy/unbound",
+	)
+	assertContainsAll(t, "reliable submit pure model admission standing rules", admissionRules,
 		"The current source-bearing persistence tranche extends that same private package with a backend-neutral claim-store port",
 		"durable semantic service",
 		"private durable-record codec",
@@ -2419,10 +2434,6 @@ func TestReliableSubmitPureModelDocsAndSourceContract(t *testing.T) {
 		"private same-package durable-record codec",
 		"revision/CAS semantics",
 		"provider-effect intent before external I/O",
-		"`reliable-submit-durable-same-operation-replay-repair`",
-		"source tranche is implemented inside the private durable source",
-		"SQLite schema v2 persists the descriptor for codec-2 rows",
-		"preserves migrated v1 rows as legacy/unbound",
 	)
 
 	assertContainsAll(t, "reliable submit pure model source package", modelCompact,
@@ -2601,7 +2612,7 @@ func TestReliableSubmitPublicOptInAndVersioningDocsContract(t *testing.T) {
 	implementationAbsence := compactDocSection(t, mustRead(t, ".docs/execution_lifecycle/implementation.md"), "**Current keyed-recovery absence**", "## 8. Lifecycle projection implementation")
 	boundaryOwnership := compactDocSection(t, mustRead(t, ".docs/system_overview/boundaries.md"), "## 8. ES boundary", "## 9. EGS boundary")
 	boundaryCompatibility := boundaryOwnership
-	plansPointer := compactDocSection(t, mustRead(t, "PLANS.md"), "## Cross-Repo Hybrid Integration ADR Pointer", "## Highest-Priority Backlog Entry")
+	admissionRules := compactText(mustRead(t, standingAdmissionRulesPath))
 
 	assertContainsAll(t, "reliable submit current outer producer contract preserved", producerTarget,
 		"`execution-substrate.producer-contract/v1`",
@@ -2753,7 +2764,7 @@ func TestReliableSubmitPublicOptInAndVersioningDocsContract(t *testing.T) {
 		"CP and IM may ignore the future additive reliable-submit sub-declaration",
 		"does not make CP or IM part of the target autonomous-development topology",
 	)
-	assertContainsAll(t, "reliable submit plans tranche", plansPointer,
+	assertContainsAll(t, "reliable submit admission standing rules tranche", admissionRules,
 		"public opt-in/versioning posture",
 		"current outer producer-contract v1 identity",
 		"current governed-execution contract identity",
@@ -3895,7 +3906,19 @@ func TestReliableSubmitPersistenceAndConcurrencyADRDocsContract(t *testing.T) {
 	)
 
 	plansPointer := compactDocSection(t, mustRead(t, "PLANS.md"), "## Cross-Repo Hybrid Integration ADR Pointer", "## Highest-Priority Backlog Entry")
+	admissionRules := compactText(mustRead(t, standingAdmissionRulesPath))
 	assertContainsAll(t, "PLANS reliable-submit persistence ADR pointer", plansPointer,
+		"`reliable-submit-durable-same-operation-replay-repair`",
+		"source tranche is implemented inside the private durable source",
+		"derives a latest-operation descriptor",
+		"recognizes the current latest committed mutation before stale-revision and inactive-state refusal",
+		"same-mutation/different-kind-or-binding reuse",
+		"keeps COMMIT-unknown recovery on stricter full-record equality including the descriptor",
+		"SQLite schema v2 persists the descriptor for codec-2 rows",
+		"preserves migrated v1 rows as legacy/unbound",
+		"Historical mutation retention remains out of scope",
+	)
+	assertContainsAll(t, "admission standing rules reliable-submit persistence tranche", admissionRules,
 		"reliable_submit_persistence_and_concurrency.md",
 		"narrow ES-owned submit-correlation store",
 		"local embedded SQLite as the first concrete backend",
@@ -3908,15 +3931,6 @@ func TestReliableSubmitPersistenceAndConcurrencyADRDocsContract(t *testing.T) {
 		"same-package SQLite implementation",
 		"revision/CAS semantics",
 		"durable provider-effect intent before external I/O",
-		"`reliable-submit-durable-same-operation-replay-repair`",
-		"source tranche is implemented inside the private durable source",
-		"derives a latest-operation descriptor",
-		"recognizes the current latest committed mutation before stale-revision and inactive-state refusal",
-		"same-mutation/different-kind-or-binding reuse",
-		"keeps COMMIT-unknown recovery on stricter full-record equality including the descriptor",
-		"SQLite schema v2 persists the descriptor for codec-2 rows",
-		"preserves migrated v1 rows as legacy/unbound",
-		"Historical mutation retention remains out of scope",
 		"does not add global ES configuration, production runtime wiring, public DTOs, HTTP handler behavior, staging, Nomad, lifecycle",
 		"does not promise live backend switching, dual write, automatic SQLite/PostgreSQL data portability",
 	)
@@ -4530,7 +4544,7 @@ func TestHybridIntegrationArchitectureADRDocsContract(t *testing.T) {
 		"four packages are the required global implementation sequence",
 		"Maintenance Agent is a mandatory target component",
 	)
-	assertContainsNone(t, "PLANS stale target relationships", plansPointer,
+	assertContainsNone(t, "PLANS stale target relationships", plansPointer+" "+compactText(mustRead(t, standingAdmissionRulesPath)),
 		"without CP is only a bounded coding-work proof candidate",
 		"no-CP routing is only a proof candidate",
 		"CP-less routing is proof-only",
@@ -4550,7 +4564,7 @@ func TestHybridIntegrationArchitectureADRDocsContract(t *testing.T) {
 		"Maintenance Agent is a permanent target component",
 		"current IM/Maintenance Agent repository survival is required",
 	)
-	assertNoStaleTargetRelationship(t, "PLANS stale target relationships", plansPointer)
+	assertNoStaleTargetRelationship(t, "PLANS stale target relationships", plansPointer+" "+compactText(mustRead(t, standingAdmissionRulesPath)))
 	assertContainsNone(t, "ADR current decision stale target relationships", adrCurrentDecision,
 		"CP-authoritative path is the enduring",
 		"CP-authoritative path is the permanent",
@@ -4633,7 +4647,7 @@ func TestHybridIntegrationBridgeCodexRowPinsEvidenceBoundary(t *testing.T) {
 		"next implementation selection is reopened contract-seam design, not end-to-end execution or a fixed global sequence",
 		"already implemented Bridge source/handoff evidence slice must remain no-write, no-shell, no-Codex-invocation, non-authoritative for ES",
 	)
-	assertContainsNone(t, "PLANS and ADR Bridge evidence agreement", plans,
+	assertContainsNone(t, "PLANS and ADR Bridge evidence agreement", plans+" "+compactText(mustRead(t, standingAdmissionRulesPath)),
 		"evaluate a future Bridge no-mutation Codex handoff packet/design",
 		"The first implementation candidate after this ADR is Bridge no-mutation Codex handoff packet/design",
 	)
@@ -8239,6 +8253,7 @@ func TestRemoteAlphaOperatorDocsInvolvementAndP0dEvidenceBoundaries(t *testing.T
 
 func TestRemoteAlphaOperatorDocsRetireExistingHostESRoutes(t *testing.T) {
 	plans := compactText(mustRead(t, "PLANS.md"))
+	routeRules := compactText(mustRead(t, standingRouteRulesPath))
 	remoteRaw := mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md")
 	implementation := mustRead(t, ".docs/execution_lifecycle/implementation.md")
 	writableState := compactText(mustRead(t, ".docs/system_overview/remote_alpha_beta_es_writable_state_ownership.md"))
@@ -8254,6 +8269,8 @@ func TestRemoteAlphaOperatorDocsRetireExistingHostESRoutes(t *testing.T) {
 		"Selecting a future diagnostic or existing-host migration contract is a separately governed decision",
 		"privacy prefilter is the first argument-sensitive operation",
 		"before script-directory canonicalization or helper-path initialization",
+	)
+	assertContainsAll(t, "Remote Alpha retirement standing route rules boundary", routeRules,
 		"public names are preserved only as fixed effect-free compatibility tombstones, not as helper or readiness workflows",
 	)
 	assertContainsAll(t, "Remote Alpha retirement current status", statusSection,
@@ -8456,7 +8473,7 @@ func TestRemoteAlphaOperatorDocsRetireAllSelectedEvidenceCompatibility(t *testin
 		"Archived v1 fixture and artifact bytes remain evidence only outside live operator behavior",
 		"The former current-schema checker, its automatic evidence-directory discovery, and its safe-field projections are retired with P0g",
 	)
-	assertContainsNone(t, "Remote Alpha facade compatibility is not a Tranche B gate", plans+" "+compactText(remoteRaw),
+	assertContainsNone(t, "Remote Alpha facade compatibility is not a Tranche B gate", plansAndStandingRules(t)+" "+compactText(remoteRaw),
 		"operator compatibility is a Tranche B prerequisite",
 		"facade compatibility is required before Tranche B",
 		"Tranche B requires preservation of operator compatibility",
@@ -8498,11 +8515,11 @@ func TestRemoteAlphaOperatorDocsRetireAllSelectedEvidenceCompatibility(t *testin
 	)
 }
 func TestRemoteAlphaOperatorP0iDocsHostLocalUnsealBoundary(t *testing.T) {
-	plans := compactText(mustRead(t, "PLANS.md"))
+	routeRules := compactText(mustRead(t, standingRouteRulesPath))
 	remoteRaw := mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md")
 	operatorSection := compactDocSection(t, remoteRaw, "### P0i Host-Local Vault Unseal Existing Recovery Session", "### P0j Mac-Side Vault Unseal Existing Recovery Session")
 
-	assertContainsAll(t, "Remote Alpha operator P0i PLANS boundary", plans,
+	assertContainsAll(t, "Remote Alpha operator P0i standing route rules boundary", routeRules,
 		"The P0i implementation/self-audit slice may add exactly one secret-sensitive",
 		"`scripts/remote_alpha_operator.sh recovery-session vault-unseal-existing --host-local`",
 		"host-local only",
@@ -8569,11 +8586,11 @@ func TestRemoteAlphaOperatorP0iDocsHostLocalUnsealBoundary(t *testing.T) {
 }
 
 func TestRemoteAlphaOperatorP0jDocsMacSideUnsealBoundary(t *testing.T) {
-	plans := compactText(mustRead(t, "PLANS.md"))
+	routeRules := compactText(mustRead(t, standingRouteRulesPath))
 	remoteRaw := mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md")
 	operatorSection := compactDocSection(t, remoteRaw, "### P0j Mac-Side Vault Unseal Existing Recovery Session", "### P0k Mac-Side Disposable Vault Reset Dry-Run Recovery Session")
 
-	assertContainsAll(t, "Remote Alpha operator P0j PLANS boundary", plans,
+	assertContainsAll(t, "Remote Alpha operator P0j standing route rules boundary", routeRules,
 		"The P0j implementation/self-audit slice may extend exactly that",
 		"`recovery-session vault-unseal-existing`",
 		"`scripts/remote_alpha_operator.sh recovery-session vault-unseal-existing --ssh-target <target> --interactive-tty`",
@@ -8664,11 +8681,11 @@ func TestRemoteAlphaOperatorP0jDocsMacSideUnsealBoundary(t *testing.T) {
 }
 
 func TestRemoteAlphaOperatorP0kDocsMacSideResetDryRunBoundary(t *testing.T) {
-	plans := compactText(mustRead(t, "PLANS.md"))
+	routeRules := compactText(mustRead(t, standingRouteRulesPath))
 	remoteRaw := mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md")
 	operatorSection := compactDocSection(t, remoteRaw, "### P0k Mac-Side Disposable Vault Reset Dry-Run Recovery Session", "### P0l Mac-Side Disposable Vault Reset Execute-Reset Contract Prep")
 
-	assertContainsAll(t, "Remote Alpha operator P0k PLANS boundary", plans,
+	assertContainsAll(t, "Remote Alpha operator P0k standing route rules boundary", routeRules,
 		"The P0k implementation/self-audit slice may add exactly one Mac-side disposable",
 		"`scripts/remote_alpha_operator.sh recovery-session vault-reset-disposable --ssh-target <target> --dry-run`",
 		"dry-run-only and non-destructive",
@@ -8773,12 +8790,12 @@ func TestRemoteAlphaOperatorP0kDocsMacSideResetDryRunBoundary(t *testing.T) {
 }
 
 func TestRemoteAlphaOperatorP0lDocsMacSideResetExecuteContractPrep(t *testing.T) {
-	plans := compactText(mustRead(t, "PLANS.md"))
+	routeRules := compactText(mustRead(t, standingRouteRulesPath))
 	remoteRaw := mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md")
 	operatorSection := compactDocSection(t, remoteRaw, "### P0l Mac-Side Disposable Vault Reset Execute-Reset Contract Prep", "### P0m Mac-Side Disposable Vault Reset Execute-Reset Recovery Session")
 	allowedFlags := compactDocSection(t, remoteRaw, "Allowed flags for the P0l `vault-reset-disposable --execute-reset` contract are:", "The P0l contract route must reject:")
 
-	assertContainsAll(t, "Remote Alpha operator P0l PLANS boundary", plans,
+	assertContainsAll(t, "Remote Alpha operator P0l standing route rules boundary", routeRules,
 		"The P0l design/static-test prep slice may define, but must not implement, the future Mac-side destructive disposable Vault reset route",
 		"`scripts/remote_alpha_operator.sh recovery-session vault-reset-disposable --ssh-target <target> --execute-reset --interactive-tty`",
 		"The already validated P0k dry-run route is the prerequisite for this design",
@@ -8913,12 +8930,12 @@ func TestRemoteAlphaOperatorP0lDocsMacSideResetExecuteContractPrep(t *testing.T)
 }
 
 func TestRemoteAlphaOperatorP0mDocsMacSideResetExecuteImplementationBoundary(t *testing.T) {
-	plans := compactText(mustRead(t, "PLANS.md"))
+	routeRules := compactText(mustRead(t, standingRouteRulesPath))
 	remoteRaw := mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md")
 	operatorSection := compactDocSection(t, remoteRaw, "### P0m Mac-Side Disposable Vault Reset Execute-Reset Recovery Session", "### Historical P0d interactive validation evidence — superseded and non-authoritative")
 	allowedFlags := compactDocSection(t, remoteRaw, "Allowed flags for `vault-reset-disposable` in P0m are:", "P0m must reject:")
 
-	assertContainsAll(t, "Remote Alpha operator P0m PLANS boundary", plans,
+	assertContainsAll(t, "Remote Alpha operator P0m standing route rules boundary", routeRules,
 		"The P0m implementation/self-audit slice may implement exactly the Mac-side destructive disposable Vault reset route defined by P0l",
 		"`scripts/remote_alpha_operator.sh recovery-session vault-reset-disposable --ssh-target <target> --execute-reset --interactive-tty`",
 		"P0m may validate only with static and fake SSH/SCP tests",
@@ -9076,12 +9093,12 @@ func TestRemoteAlphaOperatorP0nDocsAreSupersededHistory(t *testing.T) {
 }
 
 func TestRemoteAlphaOperatorP0oDocsVaultWorkloadAuthBootstrapPlanningBoundary(t *testing.T) {
-	plans := compactText(mustRead(t, "PLANS.md"))
+	routeRules := compactText(mustRead(t, standingRouteRulesPath))
 	remoteRaw := mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md")
 	operatorSection := compactDocSection(t, remoteRaw, "### P0o Vault Workload-Auth Bootstrap Planning Surface", "### Historical P0d interactive validation evidence — superseded and non-authoritative")
 	allowedFlags := compactDocSection(t, remoteRaw, "Allowed flags for `vault-workload-auth-bootstrap` in P0o are:", "With no mode")
 
-	assertContainsAll(t, "Remote Alpha operator P0o PLANS boundary", plans,
+	assertContainsAll(t, "Remote Alpha operator P0o standing route rules boundary", routeRules,
 		"The P0o combined implementation/self-audit/merge-readiness slice may add exactly one safe local/print-only planning surface",
 		"`scripts/remote_alpha_operator.sh recovery-session vault-workload-auth-bootstrap [--help|--plan|--inventory]`",
 		"must not implement live bootstrap execution",
@@ -9207,11 +9224,11 @@ func TestRemoteAlphaOperatorP0oDocsVaultWorkloadAuthBootstrapPlanningBoundary(t 
 }
 
 func TestRemoteAlphaOperatorP0pDocsVaultWorkloadAuthBootstrapExecutionContractPrep(t *testing.T) {
-	plans := compactText(mustRead(t, "PLANS.md"))
+	routeRules := compactText(mustRead(t, standingRouteRulesPath))
 	remoteRaw := mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md")
 	operatorSection := compactDocSection(t, remoteRaw, "### P0p Vault Workload-Auth Bootstrap Execution Contract Prep", "### Historical P0d interactive validation evidence — superseded and non-authoritative")
 
-	assertContainsAll(t, "Remote Alpha operator P0p PLANS boundary", plans,
+	assertContainsAll(t, "Remote Alpha operator P0p standing route rules boundary", routeRules,
 		"The P0p design/static-test prep slice may define, but must not implement, the future secret-sensitive workload-auth bootstrap execution route",
 		"`scripts/remote_alpha_operator.sh recovery-session vault-workload-auth-bootstrap --ssh-target <target> --execute-bootstrap --interactive-tty`",
 		"P0p stays docs/static-test only.",
@@ -9329,11 +9346,11 @@ func TestRemoteAlphaOperatorP0pDocsVaultWorkloadAuthBootstrapExecutionContractPr
 }
 
 func TestRemoteAlphaOperatorP0qDocsVaultWorkloadAuthBootstrapExecutionRoute(t *testing.T) {
-	plans := compactText(mustRead(t, "PLANS.md"))
+	routeRules := compactText(mustRead(t, standingRouteRulesPath))
 	remoteRaw := mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md")
 	operatorSection := compactDocSection(t, remoteRaw, "### P0q Vault Workload-Auth Bootstrap Execution Route", "### Historical P0r Mac-Side Runtime Identity Summary — Superseded and Non-Authoritative")
 
-	assertContainsAll(t, "Remote Alpha operator P0q PLANS boundary", plans,
+	assertContainsAll(t, "Remote Alpha operator P0q standing route rules boundary", routeRules,
 		"The P0q implementation/self-audit/merge-readiness slice may implement exactly one dedicated secret-sensitive workload-auth bootstrap helper, exactly one Mac-side recovery-session execution route, one bounded preparation form for the bootstrap summary path, and one bounded preparation form for fixed workload-zone config readability, and one bounded preparation form for fixed SPIRE server bundle-read access",
 		"`scripts/remote_alpha_operator.sh recovery-session vault-workload-auth-bootstrap --ssh-target <target> --execute-bootstrap --interactive-tty`",
 		"`scripts/remote_alpha_operator.sh recovery-session vault-workload-auth-bootstrap --ssh-target <target> --prepare-summary-path --interactive-tty`",
@@ -9568,12 +9585,12 @@ func TestRemoteAlphaOperatorP0rDocsAreSupersededHistory(t *testing.T) {
 }
 
 func TestRemoteAlphaP0tGrammarDiagnosticDocsContract(t *testing.T) {
-	plans := compactText(mustRead(t, "PLANS.md"))
+	routeRules := compactText(mustRead(t, standingRouteRulesPath))
 	remote := compactText(mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md"))
 	access := compactText(mustRead(t, ".docs/system_overview/remote_alpha_access_contract.md"))
 	artifact := compactText(mustRead(t, ".docs/system_overview/artifact_hygiene.md"))
 
-	for label, doc := range map[string]string{"PLANS": plans, "host": remote, "access": access, "artifact": artifact} {
+	for label, doc := range map[string]string{"route rules": routeRules, "host": remote, "access": access, "artifact": artifact} {
 		assertContainsAll(t, label+" P0t diagnostic boundary", doc,
 			"es-governance-tls-grammar-diagnostic", "execution-governance",
 			"Bounded slice rule", "Temporary compatibility edge",
@@ -9581,7 +9598,7 @@ func TestRemoteAlphaP0tGrammarDiagnosticDocsContract(t *testing.T) {
 		assertContainsAll(t, label+" P0t diagnostic nonauthority", doc,
 			"no", "retry", "restoration", "source", "lock")
 	}
-	assertContainsAll(t, "plan diagnostic effect boundary", plans,
+	assertContainsAll(t, "plan diagnostic effect boundary", routeRules,
 		"--verify-only", "zero", "at most eighteen", "first_grammar_rejection",
 		"no_grammar_rejection_reached", "incomplete_other",
 		"ES_TLS_GRAMMAR_DIAGNOSTIC_V2", "2048", "no status generation",
@@ -9595,7 +9612,7 @@ func TestRemoteAlphaP0tGrammarDiagnosticDocsContract(t *testing.T) {
 	assertContainsAll(t, "artifact private schema boundary", artifact,
 		"grammar_diagnostic_v2_schema.json", "reference/test data", "not a protected P0t status schema",
 		"No raw stdout/stderr", "2048", "other", "material-derived hashes")
-	assertContainsAll(t, "plan diagnostic projection precision", plans,
+	assertContainsAll(t, "plan diagnostic projection precision", routeRules,
 		"exactly one complete supported LF-terminated", "original stdout or stderr stream",
 		"split fragments", "repeated lines", "LF/non-LF capacity", "counts authenticate native contents")
 	assertContainsAll(t, "host diagnostic projection precision", remote,
@@ -9606,7 +9623,7 @@ func TestRemoteAlphaP0tGrammarDiagnosticDocsContract(t *testing.T) {
 	assertContainsAll(t, "artifact diagnostic projection privacy", artifact,
 		"original stdout and stderr streams", "zero, split, repeated or multiple",
 		"byte/line/CR/NUL/UTF-8 capacity", "do not export or authenticate native content")
-	assertContainsAll(t, "plan diagnostic literal capacity", plans,
+	assertContainsAll(t, "plan diagnostic literal capacity", routeRules,
 		"two admitted ASCII literal lengths", "every other LF consumes a byte",
 		"distinct", "outside the literal", "no nonliteral flag or residual byte")
 	assertContainsAll(t, "host diagnostic literal capacity", remote,
@@ -9615,7 +9632,7 @@ func TestRemoteAlphaP0tGrammarDiagnosticDocsContract(t *testing.T) {
 	assertContainsAll(t, "access and artifact capacity boundary", access+artifact,
 		"structural capacity is not access proof", "two admitted ASCII literal lengths",
 		"charging other LF bytes", "sole line has no nonliteral residual capacity")
-	assertContainsAll(t, "plan prior reader close precision", plans,
+	assertContainsAll(t, "plan prior reader close precision", routeRules,
 		"shared protected-summary reader", "disposition-unproved marker",
 		"same exception", "53-function freeze", "other 52 original functions",
 		"Settled read/metadata failure with successful close")
@@ -9625,7 +9642,7 @@ func TestRemoteAlphaP0tGrammarDiagnosticDocsContract(t *testing.T) {
 	assertContainsAll(t, "access prior reader close precision", access,
 		"failed canonical-leaf close", "disposition unproved", "FileNotFoundError",
 		"independent lock and status close attempts")
-	for label, value := range map[string]string{"plan": plans, "host": remote, "access": access} {
+	for label, value := range map[string]string{"route rules": routeRules, "host": remote, "access": access} {
 		assertContainsAll(t, label+" fixed verify-success predicate", value,
 			"verify_success_stderr_nonempty", "verify_success_stdout_not_exact",
 			"15 bytes", "one line", "UTF-8", "final LF", "no CR", "no NUL")
@@ -9642,7 +9659,7 @@ func TestRemoteAlphaP0tGrammarDiagnosticDocsContract(t *testing.T) {
 		"es-p0t-openssl-grammar-diagnostic/v2", "verify_projection",
 		"context_invalid_unclassified", "recognized_literal_count", "cap_reached",
 		"sequence_complete", "unknown_numeric", "terminal", "opaque")
-	assertContainsAll(t, "plan context-placement refusal", plans,
+	assertContainsAll(t, "plan context-placement refusal", routeRules,
 		"both original streams nonempty", "single context-invalid literal",
 		"Replacing that token with `other` is also refused", "global sequence cap")
 	assertContainsAll(t, "host context-placement refusal", remote,
@@ -9656,14 +9673,14 @@ func TestRemoteAlphaP0tGrammarDiagnosticDocsContract(t *testing.T) {
 }
 
 func TestRemoteAlphaESServiceTLSStatusOnlyContract(t *testing.T) {
-	plans := compactText(mustRead(t, "PLANS.md"))
+	routeRules := compactText(mustRead(t, standingRouteRulesPath))
 	remote := compactText(mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md"))
 	artifact := compactText(mustRead(t, ".docs/system_overview/artifact_hygiene.md"))
 	facade := mustRead(t, remoteAlphaOperatorScriptPath())
 	collector := mustRead(t, "scripts/internal/remote_alpha_es_tls_status.py")
 	wrapper := mustRead(t, "scripts/remote_alpha_es_service_tls_renew.sh")
 
-	for label, value := range map[string]string{"PLANS": plans, "Remote Alpha": remote} {
+	for label, value := range map[string]string{"route rules": routeRules, "Remote Alpha": remote} {
 		assertContainsAll(t, label+" status-only boundary", value,
 			"`Reopened redesign seam`", "dedicated", "status-only", "renewal", "held",
 			"es-service-tls-status", "es-governance-tls-status",
@@ -9698,8 +9715,7 @@ func TestRemoteAlphaESServiceTLSStatusOnlyContract(t *testing.T) {
 }
 
 func TestRemoteAlphaESServiceTLSStatusOnlyRepairContract(t *testing.T) {
-	plansRaw := mustRead(t, "PLANS.md")
-	plans := compactDocSection(t, plansRaw,
+	routeRules := compactDocSection(t, mustRead(t, standingRouteRulesPath),
 		"`Reopened redesign seam`: the P0s/P0t shared status-and-renewal helper",
 		"The P0u implementation/self-audit/merge-readiness slice")
 	remoteRaw := mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md")
@@ -9715,7 +9731,7 @@ func TestRemoteAlphaESServiceTLSStatusOnlyRepairContract(t *testing.T) {
 		"`Bounded slice rule`: the tracked synthetic public fixtures",
 		"The P0u operator healthcheck TLS status/renew summary")
 
-	assertContainsAll(t, "P0s/P0t x509 text plan refinement", plans,
+	assertContainsAll(t, "P0s/P0t x509 text plan refinement", routeRules,
 		"`Bounded slice rule refinement`", "exactly", "two complete terminal signature tails",
 		"nine-space-indented lowercase hexadecimal", "Signature Value:",
 		"eight-space-indented lowercase hexadecimal", "heading-plus-nine",
@@ -9727,7 +9743,7 @@ func TestRemoteAlphaESServiceTLSStatusOnlyRepairContract(t *testing.T) {
 		"eight-space-indented lowercase hexadecimal", "consistent indentation",
 		"anchored at end of output", "mixed indentation", "repeated or unknown headings",
 		"by itself it did not qualify")
-	for label, section := range map[string]string{"plan": plans, "status": status} {
+	for label, section := range map[string]string{"route rules": routeRules, "status": status} {
 		assertContainsAll(t, "P0s/P0t target 3.0.13 finite response grammar "+label, section,
 			"39", "13", "three", "nonroot", "certificate_malformed", "key_malformed",
 			"Could not read certificate from /dev/stdin\\nUnable to load certificate\\n",
@@ -9745,7 +9761,7 @@ func TestRemoteAlphaESServiceTLSStatusOnlyRepairContract(t *testing.T) {
 		"openssl3013_negative_responses.json", "retained malformed literals",
 		"no private key", "incomplete grammar preserves prior bytes")
 
-	for label, section := range map[string]string{"PLANS status slice": plans, "Remote Alpha status slice": status} {
+	for label, section := range map[string]string{"route rules status slice": routeRules, "Remote Alpha status slice": status} {
 		assertContainsAll(t, label+" interactive stdin contract", section,
 			"source-controlled bytes", "independent", "SSH stdin", "real local",
 			"remote TTY", "password-required sudo", "cached sudo", "NOPASSWD",
@@ -9845,7 +9861,7 @@ func TestRemoteAlphaESServiceTLSStatusOnlyRepairContract(t *testing.T) {
 		"ordinary `Exception`", "bounded backoff", "status lock",
 		"exactly one direct-child reap", "identity-based proc absence scan",
 		"waitid(P_PID, WEXITED|WNOHANG|WNOWAIT)", "probe child")
-	for label, section := range map[string]string{"PLANS": plans, "Remote Alpha": status, "access": accessScope} {
+	for label, section := range map[string]string{"route rules": routeRules, "Remote Alpha": status, "access": accessScope} {
 		assertContainsAll(t, label+" invocation custody and preflight", section,
 			"same-UID", "one fixed", "empty entry set", "measured identity",
 			"automatic", "one", "capability", "before", "OpenSSL",
@@ -9876,7 +9892,7 @@ func TestRemoteAlphaESServiceTLSStatusOnlyRepairContract(t *testing.T) {
 }
 
 func TestRemoteAlphaESServiceTLSStatusFIFOProcessAndAnchorRepairContract(t *testing.T) {
-	plans := compactDocSection(t, mustRead(t, "PLANS.md"),
+	routeRules := compactDocSection(t, mustRead(t, standingRouteRulesPath),
 		"`Reopened redesign seam`: the P0s/P0t shared status-and-renewal helper",
 		"The P0u implementation/self-audit/merge-readiness slice")
 	remote := compactDocSection(t, mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md"),
@@ -9884,7 +9900,7 @@ func TestRemoteAlphaESServiceTLSStatusFIFOProcessAndAnchorRepairContract(t *test
 		"### P0u Mac-Side Operator Healthcheck TLS Status/Renew Recovery Session")
 	access := compactDocSection(t, mustRead(t, ".docs/system_overview/remote_alpha_access_contract.md"),
 		"## 1. Authority, scope, and status", "## 2. Versioned profile and ownership")
-	for label, section := range map[string]string{"PLANS": plans, "Remote Alpha": remote} {
+	for label, section := range map[string]string{"route rules": routeRules, "Remote Alpha": remote} {
 		assertContainsAll(t, label+" nonblocking leaf and group contract", section,
 			"FIFO", "before any blocking", "O_NOFOLLOW|O_CLOEXEC|O_NONBLOCK",
 			"device", "inode", "type", "owner", "mode", "link count",
@@ -9908,10 +9924,10 @@ func TestRemoteAlphaESServiceTLSStatusFIFOProcessAndAnchorRepairContract(t *test
 }
 
 func TestRemoteAlphaProtectedEvidencePathsV1Contract(t *testing.T) {
-	plans := compactText(mustRead(t, "PLANS.md"))
+	routeRules := compactText(mustRead(t, standingRouteRulesPath))
 	remote := compactText(mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md"))
 	artifact := compactText(mustRead(t, ".docs/system_overview/artifact_hygiene.md"))
-	for label, value := range map[string]string{"PLANS": plans, "Remote Alpha": remote, "artifact hygiene": artifact} {
+	for label, value := range map[string]string{"route rules": routeRules, "Remote Alpha": remote, "artifact hygiene": artifact} {
 		assertContainsAll(t, label+" protected status acceptance", value,
 			"/var/lib/execution-substrate-remote-alpha/v1/status",
 			"es-service-tls-status-summary.json", "es-governance-tls-status-summary.json",
@@ -9926,7 +9942,7 @@ func TestRemoteAlphaProtectedEvidencePathsV1Contract(t *testing.T) {
 }
 
 func TestRemoteAlphaOperatorP0uDocsOperatorHealthcheckTLSRenewRoute(t *testing.T) {
-	plans := compactText(mustRead(t, "PLANS.md"))
+	routeRules := compactText(mustRead(t, standingRouteRulesPath))
 	remoteRaw := mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md")
 	operatorSection := compactDocSection(t, remoteRaw, "### P0u Mac-Side Operator Healthcheck TLS Status/Renew Recovery Session", "### Historical P0d interactive validation evidence — superseded and non-authoritative")
 	allowedFlags := compactDocSection(t, remoteRaw, "Allowed flags for P0u are:", "P0u must reject:")
@@ -9934,7 +9950,7 @@ func TestRemoteAlphaOperatorP0uDocsOperatorHealthcheckTLSRenewRoute(t *testing.T
 	source := mustRead(t, remoteAlphaOperatorScriptPath())
 	sourceSection := docSection(t, source, "recovery_session_operator_healthcheck_tls_usage() {", "\nrecovery_session() {")
 
-	assertContainsAll(t, "Remote Alpha operator P0u PLANS boundary", plans,
+	assertContainsAll(t, "Remote Alpha operator P0u standing route rules boundary", routeRules,
 		"The P0u implementation/self-audit/merge-readiness slice may add exactly one bounded Remote Alpha host-local operator healthcheck client TLS helper pair and exactly two Mac-side recovery-session routes",
 		"`scripts/remote_alpha_operator.sh recovery-session operator-healthcheck-tls-status --ssh-target <target> --interactive-tty`",
 		"`scripts/remote_alpha_operator.sh recovery-session operator-healthcheck-tls-renew --ssh-target <target> --interactive-tty --execute-renew`",
@@ -10054,7 +10070,7 @@ func TestRemoteAlphaOperatorP0uDocsOperatorHealthcheckTLSRenewRoute(t *testing.T
 }
 
 func TestRemoteAlphaOperatorP0vDocsOperatorHealthcheckTLSNoninteractiveStatusDesign(t *testing.T) {
-	plans := compactText(mustRead(t, "PLANS.md"))
+	routeRules := compactText(mustRead(t, standingRouteRulesPath))
 	designRaw := mustRead(t, ".docs/remote_alpha_operator_healthcheck_noninteractive_status.md")
 	design := compactText(designRaw)
 	runtimeContract := compactDocSection(t, designRaw, "## 4. Local Runtime Contract", "## 5. SSH And Remote Command")
@@ -10074,7 +10090,7 @@ func TestRemoteAlphaOperatorP0vDocsOperatorHealthcheckTLSNoninteractiveStatusDes
 	runtimeSource := mustRead(t, "scripts/remote_alpha_operator_healthcheck_tls_status_noninteractive.py")
 	collectorSource := mustRead(t, "scripts/internal/remote_alpha_operator_healthcheck_tls_status_noninteractive_remote.py")
 
-	assertContainsAll(t, "Remote Alpha operator P0v PLANS boundary", plans,
+	assertContainsAll(t, "Remote Alpha operator P0v standing route rules boundary", routeRules,
 		"The P0v noninteractive TLS status implementation slice implements",
 		"operator-healthcheck-tls-status-noninteractive --ssh-target <target> --format json",
 		"`.docs/remote_alpha_operator_healthcheck_noninteractive_status.md`",
@@ -10683,6 +10699,7 @@ func TestRemoteAlphaOperatorHealthcheckTLSDocsSigningCustodyDesign(t *testing.T)
 
 func TestRemoteAlphaOperatorHealthcheckTLSSigningCustodyResolutionCriteria(t *testing.T) {
 	plans := compactText(mustRead(t, "PLANS.md"))
+	routeRules := compactText(mustRead(t, standingRouteRulesPath))
 	remoteOverview := compactText(mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md"))
 	replacementRaw := mustRead(t, ".docs/remote_alpha_operator_healthcheck_tls_operator_authorized_replacement.md")
 	signingRaw := mustRead(t, ".docs/remote_alpha_operator_healthcheck_tls_signing_custody.md")
@@ -10712,6 +10729,8 @@ func TestRemoteAlphaOperatorHealthcheckTLSSigningCustodyResolutionCriteria(t *te
 	assertContainsAll(t, "operator healthcheck resolution PLANS boundary", plans,
 		"operator-authorized operator-healthcheck TLS replacement design tranche is also docs/static-test only",
 		"signing authority, signer custody, key custody, CSR/cert flow, backup/rollback evidence, redaction, and post-check semantics remain ES unresolved stop conditions",
+	)
+	assertContainsAll(t, "operator healthcheck resolution standing route rules boundary", routeRules,
 		"`operator-healthcheck-tls-renew` remains blocked/status-only with `unsupported_signing_topology`",
 	)
 
@@ -10915,6 +10934,7 @@ func TestRemoteAlphaOperatorHealthcheckTLSSigningCustodyResolutionCriteria(t *te
 
 func TestRemoteAlphaOperatorHealthcheckTLSDocsSigningCustodyDecisionRecord(t *testing.T) {
 	plans := compactText(mustRead(t, "PLANS.md"))
+	routeRules := compactText(mustRead(t, standingRouteRulesPath))
 	remoteOverview := compactText(mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md"))
 	replacementRaw := mustRead(t, ".docs/remote_alpha_operator_healthcheck_tls_operator_authorized_replacement.md")
 	signingRaw := mustRead(t, ".docs/remote_alpha_operator_healthcheck_tls_signing_custody.md")
@@ -10938,8 +10958,10 @@ func TestRemoteAlphaOperatorHealthcheckTLSDocsSigningCustodyDecisionRecord(t *te
 
 	assertContainsAll(t, "operator healthcheck signing custody decision PLANS boundary", plans,
 		"operator-authorized operator-healthcheck TLS replacement design tranche is also docs/static-test only",
-		"`operator-healthcheck-tls-renew` remains blocked/status-only with `unsupported_signing_topology`",
 		"signing authority, signer custody, key custody, CSR/cert flow, backup/rollback evidence, redaction, and post-check semantics remain ES unresolved stop conditions",
+	)
+	assertContainsAll(t, "operator healthcheck signing custody decision standing route rules boundary", routeRules,
+		"`operator-healthcheck-tls-renew` remains blocked/status-only with `unsupported_signing_topology`",
 	)
 
 	assertContainsAll(t, "operator healthcheck signing custody decision overview link", remoteOverview,
@@ -13082,7 +13104,7 @@ func TestIntegratedAcceptanceGateDocumentationIsConsistent(t *testing.T) {
 		"effect-free existing-host route retirements",
 		"At that point, development acceptance, a later commit, operational rollout, and publication were distinct decisions",
 	)
-	foundation := compactDocSection(t, plans, "**Acceptance boundaries selected on 2026-11-13:**", "The `reliable-submit-durable-same-operation-replay-repair` source tranche")
+	foundation := compactDocSection(t, mustRead(t, standingAdmissionRulesPath), "**Acceptance boundaries selected on 2026-11-13:**", "")
 	assertContainsAll(t, "C foundation acceptance scope", foundation,
 		"exact authenticated implementation and selected observations",
 		"A local source-preservation commit is a separate, explicitly authorized effect",
@@ -13178,7 +13200,7 @@ func TestIntegratedAcceptanceGateDocumentationIsConsistent(t *testing.T) {
 	assertContainsAll(t, "current Linux operating gate", linuxGate,
 		"Historical Tranche A sequencing allowed a fresh read-only audit",
 		"does not impose a blanket native pre-commit gate on local source preservation or integration",
-		"`PLANS.md` and `.docs/execution_lifecycle/contracts.md`",
+		"`.docs/standing_rules/execution_admission_and_custody.md` and `.docs/execution_lifecycle/contracts.md`",
 		"governed Ubuntu 24.04 linux/amd64 for Remote Alpha and governed Ubuntu 24.04 linux/arm64 for supported-local",
 		"`openat2` with beneath, no-magic-link, no-symlink, and no-cross-device resolution",
 		"`renameat2(RENAME_NOREPLACE)` collision behavior",
@@ -13230,7 +13252,7 @@ func TestIntegratedAcceptanceGateDocumentationIsConsistent(t *testing.T) {
 }
 
 func TestIntegratedCandidateStatusSeparatesCAndT(t *testing.T) {
-	plans := mustRead(t, "PLANS.md")
+	admissionRules := mustRead(t, standingAdmissionRulesPath)
 	record := mustRead(t, plansRecordPath)
 	contracts := mustRead(t, ".docs/execution_lifecycle/contracts.md")
 	section := func(body, heading string) string {
@@ -13257,7 +13279,7 @@ func TestIntegratedCandidateStatusSeparatesCAndT(t *testing.T) {
 			t.Errorf("candidate plan status missing %q", required)
 		}
 	}
-	if !strings.Contains(plans, "**Acceptance boundaries selected on 2026-11-13:**") {
+	if !strings.Contains(admissionRules, "**Acceptance boundaries selected on 2026-11-13:**") {
 		t.Error("dated C acceptance boundary was lost")
 	}
 	for _, required := range []string{
@@ -13272,7 +13294,7 @@ func TestIntegratedCandidateStatusSeparatesCAndT(t *testing.T) {
 }
 
 func TestResolvedPlanCustodyCandidateDocumentation(t *testing.T) {
-	plans := compactText(mustRead(t, "PLANS.md"))
+	admissionRules := compactText(mustRead(t, standingAdmissionRulesPath))
 	contract := compactText(mustRead(t, ".docs/execution_lifecycle/contracts.md"))
 	implementation := compactText(mustRead(t, ".docs/execution_lifecycle/implementation.md"))
 	capabilities := compactText(mustRead(t, ".docs/system_overview/capability_probing.md"))
@@ -13293,12 +13315,14 @@ func TestResolvedPlanCustodyCandidateDocumentation(t *testing.T) {
 		"Acceptance boundaries selected on 2026-11-13",
 		"reclamation gap",
 		"Two missing roots under the same deepest existing lookup context reject",
-		"No result pathname cleanup or whole-root reclamation is selected",
 		"private authenticated completion record",
 	} {
-		if !strings.Contains(plans, required) {
-			t.Fatalf("PLANS missing candidate rule %q", required)
+		if !strings.Contains(admissionRules, required) {
+			t.Fatalf("admission standing rules missing candidate rule %q", required)
 		}
+	}
+	if !strings.Contains(compactText(mustRead(t, "PLANS.md")), "No result pathname cleanup or whole-root reclamation is selected") {
+		t.Fatal("PLANS missing candidate rule \"No result pathname cleanup or whole-root reclamation is selected\"")
 	}
 	for _, required := range []string{
 		"32 MiB for primary Submit payload",
@@ -13361,7 +13385,7 @@ func TestFoundationAcceptanceBoundaryDocumentation(t *testing.T) {
 		}
 	}
 
-	status := section("PLANS.md", "**2026-11-13 Review-22 development-source disposition:**", "**Bounded material and custody rules:**")
+	status := section(standingAdmissionRulesPath, "**2026-11-13 Review-22 development-source disposition:**", "**Bounded material and custody rules:**")
 	require("dated development status", status,
 		"DEVELOPMENT_SOURCE_FOUNDATION_ACCEPTED",
 		"3e89fa9e0b7cc788e2b6c829ea25af00ea6a37b57f249e84d2b98c918511ad65",
@@ -13372,8 +13396,8 @@ func TestFoundationAcceptanceBoundaryDocumentation(t *testing.T) {
 		"Review-17's accepted 23-phase supported-local compatibility proof applies only to its original source and inputs",
 		"Process status remains PARTIAL",
 		"post-N5 recursive allocation was intentionally unmeasured")
-	boundaries := section("PLANS.md", "**Acceptance boundaries selected on 2026-11-13:**", "The `reliable-submit-durable-same-operation-replay-repair` source tranche")
-	require("plan acceptance boundaries", boundaries,
+	boundaries := section(standingAdmissionRulesPath, "**Acceptance boundaries selected on 2026-11-13:**", "Tranche B1, `ES-B1-SEMANTIC-OWNERSHIP-COMMAND`")
+	require("admission standing rules acceptance boundaries", boundaries,
 		"not final product acceptance",
 		"It grants no staging, cleanup, Git, integration, publication or deployment effect",
 		"A local source-preservation commit is a separate, explicitly authorized effect",
@@ -13444,7 +13468,7 @@ func TestFoundationAcceptanceBoundaryDocumentation(t *testing.T) {
 }
 
 func TestRetainedResultAuthProtocolDocsContract(t *testing.T) {
-	plans := compactText(mustRead(t, "PLANS.md"))
+	admissionRules := compactText(mustRead(t, standingAdmissionRulesPath))
 	contract := compactText(mustRead(t, ".docs/execution_lifecycle/contracts.md"))
 	implementation := compactText(mustRead(t, ".docs/execution_lifecycle/implementation.md"))
 	configuration := compactText(mustRead(t, ".docs/system_overview/configuration.md"))
@@ -13456,8 +13480,8 @@ func TestRetainedResultAuthProtocolDocsContract(t *testing.T) {
 		"not a migration policy",
 		"Reliable submit remains unavailable",
 	} {
-		if !strings.Contains(plans, required) {
-			t.Fatalf("PLANS missing retained result rule %q", required)
+		if !strings.Contains(admissionRules, required) {
+			t.Fatalf("admission standing rules missing retained result rule %q", required)
 		}
 	}
 	for _, required := range []string{
@@ -13533,13 +13557,13 @@ func TestRetainedResultAuditF2CurrentClaimedRootRetentionDocs(t *testing.T) {
 }
 
 func TestRetainedResultAuditF1F3OperatorReferenceAndPlacementDocs(t *testing.T) {
-	plans := compactText(mustRead(t, "PLANS.md"))
+	admissionRules := compactText(mustRead(t, standingAdmissionRulesPath))
 	config := compactText(mustRead(t, ".docs/system_overview/configuration.md"))
 	contract := compactText(mustRead(t, ".docs/execution_lifecycle/contracts.md"))
 	runbook := compactText(mustRead(t, ".docs/supported_local_cp_consumer_runbook.md"))
 	for _, phrase := range []string{"returned BLOCK", "configured-consumer compatibility", "key-placement validation", "requires new independent assessment"} {
-		if !strings.Contains(plans, phrase) {
-			t.Fatalf("PLANS missing audit status %q", phrase)
+		if !strings.Contains(admissionRules, phrase) {
+			t.Fatalf("admission standing rules missing audit status %q", phrase)
 		}
 	}
 	for _, content := range []string{config, contract, runbook} {
@@ -13552,13 +13576,13 @@ func TestRetainedResultAuditF1F3OperatorReferenceAndPlacementDocs(t *testing.T) 
 }
 
 func TestRetainedResultReview04ConsumerEntrypointAndOwnedScopeDocs(t *testing.T) {
-	plans := compactText(mustRead(t, "PLANS.md"))
+	admissionRules := compactText(mustRead(t, standingAdmissionRulesPath))
 	configuration := compactText(mustRead(t, ".docs/system_overview/configuration.md"))
 	contract := compactText(mustRead(t, ".docs/execution_lifecycle/contracts.md"))
 	implementation := compactText(mustRead(t, ".docs/execution_lifecycle/implementation.md"))
 	runbook := compactText(mustRead(t, ".docs/supported_local_cp_consumer_runbook.md"))
 	for _, phrase := range []string{"F1", "bash -s -- setup", "clean single-leading-slash", "F2 retention and F3 key-parent fixes remain in force", "independent assessment"} {
-		if !strings.Contains(plans, phrase) {
+		if !strings.Contains(admissionRules, phrase) {
 			t.Fatalf("Review-04 follow-up plan missing %q", phrase)
 		}
 	}
@@ -13576,7 +13600,7 @@ func TestStartupProbeUseAgreementDocsContract(t *testing.T) {
 		path    string
 		phrases []string
 	}{
-		{"PLANS.md", []string{"`STARTUP-PROBE-USE-AGREEMENT-01` (bounded slice rule)", "staging refuses any mode outside it, so a new staging mode cannot skip the probe", "only the second rename proves the primitive", "ES also never changes the owning user of a directory it opened by name", "`staging probe directory does not belong to the execution roots' owning user`", "The probe retains 13 entries per start", "ES also refuses to start on a staging file system that cannot keep those modes although submissions without governed mounts would work there", "ES starts only where every submission it accepts can be staged", "a bindfs mount with `--create-for-user`, is refused although it started before this rule"}},
+		{standingAdmissionRulesPath, []string{"`STARTUP-PROBE-USE-AGREEMENT-01` (bounded slice rule)", "staging refuses any mode outside it, so a new staging mode cannot skip the probe", "only the second rename proves the primitive", "ES also never changes the owning user of a directory it opened by name", "`staging probe directory does not belong to the execution roots' owning user`", "The probe retains 13 entries per start", "ES also refuses to start on a staging file system that cannot keep those modes although submissions without governed mounts would work there", "ES starts only where every submission it accepts can be staged", "a bindfs mount with `--create-for-user`, is refused although it started before this rule"}},
 		{".docs/system_overview/capability_probing.md", []string{"Staging refuses any mode the probe does not stage.", "a results file system whose rename accepts no flags refuses startup instead of losing every result", "it never changes an owning user", "prove the results no-replace rename both ways", "a staging file system that cannot keep them refuses startup even though submissions without governed mounts would work there"}},
 		{".docs/execution_lifecycle/implementation.md", []string{"(`probeStagedEntries`)", "(`probeRetainedResultFiles`)", "(`requireOpenedDirectoryOwnedByRootsUser`)", "onto an existing name, which must fail with `EEXIST`", "startup refuses a staging file system that cannot keep them even when no submission would use governed mounts"}},
 		{".runbooks/system/v1_bringup.md", []string{"the file system under the roots stores the modes ES gives files and directories, gives regular files the same device as directories, and supports the no-replace rename", "`no-replace rename to a free result name is unavailable`", "ES refuses such a file system even if your submissions never use governed mounts"}},
@@ -13635,7 +13659,7 @@ func TestNestedStagingOwnerProbeDocsContract(t *testing.T) {
 		path    string
 		phrases []string
 	}{
-		{"PLANS.md", []string{"`NESTED-STAGING-OWNER-PROBE-01` (bounded slice rule)", "as staging does inside each claimed run staging root", "inherited a group it is not a member of from a setgid parent directory", "`nested staging directory ownership is unavailable`"}},
+		{standingAdmissionRulesPath, []string{"`NESTED-STAGING-OWNER-PROBE-01` (bounded slice rule)", "as staging does inside each claimed run staging root", "inherited a group it is not a member of from a setgid parent directory", "`nested staging directory ownership is unavailable`"}},
 		{".docs/system_overview/capability_probing.md", []string{"creates a `nested` directory inside its staging probe directory", "as staging does inside each claimed run staging root", "`nested staging directory ownership is unavailable`", "roots that inherit another group from a setgid parent directory refuse startup instead of failing at the first submission"}},
 		{".docs/execution_lifecycle/implementation.md", []string{"(`probeNestedStagingDirectory`)", "`stagingCustody.ensureDirectory` does the same inside each claimed run staging root", "`nested staging directory ownership is unavailable`", "the nested staging probe above refuses them"}},
 		{".runbooks/system/v1_bringup.md", []string{"or inherited from a setgid parent directory; the inherited case is reported as `nested staging directory ownership is unavailable`"}},
@@ -13665,7 +13689,7 @@ func TestRetainedResultReviewDocsContract(t *testing.T) {
 		path    string
 		phrases []string
 	}{
-		{"PLANS.md", []string{"before staging traversal or candidate creation", "natural `0750` result run-directory creation"}},
+		{standingAdmissionRulesPath, []string{"before staging traversal or candidate creation", "natural `0750` result run-directory creation"}},
 		{".docs/execution_lifecycle/contracts.md", []string{"even if retained staging later", "only an absent final and record", "derived parent are opened exactly", "held final descriptor must itself satisfy"}},
 		{".docs/execution_lifecycle/implementation.md", []string{"before traversing staging", "full metadata policy before response buffering", "active process mask"}},
 		{".docs/system_overview/configuration.md", []string{"effective `Clean(TrimSpace(root))`", "space in a parent component"}},
@@ -13686,7 +13710,7 @@ func TestReview06GovernedRuntimeMountReadabilityContract(t *testing.T) {
 		path    string
 		phrases []string
 	}{
-		{"PLANS.md", []string{"Review-06 MOUNT-READ-01 bounded slice refinement", "normalized `0755` directories, `0644` non-executable regular files, and `0755` executable regular files", "The claimed run root remains `0750`", "The Nomad/Docker governed bind remains read-only", "does not qualify actual Docker/Nomad mount topology"}},
+		{standingAdmissionRulesPath, []string{"Review-06 MOUNT-READ-01 bounded slice refinement", "normalized `0755` directories, `0644` non-executable regular files, and `0755` executable regular files", "The claimed run root remains `0750`", "The Nomad/Docker governed bind remains read-only", "does not qualify actual Docker/Nomad mount topology"}},
 		{".docs/execution_lifecycle/contracts.md", []string{"distinct normalized workload-visibility rule", "`0755` directories, `0644` non-executable regular files, and `0755` executable regular files", "generic private payload, runtime-support, platform, trust, result-auth, and non-mount modes do not change", "complete-tree pre-dispatch validation", "mount stays read-only"}},
 		{".docs/execution_lifecycle/implementation.md", []string{"mount-specific mode normalizer retains only executable intent", "mount directories are `0755`, ordinary files `0644`, and executable files `0755`", "narrow custody file writer uses mount-directory mode", "The claimed run root remains `0750`", "does not observe or qualify the later Docker/Nomad mount topology", "failed-allocation assertion includes bounded test-owned stdout and stderr when available"}},
 	}
@@ -13705,7 +13729,7 @@ func TestReview20InstalledMountIdentityFixtureContract(t *testing.T) {
 		path    string
 		phrases []string
 	}{
-		{"PLANS.md", []string{"Review-19 A2/composition source disposition", "A2_AND_COMPOSITION_SOURCE_ACCEPTED_RUNTIME_GATES_OPEN", "Review-20 bounded qualification-fixture refinement", "Review-21 bounded qualification-fixture correction", "test-mounted-source-identity/v2", "common host/container backing-filesystem identity domain", "native fixture remains unexecuted", "running-deployment observation"}},
+		{standingAdmissionRulesPath, []string{"Review-19 A2/composition source disposition", "A2_AND_COMPOSITION_SOURCE_ACCEPTED_RUNTIME_GATES_OPEN", "Review-20 bounded qualification-fixture refinement", "Review-21 bounded qualification-fixture correction", "test-mounted-source-identity/v2", "common host/container backing-filesystem identity domain", "native fixture remains unexecuted", "running-deployment observation"}},
 		{".docs/system_overview/capability_probing.md", []string{"bounded native single-host qualification witness", "offline modeled comparison tests", "held staged directory and file anchors before provider registration", "same Linux backing-filesystem domain", "missing observation, or skip leaves topology unqualified", "Review-21 bounded fixture correction", "Running allocation/container state alone does not prove readiness"}},
 		{".docs/execution_lifecycle/contracts.md", []string{"test-owned governed-mount fixture", "held pre-registration source anchor", "Offline modeled comparisons", "running-deployment topology observation", "Review-21 test-only repair orders fixed workload readiness", "observer cannot release before readiness"}},
 	}
@@ -13724,7 +13748,7 @@ func TestReview22TaskLabelFixtureContract(t *testing.T) {
 		path    string
 		phrases []string
 	}{
-		{"PLANS.md", []string{"Review-22 test-owned task-label prerequisite correction", "extra_labels = [\"task_name\"]", "N4 refusal", "no native v2 installed-identity", "N5 and linux/arm64 did not run", "Default harness and capability-probe agents retain"}},
+		{standingAdmissionRulesPath, []string{"Review-22 test-owned task-label prerequisite correction", "extra_labels = [\"task_name\"]", "N4 refusal", "no native v2 installed-identity", "N5 and linux/arm64 did not run", "Default harness and capability-probe agents retain"}},
 		{".docs/system_overview/capability_probing.md", []string{"Review-22 test-owned task-label prerequisite correction", "fresh Nomad Docker plugin profile", "Ordinary harness and capability-probe agents retain", "before readiness and installed-object observation", "N5 and arm64 not run", "future native witness"}},
 		{".docs/execution_lifecycle/contracts.md", []string{"Review-22 test-owned task-label prerequisite correction", "exactly", "Bounded slice rule", "not an unconditional Nomad label guarantee", "before adoption or any Docker effect", "no v2 identity record", "fixture-agent configuration only"}},
 	}
@@ -13743,7 +13767,7 @@ func TestReview07CustodyRecordedModeContract(t *testing.T) {
 		path    string
 		phrases []string
 	}{
-		{"PLANS.md", []string{"Review-07 CUSTODY-MODE-01 bounded custody refinement", "Review-06 source/evidence audit returned `BLOCK`", "Unix file type, ordinary permissions, and all three special mode bits exactly", "fresh independent Review-07 re-audit"}},
+		{standingAdmissionRulesPath, []string{"Review-07 CUSTODY-MODE-01 bounded custody refinement", "Review-06 source/evidence audit returned `BLOCK`", "Unix file type, ordinary permissions, and all three special mode bits exactly", "fresh independent Review-07 re-audit"}},
 		{".docs/execution_lifecycle/contracts.md", []string{"Review-07 CUSTODY-MODE-01 repair", "Unix file type, ordinary `0777` permissions, setuid, setgid, and sticky bits exactly", "mismatch fails before provider submission"}},
 		{".docs/execution_lifecycle/implementation.md", []string{"Review-07 repairs the independently found CUSTODY-MODE-01", "`S_IFMT | 07777`", "object-identity predicate remains separate", "does not repair or remove the retained object"}},
 	}
@@ -13762,7 +13786,7 @@ func TestReview08RegistrationModeContract(t *testing.T) {
 		path    string
 		phrases []string
 	}{
-		{"PLANS.md", []string{"Review-08 REGISTRATION-MODE-01 bounded custody refinement", "post-creation descriptor stat must match the intended Unix file type", "all `07777` mode bits exactly", "fresh independent Review-08 audit"}},
+		{standingAdmissionRulesPath, []string{"Review-08 REGISTRATION-MODE-01 bounded custody refinement", "post-creation descriptor stat must match the intended Unix file type", "all `07777` mode bits exactly", "fresh independent Review-08 audit"}},
 		{".docs/execution_lifecycle/contracts.md", []string{"Review-08 REGISTRATION-MODE-01 repair", "before its identity enters the expected tree", "unregistered child and claimed root without metadata repair or deletion", "Later complete-tree handoff still validates the exact recorded state"}},
 		{".docs/execution_lifecycle/implementation.md", []string{"Review-08 closes the registration-time REGISTRATION-MODE-01 gap", "content write and `Fsync`, before recording the descriptor stat", "A later handoff sees the retained child as unexpected"}},
 	}
@@ -13781,7 +13805,7 @@ func TestReview10ProofArtifactBoundaryContract(t *testing.T) {
 		path    string
 		phrases []string
 	}{
-		{"PLANS.md", []string{"Review-10 PROOF-RAW-OBS-01", "host proof directory is evidence-only", "tracked `.out/Dockerfile`", "independent Review-10 audit"}},
+		{standingAdmissionRulesPath, []string{"Review-10 PROOF-RAW-OBS-01", "host proof directory is evidence-only", "tracked `.out/Dockerfile`", "independent Review-10 audit"}},
 		{".docs/execution_lifecycle/contracts.md", []string{"host `.out` proof directory is evidence-only", "bootstrap/transport scratch is separate", "Raw", "opaque result bundles are not retained", "final host manifest is the root evidence record"}},
 		{".docs/supported_local_cp_consumer_runbook.md", []string{"Review-10 proof artifact boundary", "guest-evidence/", "tracked `.out/Dockerfile`", "Raw Nomad/Docker/systemd output", "normal-shell result is", "fresh independent Review-10 audit"}},
 		{"scripts/73_supported_local_proof.sh", []string{"create_private_host_proof_dir", "create_private_host_bootstrap_dir", "collect_guest_workspace()", "finalize_host_evidence_manifest", "cleanup_host_bootstrap_scratch"}},
@@ -13805,7 +13829,7 @@ func TestReview11ProofCaptureAndManifestContract(t *testing.T) {
 		path    string
 		phrases []string
 	}{
-		{"PLANS.md", []string{"Review-11 PROOF-EXEC-STATUS-01", "A labeled capture writes only its", "self-exclusion field", "independent Review-11 audit"}},
+		{standingAdmissionRulesPath, []string{"Review-11 PROOF-EXEC-STATUS-01", "A labeled capture writes only its", "self-exclusion field", "independent Review-11 audit"}},
 		{".docs/execution_lifecycle/contracts.md", []string{"A labeled capture writes only its own summary, status, and fixed", "Node-detail admission parses a loopback-only URL", "self_excluded", "every other retained"}},
 		{".docs/supported_local_cp_consumer_runbook.md", []string{"Review-11 capture lineage and root manifest", "A labeled execution capture writes only labeled summary, status, and fixed", "127.0.0.1", "self_excluded: true", "fresh independent Review-11 audit"}},
 		{"scripts/73_supported_local_proof.sh", []string{"capture_execution_evidence()", "validate_control_plane_normal_shell_result_bundle"}},
@@ -13828,7 +13852,7 @@ func TestReview12ProofAllocationExactOneContract(t *testing.T) {
 		path    string
 		phrases []string
 	}{
-		{"PLANS.md", []string{"Review-12 PROOF-RUN-LINEAGE-01 exact-one allocation repair", "exactly one", "internal allocation-selection policy", "independent Review-12 audit"}},
+		{standingAdmissionRulesPath, []string{"Review-12 PROOF-RUN-LINEAGE-01 exact-one allocation repair", "exactly one", "internal allocation-selection policy", "independent Review-12 audit"}},
 		{".docs/execution_lifecycle/contracts.md", []string{"exactly one", "Zero or multiple allocations", "latest-`ModifyIndex`", "explicit redesign"}},
 		{".docs/supported_local_cp_consumer_runbook.md", []string{"Review-12 exact-one proof allocation lineage", "Zero or multiple entries", "latest-`ModifyIndex`", "independent Review-12 audit"}},
 		{"scripts/73_supported_local_proof.sh", []string{"proof allocation count must be exactly one", "proof allocation entry invalid", "proof allocation id invalid"}},
@@ -13848,7 +13872,7 @@ func TestReview13ProofAllocationStrictJSONContract(t *testing.T) {
 		path    string
 		phrases []string
 	}{
-		{"PLANS.md", []string{"Review-13 PROOF-RUN-LINEAGE-01 strict-JSON allocation refinement", "complete allocation list", "fixed safe allocation-list error", "fresh independent Review-13 audit"}},
+		{standingAdmissionRulesPath, []string{"Review-13 PROOF-RUN-LINEAGE-01 strict-JSON allocation refinement", "complete allocation list", "fixed safe allocation-list error", "fresh independent Review-13 audit"}},
 		{".docs/execution_lifecycle/contracts.md", []string{"complete allocation-list response must be strict JSON", "inside unknown or nested fields", "before allocation selection or observation"}},
 		{".docs/supported_local_cp_consumer_runbook.md", []string{"Review-13 strict JSON allocation parsing", "including unknown and nested fields", "independent Review-13 audit"}},
 		{"scripts/73_supported_local_proof.sh", []string{"parse_constant=reject_nonstandard_constant", "proof allocation list invalid"}},
@@ -13916,7 +13940,7 @@ func TestReview17ProofResultHandoffContract(t *testing.T) {
 		path    string
 		phrases []string
 	}{
-		{"PLANS.md", []string{"Review-17 PROOF-RESULT-HANDOFF-01", "already captured normal-shell", "no legacy alias", "historical live bundle was not inspected"}},
+		{standingAdmissionRulesPath, []string{"Review-17 PROOF-RESULT-HANDOFF-01", "already captured normal-shell", "no legacy alias", "historical live bundle was not inspected"}},
 		{".docs/execution_lifecycle/contracts.md", []string{"selected private workdir", "Result-validation uses that captured summary", "rejecting duplicate object keys and nonstandard constants", "Held no-follow", "Raw bytes and workdir paths remain private"}},
 		{".docs/supported_local_cp_consumer_runbook.md", []string{"Review-17 normal-shell result handoff", "<selected-workdir>/result.tar.gz", "no duplicate object keys or nonstandard constants", "newer workdir", "exact proof result validator"}},
 		{"scripts/60_execute_loop.sh", []string{"RESULT_PATH=\"${WORKDIR}/result.tar.gz\"", "\"result_path\": sys.argv[21]", "\"result_available\": sys.argv[22]", "\"result_bytes\": int(sys.argv[23])"}},

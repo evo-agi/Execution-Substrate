@@ -919,9 +919,9 @@ func TestRemoteAlphaOperatorHealthcheckTLSStatusNoninteractiveDescendantDocument
 		"descendant containment tests: a deterministic backend in place of the kernel operations on every host",
 		"skip with an explicit reason only when the attempt is refused")
 
-	plans := compactDocSection(t, mustRead(t, "PLANS.md"),
+	routeRules := compactDocSection(t, mustRead(t, standingRouteRulesPath),
 		"`Bounded slice rule` P0v descendant containment refinement:", "P0v's implemented status schema is")
-	assertContainsAll(t, "PLANS P0v descendant containment", plans,
+	assertContainsAll(t, "route rules P0v descendant containment", routeRules,
 		"makes itself a child subreaper before any status input is read",
 		"`waitid` reports no child", "two-second descendant drain bound",
 		"refuses every later fixed command of the invocation before its spawn",
@@ -931,7 +931,7 @@ func TestRemoteAlphaOperatorHealthcheckTLSStatusNoninteractiveDescendantDocument
 		"a changed binary can undo its own parent-death request and then outlives a killed collector, as one process that the process limit still keeps from starting any other",
 		"no root-side runner is added",
 		"The route schema, failure vocabulary, internal protocol, sudo allowlist, and privilege posture do not change.")
-	assertContainsNone(t, "PLANS P0v descendant containment", plans, "dies with a killed collector.")
+	assertContainsNone(t, "route rules P0v descendant containment", routeRules, "dies with a killed collector.")
 
 	probing := compactDocSection(t, mustRead(t, ".docs/system_overview/capability_probing.md"),
 		"The noninteractive remote TLS status collector proves its descendant", "")

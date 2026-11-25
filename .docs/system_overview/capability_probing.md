@@ -196,7 +196,7 @@ ownership or provision roots. The selected native Linux syscall/custody and
 test-owned installed-source witness evidence is accepted for its named source
 and testing environments; actual running-deployment topology remains an
 environment-bound operational/rollout acceptance gate. The development-source
-disposition in `PLANS.md` and `.docs/execution_lifecycle/contracts.md` grants
+disposition in `.docs/standing_rules/execution_admission_and_custody.md` and `.docs/execution_lifecycle/contracts.md` grants
 no startup or workload authority.
 The Review-20 governed-mount test fixture is a bounded native single-host
 qualification witness, not a startup probe or production submit check. Its
@@ -241,7 +241,7 @@ pending package inspection above describe the historical Review-21 report,
 not the current selected programme. The old resource refusal's first offending
 entry remains unknown. A test-owned witness does not observe the running
 deployment, qualify actual key exposure or select a retention policy; source
-and evidence limits remain as recorded in `PLANS.md`.
+and evidence limits remain as recorded in `.docs/standing_rules/execution_admission_and_custody.md`.
 The selected R1 record protocol uses exclusive temporary creation, no-replace
 publication, no-follow reopening and file sync. Configured Submit startup must
 prove any newly required local filesystem behavior on the configured roots by

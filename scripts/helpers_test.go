@@ -38,6 +38,11 @@ func repoPath(path string) string {
 	return testutil.Path(path)
 }
 
+// standingRouteRulesPath holds the Remote Alpha operator route rules (P0i
+// to P0v) that moved out of PLANS.md unreworded. They keep PLANS.md's rank
+// in the AGENTS.md authority hierarchy. Checks of those rules read it.
+const standingRouteRulesPath = ".docs/standing_rules/remote_alpha_operator_routes.md"
+
 // mustRead, compactText, docSection, compactDocSection, assertContainsAll
 // and assertContainsNone are the helpers of package testutil, under the
 // names these tests use. The tests at the repository root use them too.

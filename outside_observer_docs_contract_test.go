@@ -14,7 +14,7 @@ import (
 
 func TestOutsideObserverStageADocumentationBoundary(t *testing.T) {
 	for path, required := range map[string][]string{
-		"PLANS.md":                            {"R6J-R9.28/Stage-A", "RunEntryV4", "untrusted", "control-plane-normal-shell/v1"},
+		standingAdmissionRulesPath:            {"R6J-R9.28/Stage-A", "RunEntryV4", "untrusted", "control-plane-normal-shell/v1"},
 		".docs/system_overview/boundaries.md": {"R6J-R9.28/Stage-A", "proposed observer/receiver endpoint", "permit-consumption authority"},
 		".docs/execution_lifecycle/outside_observer_protocol.md": {
 			"17 fields", "16 fields", "untrusted", "AUTHORITY", "RunEntryV4",
