@@ -1010,5 +1010,4 @@ These seams are intentionally open in the redesign phase. Future readers must no
 - Label compatibility-only edges when they are retained.
 - Do not let a shared package silently become a new service boundary.
 - Keep boundary changes aligned with `PLANS.md` and `.docs/system_overview/contracts.md`.
-- If code and tests disagree with this document, update the document to match reality.
 - No service boundary becomes "fixed" unless it is named explicitly as such in the authoritative docs.

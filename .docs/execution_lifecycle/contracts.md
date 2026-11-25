@@ -2079,7 +2079,6 @@ These seams are active today and intentionally not fixed.
 - Keep public response and error semantics here instead of leaving them only in code comments.
 - Move implementation detail into `.docs/execution_lifecycle/implementation.md`.
 - Keep high-level lifecycle ownership in `.docs/execution_lifecycle/design.md`.
-- If code and tests disagree with this file, update this file to match reality.
 - Do not describe a contract as fixed unless that decision is explicit and intentional.
 
 ## 19. Final-audit archive and execution-root contract refinements

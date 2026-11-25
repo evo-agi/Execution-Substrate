@@ -31,6 +31,7 @@ Use authority in this order:
 Additional rules:
 
 - This section is the one place that states the authority order, the rank of a file in it, and which source wins when two disagree. Other documents say what they govern and which document owns a topic; they do not restate the order or say that one file or source ranks above, controls, or wins over another.
+- A repository test refuses the known wordings of a rank in other Markdown files. It is a regression backstop for those wordings, not a complete check: review is what keeps other documents to the rule above.
 - The Remote Alpha route design records directly under `.docs/` (the `remote_alpha_operator_healthcheck_*.md` files) rank after `.docs/system_overview/*`.
 - Do not use `README.md` as design authority.
 - Do not treat code as design authority for cross-service behavior.

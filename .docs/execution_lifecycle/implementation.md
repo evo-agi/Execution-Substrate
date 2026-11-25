@@ -1189,7 +1189,6 @@ These seams are active today and intentionally not fixed.
 - Do not omit active code paths from the implementation map.
 - Public semantics belong in `.docs/execution_lifecycle/contracts.md`.
 - System ownership belongs in `.docs/system_overview/boundaries.md`.
-- If code and tests disagree with this file, update this file to match reality.
 - Label current simplifications explicitly.
 - Do not describe an implementation shortcut as a durable invariant without support.
 
