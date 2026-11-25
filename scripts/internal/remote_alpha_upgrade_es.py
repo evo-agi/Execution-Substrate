@@ -509,7 +509,8 @@ SERVICES = ("ars", "ags", "egs", "es", "vault", "spire-server", "spire-agent", "
 PAYLOAD_FILES = ("es", "es-runtime-support", "esconfigcheck")
 # The binaries apply installs. Each must name the commit in its own Go build
 # info, not only in provenance.json. esconfigcheck is a checker the upgrade
-# runs, not something it installs.
+# runs, not something it installs; like them, it must show in its build info
+# no module other than what go.mod and go.sum pin (red-team audit 32, A32-1).
 STAMPED_PAYLOAD_FILES = ("es", "es-runtime-support")
 SUPPORTED_GO_VERSION = "go1.26.5"
 SUMMARY_SCHEMA = "execution-substrate.remote-alpha.es-upgrade-summary.v2"
@@ -952,9 +953,9 @@ def go_uvarint_string(data):
     return data[i:i + length], data[i + length:]
 
 
-def go_build_info(blob):
-    """(Go version, [build setting lines]) from a 64-bit little-endian ELF
-    Go binary's .go.buildinfo section: what `go version -m` reads, read here
+def go_modinfo(blob):
+    """(Go version, [module info lines]) from a 64-bit little-endian ELF Go
+    binary's .go.buildinfo section: what `go version -m` reads, read here
     without running anything. A test keeps the two in agreement."""
     if blob[:6] != b"\x7fELF\x02\x01" or len(blob) < 64:
         raise Refusal("not a 64-bit little-endian ELF file")
@@ -993,21 +994,57 @@ def go_build_info(blob):
     if len(modinfo) >= 33 and modinfo[-17] == ord("\n"):
         modinfo = modinfo[16:-16]
     try:
-        lines = modinfo.decode("utf-8").splitlines()
-        return version.decode("utf-8"), [line[len("build\t"):] for line in lines if line.startswith("build\t")]
+        return version.decode("utf-8"), modinfo.decode("utf-8").splitlines()
     except UnicodeDecodeError:
         raise Refusal("the Go build info is not UTF-8") from None
 
 
+def go_build_info(blob):
+    """(Go version, [build setting lines]) from a Go binary's build info."""
+    version, lines = go_modinfo(blob)
+    return version, [line[len("build\t"):] for line in lines if line.startswith("build\t")]
+
+
+def go_module_problems(lines):
+    """Why the module lines of a binary's build info (path, mod, dep and =>
+    lines, as `go version -m` shows them without its leading tab) show code
+    other than what the commit's go.mod and go.sum pin, or [] when they do
+    not. A replaced module leaves a "=>" line (a replace in a go.work or
+    go.mod) and a dep line without its go.sum hash; a module that a go.work
+    put in place of a dependency leaves a dep line with the version
+    "(devel)" and no hash; a -mod=vendor build leaves dep lines with the
+    version and an empty hash. This go.mod has no replace and build ignores
+    any go.work and vendor folder, so a clean build leaves none of them;
+    red-team audit 32, A32-1."""
+    problems = []
+    for line in lines:
+        fields = line.split("\t")
+        if fields[0] == "=>":
+            problems.append("a replaced module (" + " ".join(f for f in fields[1:] if f) + ")")
+        elif fields[0] == "dep" and (len(fields) < 4 or not fields[3].startswith("h1:")):
+            problems.append("a dependency without its go.sum hash (" + " ".join(f for f in fields[1:] if f) + ")")
+    return problems
+
+
 def check_build_stamp(name, blob, commit):
     """Refuse a binary whose own build info does not name a clean build of
-    commit with the supported Go."""
-    version, lines = go_build_info(blob)
-    settings = dict(line.partition("=")[::2] for line in lines)
+    commit with the supported Go, from the modules the commit pins."""
+    version, lines = go_modinfo(blob)
+    settings = dict(line[len("build\t"):].partition("=")[::2] for line in lines if line.startswith("build\t"))
     if version != SUPPORTED_GO_VERSION or settings.get("vcs.revision") != commit or settings.get("vcs.modified") != "false":
         raise Refusal(f"the payload file {name} is not, by its own Go build info, a clean {SUPPORTED_GO_VERSION} build of "
                       f"{commit}: Go {version!r}, vcs.revision {settings.get('vcs.revision')!r}, "
                       f"vcs.modified {settings.get('vcs.modified')!r}")
+    check_build_modules(name, lines, commit)
+
+
+def check_build_modules(name, lines, commit):
+    """Refuse a binary whose build info shows a module other than what the
+    commit's go.mod and go.sum pin."""
+    problems = go_module_problems(lines)
+    if problems:
+        raise Refusal(f"the payload file {name} was not built from the modules {commit} pins, by its own Go build info: "
+                      + "; ".join(problems))
 
 
 def owned_by_root(st):
@@ -1021,7 +1058,9 @@ def load_payload(payload_dir, commit):
     The directory and its files must be root:root and not writable by group
     or others, so no other account can change them after the check. Every
     file's SHA-256 must match provenance.json, which must name the commit,
-    and each installed binary must name it in its own Go build info."""
+    each installed binary must name it in its own Go build info, and no
+    binary's build info may show a module other than what the commit's
+    go.mod and go.sum pin."""
     if not valid_commit(commit):
         raise Refusal("the commit must be a full lower-case 40-character SHA-1")
     st = os.lstat(payload_dir)
@@ -1043,6 +1082,8 @@ def load_payload(payload_dir, commit):
             raise Refusal(f"the payload file {name} does not match its provenance")
         if name in STAMPED_PAYLOAD_FILES:
             check_build_stamp(name, blob, commit)
+        else:
+            check_build_modules(name, go_modinfo(blob)[1], commit)
     return prov
 
 
@@ -1766,7 +1807,17 @@ def cmd_build(args):
     if not valid_commit(args.commit):
         raise Refusal("the commit must be a full lower-case 40-character SHA-1")
     go = args.go
-    env = dict(os.environ, GOTOOLCHAIN="local", CGO_ENABLED="0", GOOS="linux", GOARCH="amd64", GOFLAGS="-mod=readonly")
+    # Only these Go settings apply (red-team audit 32, A32-1). Go reads a
+    # go.work from any folder above the module unless GOWORK=off, and a
+    # go.work can put any folder in place of a dependency, unchecked by
+    # go.sum; the go env file (GOENV) and other GO* variables can change
+    # where modules, the standard library and cached builds come from. So
+    # no GO* variable is taken from the environment, the go env file is not
+    # read, and the module and build caches are in their default places
+    # under the operator's home.
+    env = {key: value for key, value in os.environ.items() if not key.startswith("GO")}
+    env.update(GOWORK="off", GOENV="off", GOFLAGS="-mod=readonly", GOTOOLCHAIN="local",
+               CGO_ENABLED="0", GOOS="linux", GOARCH="amd64")
     version = run([go, "env", "GOVERSION"], env=env, check=True).stdout.strip()
     if version != SUPPORTED_GO_VERSION:
         raise Refusal(f"the build needs {SUPPORTED_GO_VERSION}, found {version}")
@@ -1786,6 +1837,9 @@ def cmd_build(args):
         info = run([go, "version", "-m", out], env=env, check=True).stdout
         if f"vcs.revision={args.commit}" not in info or "vcs.modified=false" not in info:
             raise Refusal(f"{name} does not carry the commit as a clean build")
+        problems = go_module_problems([line[1:] for line in info.splitlines() if line.startswith("\t")])
+        if problems:
+            raise Refusal(f"{name} was not built from the modules the commit pins: " + "; ".join(problems))
         blob, _ = read_regular_file(out)
         sums[name] = sha256_bytes(blob)
     prov = {"commit": args.commit, "go_version": version, "vcs_modified": False, "sha256": sums,

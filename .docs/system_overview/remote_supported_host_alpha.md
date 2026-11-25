@@ -7292,8 +7292,20 @@ Operator interface:
   clean checkout and an output folder outside it. It builds `es`,
   `es-runtime-support` and `esconfigcheck` for linux/amd64 with
   `CGO_ENABLED=0`, `GOTOOLCHAIN=local`, `-mod=readonly` and
-  `-buildvcs=true`, checks that each binary's build info names `<sha>` with
-  `vcs.modified=false`, and writes `provenance.json` with their SHA-256.
+  `-buildvcs=true`, from the modules the commit's `go.mod` and `go.sum`
+  pin: it sets `GOWORK=off` (Go would otherwise read a `go.work` from any
+  folder above the clone, and a `go.work` can put any folder in place of a
+  dependency, unchecked by `go.sum`) and `GOENV=off` (no go env file), and
+  passes no other `GO*` variable from its environment, so the module and
+  build caches are Go's defaults under your home. It checks that each
+  binary's build info names `<sha>` with `vcs.modified=false` and shows no
+  replaced module and no dependency without its `go.sum` hash, and writes
+  `provenance.json` with their SHA-256. Make the folder that holds the clone
+  and the payload one that only root and you can change, not a folder
+  under the sticky `/tmp` where other accounts can leave files beside it:
+  for example `sudo mkdir -m 0700 /var/lib/es-upgrade/<UTC time>` (under a
+  `root:root` `0755` `/var/lib/es-upgrade`) handed to you with
+  `sudo chown`, as the box procedure does.
 - `sudo scripts/remote_alpha_upgrade_es.sh check --payload <dir> --commit <sha>`
   reads only. It prints a JSON report (schema
   `execution-substrate.remote-alpha.es-upgrade-summary.v2`) with the host's
@@ -7379,8 +7391,15 @@ its rollback.
   running anything), Go `go1.26.5`, `vcs.revision=<commit>` and
   `vcs.modified=false`. A test keeps that reader in agreement with
   `go version -m`. `apply` repeats the check and installs copies with the
-  same SHA-256. `esconfigcheck` is bound by its owner and SHA-256 only, since the
-  upgrade runs it and does not install it
+  same SHA-256. `esconfigcheck` is bound by its owner and SHA-256 and the
+  module check below, not by its revision, since the upgrade runs it and
+  does not install it
+- a payload binary's Go build info shows a module other than what the
+  commit's `go.mod` and `go.sum` pin: a replaced module (a `=>` line, as a
+  `replace` in a `go.work` leaves) or a dependency without its `go.sum`
+  hash (as a module a `go.work` puts in place of a dependency, or a
+  `-mod=vendor` build, leaves). This holds for `esconfigcheck` too, and is
+  checked before it runs
 - the named commit is `16cbf739`, or the host has no shape it knows
 - one of `ars`, `ags`, `egs`, `es`, `vault`, `spire-server`, `spire-agent`,
   `nomad` and `docker` is not active, or `es.service` does not run
@@ -7489,7 +7508,9 @@ interrupted apply and `rollback` on a host-shaped folder with fake
 `systemctl`, `curl`, `nomad`, `docker`, ACL setup and identity check, and the
 real `nomad_tls_issue`: hosts of every refused shape, each named part by
 part; payload binaries whose Go build info names another commit, another Go
-or a modified build; payload files of another owner or group; a clone that
+or a modified build, or shows a replaced module, a workspace module or a
+vendored dependency (`esconfigcheck` too, and one with no Go build info);
+payload files of another owner or group; a clone that
 another account could change (a file or folder writable by its group or
 others, one of another owner, a folder above the clone writable by its
 group or others without the sticky bit, a sticky folder under `scripts`
@@ -7497,10 +7518,13 @@ that anyone can write, a symbolic link under `scripts` or on the way to
 it), for `check`, `apply` and `rollback`; the wrapper refusing, with the
 upgrade's own guard off and before any of the clone's Python runs, code of
 another account, an upgrade file, the wrapper, its folder (with the sticky
-bit too) or its `internal` folder writable by group or others, a folder
-above the clone that only others can write, an `internal` folder that is a
-symbolic link, `build` from such a clone, and, through `sudo`, a clone of
-the user running `sudo`; the wrapper refusing a symbolic link to it (beside
+bit too, and an `internal` folder with the sticky bit) or its `internal`
+folder writable by group or others, a folder above the clone that only
+others can write, an `internal` folder that is a symbolic link, `build`
+from such a clone, the upgrade file, the wrapper, the `internal` folder or
+the folder above `scripts` belonging to another account (one with a uid
+below 1000 too), and, through `sudo`, a clone of the user running
+`sudo`; the wrapper refusing a symbolic link to it (beside
 it, and in a shared sticky folder that holds another
 `internal/remote_alpha_upgrade_es.py`, which never runs), a hard link to it
 in such a folder, a path through a symbolic link, and a path with `..`
@@ -7511,8 +7535,15 @@ taking a leading `//` for `/`; and the guard on for root when the host is named
 another way (`//`, `/.`, a symbolic link to `/`); a validation
 warning about unreadable TLS files; failures at each step after the backup;
 damaged backups; an `apply` whose terminal hangs up and one whose output
-pipe closes; and `build` with a fake Go against a dirty checkout and build
-info that names another commit or a modified build.
+pipe closes; `build` with a fake Go against a dirty checkout, build info
+that names another commit or a modified build or shows a replaced module,
+a workspace module or a vendored dependency, and `GO*` variables in its
+environment (`GOWORK`, `GOFLAGS`, `GOENV`, `GOPROXY` and others), which
+must not reach Go, whose environment the test reads back exactly; and
+`build` with the real Go in a clone under a sticky folder that holds a
+`go.work` naming the clone, with `GOWORK` and `GOFLAGS=-mod=mod` in its
+environment, where a plain `go build` fails on that `go.work` and `build`
+succeeds with a clean build of the commit.
 `TestRemoteAlphaUpgradeESMovesARealNomadToHTTPS` runs `check`, `apply`, the
 in-place check and `rollback` against a real Nomad agent started on the
 box's own `nomad.hcl` (with a data folder, free ports and the TLS paths under

@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -495,14 +496,36 @@ func goBinaryWithBuildInfo(version, modinfo string) []byte {
 	return out.Bytes()
 }
 
+// cleanDep is a dependency line as a clean build writes it: the version
+// go.mod requires and its go.sum hash.
+const cleanDep = "dep\tgolang.org/x/sys\tv0.46.0\th1:noSf2Fq6F8DBgS+LysIkx7rIExoNHJsxOAtPp4rthXw=\n"
+
 // stampedBinary is a payload binary whose own build info names a Go
-// version, a commit and whether the checkout was modified.
+// version, a commit and whether the checkout was modified, with one clean
+// dependency.
 func stampedBinary(name, goVersion, revision, modified string) []byte {
+	return stampedBinaryWithModules(name, goVersion, revision, modified, cleanDep)
+}
+
+// stampedBinaryWithModules is stampedBinary with the dependency lines deps
+// (dep and => lines, as the Go linker writes them).
+func stampedBinaryWithModules(name, goVersion, revision, modified, deps string) []byte {
 	return goBinaryWithBuildInfo(goVersion, "path\texecution-substrate/cmd/"+name+"\n"+
-		"mod\texecution-substrate\t(devel)\t\n"+
+		"mod\texecution-substrate\t(devel)\t\n"+deps+
 		"build\t-buildmode=exe\nbuild\t-compiler=gc\nbuild\tCGO_ENABLED=0\nbuild\tGOARCH=amd64\nbuild\tGOOS=linux\n"+
 		"build\tvcs=git\nbuild\tvcs.revision="+revision+"\nbuild\tvcs.modified="+modified+"\n")
 }
+
+// The dependency lines a go.work leaves (red-team audit 32, A32-1): a
+// replace (the dependency loses its go.sum hash and a "=>" line names the
+// folder used instead), and a workspace module in place of a dependency.
+// vendoredDep is what a -mod=vendor build leaves: the version, with an
+// empty hash, for code taken from a vendor folder.
+const (
+	replacedDep  = "dep\tgolang.org/x/sys\tv0.46.0\n=>\t/tmp/elsewhere/sys\t(devel)\t\n"
+	workspaceDep = "dep\tgolang.org/x/sys\t(devel)\t\n"
+	vendoredDep  = "dep\tgolang.org/x/sys\tv0.46.0\t\n"
+)
 
 // newESBuild and newRuntimeSupportBuild are the payload's binaries: clean
 // go1.26.5 builds of upgradeTestCommit by their own build info. boxESBuild
@@ -840,11 +863,21 @@ func onlyReads(t *testing.T, h *upgradeHost, label string) {
 // on a real Go binary, and on the fixture binaries the other tests install.
 func TestRemoteAlphaUpgradeESReadsGoBuildInfoLikeGoVersion(t *testing.T) {
 	dir := t.TempDir()
-	fixture := filepath.Join(dir, "es")
-	if err := os.WriteFile(fixture, newESBuild, 0o755); err != nil {
-		t.Fatal(err)
+	var fixtures []string
+	for name, data := range map[string][]byte{
+		"es":          newESBuild,
+		"es-replaced": stampedBinaryWithModules("es", "go1.26.5", upgradeTestCommit, "false", cleanDep+replacedDep),
+		"es-work":     stampedBinaryWithModules("es", "go1.26.5", upgradeTestCommit, "false", workspaceDep),
+		"es-vendored": stampedBinaryWithModules("es", "go1.26.5", upgradeTestCommit, "false", vendoredDep),
+	} {
+		fixture := filepath.Join(dir, name)
+		if err := os.WriteFile(fixture, data, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		fixtures = append(fixtures, fixture)
 	}
-	for _, binary := range []string{buildESConfigCheck(t), fixture} {
+	sort.Strings(fixtures)
+	for _, binary := range append([]string{buildESConfigCheck(t)}, fixtures...) {
 		goVersion := exec.Command("go", "version", "-m", binary)
 		goVersion.Dir = dir
 		out, err := goVersion.Output()
@@ -852,14 +885,21 @@ func TestRemoteAlphaUpgradeESReadsGoBuildInfoLikeGoVersion(t *testing.T) {
 			t.Fatalf("go version -m %s: %v", binary, err)
 		}
 		lines := strings.Split(strings.TrimRight(string(out), "\n"), "\n")
-		want := map[string]any{"version": strings.TrimPrefix(lines[0], binary+": "), "build": []any{}}
+		want := map[string]any{"version": strings.TrimPrefix(lines[0], binary+": "), "build": []any{}, "modules": []any{}}
 		for _, line := range lines[1:] {
 			if setting, ok := strings.CutPrefix(line, "\tbuild\t"); ok {
 				want["build"] = append(want["build"].([]any), setting)
 			}
+			if module, ok := strings.CutPrefix(line, "\t"); ok {
+				switch strings.SplitN(module, "\t", 2)[0] {
+				case "path", "mod", "dep", "=>":
+					want["modules"] = append(want["modules"].([]any), module)
+				}
+			}
 		}
-		if len(want["build"].([]any)) < 3 {
-			t.Fatalf("go version -m shows %d build settings for %s; the comparison would check nothing:\n%s", len(want["build"].([]any)), binary, out)
+		if len(want["build"].([]any)) < 3 || len(want["modules"].([]any)) < 2 {
+			t.Fatalf("go version -m shows %d build settings and %d module lines for %s; the comparison would check little:\n%s",
+				len(want["build"].([]any)), len(want["modules"].([]any)), binary, out)
 		}
 
 		code := `import importlib.util, json, sys
@@ -867,8 +907,11 @@ spec = importlib.util.spec_from_file_location("upgrade", sys.argv[1])
 m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
 with open(sys.argv[2], "rb") as handle:
-    version, build = m.go_build_info(handle.read())
-print(json.dumps({"version": version, "build": build}))`
+    blob = handle.read()
+version, build = m.go_build_info(blob)
+_, lines = m.go_modinfo(blob)
+modules = [line for line in lines if line.split("\t")[0] in ("path", "mod", "dep", "=>")]
+print(json.dumps({"version": version, "build": build, "modules": modules}))`
 		read := exec.Command("python3", "-I", "-c", code, repoPath(upgradeESPython), binary)
 		read.Dir = dir
 		got, err := read.Output()
@@ -1142,6 +1185,28 @@ func TestRemoteAlphaUpgradeESCheckRefusesWhatItWasNotWrittenFor(t *testing.T) {
 		}, "payload", "Go 'go1.26.1'"},
 		{"es carries no Go build info", func(h *upgradeHost) {
 			h.replacePayloadFile("es", []byte("new es build\n"))
+		}, "payload", "not a 64-bit little-endian ELF file"},
+		{"es was built with a replaced module", func(h *upgradeHost) {
+			h.replacePayloadFile("es", stampedBinaryWithModules("es", "go1.26.5", upgradeTestCommit, "false", replacedDep))
+		}, "payload", "the payload file es was not built from the modules " + upgradeTestCommit + " pins, by its own Go build info: " +
+			"a dependency without its go.sum hash (golang.org/x/sys v0.46.0); a replaced module (/tmp/elsewhere/sys (devel))"},
+		{"es-runtime-support was built with a workspace module for a dependency", func(h *upgradeHost) {
+			h.replacePayloadFile("es-runtime-support", stampedBinaryWithModules("es-runtime-support", "go1.26.5", upgradeTestCommit, "false", workspaceDep))
+		}, "payload", "the payload file es-runtime-support was not built from the modules " + upgradeTestCommit + " pins, by its own Go build info: " +
+			"a dependency without its go.sum hash (golang.org/x/sys (devel))"},
+		// esconfigcheck runs as root during the check, so its modules are
+		// checked as well, before it runs; its revision is not (it is not
+		// installed).
+		{"esconfigcheck was built with a replaced module", func(h *upgradeHost) {
+			h.replacePayloadFile("esconfigcheck", stampedBinaryWithModules("esconfigcheck", "go1.26.5", upgradeTestCommit, "false", replacedDep))
+		}, "payload", "the payload file esconfigcheck was not built from the modules " + upgradeTestCommit + " pins, by its own Go build info: " +
+			"a dependency without its go.sum hash (golang.org/x/sys v0.46.0); a replaced module (/tmp/elsewhere/sys (devel))"},
+		{"es was built from a vendor folder", func(h *upgradeHost) {
+			h.replacePayloadFile("es", stampedBinaryWithModules("es", "go1.26.5", upgradeTestCommit, "false", vendoredDep))
+		}, "payload", "the payload file es was not built from the modules " + upgradeTestCommit + " pins, by its own Go build info: " +
+			"a dependency without its go.sum hash (golang.org/x/sys v0.46.0)"},
+		{"esconfigcheck carries no Go build info", func(h *upgradeHost) {
+			h.replacePayloadFile("esconfigcheck", []byte("#!/bin/sh\nexit 0\n"))
 		}, "payload", "not a 64-bit little-endian ELF file"},
 	}
 	for _, tc := range cases {
@@ -2031,16 +2096,23 @@ func TestRemoteAlphaUpgradeESBuildRefusals(t *testing.T) {
 
 // fakeGo stands in for the Go toolchain in the build tests: it reports
 // FAKE_GOVERSION, writes a small binary per package, and prints build info
-// with FAKE_REVISION and FAKE_MODIFIED.
+// with the module lines FAKE_MODULES (printf %b escapes), FAKE_REVISION and
+// FAKE_MODIFIED. Each run writes the Go settings it was given to the file
+// FAKE_GO_ENV.
 const fakeGo = `#!/usr/bin/env bash
 set -eu
+env | LC_ALL=C sort | grep -E '^(GO[A-Z0-9_]*|CGO_ENABLED)=' > "$FAKE_GO_ENV" || true
 case "$1" in
   env) [[ "$2" == GOVERSION ]] && echo "$FAKE_GOVERSION" ;;
   build) out="$4"; printf 'binary of %s\n' "$5" > "$out" ;;
-  version) printf '%s: go1.26.5\n\tbuild\tvcs.revision=%s\n\tbuild\tvcs.modified=%s\n' "$3" "$FAKE_REVISION" "$FAKE_MODIFIED" ;;
+  version) printf '%s: go1.26.5\n%b\tbuild\tvcs.revision=%s\n\tbuild\tvcs.modified=%s\n' "$3" "$FAKE_MODULES" "$FAKE_REVISION" "$FAKE_MODIFIED" ;;
   *) exit 2 ;;
 esac
 `
+
+// buildGoSettings are the only Go settings build gives the toolchain,
+// whatever its own environment holds (red-team audit 32, A32-1).
+var buildGoSettings = []string{"CGO_ENABLED=0", "GOARCH=amd64", "GOENV=off", "GOFLAGS=-mod=readonly", "GOOS=linux", "GOTOOLCHAIN=local", "GOWORK=off"}
 
 // buildRepo makes a throwaway git repository holding the upgrade script at
 // its place in the tree, with one commit, and a fake go next to it.
@@ -2078,6 +2150,105 @@ func buildRepo(t *testing.T) (repo, script, goBin, commit string) {
 	return repo, script, goBin, git("rev-parse", "HEAD")
 }
 
+// TestRemoteAlphaUpgradeESBuildIgnoresAGoWorkAbove builds with the real Go
+// a clone kept, as the box procedure of ES PR #60 kept it, in a fresh
+// folder inside a sticky folder that any account can write. There another
+// account can leave a go.work beside the clone's folder, and Go reads a
+// go.work from any folder above the module unless GOWORK=off; a go.work can
+// put any folder in place of a dependency, unchecked by go.sum, and the
+// build would still be stamped as a clean build of the commit (red-team
+// audit 32, A32-1). The go.work here names only another module, so Go
+// refuses to build the clone if it reads it; build must not read it, even
+// when its own environment names it.
+func TestRemoteAlphaUpgradeESBuildIgnoresAGoWorkAbove(t *testing.T) {
+	goBin, err := exec.LookPath("go")
+	if err != nil {
+		t.Fatalf("go: %v", err)
+	}
+	shared := filepath.Join(t.TempDir(), "shared")
+	if err := os.Mkdir(shared, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(shared, 0o777|os.ModeSticky); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(shared, "es-upgrade.test"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	repo := filepath.Join(shared, "es-upgrade.test", "repo")
+	files := map[string]string{
+		"go.mod":                                      "module example.com/fixture\n\ngo 1.26.5\n",
+		"cmd/es/main.go":                              "package main\n\nfunc main() {}\n",
+		"cmd/es-runtime-support/main.go":              "package main\n\nfunc main() {}\n",
+		"scripts/internal/esconfigcheck/main.go":      "package main\n\nfunc main() {}\n",
+		"scripts/internal/remote_alpha_upgrade_es.py": mustRead(t, repoPath(upgradeESPython)),
+	}
+	for rel, content := range files {
+		path := filepath.Join(repo, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	git := func(args ...string) string {
+		cmd := exec.Command("git", append([]string{"-C", repo, "-c", "user.name=test", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false"}, args...)...)
+		cmd.Dir = repo
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	git("init", "-q")
+	git("add", ".")
+	git("commit", "-q", "-m", "fixture")
+	head := git("rev-parse", "HEAD")
+
+	// What another account leaves in the sticky folder.
+	if err := os.MkdirAll(filepath.Join(shared, "elsewhere"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(shared, "elsewhere", "go.mod"), []byte("module example.com/elsewhere\n\ngo 1.26.5\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	work := filepath.Join(shared, "go.work")
+	if err := os.WriteFile(work, []byte("go 1.26.5\n\nuse ./elsewhere\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Control: Go itself reads that go.work and refuses the clone.
+	control := exec.Command(goBin, "build", "-o", os.DevNull, filepath.Join(repo, "cmd", "es"))
+	control.Dir = repo
+	control.Env = append(os.Environ(), "GOWORK=", "GOFLAGS=-mod=readonly", "GOTOOLCHAIN=local", "CGO_ENABLED=0")
+	if out, err := control.CombinedOutput(); err == nil || !strings.Contains(string(out), "go.work") {
+		t.Fatalf("Go built the clone below %s without a word about it (%v): %s", work, err, out)
+	}
+
+	out := filepath.Join(t.TempDir(), "payload")
+	cmd := exec.Command("python3", "-I", filepath.Join(repo, "scripts", "internal", "remote_alpha_upgrade_es.py"),
+		"build", "--out", out, "--commit", head, "--go", goBin)
+	cmd.Dir = repo
+	cmd.Env = append(os.Environ(), "GOWORK="+work, "GOFLAGS=-mod=mod")
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("build below a go.work: %v\n%s", err, stderr.String())
+	}
+	version := exec.Command(goBin, "version", "-m", filepath.Join(out, "es"))
+	version.Dir = t.TempDir()
+	info, err := version.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"\tpath\texample.com/fixture/cmd/es\n", "\tbuild\tvcs.revision=" + head + "\n", "\tbuild\tvcs.modified=false\n"} {
+		if !strings.Contains(string(info), want) {
+			t.Fatalf("es's build info lacks %q:\n%s", want, info)
+		}
+	}
+}
+
 func TestRemoteAlphaUpgradeESBuildChecksToolchainCheckoutAndBuildInfo(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -2100,6 +2271,17 @@ func TestRemoteAlphaUpgradeESBuildChecksToolchainCheckoutAndBuildInfo(t *testing
 		}, says: "uncommitted or untracked files"},
 		{name: "build info names another commit", env: map[string]string{"FAKE_REVISION": strings.Repeat("c", 40)}, says: "es does not carry the commit as a clean build"},
 		{name: "build info says modified", env: map[string]string{"FAKE_MODIFIED": "true"}, says: "es does not carry the commit as a clean build"},
+		{name: "build info shows a replaced module", env: map[string]string{"FAKE_MODULES": `\tdep\tgolang.org/x/sys\tv0.46.0\n\t=>\t/tmp/elsewhere/sys\t(devel)\t\n\t\n`},
+			says: "es was not built from the modules the commit pins: a dependency without its go.sum hash (golang.org/x/sys v0.46.0); a replaced module (/tmp/elsewhere/sys (devel))"},
+		{name: "build info shows a workspace module for a dependency", env: map[string]string{"FAKE_MODULES": `\tdep\tgolang.org/x/sys\t(devel)\t\n`},
+			says: "es was not built from the modules the commit pins: a dependency without its go.sum hash (golang.org/x/sys (devel))"},
+		{name: "build info shows a vendored dependency", env: map[string]string{"FAKE_MODULES": `\tdep\tgolang.org/x/sys\tv0.46.0\t\n`},
+			says: "es was not built from the modules the commit pins: a dependency without its go.sum hash (golang.org/x/sys v0.46.0)"},
+		{name: "Go settings in the environment do not reach the toolchain", succeeds: true, env: map[string]string{
+			"GOWORK": "/tmp/go.work", "GOFLAGS": "-mod=mod", "GOENV": "/tmp/go-env", "GOROOT": "/tmp/goroot", "GOPATH": "/tmp/gopath",
+			"GOMODCACHE": "/tmp/modcache", "GOCACHE": "/tmp/gocache", "GOPROXY": "file:///tmp/proxy", "GONOSUMDB": "*",
+			"GONOSUMCHECK": "1", "GOINSECURE": "*", "GOPRIVATE": "*", "GOEXPERIMENT": "nocoverageredesign", "GOTOOLCHAIN": "auto",
+			"GOOS": "darwin", "GOARCH": "arm64", "CGO_ENABLED": "1"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -2108,7 +2290,10 @@ func TestRemoteAlphaUpgradeESBuildChecksToolchainCheckoutAndBuildInfo(t *testing
 			if tc.commit != nil {
 				commit = tc.commit(head)
 			}
-			env := map[string]string{"FAKE_GOVERSION": "go1.26.5", "FAKE_REVISION": head, "FAKE_MODIFIED": "false"}
+			goEnv := filepath.Join(t.TempDir(), "go-env")
+			env := map[string]string{"FAKE_GOVERSION": "go1.26.5", "FAKE_REVISION": head, "FAKE_MODIFIED": "false",
+				"FAKE_MODULES": `\tpath\texecution-substrate/cmd/es\n\tmod\texecution-substrate\t(devel)\t\n\t` + strings.TrimSuffix(cleanDep, "\n") + `\n`,
+				"FAKE_GO_ENV":  goEnv}
 			for k, v := range tc.env {
 				env[k] = v
 			}
@@ -2141,6 +2326,9 @@ func TestRemoteAlphaUpgradeESBuildChecksToolchainCheckoutAndBuildInfo(t *testing
 					if sums[name] != sha256Hex([]byte("binary of "+pkg+"\n")) {
 						t.Errorf("%s sha256 %v", name, sums[name])
 					}
+				}
+				if got := strings.Fields(mustRead(t, goEnv)); strings.Join(got, " ") != strings.Join(buildGoSettings, " ") {
+					t.Fatalf("the toolchain was given the Go settings %v, want exactly %v", got, buildGoSettings)
 				}
 				return
 			}

@@ -568,6 +568,11 @@ func TestRemoteAlphaUpgradeESRefusesACloneOthersCanChange(t *testing.T) {
 			c.chmod(dir, 0o775)
 			return dir + " is writable by its group or others (0775)"
 		}},
+		{"the internal folder writable by anyone, with the sticky bit", func(c *upgradeClone) string {
+			dir := filepath.Join(c.scripts, "internal")
+			c.chmod(dir, 0o777|os.ModeSticky)
+			return dir + " is writable by its group or others (1777)"
+		}},
 		{"the wrapper's folder writable by anyone, with the sticky bit", func(c *upgradeClone) string {
 			c.chmod(c.scripts, 0o777|os.ModeSticky)
 			return c.scripts + " is writable by its group or others (1777)"
@@ -767,14 +772,35 @@ func TestRemoteAlphaUpgradeESWrapperRefusesCodeOfAnotherOwner(t *testing.T) {
 	}
 	uid := strconv.Itoa(os.Getuid())
 
-	t.Run("the upgrade's Python of another account", func(t *testing.T) {
-		c := newUpgradeClone(t)
-		if err := asRoot(c.base, "chown", "65534", c.python); err != nil {
-			t.Fatal(err)
-		}
-		stdout, stderr, code := c.wrapper(filepath.Join(c.scripts, "remote_alpha_upgrade_es.sh"), "")
-		wrapperRefused(t, "wrapper", stdout, stderr, code, c.python+" belongs to uid 65534")
-	})
+	// Each entry the wrapper checks, given to another account: 65534
+	// (nobody) or 1 (daemon), since a host's service accounts have uids
+	// below 1000 (audit 32, A32-2). Each is given back before the test
+	// folders are removed.
+	for _, tc := range []struct {
+		name  string
+		uid   string
+		entry func(c *upgradeClone) string
+	}{
+		{"the upgrade's Python of another account", "65534", func(c *upgradeClone) string { return c.python }},
+		{"the wrapper of a system account", "1", func(c *upgradeClone) string { return filepath.Join(c.scripts, "remote_alpha_upgrade_es.sh") }},
+		{"the internal folder of a system account", "1", func(c *upgradeClone) string { return filepath.Join(c.scripts, "internal") }},
+		{"a folder above the wrapper's folder of a system account", "1", func(c *upgradeClone) string { return c.root }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := newUpgradeClone(t)
+			entry := tc.entry(c)
+			if err := asRoot(c.base, "chown", tc.uid, entry); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if err := asRoot(c.base, "chown", uid, entry); err != nil {
+					t.Error(err)
+				}
+			})
+			stdout, stderr, code := c.wrapper(filepath.Join(c.scripts, "remote_alpha_upgrade_es.sh"), "")
+			wrapperRefused(t, "wrapper", stdout, stderr, code, entry+" belongs to uid "+tc.uid)
+		})
+	}
 
 	t.Run("through sudo, a clone of the user running sudo", func(t *testing.T) {
 		if os.Getuid() == 0 {
