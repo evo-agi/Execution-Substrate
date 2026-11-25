@@ -37,7 +37,7 @@ Options:
 
 Notes:
   The troubleshooting matrix remains the human-readable source of truth:
-    .runbooks/system/v1_bringup.md
+    .runbooks/system/Governed Execution ES System Bring-Up.md
   This helper only gathers the bounded checks, logs, lifecycle output, and staging signals already referenced there.
   After collection, run scripts/71_diagnostics_summary.sh <bundle_dir|bundle.json> for a compact summary.
 EOF

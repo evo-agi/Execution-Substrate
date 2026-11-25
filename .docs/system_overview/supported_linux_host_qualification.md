@@ -403,7 +403,7 @@ Current proof order:
 
 The current primary proof path is documented in:
 
-- [.runbooks/system/v1_bringup.md](../../.runbooks/system/v1_bringup.md)
+- [.runbooks/system/Governed Execution ES System Bring-Up.md](../../.runbooks/system/Governed%20Execution%20ES%20System%20Bring-Up.md)
 
 The preferred command path there is now:
 

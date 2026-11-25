@@ -2,7 +2,7 @@
 
 OPERATOR_FAILURES_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OPERATOR_FAILURES_REPO_ROOT="$(cd "${OPERATOR_FAILURES_DIR}/../.." && pwd)"
-OPERATOR_TROUBLESHOOTING_RUNBOOK="${OPERATOR_FAILURES_REPO_ROOT}/.runbooks/system/v1_bringup.md"
+OPERATOR_TROUBLESHOOTING_RUNBOOK="${OPERATOR_FAILURES_REPO_ROOT}/.runbooks/system/Governed Execution ES System Bring-Up.md"
 
 operator_category_auth() {
   printf '%s\n' "caller authorization / credential failure"
@@ -121,7 +121,7 @@ operator_diagnostics_instruction_for_category() {
 }
 
 operator_troubleshooting_reference() {
-  printf '%s\n' "See ${OPERATOR_TROUBLESHOOTING_RUNBOOK} for the operator troubleshooting matrix."
+  printf '%s\n' "See \"${OPERATOR_TROUBLESHOOTING_RUNBOOK}\" for the operator troubleshooting matrix."
 }
 
 operator_next_step_for_category() {
