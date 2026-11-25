@@ -36,8 +36,11 @@ import (
 // process that is a child subreaper. The stand-in proves only that the test
 // process has no child left after a command: the fixed child must have been
 // reaped by the command runner itself. It proves nothing about descendants.
-// The guard below refuses every other script that replaces the flag, the
-// drain, or the probe.
+// It also gives the runner a descendant backend whose parent-death request
+// does nothing, because the real request needs Linux's prctl, which macOS
+// does not have; the real-kernel tests prove the real request. The guard
+// below refuses every other script that replaces the flag, the drain, or the
+// probe.
 const remoteCollectorDescendantStandIn = `
 def _remote_collector_drain_stand_in(direct=None, backend=None):
     import os as _os
@@ -46,7 +49,12 @@ def _remote_collector_drain_stand_in(direct=None, backend=None):
     except ChildProcessError:
         return True
     return False
+class _RemoteCollectorBackendStandIn(m.DescendantBackend):
+    def __init__(self):
+        super().__init__()
+        self.parent_death_request = lambda: (lambda: 0)
 m.drain_descendants = _remote_collector_drain_stand_in
+m.DescendantBackend = _RemoteCollectorBackendStandIn
 m.DESCENDANT_CAPABILITY_READY = True
 `
 
@@ -109,8 +117,9 @@ def record(label,passed,seen):
 // process only after this process has become a child subreaper, and it ends
 // by itself when this process closes the hold pipe's write end, as the real
 // grandchild does at the end of its input. The clock moves only by sleep.
-// The backend records every call, and it records as a violation a signal to
-// anything but an unreaped child, a signal other than SIGKILL, a reap of a
+// The backend records every call but one: the fixed child's parent-death
+// request, which it resolves to a request that does nothing. It records as a
+// violation a signal to anything but an unreaped child, a signal other than SIGKILL, a reap of a
 // child that has not ended, a blocking wait on a child that has not ended, a
 // wait with other options than the drain's, and a close of a descriptor that
 // is not open.
@@ -225,6 +234,11 @@ class Kernel:
             self.children[4101]="ended"
     def exit(self,code):
         self.events.append(("exit",code));raise Exited(code)
+    def parent_death_request(self):
+        # Resolved by the command runner before each spawn; the model's
+        # request does nothing and records no event.
+        self._raise("parent_death_request")
+        return lambda:0
 def names(kernel):
     return [event[0] for event in kernel.events]
 def probe(kernel):
@@ -502,6 +516,31 @@ record("a fixed child whose setup before its exec fails does not run, and the co
        result.returncode==125 and result.runtime_failed and result.stdout==b"" and names(current["kernel"])==["waitid"]
        and m.DESCENDANT_CAPABILITY_READY is True,(result,current["kernel"].events))
 
+# The parent-death request comes from the backend, and the runner resolves it
+# before the spawn. A C library without prctl, as on macOS, then matters only
+# to the real backend, where it is a runtime failure without a spawn.
+m.subprocess.Popen=counting_popen
+spawns.clear();unresolved=[]
+for fault in (AttributeError("dlsym(RTLD_DEFAULT, prctl): symbol not found"),OSError(errno.ENOSYS,"no prctl")):
+    current["kernel"]=Kernel(parent_death_request=fault)
+    result=m.run_command(ok)
+    unresolved.append((result,names(current["kernel"]),m.DESCENDANT_CAPABILITY_READY))
+record("a parent-death request that cannot be resolved starts no fixed child, and the command is a drained runtime failure",
+       spawns==[] and all(result.returncode==125 and result.runtime_failed and seen==["waitid"] and ready is True
+                          for result,seen,ready in unresolved),(unresolved,spawns))
+class LibcWithoutPrctl:
+    def __getattr__(self,name):
+        raise AttributeError("dlsym(RTLD_DEFAULT, %s): symbol not found"%name)
+RealCDLL=m.ctypes.CDLL;m.ctypes.CDLL=lambda *args,**kwargs:LibcWithoutPrctl()
+try:
+    current["kernel"]=Kernel();result=m.run_command(ok)
+finally:
+    m.ctypes.CDLL=RealCDLL
+record("the runner takes the parent-death request only from the backend, so a C library without prctl does not stop it",
+       result.returncode==0 and result.stdout==b"ok\n" and not result.runtime_failed and len(spawns)==1
+       and names(current["kernel"])==["waitid"],(result,spawns,current["kernel"].events))
+m.subprocess.Popen=RealPopen
+
 import contextlib,io
 collected=[]
 def collect_status():
@@ -531,6 +570,8 @@ print(json.dumps({"cases":cases,"detail":detail}))
 		"an unproved drain fails a successful command, clears the flag, and refuses every later command before its spawn",
 		"an input over the bound is refused before the flag and the spawn",
 		"a fixed child whose setup before its exec fails does not run, and the command is a drained runtime failure",
+		"a parent-death request that cannot be resolved starts no fixed child, and the command is a drained runtime failure",
+		"the runner takes the parent-death request only from the backend, so a C library without prctl does not stop it",
 		"the entry point runs the probe before it reads any status",
 		"a failed probe emits the unavailable document and reads no status")
 }
@@ -804,6 +845,14 @@ func TestRemoteAlphaOperatorHealthcheckTLSStatusNoninteractiveDescendantStandInI
 		remoteAlphaESStatusReplaces(remoteCollectorDescendantStandIn, "", "validate_descendant_capability") {
 		t.Fatalf("the stand-in must replace the flag and the drain together and leave the probe")
 	}
+	// The command runner resolves the fixed child's parent-death request from
+	// a new descendant backend before each spawn. The stand-in's backend keeps
+	// every real operation but that request, which needs Linux's prctl.
+	if !remoteAlphaESStatusReplaces(remoteCollectorDescendantStandIn, "", "DescendantBackend") ||
+		!strings.Contains(remoteCollectorDescendantStandIn, "(m.DescendantBackend):\n    def __init__(self):\n        super().__init__()\n        self.parent_death_request = lambda: (lambda: 0)\n") ||
+		strings.Count(remoteCollectorDescendantStandIn, "self.") != 1 {
+		t.Fatalf("the stand-in must give the runner a real descendant backend whose only change is a parent-death request that does nothing")
+	}
 	scripts, unresolved := remoteAlphaESStatusFixtureScripts(t)
 	standIns := 0
 	for _, script := range append(scripts, unresolved...) {
@@ -889,6 +938,9 @@ func TestRemoteAlphaOperatorHealthcheckTLSStatusNoninteractiveDescendantDocument
 	assertContainsAll(t, "capability probing descendant containment", probing,
 		"replace the flag and the descendant drain together, by one shared stand-in that proves only that the test process has no child left",
 		"a guard test refuses a script that replaces one of the two without the other",
+		"The command runner takes the fixed child's parent-death request from the descendant backend and resolves it before each spawn",
+		"gives the runner a backend whose only change is a parent-death request that does nothing, and these tests run on every host, macOS included",
+		"A request that cannot be resolved makes the command a runtime failure without a spawn.",
 		"skips itself, with an explicit reason, only when the attempt to make the test process a child subreaper and to list its children is refused",
 		"also skips itself when an attempt shows that the limit does not bind the user that runs the tests")
 
@@ -912,22 +964,38 @@ func TestRemoteAlphaOperatorHealthcheckTLSStatusNoninteractiveDescendantDocument
 		"    try:\n        result = supervise_fixed_child(args, input_bytes, spawned)\n    finally:\n",
 		"            proved = drain_descendants(spawned[0] if spawned else None)\n",
 		"        if not proved:\n            DESCENDANT_CAPABILITY_READY = False\n")
+	request := docSection(t, source, "\ndef _parent_death_request(", "\ndef _read_children_file(")
+	assertContainsAll(t, "collector parent-death request", request,
+		"    prctl = ctypes.CDLL(None, use_errno=True).prctl\n",
+		"        return prctl(ctypes.c_int(PR_SET_PDEATHSIG), ctypes.c_ulong(signal.SIGKILL), ctypes.c_ulong(0),\n")
+	backend := docSection(t, source, "\nclass DescendantBackend:", "\nDESCENDANT_CAPABILITY_READY = False\n")
+	assertContainsAll(t, "collector descendant backend", backend,
+		"        self.parent_death_request = _parent_death_request\n")
+	if got := strings.Count(source, "_parent_death_request"); got != 2 {
+		t.Fatalf("collector names _parent_death_request %d times, want its definition and the backend", got)
+	}
 	setup := docSection(t, source, "\ndef fixed_child_setup(", "\ndef supervise_fixed_child(")
 	assertContainsAll(t, "collector fixed child setup", setup,
-		"    prctl = ctypes.CDLL(None, use_errno=True).prctl\n    limit = FIXED_CHILD_PROCESS_LIMIT\n",
-		"        if prctl(ctypes.c_int(PR_SET_PDEATHSIG), ctypes.c_ulong(signal.SIGKILL), ctypes.c_ulong(0),\n",
+		"    request_parent_death = DescendantBackend().parent_death_request()\n    limit = FIXED_CHILD_PROCESS_LIMIT\n",
+		"        if request_parent_death() != 0:\n            raise OSError(ctypes.get_errno(), \"prctl\")\n",
 		"        if os.getppid() != parent:\n            raise OSError(errno.ESRCH, \"collector ended\")\n",
 		"        if limit is not None:\n            resource.setrlimit(resource.RLIMIT_NPROC, (limit, limit))\n")
+	assertContainsNone(t, "collector fixed child setup", setup, "CDLL", "prctl(")
 	// The parent-death request comes first, then the proof that the collector
 	// is still the parent, and the limit last.
-	if strings.Index(setup, "PR_SET_PDEATHSIG") > strings.Index(setup, "os.getppid()") ||
+	if strings.Index(setup, "request_parent_death()") > strings.Index(setup, "os.getppid()") ||
 		strings.Index(setup, "os.getppid()") > strings.Index(setup, "RLIMIT_NPROC") {
 		t.Fatalf("the fixed child setup is not in the order: parent-death request, parent proof, process limit")
 	}
 	supervise := docSection(t, source, "\ndef supervise_fixed_child(", "\ndef direct_file_sha256(")
 	assertContainsAll(t, "collector fixed child spawn", supervise,
-		"            start_new_session=True,\n            preexec_fn=fixed_child_setup(os.getpid()),\n",
+		"    try:\n        setup = fixed_child_setup(os.getpid())\n    except Exception:\n",
+		"        return CommandResult(returncode=125, stdout=b\"\", stderr=b\"\", runtime_failed=True)\n    try:\n        proc = subprocess.Popen(\n",
+		"            start_new_session=True,\n            preexec_fn=setup,\n",
 		"    except subprocess.SubprocessError:\n")
+	if strings.Index(supervise, "setup = fixed_child_setup(") > strings.Index(supervise, "subprocess.Popen(") {
+		t.Fatalf("the fixed child setup must be prepared before the spawn")
+	}
 	if got := strings.Count(source, "preexec_fn="); got != 1 {
 		t.Fatalf("collector passes preexec_fn %d times, want once", got)
 	}

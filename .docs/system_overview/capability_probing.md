@@ -489,6 +489,12 @@ fixed command requires. Tests in `scripts/` that call its command runner
 directly replace the flag and the descendant drain together, by one shared
 stand-in that proves only that the test process has no child left, and a
 guard test refuses a script that replaces one of the two without the other.
+The command runner takes the fixed child's parent-death request from the
+descendant backend and resolves it before each spawn; the request needs
+Linux's `prctl`. So the same stand-in gives the runner a backend whose only
+change is a parent-death request that does nothing, and these tests run on
+every host, macOS included. A request that cannot be resolved makes the
+command a runtime failure without a spawn.
 The drain itself has tests of its own: one group with a deterministic backend
 in place of the kernel operations, which runs on every host, and one group with
 real processes, which runs as an unprivileged user and skips itself, with an
