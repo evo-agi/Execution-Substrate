@@ -14,35 +14,62 @@ import (
 // another. Until 2026-11-25 sixteen docs restated the order and a test
 // required them to.
 //
-// What the guard below is: a regression backstop for known wordings. It
-// refuses a sentence that names a file or source of the order beside one of
-// the rank wordings this repository has used or that audits 02 and 04
-// probed, and any copy of a line of the order. What it is not: a complete
-// check. A rank can be worded in ways no vocabulary lists, and review is
-// what keeps documents to AGENTS.md section 3. Known gaps, not claimed:
-//   - words outside the vocabulary, such as "trumps", "beats", "yields to",
-//     "outweighs" or "has the final say";
-//   - a rank whose file and wording fall in different sentences, such as
-//     "Compare this document with PLANS.md. Where they differ, the latter
-//     wins.";
-//   - a reference-style link ("[the plan][plan]") whose target is defined on
-//     another line, and a link to the order's heading
-//     ("AGENTS.md#3-authority-hierarchy") with no rank word beside it;
-//   - a sentence cut at an abbreviation such as "i.e. " or "e.g. ";
-//   - a curly apostrophe ("PLANS.md’s authority").
+// What the guard below is: a regression backstop for a list of known
+// wordings. It reads every git-listed Markdown file except AGENTS.md and the
+// closed plan record, and refuses a sentence that names a file or source of
+// the order beside one of the wordings in authorityRankRules, and any copy of
+// a line of the order. What the list covers is what the self-test refuses:
+// the removed forms it lists, the 14 probes audit 02 listed (P1 to P14), the
+// 14 cases audit 04 listed (A04-2(a)), and one example per word of the
+// vocabulary. Of audit 04's other rank probes, N05, N20, N29, N31 and N34
+// are refused too.
+//
+// What it is not: a complete check. A rank can be worded in ways no list
+// holds, and review is what keeps documents to AGENTS.md section 3. Known
+// gaps, which pass the guard (audit 04 and 06 probes in brackets):
+//   - words outside the vocabulary: "yields to" (N12), "trumps" (N13),
+//     "beats" (N14), "sits below ... in the hierarchy" (N19), "governs only
+//     where ... is silent" (N22), "outweighs" (N23), "has the final say"
+//     (N25), "is the source of truth over" (N26), "Authority: see
+//     AGENTS.md" (N27), "is binding on" (N28), "the contract applies"
+//     (N32), "the system overview docs govern" (N33);
+//   - near variants of a listed wording (audit 06 O06-2): "section 3 in
+//     AGENTS.md", "section 3 of" a link whose text does not name AGENTS.md,
+//     "less authority", "comes before", "goes first", "authoritative for
+//     anything this document says", and in a conflict "use", "apply",
+//     "realign", "change", "follows" or a passive "is updated" instead of
+//     "follow" or "update", or "the code" or "the docs" as a side;
+//   - a rank whose file and wording fall in different sentences, or whose
+//     file is a pronoun (N16);
+//   - a reference-style link whose target is defined on another line (N17),
+//     and a link to the order's heading with no rank word beside it (N08);
+//   - a sentence cut at an abbreviation such as "i.e. " or "e.g. " that
+//     leaves the file and the wording on different sides of the cut (N15);
+//   - a curly apostrophe (N18);
+//   - two sentences this PR removed from evolution.md: "`PLANS.md` is
+//     authoritative for:" (ownership wording, which the guard allows) and
+//     "Code may confirm current behavior. It must not become the design
+//     source of truth for cross-service contracts ..." (no file of the
+//     order in either sentence).
+// Known false positives: fenced code is read as prose, and an ordinary
+// sentence that uses a rule word for something else beside a file of the
+// order is refused (audit 04 O04-1, audit 06 O06-1); the failure names the
+// sentence.
 
 // authorityMarkdownLink matches a Markdown inline link.
 var authorityMarkdownLink = regexp.MustCompile(`\[([^\]]*)\]\(([^)]*)\)`)
 
 // normalizeAuthorityText reads text the way the checks compare it: a link as
-// its text, followed by its target in parentheses when the text does not
-// already name the target's file; without backticks or emphasis; "§" as
+// its text, followed by its target without any "#" anchor in parentheses when
+// the text does not already name the target's file (a heading slug is not
+// prose, so "#1-status-and-precedence" adds no words); without backticks or
+// emphasis; "§" as
 // "section"; lower case; whitespace collapsed (compactText also folds
 // non-breaking spaces).
 func normalizeAuthorityText(text string) string {
 	text = authorityMarkdownLink.ReplaceAllStringFunc(text, func(link string) string {
 		parts := authorityMarkdownLink.FindStringSubmatch(link)
-		label, target := parts[1], parts[2]
+		label, target := parts[1], strings.SplitN(parts[2], "#", 2)[0]
 		base := target[strings.LastIndex(target, "/")+1:]
 		if base == "" || strings.Contains(strings.ToLower(label), strings.ToLower(base)) {
 			return label
@@ -166,6 +193,7 @@ var authorityRankRules = []authorityRule{
 	authorityPattern("priority", `\btakes? priority\b|\bpriority over\b`),
 	authorityPattern("subordinate", `\bsubordinate to\b`),
 	authorityPattern("in favor of", `\bin favou?r of\b`),
+	authorityPattern("factual source", `\bfactual source\b`),
 	authorityPattern("place in the order", `\b(?:first|second|third|fourth|fifth|last) in the order\b|\bcomes? first\b`),
 	authorityPattern("section 3 pointer", `agents\.md\W{1,3}section 3\b|\bsection 3 of agents\.md\b`),
 	{name: "authority beside two members of the order", match: func(sentence string) bool {
@@ -252,7 +280,7 @@ func TestAuthorityOrderIsStatedOnlyInAgents(t *testing.T) {
 		"This section is the one place that states the authority order, the rank of a file in it, and which source wins when two disagree.",
 		"Other documents say what they govern and which document owns a topic; they do not restate the order or say that one file or source ranks above, controls, or wins over another.",
 		// The limit of the check below, stated where the rule is.
-		"A repository test refuses the known wordings of a rank in other Markdown files. It is a regression backstop for those wordings, not a complete check: review is what keeps other documents to the rule above.",
+		"A repository test refuses a list of known wordings of a rank in the other Markdown files, except the closed record `.docs/history/plans-record.md`. It is a regression backstop for those wordings, not a complete check: review is what keeps other documents to the rule above.",
 		// The two ranks that docs stated for themselves until 2026-11-25 and
 		// that now live only here.
 		"The Remote Alpha route design records directly under `.docs/` (the `remote_alpha_operator_healthcheck_*.md` files) rank after `.docs/system_overview/*`.",
@@ -342,6 +370,7 @@ func TestAuthorityOrderGuardFindsEachFormOfRank(t *testing.T) {
 		"priority":                  "Where they differ, `PLANS.md` takes priority.",
 		"subordinate":               "This document is subordinate to `PLANS.md`.",
 		"in favor of":               "Conflicts between this document and `PLANS.md` are resolved in favor of `PLANS.md`.",
+		"factual source":            "Use code and tests as the factual source of current behavior.",
 		"place in the order":        "`PLANS.md` is second in the order after the other file.",
 		"section 3 pointer":         "Read [`AGENTS.md`](../../AGENTS.md) §3 first.",
 		"authority beside two members of the order": "Authority, highest first: AGENTS.md, then PLANS.md.",
@@ -428,6 +457,7 @@ func TestAuthorityOrderGuardFindsEachFormOfRank(t *testing.T) {
 			"- [the closed record](.docs/history/plans-record.md); it is historical evidence with no current authority, so read it only when needed",
 			"For architecture and contracts, defer to the docs below.",
 			"If code and tests disagree with this document, update the document to match reality.",
+			"- use code and tests as the factual source of current behavior when prose is stale",
 		},
 		// Each word of the vocabulary, in an example that only it lets the
 		// guard refuse: the file gate, the members of the order, and the
@@ -504,6 +534,8 @@ func TestAuthorityOrderGuardFindsEachFormOfRank(t *testing.T) {
 		"This document is the second in a series of three decision records.",
 		// A conflict with one side of the order only.
 		"If the digests differ, follow the recovery steps in `.docs/system_overview/configuration.md`.",
+		// A link to a heading whose slug holds a rule word (audit 06 A06-3).
+		"See [the section](.docs/execution_lifecycle/reliable_submit_operational_handoff.md#1-status-and-precedence) for details.",
 		// A heading, a numbered item, "?" and "!" each end a sentence.
 		"## Notes on `PLANS.md`\nThe fastest runner wins the lease.",
 		"Sources:\n1) `PLANS.md`\n2) The fastest runner wins the lease.",

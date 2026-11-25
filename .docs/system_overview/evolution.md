@@ -32,7 +32,6 @@ How to tell the difference:
 
 - use `PLANS.md` to determine whether a surface is explicitly reopened
 - use the core docs to determine whether a rule is an invariant, bounded rule, compatibility edge, or reopened seam
-- use code and tests as the factual source of current behavior when prose is stale
 
 Agent behavior in this phase:
 
@@ -116,8 +115,6 @@ For any governed change, the required order is:
 3. update the authoritative `.docs/` pages that define the affected contract, boundary, lifecycle rule, or ownership split
 4. update or add tests that express the intended behavior
 5. implement code to match
-
-Code may confirm current behavior. It must not become the design source of truth for cross-service contracts or architectural boundaries.
 
 ## 7. Decision rules
 
