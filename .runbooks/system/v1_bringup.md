@@ -25,7 +25,7 @@ The readiness vocabulary for that primary path is now:
 
 - `service health`: the public health surfaces for ARS, EGS, AGS, and ES are up and reporting ready
 - `prepare-ready`: service health plus successful workload-zone Vault runtime-config blob verification through ARS, including structural validation of any supplied Vault CA bundle
-- `submit-ready`: prepare-ready plus ES submit config present, Docker available, required enabled runtime-profile images present, Nomad leader present, and at least one ready Nomad client node with positive `cpu.totalcompute` and a healthy Docker driver
+- `submit-ready`: prepare-ready plus ES submit config present, Docker available, required enabled runtime-profile images present, Nomad leader present, and at least one ready Nomad client node with positive `cpu.totalcompute`, a healthy Docker driver and a host-mode network
 - `submit-ready` also requires Nomad to enable only the Docker driver, with its Docker plugin refusing privileged containers and allowing only ES's runtime-helper capabilities
 - for enabled local runtime-profile images, `submit-ready` also requires Nomad Docker image garbage collection to be disabled through the Docker plugin's `gc { image = false }`, because the supported-local CP normal-shell proof image is local runtime material rather than a pullable product registry image
 
@@ -188,6 +188,7 @@ The current bounded system still assumes:
 - ES `nomad` and `execution` sections are configured for real `:submit`
 - Nomad Docker bind mounts are enabled
 - single-node loopback Nomad configs set explicit `advertise` addresses for `http`, `rpc`, and `serf`
+- Nomad configs pin the client's host network to loopback with `client { network_interface = "lo" }`, so the host works on Wi-Fi or a cable and assumes neither. ES's jobs need a host-mode network on the node: pinned to a wired port, the node has none while the cable is out and every job fails to place (`missing network`); unpinned, Nomad does not start while there is no default route. After every Nomad start, `sudo scripts/nomad_acl_setup.sh placement` checks that ES's job shapes plan with ES's token
 - the configured ES base image is available or pullable
 - any enabled `control-plane-normal-shell/v1` profile image is present in the Docker daemon used by Nomad before submit-ready is claimed
 - Nomad Docker image cleanup is disabled for local runtime-profile image durability when that profile is enabled
@@ -260,7 +261,7 @@ What this does:
   - the ES config file and every other file it names in a `*_file` setting (TLS certificate, key and client CA, the ARS and EGS client certificates, keys and root CA) are readable by your UID or your primary group; a file readable only by root, or only through another group you belong to, stops ES when it loads that file
 - records the ES same-path staging proof at `${BRINGUP_DIR}/staging-invariant.json`
 - verifies Docker readiness
-- starts Nomad from `NOMAD_CONFIG` as a bounded local fallback/troubleshooting path, then waits for a leader plus at least one ready node with positive `cpu.totalcompute` and a healthy Docker driver
+- starts Nomad from `NOMAD_CONFIG` as a bounded local fallback/troubleshooting path, then waits for a leader plus at least one ready node with positive `cpu.totalcompute`, a healthy Docker driver and a host-mode network
 - runs the unified readiness check once more before reporting success as both prepare-ready and submit-ready
 
 Note:
@@ -328,7 +329,7 @@ For the full profile, `submit-ready: true` means:
 - ARS, EGS, AGS, and ES each return `200` with `"ready": true`
 - those health checks succeeded with a valid client certificate at the TLS boundary
 - Nomad `GET /v1/agent/self` does not report `config.DevMode=true`
-- Nomad has a leader and at least one ready node with positive `cpu.totalcompute` and a healthy Docker driver
+- Nomad has a leader and at least one ready node with positive `cpu.totalcompute`, a healthy Docker driver and a host-mode network
 - `docker info` succeeds
 - ES submit config still includes `nomad.base_url`, `nomad.datacenter`, `execution.staging_root_dir`, `execution.results_root_dir`, and `execution.base_image`
 - required enabled runtime-profile images are present according to `docker image inspect`

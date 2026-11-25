@@ -56,8 +56,11 @@ client {
 `
 
 // boxNomadHCLLocked is what the lock makes of it: the legacy Docker
-// options become the driver allowlist, and the acl block and the Docker
-// plugin block of scripts/70_linux_setup.sh are added.
+// options become the driver allowlist, the wired-port pin becomes the
+// loopback pin, and the acl block and the Docker plugin block of
+// scripts/70_linux_setup.sh are added. Its SHA-256, ea333055…5163, is that
+// of the box's nomad.hcl after the host-network repair of 2026-11-24, which
+// replaced the wired pin the lock run of that day had kept.
 const boxNomadHCLLocked = `# Remote Alpha 0.7 one-host substrate config.
 data_dir = "/opt/nomad/data"
 bind_addr = "127.0.0.1"
@@ -82,7 +85,7 @@ server {
 client {
   enabled = true
   servers = ["127.0.0.1"]
-  network_interface = "enp1s0"
+  network_interface = "lo"
   cni_path = "/opt/cni/bin"
   options = {
     "driver.allowlist" = "docker"
@@ -217,6 +220,12 @@ case "$1" in
       (umask 077; echo 01234567-89ab-cdef-0123-456789abcdef > "$NOMAD_ACL_DIR/es-token")
       chmod 0400 "$NOMAD_ACL_DIR/es-token"
     fi ;;
+  placement)
+    [[ -e "$s/placement-fails" ]] && { echo "nomad placement: no host-mode network" >&2; exit 1; }
+    grep -q '^  network_interface = "lo"$' "$FAKE_HOST_ROOT/etc/nomad.d/nomad.hcl" || exit 1
+    [[ "$ES_CONFIG" == "$FAKE_HOST_ROOT/etc/execution-substrate/es.json" && -e "$ES_CONFIG" ]] || exit 1
+    [[ "$NOMAD_STARTED_AT" =~ ^[1-9][0-9]*$ && "$NOMAD_PLACEMENT_WAIT_SECONDS" == 120 ]] || exit 1
+    [[ -e "$NOMAD_ACL_DIR/es-token" ]] ;;
   check)
     [[ -e "$s/acl-check-fails" ]] && { echo "nomad acl check: failed" >&2; exit 1; }
     [[ -e "$NOMAD_ACL_DIR/es-token" ]] ;;
@@ -643,7 +652,7 @@ m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
 new, state = m.plan_nomad_hcl(sys.stdin.read())
 print(json.dumps({"locked": new, "state": state, "box_sha256": m.NOMAD_HCL_BOX_SHA256,
-                  "fragments": [m.NOMAD_LOCKED_OPTIONS, m.NOMAD_ACL_BLOCK, m.NOMAD_PLUGIN_BLOCK]}))`
+                  "fragments": [m.NOMAD_LOCKED_OPTIONS, m.NOMAD_LOOPBACK_PIN, m.NOMAD_ACL_BLOCK, m.NOMAD_PLUGIN_BLOCK]}))`
 	cmd := exec.Command("python3", "-I", "-c", code, repoPath(upgradeESPython))
 	cmd.Dir = t.TempDir()
 	cmd.Stdin = strings.NewReader(boxNomadHCL)
@@ -739,6 +748,12 @@ func TestRemoteAlphaUpgradeESCheckRefusesWhatItWasNotWrittenFor(t *testing.T) {
 		{"Nomad is already locked", func(h *upgradeHost) {
 			h.write("etc/nomad.d/nomad.hcl", boxNomadHCLLocked, 0o644)
 		}, "nomad_hcl", "already been applied"},
+		{"nomad.hcl pins another interface", func(h *upgradeHost) {
+			h.write("etc/nomad.d/nomad.hcl", strings.Replace(boxNomadHCL, `"enp1s0"`, `"wlp2s0"`, 1), 0o644)
+		}, "nomad_hcl", "does not pin the wired port this upgrade was written for"},
+		{"Nomad was locked before the loopback pin", func(h *upgradeHost) {
+			h.write("etc/nomad.d/nomad.hcl", strings.Replace(boxNomadHCLLocked, `"lo"`, `"enp1s0"`, 1), 0o644)
+		}, "nomad_hcl", "does not hold the Docker client options"},
 		{"Nomad would load another config", func(h *upgradeHost) {
 			h.write("etc/nomad.d/tls.hcl", "tls {}\n", 0o644)
 		}, "nomad_hcl", "would also load ['tls.hcl']"},
@@ -998,6 +1013,7 @@ func TestRemoteAlphaUpgradeESApply(t *testing.T) {
 	}
 	if got, want := strings.Join(h.calls("acl-setup"), " | "),
 		"acl-setup provision ES_USER=es OBSERVER_USER=root NOMAD_USER=root NOMAD_ADDR=http://127.0.0.1:4646 | "+
+			"acl-setup placement ES_USER=es OBSERVER_USER=root NOMAD_USER=root NOMAD_ADDR=http://127.0.0.1:4646 | "+
 			"acl-setup check ES_USER=es OBSERVER_USER=root NOMAD_USER=root NOMAD_ADDR=http://127.0.0.1:4646"; got != want {
 		t.Fatalf("ACL setup calls %q", got)
 	}
@@ -1067,6 +1083,7 @@ func TestRemoteAlphaUpgradeESApplyRollsBackOnFailure(t *testing.T) {
 		failure string
 	}{
 		{"the locked Nomad config does not validate", "nomad-invalid", "nomad config validate"},
+		{"Nomad cannot place ES's jobs after its start", "placement-fails", "acl-setup placement"},
 		{"ES does not start", "fail-start-es-once", "systemctl start es"},
 		{"the ACL check fails after ES starts", "acl-check-fails", "acl-setup check"},
 	}

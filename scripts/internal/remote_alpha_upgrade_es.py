@@ -487,6 +487,7 @@ STAMPED_PAYLOAD_FILES = ("es", "es-runtime-support")
 SUPPORTED_GO_VERSION = "go1.26.5"
 SUMMARY_SCHEMA = "execution-substrate.remote-alpha.es-upgrade-summary.v1"
 LEADER_WAIT_SECONDS = 90
+PLACEMENT_WAIT_SECONDS = 120
 ES_WAIT_SECONDS = 60
 
 # The key paths of the box's es.json (preflight, ES build 74748063). The
@@ -558,6 +559,12 @@ plugin "docker" {
 }
 """
 NOMAD_LOCK_BLOCKS = "\n" + NOMAD_ACL_BLOCK + "\n" + NOMAD_PLUGIN_BLOCK
+# The box's nomad.hcl pins the node's host network to its wired port. With
+# the cable out (the box runs on Wi-Fi), a Nomad start leaves the node with no
+# host-mode network, and no ES job can be placed. The lock pins loopback, as
+# the supported config does: it holds on Wi-Fi and on a cable alike.
+NOMAD_WIRED_PIN = '  network_interface = "enp1s0"\n'
+NOMAD_LOOPBACK_PIN = '  network_interface = "lo"\n'
 
 HOST_ROOT = "/"
 
@@ -675,17 +682,21 @@ def write_new_file(path, text):
 
 def lock_nomad_hcl(text):
     """(new_text, state) for nomad.hcl: state is "apply" or "applied"."""
-    if text.count(NOMAD_LOCKED_OPTIONS) == 1 and text.endswith(NOMAD_LOCK_BLOCKS) and NOMAD_LEGACY_OPTIONS not in text:
+    if (text.count(NOMAD_LOCKED_OPTIONS) == 1 and text.endswith(NOMAD_LOCK_BLOCKS) and NOMAD_LEGACY_OPTIONS not in text
+            and text.count("network_interface") == 1 and text.count(NOMAD_LOOPBACK_PIN) == 1):
         return text, "applied"
     if text.count(NOMAD_LEGACY_OPTIONS) != 1:
         raise Refusal("nomad.hcl does not hold the Docker client options this upgrade was written for")
+    if text.count("network_interface") != 1 or text.count(NOMAD_WIRED_PIN) != 1:
+        raise Refusal("nomad.hcl does not pin the wired port this upgrade was written for")
     for line in text.splitlines():
         stripped = line.strip()
         if stripped.startswith(("acl", "plugin", "tls", "vault", "consul")) and not stripped.startswith("#"):
             raise Refusal(f"nomad.hcl already has a block this upgrade would add or does not know: {stripped[:40]!r}")
     if not text.endswith("\n"):
         raise Refusal("nomad.hcl does not end with a newline")
-    return text.replace(NOMAD_LEGACY_OPTIONS, NOMAD_LOCKED_OPTIONS) + NOMAD_LOCK_BLOCKS, "apply"
+    locked = text.replace(NOMAD_LEGACY_OPTIONS, NOMAD_LOCKED_OPTIONS).replace(NOMAD_WIRED_PIN, NOMAD_LOOPBACK_PIN)
+    return locked + NOMAD_LOCK_BLOCKS, "apply"
 
 
 def plan_nomad_hcl(text):
@@ -693,7 +704,8 @@ def plan_nomad_hcl(text):
     new_text, state = lock_nomad_hcl(text)
     original = text
     if state == "applied":
-        original = text[: -len(NOMAD_LOCK_BLOCKS)].replace(NOMAD_LOCKED_OPTIONS, NOMAD_LEGACY_OPTIONS)
+        original = (text[: -len(NOMAD_LOCK_BLOCKS)].replace(NOMAD_LOCKED_OPTIONS, NOMAD_LEGACY_OPTIONS)
+                    .replace(NOMAD_LOOPBACK_PIN, NOMAD_WIRED_PIN))
     if sha256_bytes(original.encode()) != NOMAD_HCL_BOX_SHA256:
         raise Refusal("nomad.hcl is not the file the preflight read")
     return new_text, state
@@ -1096,12 +1108,12 @@ def backup_host(backup_dir):
     return manifest
 
 
-def acl_setup(action):
+def acl_setup(action, **extra_env):
     """Run scripts/nomad_acl_setup.sh from this checkout."""
     script = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "nomad_acl_setup.sh")
     override = os.environ.get("ES_UPGRADE_TEST_ACL_SETUP") if HOST_ROOT != "/" else None
     env = dict(os.environ, NOMAD_ACL_DIR=host(NOMAD_ACL_DIR), ES_USER=ES_USER, OBSERVER_USER=OBSERVER_USER,
-               NOMAD_USER="root", NOMAD_ADDR=NOMAD_ADDR)
+               NOMAD_USER="root", NOMAD_ADDR=NOMAD_ADDR, **extra_env)
     return run([override or "bash", *([] if override else [script]), action], env=env, timeout=300, check=True)
 
 
@@ -1134,12 +1146,18 @@ def apply_nomad_lock(backup_dir, log):
         os.chown(host(path), ruid, rgid, follow_symlinks=False)
         os.chmod(host(path), mode)
     log(f"nomad config and data root-owned ({len(ledger)} data entries changed owner); nomad.hcl locked")
+    started_at = int(time.time())
     run(["systemctl", "start", "nomad"], timeout=120, check=True)
     if not wait_for(nomad_leader_named, LEADER_WAIT_SECONDS):
         raise Refusal(f"Nomad named no leader within {LEADER_WAIT_SECONDS} s of its start")
     log("nomad started with a named leader")
     acl_setup("provision")
     log("nomad ACLs provisioned (nomad_acl_setup.sh provision, which ends with its check)")
+    # Every check above passes on a Nomad that can place nothing: prove that
+    # the restarted node has a host-mode network and that ES's job shapes plan.
+    acl_setup("placement", ES_CONFIG=host(ES_CONFIG), NOMAD_STARTED_AT=str(started_at),
+              NOMAD_PLACEMENT_WAIT_SECONDS=str(PLACEMENT_WAIT_SECONDS))
+    log("nomad can place ES's jobs (nomad_acl_setup.sh placement)")
 
 
 def install_es(stage_dir, migrated, log):

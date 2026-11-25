@@ -421,10 +421,11 @@ func TestRealNomadRefusesJobsWithoutTheESToken(t *testing.T) {
 }
 
 // runNomadACLTool runs the tool. Test Nomads run as the test's own user, so
-// provision and check get --nomad-uid with that uid unless args name one.
+// provision, check and placement get --nomad-uid with that uid unless args
+// name one.
 func runNomadACLTool(t *testing.T, args ...string) (string, error) {
 	t.Helper()
-	if len(args) > 0 && (args[0] == "provision" || args[0] == "check") && !slices.Contains(args, "--nomad-uid") {
+	if len(args) > 0 && slices.Contains([]string{"provision", "check", "placement"}, args[0]) && !slices.Contains(args, "--nomad-uid") {
 		args = append([]string{args[0], "--nomad-uid", strconv.Itoa(os.Geteuid())}, args[1:]...)
 	}
 	command := exec.Command("python3", append([]string{"-I", nomadACLToolPath()}, args...)...)

@@ -16,6 +16,14 @@ server {
 
 client {
   enabled = true
+  # Nomad gives the node its host network from loopback, where it already
+  # binds and advertises. ES jobs ask for no ports and need only that host
+  # network to exist, and loopback exists whether the host is on Wi-Fi or a
+  # cable. Without this line Nomad takes the default route's interface and
+  # does not start while there is none (Wi-Fi not up yet); pinned to a wired
+  # port, the node has no host network while the cable is out, and every ES
+  # job fails to place ("missing network").
+  network_interface = "lo"
   options = {
     "driver.allowlist" = "docker"
   }
