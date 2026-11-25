@@ -29,12 +29,26 @@ type upgradeClone struct {
 	scripts string
 	python  string
 	host    string // an empty --host-root
+	bin     string // a stand-in systemctl, first on PATH
 }
 
 func newUpgradeClone(t *testing.T) *upgradeClone {
 	t.Helper()
+	// The guard refuses a clone reached through any symbolic link; this
+	// package's TestMain (testtmpdir) keeps temporary folders off such paths,
+	// as on macOS, where /var leads to /private/var.
 	base := t.TempDir()
-	c := &upgradeClone{t: t, base: base, root: filepath.Join(base, "clone"), host: t.TempDir()}
+	c := &upgradeClone{t: t, base: base, root: filepath.Join(base, "clone"), host: t.TempDir(), bin: t.TempDir()}
+	// check asks systemctl about the services once the guard lets it
+	// through; the stand-in answers as for units it does not know, so a
+	// passing case does not depend on the machine running the tests (macOS
+	// has no systemctl).
+	if err := os.WriteFile(filepath.Join(c.bin, "systemctl"), []byte("#!/bin/sh\nexit 3\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(c.bin, "systemctl"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	c.scripts = filepath.Join(c.root, "scripts")
 	c.python = filepath.Join(c.scripts, "internal", "remote_alpha_upgrade_es.py")
 	for _, dir := range []string{c.root, c.scripts, filepath.Join(c.scripts, "internal")} {
@@ -77,10 +91,11 @@ func (c *upgradeClone) run(python, hostRoot, owner string, args ...string) (stri
 	cmd.Dir = c.t.TempDir()
 	var env []string
 	for _, entry := range os.Environ() {
-		if !strings.HasPrefix(entry, "ES_UPGRADE_TEST_") {
+		if !strings.HasPrefix(entry, "ES_UPGRADE_TEST_") && !strings.HasPrefix(entry, "PATH=") {
 			env = append(env, entry)
 		}
 	}
+	env = append(env, "PATH="+c.bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	if owner != "" {
 		env = append(env, "ES_UPGRADE_TEST_CHECKOUT_OWNER="+owner)
 	}
@@ -217,7 +232,13 @@ func TestRemoteAlphaUpgradeESRefusesACloneOthersCanChange(t *testing.T) {
 		c := newUpgradeClone(t)
 		other := strconv.Itoa(os.Getuid() + 1)
 		stdout, stderr, code := c.check(other)
-		refused(t, "check", stdout, stderr, code, c.root+" belongs to uid "+uid)
+		// The scripts folder is named whoever runs the tests. The folders
+		// above it are named too, unless the tests run as root: the guard
+		// accepts root's folders above the clone.
+		refused(t, "check", stdout, stderr, code, c.scripts+" belongs to uid "+uid)
+		if os.Getuid() != 0 && !strings.Contains(stderr, c.root+" belongs to uid "+uid) {
+			t.Fatalf("the refusal does not name the clone's own folder, which is above scripts:\n%s", stderr)
+		}
 		if !strings.Contains(stderr, "someone other than uid "+other) {
 			t.Fatalf("the refusal does not name the uid that may change the clone:\n%s", stderr)
 		}
