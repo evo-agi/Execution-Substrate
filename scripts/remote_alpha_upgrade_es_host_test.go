@@ -259,6 +259,12 @@ case "$url" in
     # https-jobs-open: over HTTPS, Nomad lists jobs to anyone, as a Nomad
     # whose ACLs do not hold there would.
     if [[ -e "$s/locked" && ! ( "$url" == https://* && -e "$s/https-jobs-open" ) ]]; then code=403; fi ;;
+  http://127.0.0.1:4646/v1/acl/policy/anonymous|https://127.0.0.1:4646/v1/acl/policy/anonymous)
+    nomad_up
+    # anonymous-policy: Nomad holds an anonymous policy, which it shows to
+    # anyone. Its job list stays 403 when the policy names another namespace.
+    if [[ ! -e "$s/locked" ]]; then code=400; body='ACL support disabled'
+    elif [[ ! -e "$s/anonymous-policy" ]]; then code=404; body='ACL policy not found'; fi ;;
   https://127.0.0.1:8445/*)
     { [[ -e "$s/inactive-es" ]] || [[ -e "$s/unhealthy" ]]; } && refuse ;;
   https://127.0.0.1:8444/*)
@@ -1324,7 +1330,8 @@ func TestRemoteAlphaUpgradeESApply(t *testing.T) {
 	}
 	log := mustRead(t, filepath.Join(h.state, "calls.log"))
 	order := []string{"nomad config validate", "systemctl stop nomad", "systemctl start nomad", "curl https://127.0.0.1:4646/v1/status/leader",
-		"acl-setup provision", "systemctl start es", "tls-identity check https://127.0.0.1:4646", "curl https://127.0.0.1:4646/v1/jobs", "acl-setup check"}
+		"acl-setup provision", "systemctl start es", "tls-identity check https://127.0.0.1:4646", "curl https://127.0.0.1:4646/v1/jobs",
+		"curl https://127.0.0.1:4646/v1/acl/policy/anonymous", "acl-setup check"}
 	at := 0
 	for _, step := range order {
 		next := strings.Index(log[at:], step)
@@ -1368,15 +1375,17 @@ func TestRemoteAlphaUpgradeESApply(t *testing.T) {
 	if dirs := backupDirs(t, h); len(dirs) != 1 {
 		t.Fatalf("the apply of a migrated host wrote a backup: %v", dirs)
 	}
-	for _, step := range []string{"curl https://127.0.0.1:4646/v1/status/leader", "tls-identity check https://127.0.0.1:4646", "curl https://127.0.0.1:4646/v1/jobs"} {
+	for _, step := range []string{"curl https://127.0.0.1:4646/v1/status/leader", "tls-identity check https://127.0.0.1:4646", "curl https://127.0.0.1:4646/v1/jobs",
+		"curl https://127.0.0.1:4646/v1/acl/policy/anonymous"} {
 		if len(h.calls(step)) != 2 {
 			t.Fatalf("check and apply of the migrated host did not each make %q: %v", step, h.calls(""))
 		}
 	}
 
-	// On the migrated host the anonymous job list is the only proof that
-	// Nomad still enforces its ACLs: a Nomad that lists jobs to anyone over
-	// HTTPS is refused by check and apply, and nothing changes.
+	// On the migrated host two requests without a token prove the lock: the
+	// job list shows that Nomad enforces its ACLs, and the anonymous policy's
+	// 404 that no policy gives anyone capabilities. A Nomad that lists jobs to
+	// anyone over HTTPS is refused by check and apply, and nothing changes.
 	h.mark("https-jobs-open", "")
 	h.clearCalls()
 	report, stderr, code = h.check()
@@ -1391,6 +1400,28 @@ func TestRemoteAlphaUpgradeESApply(t *testing.T) {
 	onlyReads(t, h, "a refused check and apply of the migrated host")
 	assertRestored(t, migrated, h.snapshot())
 	if err := os.Remove(filepath.Join(h.state, "https-jobs-open")); err != nil {
+		t.Fatal(err)
+	}
+
+	// An anonymous policy that opens only ES's namespace leaves the job list,
+	// which asks about the namespace default, at 403. The policy request
+	// alone shows it, and check and apply are refused for it alone.
+	h.mark("anonymous-policy", "")
+	h.clearCalls()
+	report, stderr, code = h.check()
+	blockers := fmt.Sprint(report["blockers"])
+	if code != 1 || !strings.Contains(stderr, "1 blocker(s); nothing was changed") ||
+		!strings.Contains(blockers, "Nomad answers a request without a token for its anonymous ACL policy over HTTPS with 200, not 404") ||
+		strings.Contains(blockers, "anonymous job list") {
+		t.Fatalf("check of a migrated host whose Nomad holds an anonymous policy: exit %d, blockers %v, %s", code, report["blockers"], stderr)
+	}
+	_, stderr, code = h.apply()
+	if code != 1 || !strings.Contains(stderr, "nothing was changed") {
+		t.Fatalf("apply of a migrated host whose Nomad holds an anonymous policy: exit %d: %s", code, stderr)
+	}
+	onlyReads(t, h, "a refused check and apply of a migrated host with an anonymous policy")
+	assertRestored(t, migrated, h.snapshot())
+	if err := os.Remove(filepath.Join(h.state, "anonymous-policy")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1443,6 +1474,7 @@ func TestRemoteAlphaUpgradeESApplyRollsBackOnFailure(t *testing.T) {
 		{"ES does not start", "fail-start-es-once", "systemctl start es"},
 		{"ES's TLS settings do not hold against Nomad", "identity-fails", "do not hold against the running Nomad"},
 		{"Nomad lists jobs to anyone over HTTPS", "https-jobs-open", "Nomad answers an anonymous job list over HTTPS with 200, not 403"},
+		{"Nomad holds an anonymous policy", "anonymous-policy", "Nomad answers a request without a token for its anonymous ACL policy over HTTPS with 200, not 404"},
 		{"the ACL check fails after ES starts", "acl-check-fails", "nomad_acl_setup.sh check failed"},
 	}
 	for _, tc := range cases {
@@ -1920,6 +1952,48 @@ client {
 	assertRestored(t, migrated, h.snapshot())
 	if dirs := backupDirs(t, h); len(dirs) != 1 {
 		t.Fatalf("the apply of a migrated host wrote a backup: %v", dirs)
+	}
+
+	// A real Nomad with an anonymous policy that opens ES's namespace: the
+	// job list, which asks about the namespace default, still answers 403,
+	// while anyone may list and plan jobs in ES's. check and apply refuse the
+	// host for the policy request alone.
+	anonymousPolicy := map[string]any{"Name": "anonymous",
+		"Rules": `namespace "es-submit-v1" { capabilities = ["submit-job", "list-jobs", "read-job"] }`}
+	if status, body := nomadRequest(t, secure, "POST", httpsAddr+"/v1/acl/policy/anonymous", management, anonymousPolicy); status != 200 {
+		t.Fatalf("create the anonymous policy: %d %s", status, body)
+	}
+	deadline = time.Now().Add(30 * time.Second)
+	for {
+		status, body := nomadRequest(t, secure, "GET", httpsAddr+"/v1/jobs?namespace=es-submit-v1", "", nil)
+		if status == 200 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the anonymous policy does not open ES's namespace: %d %s", status, body)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	if status, body := nomadRequest(t, secure, "GET", httpsAddr+"/v1/jobs", "", nil); status != 403 {
+		t.Fatalf("with an anonymous policy for ES's namespace, the anonymous job list answers %d, not 403: %s", status, body)
+	}
+	h.clearCalls()
+	report, stderr, code = h.check()
+	blockers := fmt.Sprint(report["blockers"])
+	if code != 1 || !strings.Contains(stderr, "1 blocker(s); nothing was changed") ||
+		!strings.Contains(blockers, "Nomad answers a request without a token for its anonymous ACL policy over HTTPS with 200, not 404") {
+		t.Fatalf("check of the migrated host with an anonymous policy: exit %d, blockers %v, %s", code, report["blockers"], stderr)
+	}
+	if _, stderr, code := h.apply(); code != 1 || !strings.Contains(stderr, "nothing was changed") {
+		t.Fatalf("apply of the migrated host with an anonymous policy: exit %d: %s", code, stderr)
+	}
+	onlyReads(t, h, "a refused check and apply of the migrated host with an anonymous policy")
+	assertRestored(t, migrated, h.snapshot())
+	if status, body := nomadRequest(t, secure, "DELETE", httpsAddr+"/v1/acl/policy/anonymous", management, nil); status != 200 {
+		t.Fatalf("delete the anonymous policy: %d %s", status, body)
+	}
+	if report, stderr, code := h.check(); code != 0 || report["result"] != "nothing to do" {
+		t.Fatalf("check of the migrated host after the anonymous policy is gone: exit %d, blockers %v, %s", code, report["blockers"], stderr)
 	}
 
 	// rollback returns the box to plain HTTP with a leader.

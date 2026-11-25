@@ -7321,9 +7321,14 @@ own:
 On `locked-http`, `check` reports what `apply` will change. On `https` for
 the named commit there is nothing to do: `check` and `apply` verify the host
 in place (Nomad names a leader over HTTPS, `nomad_tls_identity.py check`
-passes with the installed `es.json`, and Nomad answers an anonymous job list
-with 403), write no backup, touch no service, and exit 0 with the result
-`nothing to do`. Anything else is refused, and the refusal names the state
+passes with the installed `es.json`, Nomad answers an anonymous job list
+with 403, and it answers a request without a token for its `anonymous` ACL
+policy with 404, as ES's own check before each submit requires), write no
+backup, touch no service, and exit 0 with the result `nothing to do`. The job
+list asks only about the namespace `default`, so only the policy request
+shows an anonymous policy that opens ES's namespace. These requests only
+read: `nomad_acl_setup.sh check` is not run here, because it creates and
+deletes short-lived probe tokens. Anything else is refused, and the refusal names the state
 of every part: the pre-lock `nomad.hcl` (SHA-256 `5d5e106c…96b8`, ES PR
 #54's upgrade has not run), a file of unknown content, or parts that
 disagree, such as TLS material left by an `apply` that was cut off before
@@ -7408,7 +7413,8 @@ its rollback.
    endpoints answer 200, `nomad_tls_identity.py check` (ES's own checks: TLS
    1.3, the CA, the server name, the pin, and at least 14 days of validity)
    passes with the installed `es.json`, Nomad answers an anonymous job list
-   over HTTPS with 403, and `nomad_acl_setup.sh check` passes. The summary
+   over HTTPS with 403 and a request without a token for its `anonymous`
+   ACL policy with 404, and `nomad_acl_setup.sh check` passes. The summary
    goes to `summary.json` in the backup folder.
 
 Every command runs in a process group of its own. When a command times out

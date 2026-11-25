@@ -804,6 +804,26 @@ def nomad_curl_args(addr):
     return ["--proto", "=http"]
 
 
+def anonymous_nomad_problems():
+    """What two requests without a token over HTTPS show against the lock.
+    Nomad must refuse an anonymous job list, so it enforces its ACLs. That
+    list asks only about the namespace default, so Nomad must also answer 404
+    for its anonymous ACL policy: such a policy would give requests without a
+    token capabilities in whatever namespace it names, ES's among them. ES
+    makes the same policy request before each submit, and so does
+    nomad_acl_state_check in scripts/internal/nomad_acl.sh. Both requests
+    only read."""
+    addr = nomad_https_addr()
+    problems = []
+    code = curl_status(addr + "/v1/jobs", nomad_curl_args(addr), timeout=5)
+    if code != "403":
+        problems.append(f"Nomad answers an anonymous job list over HTTPS with {code}, not 403")
+    code = curl_status(addr + "/v1/acl/policy/anonymous", nomad_curl_args(addr), timeout=5)
+    if code != "404":
+        problems.append(f"Nomad answers a request without a token for its anonymous ACL policy over HTTPS with {code}, not 404")
+    return problems
+
+
 def nomad_leader_named(addr):
     doc, code = curl_json(addr + "/v1/status/leader", nomad_curl_args(addr), timeout=5)
     return code == "200" and isinstance(doc, str) and doc != ""
@@ -1258,9 +1278,8 @@ def inspect_migrated(report, block):
     report["nomad_tls_identity"] = out
     if not ok:
         block("nomad", f"ES's Nomad TLS settings do not hold against the running Nomad: {out}")
-    code = curl_status(nomad_https_addr() + "/v1/jobs", nomad_curl_args(nomad_https_addr()), timeout=5)
-    if code != "403":
-        block("nomad", f"Nomad answers an anonymous job list over HTTPS with {code}, not 403")
+    for problem in anonymous_nomad_problems():
+        block("nomad", problem)
 
 
 def write_summary(path, report):
@@ -1450,11 +1469,11 @@ def verify_after(log):
     if not ok:
         raise Refusal(f"ES's Nomad TLS settings do not hold against the running Nomad: {out}")
     log(out)
-    code = curl_status(nomad_https_addr() + "/v1/jobs", nomad_curl_args(nomad_https_addr()), timeout=5)
-    if code != "403":
-        raise Refusal(f"Nomad answers an anonymous job list over HTTPS with {code}, not 403")
+    problems = anonymous_nomad_problems()
+    if problems:
+        raise Refusal("; ".join(problems))
     acl_setup("check")
-    log("Nomad refuses anonymous requests over HTTPS; nomad_acl_setup.sh check passed")
+    log("Nomad refuses an anonymous job list and holds no anonymous policy over HTTPS; nomad_acl_setup.sh check passed")
 
 
 def live_nomad_addr():
