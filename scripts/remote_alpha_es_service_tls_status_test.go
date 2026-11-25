@@ -1015,11 +1015,11 @@ module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
 apple=(b"/AppleInternal/Library/BuildRoots/4~CVR0ugD7d_x9KkNiDhb6ZUdowAfhsgliSKtR7QU/Library/Caches/"
        b"com.apple.xbs/TemporaryDirectory.kapob0/Sources/libressl/libressl-3.3/crypto/pem/pem_lib.c:694")
 other_root=apple.replace(b"4~CVR0ugD7d_x9KkNiDhb6ZUdowAfhsgliSKtR7QU",b"4~DmQ1xYz0Ab9CdEfGhIjKlMnOpQrStUvWxYz01").replace(b"kapob0",b"Xq3rT9")
-def refusal(kind,location=apple,line=None,error=b"09FFF06C:PEM routines:CRYPTO_internal:no start line",expecting=None):
+def refusal(kind,location=apple,line=None,error=b"09FFF06C:PEM routines:CRYPTO_internal:no start line",expecting=None,thread=b"4336234112"):
     first=b"unable to load certificate\n" if kind=="certificate" else b"unable to load key\n"
     if expecting is None:
         expecting=b":Expecting: TRUSTED CERTIFICATE\n" if kind=="certificate" else b":Expecting: ANY PRIVATE KEY\n"
-    return (first if line is None else line)+b"4336234112:error:"+error+b":"+location+expecting
+    return (first if line is None else line)+thread+b":error:"+error+b":"+location+expecting
 cases=(
     ("pinned_build_certificate",True,"certificate",1,b"",refusal("certificate")),
     ("pinned_build_key",True,"key",1,b"",refusal("key")),
@@ -1028,6 +1028,9 @@ cases=(
     ("other_libressl_folder",True,"certificate",1,b"",refusal("certificate",apple.replace(b"libressl-3.3",b"libressl-4.1"))),
     ("other_line_number",True,"certificate",1,b"",refusal("certificate",apple.replace(b":694",b":702"))),
     ("short_absolute_path",True,"certificate",1,b"",refusal("certificate",b"/crypto/pem/pem_lib.c:694")),
+    ("non_decimal_thread_id",False,"certificate",1,b"",refusal("certificate",thread=b"0x1a2b")),
+    ("missing_thread_id",False,"certificate",1,b"",refusal("certificate",thread=b"")),
+    ("other_word_for_error",False,"certificate",1,b"",refusal("certificate").replace(b":error:",b":warning:")),
     ("other_error_code",False,"certificate",1,b"",refusal("certificate",error=b"0906D06C:PEM routines:CRYPTO_internal:no start line")),
     ("other_function",False,"certificate",1,b"",refusal("certificate",error=b"09FFF06C:PEM routines:PEM_read_bio:no start line")),
     ("other_reason",False,"certificate",1,b"",refusal("certificate",error=b"09FFF06C:PEM routines:CRYPTO_internal:bad end line")),
@@ -1044,8 +1047,12 @@ cases=(
     ("relative_path_with_a_folder",False,"certificate",1,b"",refusal("certificate",b"build/crypto/pem/pem_lib.c:694")),
     ("relative_path_from_the_parent",False,"certificate",1,b"",refusal("certificate",b"../crypto/pem/pem_lib.c:694")),
     ("other_character_for_the_dot",False,"certificate",1,b"",refusal("certificate",apple.replace(b"pem_lib.c",b"pem_libXc"))),
+    ("prefix_on_the_crypto_folder",False,"certificate",1,b"",refusal("certificate",apple.replace(b"/crypto/pem/",b"/xcrypto/pem/"))),
+    ("other_case_of_the_suffix",False,"certificate",1,b"",refusal("certificate",apple.replace(b"/crypto/pem/pem_lib.c",b"/CRYPTO/PEM/PEM_LIB.C"))),
     ("missing_line_number",False,"certificate",1,b"",refusal("certificate",apple.replace(b":694",b":"))),
     ("missing_line",False,"certificate",1,b"",refusal("certificate",apple.replace(b":694",b""))),
+    ("non_decimal_line_number",False,"certificate",1,b"",refusal("certificate",apple.replace(b":694",b":0x2b6"))),
+    ("text_after_line_number",False,"certificate",1,b"",refusal("certificate",apple.replace(b":694",b":694x"))),
     ("newline_in_path",False,"certificate",1,b"",refusal("certificate",apple.replace(b"/Library/Caches/",b"/Library\nCaches/"))),
     ("colon_in_path",False,"certificate",1,b"",refusal("certificate",apple.replace(b"/Library/Caches/",b"/Library:Caches/"))),
     ("nul_in_path",False,"certificate",1,b"",refusal("certificate",apple.replace(b"/Library/Caches/",b"/Library\x00Caches/"))),
@@ -1073,7 +1080,7 @@ print(json.dumps(results,sort_keys=True))
 	if err := json.Unmarshal(output, &results); err != nil {
 		t.Fatalf("LibreSSL location result: %v\n%s", err, output)
 	}
-	if len(results) != 35 {
+	if len(results) != 42 {
 		t.Fatalf("LibreSSL location checks missing: %v", results)
 	}
 	for name, ok := range results {
