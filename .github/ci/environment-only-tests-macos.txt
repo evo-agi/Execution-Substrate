@@ -1,0 +1,21 @@
+# Tests of the packages that .github/workflows/go-macos.yml gates that cannot
+# pass on its macOS runner for host reasons, not code reasons, and tests that
+# skip themselves on it.
+#
+# The format and the rules are those of environment-only-tests.txt beside
+# this file, which .github/ci/go_test_gate.py reads and documents. The
+# workflow passes the gate the package pattern in TESTED_PACKAGES, and every
+# line here must name a package that the pattern names. The step "Test" of
+# that workflow skips the entries and runs everything else in those
+# packages. The step "Listed tests still fail" fails the run when an entry
+# passes, skips itself or does not run on that runner, so a change that
+# makes a listed test pass on macOS has to delete its line in the same
+# change.
+#
+# The entries come first in this file, and the lines for tests that skip
+# themselves after them, under their own heading.
+#
+# The way to shorten this list is to port a test so that it passes on a
+# macOS runner without weakening it.
+
+# Tests that skip themselves on the runner.

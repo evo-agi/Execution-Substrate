@@ -987,6 +987,13 @@ func TestGo1265ToolchainBaselineDocsAndBuildContract(t *testing.T) {
 		"does not replace the exact-Go preflights of the supported scripts",
 		"The Nomad, Vault and SPIRE that a test starts there are throwaway test instances, not a deployment",
 		"It does not show that a test named in the list passes: on that runner those tests fail or skip themselves",
+		"A second workflow, `.github/workflows/go-macos.yml`, runs on the same events on a GitHub-hosted `macos-15` runner",
+		"a change that breaks them only on macOS passes the Linux run",
+		"runs the self-check and the two gate steps for the packages that `./scripts/...` names, with a list of its own: `.github/ci/environment-only-tests-macos.txt`, under the same rules",
+		"`go_test_gate.py` takes that package pattern as an optional third argument; without it the gate covers every package of the module",
+		"The self-check holds that workflow file by its SHA-256 as well",
+		"A green macOS run is validation evidence that the tests of those packages that its list does not name pass on that runner image",
+		"It is not a run of the other packages on macOS, and not a run on the operator's Mac",
 	)
 	assertContainsNone(t, "Go baseline stale CI denial", baselineDoc,
 		"no CI system introduced",
@@ -1017,6 +1024,23 @@ func TestGo1265ToolchainBaselineDocsAndBuildContract(t *testing.T) {
 		"run: python3 -I -B .github/ci/go_test_gate.py gate \"$ENVIRONMENT_ONLY_TESTS\"",
 		"run: python3 -I -B .github/ci/go_test_gate.py still-failing \"$ENVIRONMENT_ONLY_TESTS\"",
 	)
+	macOSWorkflow := mustRead(t, ".github/workflows/go-macos.yml")
+	assertContainsAll(t, "Go macOS CI workflow matches the documented baseline", macOSWorkflow,
+		"\n  pull_request:\n",
+		"\n  push:\n    branches:\n      - trunk_dev\n",
+		"runs-on: macos-15",
+		"GOTOOLCHAIN: local",
+		"GOFLAGS: -mod=readonly",
+		"go-version-file: go.mod",
+		"cache: false",
+		"ENVIRONMENT_ONLY_TESTS: .github/ci/environment-only-tests-macos.txt",
+		"TESTED_PACKAGES: ./scripts/...",
+		"run: go mod download",
+		"run: go mod verify",
+		"run: python3 -I -B .github/ci/go_test_gate_selftest.py",
+		"run: python3 -I -B .github/ci/go_test_gate.py gate \"$ENVIRONMENT_ONLY_TESTS\" \"$TESTED_PACKAGES\"",
+		"run: python3 -I -B .github/ci/go_test_gate.py still-failing \"$ENVIRONMENT_ONLY_TESTS\" \"$TESTED_PACKAGES\"",
+	)
 	// The SPIRE release files that CI and the supported-local scripts accept.
 	// Each line is the line of the release's own checksum file, checked by
 	// downloading the file and hashing it. A change of a pin, or a new version
@@ -1034,6 +1058,10 @@ func TestGo1265ToolchainBaselineDocsAndBuildContract(t *testing.T) {
 	if !strings.Contains(mustRead(t, ".github/ci/go_test_gate_selftest.py"), "\n"+ciWorkflowHold) {
 		t.Fatalf("the CI self-check does not hold .github/workflows/go.yml as it is; review the whole workflow, then set %s", strings.TrimSpace(ciWorkflowHold))
 	}
+	macOSWorkflowHold := fmt.Sprintf("MACOS_WORKFLOW_SHA256 = \"%x\"\n", sha256.Sum256([]byte(macOSWorkflow)))
+	if !strings.Contains(mustRead(t, ".github/ci/go_test_gate_selftest.py"), "\n"+macOSWorkflowHold) {
+		t.Fatalf("the CI self-check does not hold .github/workflows/go-macos.yml as it is; review the whole workflow, then set %s", strings.TrimSpace(macOSWorkflowHold))
+	}
 	// The observed run of the CI gate is written against one Go version and
 	// one file of its standard library. A change of the Go baseline has to
 	// come to this test, and so to these two values.
@@ -1043,6 +1071,7 @@ func TestGo1265ToolchainBaselineDocsAndBuildContract(t *testing.T) {
 	)
 	for _, path := range []string{
 		".github/ci/environment-only-tests.txt",
+		".github/ci/environment-only-tests-macos.txt",
 		".github/ci/go_test_gate.py",
 		".github/ci/go_test_gate_selftest.py",
 	} {

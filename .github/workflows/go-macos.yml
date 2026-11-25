@@ -1,0 +1,95 @@
+# Test on macOS the packages of the Go module whose tests are meant to run
+# on every host.
+#
+# The job "build, vet and test" in go.yml runs the tests on Linux only. Many
+# tests of the package execution-substrate/scripts run on the operator's Mac
+# as well, and a change that breaks them only on macOS passes that job. This
+# job runs the same test gate on macOS, for the packages that
+# TESTED_PACKAGES names, with a list of its own for the tests that cannot
+# pass, or that skip themselves, on this runner.
+#
+# A pull_request run uses this file as it appears in the pull request's merge
+# commit, so a pull request can be checked before this file reaches its base.
+# Push runs cover trunk_dev after a merge.
+name: go-macos
+
+on:
+  pull_request:
+  push:
+    branches:
+      - trunk_dev
+
+permissions:
+  contents: read
+
+concurrency:
+  # A newer push to a pull request replaces that pull request's older run.
+  # Each push to trunk_dev has its own group, so every commit there keeps its
+  # own result.
+  group: go-macos-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test:
+    name: test on macOS
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      # Use exactly the toolchain installed from go.mod and the committed
+      # go.sum; never download a different toolchain or rewrite go.mod.
+      GOTOOLCHAIN: local
+      GOFLAGS: -mod=readonly
+      # Tests of TESTED_PACKAGES that cannot pass on this runner for host
+      # reasons, and tests that skip themselves on it. The file gives the
+      # reason for each line.
+      ENVIRONMENT_ONLY_TESTS: .github/ci/environment-only-tests-macos.txt
+      # The packages that this job gates. go_test_gate.py describes the
+      # pattern.
+      TESTED_PACKAGES: ./scripts/...
+    steps:
+      # Actions are pinned to full commit SHAs, the same as in go.yml. The
+      # comment names the release tag that pointed at that commit when it was
+      # pinned.
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # No build or module cache is restored. Every run downloads the modules
+      # that "go mod verify" then checks, and compiles everything from source.
+      - name: Set up Go from go.mod
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Show toolchain
+        run: go version
+
+      # Typed source guards load packages offline (GOPROXY=off), so every
+      # module in the graph must already be in the module cache.
+      - name: Download modules
+        run: go mod download
+
+      - name: Verify module downloads
+        run: go mod verify
+
+      # Proves on throwaway modules, on this runner, that the two steps below
+      # do what they say. It holds go.yml and this file by their SHA-256: an
+      # edit of either fails here until its value in the self-check is
+      # changed in the same change.
+      - name: Check the test gate
+        run: python3 -I -B .github/ci/go_test_gate_selftest.py
+
+      # The step "Test" of go.yml, for the packages that TESTED_PACKAGES
+      # names: every test of those packages that is not an entry must report
+      # a verdict, and the tests that skip themselves must be exactly the
+      # "skips-itself" lines of the list.
+      - name: Test
+        run: python3 -I -B .github/ci/go_test_gate.py gate "$ENVIRONMENT_ONLY_TESTS" "$TESTED_PACKAGES"
+
+      # The step "Listed tests still fail" of go.yml, for the same packages:
+      # every entry must still fail on this runner, in a run of its whole
+      # package and in a go test of its own.
+      - name: Listed tests still fail
+        run: python3 -I -B .github/ci/go_test_gate.py still-failing "$ENVIRONMENT_ONLY_TESTS" "$TESTED_PACKAGES"

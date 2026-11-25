@@ -172,6 +172,20 @@ Vault and SPIRE that a test starts there are throwaway test instances, not a
 deployment. It does not show that a test named in the list passes: on that
 runner those tests fail or skip themselves.
 
+A second workflow, `.github/workflows/go-macos.yml`, runs on the same events
+on a GitHub-hosted `macos-15` runner, because many tests of the
+`execution-substrate/scripts` package also run on the operator's Mac, and a
+change that breaks them only on macOS passes the Linux run. It sets up Go the
+same way, runs `go mod download` and `go mod verify`, and then runs the
+self-check and the two gate steps for the packages that `./scripts/...` names,
+with a list of its own: `.github/ci/environment-only-tests-macos.txt`, under
+the same rules. `go_test_gate.py` takes that package pattern as an optional
+third argument; without it the gate covers every package of the module. The
+self-check holds that workflow file by its SHA-256 as well. A green macOS run
+is validation evidence that the tests of those packages that its list does not
+name pass on that runner image. It is not a run of the other packages on
+macOS, and not a run on the operator's Mac.
+
 ## 11. Explicit Non-Claims
 
 - no runtime behavior change;

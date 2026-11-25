@@ -70,7 +70,8 @@ ES is a working, bounded platform. It is not a finished product.
 
 - **Works today:** the publish, admit, run and observe path above, on one
   Linux host or VM with Nomad and Docker on the same machine. GitHub Actions
-  builds, vets and tests the Go module on every pull request.
+  builds, vets and tests the Go module on Linux on every pull request, and
+  runs the tests of the operator scripts package on macOS as well.
 - **Not yet done:** no real AI coding agent has been run through ES end to
   end. The agent path in this repository uses a deterministic, proof-only
   stand-in for the Codex CLI (see the
