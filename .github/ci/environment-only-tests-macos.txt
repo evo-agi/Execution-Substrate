@@ -88,6 +88,17 @@ execution-substrate/scripts TestRemoteAlphaOperatorRoutesRefuseAStageFolderThatI
 execution-substrate/scripts TestRemoteAlphaOperatorRoutesRefuseAStageFolderThatIsNoLongerPrivate/open/vault-unseal-existing
 execution-substrate/scripts TestRemoteAlphaOperatorRoutesRefuseAStageFolderThatIsNoLongerPrivate/open/vault-workload-auth-bootstrap
 
+# The TLS status collector accepts the malformed-PEM refusal of LibreSSL
+# only in the exact form, source path included, that the /usr/bin/openssl
+# of one macOS build prints (LIBRESSL_PEM_ERROR_PATH in
+# scripts/internal/remote_alpha_es_tls_status.py). The /usr/bin/openssl of
+# the runner does not print that form, so the collector reports
+# unexpected_openssl_grammar for a malformed certificate. On the box the
+# collector runs OpenSSL 3, whose form it accepts. The other subtests of the
+# second test pass.
+execution-substrate/scripts TestRemoteAlphaESServiceTLSStatusOpenSSLGrammar
+execution-substrate/scripts TestRemoteAlphaESServiceTLSStatusCollectionTypedFailures/malformed_cert
+
 # The test builds esconfigcheck for the host and reads its build information
 # with go_build_info of the ES upgrade helper, which reads the 64-bit
 # little-endian ELF files of the box and refuses anything else. On macOS the

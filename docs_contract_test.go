@@ -989,7 +989,7 @@ func TestGo1265ToolchainBaselineDocsAndBuildContract(t *testing.T) {
 		"It does not show that a test named in the list passes: on that runner those tests fail or skip themselves",
 		"A second workflow, `.github/workflows/go-macos.yml`, runs on the same events on a GitHub-hosted `macos-26` runner",
 		"a change that breaks them only on macOS passes the Linux run",
-		"The runner runs the same major version of macOS as the operator's Mac, because tools that macOS ships, such as `/usr/bin/openssl`, change between major versions and some of those tests run them",
+		"The runner runs the same major version of macOS as the operator's Mac, so the tests meet the tools that this version of macOS ships, such as `/bin/bash`, `stat`, `chmod` and `/usr/bin/openssl`",
 		"runs the self-check and the two gate steps for the packages that `./scripts/...` names, with a list of its own: `.github/ci/environment-only-tests-macos.txt`, under the same rules",
 		"`go_test_gate.py` takes that package pattern as an optional third argument; without it the gate covers every package of the module",
 		"The self-check holds that workflow file by its SHA-256 as well",
