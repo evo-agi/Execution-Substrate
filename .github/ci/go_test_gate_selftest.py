@@ -63,7 +63,7 @@ WORKFLOW_SHA256 = "fa3d88b7af2ed16a159a6ebfcebb79ecc31436e65c2ec25a40a25e917b4c9
 # The workflow that runs the gate on macOS, and its SHA-256 as it was last
 # reviewed. See MacOSWorkflowKeepsWhatTheGateDependsOn.
 MACOS_WORKFLOW = os.path.join(HERE, os.pardir, "workflows", "go-macos.yml")
-MACOS_WORKFLOW_SHA256 = "b7d9111b50021396dfbf59c1517ecacfea6fa1608a5fafc50e5c9b77faf4d6f4"
+MACOS_WORKFLOW_SHA256 = "2874ce50fde35b2a167a65a22771cf17c35084a8e70a028bb18dacfbe571238d"
 
 PASS = "pass"
 FAIL = "fail"
@@ -4244,9 +4244,9 @@ class MacOSWorkflowKeepsWhatTheGateDependsOn(unittest.TestCase):
             self.assertFalse(line.startswith(("continue-on-error:", "if:", "- if:")), line)
 
     def test_it_runs_on_macos_and_calls_no_sudo(self):
-        self.assertIn("runs-on: macos-15", self.lines)
+        self.assertIn("runs-on: macos-26", self.lines)
         self.assertEqual([line for line in self.lines if line.startswith("runs-on:")],
-                         ["runs-on: macos-15"])
+                         ["runs-on: macos-26"])
         commands = [line[len("run: "):] for line in self.lines if line.startswith("run: ")]
         self.assertEqual([command for command in commands if "sudo" in command], [])
 

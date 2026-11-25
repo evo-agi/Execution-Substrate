@@ -173,9 +173,12 @@ deployment. It does not show that a test named in the list passes: on that
 runner those tests fail or skip themselves.
 
 A second workflow, `.github/workflows/go-macos.yml`, runs on the same events
-on a GitHub-hosted `macos-15` runner, because many tests of the
+on a GitHub-hosted `macos-26` runner, because many tests of the
 `execution-substrate/scripts` package also run on the operator's Mac, and a
-change that breaks them only on macOS passes the Linux run. It sets up Go the
+change that breaks them only on macOS passes the Linux run. The runner runs
+the same major version of macOS as the operator's Mac, because tools that
+macOS ships, such as `/usr/bin/openssl`, change between major versions and
+some of those tests run them. It sets up Go the
 same way, runs `go mod download` and `go mod verify`, and then runs the
 self-check and the two gate steps for the packages that `./scripts/...` names,
 with a list of its own: `.github/ci/environment-only-tests-macos.txt`, under

@@ -32,7 +32,10 @@ concurrency:
 jobs:
   test:
     name: test on macOS
-    runs-on: macos-15
+    # The same major version of macOS as the operator's Mac. Tools that
+    # macOS ships, such as /usr/bin/openssl, differ from one major version
+    # to the next, and the tests run some of them.
+    runs-on: macos-26
     timeout-minutes: 60
     env:
       # Use exactly the toolchain installed from go.mod and the committed
