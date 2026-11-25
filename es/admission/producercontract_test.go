@@ -412,7 +412,7 @@ func TestProducerContractDeclarationMarksDisabledRuntimeProfileReason(t *testing
 func producerContractSubmitConfig(enableControlPlaneProfile bool) esconfig.Config {
 	cfg := esconfig.Config{
 		Nomad: esconfig.NomadConfig{
-			BaseURL:        "http://127.0.0.1:4646",
+			BaseURL:        "https://127.0.0.1:4646",
 			Datacenter:     "dc1",
 			TimeoutSeconds: 1,
 		},

@@ -40,7 +40,7 @@ The steps below remain the transparent manual breakdown for the same current sli
 - The stack is already up through [.runbooks/system/v1_bringup.md](../system/v1_bringup.md)
 - `BRINGUP_PROFILE=full`
 - `curl`, `python3`, `tar`, `gzip`, `nomad`, and `docker` are available
-- `CA_CERT`, `OPERATOR_CERT`, `OPERATOR_KEY`, `ARS_URL`, `AGS_URL`, `EGS_URL`, `ES_URL`, and `NOMAD_ADDR` are exported
+- `CA_CERT`, `OPERATOR_CERT`, `OPERATOR_KEY`, `ARS_URL`, `AGS_URL`, `EGS_URL`, `ES_URL`, `NOMAD_ADDR` (`https://127.0.0.1:4646`), and `NOMAD_CACERT` (Nomad's CA, `/etc/nomad.d/tls/ca.pem`) are exported
 - Optional `AGS_RESOLVE` and `ES_RESOLVE` are exported if your local URLs require `curl --resolve`
 
 Before publishing or submitting, re-run the stack check:

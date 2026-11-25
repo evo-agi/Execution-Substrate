@@ -228,9 +228,13 @@ Example execution snippet:
 ```json
 {
   "nomad": {
-    "base_url": "http://127.0.0.1:4646",
+    "base_url": "https://127.0.0.1:4646",
+    "server_name": "server.global.nomad",
+    "root_ca_file": "/etc/nomad.d/tls/ca.pem",
+    "server_spki_sha256": "<pin printed by scripts/70_linux_setup.sh>",
     "datacenter": "dc1",
-    "timeout_seconds": 5
+    "timeout_seconds": 5,
+    "token_file": "/etc/execution-substrate/nomad-acl/es-token"
   },
   "execution": {
     "staging_root_dir": "/tmp/es-stage",

@@ -3,7 +3,6 @@ package app_test
 import (
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -125,11 +124,18 @@ func TestNomadACLToolPlacementChecksHostNetworkAndPlans(t *testing.T) {
 		}
 		return path
 	}
-	esConfig := writeESConfig(t, `{"nomad": {"base_url": "http://127.0.0.1:4646", "datacenter": "dc-test"}}`)
+	esConfig := writeESConfig(t, `{"nomad": {"base_url": "https://127.0.0.1:4646", "datacenter": "dc-test"}}`)
+	material, err := issueNomadTLSMaterial(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	run := func(fake *fakeNomadForPlacement, config string, extra ...string) (string, error) {
-		server := httptest.NewServer(fake)
+		server, err := material.startTLSServer(fake)
+		if err != nil {
+			t.Fatal(err)
+		}
 		defer server.Close()
-		args := append([]string{"placement", "--addr", server.URL, "--es-token-file", esTokenFile,
+		args := append([]string{"placement", "--addr", server.URL, "--ca-file", material.caFile, "--es-token-file", esTokenFile,
 			"--observer-token-file", observerTokenFile, "--es-config", config}, extra...)
 		return runNomadACLTool(t, args...)
 	}

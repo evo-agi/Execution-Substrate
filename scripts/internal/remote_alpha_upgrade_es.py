@@ -1,8 +1,17 @@
 #!/usr/bin/env -S python3 -I
-"""Remote Alpha ES upgrade: move the box's ES to a named commit and lock Nomad.
+"""Remote Alpha ES upgrade: move the box's ES to a named commit and put
+Nomad's API behind HTTPS.
 
 This file is the implementation behind scripts/remote_alpha_upgrade_es.sh.
-The host steps, for the one host shape the preflight read:
+It takes the box from where the upgrade of ES PR #54 left it, ES built from
+16cbf739 and Nomad enforcing ACLs on plain HTTP (the shape "locked-http"), to
+the named commit with Nomad serving its API and RPC only over TLS 1.3 (the
+shape "https"), part 2b of the Nomad lock. check and apply first read the
+host's shape from nomad.hcl, Nomad's TLS directory, es.json and the installed
+ES binaries. On "locked-http" check reports every change apply would make. On
+"https" for the named commit there is nothing to do: both exit 0 and change
+nothing. Any other shape is refused, naming what each part looks like. The
+host steps:
 
   build           (unprivileged) build es, es-runtime-support and the
                   config check helper from this clean checkout, with
@@ -10,17 +19,19 @@ The host steps, for the one host shape the preflight read:
   check           (root, read-only) verify the payload and the host and
                   print every change apply would make; refuse anything
                   this upgrade was not written for
-  apply           (root) check, back up, stop ES, lock Nomad, provision
-                  the retained-result key, migrate es.json, install the
-                  binaries, start ES and verify; on any failure, put the
-                  backup back
+  apply           (root) check, back up, stop ES, issue Nomad's TLS
+                  material, restart Nomad on HTTPS, provision its ACLs
+                  again, migrate es.json, install the binaries, start ES
+                  and verify; on any failure, put the backup back
   rollback        (root) put a backup back and start Nomad and ES
 
 and the host-independent pieces they are built on:
 
-  migrate-config  add the keys current ES requires to an older es.json
+  migrate-config  add the Nomad TLS keys current ES requires to the box's
+                  es.json
   provision-key   create the retained-result key file, or accept an
-                  existing one that already meets ES's rules
+                  existing one that already meets ES's rules (check and
+                  apply use it to verify the key the first upgrade made)
   backup          copy named files, with owner, mode and SHA-256, into a
                   new root-only backup directory
   restore         put every file of such a backup back exactly
@@ -54,22 +65,9 @@ import time
 RETAINED_RESULT_KEY_BYTES = 32
 RETAINED_RESULT_KEY_MODES = (0o400, 0o600)
 
-IDENTIFIER_CHARS = set("abcdefghijklmnopqrstuvwxyz0123456789_-")
-
 
 class Refusal(Exception):
     """A condition the upgrade will not proceed past."""
-
-
-def valid_identifier(value):
-    # Mirrors validRetainedResultAuthIdentifier in es/config/config.go; the
-    # migrated config is then checked by config.Load itself (esconfigcheck).
-    return (
-        isinstance(value, str)
-        and 1 <= len(value) <= 32
-        and "a" <= value[0] <= "z"
-        and set(value) <= IDENTIFIER_CHARS
-    )
 
 
 def clean_absolute(path):
@@ -112,42 +110,69 @@ def insert_after(mapping, after_key, key, value):
     return out
 
 
-def migrate_config(doc, token_file, auth, expected_source_paths=None):
+# Nomad's HTTPS identity on the box: what scripts/70_linux_setup.sh issues
+# and what ES then trusts. A test keeps the TLS paths and the server name
+# equal to the setup's.
+NOMAD_PORT = 4646
+NOMAD_TLS_DIR = "/etc/nomad.d/tls"
+NOMAD_CA_FILE = NOMAD_TLS_DIR + "/ca.pem"
+NOMAD_CERT_FILE = NOMAD_TLS_DIR + "/server.pem"
+NOMAD_KEY_FILE = NOMAD_TLS_DIR + "/server-key.pem"
+NOMAD_SERVER_NAME = "server.global.nomad"
+NOMAD_TLS_KEYS = ("server_name", "root_ca_file", "server_spki_sha256")
+SPKI_CHARS = set("0123456789abcdef")
+
+
+def nomad_port():
+    """Nomad's HTTP(S) port: 4646, or a free one the real-Nomad test sets
+    under a test host root."""
+    if HOST_ROOT != "/" and os.environ.get("ES_UPGRADE_TEST_NOMAD_PORT"):
+        return int(os.environ["ES_UPGRADE_TEST_NOMAD_PORT"])
+    return NOMAD_PORT
+
+
+def nomad_http_addr():
+    return f"http://127.0.0.1:{nomad_port()}"
+
+
+def nomad_https_addr():
+    return f"https://127.0.0.1:{nomad_port()}"
+
+
+def valid_spki(value):
+    return isinstance(value, str) and len(value) == 64 and set(value) <= SPKI_CHARS
+
+
+def migrate_config(doc, spki_sha256, expected_source_paths=None):
     """Return (new_doc, changes) for an es.json document.
 
-    token_file is the path for nomad.token_file; auth is the
-    execution.retained_result_auth object. When expected_source_paths is
-    given, the input's key paths must equal it exactly, so an es.json with
-    any key this upgrade was not written for is refused. A document that
-    already carries exactly these values is returned unchanged with no
-    changes; one that carries other values is refused."""
+    The box's es.json reaches Nomad at its plain-HTTP address. The migrated
+    one reaches it at the HTTPS address, trusting only Nomad's CA for
+    Nomad's server name, and pins spki_sha256, the SHA-256 of the server
+    certificate's public key. When expected_source_paths is given, the
+    input's key paths must equal it exactly, so an es.json with any key this
+    upgrade was not written for is refused. A document that already carries
+    exactly these values is returned unchanged with no changes; one that
+    carries other values is refused."""
     if not isinstance(doc, dict):
         raise Refusal("es.json is not a JSON object")
-    if not clean_absolute(token_file):
-        raise Refusal("the token file must be a clean absolute path with a non-root parent")
-    if set(auth) != {"store_id", "key_id", "key_file"}:
-        raise Refusal("retained_result_auth needs exactly store_id, key_id and key_file")
-    if not valid_identifier(auth["store_id"]) or not valid_identifier(auth["key_id"]):
-        raise Refusal("store_id and key_id must be canonical 1-32 byte identifiers")
-    if not clean_absolute(auth["key_file"]) or auth["key_file"] == token_file:
-        raise Refusal("the key file must be a clean absolute path, different from the token file")
-
+    if not valid_spki(spki_sha256):
+        raise Refusal("the pin must be the lowercase hex SHA-256 of Nomad's server public key (64 characters)")
     nomad = doc.get("nomad")
-    execution = doc.get("execution")
     if not isinstance(nomad, dict) or not nomad.get("base_url"):
         raise Refusal("es.json has no nomad.base_url: this upgrade is for a submit-enabled ES")
-    if not isinstance(execution, dict):
-        raise Refusal("es.json has no execution section")
 
-    has_token = "token_file" in nomad
-    has_auth = "retained_result_auth" in execution
-    if has_token or has_auth:
-        if nomad.get("token_file") == token_file and execution.get("retained_result_auth") == auth:
+    target = {"base_url": nomad_https_addr(), "server_name": NOMAD_SERVER_NAME,
+              "root_ca_file": NOMAD_CA_FILE, "server_spki_sha256": spki_sha256}
+    if any(key in nomad for key in NOMAD_TLS_KEYS):
+        if all(nomad.get(key) == value for key, value in target.items()):
             return doc, []
         raise Refusal(
-            "es.json already has nomad.token_file or execution.retained_result_auth with other values; "
+            "es.json already has Nomad TLS settings with other values; "
             "it was changed by something other than this upgrade"
         )
+    if nomad["base_url"] != nomad_http_addr():
+        raise Refusal(f"es.json's nomad.base_url is {nomad['base_url']!r}, not {nomad_http_addr()!r}")
 
     if expected_source_paths is not None:
         found = leaf_paths(doc)
@@ -158,12 +183,14 @@ def migrate_config(doc, token_file, auth, expected_source_paths=None):
                 f"unexpected {sorted(found - expected)}, missing {sorted(expected - found)}"
             )
 
+    new_nomad = dict(nomad, base_url=target["base_url"])
+    after = "base_url"
+    for key in NOMAD_TLS_KEYS:
+        new_nomad = insert_after(new_nomad, after, key, target[key])
+        after = key
     new_doc = dict(doc)
-    new_nomad = dict(nomad)
-    new_nomad["token_file"] = token_file
     new_doc["nomad"] = new_nomad
-    new_doc["execution"] = insert_after(execution, "results_root_dir", "retained_result_auth", dict(auth))
-    return new_doc, ["nomad.token_file", "execution.retained_result_auth"]
+    return new_doc, ["nomad.base_url", *[f"nomad.{key}" for key in NOMAD_TLS_KEYS]]
 
 
 def render_json(doc):
@@ -256,7 +283,10 @@ def provision_key(key_file, owner_uid, owner_gid, create_parent=True, dry_run=Fa
 
 
 BACKUP_MANIFEST = "manifest.json"
-BACKUP_SCHEMA = "execution-substrate.remote-alpha.es-upgrade-backup.v1"
+# v2: the backups of this upgrade. A v1 backup, of ES PR #54's upgrade,
+# also holds directory owners and modes that this restore does not put
+# back, so it is refused here; the script at 16cbf739 restores it.
+BACKUP_SCHEMA = "execution-substrate.remote-alpha.es-upgrade-backup.v2"
 
 
 def sha256_bytes(data):
@@ -423,8 +453,7 @@ def cmd_migrate_config(args):
     if args.expected_paths:
         with open(args.expected_paths, encoding="utf-8") as handle:
             expected = [line.strip() for line in handle if line.strip()]
-    auth = {"store_id": args.store_id, "key_id": args.key_id, "key_file": args.key_file}
-    new_doc, changes = migrate_config(doc, args.token_file, auth, expected)
+    new_doc, changes = migrate_config(doc, args.spki_sha256, expected)
     if args.output:
         fd = os.open(args.output, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
@@ -440,9 +469,11 @@ def cmd_provision_key(args):
 
 
 # ---------------------------------------------------------------------------
-# The Remote Alpha host. Every path and value below comes from the read-only
-# preflight of 2026-11-24 (project files es-box-upgrade/01-preflight/), and
-# check refuses a host that differs from them.
+# The Remote Alpha host. The paths and values below are the box's as the
+# read-only preflight of 2026-11-24 read them (project files
+# es-box-upgrade/01-preflight/) and as the upgrade of ES PR #54 and the
+# host-network repair of that day left them (es-box-upgrade/08-box-run-report.md,
+# 09-nomad-network/). check refuses a host that differs from them.
 # ---------------------------------------------------------------------------
 
 ES_CONFIG = "/etc/execution-substrate/es.json"
@@ -451,26 +482,22 @@ AGS_CONFIG = "/etc/execution-substrate/ags.json"
 ES_BINARY = "/usr/local/lib/execution-substrate/bin/es"
 RUNTIME_SUPPORT = "/usr/local/bin/es-runtime-support"
 BINARY_MODE = 0o755  # root:root
-ES_UNIT = "/etc/systemd/system/es.service"
-ES_UNIT_DROPIN = "/etc/systemd/system/es.service.d/10-account.conf"
 ES_EXEC_START = f"argv[]={ES_BINARY} -config {ES_CONFIG} ;"
 HEALTHCHECK_ENV = "/etc/execution-substrate/healthcheck.env"
 NOMAD_DIR = "/etc/nomad.d"
 NOMAD_HCL = "/etc/nomad.d/nomad.hcl"
-NOMAD_ENV = "/etc/nomad.d/nomad.env"
 NOMAD_CONFIG_MODE = 0o640  # root:root, as scripts/70_linux_setup.sh writes nomad.hcl
-NOMAD_DATA_PARENT = "/opt/nomad"
-NOMAD_DATA_DIR = "/opt/nomad/data"
 # Nomad runs as root, so only root may change what it reads or keeps (audit
-# INF-16): its config directory, its data directory and that directory's
-# parent become root:root with these modes, and every entry in the data
-# directory becomes root:root.
-LOCKED_DIRS = ((NOMAD_DIR, 0o755), (NOMAD_DATA_PARENT, 0o755), (NOMAD_DATA_DIR, 0o700))
+# INF-16). ES PR #54's upgrade made these directories root:root with these
+# modes. Nomad's TLS directory goes in the first, root:root 0755 as the
+# setup makes it, and holds exactly the setup's three files.
+NOMAD_DIRS = ((NOMAD_DIR, 0o755), ("/opt/nomad", 0o755), ("/opt/nomad/data", 0o700))
+NOMAD_TLS_DIR_MODE = 0o755
+NOMAD_TLS_FILES = ("ca.pem", "server-key.pem", "server.pem")
 NOMAD_ACL_DIR = "/etc/execution-substrate/nomad-acl"
 ES_TOKEN_FILE = NOMAD_ACL_DIR + "/es-token"
-NOMAD_ADDR = "http://127.0.0.1:4646"
 # The healthcheck runbook runs its checks with sudo, so the read-only
-# observer token goes to root. Pass the same OBSERVER_USER to any later
+# observer token is root's. Pass the same OBSERVER_USER to any later
 # `nomad_acl_setup.sh check` or `rotate` on this host.
 OBSERVER_USER = "root"
 KEY_FILE = "/etc/execution-substrate/retained-result-auth/es.key"
@@ -485,19 +512,31 @@ PAYLOAD_FILES = ("es", "es-runtime-support", "esconfigcheck")
 # runs, not something it installs.
 STAMPED_PAYLOAD_FILES = ("es", "es-runtime-support")
 SUPPORTED_GO_VERSION = "go1.26.5"
-SUMMARY_SCHEMA = "execution-substrate.remote-alpha.es-upgrade-summary.v1"
+SUMMARY_SCHEMA = "execution-substrate.remote-alpha.es-upgrade-summary.v2"
 LEADER_WAIT_SECONDS = 90
 PLACEMENT_WAIT_SECONDS = 120
 ES_WAIT_SECONDS = 60
+# Docker labels every container of a Nomad allocation with the allocation's
+# ID, so running allocations show without a Nomad token.
+NOMAD_ALLOC_LABEL = "com.hashicorp.nomad.alloc_id"
+# check runs the new ES's config loader on the migrated es.json before the
+# server key exists; any well-formed pin stands in for it there.
+PLACEHOLDER_PIN = "0" * 64
 
-# The key paths of the box's es.json (preflight, ES build 74748063). The
-# config migration refuses any other set.
-EXPECTED_ES_PATHS = (
+# The ES build that ES PR #54's upgrade installed: the box's es and
+# es-runtime-support name it in their Go build info.
+BOX_ES_COMMIT = "16cbf739eea8c6a673aef8048aefb69cebd5121b"
+
+# The key paths of the box's es.json: those the preflight read (ES build
+# 74748063) and the four that ES PR #54's upgrade added. Any other set is
+# refused.
+START_ES_PATHS = (
     "authorization.allowed_spiffe_path_prefixes[]",
     *[f"dependencies.{dep}.{field}" for dep in ("artifact_registry", "execution_governance")
       for field in ("base_url", "client_cert_file", "client_key_file", "root_ca_file", "server_name", "timeout_seconds")],
     "execution.base_image",
     "execution.results_root_dir",
+    *[f"execution.retained_result_auth.{field}" for field in ("key_file", "key_id", "store_id")],
     *[f"execution.runtime_profiles.control_plane_normal_shell.{field}"
       for field in ("codex_cli_path", "credential_vault_secret_field", "credential_vault_secret_path", "enabled", "image")],
     "execution.runtime_support_binary",
@@ -507,6 +546,7 @@ EXPECTED_ES_PATHS = (
     "nomad.base_url",
     "nomad.datacenter",
     "nomad.timeout_seconds",
+    "nomad.token_file",
     "runtime_config.workload_zone_vault_config_ref.digest",
     "security.bootstrap_issuer_common_name",
     "tls.cert_file",
@@ -517,54 +557,42 @@ EXPECTED_ES_PATHS = (
     "workload_vault_auth.default_mode",
 )
 
-# SHA-256 of the box's nomad.hcl as the preflight read it (529 bytes, Remote
-# Alpha 0.7's one-host config). The lock edits only this exact file.
-NOMAD_HCL_BOX_SHA256 = "5d5e106c1eb0ec8ba74efed66272051bba0a61adac4fead2e6021b6f9b7d96b8"
+# SHA-256 of the box's nomad.hcl before ES PR #54's lock (529 bytes, Remote
+# Alpha 0.7's one-host config, as the preflight read it) and after the lock
+# and the host-network repair (1126 bytes): the file this upgrade starts from.
+NOMAD_HCL_PRELOCK_SHA256 = "5d5e106c1eb0ec8ba74efed66272051bba0a61adac4fead2e6021b6f9b7d96b8"
+NOMAD_HCL_LOCKED_SHA256 = "ea33305501c6f9cfc24fb00c678042580ed7d84ab6867f49c27a335d131d5163"
 
-# The box's nomad.hcl carries the Docker driver's legacy client options.
-# The lock replaces them with the driver allowlist and adds the acl block
-# and the Docker plugin block of the supported config
-# (scripts/70_linux_setup.sh; a test keeps these pieces equal to it).
-NOMAD_LEGACY_OPTIONS = """  options = {
-    "docker.cleanup.image" = "false"
-    "docker.volumes.enabled" = "true"
-  }
-"""
-NOMAD_LOCKED_OPTIONS = """  options = {
-    "driver.allowlist" = "docker"
-  }
-"""
-NOMAD_ACL_BLOCK = """acl {
-  enabled = true
-}
-"""
-NOMAD_PLUGIN_BLOCK = """# ES runs every task through its runtime helper on the Docker driver, so only
-# that driver is enabled and the Docker plugin is limited (audit INF-02): no
-# privileged containers, and only the capabilities the helper uses to prepare
-# a run and drop to the workload user. ES's bind mounts need volumes enabled.
-# Runtime profile images must survive image garbage collection.
-plugin "docker" {
-  config {
-    allow_privileged = false
-    allow_caps       = ["chown", "dac_override", "fowner", "kill", "setgid", "setuid", "setpcap"]
+# What this upgrade appends to that nomad.hcl: the tls block of the supported
+# config, scripts/70_linux_setup.sh, at its NOMAD_TLS_DIR. A test keeps the
+# two equal.
+NOMAD_TLS_BLOCK = f"""
+# HTTPS and RPC over TLS 1.3 only, with the certificate this script issues.
+# Clients authenticate with ACL tokens, not certificates.
+tls {{
+  http = true
+  rpc  = true
 
-    volumes {
-      enabled = true
-    }
+  ca_file   = "{NOMAD_CA_FILE}"
+  cert_file = "{NOMAD_CERT_FILE}"
+  key_file  = "{NOMAD_KEY_FILE}"
 
-    gc {
-      image = false
-    }
-  }
-}
+  verify_server_hostname = true
+  verify_https_client    = false
+  tls_min_version        = "tls13"
+}}
 """
-NOMAD_LOCK_BLOCKS = "\n" + NOMAD_ACL_BLOCK + "\n" + NOMAD_PLUGIN_BLOCK
-# The box's nomad.hcl pins the node's host network to its wired port. With
-# the cable out (the box runs on Wi-Fi), a Nomad start leaves the node with no
-# host-mode network, and no ES job can be placed. The lock pins loopback, as
-# the supported config does: it holds on Wi-Fi and on a cable alike.
-NOMAD_WIRED_PIN = '  network_interface = "enp1s0"\n'
-NOMAD_LOOPBACK_PIN = '  network_interface = "lo"\n'
+# The paths apply creates. Its backup names those it created, and a restore
+# removes them; it removes nothing else.
+CREATED_BY_APPLY = (NOMAD_TLS_DIR,)
+# `nomad config validate` warns, and still exits 0, when it cannot read the
+# TLS files a config names, and when a config has no TLS at all.
+NOMAD_VALIDATE_REFUSED = ("Error when parsing TLS configuration", "mTLS is not configured")
+
+SCRIPTS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SETUP_SCRIPT = os.path.join(SCRIPTS_DIR, "70_linux_setup.sh")
+ACL_SETUP_SCRIPT = os.path.join(SCRIPTS_DIR, "nomad_acl_setup.sh")
+TLS_IDENTITY_TOOL = os.path.join(SCRIPTS_DIR, "internal", "nomad_tls_identity.py")
 
 HOST_ROOT = "/"
 
@@ -680,77 +708,14 @@ def write_new_file(path, text):
         os.fsync(handle.fileno())
 
 
-def lock_nomad_hcl(text):
-    """(new_text, state) for nomad.hcl: state is "apply" or "applied"."""
-    if (text.count(NOMAD_LOCKED_OPTIONS) == 1 and text.endswith(NOMAD_LOCK_BLOCKS) and NOMAD_LEGACY_OPTIONS not in text
-            and text.count("network_interface") == 1 and text.count(NOMAD_LOOPBACK_PIN) == 1):
-        return text, "applied"
-    if text.count(NOMAD_LEGACY_OPTIONS) != 1:
-        raise Refusal("nomad.hcl does not hold the Docker client options this upgrade was written for")
-    if text.count("network_interface") != 1 or text.count(NOMAD_WIRED_PIN) != 1:
-        raise Refusal("nomad.hcl does not pin the wired port this upgrade was written for")
-    for line in text.splitlines():
-        stripped = line.strip()
-        if stripped.startswith(("acl", "plugin", "tls", "vault", "consul")) and not stripped.startswith("#"):
-            raise Refusal(f"nomad.hcl already has a block this upgrade would add or does not know: {stripped[:40]!r}")
-    if not text.endswith("\n"):
-        raise Refusal("nomad.hcl does not end with a newline")
-    locked = text.replace(NOMAD_LEGACY_OPTIONS, NOMAD_LOCKED_OPTIONS).replace(NOMAD_WIRED_PIN, NOMAD_LOOPBACK_PIN)
-    return locked + NOMAD_LOCK_BLOCKS, "apply"
-
-
-def plan_nomad_hcl(text):
-    """lock_nomad_hcl for the box's own nomad.hcl, or its locked form, only."""
-    new_text, state = lock_nomad_hcl(text)
-    original = text
-    if state == "applied":
-        original = (text[: -len(NOMAD_LOCK_BLOCKS)].replace(NOMAD_LOCKED_OPTIONS, NOMAD_LEGACY_OPTIONS)
-                    .replace(NOMAD_LOOPBACK_PIN, NOMAD_WIRED_PIN))
-    if sha256_bytes(original.encode()) != NOMAD_HCL_BOX_SHA256:
-        raise Refusal("nomad.hcl is not the file the preflight read")
-    return new_text, state
-
-
-def other_nomad_configs():
-    """Files besides nomad.hcl that `nomad agent -config /etc/nomad.d` loads."""
-    return sorted(name for name in os.listdir(host(NOMAD_DIR))
-                  if name != "nomad.hcl" and name.endswith((".hcl", ".json")))
-
-
-def dir_record(path):
-    st = os.lstat(host(path))
-    if not stat.S_ISDIR(st.st_mode):
-        raise Refusal(f"{path} is not a directory")
-    return {"path": path, "uid": st.st_uid, "gid": st.st_gid, "mode": format(stat.S_IMODE(st.st_mode), "04o")}
-
-
-def raise_error(exc):
-    raise exc
-
-
-def foreign_owned_entries(top):
-    """[relative path, uid, gid, mode] of every entry below top that is not
-    root:root. Symbolic links are listed, never followed. The mode is kept
-    because a chown clears a file's setuid and setgid bits."""
-    ruid, rgid = root_ids()
-    found = []
-    for dirpath, dirnames, filenames in os.walk(top, followlinks=False, onerror=raise_error):
-        for name in dirnames + filenames:
-            path = os.path.join(dirpath, name)
-            st = os.lstat(path)
-            if (st.st_uid, st.st_gid) != (ruid, rgid):
-                found.append([os.path.relpath(path, top), st.st_uid, st.st_gid, stat.S_IMODE(st.st_mode)])
-    return sorted(found)
-
-
 def curl_status(url, extra=(), timeout=10):
     proc = run(["curl", "--noproxy", "*", "-sS", "-m", str(timeout), "-o", "/dev/null", "-w", "%{http_code}", *extra, url],
                timeout=timeout + 5)
     return proc.stdout.strip() if proc.returncode == 0 else f"error: {(proc.stderr or '').strip()[:200]}"
 
 
-def curl_json(url, timeout=10):
-    proc = run(["curl", "--noproxy", "*", "-sS", "-m", str(timeout), "-w", "\n%{http_code}", url], timeout=timeout + 5)
+def curl_json(url, extra=(), timeout=10):
+    proc = run(["curl", "--noproxy", "*", "-sS", "-m", str(timeout), "-w", "\n%{http_code}", *extra, url], timeout=timeout + 5)
     if proc.returncode != 0:
         return None, f"error: {(proc.stderr or '').strip()[:200]}"
     body, _, code = proc.stdout.rpartition("\n")
@@ -831,8 +796,36 @@ def wait_for(predicate, seconds, step=2):
         time.sleep(step)
 
 
-def nomad_leader_named():
-    doc, code = curl_json(NOMAD_ADDR + "/v1/status/leader", timeout=5)
+def nomad_curl_args(addr):
+    """curl's options for Nomad at addr: over HTTPS, TLS 1.3 only, trusting
+    only Nomad's CA."""
+    if addr.startswith("https://"):
+        return ["--proto", "=https", "--tlsv1.3", "--cacert", host(NOMAD_CA_FILE), "--capath", "/dev/null"]
+    return ["--proto", "=http"]
+
+
+def anonymous_nomad_problems():
+    """What two requests without a token over HTTPS show against the lock.
+    Nomad must refuse an anonymous job list, so it enforces its ACLs. That
+    list asks only about the namespace default, so Nomad must also answer 404
+    for its anonymous ACL policy: such a policy would give requests without a
+    token capabilities in whatever namespace it names, ES's among them. ES
+    makes the same policy request before each submit, and so does
+    nomad_acl_state_check in scripts/internal/nomad_acl.sh. Both requests
+    only read."""
+    addr = nomad_https_addr()
+    problems = []
+    code = curl_status(addr + "/v1/jobs", nomad_curl_args(addr), timeout=5)
+    if code != "403":
+        problems.append(f"Nomad answers an anonymous job list over HTTPS with {code}, not 403")
+    code = curl_status(addr + "/v1/acl/policy/anonymous", nomad_curl_args(addr), timeout=5)
+    if code != "404":
+        problems.append(f"Nomad answers a request without a token for its anonymous ACL policy over HTTPS with {code}, not 404")
+    return problems
+
+
+def nomad_leader_named(addr):
+    doc, code = curl_json(addr + "/v1/status/leader", nomad_curl_args(addr), timeout=5)
     return code == "200" and isinstance(doc, str) and doc != ""
 
 
@@ -984,6 +977,160 @@ def retained_result_auth():
     return {"store_id": STORE_ID, "key_id": KEY_ID, "key_file": KEY_FILE}
 
 
+def other_nomad_configs():
+    """Files besides nomad.hcl that `nomad agent -config /etc/nomad.d` loads."""
+    return sorted(name for name in os.listdir(host(NOMAD_DIR))
+                  if name != "nomad.hcl" and name.endswith((".hcl", ".json")))
+
+
+def owner_mode(st):
+    return {"uid": st.st_uid, "gid": st.st_gid, "mode": format(stat.S_IMODE(st.st_mode), "04o")}
+
+
+def setup_tls_functions():
+    """The nomad_tls functions of scripts/70_linux_setup.sh, which issue and
+    check Nomad's TLS material on every supported host."""
+    data, _ = read_regular_file(SETUP_SCRIPT)
+    text = data.decode("utf-8")
+    begin = text.find("\n# BEGIN nomad_tls")
+    end = text.find("\n# END nomad_tls\n", begin + 1)
+    if begin < 0 or end < 0:
+        raise Refusal("scripts/70_linux_setup.sh has no nomad_tls functions")
+    return text[begin + 1:end + 1]
+
+
+def nomad_tls(function, *args):
+    """Run one of the setup's nomad_tls functions as the user running this
+    script: root on the host, so the material is root's."""
+    script = "set -euo pipefail\n" + setup_tls_functions() + '"$@"\n'
+    return run(["bash", "-c", script, "nomad-tls", function, *args], timeout=120)
+
+
+def server_spki_sha256():
+    """The pin: the SHA-256 of the public key in Nomad's server certificate."""
+    proc = nomad_tls("nomad_tls_spki_sha256", host(NOMAD_CERT_FILE))
+    pin = proc.stdout.strip()
+    if proc.returncode != 0 or not valid_spki(pin):
+        raise Refusal(f"cannot read the public key of {NOMAD_CERT_FILE}: {proc.stderr.strip()[:200]}")
+    return pin
+
+
+# The host's shape. Each part of the host this upgrade changes is read on its
+# own and reports (shape, state): shape is "locked-http" (where ES PR #54's
+# upgrade left it), "https" (where this upgrade leaves it) or None, and state
+# says what was found. The host has a shape only when every part agrees.
+
+def nomad_hcl_shape(text):
+    digest = sha256_bytes(text)
+    if digest == NOMAD_HCL_LOCKED_SHA256:
+        return "locked-http", "locked-http (ES PR #54's lock, plain HTTP)"
+    if digest == NOMAD_HCL_PRELOCK_SHA256:
+        return None, "pre-lock (Remote Alpha 0.7's config: ES PR #54's upgrade has not run)"
+    block = NOMAD_TLS_BLOCK.encode()
+    if text.endswith(block) and sha256_bytes(text[:-len(block)]) == NOMAD_HCL_LOCKED_SHA256:
+        return "https", "https (the lock and the supported config's tls block)"
+    return None, f"unknown (SHA-256 {digest})"
+
+
+def tls_dir_shape():
+    path = host(NOMAD_TLS_DIR)
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        return "locked-http", "absent"
+    if not stat.S_ISDIR(st.st_mode):
+        return None, "present, but not a directory"
+    if not owned_by_root(st) or stat.S_IMODE(st.st_mode) != NOMAD_TLS_DIR_MODE:
+        return None, f"present, but not root:root {NOMAD_TLS_DIR_MODE:04o} ({owner_mode(st)})"
+    names = tuple(sorted(os.listdir(path)))
+    if names != NOMAD_TLS_FILES:
+        return None, f"present, but holds {list(names)}, not exactly {list(NOMAD_TLS_FILES)}"
+    if nomad_tls("nomad_tls_material_ok", path).returncode != 0:
+        return None, "present, but its material fails the setup's nomad_tls_material_ok"
+    return "https", "https (root's material that passes the setup's nomad_tls_material_ok)"
+
+
+def es_config_shape(doc, pin):
+    """pin is the live server certificate's key SHA-256, or None if there is
+    no valid certificate."""
+    if not isinstance(doc, dict) or not isinstance(doc.get("nomad"), dict):
+        return None, "unknown (no nomad block)"
+    nomad = doc["nomad"]
+    execution = doc.get("execution") if isinstance(doc.get("execution"), dict) else {}
+    if nomad.get("token_file") != ES_TOKEN_FILE or execution.get("retained_result_auth") != retained_result_auth():
+        return None, "unknown (nomad.token_file or execution.retained_result_auth is not what ES PR #54's upgrade set)"
+    found, start = leaf_paths(doc), set(START_ES_PATHS)
+    if found == start:
+        if nomad.get("base_url") == nomad_http_addr():
+            return "locked-http", f"locked-http (Nomad at {nomad_http_addr()})"
+        return None, f"unknown (nomad.base_url {nomad.get('base_url')!r})"
+    if found == start | {f"nomad.{key}" for key in NOMAD_TLS_KEYS}:
+        try:
+            _, changes = migrate_config(doc, nomad.get("server_spki_sha256"))
+        except Refusal as exc:
+            return None, f"unknown ({exc})"
+        if changes:
+            return None, "unknown (Nomad TLS keys this upgrade did not write)"
+        if pin != nomad["server_spki_sha256"]:
+            return None, "https keys, but nomad.server_spki_sha256 is not the key of the server certificate on disk"
+        return "https", f"https (Nomad at {nomad_https_addr()}, its server key pinned)"
+    return None, f"unknown (keys: unexpected {sorted(found - start)}, missing {sorted(start - found)})"
+
+
+def binaries_shape(commit, prov):
+    revisions = {}
+    for name, path in (("es", ES_BINARY), ("es-runtime-support", RUNTIME_SUPPORT)):
+        try:
+            blob, _ = read_regular_file(host(path))
+            _, lines = go_build_info(blob)
+        except (Refusal, OSError) as exc:
+            return None, f"unknown ({name}: {exc})"
+        settings = dict(line.partition("=")[::2] for line in lines)
+        revision = settings.get("vcs.revision")
+        if settings.get("vcs.modified") != "false":
+            return None, f"unknown ({name} is a build of a modified checkout of {revision})"
+        if revision == commit and (prov is None or sha256_bytes(blob) != prov["sha256"].get(name)):
+            return None, f"unknown ({name} names {commit} but is not the verified payload's build)"
+        revisions[name] = revision
+    found = set(revisions.values())
+    if found == {BOX_ES_COMMIT}:
+        return "locked-http", f"locked-http (builds of {BOX_ES_COMMIT})"
+    if found == {commit}:
+        return "https", f"https (the payload's builds of {commit})"
+    return None, "unknown (" + ", ".join(f"{name} built from {rev}" for name, rev in revisions.items()) + ")"
+
+
+SHAPE_PARTS = ("nomad.hcl", "Nomad's TLS directory", "es.json", "the ES binaries")
+
+
+def host_shape(commit, prov):
+    """(shape or None, {part: state}, pin or None). Reads only."""
+    def guarded(read):
+        try:
+            return read()
+        except (Refusal, OSError, ValueError, UnicodeDecodeError) as exc:
+            return None, f"unreadable ({exc})"
+
+    found = {}
+    found["nomad.hcl"] = guarded(lambda: nomad_hcl_shape(read_regular_file(host(NOMAD_HCL))[0]))
+    found["Nomad's TLS directory"] = guarded(tls_dir_shape)
+    pin = None
+    if found["Nomad's TLS directory"][0] == "https":
+        try:
+            pin = server_spki_sha256()
+        except Refusal as exc:
+            found["Nomad's TLS directory"] = (None, f"present, but {exc}")
+    found["es.json"] = guarded(lambda: es_config_shape(json.loads(read_regular_file(host(ES_CONFIG))[0]), pin))
+    found["the ES binaries"] = guarded(lambda: binaries_shape(commit, prov))
+    shapes = {shape for shape, _ in found.values()}
+    shape = shapes.pop() if len(shapes) == 1 else None
+    return shape, {part: found[part][1] for part in SHAPE_PARTS}, pin
+
+
+def describe_parts(parts):
+    return "; ".join(f"{part}: {state}" for part, state in parts.items())
+
+
 def inspect_host(payload_dir, commit):
     """Everything check reports. Reads only; returns (report, blockers)."""
     blockers = []
@@ -994,6 +1141,8 @@ def inspect_host(payload_dir, commit):
 
     if HOST_ROOT == "/" and not as_root():
         block("privilege", "run as root (sudo -n)")
+    if commit == BOX_ES_COMMIT:
+        block("commit", f"{BOX_ES_COMMIT} is the build ES PR #54's upgrade installed; name the commit to move to")
 
     try:
         prov = load_payload(payload_dir, commit)
@@ -1002,24 +1151,73 @@ def inspect_host(payload_dir, commit):
         prov = None
         block("payload", str(exc))
 
+    shape, parts, pin = host_shape(commit, prov)
+    report["shape"] = shape or "unknown"
+    report["parts"] = parts
+    if shape is None:
+        block("shape", "the host is in no shape this upgrade knows; it takes locked-http to https: " + describe_parts(parts))
+
     active = services_active()
     report["services"] = active
     if len(active) != len(SERVICES) or any(state != "active" for state in active.values()):
         block("services", "not every service is active")
     for problem in es_unit_problems():
         block("es_unit", problem)
+    try:
+        report["health"] = service_health()
+        if not healthy(report["health"]):
+            block("health", "ES and AGS do not all answer 200 (healthcheck runbook step 4)")
+    except (Refusal, OSError, ValueError) as exc:
+        block("health", str(exc))
 
     try:
-        data, st = read_regular_file(host(ES_CONFIG))
-        config = json.loads(data)
-        report["es_config"] = {"sha256": sha256_bytes(data), "uid": st.st_uid, "gid": st.st_gid,
-                               "mode": format(stat.S_IMODE(st.st_mode), "04o")}
+        _, st = read_regular_file(host(ES_CONFIG))
+        report["es_config"] = owner_mode(st)
         if (st.st_uid, st.st_gid, stat.S_IMODE(st.st_mode)) != (root_ids()[0], group_id(ES_USER), ES_CONFIG_MODE):
             block("es_config", "es.json is not root:es 0640")
-        migrated, changes = migrate_config(config, ES_TOKEN_FILE, retained_result_auth(), EXPECTED_ES_PATHS)
-        report["es_config"]["changes"] = changes
-        if not changes:
-            block("es_config", "es.json is already migrated: this upgrade has already been applied")
+    except (Refusal, OSError) as exc:
+        block("es_config", str(exc))
+    try:
+        _, st = read_regular_file(host(NOMAD_HCL))
+        report["nomad_hcl"] = owner_mode(st)
+        if not owned_by_root(st) or stat.S_IMODE(st.st_mode) != NOMAD_CONFIG_MODE:
+            block("nomad_hcl", "nomad.hcl is not root:root 0640")
+        others = other_nomad_configs()
+        if others:
+            block("nomad_hcl", f"Nomad would also load {others} from {NOMAD_DIR}")
+    except (Refusal, OSError) as exc:
+        block("nomad_hcl", str(exc))
+    for path, mode in NOMAD_DIRS:
+        try:
+            st = os.lstat(host(path))
+            if not stat.S_ISDIR(st.st_mode) or not owned_by_root(st) or stat.S_IMODE(st.st_mode) != mode:
+                block("nomad_dirs", f"{path} is not a root:root {mode:04o} directory")
+        except OSError as exc:
+            block("nomad_dirs", str(exc))
+
+    if shape == "locked-http":
+        inspect_start(report, block, payload_dir, prov)
+    elif shape == "https":
+        inspect_migrated(report, block)
+    report["blockers"] = blockers
+    return report, blockers
+
+
+def acl_files():
+    """(file, owner uid, mode) of each token file nomad_acl_setup.sh made.
+    The management token is root's; under a test host root it is the test
+    user's, or root's when the real script runs through sudo."""
+    management_uid = 0 if not test_mode() or acl_setup_sudo() else os.getuid()
+    return (("management-token", management_uid, 0o600), ("es-token", user_ids(ES_USER)[0], 0o400),
+            ("observer-token", user_ids(OBSERVER_USER)[0], 0o400))
+
+
+def inspect_start(report, block, payload_dir, prov):
+    """The checks of a locked-http host, which apply will change."""
+    try:
+        data, _ = read_regular_file(host(ES_CONFIG))
+        migrated, changes = migrate_config(json.loads(data), PLACEHOLDER_PIN, START_ES_PATHS)
+        report.setdefault("es_config", {})["changes"] = changes
         if prov is not None:
             ok, out = esconfigcheck(os.path.join(payload_dir, "esconfigcheck"), migrated)
             report["es_config"]["new_es_accepts_migrated_config"] = ok
@@ -1028,55 +1226,60 @@ def inspect_host(payload_dir, commit):
     except (Refusal, OSError, ValueError) as exc:
         block("es_config", str(exc))
 
-    try:
-        report["health"] = service_health()
-        if not healthy(report["health"]):
-            block("health", "ES and AGS do not all answer 200 (healthcheck runbook step 4)")
-    except (Refusal, OSError, ValueError) as exc:
-        block("health", str(exc))
-
-    state = None
-    try:
-        text, st = read_regular_file(host(NOMAD_HCL))
-        _, state = plan_nomad_hcl(text.decode())
-        report["nomad_hcl"] = {"sha256": sha256_bytes(text), "lock": state, "uid": st.st_uid, "gid": st.st_gid,
-                               "mode": format(stat.S_IMODE(st.st_mode), "04o")}
-        if state == "applied":
-            block("nomad_hcl", "Nomad is already locked: this upgrade has already been applied")
-        others = other_nomad_configs()
-        if others:
-            block("nomad_hcl", f"Nomad would also load {others} from {NOMAD_DIR}")
-        read_regular_file(host(NOMAD_ENV))
-    except (Refusal, OSError, UnicodeDecodeError) as exc:
-        block("nomad_hcl", str(exc))
-
-    try:
-        report["nomad_dirs"] = [dir_record(path) for path, _ in LOCKED_DIRS]
-        foreign = foreign_owned_entries(host(NOMAD_DATA_DIR))
-        report["nomad_data_foreign_owned"] = {"count": len(foreign), "first": foreign[:10]}
-    except (Refusal, OSError) as exc:
-        block("nomad_dirs", str(exc))
-
-    if not nomad_leader_named():
-        block("nomad", "Nomad has no named leader")
-    jobs, code = curl_json(NOMAD_ADDR + "/v1/jobs?namespace=*", timeout=10)
-    if code != "200" or not isinstance(jobs, list):
-        block("nomad", f"cannot list Nomad's jobs anonymously (HTTP {code})")
-    else:
-        busy = [job.get("ID") for job in jobs if job.get("Status") in ("pending", "running")]
-        report["nomad_jobs"] = {"total": len(jobs), "pending_or_running": busy}
-        if busy:
-            block("nomad", f"Nomad jobs are pending or running: {busy[:10]}")
-
+    for name, uid, mode in acl_files():
+        path = f"{NOMAD_ACL_DIR}/{name}"
+        try:
+            st = os.lstat(host(path))
+            if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1 or st.st_uid != uid or stat.S_IMODE(st.st_mode) != mode:
+                block("nomad_acl", f"{path} is not a {mode:04o} file of uid {uid} with one link, as provision left it")
+        except OSError as exc:
+            block("nomad_acl", f"{path}: {exc.strerror}")
     try:
         uid, gid = user_ids(ES_USER)
-        report["retained_result_key"] = provision_key(host(KEY_FILE), uid, gid, dry_run=True)
+        report["retained_result_key"] = provision_key(host(KEY_FILE), uid, gid, create_parent=False, dry_run=True)
+        if report["retained_result_key"] != "exists":
+            block("retained_result_key", "the retained-result key ES PR #54's upgrade made is missing")
     except (Refusal, OSError) as exc:
         block("retained_result_key", str(exc))
-    report["nomad_acl_dir_exists"] = os.path.lexists(host(NOMAD_ACL_DIR))
 
-    report["blockers"] = blockers
-    return report, blockers
+    if shutil.which("openssl") is None:
+        block("tools", "openssl is not installed; the setup's nomad_tls functions need it")
+    try:
+        setup_tls_functions()
+    except (Refusal, OSError, UnicodeDecodeError) as exc:
+        block("tools", str(exc))
+
+    if not nomad_leader_named(nomad_http_addr()):
+        block("nomad", f"Nomad has no named leader at {nomad_http_addr()}")
+    proc = run(["docker", "ps", "--quiet", "--no-trunc", "--filter", f"label={NOMAD_ALLOC_LABEL}"], timeout=30)
+    if proc.returncode != 0:
+        block("nomad", f"cannot list the containers of Nomad's allocations: {proc.stderr.strip()[:200]}")
+    else:
+        running = proc.stdout.split()
+        report["nomad_allocation_containers"] = len(running)
+        if running:
+            block("nomad", f"{len(running)} container(s) of Nomad allocations are running; wait until they finish")
+
+    report["changes"] = [
+        f"issue Nomad's TLS material into {NOMAD_TLS_DIR} with the setup's nomad_tls_issue",
+        "append the supported config's tls block to nomad.hcl and restart Nomad on HTTPS",
+        "provision Nomad's ACLs again (the observer policy gains list-jobs) and check placement",
+        "es.json: " + ", ".join(report.get("es_config", {}).get("changes", [])),
+        f"install es and es-runtime-support built from {report['commit']}",
+    ]
+
+
+def inspect_migrated(report, block):
+    """The read-only proof that an https host runs as this upgrade leaves it."""
+    report["changes"] = []
+    if not nomad_leader_named(nomad_https_addr()):
+        block("nomad", f"Nomad has no named leader at {nomad_https_addr()}")
+    ok, out = tls_identity_check()
+    report["nomad_tls_identity"] = out
+    if not ok:
+        block("nomad", f"ES's Nomad TLS settings do not hold against the running Nomad: {out}")
+    for problem in anonymous_nomad_problems():
+        block("nomad", problem)
 
 
 def write_summary(path, report):
@@ -1098,71 +1301,125 @@ def backup_root_ready():
     return root
 
 
+CREATED_MANIFEST = "created.json"
+
+
 def backup_host(backup_dir):
-    """Back up every file the upgrade changes, and the owner and mode of
-    every directory it changes."""
-    paths = [host(p) for p in (ES_CONFIG, ES_UNIT, ES_UNIT_DROPIN, ES_BINARY, RUNTIME_SUPPORT, NOMAD_HCL, NOMAD_ENV)]
-    manifest = backup_files(backup_dir, paths)
-    write_new_file(os.path.join(backup_dir, "directories.json"),
-                   json.dumps([dir_record(path) for path, _ in LOCKED_DIRS], indent=2) + "\n")
+    """Back up every file apply changes, and name every path it creates."""
+    manifest = backup_files(backup_dir, [host(p) for p in (ES_CONFIG, ES_BINARY, RUNTIME_SUPPORT, NOMAD_HCL)])
+    for path in CREATED_BY_APPLY:
+        if os.path.lexists(host(path)):
+            raise Refusal(f"{path} exists already")
+    write_new_file(os.path.join(backup_dir, CREATED_MANIFEST), json.dumps(list(CREATED_BY_APPLY), indent=2) + "\n")
     return manifest
 
 
+def load_created(backup_dir):
+    data, _ = read_regular_file(os.path.join(backup_dir, CREATED_MANIFEST))
+    created = json.loads(data)
+    if not isinstance(created, list) or not set(created) <= set(CREATED_BY_APPLY):
+        raise Refusal(f"the backup's {CREATED_MANIFEST} names paths that apply does not create")
+    return created
+
+
+def remove_created(created):
+    removed = []
+    for path in created:
+        try:
+            st = os.lstat(host(path))
+        except FileNotFoundError:
+            continue
+        if stat.S_ISDIR(st.st_mode):
+            shutil.rmtree(host(path))
+        else:
+            os.unlink(host(path))
+        removed.append(path)
+    return removed
+
+
+def acl_setup_sudo():
+    return test_mode() and os.environ.get("ES_UPGRADE_TEST_ACL_SUDO") == "1"
+
+
 def acl_setup(action, **extra_env):
-    """Run scripts/nomad_acl_setup.sh from this checkout."""
-    script = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "nomad_acl_setup.sh")
-    override = os.environ.get("ES_UPGRADE_TEST_ACL_SETUP") if HOST_ROOT != "/" else None
-    env = dict(os.environ, NOMAD_ACL_DIR=host(NOMAD_ACL_DIR), ES_USER=ES_USER, OBSERVER_USER=OBSERVER_USER,
-               NOMAD_USER="root", NOMAD_ADDR=NOMAD_ADDR, **extra_env)
-    return run([override or "bash", *([] if override else [script]), action], env=env, timeout=300, check=True)
+    """Run scripts/nomad_acl_setup.sh from this checkout against Nomad's
+    HTTPS address, trusting only Nomad's CA."""
+    settings = dict(NOMAD_ADDR=nomad_https_addr(), NOMAD_CACERT=host(NOMAD_CA_FILE), NOMAD_ACL_DIR=host(NOMAD_ACL_DIR),
+                    ES_USER=ES_USER, OBSERVER_USER=OBSERVER_USER, NOMAD_USER="root", **extra_env)
+    if acl_setup_sudo():
+        # The real script, as root, against a real Nomad that the test runs
+        # as its own user, who also stands in for ES and the observer.
+        name = pwd.getpwuid(os.getuid()).pw_name
+        settings.update(ES_USER=name, OBSERVER_USER=name, NOMAD_USER=name)
+        argv = ["sudo", "-n", "env", *[f"{key}={value}" for key, value in settings.items()], "bash", ACL_SETUP_SCRIPT, action]
+        proc = run(argv, timeout=300)
+    else:
+        override = os.environ.get("ES_UPGRADE_TEST_ACL_SETUP") if test_mode() else None
+        argv = [override, action] if override else ["bash", ACL_SETUP_SCRIPT, action]
+        proc = run(argv, env=dict(os.environ, **settings), timeout=300)
+    if proc.returncode != 0:
+        raise Refusal(f"nomad_acl_setup.sh {action} failed: {(proc.stderr or proc.stdout).strip()[:400]}")
+    return proc
 
 
-def apply_nomad_lock(backup_dir, log):
-    text, _ = read_regular_file(host(NOMAD_HCL))
-    new_text, state = plan_nomad_hcl(text.decode())
-    if state != "apply":
-        raise Refusal("Nomad is already locked")
+def validate_nomad_hcl(text):
+    """nomad config validate on text, its TLS paths read through a test host
+    root (on the host they are the same). validate only warns, and exits 0,
+    about TLS files it cannot read, so that warning is refused here."""
+    view = text.replace(f'"{NOMAD_TLS_DIR}/', f'"{host(NOMAD_TLS_DIR)}/') if test_mode() else text
     tmpdir = tempfile.mkdtemp(prefix="es-upgrade-nomad-")
     try:
         with open(os.path.join(tmpdir, "nomad.hcl"), "w", encoding="utf-8") as handle:
-            handle.write(new_text)
-        run(["nomad", "config", "validate", tmpdir], timeout=60, check=True)
+            handle.write(view)
+        proc = run(["nomad", "config", "validate", tmpdir], timeout=60, check=True)
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
-    log("locked nomad.hcl validated")
+    for line in (proc.stdout + proc.stderr).splitlines():
+        if any(refused in line for refused in NOMAD_VALIDATE_REFUSED):
+            raise Refusal(f"nomad config validate: {line.strip()[:300]}")
+
+
+def apply_nomad_tls(log):
+    """Issue Nomad's TLS material, restart Nomad on HTTPS, provision its ACLs
+    again and prove that it places ES's jobs. Returns the server key's pin."""
+    text, _ = read_regular_file(host(NOMAD_HCL))
+    if sha256_bytes(text) != NOMAD_HCL_LOCKED_SHA256:
+        raise Refusal("nomad.hcl changed after check")
+    proc = nomad_tls("nomad_tls_issue", host(NOMAD_TLS_DIR))
+    if proc.returncode != 0:
+        raise Refusal(f"nomad_tls_issue failed: {proc.stderr.strip()[:300]}")
+    shape, state = tls_dir_shape()
+    if shape != "https":
+        raise Refusal(f"Nomad's new TLS directory is {state}")
+    pin = server_spki_sha256()
+    log(f"Nomad's TLS material issued in {NOMAD_TLS_DIR}; server key SHA-256 {pin}")
+    new_text = text + NOMAD_TLS_BLOCK.encode()
+    validate_nomad_hcl(new_text.decode("utf-8"))
+    log("nomad.hcl with the tls block validated")
     stop_service("nomad")
     log("nomad stopped")
     ruid, rgid = root_ids()
-    data_dir = host(NOMAD_DATA_DIR)
-    ledger = foreign_owned_entries(data_dir)
-    write_new_file(os.path.join(backup_dir, "ownership.json"),
-                   json.dumps({"root": NOMAD_DATA_DIR, "entries": ledger}, indent=2) + "\n")
-    for rel, _, _, _ in ledger:
-        os.lchown(os.path.join(data_dir, rel), ruid, rgid)
-    atomic_replace(host(NOMAD_HCL), new_text.encode(), ruid, rgid, NOMAD_CONFIG_MODE)
-    env_data, _ = read_regular_file(host(NOMAD_ENV))
-    atomic_replace(host(NOMAD_ENV), env_data, ruid, rgid, NOMAD_CONFIG_MODE)
-    for path, mode in LOCKED_DIRS:
-        os.chown(host(path), ruid, rgid, follow_symlinks=False)
-        os.chmod(host(path), mode)
-    log(f"nomad config and data root-owned ({len(ledger)} data entries changed owner); nomad.hcl locked")
+    atomic_replace(host(NOMAD_HCL), new_text, ruid, rgid, NOMAD_CONFIG_MODE)
+    log("tls block added to nomad.hcl")
     started_at = int(time.time())
     run(["systemctl", "start", "nomad"], timeout=120, check=True)
-    if not wait_for(nomad_leader_named, LEADER_WAIT_SECONDS):
-        raise Refusal(f"Nomad named no leader within {LEADER_WAIT_SECONDS} s of its start")
-    log("nomad started with a named leader")
+    if not wait_for(lambda: nomad_leader_named(nomad_https_addr()), LEADER_WAIT_SECONDS):
+        raise Refusal(f"Nomad named no leader at {nomad_https_addr()} within {LEADER_WAIT_SECONDS} s of its start")
+    log("nomad started on HTTPS with a named leader")
     acl_setup("provision")
-    log("nomad ACLs provisioned (nomad_acl_setup.sh provision, which ends with its check)")
+    log("nomad ACLs provisioned again (nomad_acl_setup.sh provision, which ends with its check)")
     # Every check above passes on a Nomad that can place nothing: prove that
     # the restarted node has a host-mode network and that ES's job shapes plan.
     acl_setup("placement", ES_CONFIG=host(ES_CONFIG), NOMAD_STARTED_AT=str(started_at),
               NOMAD_PLACEMENT_WAIT_SECONDS=str(PLACEMENT_WAIT_SECONDS))
     log("nomad can place ES's jobs (nomad_acl_setup.sh placement)")
+    return pin
 
 
 def install_es(stage_dir, migrated, log):
     uid, gid = user_ids(ES_USER)
-    log(f"retained-result key: {provision_key(host(KEY_FILE), uid, gid)}")
+    if provision_key(host(KEY_FILE), uid, gid, create_parent=False, dry_run=True) != "exists":
+        raise Refusal("the retained-result key ES PR #54's upgrade made is missing")
     _, tst = read_regular_file(host(ES_TOKEN_FILE))
     if tst.st_uid != uid or stat.S_IMODE(tst.st_mode) not in (0o400, 0o600):
         raise Refusal("the ES Nomad token file is not ES's own 0400/0600 file")
@@ -1178,55 +1435,81 @@ def install_es(stage_dir, migrated, log):
     log("es and es-runtime-support installed")
 
 
+def tls_identity_check():
+    """(ok, line) of nomad_tls_identity.py check, which makes ES's own TLS
+    checks against the running Nomad with the installed es.json. Its CA path
+    is read through a test host root (on the host it is the same)."""
+    try:
+        data, _ = read_regular_file(host(ES_CONFIG))
+        doc = json.loads(data)
+        nomad = doc.get("nomad") if isinstance(doc, dict) else None
+        if not isinstance(nomad, dict):
+            return False, "es.json has no nomad block"
+    except (Refusal, OSError, ValueError) as exc:
+        return False, str(exc)
+    if test_mode() and isinstance(nomad.get("root_ca_file"), str):
+        nomad["root_ca_file"] = host(nomad["root_ca_file"])
+    override = os.environ.get("ES_UPGRADE_TEST_TLS_IDENTITY") if test_mode() else None
+    tmpdir = tempfile.mkdtemp(prefix="es-upgrade-identity-")
+    try:
+        path = os.path.join(tmpdir, "es.json")
+        write_new_file(path, render_json(doc))
+        argv = [override] if override else [sys.executable, "-I", TLS_IDENTITY_TOOL]
+        proc = run([*argv, "check", path, nomad_https_addr()], timeout=30)
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+    return proc.returncode == 0, ((proc.stdout if proc.returncode == 0 else proc.stderr) or "").strip()[:300]
+
+
 def verify_after(log):
     if not wait_for(lambda: services_active().get("es") == "active" and healthy(service_health()), ES_WAIT_SECONDS):
         raise Refusal(f"ES did not come back healthy: {services_active().get('es')}, {service_health()}")
     log("ES and AGS answer 200")
-    code = curl_status(NOMAD_ADDR + "/v1/jobs", timeout=5)
-    if code != "403":
-        raise Refusal(f"Nomad answers an anonymous job list with HTTP {code}, not 403")
+    ok, out = tls_identity_check()
+    if not ok:
+        raise Refusal(f"ES's Nomad TLS settings do not hold against the running Nomad: {out}")
+    log(out)
+    problems = anonymous_nomad_problems()
+    if problems:
+        raise Refusal("; ".join(problems))
     acl_setup("check")
-    log("Nomad refuses anonymous requests; nomad_acl_setup.sh check passed")
+    log("Nomad refuses an anonymous job list and holds no anonymous policy over HTTPS; nomad_acl_setup.sh check passed")
+
+
+def live_nomad_addr():
+    """Nomad's address under the nomad.hcl on disk."""
+    try:
+        text, _ = read_regular_file(host(NOMAD_HCL))
+    except (Refusal, OSError):
+        return nomad_http_addr()
+    return nomad_https_addr() if text.endswith(NOMAD_TLS_BLOCK.encode()) else nomad_http_addr()
 
 
 def restore_host(backup_dir, log):
-    """Put back every file and owner the backup holds, then start Nomad and ES."""
+    """Put back every file the backup holds and remove every path apply
+    created, then start Nomad and ES. Nomad's ACL policies stay as provision
+    last wrote them: the observer policy keeps list-jobs, a read."""
+    # The whole backup is verified before a service is touched.
+    load_backup(backup_dir)
+    created = load_created(backup_dir)
     # Nothing is put back under a running service: if either will not stop,
     # the restore stops here and reports it.
     stop_service("es")
     stop_service("nomad")
     log("es and nomad stopped for the restore")
     result = restore_files(backup_dir)
-    ownership = os.path.join(backup_dir, "ownership.json")
-    if os.path.lexists(ownership):
-        data, _ = read_regular_file(ownership)
-        doc = json.loads(data)
-        data_dir = host(doc["root"])
-        for rel, uid, gid, mode in doc["entries"]:
-            path = os.path.join(data_dir, rel)
-            try:
-                os.lchown(path, uid, gid)
-                # After the owner, so that a setuid or setgid bit comes back
-                # with the owner it had.
-                if not stat.S_ISLNK(os.lstat(path).st_mode):
-                    os.chmod(path, mode)
-            except FileNotFoundError:
-                pass
-        result["nomad_data_owners_restored"] = len(doc["entries"])
-    data, _ = read_regular_file(os.path.join(backup_dir, "directories.json"))
-    for record in json.loads(data):
-        os.chown(host(record["path"]), record["uid"], record["gid"], follow_symlinks=False)
-        os.chmod(host(record["path"]), int(record["mode"], 8))
-    log("files, owners and modes restored from " + backup_dir)
+    result["removed"] = remove_created(created)
+    log(f"files restored from {backup_dir}; removed {result['removed']}")
     run(["systemctl", "start", "nomad"], timeout=120, check=True)
-    leader = bool(wait_for(nomad_leader_named, LEADER_WAIT_SECONDS))
+    addr = live_nomad_addr()
+    leader = bool(wait_for(lambda: nomad_leader_named(addr), LEADER_WAIT_SECONDS))
     run(["systemctl", "start", "es"], timeout=120, check=True)
     log("nomad and es started")
     # ES's /health does not ask Nomad, so a Nomad without a leader fails
     # the restore here rather than passing unseen.
     if not leader:
-        raise Refusal(f"Nomad named no leader within {LEADER_WAIT_SECONDS} s of the restore")
-    log("nomad has a named leader")
+        raise Refusal(f"Nomad named no leader at {addr} within {LEADER_WAIT_SECONDS} s of the restore")
+    log(f"nomad has a named leader at {addr}")
     return result
 
 
@@ -1282,6 +1565,8 @@ def say(text, stream=None):
 def cmd_check(args):
     report, blockers = inspect_host(args.payload, args.commit)
     report["mode"] = "check"
+    if not blockers:
+        report["result"] = "nothing to do" if report["shape"] == "https" else "ready"
     say(json.dumps(report, indent=2, sort_keys=True))
     if blockers:
         raise Refusal(f"{len(blockers)} blocker(s); nothing was changed")
@@ -1300,6 +1585,12 @@ def cmd_apply(args):
     if blockers:
         say(json.dumps(report, indent=2, sort_keys=True))
         raise Refusal(f"{len(blockers)} blocker(s); nothing was changed")
+    if report["shape"] == "https":
+        # Already applied for this commit, and verified in place: no backup,
+        # and no service is touched.
+        report["result"] = "nothing to do"
+        say(json.dumps(report, indent=2, sort_keys=True))
+        return
     prov = load_payload(args.payload, args.commit)
     backup_dir = os.path.join(backup_root_ready(),
                               time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()) + "-" + args.commit[:12])
@@ -1309,7 +1600,7 @@ def cmd_apply(args):
     log("backup written to " + backup_dir)
     stage_dir = stage_payload(args.payload, prov, os.path.join(backup_dir, "payload"))
     data, _ = read_regular_file(host(ES_CONFIG))
-    migrated, _ = migrate_config(json.loads(data), ES_TOKEN_FILE, retained_result_auth(), EXPECTED_ES_PATHS)
+    config = json.loads(data)
 
     # From here on, any failure or interruption puts the backup back. The
     # handler raises once at most (it sets every signal aside first), and the
@@ -1322,7 +1613,8 @@ def cmd_apply(args):
         try:
             stop_service("es")
             log("es stopped")
-            apply_nomad_lock(backup_dir, log)
+            pin = apply_nomad_tls(log)
+            migrated, _ = migrate_config(config, pin, START_ES_PATHS)
             install_es(stage_dir, migrated, log)
             run(["systemctl", "start", "es"], timeout=120, check=True)
             log("es started")
@@ -1413,10 +1705,7 @@ def main(argv):
     mc.add_argument("--input", required=True)
     mc.add_argument("--output")
     mc.add_argument("--expected-paths")
-    mc.add_argument("--token-file", required=True)
-    mc.add_argument("--store-id", required=True)
-    mc.add_argument("--key-id", required=True)
-    mc.add_argument("--key-file", required=True)
+    mc.add_argument("--spki-sha256", required=True)
     mc.set_defaults(func=cmd_migrate_config)
 
     pk = sub.add_parser("provision-key")

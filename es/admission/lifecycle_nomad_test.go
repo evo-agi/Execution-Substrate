@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"regexp"
 	"strings"
@@ -643,23 +642,15 @@ func newTestNomadClient(t *testing.T, handler http.Handler) *nomadClient {
 }
 
 // newUnwrappedTestNomadClient serves handler as the whole Nomad, including
-// the access-control endpoints.
+// the access-control endpoints, over HTTPS with a pinned test certificate;
+// the client uses ES's own TLS configuration and transport.
 func newUnwrappedTestNomadClient(t *testing.T, handler http.Handler) *nomadClient {
 	t.Helper()
 
-	server := httptest.NewServer(handler)
-	t.Cleanup(server.Close)
-
-	baseURL, err := url.Parse(server.URL)
-	if err != nil {
-		t.Fatalf("parse test nomad url: %v", err)
-	}
-	return &nomadClient{
-		baseURL:    baseURL,
-		datacenter: "dc1",
-		token:      testNomadToken,
-		client:     server.Client(),
-	}
+	pki := newTestNomadPKI(t)
+	certificate, pin := pki.serverCert(t, testNomadServerCertOptions{})
+	server := startTestNomadTLSServer(t, handler, certificate, 0)
+	return newTLSTestNomadClient(t, testNomadTLSConfigFor(server, pki, pin))
 }
 
 func minimalLifecycleConfig(t *testing.T) esconfig.Config {

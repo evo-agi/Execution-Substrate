@@ -3,16 +3,24 @@ package scripts_test
 import (
 	"bytes"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	"debug/elf"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
+	"io"
 	"io/fs"
+	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -55,12 +63,11 @@ client {
 }
 `
 
-// boxNomadHCLLocked is what the lock makes of it: the legacy Docker
-// options become the driver allowlist, the wired-port pin becomes the
-// loopback pin, and the acl block and the Docker plugin block of
-// scripts/70_linux_setup.sh are added. Its SHA-256, ea333055…5163, is that
-// of the box's nomad.hcl after the host-network repair of 2026-11-24, which
-// replaced the wired pin the lock run of that day had kept.
+// boxNomadHCLLocked is the box's nomad.hcl where this upgrade starts: ES PR
+// #54's lock of boxNomadHCL (the driver allowlist, the acl block and the
+// Docker plugin block of scripts/70_linux_setup.sh) with the loopback pin of
+// the host-network repair of 2026-11-24. Its SHA-256, ea333055…5163, is that
+// of the box's file after that repair.
 const boxNomadHCLLocked = `# Remote Alpha 0.7 one-host substrate config.
 data_dir = "/opt/nomad/data"
 bind_addr = "127.0.0.1"
@@ -117,21 +124,56 @@ plugin "docker" {
 }
 `
 
+// boxNomadTLSBlock is what this upgrade appends to it: the tls block of
+// scripts/70_linux_setup.sh at that script's NOMAD_TLS_DIR, /etc/nomad.d/tls.
+const boxNomadTLSBlock = `
+# HTTPS and RPC over TLS 1.3 only, with the certificate this script issues.
+# Clients authenticate with ACL tokens, not certificates.
+tls {
+  http = true
+  rpc  = true
+
+  ca_file   = "/etc/nomad.d/tls/ca.pem"
+  cert_file = "/etc/nomad.d/tls/server.pem"
+  key_file  = "/etc/nomad.d/tls/server-key.pem"
+
+  verify_server_hostname = true
+  verify_https_client    = false
+  tls_min_version        = "tls13"
+}
+`
+
+// boxNomadHCLHTTPS is the box's nomad.hcl where this upgrade leaves it.
+const boxNomadHCLHTTPS = boxNomadHCLLocked + boxNomadTLSBlock
+
 const upgradeTestCommit = "0123456789abcdef0123456789abcdef01234567"
 
-// The fakes stand in for the host's systemctl, curl and nomad, and for
-// scripts/nomad_acl_setup.sh. They log every call to calls.log in the state
-// directory and act on its marker files. Starting nomad reads the host's
-// nomad.hcl: with an acl block, Nomad is "locked" and refuses anonymous job
-// requests, as the real one does.
+// boxESCommit is the ES build that ES PR #54's upgrade installed on the box.
+const boxESCommit = "16cbf739eea8c6a673aef8048aefb69cebd5121b"
+
+// The fakes stand in for the host's systemctl, curl, nomad and docker, for
+// scripts/nomad_acl_setup.sh and for scripts/internal/nomad_tls_identity.py.
+// They log every call to calls.log in the state directory and act on its
+// marker files. Starting nomad reads the host's nomad.hcl: with an acl block,
+// Nomad is "locked" and refuses anonymous job requests; with a tls block it
+// answers only over HTTPS, and only a curl that trusts nothing but the host's
+// Nomad CA. With the marker real-nomad, systemctl starts and stops a real
+// Nomad agent on the host's nomad.hcl, with the overrides the test wrote
+// (data directory, free ports, the TLS files under the test host root), and
+// curl hands every request to that Nomad to the real curl.
 const fakeSystemctl = `#!/usr/bin/env bash
 set -u
 s="$FAKE_STATE"
 echo "systemctl $*" >> "$s/calls.log"
+real_nomad_running() { [[ -s "$s/nomad.pid" ]] && kill -0 "$(cat "$s/nomad.pid")" 2>/dev/null; }
 case "$1" in
   is-active)
     shift
-    for u in "$@"; do if [[ -e "$s/inactive-$u" ]]; then echo inactive; else echo active; fi; done ;;
+    for u in "$@"; do
+      if [[ "$u" == nomad && -e "$s/real-nomad" ]]; then
+        if real_nomad_running; then echo active; else echo inactive; fi
+      elif [[ -e "$s/inactive-$u" ]]; then echo inactive; else echo active; fi
+    done ;;
   show)
     printf 'User=%s\n' "$(cat "$s/es-user" 2>/dev/null || echo es)"
     printf 'ExecStart={ path=/usr/local/lib/execution-substrate/bin/es ; argv[]=%s ; ignore_errors=no }\n' \
@@ -144,15 +186,34 @@ case "$1" in
       if (( n <= 0 )); then echo "Failed to stop $2.service" >&2; exit 1; fi
       echo $((n - 1)) > "$s/fail-stop-$2"
     fi
+    if [[ "$2" == nomad && -e "$s/real-nomad" ]] && real_nomad_running; then
+      pid="$(cat "$s/nomad.pid")"
+      kill "$pid"
+      for _ in $(seq 150); do kill -0 "$pid" 2>/dev/null || break; sleep 0.1; done
+      if kill -0 "$pid" 2>/dev/null; then kill -9 "$pid"; sleep 1; fi
+      rm -f "$s/nomad.pid"
+    fi
     touch "$s/inactive-$2" ;;
   start)
     if [[ -e "$s/fail-start-$2-once" ]]; then rm -f "$s/fail-start-$2-once"; echo "Job for $2.service failed" >&2; exit 1; fi
     if [[ "$2" == nomad ]]; then
-      if grep -q '^acl {' "$FAKE_HOST_ROOT/etc/nomad.d/nomad.hcl"; then touch "$s/locked"; else rm -f "$s/locked"; fi
+      hcl="$FAKE_HOST_ROOT/etc/nomad.d/nomad.hcl"
+      if grep -q '^acl {' "$hcl"; then touch "$s/locked"; else rm -f "$s/locked"; fi
+      if grep -q '^tls {' "$hcl"; then touch "$s/tls"; else rm -f "$s/tls"; fi
       # leader-starts holds how many Nomad starts still elect a leader.
       if [[ -e "$s/leader-starts" ]]; then
         n="$(cat "$s/leader-starts")"
         if (( n <= 0 )); then touch "$s/no-leader"; else echo $((n - 1)) > "$s/leader-starts"; rm -f "$s/no-leader"; fi
+      fi
+      if [[ -e "$s/real-nomad" ]] && ! real_nomad_running; then
+        args=(-config "$hcl" -config "$s/override.hcl")
+        [[ -e "$s/tls" ]] && args+=(-config "$s/override-tls.hcl")
+        rm -f "$s/nomad.pid"
+        # A session of its own, so that the upgrade's end of systemctl's
+        # process group does not end Nomad.
+        setsid bash -c 'echo $$ > "$0.tmp" && mv "$0.tmp" "$0" && exec nomad agent "$@"' "$s/nomad.pid" "${args[@]}" \
+          >> "$s/nomad.log" 2>&1 < /dev/null &
+        for _ in $(seq 100); do [[ -s "$s/nomad.pid" ]] && break; sleep 0.05; done
       fi
     fi
     rm -f "$s/inactive-$2" ;;
@@ -166,21 +227,44 @@ set -u
 s="$FAKE_STATE"
 url="${@: -1}"
 echo "curl $url" >> "$s/calls.log"
+nomad="127.0.0.1:${FAKE_NOMAD_PORT:-4646}"
+if [[ -e "$s/real-nomad" && "$url" == http*://"$nomad"/* ]]; then
+  exec "$REAL_CURL" "$@"
+fi
+args=" $* "
 body_wanted=1
-for a in "$@"; do [[ "$a" == /dev/null ]] && body_wanted=0; done
+[[ "$args" == *" -o /dev/null "* ]] && body_wanted=0
 code=200
 body=''
 refuse() { echo "curl: (7) Failed to connect" >&2; exit 7; }
+# A request to Nomad must use the scheme Nomad serves, and over HTTPS trust
+# only the host's Nomad CA, with TLS 1.3.
+nomad_up() {
+  [[ -e "$s/inactive-nomad" ]] && refuse
+  if [[ "$url" == https://* ]]; then
+    [[ -e "$s/tls" ]] || { echo "curl: (35) TLS connect error" >&2; exit 35; }
+    [[ "$args" == *" --proto =https --tlsv1.3 --cacert $FAKE_HOST_ROOT/etc/nomad.d/tls/ca.pem --capath /dev/null "* ]] || \
+      { echo "curl: (60) not limited to Nomad's CA and TLS 1.3" >&2; exit 60; }
+  else
+    [[ -e "$s/tls" ]] && { echo "curl: (52) Empty reply from server" >&2; exit 52; }
+    [[ "$args" == *" --proto =http "* ]] || { echo "curl: plain-HTTP request without --proto =http" >&2; exit 1; }
+  fi
+}
 case "$url" in
-  */v1/status/leader)
-    [[ -e "$s/inactive-nomad" ]] && refuse
-    if [[ -e "$s/no-leader" ]]; then code=500; body='No cluster leader'; else body='"127.0.0.1:4647"'; fi ;;
-  */v1/jobs\?namespace=\*)
-    [[ -e "$s/inactive-nomad" ]] && refuse
-    if [[ -e "$s/locked" ]]; then code=403; body='Permission denied'; else body="$(cat "$s/jobs.json" 2>/dev/null || echo '[]')"; fi ;;
-  */v1/jobs)
-    [[ -e "$s/inactive-nomad" ]] && refuse
-    if [[ -e "$s/locked" ]]; then code=403; fi ;;
+  http://127.0.0.1:4646/v1/status/leader|https://127.0.0.1:4646/v1/status/leader)
+    nomad_up
+    if [[ -e "$s/no-leader" || ( "$url" == https://* && -e "$s/https-no-leader" ) ]]; then code=500; body='No cluster leader'; else body='"127.0.0.1:4647"'; fi ;;
+  http://127.0.0.1:4646/v1/jobs|https://127.0.0.1:4646/v1/jobs)
+    nomad_up
+    # https-jobs-open: over HTTPS, Nomad lists jobs to anyone, as a Nomad
+    # whose ACLs do not hold there would.
+    if [[ -e "$s/locked" && ! ( "$url" == https://* && -e "$s/https-jobs-open" ) ]]; then code=403; fi ;;
+  http://127.0.0.1:4646/v1/acl/policy/anonymous|https://127.0.0.1:4646/v1/acl/policy/anonymous)
+    nomad_up
+    # anonymous-policy: Nomad holds an anonymous policy, which it shows to
+    # anyone. Its job list stays 403 when the policy names another namespace.
+    if [[ ! -e "$s/locked" ]]; then code=400; body='ACL support disabled'
+    elif [[ ! -e "$s/anonymous-policy" ]]; then code=404; body='ACL policy not found'; fi ;;
   https://127.0.0.1:8445/*)
     { [[ -e "$s/inactive-es" ]] || [[ -e "$s/unhealthy" ]]; } && refuse ;;
   https://127.0.0.1:8444/*)
@@ -191,6 +275,9 @@ esac
 if [[ $body_wanted == 1 ]]; then printf '%s\n%s' "$body" "$code"; else printf '%s' "$code"; fi
 `
 
+// fakeNomad is nomad config validate as Nomad 2.1 behaves: it exits 0 but
+// warns when it cannot read the TLS files a config names, and when a config
+// has no TLS.
 const fakeNomad = `#!/usr/bin/env bash
 set -u
 s="$FAKE_STATE"
@@ -198,14 +285,29 @@ echo "nomad $*" >> "$s/calls.log"
 [[ "$1 $2" == "config validate" ]] || exit 2
 if [[ -e "$s/slow-validate" ]]; then touch "$s/validating"; sleep 20; fi
 [[ -e "$s/nomad-invalid" ]] && { echo "invalid config" >&2; exit 1; }
-grep -q '^acl {' "$3/nomad.hcl"
+f="$3/nomad.hcl"
+grep -q '^acl {' "$f" || exit 1
+if grep -q '^tls {' "$f"; then
+  ca="$(sed -n 's/^  ca_file   = "\(.*\)"$/\1/p' "$f")"
+  if [[ -e "$s/tls-unreadable" || ! -r "$ca" ]]; then
+    echo "WARNING: Error when parsing TLS configuration: open $ca: no such file or directory"
+  fi
+else
+  echo "WARNING: mTLS is not configured - Nomad is not secure without mTLS!"
+fi
+echo "Configuration is valid!"
 `
 
 const fakeACLSetup = `#!/usr/bin/env bash
 set -u
 s="$FAKE_STATE"
-echo "acl-setup $1 ES_USER=$ES_USER OBSERVER_USER=$OBSERVER_USER NOMAD_USER=$NOMAD_USER NOMAD_ADDR=$NOMAD_ADDR" >> "$s/calls.log"
+echo "acl-setup $1 ES_USER=$ES_USER OBSERVER_USER=$OBSERVER_USER NOMAD_USER=$NOMAD_USER NOMAD_ADDR=$NOMAD_ADDR NOMAD_CACERT=${NOMAD_CACERT#"$FAKE_HOST_ROOT"}" >> "$s/calls.log"
+[[ "$NOMAD_ADDR" == https://127.0.0.1:4646 && -e "$s/tls" && ! -e "$s/inactive-nomad" && -r "$NOMAD_CACERT" ]] || \
+  { echo "nomad acl setup: no Nomad over HTTPS at $NOMAD_ADDR" >&2; exit 1; }
 [[ -e "$s/locked" ]] || { echo "nomad acl setup: Nomad does not enforce ACLs" >&2; exit 1; }
+for f in management-token es-token observer-token; do
+  [[ -f "$NOMAD_ACL_DIR/$f" ]] || { echo "nomad acl setup: no $f" >&2; exit 1; }
+done
 case "$1" in
   provision)
     if [[ -e "$s/slow-acl" ]]; then
@@ -214,23 +316,46 @@ case "$1" in
       touch "$s/acl-running"
       sleep 20
     fi
-    mkdir -p "$NOMAD_ACL_DIR"
-    chmod 0755 "$NOMAD_ACL_DIR"
-    if [[ ! -e "$NOMAD_ACL_DIR/es-token" ]]; then
-      (umask 077; echo 01234567-89ab-cdef-0123-456789abcdef > "$NOMAD_ACL_DIR/es-token")
-      chmod 0400 "$NOMAD_ACL_DIR/es-token"
-    fi ;;
+    touch "$s/observer-policy-v2" ;;
   placement)
     [[ -e "$s/placement-fails" ]] && { echo "nomad placement: no host-mode network" >&2; exit 1; }
-    grep -q '^  network_interface = "lo"$' "$FAKE_HOST_ROOT/etc/nomad.d/nomad.hcl" || exit 1
     [[ "$ES_CONFIG" == "$FAKE_HOST_ROOT/etc/execution-substrate/es.json" && -e "$ES_CONFIG" ]] || exit 1
-    [[ "$NOMAD_STARTED_AT" =~ ^[1-9][0-9]*$ && "$NOMAD_PLACEMENT_WAIT_SECONDS" == 120 ]] || exit 1
-    [[ -e "$NOMAD_ACL_DIR/es-token" ]] ;;
+    [[ "$NOMAD_STARTED_AT" =~ ^[1-9][0-9]*$ && "$NOMAD_PLACEMENT_WAIT_SECONDS" == 120 ]] || exit 1 ;;
   check)
     [[ -e "$s/acl-check-fails" ]] && { echo "nomad acl check: failed" >&2; exit 1; }
-    [[ -e "$NOMAD_ACL_DIR/es-token" ]] ;;
+    [[ -e "$s/observer-policy-v2" ]] || { echo "nomad acl check: the es-observer-v1 policy's rules differ" >&2; exit 1; } ;;
   *) exit 2 ;;
 esac
+`
+
+// fakeTLSIdentity is nomad_tls_identity.py check against the fake Nomad: the
+// config must name Nomad's HTTPS address, the host's CA (read through the
+// test host root) and the key of the certificate on disk.
+const fakeTLSIdentity = `#!/usr/bin/env bash
+set -u
+s="$FAKE_STATE"
+echo "tls-identity $1 $3" >> "$s/calls.log"
+[[ "$1" == check && "$3" == https://127.0.0.1:4646 ]] || exit 2
+[[ -e "$s/identity-fails" ]] && { echo "nomad tls: Nomad's server key does not match nomad.server_spki_sha256" >&2; exit 1; }
+[[ -e "$s/tls" && ! -e "$s/inactive-nomad" ]] || { echo "nomad tls: no TLS 1.3 connection to $3" >&2; exit 1; }
+read -r base ca pin < <(python3 -I -c 'import json, sys
+n = json.load(open(sys.argv[1]))["nomad"]
+print(n["base_url"], n["root_ca_file"], n["server_spki_sha256"])' "$2")
+tls="$FAKE_HOST_ROOT/etc/nomad.d/tls"
+[[ "$base" == "$3" ]] || { echo "nomad tls: nomad.base_url is not $3" >&2; exit 1; }
+[[ "$ca" == "$tls/ca.pem" ]] || { echo "nomad tls: nomad.root_ca_file $ca is not the host's CA" >&2; exit 1; }
+live="$(openssl x509 -in "$tls/server.pem" -noout -pubkey | openssl pkey -pubin -outform DER | openssl dgst -sha256 -r)"
+[[ "$pin" == "${live%% *}" ]] || { echo "nomad tls: Nomad's server key does not match nomad.server_spki_sha256" >&2; exit 1; }
+echo "nomad tls: tls=1.3 server_name=server.global.nomad key=pinned"
+`
+
+const fakeDocker = `#!/usr/bin/env bash
+set -u
+s="$FAKE_STATE"
+echo "docker $*" >> "$s/calls.log"
+[[ "$*" == "ps --quiet --no-trunc --filter label=com.hashicorp.nomad.alloc_id" ]] || exit 2
+[[ -e "$s/docker-fails" ]] && { echo "Cannot connect to the Docker daemon" >&2; exit 1; }
+cat "$s/allocs" 2>/dev/null || true
 `
 
 type upgradeHost struct {
@@ -240,6 +365,10 @@ type upgradeHost struct {
 	bin     string
 	payload string
 	helper  string
+	commit  string
+	// env overrides the environment the upgrade runs with; an empty value
+	// removes the variable.
+	env map[string]string
 }
 
 func (h *upgradeHost) path(rel string) string { return filepath.Join(h.root, filepath.FromSlash(rel)) }
@@ -248,6 +377,9 @@ func (h *upgradeHost) write(rel string, data string, mode os.FileMode) {
 	h.t.Helper()
 	path := h.path(rel)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		h.t.Fatal(err)
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		h.t.Fatal(err)
 	}
 	if err := os.WriteFile(path, []byte(data), mode); err != nil {
@@ -280,9 +412,11 @@ func (h *upgradeHost) marked(name string) bool {
 	return err == nil
 }
 
-// boxShapedESConfig is the operator and control-plane example without the
-// two keys the box's ES build predates: the box's es.json key set.
-func boxShapedESConfig(t *testing.T) []byte {
+// boxStartESConfig is the box's es.json where this upgrade starts: the
+// operator and control-plane example with Nomad at baseURL over plain HTTP,
+// none of the Nomad TLS keys, and the Nomad token file and retained-result
+// auth that ES PR #54's upgrade set.
+func boxStartESConfig(t *testing.T, baseURL string) []byte {
 	t.Helper()
 	data, err := os.ReadFile(repoPath(".examples/config/es.operator_and_control_plane.json"))
 	if err != nil {
@@ -292,8 +426,15 @@ func boxShapedESConfig(t *testing.T) []byte {
 	if err := json.Unmarshal(data, &doc); err != nil {
 		t.Fatal(err)
 	}
-	delete(doc["nomad"].(map[string]any), "token_file")
-	delete(doc["execution"].(map[string]any), "retained_result_auth")
+	nomad := doc["nomad"].(map[string]any)
+	nomad["base_url"] = baseURL
+	for _, key := range []string{"server_name", "root_ca_file", "server_spki_sha256"} {
+		delete(nomad, key)
+	}
+	nomad["token_file"] = "/etc/execution-substrate/nomad-acl/es-token"
+	doc["execution"].(map[string]any)["retained_result_auth"] = map[string]any{
+		"store_id": "remote-alpha", "key_id": "k1", "key_file": "/etc/execution-substrate/retained-result-auth/es.key",
+	}
 	out, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
 		t.Fatal(err)
@@ -364,10 +505,13 @@ func stampedBinary(name, goVersion, revision, modified string) []byte {
 }
 
 // newESBuild and newRuntimeSupportBuild are the payload's binaries: clean
-// go1.26.5 builds of upgradeTestCommit by their own build info.
+// go1.26.5 builds of upgradeTestCommit by their own build info. boxESBuild
+// and boxRuntimeSupportBuild are the box's: builds of boxESCommit.
 var (
 	newESBuild             = stampedBinary("es", "go1.26.5", upgradeTestCommit, "false")
 	newRuntimeSupportBuild = stampedBinary("es-runtime-support", "go1.26.5", upgradeTestCommit, "false")
+	boxESBuild             = stampedBinary("es", "go1.26.5", boxESCommit, "false")
+	boxRuntimeSupportBuild = stampedBinary("es-runtime-support", "go1.26.5", boxESCommit, "false")
 )
 
 // replacePayloadFile puts data in the payload under name and records its
@@ -385,31 +529,41 @@ func (h *upgradeHost) replacePayloadFile(name string, data []byte) {
 	writeJSONFile(h.t, filepath.Join(h.payload, "provenance.json"), prov)
 }
 
-// newUpgradeHost lays out a host root shaped like the box, a payload built
-// from upgradeTestCommit, and the fakes.
+// newUpgradeHost lays out a host root shaped like the box where this upgrade
+// starts (the shape "locked-http"), a payload built from upgradeTestCommit,
+// and the fakes.
 func newUpgradeHost(t *testing.T, helper string) *upgradeHost {
 	t.Helper()
-	h := &upgradeHost{t: t, root: t.TempDir(), state: t.TempDir(), bin: t.TempDir(), payload: filepath.Join(t.TempDir(), "payload"), helper: helper}
+	h := &upgradeHost{t: t, root: t.TempDir(), state: t.TempDir(), bin: t.TempDir(), payload: filepath.Join(t.TempDir(), "payload"),
+		helper: helper, commit: upgradeTestCommit, env: map[string]string{}}
 	if err := os.WriteFile(filepath.Join(h.state, "calls.log"), nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
 
 	h.mkdir("etc/execution-substrate", 0o755)
-	h.write("etc/execution-substrate/es.json", string(boxShapedESConfig(t)), 0o640)
+	h.write("etc/execution-substrate/es.json", string(boxStartESConfig(t, "http://127.0.0.1:4646")), 0o640)
 	h.write("etc/execution-substrate/ags.json", `{"http": {"bind_address": "127.0.0.1", "port": 8444}}`+"\n", 0o640)
 	h.write("etc/execution-substrate/healthcheck.env", "CA_CERT=/etc/execution-substrate/tls/ca.pem\nOPERATOR_CERT=\"/etc/x/operator.pem\"\nOPERATOR_KEY=/etc/x/operator-key.pem\n", 0o640)
 	h.write("etc/systemd/system/es.service", "[Service]\nExecStart=/usr/local/lib/execution-substrate/bin/es -config /etc/execution-substrate/es.json\n", 0o644)
 	h.write("etc/systemd/system/es.service.d/10-account.conf", "[Service]\nUser=es\nGroup=es\nUMask=0027\n", 0o644)
-	h.write("usr/local/lib/execution-substrate/bin/es", "old es build\n", 0o755)
-	h.write("usr/local/bin/es-runtime-support", "old runtime support build\n", 0o755)
+	h.write("usr/local/lib/execution-substrate/bin/es", string(boxESBuild), 0o755)
+	h.write("usr/local/bin/es-runtime-support", string(boxRuntimeSupportBuild), 0o755)
 	h.mkdir("etc/nomad.d", 0o755)
-	h.write("etc/nomad.d/nomad.hcl", boxNomadHCL, 0o644)
-	h.write("etc/nomad.d/nomad.env", "", 0o644)
+	h.write("etc/nomad.d/nomad.hcl", boxNomadHCLLocked, 0o640)
+	h.write("etc/nomad.d/nomad.env", "", 0o640)
 	h.write("etc/nomad.d/nomad.hcl.pre-alpha0.7.20260422213553", "# an older config Nomad does not load\n", 0o644)
 	h.mkdir("opt/nomad", 0o755)
-	h.mkdir("opt/nomad/data", 0o755)
+	h.mkdir("opt/nomad/data", 0o700)
 	h.write("opt/nomad/data/server/raft/raft.db", "raft state\n", 0o600)
+	h.mkdir("etc/execution-substrate/nomad-acl", 0o755)
+	h.write("etc/execution-substrate/nomad-acl/management-token", "00000000-1111-2222-3333-444444444444\n", 0o600)
+	h.write("etc/execution-substrate/nomad-acl/es-token", "01234567-89ab-cdef-0123-456789abcdef\n", 0o400)
+	h.write("etc/execution-substrate/nomad-acl/observer-token", "fedcba98-7654-3210-fedc-ba9876543210\n", 0o400)
+	h.mkdir("etc/execution-substrate/retained-result-auth", 0o755)
+	h.write("etc/execution-substrate/retained-result-auth/es.key", strings.Repeat("k", 32), 0o400)
 	h.mkdir("var/backups", 0o755)
+	// Nomad runs, on plain HTTP, and enforces ACLs.
+	h.mark("locked", "")
 
 	if err := os.Mkdir(h.payload, 0o755); err != nil {
 		t.Fatal(err)
@@ -430,7 +584,8 @@ func newUpgradeHost(t *testing.T, helper string) *upgradeHost {
 		"commit": upgradeTestCommit, "go_version": "go1.26.5", "vcs_modified": false, "sha256": sums,
 	})
 
-	for name, script := range map[string]string{"systemctl": fakeSystemctl, "curl": fakeCurl, "nomad": fakeNomad, "acl-setup": fakeACLSetup} {
+	for name, script := range map[string]string{"systemctl": fakeSystemctl, "curl": fakeCurl, "nomad": fakeNomad,
+		"acl-setup": fakeACLSetup, "tls-identity": fakeTLSIdentity, "docker": fakeDocker} {
 		if err := os.WriteFile(filepath.Join(h.bin, name), []byte(script), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -438,16 +593,37 @@ func newUpgradeHost(t *testing.T, helper string) *upgradeHost {
 	return h
 }
 
+func (h *upgradeHost) environ() []string {
+	env := map[string]string{
+		"PATH":                         h.bin + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"FAKE_STATE":                   h.state,
+		"FAKE_HOST_ROOT":               h.root,
+		"ES_UPGRADE_TEST_ACL_SETUP":    filepath.Join(h.bin, "acl-setup"),
+		"ES_UPGRADE_TEST_TLS_IDENTITY": filepath.Join(h.bin, "tls-identity"),
+		"ES_UPGRADE_TEST_WAIT_SECONDS": "1",
+	}
+	for key, value := range h.env {
+		env[key] = value
+	}
+	var out []string
+	for _, entry := range os.Environ() {
+		key, _, _ := strings.Cut(entry, "=")
+		if _, set := env[key]; !set && !strings.HasPrefix(key, "ES_UPGRADE_TEST_") {
+			out = append(out, entry)
+		}
+	}
+	for key, value := range env {
+		if value != "" {
+			out = append(out, key+"="+value)
+		}
+	}
+	return out
+}
+
 func (h *upgradeHost) command(args ...string) *exec.Cmd {
 	cmd := exec.Command("python3", append([]string{"-I", repoPath(upgradeESPython), "--host-root", h.root}, args...)...)
 	cmd.Dir = h.state
-	cmd.Env = append(os.Environ(),
-		"PATH="+h.bin+string(os.PathListSeparator)+os.Getenv("PATH"),
-		"FAKE_STATE="+h.state,
-		"FAKE_HOST_ROOT="+h.root,
-		"ES_UPGRADE_TEST_ACL_SETUP="+filepath.Join(h.bin, "acl-setup"),
-		"ES_UPGRADE_TEST_WAIT_SECONDS=1",
-	)
+	cmd.Env = h.environ()
 	return cmd
 }
 
@@ -470,7 +646,7 @@ func (h *upgradeHost) run(args ...string) (string, string, int) {
 
 func (h *upgradeHost) check() (map[string]any, string, int) {
 	h.t.Helper()
-	stdout, stderr, code := h.run("check", "--payload", h.payload, "--commit", upgradeTestCommit)
+	stdout, stderr, code := h.run("check", "--payload", h.payload, "--commit", h.commit)
 	var report map[string]any
 	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
 		h.t.Fatalf("check printed no JSON report (exit %d): %v\nstdout %s\nstderr %s", code, err, stdout, stderr)
@@ -480,7 +656,18 @@ func (h *upgradeHost) check() (map[string]any, string, int) {
 
 func (h *upgradeHost) apply() (string, string, int) {
 	h.t.Helper()
-	return h.run("apply", "--payload", h.payload, "--commit", upgradeTestCommit)
+	return h.run("apply", "--payload", h.payload, "--commit", h.commit)
+}
+
+// systemctl runs the fake systemctl as the upgrade would.
+func (h *upgradeHost) systemctl(args ...string) {
+	h.t.Helper()
+	cmd := exec.Command(filepath.Join(h.bin, "systemctl"), args...)
+	cmd.Dir = h.state
+	cmd.Env = h.environ()
+	if out, err := cmd.CombinedOutput(); err != nil {
+		h.t.Fatalf("systemctl %v: %v %s", args, err, out)
+	}
 }
 
 func (h *upgradeHost) calls(prefix string) []string {
@@ -505,8 +692,8 @@ func (h *upgradeHost) clearCalls() {
 	}
 }
 
-// snapshot maps every path under the host root to its type, mode and,
-// for a file, the SHA-256 of its content.
+// snapshot maps every path under the host root to its type, mode, owner
+// and, for a file the test can read, the SHA-256 of its content.
 func (h *upgradeHost) snapshot() map[string]string {
 	h.t.Helper()
 	out := map[string]string{}
@@ -523,10 +710,14 @@ func (h *upgradeHost) snapshot() map[string]string {
 		entry := fmt.Sprintf("%s %d:%d", info.Mode().String(), st.Uid, st.Gid)
 		if info.Mode().IsRegular() {
 			data, err := os.ReadFile(path)
-			if err != nil {
+			switch {
+			case err == nil:
+				entry += " " + sha256Hex(data)
+			case os.IsPermission(err):
+				entry += " unreadable"
+			default:
 				return err
 			}
-			entry += " " + sha256Hex(data)
 		}
 		out[filepath.ToSlash(rel)] = entry
 		return nil
@@ -537,10 +728,39 @@ func (h *upgradeHost) snapshot() map[string]string {
 	return out
 }
 
+// issueTLS runs scripts/70_linux_setup.sh's nomad_tls_issue into the host's
+// Nomad TLS directory, as the test user.
+func (h *upgradeHost) issueTLS() {
+	h.t.Helper()
+	setup := mustRead(h.t, repoPath("scripts/70_linux_setup.sh"))
+	begin, end := strings.Index(setup, "# BEGIN nomad_tls"), strings.Index(setup, "# END nomad_tls")
+	if begin < 0 || end < begin {
+		h.t.Fatal("scripts/70_linux_setup.sh has no nomad_tls region")
+	}
+	cmd := exec.Command("bash", "-c", "set -euo pipefail\n"+setup[begin:end]+"nomad_tls_issue \"$1\"\n", "issue", h.path("etc/nomad.d/tls"))
+	cmd.Dir = h.state
+	if out, err := cmd.CombinedOutput(); err != nil {
+		h.t.Fatalf("nomad_tls_issue: %v %s", err, out)
+	}
+}
+
+// serverKeyPin is the SHA-256 of the public key of the certificate at path.
+func serverKeyPin(t *testing.T, path string) string {
+	t.Helper()
+	block, _ := pem.Decode([]byte(mustRead(t, path)))
+	if block == nil {
+		t.Fatalf("%s holds no PEM block", path)
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sha256Hex(cert.RawSubjectPublicKeyInfo)
+}
+
 // upgradeLeftovers are the paths an apply leaves on the host even after a
-// rollback: the retained-result key, the Nomad ACL token files and the
-// backups. The old config names none of them.
-var upgradeLeftovers = regexp.MustCompile(`^(etc/execution-substrate/retained-result-auth|etc/execution-substrate/nomad-acl|var/backups/execution-substrate-es-upgrade)(/|$)`)
+// rollback: its backups.
+var upgradeLeftovers = regexp.MustCompile(`^var/backups/execution-substrate-es-upgrade(/|$)`)
 
 func assertRestored(t *testing.T, before, after map[string]string) {
 	t.Helper()
@@ -556,11 +776,20 @@ func assertRestored(t *testing.T, before, after map[string]string) {
 	}
 }
 
-func readSummary(t *testing.T, h *upgradeHost) (string, map[string]any) {
+func backupDirs(t *testing.T, h *upgradeHost) []string {
 	t.Helper()
 	dirs, err := filepath.Glob(h.path("var/backups/execution-substrate-es-upgrade/*"))
-	if err != nil || len(dirs) != 1 {
-		t.Fatalf("want one backup directory, found %v (%v)", dirs, err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dirs
+}
+
+func readSummary(t *testing.T, h *upgradeHost) (string, map[string]any) {
+	t.Helper()
+	dirs := backupDirs(t, h)
+	if len(dirs) != 1 {
+		t.Fatalf("want one backup directory, found %v", dirs)
 	}
 	if !regexp.MustCompile(`/\d{8}T\d{6}Z-` + upgradeTestCommit[:12] + `$`).MatchString(dirs[0]) {
 		t.Fatalf("backup directory %s is not named <UTC time>-<commit>", dirs[0])
@@ -589,6 +818,20 @@ func modeOf(t *testing.T, path string) os.FileMode {
 		t.Fatal(err)
 	}
 	return st.Mode().Perm()
+}
+
+// onlyReads fails when the calls since the last clearCalls stopped or
+// started a service or ran the ACL setup.
+func onlyReads(t *testing.T, h *upgradeHost, label string) {
+	t.Helper()
+	for _, call := range h.calls("systemctl") {
+		if !strings.HasPrefix(call, "systemctl is-active") && !strings.HasPrefix(call, "systemctl show") {
+			t.Fatalf("%s ran %q", label, call)
+		}
+	}
+	if calls := h.calls("acl-setup"); len(calls) != 0 {
+		t.Fatalf("%s ran the ACL setup: %v", label, calls)
+	}
 }
 
 // TestRemoteAlphaUpgradeESReadsGoBuildInfoLikeGoVersion keeps the upgrade's
@@ -642,45 +885,67 @@ print(json.dumps({"version": version, "build": build}))`
 	}
 }
 
-func TestRemoteAlphaUpgradeESNomadLockMatchesSupportedConfig(t *testing.T) {
-	if len(boxNomadHCL) != 529 {
-		t.Fatalf("the box's nomad.hcl fixture is %d bytes; the preflight read 529", len(boxNomadHCL))
+// TestRemoteAlphaUpgradeESNomadShapesMatchTheBoxAndTheSupportedConfig ties
+// the upgrade's nomad.hcl shapes to the box's files and its tls block to the
+// supported config's own text.
+func TestRemoteAlphaUpgradeESNomadShapesMatchTheBoxAndTheSupportedConfig(t *testing.T) {
+	if len(boxNomadHCL) != 529 || len(boxNomadHCLLocked) != 1126 {
+		t.Fatalf("the box's nomad.hcl fixtures are %d and %d bytes; the box's files are 529 and 1126", len(boxNomadHCL), len(boxNomadHCLLocked))
 	}
+	if got := sha256Hex([]byte(boxNomadHCLLocked)); got != "ea33305501c6f9cfc24fb00c678042580ed7d84ab6867f49c27a335d131d5163" {
+		t.Fatalf("the locked fixture's SHA-256 %s is not the box's", got)
+	}
+	unknown := strings.Replace(boxNomadHCLHTTPS, `tls_min_version        = "tls13"`, `tls_min_version        = "tls12"`, 1)
 	code := `import importlib.util, json, sys
 spec = importlib.util.spec_from_file_location("upgrade", sys.argv[1])
 m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
-new, state = m.plan_nomad_hcl(sys.stdin.read())
-print(json.dumps({"locked": new, "state": state, "box_sha256": m.NOMAD_HCL_BOX_SHA256,
-                  "fragments": [m.NOMAD_LOCKED_OPTIONS, m.NOMAD_LOOPBACK_PIN, m.NOMAD_ACL_BLOCK, m.NOMAD_PLUGIN_BLOCK]}))`
+fixtures = json.load(sys.stdin)
+print(json.dumps({"prelock": m.NOMAD_HCL_PRELOCK_SHA256, "locked": m.NOMAD_HCL_LOCKED_SHA256, "block": m.NOMAD_TLS_BLOCK,
+                  "tls_dir": m.NOMAD_TLS_DIR, "server_name": m.NOMAD_SERVER_NAME,
+                  "shapes": [m.nomad_hcl_shape(text.encode())[0] for text in fixtures]}))`
 	cmd := exec.Command("python3", "-I", "-c", code, repoPath(upgradeESPython))
 	cmd.Dir = t.TempDir()
-	cmd.Stdin = strings.NewReader(boxNomadHCL)
+	fixtures, _ := json.Marshal([]string{boxNomadHCL, boxNomadHCLLocked, boxNomadHCLHTTPS, unknown})
+	cmd.Stdin = bytes.NewReader(fixtures)
 	out, err := cmd.Output()
 	if err != nil {
-		t.Fatalf("plan_nomad_hcl: %v", err)
+		t.Fatalf("nomad_hcl_shape: %v", err)
 	}
 	var got struct {
-		Locked    string   `json:"locked"`
-		State     string   `json:"state"`
-		BoxSHA256 string   `json:"box_sha256"`
-		Fragments []string `json:"fragments"`
+		Prelock    string `json:"prelock"`
+		Locked     string `json:"locked"`
+		Block      string `json:"block"`
+		TLSDir     string `json:"tls_dir"`
+		ServerName string `json:"server_name"`
+		Shapes     []any  `json:"shapes"`
 	}
 	if err := json.Unmarshal(out, &got); err != nil {
 		t.Fatal(err)
 	}
-	if got.BoxSHA256 != sha256Hex([]byte(boxNomadHCL)) {
-		t.Fatalf("NOMAD_HCL_BOX_SHA256 %s is not the fixture's %s", got.BoxSHA256, sha256Hex([]byte(boxNomadHCL)))
+	if got.Prelock != sha256Hex([]byte(boxNomadHCL)) || got.Locked != sha256Hex([]byte(boxNomadHCLLocked)) {
+		t.Fatalf("the upgrade's nomad.hcl hashes %s and %s are not the fixtures'", got.Prelock, got.Locked)
 	}
-	if got.State != "apply" || got.Locked != boxNomadHCLLocked {
-		t.Fatalf("the lock of the box's nomad.hcl (%s):\n%s", got.State, got.Locked)
+	if got.Block != boxNomadTLSBlock {
+		t.Fatalf("NOMAD_TLS_BLOCK is not the fixture's tls block:\n%s", got.Block)
 	}
-	// Every piece the lock adds is the supported config's own text.
+	if fmt.Sprint(got.Shapes) != "[<nil> locked-http https <nil>]" {
+		t.Fatalf("the shapes of the pre-lock, locked, https and an unknown nomad.hcl: %v", got.Shapes)
+	}
+	// The tls block, its directory and the server name are the supported
+	// config's own.
 	setup := mustRead(t, repoPath("scripts/70_linux_setup.sh"))
-	for _, fragment := range got.Fragments {
-		if !strings.Contains(setup, fragment) {
-			t.Errorf("scripts/70_linux_setup.sh's Nomad config does not hold the lock's fragment:\n%s", fragment)
+	for _, want := range []string{
+		strings.ReplaceAll(boxNomadTLSBlock, got.TLSDir, "${NOMAD_TLS_DIR}"),
+		`NOMAD_CONFIG_DIR="/etc/nomad.d"`, `NOMAD_TLS_DIR="${NOMAD_CONFIG_DIR}/tls"`,
+		`NOMAD_TLS_SERVER_NAME="` + got.ServerName + `"`,
+	} {
+		if !strings.Contains(setup, want) {
+			t.Errorf("scripts/70_linux_setup.sh does not hold:\n%s", want)
 		}
+	}
+	if got.TLSDir != "/etc/nomad.d/tls" {
+		t.Fatalf("NOMAD_TLS_DIR %s", got.TLSDir)
 	}
 }
 
@@ -694,15 +959,28 @@ func TestRemoteAlphaUpgradeESCheckChangesNothing(t *testing.T) {
 	if blockers := report["blockers"].([]any); len(blockers) != 0 {
 		t.Fatalf("blockers on a box-shaped host: %v", blockers)
 	}
+	if report["shape"] != "locked-http" || report["result"] != "ready" {
+		t.Fatalf("shape %v, result %v", report["shape"], report["result"])
+	}
+	parts := report["parts"].(map[string]any)
+	for part, want := range map[string]string{
+		"nomad.hcl": "locked-http (", "Nomad's TLS directory": "absent", "es.json": "locked-http (Nomad at http://127.0.0.1:4646)",
+		"the ES binaries": "locked-http (builds of " + boxESCommit + ")",
+	} {
+		if state, _ := parts[part].(string); !strings.HasPrefix(state, want) {
+			t.Errorf("part %s: %q, want %q", part, state, want)
+		}
+	}
 	esConfig := report["es_config"].(map[string]any)
-	if fmt.Sprint(esConfig["changes"]) != "[nomad.token_file execution.retained_result_auth]" || esConfig["new_es_accepts_migrated_config"] != true {
+	if fmt.Sprint(esConfig["changes"]) != "[nomad.base_url nomad.server_name nomad.root_ca_file nomad.server_spki_sha256]" ||
+		esConfig["new_es_accepts_migrated_config"] != true {
 		t.Fatalf("es_config report: %v", esConfig)
 	}
-	if lock := report["nomad_hcl"].(map[string]any)["lock"]; lock != "apply" {
-		t.Fatalf("nomad_hcl lock state %v", lock)
+	if report["retained_result_key"] != "exists" || report["nomad_allocation_containers"] != float64(0) {
+		t.Fatalf("retained_result_key %v, allocation containers %v", report["retained_result_key"], report["nomad_allocation_containers"])
 	}
-	if report["retained_result_key"] != "would create" {
-		t.Fatalf("retained_result_key %v", report["retained_result_key"])
+	if changes := report["changes"].([]any); len(changes) != 5 {
+		t.Fatalf("changes %v", changes)
 	}
 	health := report["health"].(map[string]any)
 	for _, url := range []string{"https://127.0.0.1:8445/health", "https://127.0.0.1:8445/v1/executions:contract", "https://127.0.0.1:8444/health"} {
@@ -714,58 +992,124 @@ func TestRemoteAlphaUpgradeESCheckChangesNothing(t *testing.T) {
 	if len(before) != len(h.snapshot()) {
 		t.Fatalf("check created files")
 	}
-	for _, call := range h.calls("systemctl") {
-		if !strings.HasPrefix(call, "systemctl is-active") && !strings.HasPrefix(call, "systemctl show") {
-			t.Fatalf("check ran %q", call)
-		}
-	}
-	if calls := h.calls("acl-setup"); len(calls) != 0 {
-		t.Fatalf("check ran the ACL setup: %v", calls)
+	onlyReads(t, h, "check")
+	if got := strings.Join(h.calls("curl http://127.0.0.1:4646"), " | "); got != "curl http://127.0.0.1:4646/v1/status/leader" {
+		t.Fatalf("check's Nomad requests: %q", got)
 	}
 }
 
 func TestRemoteAlphaUpgradeESCheckRefusesWhatItWasNotWrittenFor(t *testing.T) {
 	helper := buildESConfigCheck(t)
+	writeESConfig := func(h *upgradeHost, edit func(doc map[string]any)) {
+		var doc map[string]any
+		_ = json.Unmarshal(boxStartESConfig(t, "http://127.0.0.1:4646"), &doc)
+		edit(doc)
+		data, _ := json.Marshal(doc)
+		h.write("etc/execution-substrate/es.json", string(data), 0o640)
+	}
 	cases := []struct {
 		name   string
 		break_ func(h *upgradeHost)
 		scope  string
 		says   string
 	}{
+		// The shape: every part is named whenever one is unknown or the
+		// parts disagree.
+		{"nomad.hcl is the pre-lock file", func(h *upgradeHost) {
+			h.write("etc/nomad.d/nomad.hcl", boxNomadHCL, 0o640)
+		}, "shape", "nomad.hcl: pre-lock (Remote Alpha 0.7's config: ES PR #54's upgrade has not run); Nomad's TLS directory: absent; " +
+			"es.json: locked-http (Nomad at http://127.0.0.1:4646); the ES binaries: locked-http (builds of " + boxESCommit + ")"},
+		{"nomad.hcl is not the box's", func(h *upgradeHost) {
+			h.write("etc/nomad.d/nomad.hcl", strings.Replace(boxNomadHCLLocked, `bootstrap_expect = 1`, `bootstrap_expect = 3`, 1), 0o640)
+		}, "shape", "nomad.hcl: unknown (SHA-256 "},
+		{"nomad.hcl has the tls block but nothing else moved", func(h *upgradeHost) {
+			h.write("etc/nomad.d/nomad.hcl", boxNomadHCLHTTPS, 0o640)
+		}, "shape", "nomad.hcl: https (the lock and the supported config's tls block); Nomad's TLS directory: absent"},
+		{"an empty TLS directory exists", func(h *upgradeHost) {
+			h.mkdir("etc/nomad.d/tls", 0o755)
+		}, "shape", "Nomad's TLS directory: present, but holds [], not exactly ['ca.pem', 'server-key.pem', 'server.pem']"},
+		{"TLS material was issued but nothing else moved", func(h *upgradeHost) { h.issueTLS() },
+			"shape", "nomad.hcl: locked-http (ES PR #54's lock, plain HTTP); Nomad's TLS directory: https ("},
+		{"the TLS directory is group-writable", func(h *upgradeHost) {
+			h.issueTLS()
+			_ = os.Chmod(h.path("etc/nomad.d/tls"), 0o775)
+		}, "shape", "Nomad's TLS directory: present, but not root:root 0755"},
+		{"the TLS key is readable by others", func(h *upgradeHost) {
+			h.issueTLS()
+			_ = os.Chmod(h.path("etc/nomad.d/tls/server-key.pem"), 0o644)
+		}, "shape", "Nomad's TLS directory: present, but its material fails the setup's nomad_tls_material_ok"},
 		{"es.json has a key the box's build lacks", func(h *upgradeHost) {
-			var doc map[string]any
-			_ = json.Unmarshal(boxShapedESConfig(t), &doc)
-			doc["http"].(map[string]any)["idle_timeout_seconds"] = 5
-			data, _ := json.Marshal(doc)
-			h.write("etc/execution-substrate/es.json", string(data), 0o640)
-		}, "es_config", "differ from the build this upgrade was written for"},
+			writeESConfig(h, func(doc map[string]any) { doc["http"].(map[string]any)["idle_timeout_seconds"] = 5 })
+		}, "shape", "es.json: unknown (keys: unexpected ['http.idle_timeout_seconds'], missing [])"},
+		{"es.json reaches Nomad elsewhere", func(h *upgradeHost) {
+			writeESConfig(h, func(doc map[string]any) { doc["nomad"].(map[string]any)["base_url"] = "http://localhost:4646" })
+		}, "shape", "es.json: unknown (nomad.base_url 'http://localhost:4646')"},
+		{"es.json names another token file", func(h *upgradeHost) {
+			writeESConfig(h, func(doc map[string]any) { doc["nomad"].(map[string]any)["token_file"] = "/etc/elsewhere/es-token" })
+		}, "shape", "es.json: unknown (nomad.token_file or execution.retained_result_auth is not what ES PR #54's upgrade set)"},
+		{"es.json was moved to HTTPS by hand", func(h *upgradeHost) {
+			writeESConfig(h, func(doc map[string]any) {
+				nomad := doc["nomad"].(map[string]any)
+				nomad["base_url"], nomad["server_name"] = "https://127.0.0.1:4646", "server.global.nomad"
+				nomad["root_ca_file"], nomad["server_spki_sha256"] = "/etc/nomad.d/tls/ca.pem", strings.Repeat("a", 64)
+			})
+		}, "shape", "Nomad's TLS directory: absent; es.json: https keys, but nomad.server_spki_sha256 is not the key of the server certificate on disk"},
+		{"the ES binaries are another build", func(h *upgradeHost) {
+			h.write("usr/local/lib/execution-substrate/bin/es", string(stampedBinary("es", "go1.26.5", strings.Repeat("a", 40), "false")), 0o755)
+		}, "shape", "the ES binaries: unknown (es built from " + strings.Repeat("a", 40) + ", es-runtime-support built from " + boxESCommit + ")"},
+		{"es is a build of a modified checkout", func(h *upgradeHost) {
+			h.write("usr/local/lib/execution-substrate/bin/es", string(stampedBinary("es", "go1.26.5", boxESCommit, "true")), 0o755)
+		}, "shape", "the ES binaries: unknown (es is a build of a modified checkout of " + boxESCommit + ")"},
+		{"es is not a Go binary", func(h *upgradeHost) {
+			h.write("usr/local/lib/execution-substrate/bin/es", "old es build\n", 0o755)
+		}, "shape", "the ES binaries: unknown (es: not a 64-bit little-endian ELF file)"},
+		{"the commit named is the box's own build", func(h *upgradeHost) { h.commit = boxESCommit },
+			"commit", boxESCommit + " is the build ES PR #54's upgrade installed"},
+
+		// Owners, modes and what else Nomad loads.
 		{"es.json is world-readable", func(h *upgradeHost) {
 			_ = os.Chmod(h.path("etc/execution-substrate/es.json"), 0o644)
 		}, "es_config", "not root:es 0640"},
-		{"nomad.hcl is not the preflight's", func(h *upgradeHost) {
-			h.write("etc/nomad.d/nomad.hcl", strings.Replace(boxNomadHCL, `bootstrap_expect = 1`, `bootstrap_expect = 3`, 1), 0o644)
-		}, "nomad_hcl", "not the file the preflight read"},
-		{"Nomad is already locked", func(h *upgradeHost) {
-			h.write("etc/nomad.d/nomad.hcl", boxNomadHCLLocked, 0o644)
-		}, "nomad_hcl", "already been applied"},
-		{"nomad.hcl pins another interface", func(h *upgradeHost) {
-			h.write("etc/nomad.d/nomad.hcl", strings.Replace(boxNomadHCL, `"enp1s0"`, `"wlp2s0"`, 1), 0o644)
-		}, "nomad_hcl", "does not pin the wired port this upgrade was written for"},
-		{"Nomad was locked before the loopback pin", func(h *upgradeHost) {
-			h.write("etc/nomad.d/nomad.hcl", strings.Replace(boxNomadHCLLocked, `"lo"`, `"enp1s0"`, 1), 0o644)
-		}, "nomad_hcl", "does not hold the Docker client options"},
+		{"nomad.hcl is world-readable", func(h *upgradeHost) {
+			_ = os.Chmod(h.path("etc/nomad.d/nomad.hcl"), 0o644)
+		}, "nomad_hcl", "nomad.hcl is not root:root 0640"},
 		{"Nomad would load another config", func(h *upgradeHost) {
 			h.write("etc/nomad.d/tls.hcl", "tls {}\n", 0o644)
 		}, "nomad_hcl", "would also load ['tls.hcl']"},
+		{"Nomad's data directory is group-readable", func(h *upgradeHost) {
+			_ = os.Chmod(h.path("opt/nomad/data"), 0o750)
+		}, "nomad_dirs", "/opt/nomad/data is not a root:root 0700 directory"},
+		{"Nomad's data directory is a link", func(h *upgradeHost) {
+			_ = os.RemoveAll(h.path("opt/nomad/data"))
+			_ = os.Symlink(h.path("var/backups"), h.path("opt/nomad/data"))
+		}, "nomad_dirs", "/opt/nomad/data is not a root:root 0700 directory"},
+		{"the ES token file is missing", func(h *upgradeHost) {
+			_ = os.Remove(h.path("etc/execution-substrate/nomad-acl/es-token"))
+		}, "nomad_acl", "/etc/execution-substrate/nomad-acl/es-token: No such file or directory"},
+		{"the management token is group-readable", func(h *upgradeHost) {
+			_ = os.Chmod(h.path("etc/execution-substrate/nomad-acl/management-token"), 0o640)
+		}, "nomad_acl", "/etc/execution-substrate/nomad-acl/management-token is not a 0600 file"},
+		{"the retained-result key is missing", func(h *upgradeHost) {
+			_ = os.Remove(h.path("etc/execution-substrate/retained-result-auth/es.key"))
+		}, "retained_result_key", "the retained-result key ES PR #54's upgrade made is missing"},
+		{"a retained-result key of the wrong size", func(h *upgradeHost) {
+			h.write("etc/execution-substrate/retained-result-auth/es.key", "short", 0o400)
+		}, "retained_result_key", "exactly 32 bytes"},
+
+		// Services and Nomad.
 		{"a service is down", func(h *upgradeHost) { h.mark("inactive-vault", "") }, "services", "not every service is active"},
 		{"es.service runs ES as root", func(h *upgradeHost) { h.mark("es-user", "root") }, "es_unit", "runs as 'root'"},
 		{"es.service starts another binary", func(h *upgradeHost) {
 			h.mark("es-argv", "/opt/es -config /etc/execution-substrate/es.json")
 		}, "es_unit", "does not start"},
 		{"ES is not healthy", func(h *upgradeHost) { h.mark("unhealthy", "") }, "health", "do not all answer 200"},
-		{"a Nomad job is running", func(h *upgradeHost) {
-			h.mark("jobs.json", `[{"ID": "es-run-1", "Status": "running"}]`)
-		}, "nomad", "pending or running: ['es-run-1']"},
+		{"Nomad has no leader", func(h *upgradeHost) { h.mark("no-leader", "") }, "nomad", "Nomad has no named leader at http://127.0.0.1:4646"},
+		{"an allocation is running", func(h *upgradeHost) { h.mark("allocs", "3f1c9a\n") },
+			"nomad", "1 container(s) of Nomad allocations are running"},
+		{"Docker cannot be asked", func(h *upgradeHost) { h.mark("docker-fails", "") },
+			"nomad", "cannot list the containers of Nomad's allocations: Cannot connect to the Docker daemon"},
+
+		// The payload.
 		{"the payload is from another commit", func(h *upgradeHost) {
 			writeJSONFile(t, filepath.Join(h.payload, "provenance.json"), map[string]any{"commit": strings.Repeat("a", 40), "go_version": "go1.26.5", "vcs_modified": false})
 		}, "payload", "not the named commit"},
@@ -799,13 +1143,6 @@ func TestRemoteAlphaUpgradeESCheckRefusesWhatItWasNotWrittenFor(t *testing.T) {
 		{"es carries no Go build info", func(h *upgradeHost) {
 			h.replacePayloadFile("es", []byte("new es build\n"))
 		}, "payload", "not a 64-bit little-endian ELF file"},
-		{"a retained-result key of the wrong size exists", func(h *upgradeHost) {
-			h.write("etc/execution-substrate/retained-result-auth/es.key", "short", 0o400)
-		}, "retained_result_key", "exactly 32 bytes"},
-		{"Nomad's data directory is a link", func(h *upgradeHost) {
-			_ = os.RemoveAll(h.path("opt/nomad/data"))
-			_ = os.Symlink(h.path("var/backups"), h.path("opt/nomad/data"))
-		}, "nomad_dirs", "/opt/nomad/data is not a directory"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -827,6 +1164,7 @@ func TestRemoteAlphaUpgradeESCheckRefusesWhatItWasNotWrittenFor(t *testing.T) {
 				t.Fatalf("no %s blocker saying %q in %v", tc.scope, tc.says, report["blockers"])
 			}
 			assertRestored(t, before, h.snapshot())
+			onlyReads(t, h, "a refused check")
 
 			// apply refuses the same host before it changes anything.
 			h.clearCalls()
@@ -838,11 +1176,7 @@ func TestRemoteAlphaUpgradeESCheckRefusesWhatItWasNotWrittenFor(t *testing.T) {
 			if _, err := os.Lstat(h.path("var/backups/execution-substrate-es-upgrade")); err == nil {
 				t.Fatalf("a refused apply wrote a backup")
 			}
-			for _, call := range h.calls("systemctl") {
-				if !strings.HasPrefix(call, "systemctl is-active") && !strings.HasPrefix(call, "systemctl show") {
-					t.Fatalf("a refused apply ran %q", call)
-				}
-			}
+			onlyReads(t, h, "a refused apply")
 		})
 	}
 }
@@ -896,83 +1230,67 @@ func foreignOwnedDir(t *testing.T) string {
 	return dir
 }
 
-// giveNomadDataAnotherOwner makes the fake host's Nomad data look as a
-// package install leaves it: the data folder, a file, a setgid file and a
-// link belong to another group.
-func giveNomadDataAnotherOwner(t *testing.T, h *upgradeHost) {
-	t.Helper()
-	gid := otherGroup(t)
-	h.write("opt/nomad/data/plugins/helper", "#!/bin/sh\n", 0o755)
-	if err := os.Symlink("server", h.path("opt/nomad/data/current")); err != nil {
-		t.Fatal(err)
-	}
-	for _, rel := range []string{"opt/nomad/data", "opt/nomad/data/server/raft/raft.db", "opt/nomad/data/plugins/helper", "opt/nomad/data/current"} {
-		if err := os.Lchown(h.path(rel), -1, gid); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := os.Chmod(h.path("opt/nomad/data/plugins/helper"), 0o755|os.ModeSetgid); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func TestRemoteAlphaUpgradeESApply(t *testing.T) {
 	helper := buildESConfigCheck(t)
 	h := newUpgradeHost(t, helper)
-	giveNomadDataAnotherOwner(t, h)
 	before := h.snapshot()
-	if !strings.Contains(before["opt/nomad/data/plugins/helper"], "grwxr-xr-x") {
-		t.Fatalf("the fake setgid file is %q", before["opt/nomad/data/plugins/helper"])
-	}
 	stdout, stderr, code := h.apply()
 	if code != 0 {
 		t.Fatalf("apply exited %d\nstdout %s\nstderr %s", code, stdout, stderr)
 	}
 
-	// Every entry of Nomad's data, and the folder, now belongs to the
-	// stand-in root, and the ledger holds each old owner and mode.
-	gid := os.Getgid()
-	if os.Geteuid() == 0 {
-		gid = 0
+	// Nomad's TLS material: what the setup's nomad_tls_issue writes, with a
+	// server certificate for Nomad's names that the CA signed.
+	tlsDir := h.path("etc/nomad.d/tls")
+	for path, want := range map[string]os.FileMode{
+		"etc/nomad.d/tls": 0o755, "etc/nomad.d/tls/ca.pem": 0o644, "etc/nomad.d/tls/server.pem": 0o644, "etc/nomad.d/tls/server-key.pem": 0o600,
+	} {
+		if got := modeOf(t, h.path(path)); got != want {
+			t.Errorf("%s mode %04o, want %04o", path, got, want)
+		}
 	}
-	for _, rel := range []string{"opt/nomad/data", "opt/nomad/data/server/raft/raft.db", "opt/nomad/data/plugins/helper", "opt/nomad/data/current"} {
-		st, err := os.Lstat(h.path(rel))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got := int(st.Sys().(*syscall.Stat_t).Gid); got != gid {
-			t.Errorf("%s has group %d after apply, want %d", rel, got, gid)
-		}
+	verify := exec.Command("openssl", "verify", "-CAfile", filepath.Join(tlsDir, "ca.pem"), "-purpose", "sslserver", filepath.Join(tlsDir, "server.pem"))
+	verify.Dir = tlsDir
+	if out, err := verify.CombinedOutput(); err != nil {
+		t.Fatalf("the server certificate does not verify under the CA: %v %s", err, out)
+	}
+	pin := serverKeyPin(t, filepath.Join(tlsDir, "server.pem"))
+
+	// nomad.hcl gains the tls block and nothing else.
+	if got := mustRead(t, h.path("etc/nomad.d/nomad.hcl")); got != boxNomadHCLHTTPS {
+		t.Fatalf("nomad.hcl after apply:\n%s", got)
 	}
 
-	// ES's own config loader accepts the migrated es.json, which carries the
-	// token file and retained-result auth, with its old owner and mode.
+	// ES's own config loader accepts the migrated es.json, which reaches
+	// Nomad over HTTPS and pins the server key; nothing else changed.
 	loadCheck := exec.Command(helper, h.path("etc/execution-substrate/es.json"))
 	loadCheck.Dir = h.state
 	if out, err := loadCheck.CombinedOutput(); err != nil {
 		t.Fatalf("ES refuses the installed es.json: %v %s", err, out)
 	}
-	var esConfig map[string]any
+	var esConfig, startConfig map[string]any
 	if err := json.Unmarshal([]byte(mustRead(t, h.path("etc/execution-substrate/es.json"))), &esConfig); err != nil {
 		t.Fatal(err)
 	}
-	if got := esConfig["nomad"].(map[string]any)["token_file"]; got != "/etc/execution-substrate/nomad-acl/es-token" {
-		t.Fatalf("token_file %v", got)
+	nomad := esConfig["nomad"].(map[string]any)
+	if nomad["base_url"] != "https://127.0.0.1:4646" || nomad["server_name"] != "server.global.nomad" ||
+		nomad["root_ca_file"] != "/etc/nomad.d/tls/ca.pem" || nomad["server_spki_sha256"] != pin {
+		t.Fatalf("es.json's nomad block %v; the server key's SHA-256 is %s", nomad, pin)
 	}
-	if got := fmt.Sprint(esConfig["execution"].(map[string]any)["retained_result_auth"]); got != "map[key_file:/etc/execution-substrate/retained-result-auth/es.key key_id:k1 store_id:remote-alpha]" {
-		t.Fatalf("retained_result_auth %s", got)
+	nomad["base_url"] = "http://127.0.0.1:4646"
+	delete(nomad, "server_name")
+	delete(nomad, "root_ca_file")
+	delete(nomad, "server_spki_sha256")
+	_ = json.Unmarshal(boxStartESConfig(t, "http://127.0.0.1:4646"), &startConfig)
+	if fmt.Sprint(esConfig) != fmt.Sprint(startConfig) {
+		t.Fatalf("apply changed more of es.json than Nomad's address and TLS keys:\n%v\n%v", esConfig, startConfig)
 	}
+
 	for path, want := range map[string]os.FileMode{
-		"etc/execution-substrate/es.json":                     0o640,
-		"usr/local/lib/execution-substrate/bin/es":            0o755,
-		"usr/local/bin/es-runtime-support":                    0o755,
-		"etc/nomad.d/nomad.hcl":                               0o640,
-		"etc/nomad.d/nomad.env":                               0o640,
-		"etc/nomad.d":                                         0o755,
-		"opt/nomad":                                           0o755,
-		"opt/nomad/data":                                      0o700,
-		"etc/execution-substrate/retained-result-auth":        0o755,
-		"etc/execution-substrate/retained-result-auth/es.key": 0o400,
+		"etc/execution-substrate/es.json":          0o640,
+		"usr/local/lib/execution-substrate/bin/es": 0o755,
+		"usr/local/bin/es-runtime-support":         0o755,
+		"etc/nomad.d/nomad.hcl":                    0o640,
 	} {
 		if got := modeOf(t, h.path(path)); got != want {
 			t.Errorf("%s mode %04o, want %04o", path, got, want)
@@ -984,94 +1302,161 @@ func TestRemoteAlphaUpgradeESApply(t *testing.T) {
 	if got := mustRead(t, h.path("usr/local/bin/es-runtime-support")); got != string(newRuntimeSupportBuild) {
 		t.Fatalf("runtime support binary is not the payload's: %d bytes", len(got))
 	}
-	if got := mustRead(t, h.path("etc/nomad.d/nomad.hcl")); got != boxNomadHCLLocked {
-		t.Fatalf("nomad.hcl after the lock:\n%s", got)
+	if strings.Contains(stdout+stderr, "PRIVATE KEY") || strings.Contains(stdout+stderr, "01234567-89ab-cdef") {
+		t.Fatalf("apply printed key or token material")
 	}
-	if key, err := os.ReadFile(h.path("etc/execution-substrate/retained-result-auth/es.key")); err != nil || len(key) != 32 {
-		t.Fatalf("retained-result key: %d bytes, %v", len(key), err)
-	}
-	if strings.Contains(stdout+stderr, "01234567-89ab-cdef") {
-		t.Fatalf("apply printed the Nomad token")
-	}
-	// Files the upgrade does not own stay as they were.
-	for _, path := range []string{"etc/execution-substrate/ags.json", "etc/execution-substrate/healthcheck.env", "etc/systemd/system/es.service",
-		"etc/systemd/system/es.service.d/10-account.conf", "etc/nomad.d/nomad.hcl.pre-alpha0.7.20260422213553"} {
-		if after := h.snapshot()[path]; after != before[path] {
-			t.Errorf("%s changed: %q -> %q", path, before[path], after)
+	// Everything else stays as it was: the ACL token files, the retained-
+	// result key, Nomad's state, and the files the upgrade does not own.
+	after := h.snapshot()
+	for path, entry := range before {
+		switch path {
+		case "etc/execution-substrate/es.json", "usr/local/lib/execution-substrate/bin/es", "usr/local/bin/es-runtime-support", "etc/nomad.d/nomad.hcl":
+			continue
+		}
+		if after[path] != entry {
+			t.Errorf("%s changed: %q -> %q", path, entry, after[path])
 		}
 	}
-	// Nomad's state keeps its bytes; only its owner changed (checked above).
-	contentOf := func(entry string) string { return entry[strings.LastIndex(entry, " ")+1:] }
-	if after := h.snapshot()["opt/nomad/data/server/raft/raft.db"]; contentOf(after) != contentOf(before["opt/nomad/data/server/raft/raft.db"]) {
-		t.Errorf("raft.db content changed: %q -> %q", before["opt/nomad/data/server/raft/raft.db"], after)
-	}
 
-	// The order: ES stops first, Nomad is validated, stopped, locked and
-	// started, its ACLs are provisioned, then ES starts and is verified.
+	// The order: ES stops; the TLS material is issued and the new nomad.hcl
+	// validated before Nomad stops; Nomad starts on HTTPS; its ACLs are
+	// provisioned and placement checked; ES starts and is verified.
 	if got, want := strings.Join(h.calls("systemctl st"), " | "), "systemctl stop es | systemctl stop nomad | systemctl start nomad | systemctl start es"; got != want {
 		t.Fatalf("service calls %q, want %q", got, want)
 	}
-	if got, want := strings.Join(h.calls("acl-setup"), " | "),
-		"acl-setup provision ES_USER=es OBSERVER_USER=root NOMAD_USER=root NOMAD_ADDR=http://127.0.0.1:4646 | "+
-			"acl-setup placement ES_USER=es OBSERVER_USER=root NOMAD_USER=root NOMAD_ADDR=http://127.0.0.1:4646 | "+
-			"acl-setup check ES_USER=es OBSERVER_USER=root NOMAD_USER=root NOMAD_ADDR=http://127.0.0.1:4646"; got != want {
-		t.Fatalf("ACL setup calls %q", got)
+	acl := " ES_USER=es OBSERVER_USER=root NOMAD_USER=root NOMAD_ADDR=https://127.0.0.1:4646 NOMAD_CACERT=/etc/nomad.d/tls/ca.pem"
+	if got, want := strings.Join(h.calls("acl-setup"), " | "), "acl-setup provision"+acl+" | acl-setup placement"+acl+" | acl-setup check"+acl; got != want {
+		t.Fatalf("ACL setup calls %q\nwant %q", got, want)
 	}
 	log := mustRead(t, filepath.Join(h.state, "calls.log"))
-	if strings.Index(log, "nomad config validate") > strings.Index(log, "systemctl stop nomad") {
-		t.Fatalf("Nomad was stopped before its new config was validated:\n%s", log)
+	order := []string{"nomad config validate", "systemctl stop nomad", "systemctl start nomad", "curl https://127.0.0.1:4646/v1/status/leader",
+		"acl-setup provision", "systemctl start es", "tls-identity check https://127.0.0.1:4646", "curl https://127.0.0.1:4646/v1/jobs",
+		"curl https://127.0.0.1:4646/v1/acl/policy/anonymous", "acl-setup check"}
+	at := 0
+	for _, step := range order {
+		next := strings.Index(log[at:], step)
+		if next < 0 {
+			t.Fatalf("%q does not follow the steps before it in:\n%s", step, log)
+		}
+		at += next
 	}
 
 	backupDir, summary := readSummary(t, h)
-	if summary["result"] != "applied" {
-		t.Fatalf("summary result %v", summary["result"])
+	if summary["result"] != "applied" || summary["shape"] != "locked-http" {
+		t.Fatalf("summary result %v, shape %v", summary["result"], summary["shape"])
 	}
-	for _, name := range []string{"manifest.json", "directories.json", "ownership.json", "payload/es", "payload/es-runtime-support", "payload/esconfigcheck"} {
+	for _, name := range []string{"manifest.json", "created.json", "payload/es", "payload/es-runtime-support", "payload/esconfigcheck"} {
 		if _, err := os.Lstat(filepath.Join(backupDir, name)); err != nil {
 			t.Errorf("backup lacks %s: %v", name, err)
 		}
 	}
-	var ledger struct {
-		Root    string  `json:"root"`
-		Entries [][]any `json:"entries"`
+	if got := strings.Join(strings.Fields(mustRead(t, filepath.Join(backupDir, "created.json"))), ""); got != `["/etc/nomad.d/tls"]` {
+		t.Fatalf("created.json %s", got)
 	}
-	if err := json.Unmarshal([]byte(mustRead(t, filepath.Join(backupDir, "ownership.json"))), &ledger); err != nil {
+
+	// The host is now in the shape this upgrade leaves: check and apply
+	// verify it in place and change nothing.
+	migrated := h.snapshot()
+	h.clearCalls()
+	report, stderr, code := h.check()
+	if code != 0 || report["shape"] != "https" || report["result"] != "nothing to do" || len(report["changes"].([]any)) != 0 {
+		t.Fatalf("check after apply: exit %d, shape %v, result %v, changes %v, blockers %v, %s",
+			code, report["shape"], report["result"], report["changes"], report["blockers"], stderr)
+	}
+	if report["nomad_tls_identity"] != "nomad tls: tls=1.3 server_name=server.global.nomad key=pinned" {
+		t.Fatalf("nomad_tls_identity %v", report["nomad_tls_identity"])
+	}
+	stdout, stderr, code = h.apply()
+	if code != 0 || !strings.Contains(stdout, `"result": "nothing to do"`) {
+		t.Fatalf("apply after apply: exit %d\nstdout %s\nstderr %s", code, stdout, stderr)
+	}
+	onlyReads(t, h, "a check and an apply of the migrated host")
+	assertRestored(t, migrated, h.snapshot())
+	if dirs := backupDirs(t, h); len(dirs) != 1 {
+		t.Fatalf("the apply of a migrated host wrote a backup: %v", dirs)
+	}
+	for _, step := range []string{"curl https://127.0.0.1:4646/v1/status/leader", "tls-identity check https://127.0.0.1:4646", "curl https://127.0.0.1:4646/v1/jobs",
+		"curl https://127.0.0.1:4646/v1/acl/policy/anonymous"} {
+		if len(h.calls(step)) != 2 {
+			t.Fatalf("check and apply of the migrated host did not each make %q: %v", step, h.calls(""))
+		}
+	}
+
+	// On the migrated host two requests without a token prove the lock: the
+	// job list shows that Nomad enforces its ACLs, and the anonymous policy's
+	// 404 that no policy gives anyone capabilities. A Nomad that lists jobs to
+	// anyone over HTTPS is refused by check and apply, and nothing changes.
+	h.mark("https-jobs-open", "")
+	h.clearCalls()
+	report, stderr, code = h.check()
+	if code != 1 || !strings.Contains(stderr, "blocker(s); nothing was changed") ||
+		!strings.Contains(fmt.Sprint(report["blockers"]), "Nomad answers an anonymous job list over HTTPS with 200, not 403") {
+		t.Fatalf("check of a migrated host whose Nomad lists jobs to anyone: exit %d, blockers %v, %s", code, report["blockers"], stderr)
+	}
+	_, stderr, code = h.apply()
+	if code != 1 || !strings.Contains(stderr, "nothing was changed") {
+		t.Fatalf("apply of a migrated host whose Nomad lists jobs to anyone: exit %d: %s", code, stderr)
+	}
+	onlyReads(t, h, "a refused check and apply of the migrated host")
+	assertRestored(t, migrated, h.snapshot())
+	if err := os.Remove(filepath.Join(h.state, "https-jobs-open")); err != nil {
 		t.Fatal(err)
 	}
-	var ledgerPaths []string
-	for _, entry := range ledger.Entries {
-		ledgerPaths = append(ledgerPaths, fmt.Sprint(entry[0]))
+
+	// An anonymous policy that opens only ES's namespace leaves the job list,
+	// which asks about the namespace default, at 403. The policy request
+	// alone shows it, and check and apply are refused for it alone.
+	h.mark("anonymous-policy", "")
+	h.clearCalls()
+	report, stderr, code = h.check()
+	blockers := fmt.Sprint(report["blockers"])
+	if code != 1 || !strings.Contains(stderr, "1 blocker(s); nothing was changed") ||
+		!strings.Contains(blockers, "Nomad answers a request without a token for its anonymous ACL policy over HTTPS with 200, not 404") ||
+		strings.Contains(blockers, "anonymous job list") {
+		t.Fatalf("check of a migrated host whose Nomad holds an anonymous policy: exit %d, blockers %v, %s", code, report["blockers"], stderr)
 	}
-	if ledger.Root != "/opt/nomad/data" || strings.Join(ledgerPaths, " ") != "current plugins/helper server/raft/raft.db" {
-		t.Fatalf("ownership ledger %s %v", ledger.Root, ledger.Entries)
+	_, stderr, code = h.apply()
+	if code != 1 || !strings.Contains(stderr, "nothing was changed") {
+		t.Fatalf("apply of a migrated host whose Nomad holds an anonymous policy: exit %d: %s", code, stderr)
+	}
+	onlyReads(t, h, "a refused check and apply of a migrated host with an anonymous policy")
+	assertRestored(t, migrated, h.snapshot())
+	if err := os.Remove(filepath.Join(h.state, "anonymous-policy")); err != nil {
+		t.Fatal(err)
 	}
 
-	// A second check sees an applied upgrade and refuses.
-	report, _, code := h.check()
-	if code != 1 || !strings.Contains(fmt.Sprint(report["blockers"]), "already been applied") {
-		t.Fatalf("check after apply: exit %d, %v", code, report["blockers"])
+	// A binary that names the commit but is not the payload's build is no
+	// part of the shape this upgrade leaves.
+	other := stampedBinary("es", "go1.26.5", upgradeTestCommit, "false")
+	other = bytes.Replace(other, []byte("build\t-compiler=gc\n"), []byte("build\t-compiler=xx\n"), 1)
+	h.write("usr/local/lib/execution-substrate/bin/es", string(other), 0o755)
+	report, _, code = h.check()
+	if code != 1 || !strings.Contains(fmt.Sprint(report["blockers"]), "the ES binaries: unknown (es names "+upgradeTestCommit+" but is not the verified payload's build)") {
+		t.Fatalf("check of a migrated host with another build of the commit: exit %d, %v", code, report["blockers"])
 	}
+	h.write("usr/local/lib/execution-substrate/bin/es", string(newESBuild), 0o755)
 
-	// rollback puts the host back exactly, and Nomad, read again, is unlocked.
+	// rollback puts the host back exactly: Nomad on plain HTTP, no TLS
+	// directory.
 	h.clearCalls()
 	stdout, stderr, code = h.run("rollback", "--backup-dir", backupDir)
 	if code != 0 {
 		t.Fatalf("rollback exited %d\nstdout %s\nstderr %s", code, stdout, stderr)
 	}
 	assertRestored(t, before, h.snapshot())
-	if h.marked("locked") || h.marked("inactive-es") || h.marked("inactive-nomad") {
-		t.Fatalf("after the rollback: locked %v, es down %v, nomad down %v", h.marked("locked"), h.marked("inactive-es"), h.marked("inactive-nomad"))
+	if h.marked("tls") || !h.marked("locked") || h.marked("inactive-es") || h.marked("inactive-nomad") {
+		t.Fatalf("after the rollback: tls %v, locked %v, es down %v, nomad down %v", h.marked("tls"), h.marked("locked"), h.marked("inactive-es"), h.marked("inactive-nomad"))
 	}
 	if got, want := strings.Join(h.calls("systemctl st"), " | "), "systemctl stop es | systemctl stop nomad | systemctl start nomad | systemctl start es"; got != want {
 		t.Fatalf("rollback service calls %q, want %q", got, want)
 	}
+	if len(h.calls("curl http://127.0.0.1:4646/v1/status/leader")) == 0 {
+		t.Fatalf("the rollback did not wait for Nomad's leader on plain HTTP: %v", h.calls("curl"))
+	}
 
-	// After the rollback the host checks clean again, and a second apply
-	// reuses the key and the ACL tokens the first one left.
-	if report, stderr, code := h.check(); code != 0 {
+	// After the rollback the host checks clean again.
+	if report, stderr, code := h.check(); code != 0 || report["shape"] != "locked-http" {
 		t.Fatalf("check after rollback exited %d: %s %v", code, stderr, report["blockers"])
-	} else if report["retained_result_key"] != "exists" {
-		t.Fatalf("retained_result_key after rollback %v", report["retained_result_key"])
 	}
 }
 
@@ -1082,10 +1467,15 @@ func TestRemoteAlphaUpgradeESApplyRollsBackOnFailure(t *testing.T) {
 		marker  string
 		failure string
 	}{
-		{"the locked Nomad config does not validate", "nomad-invalid", "nomad config validate"},
-		{"Nomad cannot place ES's jobs after its start", "placement-fails", "acl-setup placement"},
+		{"the new Nomad config does not validate", "nomad-invalid", "nomad config validate"},
+		{"Nomad cannot read the TLS files the config names", "tls-unreadable", "Error when parsing TLS configuration"},
+		{"Nomad names no leader over HTTPS", "https-no-leader", "Nomad named no leader at https://127.0.0.1:4646"},
+		{"Nomad cannot place ES's jobs after its start", "placement-fails", "nomad_acl_setup.sh placement failed"},
 		{"ES does not start", "fail-start-es-once", "systemctl start es"},
-		{"the ACL check fails after ES starts", "acl-check-fails", "acl-setup check"},
+		{"ES's TLS settings do not hold against Nomad", "identity-fails", "do not hold against the running Nomad"},
+		{"Nomad lists jobs to anyone over HTTPS", "https-jobs-open", "Nomad answers an anonymous job list over HTTPS with 200, not 403"},
+		{"Nomad holds an anonymous policy", "anonymous-policy", "Nomad answers a request without a token for its anonymous ACL policy over HTTPS with 200, not 404"},
+		{"the ACL check fails after ES starts", "acl-check-fails", "nomad_acl_setup.sh check failed"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1097,12 +1487,15 @@ func TestRemoteAlphaUpgradeESApplyRollsBackOnFailure(t *testing.T) {
 				t.Fatalf("apply exited %d\nstdout %s\nstderr %s", code, stdout, stderr)
 			}
 			assertRestored(t, before, h.snapshot())
-			if h.marked("locked") || h.marked("inactive-es") || h.marked("inactive-nomad") {
-				t.Fatalf("after the rollback: locked %v, es down %v, nomad down %v", h.marked("locked"), h.marked("inactive-es"), h.marked("inactive-nomad"))
+			if h.marked("tls") || !h.marked("locked") || h.marked("inactive-es") || h.marked("inactive-nomad") {
+				t.Fatalf("after the rollback: tls %v, locked %v, es down %v, nomad down %v", h.marked("tls"), h.marked("locked"), h.marked("inactive-es"), h.marked("inactive-nomad"))
 			}
 			_, summary := readSummary(t, h)
 			if summary["result"] != "rolled_back" || !strings.Contains(fmt.Sprint(summary["failure"]), tc.failure) {
 				t.Fatalf("summary result %v, failure %v", summary["result"], summary["failure"])
+			}
+			if removed := fmt.Sprint(summary["rollback"].(map[string]any)["removed"]); removed != "[/etc/nomad.d/tls]" {
+				t.Fatalf("the rollback removed %s", removed)
 			}
 			calls := h.calls("systemctl st")
 			if len(calls) < 2 || calls[len(calls)-2] != "systemctl start nomad" || calls[len(calls)-1] != "systemctl start es" {
@@ -1195,13 +1588,13 @@ func TestRemoteAlphaUpgradeESRollbackFailuresAreReported(t *testing.T) {
 		h := newUpgradeHost(t, helper)
 		before := h.snapshot()
 		h.mark("acl-check-fails", "")
-		h.mark("leader-starts", "1") // the lock's start elects a leader; the restore's does not
+		h.mark("leader-starts", "1") // the HTTPS start elects a leader; the restore's does not
 		_, stderr, code := h.apply()
 		if code != 1 || !strings.Contains(stderr, "result rollback_failed") {
 			t.Fatalf("apply exited %d: %s", code, stderr)
 		}
 		_, summary := readSummary(t, h)
-		if !strings.Contains(fmt.Sprint(summary["rollback_failure"]), "named no leader") {
+		if !strings.Contains(fmt.Sprint(summary["rollback_failure"]), "named no leader at http://127.0.0.1:4646") {
 			t.Fatalf("rollback_failure %v", summary["rollback_failure"])
 		}
 		assertRestored(t, before, h.snapshot())
@@ -1210,18 +1603,411 @@ func TestRemoteAlphaUpgradeESRollbackFailuresAreReported(t *testing.T) {
 		}
 	})
 
-	t.Run("rollback exits 1 when Nomad names no leader", func(t *testing.T) {
+	applied := func(t *testing.T) (*upgradeHost, string) {
 		h := newUpgradeHost(t, helper)
 		if _, stderr, code := h.apply(); code != 0 {
 			t.Fatalf("apply exited %d: %s", code, stderr)
 		}
 		backupDir, _ := readSummary(t, h)
+		h.clearCalls()
+		return h, backupDir
+	}
+
+	t.Run("rollback exits 1 when Nomad names no leader", func(t *testing.T) {
+		h, backupDir := applied(t)
 		h.mark("leader-starts", "0")
 		_, stderr, code := h.run("rollback", "--backup-dir", backupDir)
 		if code != 1 || !strings.Contains(stderr, "named no leader") {
 			t.Fatalf("rollback exited %d: %s", code, stderr)
 		}
 	})
+
+	t.Run("a damaged backup is refused before a service stops", func(t *testing.T) {
+		h, backupDir := applied(t)
+		copies, _ := filepath.Glob(filepath.Join(backupDir, "files", "*-es.json"))
+		if len(copies) != 1 {
+			t.Fatalf("backup copies of es.json: %v", copies)
+		}
+		if err := os.WriteFile(copies[0], []byte("{}\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		migrated := h.snapshot()
+		_, stderr, code := h.run("rollback", "--backup-dir", backupDir)
+		if code != 1 || !strings.Contains(stderr, "does not match its manifest") {
+			t.Fatalf("rollback exited %d: %s", code, stderr)
+		}
+		onlyReads(t, h, "a refused rollback")
+		assertRestored(t, migrated, h.snapshot())
+	})
+
+	t.Run("a backup that names another path to remove is refused before a service stops", func(t *testing.T) {
+		h, backupDir := applied(t)
+		if err := os.WriteFile(filepath.Join(backupDir, "created.json"), []byte(`["/etc/nomad.d"]`+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		migrated := h.snapshot()
+		_, stderr, code := h.run("rollback", "--backup-dir", backupDir)
+		if code != 1 || !strings.Contains(stderr, "names paths that apply does not create") {
+			t.Fatalf("rollback exited %d: %s", code, stderr)
+		}
+		onlyReads(t, h, "a refused rollback")
+		assertRestored(t, migrated, h.snapshot())
+	})
+}
+
+// freeLoopbackPorts returns n TCP ports on 127.0.0.1 that were free a
+// moment ago.
+func freeLoopbackPorts(t *testing.T, n int) []int {
+	t.Helper()
+	var ports []int
+	var listeners []net.Listener
+	for len(ports) < n {
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		listeners = append(listeners, listener)
+		ports = append(ports, listener.Addr().(*net.TCPAddr).Port)
+	}
+	for _, listener := range listeners {
+		_ = listener.Close()
+	}
+	return ports
+}
+
+// nomadRequest sends one request to the test's real Nomad and returns the
+// status (0 when no answer came) and the body.
+func nomadRequest(t *testing.T, client *http.Client, method, url, token string, body any) (int, []byte) {
+	t.Helper()
+	var reader io.Reader
+	if body != nil {
+		data, err := json.Marshal(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		reader = bytes.NewReader(data)
+	}
+	request, err := http.NewRequest(method, url, reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if token != "" {
+		request.Header.Set("X-Nomad-Token", token)
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		return 0, []byte(err.Error())
+	}
+	defer response.Body.Close()
+	data, _ := io.ReadAll(response.Body)
+	return response.StatusCode, data
+}
+
+// nomadACLRules are the ES and observer policy rules of
+// scripts/internal/nomad_acl.py.
+func nomadACLRules(t *testing.T) (string, string) {
+	t.Helper()
+	code := `import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("nomad_acl", sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+print(json.dumps([m.ES_POLICY_RULES, m.OBSERVER_POLICY_RULES]))`
+	cmd := exec.Command("python3", "-I", "-c", code, repoPath("scripts/internal/nomad_acl.py"))
+	cmd.Dir = t.TempDir()
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("read nomad_acl.py's rules: %v", err)
+	}
+	var rules []string
+	if err := json.Unmarshal(out, &rules); err != nil || len(rules) != 2 {
+		t.Fatalf("nomad_acl.py's rules: %s %v", out, err)
+	}
+	return rules[0], rules[1]
+}
+
+// TestRemoteAlphaUpgradeESMovesARealNomadToHTTPS runs check, apply, the
+// no-op and rollback against a real Nomad agent on the box's own nomad.hcl,
+// and lets apply run the real scripts/nomad_acl_setup.sh (through sudo, as
+// root, like on the box) and the real nomad_tls_identity.py, so that no
+// stand-in can hide a broken step. The test sets Nomad up the way ES PR
+// #54's upgrade left the box: ACLs bootstrapped over plain HTTP, the ES and
+// observer tokens in their files, and the observer policy without
+// list-jobs. Only ES and the services around it stay fakes.
+func TestRemoteAlphaUpgradeESMovesARealNomadToHTTPS(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the box's Nomad client config is Linux's")
+	}
+	if _, err := exec.LookPath("nomad"); err != nil {
+		t.Skipf("nomad binary lookup failed: %v", err)
+	}
+	sudoCheck := exec.Command("sudo", "-n", "true")
+	sudoCheck.Dir = t.TempDir()
+	if output, err := sudoCheck.CombinedOutput(); err != nil {
+		t.Skipf("needs passwordless sudo, which runs scripts/nomad_acl_setup.sh as root: %v: %s", err, strings.TrimSpace(string(output)))
+	}
+	realCurl, err := exec.LookPath("curl")
+	if err != nil {
+		t.Fatalf("curl lookup failed: %v", err)
+	}
+	h := newUpgradeHost(t, buildESConfigCheck(t))
+	ports := freeLoopbackPorts(t, 3)
+	port := strconv.Itoa(ports[0])
+	plainAddr, httpsAddr := "http://127.0.0.1:"+port, "https://127.0.0.1:"+port
+	nomadData := t.TempDir()
+	override := fmt.Sprintf(`data_dir = %q
+ports {
+  http = %d
+  rpc  = %d
+  serf = %d
+}
+advertise {
+  http = "127.0.0.1:%d"
+  rpc  = "127.0.0.1:%d"
+  serf = "127.0.0.1:%d"
+}
+client {
+  servers = ["127.0.0.1:%d"]
+}
+`, nomadData, ports[0], ports[1], ports[2], ports[0], ports[1], ports[2], ports[1])
+	overrideTLS := fmt.Sprintf("tls {\n  ca_file   = %q\n  cert_file = %q\n  key_file  = %q\n}\n",
+		h.path("etc/nomad.d/tls/ca.pem"), h.path("etc/nomad.d/tls/server.pem"), h.path("etc/nomad.d/tls/server-key.pem"))
+	for name, text := range map[string]string{"override.hcl": override, "override-tls.hcl": overrideTLS} {
+		if err := os.WriteFile(filepath.Join(h.state, name), []byte(text), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The real nomad validates configs and runs the agent.
+	if err := os.Remove(filepath.Join(h.bin, "nomad")); err != nil {
+		t.Fatal(err)
+	}
+	h.mark("real-nomad", "")
+	h.env = map[string]string{
+		"ES_UPGRADE_TEST_NOMAD_PORT":   port,
+		"ES_UPGRADE_TEST_ACL_SUDO":     "1",
+		"ES_UPGRADE_TEST_ACL_SETUP":    "",
+		"ES_UPGRADE_TEST_TLS_IDENTITY": "",
+		"ES_UPGRADE_TEST_WAIT_SECONDS": "90",
+		"FAKE_NOMAD_PORT":              port,
+		"REAL_CURL":                    realCurl,
+	}
+	h.write("etc/execution-substrate/es.json", string(boxStartESConfig(t, plainAddr)), 0o640)
+	managementFile := h.path("etc/execution-substrate/nomad-acl/management-token")
+	t.Cleanup(func() {
+		cmd := exec.Command(filepath.Join(h.bin, "systemctl"), "stop", "nomad")
+		cmd.Dir = h.state
+		cmd.Env = h.environ()
+		_ = cmd.Run()
+	})
+	dumpNomad := func() string { return mustRead(t, filepath.Join(h.state, "nomad.log")) }
+
+	// Nomad on plain HTTP with ACLs, as ES PR #54's upgrade left the box.
+	h.systemctl("start", "nomad")
+	plain := &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{Proxy: nil}}
+	deadline := time.Now().Add(60 * time.Second)
+	for {
+		status, body := nomadRequest(t, plain, "GET", plainAddr+"/v1/status/leader", "", nil)
+		if status == 200 && len(bytes.Trim(body, "\" \n")) > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("Nomad named no leader on plain HTTP: %d %s\n%s", status, body, dumpNomad())
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	status, body := nomadRequest(t, plain, "POST", plainAddr+"/v1/acl/bootstrap", "", map[string]any{})
+	var bootstrap struct{ SecretID string }
+	if err := json.Unmarshal(body, &bootstrap); status != 200 || err != nil || bootstrap.SecretID == "" {
+		t.Fatalf("ACL bootstrap: %d %s", status, body)
+	}
+	management := bootstrap.SecretID
+	esRules, observerRules := nomadACLRules(t)
+	oldObserverRules := strings.Replace(observerRules, `"list-jobs", `, "", 1)
+	if oldObserverRules == observerRules {
+		t.Fatalf("the observer rules hold no list-jobs to take out:\n%s", observerRules)
+	}
+	for _, step := range []struct {
+		path string
+		body map[string]any
+	}{
+		{"/v1/namespace/es-submit-v1", map[string]any{"Name": "es-submit-v1", "Description": "Execution Substrate submit path"}},
+		{"/v1/acl/policy/es-submit-v1", map[string]any{"Name": "es-submit-v1", "Rules": esRules}},
+		{"/v1/acl/policy/es-observer-v1", map[string]any{"Name": "es-observer-v1", "Rules": oldObserverRules}},
+	} {
+		if status, body := nomadRequest(t, plain, "POST", plainAddr+step.path, management, step.body); status != 200 {
+			t.Fatalf("POST %s: %d %s", step.path, status, body)
+		}
+	}
+	tokens := map[string]string{}
+	for _, name := range []string{"es-submit-v1", "es-observer-v1"} {
+		status, body := nomadRequest(t, plain, "POST", plainAddr+"/v1/acl/token", management,
+			map[string]any{"Name": name, "Type": "client", "Policies": []string{name}})
+		var token struct{ SecretID string }
+		if err := json.Unmarshal(body, &token); status != 200 || err != nil || token.SecretID == "" {
+			t.Fatalf("create the %s token: %d %s", name, status, body)
+		}
+		tokens[name] = token.SecretID
+	}
+	h.write("etc/execution-substrate/nomad-acl/es-token", tokens["es-submit-v1"]+"\n", 0o400)
+	h.write("etc/execution-substrate/nomad-acl/observer-token", tokens["es-observer-v1"]+"\n", 0o400)
+	staged := filepath.Join(t.TempDir(), "management-token")
+	if err := os.WriteFile(staged, []byte(management+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(managementFile); err != nil {
+		t.Fatal(err)
+	}
+	// As on the box, the token files' directory is root's, and the
+	// management token root's alone.
+	aclDir := filepath.Dir(managementFile)
+	t.Cleanup(func() {
+		remove := exec.Command("sudo", "-n", "rm", "-rf", "--", aclDir)
+		remove.Dir = h.state
+		if output, err := remove.CombinedOutput(); err != nil {
+			t.Errorf("remove the root-owned token directory: %v %s", err, output)
+		}
+	})
+	for _, argv := range [][]string{{"chown", "root:root", aclDir}, {"install", "-o", "root", "-g", "root", "-m", "0600", staged, managementFile}} {
+		cmd := exec.Command("sudo", append([]string{"-n"}, argv...)...)
+		cmd.Dir = h.state
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("sudo %v: %v %s", argv, err, output)
+		}
+	}
+	if status, body := nomadRequest(t, plain, "GET", plainAddr+"/v1/jobs?namespace=es-submit-v1", tokens["es-observer-v1"], nil); status != 403 {
+		t.Fatalf("before the upgrade the observer token lists ES's jobs: %d %s", status, body)
+	}
+
+	before := h.snapshot()
+	report, stderr, code := h.check()
+	if code != 0 || report["shape"] != "locked-http" {
+		t.Fatalf("check exited %d: shape %v, blockers %v, %s", code, report["shape"], report["blockers"], stderr)
+	}
+	stdout, stderr, code := h.apply()
+	if code != 0 {
+		t.Fatalf("apply exited %d\nstdout %s\nstderr %s\nnomad log:\n%s", code, stdout, stderr, dumpNomad())
+	}
+
+	// Nomad now answers only over HTTPS, as the issued certificate's holder
+	// for Nomad's server name, and still refuses anonymous requests.
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM([]byte(mustRead(t, h.path("etc/nomad.d/tls/ca.pem")))) {
+		t.Fatal("ca.pem holds no certificate")
+	}
+	secure := &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{Proxy: nil, TLSClientConfig: &tls.Config{
+		RootCAs: pool, ServerName: "server.global.nomad", MinVersion: tls.VersionTLS13,
+	}}}
+	if status, body := nomadRequest(t, secure, "GET", httpsAddr+"/v1/status/leader", "", nil); status != 200 {
+		t.Fatalf("Nomad's leader over HTTPS: %d %s", status, body)
+	}
+	if status, _ := nomadRequest(t, secure, "GET", httpsAddr+"/v1/jobs", "", nil); status != 403 {
+		t.Fatalf("Nomad answers an anonymous job list over HTTPS with %d, not 403", status)
+	}
+	if status, _ := nomadRequest(t, plain, "GET", plainAddr+"/v1/status/leader", "", nil); status == 200 {
+		t.Fatalf("Nomad still answers plain HTTP")
+	}
+	// The real nomad_acl_setup.sh provision rewrote the observer policy and
+	// kept both tokens.
+	if status, body := nomadRequest(t, secure, "GET", httpsAddr+"/v1/jobs?namespace=es-submit-v1", tokens["es-observer-v1"], nil); status != 200 {
+		t.Fatalf("after the upgrade the observer token cannot list ES's jobs: %d %s", status, body)
+	}
+	for file, token := range map[string]string{"es-token": tokens["es-submit-v1"], "observer-token": tokens["es-observer-v1"]} {
+		if got := strings.TrimSpace(mustRead(t, h.path("etc/execution-substrate/nomad-acl/"+file))); got != token {
+			t.Fatalf("provision replaced the %s", file)
+		}
+	}
+	var esConfig map[string]any
+	if err := json.Unmarshal([]byte(mustRead(t, h.path("etc/execution-substrate/es.json"))), &esConfig); err != nil {
+		t.Fatal(err)
+	}
+	if nomad := esConfig["nomad"].(map[string]any); nomad["base_url"] != httpsAddr ||
+		nomad["server_spki_sha256"] != serverKeyPin(t, h.path("etc/nomad.d/tls/server.pem")) {
+		t.Fatalf("es.json's nomad block %v", nomad)
+	}
+	if got := mustRead(t, h.path("etc/nomad.d/nomad.hcl")); got != boxNomadHCLHTTPS {
+		t.Fatalf("nomad.hcl after apply:\n%s", got)
+	}
+	backupDir, summary := readSummary(t, h)
+	events := fmt.Sprint(summary["events"])
+	for _, want := range []string{"nomad ACLs provisioned again", "nomad can place ES's jobs", "nomad tls: tls=1.3 server_name=server.global.nomad key=pinned",
+		"nomad_acl_setup.sh check passed"} {
+		if !strings.Contains(events, want) {
+			t.Fatalf("apply's events lack %q: %s", want, events)
+		}
+	}
+
+	// Already migrated: check and apply prove it in place, with the real
+	// identity check, and change nothing.
+	migrated := h.snapshot()
+	h.clearCalls()
+	report, stderr, code = h.check()
+	if code != 0 || report["shape"] != "https" || report["result"] != "nothing to do" ||
+		!strings.HasPrefix(fmt.Sprint(report["nomad_tls_identity"]), "nomad tls: tls=1.3 server_name=server.global.nomad key=pinned") {
+		t.Fatalf("check of the migrated host: exit %d, shape %v, result %v, identity %v, blockers %v, %s",
+			code, report["shape"], report["result"], report["nomad_tls_identity"], report["blockers"], stderr)
+	}
+	if stdout, stderr, code := h.apply(); code != 0 || !strings.Contains(stdout, `"result": "nothing to do"`) {
+		t.Fatalf("apply of the migrated host: exit %d\nstdout %s\nstderr %s", code, stdout, stderr)
+	}
+	onlyReads(t, h, "a check and an apply of the migrated host")
+	assertRestored(t, migrated, h.snapshot())
+	if dirs := backupDirs(t, h); len(dirs) != 1 {
+		t.Fatalf("the apply of a migrated host wrote a backup: %v", dirs)
+	}
+
+	// A real Nomad with an anonymous policy that opens ES's namespace: the
+	// job list, which asks about the namespace default, still answers 403,
+	// while anyone may list and plan jobs in ES's. check and apply refuse the
+	// host for the policy request alone.
+	anonymousPolicy := map[string]any{"Name": "anonymous",
+		"Rules": `namespace "es-submit-v1" { capabilities = ["submit-job", "list-jobs", "read-job"] }`}
+	if status, body := nomadRequest(t, secure, "POST", httpsAddr+"/v1/acl/policy/anonymous", management, anonymousPolicy); status != 200 {
+		t.Fatalf("create the anonymous policy: %d %s", status, body)
+	}
+	deadline = time.Now().Add(30 * time.Second)
+	for {
+		status, body := nomadRequest(t, secure, "GET", httpsAddr+"/v1/jobs?namespace=es-submit-v1", "", nil)
+		if status == 200 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the anonymous policy does not open ES's namespace: %d %s", status, body)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	if status, body := nomadRequest(t, secure, "GET", httpsAddr+"/v1/jobs", "", nil); status != 403 {
+		t.Fatalf("with an anonymous policy for ES's namespace, the anonymous job list answers %d, not 403: %s", status, body)
+	}
+	h.clearCalls()
+	report, stderr, code = h.check()
+	blockers := fmt.Sprint(report["blockers"])
+	if code != 1 || !strings.Contains(stderr, "1 blocker(s); nothing was changed") ||
+		!strings.Contains(blockers, "Nomad answers a request without a token for its anonymous ACL policy over HTTPS with 200, not 404") {
+		t.Fatalf("check of the migrated host with an anonymous policy: exit %d, blockers %v, %s", code, report["blockers"], stderr)
+	}
+	if _, stderr, code := h.apply(); code != 1 || !strings.Contains(stderr, "nothing was changed") {
+		t.Fatalf("apply of the migrated host with an anonymous policy: exit %d: %s", code, stderr)
+	}
+	onlyReads(t, h, "a refused check and apply of the migrated host with an anonymous policy")
+	assertRestored(t, migrated, h.snapshot())
+	if status, body := nomadRequest(t, secure, "DELETE", httpsAddr+"/v1/acl/policy/anonymous", management, nil); status != 200 {
+		t.Fatalf("delete the anonymous policy: %d %s", status, body)
+	}
+	if report, stderr, code := h.check(); code != 0 || report["result"] != "nothing to do" {
+		t.Fatalf("check of the migrated host after the anonymous policy is gone: exit %d, blockers %v, %s", code, report["blockers"], stderr)
+	}
+
+	// rollback returns the box to plain HTTP with a leader.
+	stdout, stderr, code = h.run("rollback", "--backup-dir", backupDir)
+	if code != 0 {
+		t.Fatalf("rollback exited %d\nstdout %s\nstderr %s\nnomad log:\n%s", code, stdout, stderr, dumpNomad())
+	}
+	assertRestored(t, before, h.snapshot())
+	if status, body := nomadRequest(t, plain, "GET", plainAddr+"/v1/status/leader", "", nil); status != 200 {
+		t.Fatalf("Nomad's leader on plain HTTP after the rollback: %d %s", status, body)
+	}
+	if report, stderr, code := h.check(); code != 0 || report["shape"] != "locked-http" {
+		t.Fatalf("check after the rollback exited %d: shape %v, blockers %v, %s", code, report["shape"], report["blockers"], stderr)
+	}
 }
 
 func TestRemoteAlphaUpgradeESBuildRefusals(t *testing.T) {
@@ -1453,8 +2239,8 @@ func TestRemoteAlphaUpgradeESApplySurvivesALostSession(t *testing.T) {
 			}
 			if tc.result == "rolled_back" {
 				assertRestored(t, before, h.snapshot())
-			} else if got := mustRead(t, h.path("etc/nomad.d/nomad.hcl")); got != boxNomadHCLLocked {
-				t.Fatalf("the applied run did not lock Nomad")
+			} else if got := mustRead(t, h.path("etc/nomad.d/nomad.hcl")); got != boxNomadHCLHTTPS {
+				t.Fatalf("the applied run did not move Nomad to HTTPS")
 			}
 		})
 	}

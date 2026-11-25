@@ -2,6 +2,7 @@ package admission
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -238,6 +239,10 @@ func newNomadClient(cfg esconfig.NomadConfig) (*nomadClient, error) {
 	if err != nil {
 		return nil, err
 	}
+	tlsConfig, err := newNomadTLSConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
 
 	return &nomadClient{
 		baseURL:    baseURL,
@@ -249,7 +254,7 @@ func newNomadClient(cfg esconfig.NomadConfig) (*nomadClient, error) {
 			// 		 slice, so traceparent propagation remains disabled explicitly.
 			// 		 Future external dependencies must make the same propagation decision
 			// 		 deliberately rather than inheriting internal behavior silently.
-			Transport:     observability.WrapRoundTripper("execution", "nomad", false, newNomadTransport()),
+			Transport:     observability.WrapRoundTripper("execution", "nomad", false, newNomadTransport(tlsConfig)),
 			CheckRedirect: refuseNomadRedirect,
 		},
 	}, nil
@@ -257,10 +262,12 @@ func newNomadClient(cfg esconfig.NomadConfig) (*nomadClient, error) {
 
 // newNomadTransport is the transport for every request that carries ES's
 // Nomad token. It uses no proxy, so the token reaches only the configured
-// Nomad address.
-func newNomadTransport() *http.Transport {
+// Nomad address, and only over a connection that passed tlsConfig's checks
+// (see newNomadTLSConfig).
+func newNomadTransport(tlsConfig *tls.Config) *http.Transport {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = nil
+	transport.TLSClientConfig = tlsConfig
 	return transport
 }
 

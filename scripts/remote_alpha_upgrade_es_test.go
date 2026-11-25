@@ -32,10 +32,10 @@ func runUpgradeESPython(t *testing.T, args ...string) (string, string, int) {
 	return stdout.String(), stderr.String(), code
 }
 
-// preSubmitAuthExample is the submit example without the two keys current
-// ES requires and the box's older build does not know: the shape of the
-// box's es.json as far as these keys go.
-func preSubmitAuthExample(t *testing.T) map[string]any {
+// preHTTPSExample is the submit example as the box's es.json has it before
+// this upgrade: Nomad at its plain-HTTP loopback address, and none of the
+// Nomad TLS keys current ES requires.
+func preHTTPSExample(t *testing.T) map[string]any {
 	t.Helper()
 	data, err := os.ReadFile(repoPath(".examples/config/es.json"))
 	if err != nil {
@@ -45,34 +45,35 @@ func preSubmitAuthExample(t *testing.T) map[string]any {
 	if err := json.Unmarshal(data, &doc); err != nil {
 		t.Fatal(err)
 	}
-	delete(doc["nomad"].(map[string]any), "token_file")
-	delete(doc["execution"].(map[string]any), "retained_result_auth")
+	nomad := doc["nomad"].(map[string]any)
+	if nomad["base_url"] != "https://127.0.0.1:4646" {
+		t.Fatalf("the submit example's nomad.base_url is %v; this test expects Nomad's loopback HTTPS address", nomad["base_url"])
+	}
+	nomad["base_url"] = "http://127.0.0.1:4646"
+	for _, key := range []string{"server_name", "root_ca_file", "server_spki_sha256"} {
+		delete(nomad, key)
+	}
 	return doc
 }
 
-var upgradeAuthArgs = []string{
-	"--token-file", "/etc/execution-substrate/nomad-acl/es-token",
-	"--store-id", "remote-alpha",
-	"--key-id", "k1",
-	"--key-file", "/etc/execution-substrate/retained-result-auth/es.key",
-}
+const upgradeTestPin = "4f3c2b1a09f8e7d6c5b4a39281706f5e4d3c2b1a09f8e7d6c5b4a39281706f5e"
 
 func TestRemoteAlphaUpgradeESMigratedConfigIsAcceptedByES(t *testing.T) {
 	helper := buildESConfigCheck(t)
 	dir := t.TempDir()
 	oldPath, newPath := filepath.Join(dir, "old.json"), filepath.Join(dir, "new.json")
-	writeJSONFile(t, oldPath, preSubmitAuthExample(t))
+	writeJSONFile(t, oldPath, preHTTPSExample(t))
 
 	refuses := exec.Command(helper, oldPath)
 	refuses.Dir = dir
 	if out, err := refuses.CombinedOutput(); err == nil {
-		t.Fatalf("current ES accepts the pre-upgrade shape, so this test proves nothing: %s", out)
+		t.Fatalf("current ES accepts the plain-HTTP shape, so this test proves nothing: %s", out)
 	}
-	stdout, stderr, code := runUpgradeESPython(t, append([]string{"migrate-config", "--input", oldPath, "--output", newPath}, upgradeAuthArgs...)...)
+	stdout, stderr, code := runUpgradeESPython(t, "migrate-config", "--input", oldPath, "--output", newPath, "--spki-sha256", upgradeTestPin)
 	if code != 0 {
 		t.Fatalf("migrate-config exited %d: %s", code, stderr)
 	}
-	if strings.TrimSpace(stdout) != `{"changes": ["nomad.token_file", "execution.retained_result_auth"]}` {
+	if strings.TrimSpace(stdout) != `{"changes": ["nomad.base_url", "nomad.server_name", "nomad.root_ca_file", "nomad.server_spki_sha256"]}` {
 		t.Fatalf("migrate-config reported %q", stdout)
 	}
 	accepts := exec.Command(helper, newPath)
@@ -81,50 +82,56 @@ func TestRemoteAlphaUpgradeESMigratedConfigIsAcceptedByES(t *testing.T) {
 		t.Fatalf("ES refuses the migrated config: %v %s", err, out)
 	}
 
-	var migrated map[string]any
 	data, err := os.ReadFile(newPath)
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The TLS keys follow base_url, in the order the examples use.
+	nomadAt := bytes.Index(data, []byte(`"nomad": {`))
+	order := []string{`"base_url": "https://127.0.0.1:4646"`, `"server_name": "server.global.nomad"`,
+		`"root_ca_file": "/etc/nomad.d/tls/ca.pem"`, `"server_spki_sha256": "` + upgradeTestPin + `"`, `"datacenter"`}
+	last := nomadAt
+	for _, want := range order {
+		at := bytes.Index(data[last+1:], []byte(want))
+		if nomadAt < 0 || at < 0 {
+			t.Fatalf("migrated nomad block lacks %s after the previous key:\n%s", want, data)
+		}
+		last += 1 + at
+	}
+	var migrated map[string]any
 	if err := json.Unmarshal(data, &migrated); err != nil {
 		t.Fatal(err)
 	}
-	if got := migrated["nomad"].(map[string]any)["token_file"]; got != "/etc/execution-substrate/nomad-acl/es-token" {
-		t.Fatalf("token_file = %v", got)
-	}
-	auth := migrated["execution"].(map[string]any)["retained_result_auth"].(map[string]any)
-	if auth["store_id"] != "remote-alpha" || auth["key_id"] != "k1" || auth["key_file"] != "/etc/execution-substrate/retained-result-auth/es.key" || len(auth) != 3 {
-		t.Fatalf("retained_result_auth = %v", auth)
-	}
 	// Nothing else changed.
-	delete(migrated["nomad"].(map[string]any), "token_file")
-	delete(migrated["execution"].(map[string]any), "retained_result_auth")
-	want, _ := json.Marshal(preSubmitAuthExample(t))
+	nomad := migrated["nomad"].(map[string]any)
+	nomad["base_url"] = "http://127.0.0.1:4646"
+	for _, key := range []string{"server_name", "root_ca_file", "server_spki_sha256"} {
+		delete(nomad, key)
+	}
+	want, _ := json.Marshal(preHTTPSExample(t))
 	got, _ := json.Marshal(migrated)
 	if !bytes.Equal(want, got) {
-		t.Fatalf("migrate-config changed more than the two keys:\nwant %s\ngot  %s", want, got)
+		t.Fatalf("migrate-config changed more than Nomad's address and TLS keys:\nwant %s\ngot  %s", want, got)
 	}
 	if st, err := os.Stat(newPath); err != nil || st.Mode().Perm() != 0o600 {
 		t.Fatalf("migrated file mode: %v %v", st.Mode(), err)
 	}
 
-	// A rerun on the migrated file changes nothing; other values refuse.
-	stdout, stderr, code = runUpgradeESPython(t, append([]string{"migrate-config", "--input", newPath}, upgradeAuthArgs...)...)
+	// A rerun on the migrated file changes nothing; another pin refuses.
+	stdout, stderr, code = runUpgradeESPython(t, "migrate-config", "--input", newPath, "--spki-sha256", upgradeTestPin)
 	if code != 0 || strings.TrimSpace(stdout) != `{"changes": []}` {
 		t.Fatalf("rerun: exit %d, stdout %q, stderr %q", code, stdout, stderr)
 	}
-	other := append([]string{}, upgradeAuthArgs...)
-	other[1] = "/etc/elsewhere/es-token"
-	_, stderr, code = runUpgradeESPython(t, append([]string{"migrate-config", "--input", newPath}, other...)...)
-	if code != 1 || !strings.Contains(stderr, "already has nomad.token_file or execution.retained_result_auth with other values") {
-		t.Fatalf("rerun with other values: exit %d, stderr %q", code, stderr)
+	_, stderr, code = runUpgradeESPython(t, "migrate-config", "--input", newPath, "--spki-sha256", strings.Repeat("a", 64))
+	if code != 1 || !strings.Contains(stderr, "already has Nomad TLS settings with other values") {
+		t.Fatalf("rerun with another pin: exit %d, stderr %q", code, stderr)
 	}
 }
 
 func TestRemoteAlphaUpgradeESMigrateConfigRefusesWhatItWasNotWrittenFor(t *testing.T) {
 	dir := t.TempDir()
 	expectedPaths := filepath.Join(dir, "expected-paths")
-	doc := preSubmitAuthExample(t)
+	doc := preHTTPSExample(t)
 	var paths []string
 	var walk func(prefix string, v any)
 	walk = func(prefix string, v any) {
@@ -150,27 +157,29 @@ func TestRemoteAlphaUpgradeESMigrateConfigRefusesWhatItWasNotWrittenFor(t *testi
 		t.Fatal(err)
 	}
 
-	run := func(name string, edit func(map[string]any), extra []string, wantCode int, wantText string) {
+	run := func(name string, edit func(map[string]any), pin string, wantCode int, wantText string) {
 		t.Run(name, func(t *testing.T) {
-			d := preSubmitAuthExample(t)
+			d := preHTTPSExample(t)
 			edit(d)
 			in := filepath.Join(t.TempDir(), "es.json")
 			writeJSONFile(t, in, d)
-			args := append([]string{"migrate-config", "--input", in, "--expected-paths", expectedPaths}, upgradeAuthArgs...)
-			args = append(args, extra...)
-			_, stderr, code := runUpgradeESPython(t, args...)
+			_, stderr, code := runUpgradeESPython(t, "migrate-config", "--input", in, "--expected-paths", expectedPaths, "--spki-sha256", pin)
 			if code != wantCode || !strings.Contains(stderr, wantText) {
 				t.Fatalf("exit %d (want %d), stderr %q (want %q)", code, wantCode, stderr, wantText)
 			}
 		})
 	}
-	run("expected shape", func(map[string]any) {}, nil, 0, "")
-	run("unexpected key", func(d map[string]any) { d["http"].(map[string]any)["extra"] = 1 }, nil, 1, "unexpected ['http.extra']")
-	run("missing key", func(d map[string]any) { delete(d["nomad"].(map[string]any), "datacenter") }, nil, 1, "missing ['nomad.datacenter']")
-	run("no nomad", func(d map[string]any) { delete(d, "nomad") }, nil, 1, "no nomad.base_url")
-	run("bad store id", func(map[string]any) {}, []string{"--store-id", "Remote"}, 1, "canonical 1-32 byte identifiers")
-	run("key equals token", func(map[string]any) {}, []string{"--key-file", "/etc/execution-substrate/nomad-acl/es-token"}, 1, "different from the token file")
-	run("relative token", func(map[string]any) {}, []string{"--token-file", "es-token"}, 1, "clean absolute path")
+	nomad := func(d map[string]any) map[string]any { return d["nomad"].(map[string]any) }
+	run("expected shape", func(map[string]any) {}, upgradeTestPin, 0, "")
+	run("unexpected key", func(d map[string]any) { d["http"].(map[string]any)["extra"] = 1 }, upgradeTestPin, 1, "unexpected ['http.extra']")
+	run("missing key", func(d map[string]any) { delete(nomad(d), "datacenter") }, upgradeTestPin, 1, "missing ['nomad.datacenter']")
+	run("no nomad", func(d map[string]any) { delete(d, "nomad") }, upgradeTestPin, 1, "no nomad.base_url")
+	run("Nomad at another address", func(d map[string]any) { nomad(d)["base_url"] = "http://localhost:4646" }, upgradeTestPin, 1,
+		"nomad.base_url is 'http://localhost:4646', not 'http://127.0.0.1:4646'")
+	run("one TLS key already set", func(d map[string]any) { nomad(d)["server_name"] = "server.global.nomad" }, upgradeTestPin, 1,
+		"already has Nomad TLS settings with other values")
+	run("upper-case pin", func(map[string]any) {}, strings.ToUpper(upgradeTestPin), 1, "lowercase hex SHA-256")
+	run("short pin", func(map[string]any) {}, upgradeTestPin[:63], 1, "lowercase hex SHA-256")
 }
 
 func TestRemoteAlphaUpgradeESProvisionKey(t *testing.T) {

@@ -762,10 +762,13 @@ func TestConfigValidateRejectsBroadOrMalformedSPIFFEPathPrefixes(t *testing.T) {
 func TestConfigValidateRequiresExecutionWhenSubmitConfigured(t *testing.T) {
 	cfg := validTestConfig()
 	cfg.Nomad = NomadConfig{
-		BaseURL:        "http://127.0.0.1:4646",
-		Datacenter:     "dc1",
-		TimeoutSeconds: 5,
-		TokenFile:      "/tmp/es-nomad/token",
+		BaseURL:          "https://127.0.0.1:4646",
+		ServerName:       "server.global.nomad",
+		RootCAFile:       "/etc/nomad.d/tls/ca.pem",
+		ServerSPKISHA256: testNomadServerSPKISHA256,
+		Datacenter:       "dc1",
+		TimeoutSeconds:   5,
+		TokenFile:        "/tmp/es-nomad/token",
 	}
 	cfg.Execution = ExecutionConfig{
 		StagingRootDir: "/tmp/es-stage",
@@ -1138,10 +1141,13 @@ func validConfiguredStaticScriptLiteralDenyPolicyConfig() ConfiguredStaticScript
 func validSubmitTestConfig() Config {
 	cfg := validTestConfig()
 	cfg.Nomad = NomadConfig{
-		BaseURL:        "http://127.0.0.1:4646",
-		Datacenter:     "dc1",
-		TimeoutSeconds: 5,
-		TokenFile:      "/external/private/nomad-acl/es-token",
+		BaseURL:          "https://127.0.0.1:4646",
+		ServerName:       "server.global.nomad",
+		RootCAFile:       "/etc/nomad.d/tls/ca.pem",
+		ServerSPKISHA256: testNomadServerSPKISHA256,
+		Datacenter:       "dc1",
+		TimeoutSeconds:   5,
+		TokenFile:        "/external/private/nomad-acl/es-token",
 	}
 	cfg.Execution = ExecutionConfig{
 		StagingRootDir:             "/tmp/es-stage",
@@ -1152,6 +1158,83 @@ func validSubmitTestConfig() Config {
 		RetainedResultAuth:         RetainedResultAuthConfig{StoreID: "test_store", KeyID: "test_key", KeyFile: "/external/private/retained-result-auth/key"},
 	}
 	return cfg
+}
+
+const testNomadServerSPKISHA256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+// ES reaches Nomad only over HTTPS on a loopback IP literal, verifies the
+// configured server name against the configured CA, and pins the server key.
+func TestNomadConfigRequiresHTTPSOnLoopbackWithAPinnedServerKey(t *testing.T) {
+	if err := validSubmitTestConfig().Validate(); err != nil {
+		t.Fatalf("valid submit configuration rejected: %v", err)
+	}
+	for _, accepted := range []string{"https://127.0.0.1:4646", "https://127.0.0.1:4646/", "https://[::1]:4646", "https://127.0.0.2:18646"} {
+		cfg := validSubmitTestConfig()
+		cfg.Nomad.BaseURL = accepted
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("nomad.base_url %q rejected: %v", accepted, err)
+		}
+	}
+	for _, test := range []struct {
+		name   string
+		edit   func(*NomadConfig)
+		reason string
+	}{
+		{"plain http", func(c *NomadConfig) { c.BaseURL = "http://127.0.0.1:4646" }, "nomad.base_url"},
+		{"host name", func(c *NomadConfig) { c.BaseURL = "https://localhost:4646" }, "nomad.base_url"},
+		{"server name as host", func(c *NomadConfig) { c.BaseURL = "https://server.global.nomad:4646" }, "nomad.base_url"},
+		{"non-loopback address", func(c *NomadConfig) { c.BaseURL = "https://192.168.1.10:4646" }, "nomad.base_url"},
+		{"unspecified address", func(c *NomadConfig) { c.BaseURL = "https://0.0.0.0:4646" }, "nomad.base_url"},
+		{"no port", func(c *NomadConfig) { c.BaseURL = "https://127.0.0.1" }, "nomad.base_url"},
+		{"port zero", func(c *NomadConfig) { c.BaseURL = "https://127.0.0.1:0" }, "nomad.base_url"},
+		{"port with leading zero", func(c *NomadConfig) { c.BaseURL = "https://127.0.0.1:04646" }, "nomad.base_url"},
+		{"path", func(c *NomadConfig) { c.BaseURL = "https://127.0.0.1:4646/nomad" }, "nomad.base_url"},
+		{"query", func(c *NomadConfig) { c.BaseURL = "https://127.0.0.1:4646/?region=global" }, "nomad.base_url"},
+		{"fragment", func(c *NomadConfig) { c.BaseURL = "https://127.0.0.1:4646#x" }, "nomad.base_url"},
+		{"user", func(c *NomadConfig) { c.BaseURL = "https://user@127.0.0.1:4646" }, "nomad.base_url"},
+		{"zoned address", func(c *NomadConfig) { c.BaseURL = "https://[fe80::1%25lo]:4646" }, "nomad.base_url"},
+		{"no server name", func(c *NomadConfig) { c.ServerName = "" }, "nomad.server_name"},
+		{"server name is an IP", func(c *NomadConfig) { c.ServerName = "127.0.0.1" }, "nomad.server_name"},
+		{"upper-case server name", func(c *NomadConfig) { c.ServerName = "Server.Global.Nomad" }, "nomad.server_name"},
+		{"server name with space", func(c *NomadConfig) { c.ServerName = "server.global.nomad " }, "nomad.server_name"},
+		{"server name with empty label", func(c *NomadConfig) { c.ServerName = "server..nomad" }, "nomad.server_name"},
+		{"server name label starts with hyphen", func(c *NomadConfig) { c.ServerName = "-server.global.nomad" }, "nomad.server_name"},
+		{"no root CA file", func(c *NomadConfig) { c.RootCAFile = "" }, "nomad.root_ca_file"},
+		{"relative root CA file", func(c *NomadConfig) { c.RootCAFile = "tls/ca.pem" }, "nomad.root_ca_file"},
+		{"unclean root CA file", func(c *NomadConfig) { c.RootCAFile = "/etc/nomad.d/tls/../ca.pem" }, "nomad.root_ca_file"},
+		{"no pin", func(c *NomadConfig) { c.ServerSPKISHA256 = "" }, "nomad.server_spki_sha256"},
+		{"short pin", func(c *NomadConfig) { c.ServerSPKISHA256 = testNomadServerSPKISHA256[:62] }, "nomad.server_spki_sha256"},
+		{"upper-case pin", func(c *NomadConfig) { c.ServerSPKISHA256 = strings.ToUpper(testNomadServerSPKISHA256) }, "nomad.server_spki_sha256"},
+		{"pin with prefix", func(c *NomadConfig) { c.ServerSPKISHA256 = "sha256:" + testNomadServerSPKISHA256[7:] }, "nomad.server_spki_sha256"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := validSubmitTestConfig()
+			test.edit(&cfg.Nomad)
+			err := cfg.Validate()
+			if err == nil || !strings.Contains(err.Error(), test.reason) {
+				t.Fatalf("configuration accepted or misreported: %v", err)
+			}
+		})
+	}
+}
+
+func TestNomadTLSFieldsAloneMakeSubmitConfigured(t *testing.T) {
+	for name, edit := range map[string]func(*NomadConfig){
+		"server_name":        func(c *NomadConfig) { c.ServerName = "server.global.nomad" },
+		"root_ca_file":       func(c *NomadConfig) { c.RootCAFile = "/etc/nomad.d/tls/ca.pem" },
+		"server_spki_sha256": func(c *NomadConfig) { c.ServerSPKISHA256 = testNomadServerSPKISHA256 },
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := validTestConfig()
+			edit(&cfg.Nomad)
+			if !cfg.SubmitConfigured() {
+				t.Fatalf("nomad.%s alone did not make the configuration submit-configured", name)
+			}
+			if err := cfg.Validate(); err == nil {
+				t.Fatalf("a lone nomad.%s passed validation without the rest of the submit configuration", name)
+			}
+		})
+	}
 }
 
 func TestNomadTokenFileIsRequiredWhenSubmitIsConfigured(t *testing.T) {

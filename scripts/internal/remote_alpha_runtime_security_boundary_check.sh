@@ -479,6 +479,7 @@ def collect_nomad_inventory():
         inventory["version_summary"] = "\n".join(text.splitlines()[:4])
 
     try:
+        import ssl
         import urllib.request
 
         # Nomad enforces ACLs: read with the read-only observer token named by
@@ -498,14 +499,20 @@ def collect_nomad_inventory():
             nomad_headers["X-Nomad-Token"] = token_text.rstrip("\n")
 
         def nomad_get(path):
-            return urllib.request.Request("http://127.0.0.1:4646" + path, headers=nomad_headers)
+            return urllib.request.Request("https://127.0.0.1:4646" + path, headers=nomad_headers)
 
         class NoRedirect(urllib.request.HTTPRedirectHandler):
             def redirect_request(self, req, fp, code, msg, headers, newurl):
                 return None
 
+        # Nomad serves HTTPS only: TLS 1.3, trusting only Nomad's CA
+        # (NOMAD_CACERT, default the one scripts/70_linux_setup.sh issues).
         # No proxy and no redirects: the observer token reaches only Nomad.
-        nomad_opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+        nomad_tls = ssl.create_default_context(cafile=os.environ.get("NOMAD_CACERT") or "/etc/nomad.d/tls/ca.pem")
+        nomad_tls.minimum_version = ssl.TLSVersion.TLSv1_3
+        nomad_opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({}), urllib.request.HTTPSHandler(context=nomad_tls), NoRedirect()
+        )
 
         with nomad_opener.open(nomad_get("/v1/agent/self"), timeout=3) as response:
             agent_payload = json.loads(response.read().decode("utf-8"))

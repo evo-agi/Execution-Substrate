@@ -3,12 +3,14 @@
 
 ES submits Nomad jobs with one least-privilege ACL client token. This tool is
 the one place that sets that up and checks it. It talks to a loopback Nomad
-HTTP address only, never prints or passes a token on a command line, and
-reads and writes token files with fixed custody rules. Before it sends
-anything on a connection, it asks the kernel which user owns the socket that
-accepted it, and refuses unless that is Nomad's user (--nomad-uid, default
-root): while Nomad is down any local account can hold its port, and must not
-receive a token or a bootstrap secret.
+HTTPS address only (TLS 1.3, trusting only the CA file it is given), never
+prints or passes a token on a command line, and reads and writes token files
+with fixed custody rules. While Nomad is down any local account can hold its
+port; TLS keeps such a holder from passing for Nomad. As a second guard, before
+the TLS handshake the tool asks the kernel which user owns the socket that
+accepted the connection, and refuses unless that is Nomad's user (--nomad-uid,
+default root), so a holder never even sees a handshake, let alone a token or a
+bootstrap secret.
 
   provision  Bootstrap Nomad's ACL system when needed (the operator keeps the
              management token in a root-only file), create the ES namespace
@@ -52,6 +54,7 @@ import json
 import os
 import re
 import socket
+import ssl
 import stat
 import sys
 import time
@@ -72,11 +75,15 @@ ES_POLICY_RULES = (
     '  capabilities = ["submit-job", "read-job", "read-logs"]\n'
     "}\n"
 )
+# The observer reads: it lists and inspects ES's jobs and reads their logs
+# (list-jobs is its own capability; read-job does not imply it), and it
+# reads the agent and the nodes for readiness. It cannot submit, plan,
+# stop or exec.
 OBSERVER_POLICY_RULES = (
     'agent {\n  policy = "read"\n}\n'
     'node {\n  policy = "read"\n}\n'
     'namespace "' + NAMESPACE + '" {\n'
-    '  capabilities = ["read-job", "read-logs"]\n'
+    '  capabilities = ["list-jobs", "read-job", "read-logs"]\n'
     "}\n"
 )
 
@@ -177,39 +184,64 @@ def require_nomads_socket(sock: socket.socket, nomad_uid: int, base: str) -> Non
         )
 
 
-class _NomadsConnection(http.client.HTTPConnection):
-    """An HTTP connection that sends nothing until the kernel shows that
-    Nomad's user owns the accepting socket."""
+class _NomadsConnection(http.client.HTTPSConnection):
+    """An HTTPS connection that sends nothing, not even a TLS handshake,
+    until the kernel shows that Nomad's user owns the accepting socket."""
 
-    def __init__(self, *args, nomad_uid: int, base: str, **kwargs) -> None:
-        super().__init__(*args, **kwargs)
+    def __init__(self, *args, nomad_uid: int, base: str, tls: ssl.SSLContext, **kwargs) -> None:
+        super().__init__(*args, context=tls, **kwargs)
         self._nomad_uid = nomad_uid
         self._base = base
+        self._tls = tls
 
     def connect(self) -> None:
-        super().connect()
+        # The TCP connection only (there is never a proxy tunnel: the opener
+        # has no proxies), then the owner check, then TLS.
+        http.client.HTTPConnection.connect(self)
         try:
             require_nomads_socket(self.sock, self._nomad_uid, self._base)
+            self.sock = self._tls.wrap_socket(self.sock, server_hostname=self.host)
         except BaseException:
             self.close()
             raise
 
 
-class _NomadsHTTPHandler(urllib.request.HTTPHandler):
-    def __init__(self, nomad_uid: int, base: str) -> None:
-        super().__init__()
-        self._connection = functools.partial(_NomadsConnection, nomad_uid=nomad_uid, base=base)
+class _NomadsHTTPSHandler(urllib.request.HTTPSHandler):
+    def __init__(self, nomad_uid: int, base: str, tls: ssl.SSLContext) -> None:
+        super().__init__(context=tls)
+        self._connection = functools.partial(_NomadsConnection, nomad_uid=nomad_uid, base=base, tls=tls)
 
-    def http_open(self, req):
+    def https_open(self, req):
         return self.do_open(self._connection, req)
 
 
+class _NoPlainHTTP(urllib.request.HTTPHandler):
+    """Replaces urllib's default http:// handler: nothing goes out unencrypted."""
+
+    def http_open(self, req):
+        raise urllib.error.URLError("plain http is not used")
+
+
+def nomad_tls_context(ca_file: str) -> ssl.SSLContext:
+    """TLS 1.3, trusting only Nomad's own CA (no system CAs) and checking that
+    the certificate names the loopback address."""
+    try:
+        info = os.lstat(ca_file)
+        if not stat.S_ISREG(info.st_mode):
+            raise OSError("not a regular file")
+        context = ssl.create_default_context(cafile=ca_file)
+    except (OSError, ssl.SSLError, ValueError):
+        raise Refusal("--ca-file must name Nomad's CA certificate file (PEM)") from None
+    context.minimum_version = ssl.TLSVersion.TLSv1_3
+    return context
+
+
 class Nomad:
-    def __init__(self, address: str, nomad_uid: int = 0) -> None:
+    def __init__(self, address: str, ca_file: str, nomad_uid: int = 0) -> None:
         parsed = urllib.parse.urlsplit(address)
         host = parsed.hostname or ""
         if (
-            parsed.scheme != "http"
+            parsed.scheme != "https"
             or host not in ("127.0.0.1", "::1")
             or parsed.port is None
             or parsed.username is not None
@@ -218,15 +250,18 @@ class Nomad:
             or parsed.query
             or parsed.fragment
         ):
-            raise Refusal("nomad address must be http://127.0.0.1:<port> or http://[::1]:<port>")
+            raise Refusal("nomad address must be https://127.0.0.1:<port> or https://[::1]:<port>")
         self.base = address.rstrip("/")
-        # Never follow redirects and never use a proxy: a token must reach
-        # only the loopback Nomad named here, and only once the kernel shows
-        # that Nomad's user owns the socket that accepted the connection.
+        tls = nomad_tls_context(ca_file)
+        # Never follow redirects, never use a proxy and never send plain HTTP:
+        # a token must reach only the loopback Nomad named here, over TLS, and
+        # only once the kernel shows that Nomad's user owns the socket that
+        # accepted the connection.
         self.opener = urllib.request.build_opener(
             urllib.request.ProxyHandler({}),
             _NoRedirect(),
-            _NomadsHTTPHandler(nomad_uid, self.base),
+            _NoPlainHTTP(),
+            _NomadsHTTPSHandler(nomad_uid, self.base, tls),
         )
 
     def request(self, method: str, path: str, token: str | None = None, body=None):
@@ -809,7 +844,7 @@ def require_designed_policy(nomad: Nomad, token: str, name: str, rules: str, req
 
 
 def command_provision(args) -> None:
-    nomad = Nomad(args.addr, args.nomad_uid)
+    nomad = Nomad(args.addr, args.ca_file, args.nomad_uid)
     es_uid, es_gid = parse_owner(args.es_token_owner)
     observer_owner = None
     if args.observer_token_file:
@@ -876,7 +911,7 @@ def _probe_plan_body() -> dict:
 
 
 def command_check(args) -> None:
-    nomad = Nomad(args.addr, args.nomad_uid)
+    nomad = Nomad(args.addr, args.ca_file, args.nomad_uid)
     require_acl_enabled(nomad)
     require_no_anonymous_policy(nomad)
 
@@ -1081,7 +1116,7 @@ def plan_failures(nomad: Nomad, es_token: str, datacenter: str) -> list[str]:
 
 
 def command_placement(args) -> None:
-    nomad = Nomad(args.addr, args.nomad_uid)
+    nomad = Nomad(args.addr, args.ca_file, args.nomad_uid)
     datacenter = es_config_datacenter(args.es_config)
     es_uid = parse_owner(args.es_token_owner)[0] if args.es_token_owner else None
     es_token = read_token_file(args.es_token_file, "ES token file", owner_uid=es_uid)
@@ -1113,7 +1148,9 @@ def command_placement(args) -> None:
     )
 
 
-NOMAD_UID_HELP = "uid that Nomad's HTTP listener runs as; nothing is sent to a listener owned by any other user (default 0)"
+ADDR_HELP = "Nomad's loopback https:// address"
+CA_FILE_HELP = "Nomad's CA certificate (PEM), the only CA trusted"
+NOMAD_UID_HELP = "uid that Nomad's HTTPS listener runs as; nothing is sent to a listener owned by any other user (default 0)"
 
 
 def _non_negative_int(text: str) -> int:
@@ -1127,7 +1164,8 @@ def main(argv: list[str]) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
 
     provision = sub.add_parser("provision")
-    provision.add_argument("--addr", required=True)
+    provision.add_argument("--addr", required=True, help=ADDR_HELP)
+    provision.add_argument("--ca-file", required=True, help=CA_FILE_HELP)
     provision.add_argument("--nomad-uid", type=_non_negative_int, default=0, help=NOMAD_UID_HELP)
     provision.add_argument("--management-token-file", required=True)
     provision.add_argument("--es-token-file", required=True)
@@ -1143,7 +1181,8 @@ def main(argv: list[str]) -> int:
     )
 
     check = sub.add_parser("check")
-    check.add_argument("--addr", required=True)
+    check.add_argument("--addr", required=True, help=ADDR_HELP)
+    check.add_argument("--ca-file", required=True, help=CA_FILE_HELP)
     check.add_argument("--nomad-uid", type=_non_negative_int, default=0, help=NOMAD_UID_HELP)
     check.add_argument("--es-token-file", required=True)
     check.add_argument("--es-token-owner", help="<uid>:<gid> expected to own the ES token file (default: current user)")
@@ -1155,7 +1194,8 @@ def main(argv: list[str]) -> int:
     )
 
     placement = sub.add_parser("placement")
-    placement.add_argument("--addr", required=True)
+    placement.add_argument("--addr", required=True, help=ADDR_HELP)
+    placement.add_argument("--ca-file", required=True, help=CA_FILE_HELP)
     placement.add_argument("--nomad-uid", type=_non_negative_int, default=0, help=NOMAD_UID_HELP)
     placement.add_argument("--es-token-file", required=True)
     placement.add_argument("--es-token-owner", help="<uid>:<gid> expected to own the ES token file (default: current user)")

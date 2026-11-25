@@ -291,7 +291,7 @@ check_nomad_ready_once() {
   nodes_path="$(mktemp)"
   agent_path="$(mktemp)"
 
-  if ! curl --noproxy '*' --fail-with-body --silent --show-error "${NOMAD_ADDR}/v1/status/leader" >"${leader_path}"; then
+  if ! nomad_curl --fail-with-body --silent --show-error "${NOMAD_ADDR}/v1/status/leader" >"${leader_path}"; then
     echo "nomad: leader request failed for ${NOMAD_ADDR}/v1/status/leader" >&2
     status=1
   elif ! nomad_acl_state_check; then
@@ -304,11 +304,12 @@ check_nomad_ready_once() {
   elif ! nomad_api_get "/v1/nodes" "${nodes_path}"; then
     echo "nomad: node request failed for ${NOMAD_ADDR}/v1/nodes" >&2
     status=1
-  elif ! summary="$(python3 -I - <<'PY' "${NOMAD_ADDR}" "${leader_path}" "${nodes_path}" "${agent_path}" "${NOMAD_TOKEN_FILE}"
+  elif ! summary="$(python3 -I - <<'PY' "${NOMAD_ADDR}" "${leader_path}" "${nodes_path}" "${agent_path}" "${NOMAD_TOKEN_FILE}" "${NOMAD_CACERT}"
 import glob
 import json
 import os
 import pathlib
+import ssl
 import sys
 import urllib.error
 import urllib.request
@@ -318,10 +319,18 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-# No proxy and no redirects: a token reaches only the loopback Nomad.
-nomad_opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
+# HTTPS with TLS 1.3, trusting only Nomad's CA; no proxy and no redirects:
+# a token reaches only the loopback Nomad.
+nomad_tls = ssl.create_default_context(cafile=sys.argv[6])
+nomad_tls.minimum_version = ssl.TLSVersion.TLSv1_3
+nomad_opener = urllib.request.build_opener(
+    urllib.request.ProxyHandler({}), urllib.request.HTTPSHandler(context=nomad_tls), _NoRedirect()
+)
 
 base_url = sys.argv[1].rstrip("/")
+if not base_url.startswith("https://"):
+    print("nomad: NOMAD_ADDR must use https", file=sys.stderr)
+    raise SystemExit(1)
 with open(sys.argv[5], encoding="ascii") as token_file:
     nomad_token = token_file.readline().strip()
 leader = json.loads(pathlib.Path(sys.argv[2]).read_text(encoding="utf-8"))
@@ -455,7 +464,7 @@ wait_for_nomad_leader() {
   local leader=""
 
   while ((SECONDS < deadline)); do
-    if leader="$(curl --noproxy '*' --fail --silent "${NOMAD_ADDR}/v1/status/leader" 2>/dev/null)" && [[ "${leader}" =~ ^\"[^\"]+\"$ ]]; then
+    if leader="$(nomad_curl --fail --silent "${NOMAD_ADDR}/v1/status/leader" 2>/dev/null)" && [[ "${leader}" =~ ^\"[^\"]+\"$ ]]; then
       return 0
     fi
     sleep 1
@@ -645,6 +654,9 @@ def require_non_empty(path):
 
 for path in (
     ("nomad", "base_url"),
+    ("nomad", "server_name"),
+    ("nomad", "root_ca_file"),
+    ("nomad", "server_spki_sha256"),
     ("nomad", "datacenter"),
     ("nomad", "token_file"),
     ("execution", "staging_root_dir"),
@@ -704,8 +716,8 @@ runtime_support_binary = require_non_empty(("execution", "runtime_support_binary
 spire_socket_path = require_non_empty(("execution", "spire_workload_api_socket_path"))
 
 parsed = urlparse(base_url)
-if parsed.scheme not in ("http", "https") or not parsed.netloc:
-    raise SystemExit("es submit config: nomad.base_url must be a valid absolute http(s) URL")
+if parsed.scheme != "https" or not parsed.netloc:
+    raise SystemExit("es submit config: nomad.base_url must be Nomad's https:// address")
 
 staging_root = pathlib.Path(staging_root_dir)
 results_root = pathlib.Path(results_root_dir)
@@ -768,6 +780,16 @@ PY
   fi
 
   echo "${summary}"
+}
+
+# ES's own TLS checks against the running Nomad: TLS 1.3, ES's CA and server
+# name, the pinned key, and nomad.base_url being the NOMAD_ADDR the other
+# checks use. It completes a handshake and sends no request. Callers run it
+# after Nomad readiness, so a Nomad that is still starting is waited for first.
+check_es_nomad_identity_once() {
+  local config_path=$1
+
+  python3 -I "$(dirname "${BASH_SOURCE[0]}")/nomad_tls_identity.py" check "${config_path}" "${NOMAD_ADDR:-}"
 }
 
 resolve_ars_read_credentials() {

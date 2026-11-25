@@ -1427,6 +1427,9 @@ type submitStackOptions struct {
 	mountedSourceDockerTaskNameLabel bool
 	// nomadACLDisabled starts the stack's real Nomad without ACLs.
 	nomadACLDisabled bool
+	// nomadESConfig, when set, changes ES's Nomad config after the stack
+	// fills it in (for example a pin for another key).
+	nomadESConfig func(*esconfig.NomadConfig)
 }
 
 func (opts submitStackOptions) nomadHarnessOptions() nomadHarnessOptions {
@@ -1588,19 +1591,29 @@ func startSubmitStackWithOptions(t *testing.T, opts submitStackOptions) *submitS
 	fixture := newTLSFixture(t)
 	var nomad *nomadHarness
 	var nomadServer *httptest.Server
+	var nomadTLS nomadTLSMaterial
 	nomadBaseURL := ""
 	nomadTokenFile := ""
 	if opts.nomadHandler != nil {
-		nomadServer = httptest.NewServer(lockedFakeNomadHandler(opts.nomadHandler))
+		// The stand-in presents a certificate from the setup script's issuer,
+		// so ES's HTTPS checks pass exactly as they do for a real Nomad.
+		var err error
+		if nomadTLS, err = issueNomadTLSMaterial(filepath.Join(rootDir, "nomad-tls")); err != nil {
+			t.Fatal(err)
+		}
+		if nomadServer, err = nomadTLS.startTLSServer(lockedFakeNomadHandler(opts.nomadHandler)); err != nil {
+			t.Fatalf("start fake nomad: %v", err)
+		}
 		nomadBaseURL = nomadServer.URL
 		nomadTokenFile = writeFakeNomadTokenFile(t, rootDir)
 	} else {
 		requireHealthyDockerBackedNomadClient(t)
 		nomad = startNomadHarnessWithOptions(t, rootDir, opts.nomadHarnessOptions())
+		nomadTLS = nomad.tls
 		nomadBaseURL = nomad.baseURL()
 		nomadTokenFile = nomad.esTokenFile
 		if opts.mountRegistrationCapture != nil {
-			proxy, proxyErr := newMountedSourceRegistrationProxy(nomadBaseURL, stagingRoot, opts.mountRegistrationCapture)
+			proxy, proxyErr := newMountedSourceRegistrationProxy(nomadBaseURL, nomadTLS, stagingRoot, opts.mountRegistrationCapture)
 			if proxyErr != nil {
 				t.Fatalf("build mounted-source registration proxy: %v", proxyErr)
 			}
@@ -1851,12 +1864,7 @@ func startSubmitStackWithOptions(t *testing.T, opts submitStackOptions) *submitS
 		WorkloadVaultAuth: esconfig.WorkloadVaultAuthConfig{
 			DefaultMode: esconfig.WorkloadVaultAuthModeVaultIdentityJWT,
 		},
-		Nomad: esconfig.NomadConfig{
-			BaseURL:        nomadBaseURL,
-			Datacenter:     "dc1",
-			TimeoutSeconds: 5,
-			TokenFile:      nomadTokenFile,
-		},
+		Nomad: nomadTLS.esNomadConfig(nomadBaseURL, nomadTokenFile),
 		Execution: esconfig.ExecutionConfig{
 			StagingRootDir:             stagingRoot,
 			ResultsRootDir:             resultsRoot,
@@ -1866,6 +1874,9 @@ func startSubmitStackWithOptions(t *testing.T, opts submitStackOptions) *submitS
 			RuntimeSupportBinary:       runtimeSupportBinary,
 			SPIREWorkloadAPISocketPath: mockSPIRE.socketPath,
 		},
+	}
+	if opts.nomadESConfig != nil {
+		opts.nomadESConfig(&esCfg.Nomad)
 	}
 	esService, err := esapp.New(esCfg)
 	if err != nil {
@@ -2631,7 +2642,10 @@ func assertNoRawSPIREEnvLeak(t *testing.T, env map[string]string, rawSPIREPath s
 }
 
 type nomadHarness struct {
-	addr       string
+	addr string
+	// tls is the harness Nomad's HTTPS identity, issued by the setup
+	// script's own nomad_tls_issue.
+	tls        nomadTLSMaterial
 	configPath string
 	cmd        *exec.Cmd
 	outputPath string
@@ -2755,6 +2769,15 @@ func startNomadHarnessForCapabilityProbeWithOptions(rootDir string, opts nomadHa
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
 		return nil, fmt.Sprintf("mkdir nomad data dir: %v", err)
 	}
+	// Every real Nomad these tests start serves HTTPS and RPC over TLS 1.3
+	// only, with a certificate the setup script's own issuer wrote.
+	tlsMaterial, err := issueNomadTLSMaterial(filepath.Join(rootDir, "nomad-tls"))
+	if err != nil {
+		return nil, err.Error()
+	}
+	if err := registerTestNomadCA(tlsMaterial.caFile); err != nil {
+		return nil, fmt.Sprintf("register nomad test CA: %v", err)
+	}
 	// Every real Nomad these tests start enables only the Docker driver and
 	// carries the supported Docker plugin limits, so ES jobs run under them.
 	clientDockerConfig := supportedNomadClientOptions
@@ -2788,7 +2811,7 @@ advertise {
   rpc  = "127.0.0.1:%d"
   serf = "127.0.0.1:%d"
 }
-`, dataDir, aclConfig, clientCPUOverride, supportedNomadClientNetworkInterface, clientDockerConfig, dockerPluginConfig, httpPort, rpcPort, serfPort, httpPort, rpcPort, serfPort)
+%s`, dataDir, aclConfig, clientCPUOverride, supportedNomadClientNetworkInterface, clientDockerConfig, dockerPluginConfig, httpPort, rpcPort, serfPort, httpPort, rpcPort, serfPort, supportedNomadTLSBlock(tlsMaterial.dir))
 	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
 		return nil, fmt.Sprintf("write nomad config: %v", err)
 	}
@@ -2812,7 +2835,8 @@ advertise {
 	}
 
 	harness := &nomadHarness{
-		addr:       fmt.Sprintf("http://127.0.0.1:%d", httpPort),
+		addr:       fmt.Sprintf("https://127.0.0.1:%d", httpPort),
+		tls:        tlsMaterial,
 		configPath: configPath,
 		cmd:        cmd,
 		outputPath: outputPath,

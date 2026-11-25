@@ -860,9 +860,19 @@ func byPathOwnershipChangeLines(source string) []string {
 // sync: it runs as root only, in /etc/execution-substrate/host-firewall,
 // /var/lib/es-host-firewall and /etc/systemd/system, which only root can
 // change, and one of its seven lines is the text of a refusal.
+//
+// 70_linux_setup.sh's three lines for Nomad's TLS material came with the
+// Nomad lock's part 2b. install -d makes /etc/nomad.d/tls root:root 0755
+// inside /etc/nomad.d, which setup makes root:root 0755 two lines before. In
+// nomad_tls_issue, which runs as root on a host, one line makes the
+// destination folder 0755 (setup's /etc/nomad.d/tls, or the same folder
+// when remote_alpha_upgrade_es.py creates it after checking that
+// /etc/nomad.d is root:root 0755 and that the folder does not exist yet),
+// and the other sets the modes of the new files inside the caller's own
+// mktemp -d folder (0700), which no one else can enter.
 var byPathOwnershipChangeAllowance = map[string]int{
 	"scripts/01_bringup.sh":                                           1,
-	"scripts/70_linux_setup.sh":                                       8,
+	"scripts/70_linux_setup.sh":                                       11,
 	"scripts/72_supported_local_setup.sh":                             7,
 	"scripts/73_supported_local_proof.sh":                             1,
 	"scripts/internal/control_plane.sh":                               3,
