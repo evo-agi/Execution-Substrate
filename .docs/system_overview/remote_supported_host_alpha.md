@@ -7436,7 +7436,10 @@ so `apply` goes on with its output sent to `/dev/null`; the summary records
 signals `apply` alone and leaves it time to roll back. Neither changes the
 key, the token files or Nomad's ACL policies back: the policies stay as
 `provision` last wrote them, and the observer's `list-jobs` is a read.
-Nothing prints a key or a token.
+So after a rollback, `nomad_acl_setup.sh check` from the checkout of
+`16cbf739` refuses the observer policy until `provision` from that checkout
+writes it back; this script's `check` and `apply` accept the rolled-back host
+as `locked-http`. Nothing prints a key or a token.
 
 The tests (`scripts/remote_alpha_upgrade_es_test.go`,
 `scripts/remote_alpha_upgrade_es_host_test.go` and
