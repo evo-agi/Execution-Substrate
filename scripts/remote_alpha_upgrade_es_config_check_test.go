@@ -157,6 +157,8 @@ func TestESConfigCheckAgreesWithConfigLoad(t *testing.T) {
 		{"unknown field", mutate(func(d map[string]any) { section(d, "nomad")["token"] = "x" })},
 		{"no token_file", mutate(func(d map[string]any) { delete(section(d, "nomad"), "token_file") })},
 		{"no retained_result_auth", mutate(func(d map[string]any) { delete(section(d, "execution"), "retained_result_auth") })},
+		{"Nomad over plain HTTP", mutate(func(d map[string]any) { section(d, "nomad")["base_url"] = "http://127.0.0.1:4646" })},
+		{"no Nomad server key pin", mutate(func(d map[string]any) { delete(section(d, "nomad"), "server_spki_sha256") })},
 		{"one-segment prefix", mutate(func(d map[string]any) {
 			section(d, "authorization")["allowed_spiffe_path_prefixes"] = []any{"operator"}
 		})},
