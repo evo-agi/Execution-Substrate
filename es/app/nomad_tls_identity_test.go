@@ -354,6 +354,13 @@ func TestNomadTLSIdentityChecksWhatESChecks(t *testing.T) {
 
 	tls12 := httptestTLS12Server(t, material, handler)
 	port := strings.TrimPrefix(server.URL, "https://127.0.0.1:")
+	// The CA file named through a symbolic link: the tool refuses it, as
+	// it refuses NOMAD_CACERT through one, even when the link leads to the
+	// right CA.
+	linkedCA := filepath.Join(t.TempDir(), "ca-link.pem")
+	if err := os.Symlink(material.caFile, linkedCA); err != nil {
+		t.Fatal(err)
+	}
 	for _, test := range []struct {
 		name   string
 		change func(map[string]any)
@@ -367,11 +374,15 @@ func TestNomadTLSIdentityChecksWhatESChecks(t *testing.T) {
 		{"another CA", func(c map[string]any) { c["root_ca_file"] = other.caFile }, "", "Nomad's certificate does not verify under the CA"},
 		{"CA file missing", func(c map[string]any) { c["root_ca_file"] = filepath.Join(t.TempDir(), "missing.pem") },
 			"", "nomad.root_ca_file is not a readable CA certificate file"},
+		{"CA file is a symbolic link", func(c map[string]any) { c["root_ca_file"] = linkedCA },
+			"", "nomad.root_ca_file is not a readable CA certificate file: " + linkedCA},
 		{"another server name", func(c map[string]any) { c["server_name"] = "client.global.nomad" }, "", "does not verify under the CA for client.global.nomad"},
 		{"plain HTTP address", func(c map[string]any) { c["base_url"] = "http://127.0.0.1:" + port },
 			"http://127.0.0.1:" + port, "nomad.base_url must be https://<loopback IP>:<port>"},
 		{"host name address", func(c map[string]any) { c["base_url"] = "https://localhost:" + port },
 			"https://localhost:" + port, "nomad.base_url must be https://<loopback IP>:<port>"},
+		{"non-loopback IP address", func(c map[string]any) { c["base_url"] = "https://192.0.2.1:" + port },
+			"https://192.0.2.1:" + port, "nomad.base_url must be https://<loopback IP>:<port>"},
 		{"address other than the checks use", nil, "https://127.0.0.1:1", "is not the Nomad address the checks use"},
 		{"Nomad offers only TLS 1.2", func(c map[string]any) { c["base_url"] = tls12.URL }, tls12.URL, "nomad tls: no TLS 1.3 connection to " + tls12.URL},
 	} {
@@ -393,6 +404,12 @@ func TestNomadTLSIdentityChecksWhatESChecks(t *testing.T) {
 	t.Run("pin refuses a certificate from another CA", func(t *testing.T) {
 		if output, err := runNomadTLSIdentity(t, "pin", server.URL, other.caFile, nomadTLSServerName); err == nil || strings.Contains(output, material.spkiSHA256) {
 			t.Fatalf("pin printed a key from a certificate another CA signed: %v output=%s", err, output)
+		}
+	})
+	t.Run("pin refuses a CA file that is a symbolic link", func(t *testing.T) {
+		output, err := runNomadTLSIdentity(t, "pin", server.URL, linkedCA, nomadTLSServerName)
+		if err == nil || strings.Contains(output, material.spkiSHA256) || !strings.Contains(output, "<ca-file> is not a readable CA certificate file: "+linkedCA) {
+			t.Fatalf("pin did not refuse a linked CA file: %v output=%s", err, output)
 		}
 	})
 

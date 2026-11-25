@@ -267,6 +267,13 @@ func TestNewNomadClientRefusesWithoutAUsableRootCAOrPin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// White space around and between whole certificate blocks is all the
+	// file may hold besides them.
+	spaced := base
+	spaced.RootCAFile = write("spaced.pem", append(append(append([]byte("\n \t\n"), caPEM...), []byte("\r\n\n")...), caPEM...))
+	if client, err := newNomadClient(spaced); err != nil || client == nil {
+		t.Fatalf("client refused two certificates with white space around them: %v", err)
+	}
 	for _, test := range []struct {
 		name string
 		edit func(*esconfig.NomadConfig)
@@ -279,6 +286,16 @@ func TestNewNomadClientRefusesWithoutAUsableRootCAOrPin(t *testing.T) {
 		}},
 		{"certificate followed by other data", func(c *esconfig.NomadConfig) {
 			c.RootCAFile = write("trailing.pem", append(append([]byte{}, caPEM...), []byte("not pem\n")...))
+		}},
+		{"text before the certificate", func(c *esconfig.NomadConfig) {
+			c.RootCAFile = write("leading.pem", append([]byte("not pem\n"), caPEM...))
+		}},
+		{"text between two certificates", func(c *esconfig.NomadConfig) {
+			c.RootCAFile = write("between.pem", append(append(append([]byte{}, caPEM...), []byte("not pem\n")...), caPEM...))
+		}},
+		{"corrupt block before a good certificate", func(c *esconfig.NomadConfig) {
+			corrupt := []byte("-----BEGIN CERTIFICATE-----\n!!not base64!!\n-----END CERTIFICATE-----\n")
+			c.RootCAFile = write("corrupt-first.pem", append(corrupt, caPEM...))
 		}},
 		{"certificate with PEM headers", func(c *esconfig.NomadConfig) {
 			block, _ := pem.Decode(caPEM)

@@ -256,7 +256,9 @@ case "$url" in
     if [[ -e "$s/no-leader" || ( "$url" == https://* && -e "$s/https-no-leader" ) ]]; then code=500; body='No cluster leader'; else body='"127.0.0.1:4647"'; fi ;;
   http://127.0.0.1:4646/v1/jobs|https://127.0.0.1:4646/v1/jobs)
     nomad_up
-    if [[ -e "$s/locked" ]]; then code=403; fi ;;
+    # https-jobs-open: over HTTPS, Nomad lists jobs to anyone, as a Nomad
+    # whose ACLs do not hold there would.
+    if [[ -e "$s/locked" && ! ( "$url" == https://* && -e "$s/https-jobs-open" ) ]]; then code=403; fi ;;
   https://127.0.0.1:8445/*)
     { [[ -e "$s/inactive-es" ]] || [[ -e "$s/unhealthy" ]]; } && refuse ;;
   https://127.0.0.1:8444/*)
@@ -1372,6 +1374,26 @@ func TestRemoteAlphaUpgradeESApply(t *testing.T) {
 		}
 	}
 
+	// On the migrated host the anonymous job list is the only proof that
+	// Nomad still enforces its ACLs: a Nomad that lists jobs to anyone over
+	// HTTPS is refused by check and apply, and nothing changes.
+	h.mark("https-jobs-open", "")
+	h.clearCalls()
+	report, stderr, code = h.check()
+	if code != 1 || !strings.Contains(stderr, "blocker(s); nothing was changed") ||
+		!strings.Contains(fmt.Sprint(report["blockers"]), "Nomad answers an anonymous job list over HTTPS with 200, not 403") {
+		t.Fatalf("check of a migrated host whose Nomad lists jobs to anyone: exit %d, blockers %v, %s", code, report["blockers"], stderr)
+	}
+	_, stderr, code = h.apply()
+	if code != 1 || !strings.Contains(stderr, "nothing was changed") {
+		t.Fatalf("apply of a migrated host whose Nomad lists jobs to anyone: exit %d: %s", code, stderr)
+	}
+	onlyReads(t, h, "a refused check and apply of the migrated host")
+	assertRestored(t, migrated, h.snapshot())
+	if err := os.Remove(filepath.Join(h.state, "https-jobs-open")); err != nil {
+		t.Fatal(err)
+	}
+
 	// A binary that names the commit but is not the payload's build is no
 	// part of the shape this upgrade leaves.
 	other := stampedBinary("es", "go1.26.5", upgradeTestCommit, "false")
@@ -1420,6 +1442,7 @@ func TestRemoteAlphaUpgradeESApplyRollsBackOnFailure(t *testing.T) {
 		{"Nomad cannot place ES's jobs after its start", "placement-fails", "nomad_acl_setup.sh placement failed"},
 		{"ES does not start", "fail-start-es-once", "systemctl start es"},
 		{"ES's TLS settings do not hold against Nomad", "identity-fails", "do not hold against the running Nomad"},
+		{"Nomad lists jobs to anyone over HTTPS", "https-jobs-open", "Nomad answers an anonymous job list over HTTPS with 200, not 403"},
 		{"the ACL check fails after ES starts", "acl-check-fails", "nomad_acl_setup.sh check failed"},
 	}
 	for _, tc := range cases {

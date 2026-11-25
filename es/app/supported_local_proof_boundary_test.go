@@ -188,6 +188,36 @@ func TestSupportedLocalProofNodeDetailLoopbackAdmission(t *testing.T) {
 		}
 	}
 	caFile = nomadTLS.caFile
+	// NOMAD_CACERT has to name Nomad's CA file itself, by an absolute path.
+	// Empty (Python would then trust the system's store, which SSL_CERT_FILE
+	// points at Nomad's CA here), relative to the working directory, or a
+	// symbolic link, the fetch is refused before any request, though each
+	// would lead to Nomad's CA.
+	relativeCA, err := filepath.Rel(executionPlatformRepoRoot(t), nomadTLS.caFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	linkedCA := filepath.Join(t.TempDir(), "ca-link.pem")
+	if err := os.Symlink(nomadTLS.caFile, linkedCA); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name string
+		env  []string
+	}{
+		{"NOMAD_CACERT empty", []string{"NOMAD_CACERT=", "SSL_CERT_FILE=" + nomadTLS.caFile}},
+		{"NOMAD_CACERT relative", []string{"NOMAD_CACERT=" + relativeCA}},
+		{"NOMAD_CACERT a symbolic link", []string{"NOMAD_CACERT=" + linkedCA}},
+	} {
+		path := filepath.Join(t.TempDir(), "node-details-safe.json")
+		output, err := runProofPythonWithEnv(t, "supported_local_proof_projection.py", nil, test.env, "fetch-node-details", server.URL, path)
+		if err == nil || requests.Load() != baseRequests {
+			t.Fatalf("%s: node fetch was not refused before any request: %v output=%q", test.name, err, output)
+		}
+		if _, statErr := os.Lstat(path); !os.IsNotExist(statErr) {
+			t.Fatalf("%s: refused node fetch published output", test.name)
+		}
+	}
 	tls12 := httptestTLS12Server(t, nomadTLS, server.Config.Handler)
 	if output, err := project(tls12.URL); err == nil || requests.Load() != baseRequests {
 		t.Fatalf("node fetch from a TLS 1.2 Nomad was not refused before any request: %v output=%q", err, output)

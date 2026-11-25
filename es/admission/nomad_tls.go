@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"unicode"
 
 	esconfig "execution-substrate/es/config"
 )
@@ -80,15 +81,20 @@ func loadNomadRootCAs(path string) (*x509.CertPool, error) {
 	}
 	pool := x509.NewCertPool()
 	count := 0
-	rest := data
-	for {
-		var block *pem.Block
-		block, rest = pem.Decode(rest)
-		if block == nil {
-			break
+	rest := bytes.TrimLeftFunc(data, unicode.IsSpace)
+	for len(rest) != 0 {
+		// pem.Decode skips any text before a block, and any block it cannot
+		// decode, to return a later one. So each block has to start where
+		// the white space ends, and the call may consume only that block.
+		if !bytes.HasPrefix(rest, nomadPEMCertificateBegin) {
+			return nil, errNomadRootCAFileNotOnlyCertificates
+		}
+		block, after := pem.Decode(rest)
+		if block == nil || bytes.Count(rest[:len(rest)-len(after)], nomadPEMBegin) != 1 {
+			return nil, errNomadRootCAFileNotOnlyCertificates
 		}
 		if block.Type != "CERTIFICATE" || len(block.Headers) != 0 {
-			return nil, fmt.Errorf("nomad root CA file must contain only PEM CERTIFICATE blocks")
+			return nil, errNomadRootCAFileNotOnlyCertificates
 		}
 		certificate, err := x509.ParseCertificate(block.Bytes)
 		if err != nil {
@@ -96,12 +102,20 @@ func loadNomadRootCAs(path string) (*x509.CertPool, error) {
 		}
 		pool.AddCert(certificate)
 		count++
+		rest = bytes.TrimLeftFunc(after, unicode.IsSpace)
 	}
-	if count == 0 || len(bytes.TrimSpace(rest)) != 0 {
-		return nil, fmt.Errorf("nomad root CA file must contain only PEM CERTIFICATE blocks")
+	if count == 0 {
+		return nil, errNomadRootCAFileNotOnlyCertificates
 	}
 	return pool, nil
 }
+
+var (
+	nomadPEMBegin            = []byte("-----BEGIN")
+	nomadPEMCertificateBegin = []byte("-----BEGIN CERTIFICATE-----")
+
+	errNomadRootCAFileNotOnlyCertificates = errors.New("nomad root CA file must contain only PEM CERTIFICATE blocks")
+)
 
 func decodeNomadServerSPKIPin(value string) ([32]byte, error) {
 	var pin [32]byte
