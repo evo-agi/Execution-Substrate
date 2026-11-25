@@ -1,6 +1,6 @@
 # Remote Alpha Operator-Authorized Operator-Healthcheck TLS Replacement Design
 
-## 0. Purpose, Authority, And Status
+## 0. Purpose And Status
 
 This document defines a design-only, ES-owned path for a future
 operator-authorized replacement of Remote Alpha operator-healthcheck TLS public

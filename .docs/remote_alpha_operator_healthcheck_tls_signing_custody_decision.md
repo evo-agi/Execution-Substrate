@@ -1,6 +1,6 @@
 # Remote Alpha Operator-Healthcheck TLS Signer/Custody Decision Record
 
-## 0. Purpose, Authority, And Status
+## 0. Purpose And Status
 
 This decision record compares signer-authority and private-key custody models
 for future Remote Alpha operator-healthcheck client TLS replacement.

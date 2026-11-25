@@ -6,8 +6,6 @@ A boundary in this repository is an ownership line: which service is authoritati
 
 This document records the repository's current service ownership in the bounded platform phase described in `PLANS.md`. The boundaries below are real and active today, but they are not automatically permanent architecture. Where the current split is serving a bounded slice, compatibility need, or inherited choreography, that is called out explicitly.
 
-When prose and code disagree, code and tests win.
-
 ## 2. How to read this document
 
 - **Observed current boundary**: A service split or responsibility line that is implemented and visible in the current Go repo.

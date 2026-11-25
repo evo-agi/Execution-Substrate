@@ -148,8 +148,23 @@ func TestPlansOpensWithTheCurrentPlan(t *testing.T) {
 		"Do not add dated status entries",
 		"Cite this file by section heading, never by line number",
 		"("+plansRecordPath+")",
-		"The record is closed and is historical evidence only: it holds no current authority, and where it differs from this file or from an owning `.docs/` contract, they win.",
+		"The record is closed and is historical evidence only. Read it when a change touches a surface one of its entries names.",
+		"Two standing-rule sections are still here and are to move the same way: \"Current paired-root custody and acceptance scope\" and \"Remote Alpha access contract v1 — Tranche A\".",
 	)
+	// The opening names the standing-rule sections still in this file. When
+	// one moves out, this fails until the opening says so.
+	headings := map[string]bool{}
+	for _, heading := range markdownHeadingTitles(plans) {
+		headings[heading] = true
+	}
+	for _, heading := range []string{
+		"### Current paired-root custody and acceptance scope",
+		"### Remote Alpha access contract v1 — Tranche A",
+	} {
+		if !headings[heading] {
+			t.Errorf("PLANS.md no longer has %q; update the opening, which names it as a standing-rule section still here", heading)
+		}
+	}
 }
 
 // TestPlansHoldsNoDatedStatusEntries keeps the status log from coming back:
@@ -247,7 +262,7 @@ func TestPlansRecordIsNamedWhereAgentsStart(t *testing.T) {
 	)
 	assertContainsAll(t, "README plan record reference", mustRead(t, "README.md"),
 		"[.docs/history/plans-record.md](.docs/history/plans-record.md)",
-		"historical evidence with no current authority",
+		"it is historical evidence, so read it only when a change touches a surface it names",
 	)
 }
 

@@ -1,6 +1,6 @@
 # Runtime Identity Handoff Ownership Decision
 
-## 1. Purpose and authority
+## 1. Purpose and scope
 
 This document records the docs/tests-only F0 Workstream F runtime-identity
 handoff ownership decision.
@@ -12,9 +12,8 @@ SPIRE/Vault handoff implementation, runtime helper behavior, Nomad/Docker
 placement behavior, Control Plane compatibility, Infrastructure Manager
 inputs, or support-bundle input shapes.
 
-If this document disagrees with current code and tests on implemented behavior,
-the code and tests win and this document must be realigned before Workstream F
-continues.
+Workstream F continues only once this document matches current code and tests
+on implemented behavior.
 
 ## 2. Decision summary
 

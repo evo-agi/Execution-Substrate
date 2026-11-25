@@ -1,6 +1,6 @@
 # Artifact Publication, Storage, And Discoverability Decision
 
-## 1. Purpose and authority
+## 1. Purpose and scope
 
 This document records the bounded Workstream B artifact
 publication/storage/discoverability decision for Milestone 2B.1.
@@ -15,9 +15,6 @@ artifact path. It does not settle:
 - Workstream E runtime-config ownership redesign
 - Workstream F runtime-identity redesign
 - Control Plane orchestration, review, checkpoint, or finalization semantics
-
-If this document disagrees with current code and tests on implemented behavior,
-the code and tests win and this document must be realigned.
 
 ## 2. Decision summary
 

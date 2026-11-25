@@ -1,6 +1,6 @@
 # Remote Alpha Operator Healthcheck TLS Noninteractive Status Contract
 
-## 0. Purpose, Authority, And Status
+## 0. Purpose And Status
 
 This document defines the implemented ES-owned noninteractive, read-only
 operator-healthcheck TLS status route for Remote Alpha.
@@ -18,9 +18,6 @@ Status:
 - `Current invariant`: no fallback emitter is allowed. The local Python
   runtime is the sole final route-schema emitter.
 - `Current invariant`: `scheduled_execution_allowed=false`.
-
-If this document disagrees with current code and tests on implemented behavior,
-code and tests win for current behavior and this document must be realigned.
 
 ## 1. Active Route
 

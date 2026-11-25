@@ -6,7 +6,7 @@ This document defines change governance for the repository during the current bo
 
 Doc-first discipline still applies: code must not be the first place a system contract, boundary, lifecycle rule, or shared-kernel decision appears.
 
-This file governs how the repo may evolve. It does not decide which seams are open. `PLANS.md` is authoritative for:
+This file governs how the repo may evolve. It does not decide which seams are open. `PLANS.md` sets:
 
 - which architecture-defining surfaces are explicitly reopened
 - which redesign work is in scope now
@@ -68,7 +68,7 @@ Doc-first governance applies to all architecture-defining surfaces, especially:
 - canonicalization and verification rules that cross service boundaries
 - ownership boundaries and explicit non-ownership where service interaction depends on them
 
-`PLANS.md` is the authoritative redesign-phase list of reopened high-risk surfaces. If this file and `PLANS.md` differ on scope, `PLANS.md` controls.
+`PLANS.md` holds the redesign-phase list of reopened high-risk surfaces.
 
 ## 5. Allowed evolution modes
 

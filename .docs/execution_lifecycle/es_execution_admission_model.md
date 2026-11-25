@@ -1,6 +1,6 @@
 # ES Execution Admission Model Decision
 
-## 1. Purpose and authority
+## 1. Purpose and scope
 
 This document records the bounded Workstream C ES public admission/execution
 model decision for Milestone 2C.1.
@@ -19,9 +19,6 @@ does not settle:
 - Control Plane orchestration, review, checkpoint, escalation, or finalization
   semantics
 - Infrastructure Manager bootstrap, readiness, or support-bundle ownership
-
-If this document disagrees with current code and tests on implemented behavior,
-the code and tests win and this document must be realigned.
 
 ### PR #12 private retained-admission refinement
 

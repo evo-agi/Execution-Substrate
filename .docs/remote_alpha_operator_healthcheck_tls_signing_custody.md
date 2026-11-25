@@ -1,6 +1,6 @@
 # Remote Alpha Operator-Healthcheck TLS Signing And Custody Design
 
-## 0. Purpose, Authority, And Status
+## 0. Purpose And Status
 
 This document hardens the ES-owned signing topology, private-key custody,
 public-material flow, backup/rollback, redaction, and post-check requirements

@@ -1,6 +1,6 @@
 # Workstream C7 Consolidation Checkpoint
 
-## 0. Purpose, Authority, And Status
+## 0. Purpose And Status
 
 This document records a Workstream C7 consolidation checkpoint for ES
 Admission and Runtime Boundary Realignment after the Remote Alpha

@@ -1,6 +1,6 @@
 # Remote Alpha Operator-Healthcheck TLS Signing/Custody Resolution Criteria
 
-## 0. Purpose, Authority, And Status
+## 0. Purpose And Status
 
 This document defines the evidence gate for moving Remote Alpha
 operator-healthcheck TLS signing/custody from unresolved/fail-closed to

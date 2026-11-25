@@ -1,14 +1,11 @@
 # Generated Artifact Hygiene
 
-## 1. Purpose and authority
+## 1. Purpose and scope
 
 This document classifies generated, binary-ish, proof, and local-output
 artifacts in the current source baseline. Its purpose is to keep the repository
 reproducible and honest without promoting generated evidence into runtime or
 architecture authority.
-
-If this document disagrees with current code and tests on factual tracked-file
-state, code and tests win and this document must be realigned.
 
 ## 2. Current invariant
 

@@ -16,7 +16,9 @@ How this file is kept:
   holds the Workstream C admission and custody rules, and
   [`remote_alpha_operator_routes.md`](.docs/standing_rules/remote_alpha_operator_routes.md)
   holds the Remote Alpha operator route rules P0i to P0v. Edit a rule there, in
-  place.
+  place. Two standing-rule sections are still here and are to move the same
+  way: "Current paired-root custody and acceptance scope" and "Remote Alpha
+  access contract v1 — Tranche A".
 - Cite this file by section heading, never by line number, because its lines
   move.
 - The dated record that used to open this file moved to
@@ -24,9 +26,8 @@ How this file is kept:
   unreworded: the `Status` entries up to that day, the source publication and
   selection history of 2026-11-17 and 2026-11-18, and the records of the
   superseded Remote Alpha operator facade routes P0n and P0r. The record is
-  closed and is historical evidence only: it holds no current authority, and
-  where it differs from this file or from an owning `.docs/` contract, they
-  win. Read it when a change touches a surface one of its entries names.
+  closed and is historical evidence only. Read it when a change touches a
+  surface one of its entries names.
 
 ## Current Planning Objective
 
