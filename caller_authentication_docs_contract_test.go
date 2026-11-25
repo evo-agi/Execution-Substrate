@@ -102,8 +102,10 @@ func TestCallerAllowlistPrefixRuleIsDocumentedOnce(t *testing.T) {
 	assertContainsAll(t, "architecture", compactText(mustRead(t, ".docs/system_overview/architecture.md")),
 		"`internal/callerallowlist` is the cross-cutting path-prefix allowlist rule shared by ARS, AGS, and ES",
 	)
-	assertContainsAll(t, "PLANS.md", compactText(mustRead(t, "PLANS.md")),
+	assertContainsAll(t, "PLANS.md record", compactText(mustRead(t, plansRecordPath)),
 		"### One allowlist-prefix rule for ARS, AGS, and ES (2026-11-23)",
+	)
+	assertContainsAll(t, "PLANS.md", compactText(mustRead(t, "PLANS.md")),
 		"ARS, AGS, and ES check their configured path-prefix allowlists at startup and match callers against them through the one shared package `internal/callerallowlist`",
 	)
 	assertContainsAll(t, "bring-up runbook", compactText(mustRead(t, ".runbooks/system/v1_bringup.md")),

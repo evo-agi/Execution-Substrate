@@ -101,7 +101,8 @@ if reason is not None:
 # The grace bound of the cleanup owner is not under test here: a loaded test
 # host must not turn one late scheduling of a fixture child into a failure.
 module.CHILD_GRACE=30.0
-held=[]
+# The PID namespace of a fixed command needs root and has its own tests.
+` + remoteAlphaESStatusLocalChildNamespace + `held=[]
 def start(name,stay=True):
     ready_r,ready_w=os.pipe();hold_r,hold_w=os.pipe()
     pid=os.fork()
@@ -754,7 +755,7 @@ print(json.dumps({"capability":True,"cases":cases,"detail":detail},sort_keys=Tru
 }
 
 func TestRemoteAlphaESServiceTLSStatusProcessIdentityDocumentsContract(t *testing.T) {
-	plans := compactDocSection(t, mustRead(t, "PLANS.md"),
+	routeRules := compactDocSection(t, mustRead(t, standingRouteRulesPath),
 		"`Reopened redesign seam`: the P0s/P0t shared status-and-renewal helper",
 		"The P0u implementation/self-audit/merge-readiness slice")
 	remote := compactDocSection(t, mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md"),
@@ -762,7 +763,7 @@ func TestRemoteAlphaESServiceTLSStatusProcessIdentityDocumentsContract(t *testin
 		"### P0u Mac-Side Operator Healthcheck TLS Status/Renew Recovery Session")
 	access := compactDocSection(t, mustRead(t, ".docs/system_overview/remote_alpha_access_contract.md"),
 		"## 1. Authority, scope, and status", "## 2. Versioned profile and ownership")
-	for label, section := range map[string]string{"PLANS": plans, "Remote Alpha": remote, "access contract": access} {
+	for label, section := range map[string]string{"route rules": routeRules, "Remote Alpha": remote, "access contract": access} {
 		assertContainsAll(t, label+" process identity read", section,
 			"as bytes", "kernel-written fields after the last `)`",
 			"The stat file never proves that a process is absent",
@@ -774,7 +775,7 @@ func TestRemoteAlphaESServiceTLSStatusProcessIdentityDocumentsContract(t *testin
 		assertContainsNone(t, label+" process identity read", section,
 			"absent, not unproved", "no longer exists")
 	}
-	for label, section := range map[string]string{"PLANS": plans, "Remote Alpha": remote} {
+	for label, section := range map[string]string{"route rules": routeRules, "Remote Alpha": remote} {
 		assertContainsAll(t, label+" process identity bounds", section,
 			"may hold any byte", "it is never decoded, compared, or otherwise interpreted",
 			"a thread other than the first thread of a live process calls exec, the kernel can answer `ENOENT` or `ESRCH` at open, `ESRCH` at read, or a line with a negative group ID",

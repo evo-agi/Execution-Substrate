@@ -501,7 +501,7 @@ they were not passed or waived.
 - The primary bring-up/check path distinguishes:
   - service health: ARS, EGS, AGS, and ES public health surfaces
   - prepare-ready: service health plus successful workload-zone Vault runtime-config blob verification through ARS, including structural validation of any supplied Vault CA bundle
-  - submit-ready: prepare-ready plus ES submit config present (including a `nomad.token_file` that is a regular 0400/0600 file), Nomad presenting the pinned certificate over TLS 1.3 with at least 14 days of validity left, Docker available, required enabled runtime-profile images present, Nomad leader present, Nomad enforcing ACLs with no anonymous policy (read with the observer token named by `NOMAD_TOKEN_FILE`), and at least one ready Nomad client node that exposes positive `cpu.totalcompute` and a healthy Docker driver
+  - submit-ready: prepare-ready plus ES submit config present (including a `nomad.token_file` that is a regular 0400/0600 file), Nomad presenting the pinned certificate over TLS 1.3 with at least 14 days of validity left, Docker available, required enabled runtime-profile images present, Nomad leader present, Nomad enforcing ACLs with no anonymous policy (read with the observer token named by `NOMAD_TOKEN_FILE`), and at least one ready Nomad client node that exposes positive `cpu.totalcompute`, a healthy Docker driver and a host-mode network
 
 Minimal vault-auth example:
 
@@ -532,7 +532,13 @@ remain outside this retirement. Future infrastructure recovery requires a
 separately selected fresh-host setup contract, but a
 complete supported fresh-host ES provisioner is not currently implemented.
 Reuse of an old or nonempty host remains blocked without a separately governed
-existing-host migration contract.
+existing-host migration contract. One such contract exists, for one host:
+`scripts/remote_alpha_upgrade_es.sh` moves the Remote Alpha box's ES from its
+`74748063` build to one named commit, adding `nomad.token_file` and
+`execution.retained_result_auth` to its `es.json`, and locks its Nomad. It
+refuses any other host shape; see
+`.docs/system_overview/remote_supported_host_alpha.md`, section "Remote ES
+Upgrade And Nomad Lock".
 
 ## CGS
 
@@ -597,6 +603,7 @@ The current host-qualification boundary for the supported Linux environment is d
 - readiness (`scripts/10_health_check.sh`, bring-up and supported-local setup) refuses a Nomad whose agent does not report the Docker-only allowlist, `allow_privileged = false` and capabilities within the list above (`nomad: drivers=docker docker_privileged=refused docker_caps=...`)
 - explicit local data directory for repeatable manual bring-up
 - when the current slice-0 single-node topology binds Nomad to `127.0.0.1`, the Nomad config must also set explicit loopback `advertise` addresses for `http`, `rpc`, and `serf`
+- the client's host network pinned to loopback: `client { network_interface = "lo" }` (`scripts/70_linux_setup.sh` and `.examples/config/nomad.hcl` write it). ES's jobs (Docker with `network_mode` `none`, or `bridge` when the execution has network access, no Nomad network block, no ports) can be placed only on a node with a host-mode network, which Nomad takes from the interface `network_interface` names, or from the default route's interface when it names none. Loopback exists whether the host is on Wi-Fi or a cable, so the supported setup works on either and assumes neither: pinned to a wired port, the node has no host network while the cable is out and every plan fails with `missing network`; unpinned, Nomad does not start while there is no default route (Wi-Fi not up yet). Readiness refuses a node without a host-mode network (`<node>=no-host-network`), and `sudo scripts/nomad_acl_setup.sh placement`, run after every Nomad start, plans ES's job shapes with ES's token (see [Nomad access control](#nomad-access-control))
 - for the supported Linux environment story in this slice, Nomad should already be running as a pre-managed non-dev service on the host/VM before `scripts/01_bringup.sh up`; the local script-managed Nomad startup path remains bounded fallback/troubleshooting scaffolding
 - the operator readiness path now inspects `GET /v1/agent/self` and rejects `config.DevMode=true`; `nomad agent -dev` is unsupported for the slice-0 supported-environment claim even if it reports healthy Docker and positive compute
 - when Nomad uses the Docker driver on Linux, HashiCorp's Docker driver guidance treats root-managed Nomad as the compatible mode for CPU-core / NUMA-aware behavior; user-managed Nomad startup may still be useful for bounded proof and troubleshooting, but it is not the supported-environment baseline
@@ -677,6 +684,22 @@ bypass ES admission. ES therefore submits only to a Nomad that enforces them.
   lost or holds another token, both scripts refuse and leave an existing
   file as it is; recovery is Nomad's ACL bootstrap reset procedure, done by
   hand.
+- **Port holder guard (second guard)**: while Nomad is down, any local
+  account can listen on its port. HTTPS stops such a holder from passing
+  for Nomad: it has no certificate from Nomad's CA and cannot read Nomad's
+  server key, and ES also pins that key. As a second guard, before the
+  setup script and the ACL tool send a token or a bootstrap secret, they
+  check in the kernel's TCP tables that the socket belongs to Nomad's user:
+  root for `nomad.service`; `NOMAD_USER` for `scripts/nomad_acl_setup.sh`,
+  `SUPPORTED_LOCAL_NOMAD_USER` for supported-local setup, and the current
+  user for full-profile bring-up, which starts Nomad itself. Otherwise they
+  send nothing. The tool checks the socket that accepted its own
+  connection, before the TLS handshake. The setup script checks the
+  listener just before each request or batch of requests, which leaves a
+  short window for a restart in between, and TLS covers that window.
+  `provision` also waits up to 30 s for Nomad to name a leader before it
+  bootstraps. ES's own requests and the observer token's readiness requests
+  rely on TLS (and, for ES, the pin) alone.
 - **ES token** (`nomad.token_file`): a client token with only policy
   `es-submit-v1` (`submit-job`, `read-job`, `read-logs` in namespace
   `es-submit-v1`). It cannot read nodes or the agent, write policies or
@@ -746,6 +769,23 @@ bypass ES admission. ES therefore submits only to a Nomad that enforces them.
   loopback Nomad HTTPS address over TLS 1.3, trusting only the CA given by
   `--ca-file` (`NOMAD_CACERT` in the wrapper), with no proxy and no
   redirects.
+- **Placement check**: `sudo scripts/nomad_acl_setup.sh placement` proves
+  what no ACL check sees: that Nomad can place ES's jobs. With the observer
+  token it waits (`NOMAD_PLACEMENT_WAIT_SECONDS`, default 60) for a ready,
+  eligible client node with a healthy Docker driver and a host-mode
+  network. With `NOMAD_STARTED_AT`, the Unix time just before the latest
+  Nomad start, a node counts only once the restarted client registered
+  again, because for about half a minute after a restart the servers can
+  serve the node as it was before. With ES's token it then plans each job
+  shape ES submits (Docker, `network_mode` `none` and `bridge`, no network
+  block, no ports) in `es-submit-v1` and in the datacenter that
+  `nomad.datacenter` names in ES's config (`ES_CONFIG`, default
+  `/etc/execution-substrate/es.json`); each plan must place its one
+  allocation. A plan registers nothing, and the check never uses the
+  management token. Like `check` and `rotate`, it needs the `ES_USER` and
+  `OBSERVER_USER` that provisioned the tokens, because it refuses token
+  files owned by anyone else. The Remote Alpha upgrade script runs it after
+  it restarts Nomad.
 - **Rotation needs an ES restart**: ES reads its token only at startup, and a
   container bind mount keeps the old file, so restart ES after `rotate`.
 - **Bring-up and proof paths**: `BRINGUP_PROFILE=full scripts/01_bringup.sh
@@ -835,7 +875,7 @@ The current unified health check verifies:
 
 - ARS, EGS, AGS, and ES all report `ready=true`
 - those health checks succeeded with a real client certificate at the TLS boundary
-- Nomad has a leader and at least one ready node with positive `cpu.totalcompute` and a healthy Docker driver when `BRINGUP_PROFILE=full`
+- Nomad has a leader and at least one ready node with positive `cpu.totalcompute`, a healthy Docker driver and a host-mode network when `BRINGUP_PROFILE=full`
 - `docker info` succeeds when `BRINGUP_PROFILE=full`
 - any enabled `control-plane-normal-shell/v1` runtime-profile image is present according to `docker image inspect` in the Docker daemon used by Nomad when `BRINGUP_PROFILE=full`
 - when an enabled runtime-profile image is present, the Nomad Docker plugin reports `gc.image = false`, so Nomad will not remove that local image after stopped tasks as part of the supported-local runtime surface

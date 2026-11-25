@@ -292,7 +292,7 @@ run. The historical proof does not establish real upstream Codex behavior,
 actual running-deployment topology or key isolation. Later source/native
 evidence retains its separate identities and limits; there is no automatic
 proof inheritance or default repeat without a concrete unaccepted interaction
-for a selected operational claim. `PLANS.md` and the lifecycle contract own
+for a selected operational claim. `.docs/standing_rules/execution_admission_and_custody.md` and the lifecycle contract own
 the development evidence and environment-bound rollout distinction.
 
 ## 3. Ownership boundaries
@@ -581,7 +581,7 @@ For `BRINGUP_PROFILE=full`, the current readiness helpers require:
 - Docker is reachable through `docker info`
 - Nomad has a leader
 - Nomad reports `config.DevMode=false`
-- at least one ready Nomad client has positive natural `cpu.totalcompute` and a healthy Docker driver
+- at least one ready Nomad client has positive natural `cpu.totalcompute`, a healthy Docker driver and a host-mode network
 - Nomad enables only the Docker driver, and its Docker plugin refuses privileged containers and allows only ES's runtime-helper capabilities
 - any enabled runtime-profile image is present in the Docker daemon used by Nomad
 - for enabled local runtime-profile images, Nomad Docker image garbage collection is disabled through the Docker plugin's `gc { image = false }`

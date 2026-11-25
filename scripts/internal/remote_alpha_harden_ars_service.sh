@@ -5,6 +5,62 @@ fi
 
 remote_alpha_ars_hardening_summary_schema_version="execution-substrate.remote-alpha.ars-service-hardening-summary.v1"
 
+# Copy of remote_alpha_prepare_output_dir from scripts/internal/remote_alpha_output_dir.sh,
+# which explains it; TestRemoteAlphaOutputDirCopiesMatch keeps the two identical.
+remote_alpha_prepare_output_dir() {
+  python3 -I - "$1" <<'REMOTE_ALPHA_OUTPUT_DIR_PY'
+import os
+import stat
+import sys
+
+if not sys.argv[1]:
+    sys.exit("remote alpha output folder: no folder given")
+if ".." in sys.argv[1].split("/"):
+    sys.exit(f"remote alpha output folder: {sys.argv[1]} has a '..' component; refusing to check a path that is not canonical")
+# The path is checked as given, never normalized: dropping "link/.." would
+# check another folder than the one a later write through the link reaches.
+parts = [part for part in os.path.join(os.getcwd(), sys.argv[1]).split("/") if part not in ("", ".")]
+trusted = {0, os.geteuid()}
+if os.environ.get("SUDO_UID", "").isdigit():
+    trusted.add(int(os.environ["SUDO_UID"]))
+# O_PATH reads a folder's owner and mode without read permission on it, so a
+# folder that root keeps private still passes and sudo can hand it over.
+flags = getattr(os, "O_PATH", os.O_RDONLY) | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+shown = "/"
+fd = os.open("/", flags)
+try:
+    for index in range(len(parts) + 1):
+        info = os.fstat(fd)
+        last = index == len(parts)
+        if info.st_uid not in trusted:
+            sys.exit(
+                f"remote alpha output folder: {shown} belongs to uid {info.st_uid}, not to root, "
+                "the user running this step or the user who ran sudo; refusing to write under it"
+            )
+        if info.st_mode & (stat.S_IWGRP | stat.S_IWOTH) and (
+            last or info.st_uid != 0 or not info.st_mode & stat.S_ISVTX
+        ):
+            sys.exit(f"remote alpha output folder: {shown} can be written by its group or others; refusing to write under it")
+        if last:
+            break
+        shown = "/" + "/".join(parts[: index + 1])
+        try:
+            next_fd = os.open(parts[index], flags, dir_fd=fd)
+        except FileNotFoundError:
+            try:
+                os.mkdir(parts[index], 0o755, dir_fd=fd)
+            except FileExistsError:
+                pass
+            next_fd = os.open(parts[index], flags, dir_fd=fd)
+        os.close(fd)
+        fd = next_fd
+except OSError as exc:
+    sys.exit(f"remote alpha output folder: {shown} is not a directory or is a symbolic link ({exc.strerror})")
+finally:
+    os.close(fd)
+REMOTE_ALPHA_OUTPUT_DIR_PY
+}
+
 remote_alpha_ars_hardening_init_expected_slice_inputs() {
   remote_alpha_ars_hardening_expected_service_name="${remote_alpha_ars_hardening_expected_service_name:-ars}"
   remote_alpha_ars_hardening_expected_service_user="${remote_alpha_ars_hardening_expected_service_user:-ars}"
@@ -160,7 +216,7 @@ remote_alpha_ars_hardening_json_field() {
   local json_path=$1
   local dotted_path=$2
 
-  python3 - "${json_path}" "${dotted_path}" <<'PY'
+  python3 -I - "${json_path}" "${dotted_path}" <<'PY'
 import json
 import sys
 
@@ -239,7 +295,7 @@ remote_alpha_ars_hardening_ds_not_in_docker_group() {
 }
 
 remote_alpha_ars_hardening_runtime_meta() {
-  python3 - "${REMOTE_ALPHA_CONFIG_PATH}" "${REMOTE_ALPHA_BINARY_PATH}" <<'PY'
+  python3 -I - "${REMOTE_ALPHA_CONFIG_PATH}" "${REMOTE_ALPHA_BINARY_PATH}" <<'PY'
 import json
 import os
 import ssl
@@ -414,7 +470,7 @@ remote_alpha_ars_hardening_assert_runtime_shape() {
 }
 
 remote_alpha_ars_hardening_ags_runtime_meta() {
-  python3 - "${REMOTE_ALPHA_AGS_CONFIG_PATH}" <<'PY'
+  python3 -I - "${REMOTE_ALPHA_AGS_CONFIG_PATH}" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -457,7 +513,7 @@ PY
 }
 
 remote_alpha_ars_hardening_health_env_meta() {
-  python3 - "${REMOTE_ALPHA_HEALTHCHECK_ENV_PATH}" <<'PY'
+  python3 -I - "${REMOTE_ALPHA_HEALTHCHECK_ENV_PATH}" <<'PY'
 import json
 import pathlib
 import sys
@@ -614,7 +670,7 @@ remote_alpha_ars_hardening_prepare_tls_material() {
   key_source="$(remote_alpha_ars_hardening_json_field "${runtime_meta_path}" "tls.key_file")"
   ca_source="$(remote_alpha_ars_hardening_json_field "${runtime_meta_path}" "tls.client_ca_file")"
 
-  python3 - "${cert_source}" "${REMOTE_ALPHA_TLS_CERT_PATH}" "${key_source}" "${REMOTE_ALPHA_TLS_KEY_PATH}" "${ca_source}" "${REMOTE_ALPHA_TLS_CLIENT_CA_PATH}" <<'PY'
+  python3 -I - "${cert_source}" "${REMOTE_ALPHA_TLS_CERT_PATH}" "${key_source}" "${REMOTE_ALPHA_TLS_KEY_PATH}" "${ca_source}" "${REMOTE_ALPHA_TLS_CLIENT_CA_PATH}" <<'PY'
 from pathlib import Path
 import sys
 
@@ -642,7 +698,7 @@ PY
 }
 
 remote_alpha_ars_hardening_rewrite_config() {
-  python3 - "${REMOTE_ALPHA_CONFIG_PATH}" "${REMOTE_ALPHA_TLS_CERT_PATH}" "${REMOTE_ALPHA_TLS_KEY_PATH}" "${REMOTE_ALPHA_TLS_CLIENT_CA_PATH}" <<'PY'
+  python3 -I - "${REMOTE_ALPHA_CONFIG_PATH}" "${REMOTE_ALPHA_TLS_CERT_PATH}" "${REMOTE_ALPHA_TLS_KEY_PATH}" "${REMOTE_ALPHA_TLS_CLIENT_CA_PATH}" <<'PY'
 import json
 import os
 import sys
@@ -679,12 +735,134 @@ remote_alpha_ars_hardening_apply_state_permissions() {
   blob_root="$(remote_alpha_ars_hardening_json_field "${runtime_meta_path}" "storage.root_dir")"
   index_file="$(remote_alpha_ars_hardening_json_field "${runtime_meta_path}" "storage.index_file")"
 
-  mkdir -p "${state_root_dir}" "${blob_root}" "$(dirname "${index_file}")"
-  chown -R "${REMOTE_ALPHA_SERVICE_USER}:${REMOTE_ALPHA_SERVICE_GROUP}" "${state_root_dir}"
-  chmod 0750 "${state_root_dir}"
-  chmod 0750 "${blob_root}"
-  chown "${REMOTE_ALPHA_SERVICE_USER}:${REMOTE_ALPHA_SERVICE_GROUP}" "${index_file}"
-  chmod 0600 "${index_file}"
+  local service_uid service_gid
+  service_uid="$(id -u "${REMOTE_ALPHA_SERVICE_USER}")" || return 1
+  service_gid="$(getent group "${REMOTE_ALPHA_SERVICE_GROUP}" | cut -d: -f3)" || return 1
+
+  # After the first run the ARS account owns this tree, and ARS keeps running
+  # while the step runs again, so root must never act on a name in it: a plain
+  # chown or chmod would follow a link the ARS account put there. Every object
+  # is reached from the state root's parent, which the account cannot change,
+  # by descriptors opened without following a symbolic link. Owners and modes
+  # are set through those descriptors. Anything but a directory or a regular
+  # file with one link is refused. A first walk only checks, so a tree that is
+  # refused is left unchanged; the second walk checks each object again as it
+  # sets it.
+  python3 -I - "${state_root_dir}" "${blob_root}" "${index_file}" "${service_uid}" "${service_gid}" <<'PY'
+import os
+import stat
+import sys
+
+state_root, blob_root, index_file, uid_text, gid_text = sys.argv[1:6]
+DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+FILE_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
+MAX_DEPTH = 16
+
+
+class Refusal(Exception):
+    pass
+
+
+def direct_child(parent, path, label):
+    if os.path.normpath(path) != path or os.path.dirname(path) != parent or os.path.basename(path) in ("", ".", ".."):
+        raise Refusal(f"{label} must be directly under {parent}: {path}")
+    return os.path.basename(path)
+
+
+def open_dir(name, dir_fd, label, create):
+    if create:
+        try:
+            os.mkdir(name, 0o750, dir_fd=dir_fd)
+        except FileExistsError:
+            pass
+    try:
+        return os.open(name, DIR_FLAGS, dir_fd=dir_fd)
+    except OSError as exc:
+        raise Refusal(f"{label} is not a directory or is a symbolic link ({exc.strerror})") from None
+
+
+def own_file(name, dir_fd, label, owner, mode):
+    try:
+        fd = os.open(name, FILE_FLAGS, dir_fd=dir_fd)
+    except OSError as exc:
+        raise Refusal(f"{label} is missing, is not a regular file or is a symbolic link ({exc.strerror})") from None
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise Refusal(f"{label} must be a regular file with one link")
+        if owner is not None:
+            os.fchown(fd, *owner)
+            if mode is not None:
+                os.fchmod(fd, mode)
+    finally:
+        os.close(fd)
+
+
+def own_tree(dir_fd, label, owner, depth):
+    if depth > MAX_DEPTH:
+        raise Refusal(f"{label} is more than {MAX_DEPTH} directories below the state root")
+    if owner is not None:
+        os.fchown(dir_fd, *owner)
+    for entry in sorted(os.listdir(dir_fd)):
+        where = f"{label}/{entry}"
+        info = os.stat(entry, dir_fd=dir_fd, follow_symlinks=False)
+        if stat.S_ISDIR(info.st_mode):
+            child_fd = open_dir(entry, dir_fd, where, create=False)
+            try:
+                own_tree(child_fd, where, owner, depth + 1)
+            finally:
+                os.close(child_fd)
+        elif stat.S_ISREG(info.st_mode):
+            own_file(entry, dir_fd, where, owner, None)
+        else:
+            raise Refusal(f"{where} is not a directory or a regular file")
+
+
+def main():
+    if not uid_text.isdigit() or not gid_text.isdigit():
+        raise Refusal("the ARS service account or group has no numeric ID")
+    owner = (int(uid_text), int(gid_text))
+    if not os.path.isabs(state_root) or os.path.normpath(state_root) != state_root or os.path.dirname(state_root) == state_root:
+        raise Refusal(f"the ARS state root must be a clean absolute path below another directory: {state_root}")
+    blob_name = direct_child(state_root, blob_root, "storage.root_dir")
+    index_name = direct_child(state_root, index_file, "storage.index_file")
+    if blob_name == index_name:
+        raise Refusal("storage.root_dir and storage.index_file name the same entry")
+
+    parent = os.path.dirname(state_root)
+    os.makedirs(parent, mode=0o755, exist_ok=True)
+    parent_fd = os.open(parent, DIR_FLAGS)
+    try:
+        parent_info = os.fstat(parent_fd)
+        if parent_info.st_uid != os.geteuid() or parent_info.st_mode & 0o022:
+            raise Refusal(f"{parent} must belong to the user running this step and must not be writable by group or others")
+        root_fd = open_dir(os.path.basename(state_root), parent_fd, state_root, create=True)
+    finally:
+        os.close(parent_fd)
+    try:
+        blob_fd = open_dir(blob_name, root_fd, blob_root, create=True)
+        try:
+            own_file(index_name, root_fd, index_file, None, None)
+            own_tree(root_fd, state_root, None, 0)
+            own_tree(root_fd, state_root, owner, 0)
+            os.fchmod(root_fd, 0o750)
+            os.fchmod(blob_fd, 0o750)
+        finally:
+            os.close(blob_fd)
+        own_file(index_name, root_fd, index_file, owner, 0o600)
+    finally:
+        os.close(root_fd)
+
+
+try:
+    main()
+except Refusal as exc:
+    print(f"remote alpha ARS hardening: {exc}; stopped without changing it", file=sys.stderr)
+    sys.exit(1)
+except OSError as exc:
+    print(f"remote alpha ARS hardening: could not set the ARS state owners and modes: {exc}", file=sys.stderr)
+    sys.exit(1)
+PY
 }
 
 remote_alpha_ars_hardening_write_dropin() {
@@ -706,7 +884,7 @@ remote_alpha_ars_hardening_service_meta() {
     unit_name="${unit_name}.service"
   fi
 
-  python3 - "${service_name}" \
+  python3 -I - "${service_name}" \
     "$(systemctl show "${unit_name}" -p User -p Group -p ExecStart -p FragmentPath -p ActiveState -p SubState 2>/dev/null || true)" \
     "$(remote_alpha_ars_hardening_systemctl_state is-enabled "${unit_name}")" <<'PY'
 import json
@@ -783,7 +961,7 @@ remote_alpha_ars_hardening_health_probe_meta() {
       --key "${operator_key}" \
       "${curl_args[@]}" \
       "${url}" >"${response_path}" 2>"${error_path}"; then
-      python3 - "${url}" "${error_path}" <<'PY'
+      python3 -I - "${url}" "${error_path}" <<'PY'
 import json
 import pathlib
 import sys
@@ -801,7 +979,7 @@ PY
     --cert "${operator_cert}" \
     --key "${operator_key}" \
     "${url}" >"${response_path}" 2>"${error_path}"; then
-    python3 - "${url}" "${error_path}" <<'PY'
+    python3 -I - "${url}" "${error_path}" <<'PY'
 import json
 import pathlib
 import sys
@@ -815,7 +993,7 @@ PY
     return 1
   fi
 
-  python3 - "${url}" "${response_path}" "${expected_service}" "${dependency_field}" <<'PY'
+  python3 -I - "${url}" "${response_path}" "${expected_service}" "${dependency_field}" <<'PY'
 import json
 import pathlib
 import sys
@@ -839,7 +1017,7 @@ PY
 remote_alpha_ars_hardening_write_publish_request() {
   local request_path=$1
 
-  python3 - "${request_path}" <<'PY'
+  python3 -I - "${request_path}" <<'PY'
 import base64
 import hashlib
 import json
@@ -922,7 +1100,7 @@ remote_alpha_ars_hardening_publish_probe_meta() {
     --header "content-type: application/json" \
     --data "@${request_path}" \
     "${url}" >"${response_path}" 2>"${error_path}"; then
-    python3 - "${url}" "${response_path}" <<'PY'
+    python3 -I - "${url}" "${response_path}" <<'PY'
 import json
 import pathlib
 import sys
@@ -940,7 +1118,7 @@ PY
     return 0
   fi
 
-  python3 - "${url}" "${error_path}" <<'PY'
+  python3 -I - "${url}" "${error_path}" <<'PY'
 import json
 import pathlib
 import sys
@@ -963,7 +1141,7 @@ remote_alpha_ars_hardening_state_ownership_meta() {
   index_file="$(remote_alpha_ars_hardening_json_field "${runtime_meta_path}" "storage.index_file")"
   state_root="$(remote_alpha_ars_hardening_json_field "${runtime_meta_path}" "storage.state_root_dir")"
 
-  python3 - \
+  python3 -I - \
     "${config_path}" "root:${REMOTE_ALPHA_SERVICE_GROUP}" "0640" "$(stat -c '%U:%G %a %n' "${config_path}" 2>/dev/null || true)" \
     "${tls_dir}" "root:${REMOTE_ALPHA_SERVICE_GROUP}" "0710" "$(stat -c '%U:%G %a %n' "${tls_dir}" 2>/dev/null || true)" \
     "${REMOTE_ALPHA_TLS_CERT_PATH}" "root:${REMOTE_ALPHA_SERVICE_GROUP}" "0640" "$(stat -c '%U:%G %a %n' "${REMOTE_ALPHA_TLS_CERT_PATH}" 2>/dev/null || true)" \
@@ -1029,7 +1207,7 @@ remote_alpha_ars_hardening_write_summary() {
   local ds_not_in_docker_group=${11}
   local passwordless_sudo_for_ds=${12}
 
-  python3 - "${summary_path}" \
+  python3 -I - "${summary_path}" \
     "${runtime_meta_path}" \
     "${ars_meta_path}" \
     "${ags_meta_path}" \
@@ -1207,6 +1385,7 @@ remote_alpha_ars_hardening_main() {
   remote_alpha_ars_hardening_require_root || return 1
 
   remote_alpha_ars_hardening_require_command python3 || return 1
+  remote_alpha_prepare_output_dir "$(dirname "${REMOTE_ALPHA_SUMMARY_PATH}")" || return 1
   remote_alpha_ars_hardening_require_command curl || return 1
   remote_alpha_ars_hardening_require_command systemctl || return 1
   remote_alpha_ars_hardening_require_command getent || return 1
@@ -1376,6 +1555,7 @@ remote_alpha_ars_hardening_main() {
     overall_ok=false
   fi
 
+  remote_alpha_prepare_output_dir "$(dirname "${REMOTE_ALPHA_SUMMARY_PATH}")" || return 1
   remote_alpha_ars_hardening_write_summary \
     "${REMOTE_ALPHA_SUMMARY_PATH}" \
     "${runtime_meta_path}" \

@@ -92,7 +92,8 @@ func newFullReadinessFixture(t *testing.T) *fullReadinessFixture {
 			http.NotFound(w, r)
 			return
 		}
-		_, _ = w.Write([]byte(`{"Attributes":{"cpu.totalcompute":"4000"},"Drivers":{"docker":{"Healthy":true}}}`))
+		_, _ = w.Write([]byte(`{"Attributes":{"cpu.totalcompute":"4000"},"Drivers":{"docker":{"Healthy":true}},` +
+			`"NodeResources":{"Networks":[{"Mode":"host","Device":"lo","CIDR":"127.0.0.1/32","IP":"127.0.0.1"}]}}`))
 	}))
 	config := filepath.Join(proof, "es.json")
 	esTokenFile := writeFakeNomadTokenFile(t, workspace)
@@ -131,9 +132,9 @@ func newFullReadinessFixture(t *testing.T) *fullReadinessFixture {
 	}
 	for name, body := range map[string]string{
 		"python3": `#!/bin/sh
-if [ "${1:-}" = "$ROOT_REPO/scripts/internal/supported_local_execution_roots.py" ]; then
-  printf 'root-check %s\n' "$2" >> "$ROOT_EVENTS"
-  [ "$2" = check ] && [ "${ROOT_HELPER_RESULT:-ok}" = ok ] && exit 0
+if [ "${1:-}" = -I ] && [ "${2:-}" = "$ROOT_REPO/scripts/internal/supported_local_execution_roots.py" ]; then
+  printf 'root-check %s\n' "$3" >> "$ROOT_EVENTS"
+  [ "$3" = check ] && [ "${ROOT_HELPER_RESULT:-ok}" = ok ] && exit 0
   exit 83
 fi
 exec "$ROOT_REAL_PYTHON" "$@"
@@ -534,7 +535,7 @@ setup`
 	}
 	data, err := os.ReadFile(events)
 	if err != nil || !strings.Contains(string(data), "sudo -n true\n") ||
-		!strings.Contains(string(data), "sudo -n python3 "+filepath.Join(repo, "scripts", "internal", "supported_local_execution_roots.py")+" provision "+proof+" fixture-proof ") ||
+		!strings.Contains(string(data), "sudo -n python3 -I "+filepath.Join(repo, "scripts", "internal", "supported_local_execution_roots.py")+" provision "+proof+" fixture-proof ") ||
 		strings.Contains(string(data), "unexpected ") {
 		t.Fatalf("failed provisioning escaped the fake privilege boundary: err=%v events=%q", err, data)
 	}
@@ -602,9 +603,9 @@ provision_supported_local_execution_roots`
 		t.Fatalf("narrow privilege transport failed: err=%v output=%q", err, output)
 	}
 	got, err := os.ReadFile(events)
-	want := "bind " + filepath.Join(repo, "scripts", "internal", "supported_local_execution_roots.py") +
+	want := "bind -I " + filepath.Join(repo, "scripts", "internal", "supported_local_execution_roots.py") +
 		" bind " + proof + " fixture-proof\n" +
-		"sudo -n python3 " + filepath.Join(repo, "scripts", "internal", "supported_local_execution_roots.py") +
+		"sudo -n python3 -I " + filepath.Join(repo, "scripts", "internal", "supported_local_execution_roots.py") +
 		" provision " + proof + " fixture-proof 1:2:3\n"
 	if err != nil || string(got) != want {
 		t.Fatalf("privilege transport widened: err=%v got=%q want=%q", err, got, want)
@@ -649,7 +650,7 @@ func TestSupportedLocalExecutionRootSharedPreflightProfileAndGeneric(t *testing.
 	body := `
 bringup_repo_root() { printf '%s\n' "$ROOT_REPO"; }
 python3() {
-  if [[ "${1:-}" == "$ROOT_REPO/scripts/internal/supported_local_execution_roots.py" ]]; then
+  if [[ "${1:-}" == -I && "${2:-}" == "$ROOT_REPO/scripts/internal/supported_local_execution_roots.py" ]]; then
     printf '%s\n' "$*" >> "$ROOT_HELPER_CALLS"
     return 0
   fi
@@ -749,7 +750,7 @@ func TestSupportedLocalExecutionRootSetupAndProofOrdering(t *testing.T) {
 		"write_supported_local_execution_root_evidence",
 		"execution-roots-setup-safe.json",
 		`export SUPPORTED_LOCAL_ES_ROOTS_PROFILE="${ES_ROOTS_PROFILE}"`,
-		`python3 "${ES_ROOTS_HELPER}" check "${PROOF_DIR}" "${PROOF_ID}" "${PROOF_DIR}/es.json"`,
+		`python3 -I "${ES_ROOTS_HELPER}" check "${PROOF_DIR}" "${PROOF_ID}" "${PROOF_DIR}/es.json"`,
 	} {
 		if !strings.Contains(setup, required) {
 			t.Fatalf("setup missing root profile boundary %q", required)
@@ -762,7 +763,7 @@ func TestSupportedLocalExecutionRootSetupAndProofOrdering(t *testing.T) {
 	if preflight < 0 || fresh < preflight || provision < fresh || build < provision {
 		t.Fatalf("setup privilege/fresh-root/provision/build ordering changed")
 	}
-	checked := strings.Index(setup, `python3 "${ES_ROOTS_HELPER}" check "${PROOF_DIR}" "${PROOF_ID}" "${PROOF_DIR}/es.json"`)
+	checked := strings.Index(setup, `python3 -I "${ES_ROOTS_HELPER}" check "${PROOF_DIR}" "${PROOF_ID}" "${PROOF_DIR}/es.json"`)
 	emitted := strings.Index(setup, `  write_supported_local_execution_root_evidence "${PROOF_DIR}"`)
 	if checked < build || emitted < checked {
 		t.Fatal("safe setup projection is not after root/config check")
@@ -833,7 +834,7 @@ func TestSupportedLocalProofStagingPresenceMetadataOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(body)
-	startMarker := "staging_state=\"$(python3 - <<'PY' \"$GUEST_PROOF_DIR/es.json\" \"${run_id}\"\n"
+	startMarker := "staging_state=\"$(python3 -I - <<'PY' \"$GUEST_PROOF_DIR/es.json\" \"${run_id}\"\n"
 	start := strings.Index(text, startMarker)
 	if start < 0 {
 		t.Fatal("source-owned metadata staging observation missing")
@@ -920,11 +921,11 @@ esac
 exit 97
 `,
 		"python3": `#!/bin/sh
-if [ "$1" = "$ROOT_REPO/scripts/internal/supported_local_execution_roots.py" ]; then
-  printf 'root-check %s\n' "$2" >> "$ROOT_EVENTS"
+if [ "${1:-}" = -I ] && [ "${2:-}" = "$ROOT_REPO/scripts/internal/supported_local_execution_roots.py" ]; then
+  printf 'root-check %s\n' "$3" >> "$ROOT_EVENTS"
   exit 83
 fi
-if [ "$1 $2" = "-m http.server" ]; then
+if [ "$1 $2 $3" = "-I -m http.server" ]; then
   printf 'fake-http-server\n' >> "$ROOT_EVENTS"
   exit 0
 fi

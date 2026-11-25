@@ -59,7 +59,7 @@ echo "publish: success"
 operator_print_payload "${tmp_response}"
 printf '\n'
 
-artifact_digest="$(python3 - <<'PY' "${tmp_response}"
+artifact_digest="$(python3 -I - <<'PY' "${tmp_response}"
 import json, pathlib, sys
 payload = json.loads(pathlib.Path(sys.argv[1]).read_text())
 print(payload.get("artifact_digest", ""))

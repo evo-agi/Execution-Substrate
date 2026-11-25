@@ -322,6 +322,11 @@ For Remote Alpha 0.3:
 
 ## Future ES-Owned Remote Alpha Operator Facade
 
+The route rules for P0i to P0v at `PLANS.md`'s rank are in
+`.docs/standing_rules/remote_alpha_operator_routes.md`; `AGENTS.md` section 3
+ranks that file with `PLANS.md`. The sections below hold the detailed route
+contracts.
+
 `Bounded slice rule`: a future ES-owned Remote Alpha operator facade is allowed
 only as a bounded MVP proof/support helper plus evidence/projection outputs
 only. This P0 effort is operator-helper consolidation and manual recovery
@@ -1070,6 +1075,40 @@ The first delegation slice must stay check-only/non-mutating. It may rely on
 the helper's existing temporary checker staging under
 `/var/tmp/execution-substrate-remote-alpha/helper-staging/<run-id>/`, but the
 operator facade itself must not introduce a generic remote staging framework.
+
+`Current invariant`: root writes summaries, preflights, backups and staged
+helpers into the shared artifact folder `/var/tmp/execution-substrate-remote-alpha`
+by name, and `/var/tmp` is writable by every account, so another account could
+create that folder first and plant links in it (whole-trunk red-team follow-up
+N-1, 2026-11-24). Every helper that writes there, and every Mac-side route that
+stages helpers there, first runs `remote_alpha_prepare_output_dir`
+(`scripts/internal/remote_alpha_output_dir.sh`; helpers that are staged on
+their own carry an identical copy, which a test keeps identical). It creates
+missing folders one at a time without following links and refuses a symbolic
+link anywhere on the path, a folder that belongs to an account other than root,
+the user running the step or the user who ran sudo, a folder its group or
+others can write unless root owns it and it is sticky (such as `/var/tmp`
+itself), an artifact folder its group or others can write, and a path with a
+`..` component (normalizing `link/..` away would check a folder other than the
+one the write reaches). It reads owners and modes without needing read
+permission on a folder, so a root-owned private folder still passes when the
+SSH user checks it before sudo hands it over. The Mac-side
+staging routes run that check through sudo before any other sudo step, so a
+folder they create belongs to root, and they make their `/tmp` upload and
+artifact folders fresh and private (`mkdir -m 0700` without `-p`, which fails
+when a folder of that name already exists). The Vault reset reads the
+workload-auth summary only from a folder that passes the same check.
+The operator's Vault unseal, Vault reset (dry run and execute), workload-auth
+bootstrap and operator healthcheck TLS routes stage their helpers in a folder
+named `<route prefix>-<run id>` directly under `/tmp`, such as
+`/tmp/execution-substrate-remote-alpha-vault-unseal-existing-<run id>`, made
+with `mkdir -m 0700` and no `-p`. A folder or link someone planted at that name
+makes staging fail, no parent another account could own sits between `/tmp`
+and the staged helpers (the healthcheck route runs its helper through sudo),
+and cleanup removes only a real folder the SSH user owns (red-team re-check 14
+of PR #50, O14-1). The route stops at the first staging step that fails and
+copies or runs nothing after it, and the run step runs a helper only from a
+real `0700` folder the SSH user owns.
 Default sudo behavior must remain the helper's noninteractive `sudo -n`
 preflight and structured `sudo_unavailable` evidence. `--interactive-sudo`
 may remain available only for a visible terminal when a bounded password
@@ -2055,6 +2094,17 @@ Stop conditions for P0m:
 - any request to pass secrets as CLI args, environment values, environment
   files, local files, remote files, logs, artifacts, or Codex output
 - reset helper broad raft path guard triggers
+- the raft path is a symbolic link or does not belong to the Vault service user
+- a process still runs as the Vault service user after the unit stops; the
+  helper moves nothing and Vault stays stopped (whole-trunk red-team RT-2,
+  2026-11-24)
+- a directory on the raft path is a symbolic link when the helper moves the
+  raft directory, or the raft directory is no longer the Vault service user's;
+  the helper reaches the raft directory's parent from `/` without following a
+  link, moves the old directory and creates the new one inside that parent,
+  and hands the new one over through its own descriptor, so a link the Vault
+  account plants anywhere on the path cannot point root at another directory
+  (audit 03 of PR #49, 2026-11-24)
 - exact phrase mismatch
 - request to run post-unseal check, workload-auth check, Infrastructure Manager
   refresh, support-bundle collection, CP proof, governed smoke, runtime identity
@@ -2702,15 +2752,22 @@ Summary-path preparation:
   request Vault/root/proof secret material, run workload-auth checks,
   reset/unseal, IM, support bundles, CP proof, runtime identity generation,
   helper staging, or summary copy-back.
+- Before any sudo step, preparation checks the parent with
+  `remote_alpha_prepare_output_dir`: it refuses
+  (`error_classification=summary_parent_unsafe`) a symbolic link anywhere on
+  the path, a parent that belongs to an account other than root or the helper
+  user, and a parent its group or others can write.
 - If the parent is missing, preparation creates it. If the parent exists but is
   not writable/executable by the helper user, preparation uses only an explicit
   operator-authorized OS sudo prompt through the visible SSH TTY to make that
-  parent helper-user/group owned with mode `0750`. The preparation command must
+  parent helper-user/group owned with mode `0750` (through `chown -h`, which
+  never follows a link). The preparation command must
   keep SSH stdin attached to the visible terminal instead of feeding the remote
   script over SSH stdin, so sudo controls password echo suppression. If the
   bootstrap summary file already exists as a regular file but is not writable by
   the helper user, preparation uses visible sudo to make only that file
-  helper-owned with mode `0600`. Preparation does not delete workload-auth check
+  helper-owned with mode `0600`; a summary path that is a symbolic link is
+  refused (`summary_path_symlink`). Preparation does not delete workload-auth check
   summaries or other unrelated evidence files, creates and removes only a hidden
   same-directory temp probe, and creates no final bootstrap summary in
   standalone mode.
@@ -3005,6 +3062,171 @@ P0q tests:
   `ssh -tt` is used only for execution, only the public bootstrap helper is
   invoked, cleanup is attempted, no transcript/`tee`/`script` is used, and no
   Mac `.out` copy-back occurs
+
+#### P0q-R1 Bootstrap Token Limits, Proof History And Unseal-Key Authority
+
+`Bounded slice rule`: P0q-R1 refines the bootstrap helper for findings INF-04,
+INF-05 and the root-token half of INF-06 of the 2026-11-23 infrastructure
+audit. Everything above still holds unless this subsection says otherwise.
+
+Role token limits:
+
+- role `service_execution` also gets `token_ttl`, `token_max_ttl` and
+  `token_bound_cidrs`, from the non-secret environment
+  `REMOTE_ALPHA_BOOTSTRAP_TOKEN_TTL` (default `15m`),
+  `REMOTE_ALPHA_BOOTSTRAP_TOKEN_MAX_TTL` (default `30m`) and
+  `REMOTE_ALPHA_BOOTSTRAP_TOKEN_BOUND_CIDRS` (default `172.17.0.0/16`, the
+  Docker bridge that workloads log in from)
+- Vault checks the bound CIDRs against the connection's source address,
+  for the login and for every later use of the token. Workload containers
+  on the default bridge connect from `172.17.0.x`. The box's own
+  workload-auth check connects from the bridge address only while the host
+  firewall's `host_to_vault_source` chain is loaded (section "Remote Alpha
+  Host Firewall"); without it Docker's masquerade rule makes Vault see the
+  box's LAN address and the login fails with a plain 403
+- the helper validates them before any prompt or Vault request: durations
+  `N` followed by `s`, `m` or `h`, `token_ttl` not above `token_max_ttl`,
+  neither above 24 hours, and at least one strict CIDR that is not `/0`;
+  otherwise it fails at phase `role_token_limits` with `config_invalid`.
+  This operation sits between `summary_preflight` and `config_load`, so a
+  later config failure reports `last_completed_operation=role_token_limits`
+
+Proof history:
+
+- before the new value is written, the helper deletes the metadata, and with
+  it every earlier version, of both proof paths
+  (`proof-secrets/metadata/runtime-identity-vault-login` and
+  `proof-secrets/metadata/codex-runtime-profile`); a path that does not exist
+  yet is accepted
+- so no earlier value, for example an API key written there by hand, stays
+  readable through `?version=N`; the summary records
+  `proof_path_history=all_earlier_versions_and_metadata_deleted_before_write`
+
+Proof value source:
+
+- `REMOTE_ALPHA_BOOTSTRAP_PROOF_VALUE=prompt` (default) keeps the hidden
+  prompt
+- `REMOTE_ALPHA_BOOTSTRAP_PROOF_VALUE=generate` writes a random value made in
+  helper memory to both proof paths and never shows it; this is how the Codex
+  key is discarded
+
+Bootstrap authority:
+
+- `REMOTE_ALPHA_BOOTSTRAP_AUTHORITY=root-token` (default) keeps the prompt for
+  an existing root token
+- `REMOTE_ALPHA_BOOTSTRAP_AUTHORITY=unseal-key` prompts for the single unseal
+  key share instead. The helper starts `sys/generate-root` without a token,
+  requires a threshold of exactly one share, sends the key with the attempt's
+  nonce, and decodes the root token with the one-time password in memory. It
+  uses that root token once, for `auth/token/create-orphan` with policy
+  `root`, `ttl` and `explicit_max_ttl` `15m` and `renewable=false`, then
+  revokes the root token with `auth/token/revoke-self` as the very next
+  request, before Vault's configuration is put back (see "Generate-root
+  access") and before any configuration request. Configuration runs with
+  the 15-minute token, which the helper revokes before it exits, also after
+  a failure.
+- a generate-root attempt that someone else started is refused, not
+  cancelled; an attempt the helper started is cancelled when a later step
+  fails
+- a root token that cannot be revoked fails the run with
+  `root_token_revoke_failed` and a plain warning; a 15-minute token that
+  cannot be revoked is reported and expires by itself
+- the unseal key, the root token, the 15-minute token, the nonce and the
+  one-time password are never printed, logged, written or passed on a command
+  line; the summary records labels only
+
+Signals and interrupted runs:
+
+- before it reads anything, the helper turns core dumps off
+  (`RLIMIT_CORE` 0, which the commands it starts inherit, and
+  `PR_SET_DUMPABLE` 0 through `prctl`, which also stops a `core_pattern`
+  pipe such as systemd-coredump), and it stops (phase `disable_core_dumps`)
+  if either does not hold. It reads both back and does not look at the
+  operating system's name: on a host without `prctl`, such as macOS, it
+  stops there with `core_dumps_not_disabled` (message class
+  `process_still_dumpable`), and there is no fallback. So a crash while the
+  unseal key or a token is in memory writes no core file
+- from before generate-root until the root token is revoked and Vault's
+  configuration is back, SIGINT, SIGTERM, SIGHUP and SIGQUIT are blocked;
+  the reload command inherits that, so Ctrl-C does not cut a reload short.
+  A signal that arrives then takes effect right after that section, at the
+  latest after the reload timeout (60 s) and the two waits (20 s each).
+  The terminal's stop signals (SIGTSTP from Ctrl-Z, SIGTTIN, SIGTTOU) are
+  held over the same section, so the run stops only after it; SIGSTOP
+  cannot be held
+- SIGTERM, SIGHUP and SIGQUIT are turned into the same clean stop as
+  Ctrl-C: no configuration request follows, the 15-minute token is
+  revoked, the summary records `failure_class=interrupted` and
+  `interrupted_by`, the warnings are printed, and the exit code is 128 plus
+  the signal number
+- SIGKILL and a power loss cannot be deferred. Inside the two requests
+  between generate-root's last step and the revoke, they can leave a root
+  token that never expires; its value existed only in the killed process.
+  During the enable or restore reload, they can leave the added line in the
+  file, or Vault answering generate-root without a token from memory while
+  the file is clean. A power loss also reseals Vault
+- the next run finds each of these. With `temporary-config` it refuses a
+  file that mentions `enable_unauthenticated_access` (phase
+  `vault_config_preflight`; remove the marked line, reload) and a Vault
+  that answers generate-root without a token while the file does not say
+  so (phase `generate_root_access_preflight`, class
+  `generate_root_access_open_outside_config_file`; reload Vault). With the
+  15-minute token it counts the root-policy tokens that never expire (no
+  `expire_time`, or periodic) and warns when there are any, operation
+  `standing_root_tokens`, before any configuration request.
+  `REMOTE_ALPHA_BOOTSTRAP_STANDING_ROOT_TOKENS=revoke` (unseal-key only)
+  revokes them with `auth/token/revoke-accessor`, which also revokes the
+  tokens each one made that are not orphans. The summary records counts,
+  never accessors
+
+Generate-root access:
+
+- Vault 2.x (2.0.0 on the box, 2.2.2 in CI) answers `403` to
+  `sys/generate-root` without a token unless its server configuration holds
+  `enable_unauthenticated_access = ["generate-root"]`, which a reload (SIGHUP)
+  applies without a restart or reseal
+- with `unseal-key`, the helper asks Vault (read-only) before it asks for the
+  key, phase `generate_root_access_preflight`
+- `REMOTE_ALPHA_BOOTSTRAP_GENERATE_ROOT_ACCESS=as-configured` (default) never
+  touches Vault's configuration and fails there with
+  `generate_root_unauthenticated_access_disabled` when Vault refuses
+- `REMOTE_ALPHA_BOOTSTRAP_GENERATE_ROOT_ACCESS=temporary-config` (unseal-key
+  only) checks before any prompt that `REMOTE_ALPHA_BOOTSTRAP_VAULT_CONFIG_PATH`
+  (default `/etc/vault.d/vault.hcl`) is a regular file, not a symlink,
+  writable, and does not mention `enable_unauthenticated_access`, and that
+  the first word of `REMOTE_ALPHA_BOOTSTRAP_VAULT_RELOAD_COMMAND` (default
+  `systemctl reload vault.service`) exists. Only when Vault refuses does it
+  add a marked comment and that one setting to the file, reload Vault and
+  wait until Vault answers. After generate-root, once the 15-minute token is
+  made and the root token is revoked, it writes the original bytes back with
+  the same owner and mode, reloads again, and waits until Vault refuses
+  again, all before any configuration request. The Vault account may own
+  the folder of that file, so the helper reads the file without following
+  a link at its name and sets the new file's owner and mode through the
+  descriptor it created it with, never by name. If that cannot be shown, it
+  revokes the 15-minute token, fails with `vault_config_restore_failed` and
+  prints the exact line to remove and the reload command.
+- with `temporary-config`, a Vault that already answers generate-root
+  without a token is refused, before the key prompt and again just before
+  generate-root, because the file was checked not to mention the setting:
+  that state is what a run killed during the restore leaves. If the setting
+  is meant to stay on (set in another file), `as-configured` uses it
+
+Validation:
+
+- fake-Vault tests cover every order, refusal and failure path above
+- one test runs the helper against a real local Vault server (not dev mode;
+  raft, TLS, one key share). It shows that Vault refuses generate-root without
+  a token until the setting is reloaded, that the token accessor list is the
+  same before and after a run, that earlier proof versions are gone, that a
+  workload login gets the 900-second TTL, that a login from outside
+  `token_bound_cidrs` is refused, that a wrong key changes nothing, that the
+  initial root token is reported as a standing root token and that `revoke`
+  revokes it. A second real-Vault test sends SIGINT, SIGTERM, SIGHUP and
+  SIGQUIT from inside the enable and the restore reload and checks that no
+  token stays valid, the file is back, Vault refuses again and no
+  configuration ran. CI installs Vault 2.2.2, so both run there. They still
+  run no live box, SSH or sudo.
 
 ### Historical P0r Mac-Side Runtime Identity Summary — Superseded and Non-Authoritative
 
@@ -3516,7 +3738,9 @@ before its fixed release and is reaped on every path. One successful
 invocation-local capability state is required by every fixed OpenSSL command;
 no command forks another probe. Failure or indeterminate capability reads no
 status input, spawns no OpenSSL child, publishes no generation, and leaves no
-probe descriptor or process. On group signal
+probe descriptor or process. A second part of the same probe proves the
+PID-namespace containment stated below with two further fixed internal fork
+children, a probe anchor and one probe member, under the same rules. On group signal
 failure it enumerates only members whose observed PGID equals the reserved
 leader PGID, acquires pidfds, revalidates identity and membership, signals
 members through pidfds, and repeats bounded scans until nonleader members are
@@ -3531,7 +3755,8 @@ identity revalidation, signaling, polling, waiting, or cleanup-state
 reporting is contained by this unresolved-cleanup hold. One-shot faults
 recover on later iterations; persistent faults retain the invocation and
 lock with bounded backoff. No outer retry may return until group absence
-and exactly one direct-child reap are proved. No unrelated process is signaled.
+and exactly one direct-child reap are proved, and no fixed command returns
+before the anchor of its PID namespace is reaped. No unrelated process is signaled.
 Group TERM and KILL occur while the child remains unreaped, so
 its PID remains reserved; cleanup never signals a process group after reaping.
 Nonreaping `waitid` with `WNOWAIT` detects terminal leader state without
@@ -3575,6 +3800,146 @@ error is unproved, never absent, and a missing `<pid> (` prefix, a line over
 therefore neither fails the capability probe nor prolongs the
 unresolved-cleanup hold. This rule adds no time limit to that hold and never
 counts a visible zombie as absent.
+
+`Bounded slice rule` for fixed-child containment: the process-group
+disposition reaches only a process that stays in the fixed child's process
+group and that one identity scan observes. A descendant that leaves the group
+with `setsid` or `setpgid`, or that ignores TERM and replaces itself with a
+new process between two scans, is outside both. Each fixed OpenSSL command
+therefore runs in a PID namespace of its own, and the kernel, not a scan,
+accounts for its processes. The sequence for one command is fixed:
+
+1. The collector opens `/proc/self/ns/pid` and proves that
+   `/proc/self/ns/pid_for_children` names the same namespace object, by
+   device and inode. Otherwise the command refuses before any spawn.
+2. It creates one control pipe and one ready pipe, calls
+   `unshare(CLONE_NEWPID)`, and forks exactly one fixed internal anchor. The
+   anchor is the first process of the new namespace. It first asks the
+   kernel with `prctl(PR_SET_PDEATHSIG)` to kill it when the collector's
+   thread that forked it ends. It then closes every inherited descriptor
+   except its standard streams, the read end of the control pipe and the
+   write end of the ready pipe, including the status lock and the
+   trust-anchor pipe, checks that none is left, and ends with a nonzero
+   status when one is. Only then does it write one byte to the ready pipe and
+   close it. It then reaps every orphan of the namespace and ends with status
+   zero when the control pipe reports end of input. The reaping is required:
+   an orphan that ends as a zombie in the fixed child's process group would
+   otherwise stay visible to the absence scan of step 6 and hold it. The
+   anchor runs no other code and reads no status input. The collector reads
+   the ready byte before step 3, so no fixed child exists while a death of
+   the collector could leave the anchor alive.
+3. The collector spawns the fixed child exactly as before. The child is the
+   second process of the namespace and a direct child of the collector, so
+   the collector sees its ordinary process and group IDs and every existing
+   cleanup step applies to it unchanged.
+4. Directly after the spawn attempt, successful or not, the collector calls
+   `setns` with its own namespace and proves the reset by the check of step 1.
+5. Collection runs unchanged.
+6. The cleanup owner, process-group disposition, the unresolved-cleanup hold,
+   the direct-child reap, and the post-reap absence scan run unchanged, and on
+   every path after the spawn the collector closes the control pipe before the
+   cleanup owner runs and sends the anchor, its own unreaped child, one KILL.
+   The namespace therefore ends whatever a process of the namespace does to
+   the pipe or to the anchor: a root process can open the collector's end of
+   the pipe once more through `/proc`, or stop the anchor with `ptrace`, and
+   any process can keep the anchor busy with orphans to reap. A descendant
+   that left the group can keep a child of its own in the fixed child's
+   process group and leave it unreaped. Once that child has ended, it is a
+   zombie that is not an orphan, so the anchor cannot reap it, and no group
+   signal can end it; the unchanged cleanup would wait until the descendant
+   ends by itself, which may be never. With the namespace ended first, the
+   kernel kills that descendant, the zombie goes to the anchor, which reaps
+   it, and the cleanup finds the fixed child alone. A fixed child that still
+   runs at a timeout, an interruption, an output overflow, or a failed step
+   after the spawn, and any process that outlived the fixed child, is
+   therefore killed by the kernel without the grace period of TERM before
+   KILL; on those paths the command is incomplete, and after a normal end the
+   result is already complete, so nothing such a process could still write
+   counts. When the anchor ends, the kernel kills every process that is still
+   in the namespace, admits no new process into it, and lets the anchor
+   become terminal only when no other process of the namespace is left, which
+   includes an unreaped direct child of the collector.
+
+   The fixed command can make such a direct child itself: a process that it
+   makes with `clone` and `CLONE_PARENT` is inside the namespace, and its
+   parent is the collector. Only the collector can reap that stray, and its
+   zombie would hold the group cleanup when it stays in the fixed child's
+   group, and the anchor otherwise. Before the cleanup owner runs, the
+   collector therefore waits without a time limit until the fixed child is
+   terminal and then reaps every stray: each child of the collector, as
+   `/proc/self/task/<tid>/children` lists them, that is outside the
+   collector's own PID namespace and is neither the anchor nor the fixed
+   child. It waits for a stray once it has ended and never signals it, and it
+   goes on until one list of its children holds no stray. Only the fixed
+   child and a stray can make a stray, so a list that holds none, read after
+   the fixed child was seen terminal, is final. The fixed child stays
+   unreaped for the cleanup owner.
+7. The collector waits for the anchor with a nonblocking `waitpid`, reaping
+   every ended stray in the same loop, sends the anchor one KILL when it has
+   not had one and is not terminal after the grace period or when the pipe
+   close failed, and reaps it exactly once. No fixed command returns, with a
+   result or incomplete, before that reap.
+
+A collector that ceases to exist ends its anchor through the parent-death
+signal of step 2, whatever a process of the namespace does to the control
+pipe or to the anchor, so a killed collector takes its fixed child and every
+descendant in the namespace with it. As the first process of its namespace
+the anchor cannot be ended by a signal from inside it. An anchor that does
+not become terminal holds the invocation with lifecycle ownership and the
+status lock retained, as the unresolved-cleanup hold does, and that hold has
+no time limit.
+
+Failure never selects a weaker mode. A missing `os.unshare` or `os.setns`, a
+refused namespace, a failed anchor fork, or an anchor that does not write its
+ready byte means no spawn and an incomplete command. An unproved reset, a
+failed control-pipe close, a failed KILL of the anchor, a failed list of the
+collector's children or wait for a stray, an anchor that ends in any way
+other than status zero or the collector's own KILL, and an unproved anchor
+reap are incomplete after the complete cleanup; the private
+`child_namespace_unproved` literal maps to the existing
+`openssl_child_unproved` collection witness reason. While the reset stays
+unproved, every later command refuses at step 1. No command falls back to
+process-group disposition alone.
+
+The process-capability probe proves this by behavior in its second part,
+after its first part succeeded and before any status input is read. It opens
+one probe namespace by steps 1, 2 and 4 with one fixed internal member in
+place of the fixed child. The member closes its inherited descriptors and
+then waits for input that never comes, so it never ends by itself. After the
+collector closes the control pipe, the member must become terminal by the
+kernel's KILL within the grace period, the anchor must not be terminal while
+the member is unreaped, the ended member must be listed among the
+collector's children outside its own PID namespace, as a stray is found, and
+after the member's reap the anchor must end with status zero without a KILL
+from the collector. Both children are reaped and
+every probe descriptor is closed on every path. Any other outcome is
+`process_capability_unproved` before any status input is read and before any
+OpenSSL spawn. The decision is by behavior, never by an OS label, a kernel
+version, or the caller's user ID.
+
+Limits that this rule states and does not remove:
+
+- The fixed child still runs as root. It cannot leave its PID namespace, but
+  a hostile child could ask a service of the host to start a process outside
+  it, or write any file that root may write. A root process of the namespace
+  that may trace the anchor could also undo the anchor's parent-death
+  signal, so that a killed collector leaves that namespace alive; while the
+  collector lives, its KILL ends the anchor all the same. The rule contains
+  the processes of the fixed command, not the authority of root.
+- A process that cannot die, for example one that is stuck in the kernel,
+  keeps the anchor or a stray from becoming terminal. The invocation then
+  holds.
+- Inside its namespace the fixed child has process ID 2 and parent ID 0,
+  while `/proc` stays the host's and shows the host's process IDs.
+- The namespace setting belongs to the calling thread, and a kernel may
+  refuse `unshare(CLONE_NEWPID)` to a process with several threads. The
+  collector keeps exactly one thread.
+- Creating a PID namespace needs root on Linux. Local and unprivileged tests
+  replace the namespace steps with a stand-in and prove nothing about the
+  kernel path; only a run as root on Linux does.
+
+This rule changes no process-group signal, hold, direct-child reap, lock,
+publication, public code, schema, reader, or retry authority.
 
 The exact client verification argv is `/usr/bin/openssl verify -trusted
 <selected-ca-fd> -purpose sslclient /dev/stdin`. The server argv is
@@ -4963,6 +5328,14 @@ The active repo-derived ARS service inputs for that ARS step remain:
 - systemd drop-in dir `/etc/systemd/system/ars.service.d`
 - systemd drop-in path `/etc/systemd/system/ars.service.d/10-account.conf`
 
+`Current invariant`: after the first run the ars account owns its state tree,
+so a rerun must not follow names in it (whole-trunk red-team RT-1,
+2026-11-24). The state step opens every directory and file without following
+links, refuses a link, a file with more than one link, anything that is not a
+directory or regular file, and a tree more than 16 directories deep, checks
+the whole tree before it changes anything, and requires the state root's
+parent to belong to root and not be writable by group or others.
+
 ### EGS De-root Step
 
 The EGS step in this tranche is already landed. It remains documented because
@@ -6325,6 +6698,27 @@ must stay limited to the dedicated Vault service account posture, the Vault
 systemd drop-in, and the minimum config or storage or log or audit or TLS
 ownership or readability changes needed for Vault.
 
+`Current invariant`: the vault account may own the directories this helper
+changes, so root must never change a path by name there (whole-trunk red-team
+RT-3, 2026-11-24). The check-only plan blocks a path that goes through a
+symbolic link, any directory the apply would change that is not dedicated to
+Vault (owned by the Vault account or group, and never a shared system directory
+such as `/etc` or `/var/log`), a log, audit or storage directory that vault can
+only read now and the apply would make writable by it, a storage directory that
+is not Vault's own or inside one, and a directory the plan would give two
+owners. Apply opens every
+path without following links, checks all of them before changing any, changes
+the path owners before it installs the drop-in, takes a config or TLS file's
+directory to `root:<vault group>` before the file, changes only regular files
+with one link, and refuses anything else with a summary that says whether a
+path had already changed. Once the unit already runs as the Vault user, a
+process of that account may have moved or renamed entries in the directories
+it owns, so the plan and the apply also refuse a config or TLS file that vault
+cannot read now, and the apply refuses a storage entry vault does not own,
+instead of opening either up to vault (red-team re-check 06 of PR #49, RC-1).
+While the unit still runs as root, those files are root's by design and the
+apply hands them over.
+
 The apply summary must record changed paths, backups, rollback path,
 post-apply checks, skipped checks, redaction status, and explicit non-claims.
 Required post-apply checks are Vault `/v1/sys/health` or an equivalent local
@@ -6553,17 +6947,26 @@ with a bundle just read over the admin socket. Then it stops
 `spire-agent.service` (`es.service` stops with it), moves
 `/var/lib/spire/agent` aside to `/var/lib/spire/agent.recover-<UTC timestamp>`
 (kept, never deleted) and creates an empty one with the same owner and mode.
+It sets that owner and mode through a descriptor opened without following
+symlinks, and only on the empty directory it just created, because `spire`
+may be able to write `/var/lib/spire`: a symlink or directory put in its
+place is refused and rolled back, never handed over.
 It generates one join token for `spiffe://execution.internal/spire-agent`
 with a 120 s lifetime over the admin socket as `spire`. The token stays in
-the helper's memory and in a `0600` file owned by `spire` inside a private
-`0700` directory under `/run` (tmpfs); it is never printed, logged by the
-helper, put in an environment or on any command line. The helper runs
+the helper's memory and in a `0600` file owned by `spire` inside a
+directory under `/run` (tmpfs) that stays root's own, mode `0710` with
+group `spire`: `spire` can reach the token file but cannot create, rename
+or replace anything there. The token is never printed, logged by the
+helper, put in an environment or on any command line. The attesting
+agent's output goes to a log file the helper creates there as a new file
+(never through an existing name or symlink) and reads back, for a failure
+report, through its own descriptor. The helper runs
 `spire-agent run -config /etc/spire/agent/agent.conf -trustBundle /etc/spire/agent/bootstrap-bundle.pem -trustBundleFormat pem -joinTokenFile <file>`
 as `spire` until the new agent's SVID appears (with `-trustBundle`, SPIRE
 itself refuses to start if it still reads `insecure_bootstrap` in
 `agent.conf`, whatever the helper's own scan concluded), deletes the token file at
 once, checks the server lists the new agent, stops that process and removes
-the private directory. It then starts `spire-agent.service` and
+the token directory. It then starts `spire-agent.service` and
 `es.service` and requires the same health, identity, server record,
 workload SVID and unit checks as `pin`. If the attestation fails, it moves
 the new data directory aside to `/var/lib/spire/agent.failed-<UTC timestamp>`,
@@ -6608,6 +7011,443 @@ Not covered (long-term work owned elsewhere): a node attestor that can
 re-attest so that expiry heals itself, expiry alerting from the Maintenance
 Agent, issuing the services' certificates from SPIRE, and reproducing the
 host's SPIRE configuration from a repository.
+
+## Remote Alpha Host Firewall
+
+`Bounded slice rule`: the Remote Alpha box sits on the operator's home
+network, so one operator-run host firewall keeps containers off the home LAN
+and limits who reaches the box. It closes INF-01, INF-13 and INF-23 of the
+2026-11-23 infrastructure audit. It is a short-term bridge: the named
+workload identities, network grants and egress lanes of the workload-identity
+design replace its container rules when they land.
+
+Scripts:
+
+- public: `scripts/remote_alpha_host_firewall.sh`
+- internal: `scripts/internal/remote_alpha_host_firewall.sh` (host checks,
+  apply, confirm, rollback, status, probe) and
+  `scripts/internal/remote_alpha_host_firewall.py` (settings validation,
+  rendering, listener classification)
+
+What it owns, and nothing else:
+
+- nftables tables `inet es_host_firewall` and `bridge es_host_firewall`,
+  replaced atomically in one transaction; Docker's, ufw's and every other
+  table stay as they are
+- files it installs under `/etc/execution-substrate/host-firewall`
+  (`es-host-firewall.nft` and its listing); it reads the settings file there
+  and never writes it
+- unit `/etc/systemd/system/es-host-firewall.service`, which loads the
+  installed ruleset at boot and then fails unless both tables exist (`nft -f`
+  succeeds on an empty file and loads nothing)
+- sshd drop-in `/etc/ssh/sshd_config.d/00-execution-substrate-host-access.conf`
+- a transient `es-host-firewall-rollback` timer and the records of an apply
+  that awaits `--confirm`, under `/var/lib/es-host-firewall`. They are on
+  disk so that an apply cut short by a reboot (which also ends the timer)
+  stays visible: its marker makes `--status` report it and `--plan` and
+  `--apply` refuse until `--rollback` runs. At boot the loaded tables are
+  the installed ruleset (or none), while the unconfirmed sshd drop-in may
+  still be in place
+
+It reloads sshd. It does not touch other sshd files, Vault, Nomad, Docker or
+ES, and reads no secrets.
+
+Rules (`execution-substrate.remote-alpha.host-firewall.v1`, golden file
+`testdata/remote_alpha_host_firewall/ruleset.golden.nft`):
+
+- input, default drop, at priority `filter - 10` so that a drop is final even
+  when another table accepts: loopback (all host-local traffic, including to
+  the box's own LAN and bridge addresses), replies, and then by source
+  interface
+- from container interfaces (`CONTAINER_INTERFACES`, default `docker0 br-*
+  nomad`): only `VAULT_ADDRESS:VAULT_PORT` (default `172.17.0.1:8200`)
+- from the LAN: needed ICMP and ICMPv6, DHCP replies, SSH from
+  `SSH_SOURCES` on `SSH_PORT`, and `SERVICE_PORTS` (default `8444 8445`, AGS
+  and ES) from `SERVICE_CALLERS`; everything else is counted, rate-limited
+  logged and dropped. IPv6 is filtered the same way, so the box's public and
+  unique-local IPv6 addresses take only what an IPv6 source entry allows
+- forward: containers reach the listed resolvers on port 53 and the
+  internet, and no private, loopback, link-local, multicast or reserved
+  range; no new connection into a container is forwarded, published ports
+  (Docker DNAT) included, so a port published later stays closed until this
+  rule changes
+- bridge table: containers cannot reach each other at layer 2, whatever
+  the `br_netfilter` state: no frame passes from one bridge port to another
+  (IPv4 whatever its addresses, IPv6, VLAN-tagged frames, ARP), so a forged
+  source address, an 802.1Q priority tag or a forged ARP reply does not
+  help either. The bridge forward hook sees only port-to-port frames, so
+  this does not touch traffic to the host. The rule cannot be keyed on the
+  container bridges (`meta ibrname` is not supported here), so it covers
+  every bridge; `--apply` refuses while a bridge exists that is not a
+  container interface
+- box's own connections to Vault: chain `host_to_vault_source` (nat,
+  postrouting, priority `srcnat - 10`) applies an identity snat to
+  connections that leave through `lo` from `VAULT_ADDRESS` to
+  `VAULT_ADDRESS:VAULT_PORT`. Docker masquerades everything from a bridge
+  subnet that leaves through another interface (`-s 172.17.0.0/16 ! -o
+  docker0` for the default bridge), and the box's own connection to the
+  bridge address leaves through `lo`; the kernel then picks the first
+  interface's global address, which on the box is the LAN address. Without
+  the chain Vault sees the box as `192.168.1.156`, and the workload role's
+  `token_bound_cidrs` (`172.17.0.0/16`, P0q-R1) refuses the box's own
+  workload-auth check with a plain 403. The identity snat binds the
+  connection first, so Docker's rule is not consulted for it; an `accept`
+  would not do this. It is the only address rewrite in the ruleset; no other
+  traffic and no Docker rule changes
+- named counters for every drop and for the kept-source connections
+  (`host_to_vault_source_kept`); `--status` prints them
+
+Settings:
+
+- file `/etc/execution-substrate/host-firewall/settings.env` (or
+  `REMOTE_ALPHA_HOST_FIREWALL_SETTINGS_FILE`), one `NAME=value` or
+  `NAME="value"` line per setting, names without the
+  `REMOTE_ALPHA_HOST_FIREWALL_` prefix
+- refused, before anything else: unknown or repeated names, quotes inside a
+  value, `$`, backquotes, backslashes, carriage returns, a symlink, and (when
+  run as root) a file not owned by root or writable by group or others
+- a non-empty environment variable `REMOTE_ALPHA_HOST_FIREWALL_<NAME>` wins
+  over the file; the file wins over the built-in defaults
+- `SERVICE_CALLERS` has no default. Adding a device that may call ES and AGS
+  is one address added there, then `--plan`, `--apply` and `--confirm`
+- `SSH_PASSWORD_SOURCES` (default empty: keys only) must lie inside
+  `SSH_SOURCES`
+- `CONTAINER_DNS_SERVERS=auto` picks the resolvers the way Docker does for
+  its default bridge (`daemon.json` `dns`; else `/etc/resolv.conf` without
+  loopback, or systemd-resolved's upstream list when 127.0.0.53 is the only
+  entry; IPv6 resolvers only when `daemon.json` enables IPv6)
+- `ACCEPT_BLOCKED_LISTENERS` names listening sockets (`tcp/PORT`,
+  `udp/PORT`) that the firewall makes unreachable from the LAN and that the
+  operator checked nobody needs; `--apply` refuses while an unlisted one
+  exists
+
+sshd drop-in:
+
+- `PasswordAuthentication no`, `KbdInteractiveAuthentication no`,
+  `X11Forwarding no`, then `Match Address <SSH_PASSWORD_SOURCES>` with
+  `PasswordAuthentication yes` when the list is not empty
+- it sorts first in `sshd_config.d` and sshd keeps the first value it reads,
+  so these values win over later files and `sshd_config`; a `Match` block in
+  an included file ends at the end of that file
+- before anything changes, the script requires an `Include` of
+  `sshd_config.d/*.conf` in `sshd_config`, no other `Match` block, and no
+  unmanaged file at the drop-in path; it runs `sshd -t` and `sshd -T` for a
+  password source, `192.0.2.1`, `2001:db8::1` and the first address of each
+  SSH source outside the password sources, with the new drop-in first
+- after installing it, the same `sshd -T` check runs on the live
+  configuration before sshd reloads; any difference restores the previous
+  state
+- root login, forwarding and accounts stay as they are
+
+Modes:
+
+- `--plan` (default): read-only; settings, host facts (including the
+  source address Vault sees for the box's own connections), inbound SSH
+  peers, listening sockets and what the firewall does to each, the ruleset,
+  the drop-in, and every check `--apply` makes
+- `--apply`: the checks (the kernel accepts the ruleset with `nft -c`,
+  current SSH peers stay allowed, the Vault address is on a container
+  interface, every bridge is a container interface, no
+  container interface has a global or unique-local IPv6 address, every
+  newly blocked listener is accepted, the sshd checks, no earlier apply
+  awaiting confirm or left unconfirmed), then it arms the rollback
+  timer (`ROLLBACK_SECONDS`, default 180), loads the ruleset, installs and
+  checks the drop-in and reloads sshd. Existing sessions stay
+- `--confirm`: only from an SSH connection opened after `--apply` and with
+  the same settings; installs the ruleset and unit, keeps the drop-in and
+  cancels the timer. Every file it installs (and the drop-in `--apply`
+  installs) is written to a temporary file, flushed to disk, renamed into
+  place, and its directory flushed, so a crash or power cut leaves the old
+  file or the new one, never an empty one. The new connection must come from an address inside
+  `SSH_SOURCES` and not from loopback (IPv4-mapped addresses are compared as
+  IPv4); a loopback connection proves nothing about the operator's path. At
+  the box's console, where no SSH connection can prove anything,
+  `REMOTE_ALPHA_HOST_FIREWALL_CONFIRM_WITHOUT_NEW_SSH=1` skips the
+  new-connection check
+- `--status`: read-only; whether both tables are loaded at all (an empty
+  installed ruleset or listing counts as not installed), whether the
+  installed ruleset is loaded and unchanged, whether the drop-in matches the settings and `sshd -T` agrees,
+  the unit, a pending rollback, whether every bridge is still a container
+  interface and no container interface has a global or unique-local IPv6
+  address (so a bridge or an IPv6 network added after `--apply` shows up
+  here, not only at the next `--apply`), the source Vault sees for the box
+  and the counters. Exit 0 only when both tables are loaded, the installed
+  ruleset is not empty and is unchanged, and both host checks pass
+- `--probe`: two short-lived containers from `PROBE_IMAGE` (never pulled);
+  Vault, DNS and the internet must work, and the box's LAN services, the LAN
+  gateway and the other container must not; Vault must see the box's own
+  connections from `VAULT_ADDRESS`; the drop counters must move
+- `--rollback`: removes both tables, the unit, the installed files, the
+  records of an earlier `--apply` under `/var/lib/es-host-firewall` and the
+  drop-in (only when it carries the script's marker) and reloads sshd; the
+  settings file stays
+- `--render`: prints the ruleset for the current settings
+
+Recovery: SSH reaches the box only from `SSH_SOURCES`. If the operator's
+address changes (for example a lost DHCP reservation), recover at the box's
+console with `sudo bash scripts/remote_alpha_host_firewall.sh --rollback`,
+or by changing `SSH_SOURCES` and running `--apply` and then `--confirm` with
+`REMOTE_ALPHA_HOST_FIREWALL_CONFIRM_WITHOUT_NEW_SSH=1`.
+
+Host facts (`--plan`): interfaces, the default route, nftables.service,
+ufw, iptables, whether `br_netfilter` is active (read from
+`/proc/sys/net/bridge/bridge-nf-call-iptables`, which exists whether it is
+a module or built in), every bridge and whether it is a container
+interface, the tables, the unit, the rollback timer and the source check.
+
+Known limits:
+
+- listener classification treats a UDP socket on a port in the ephemeral
+  range as a client socket that only gets replies; a real UDP service on
+  such a port is blocked like any other unlisted listener, and the
+  classification line names its owner so the operator can check
+- the role's `token_bound_cidrs` (`172.17.0.0/16`) admits only the default
+  bridge. Containers on `br-*` or `nomad` bridges reach Vault through this
+  firewall but their logins are refused with a plain 403 until their
+  subnet is added there. Because the identity snat gives every local
+  process that connects to `VAULT_ADDRESS:VAULT_PORT` the bridge address,
+  the bound CIDR limits by network, not by workload: a process on the box
+  passes it, which the box's own workload-auth check needs
+- container networks with IPv6 are refused (see `--apply`; `--status`
+  reports one added later): the forward rules block only private IPv6
+  ranges for containers, so containers with IPv6 could reach LAN hosts at
+  the LAN's global IPv6 prefix
+- a bridge created after `--apply` that is not a container interface (for
+  example a libvirt bridge) loses every frame between its ports, because
+  the bridge table cannot be keyed on the bridge name; `--status` reports
+  it. Remove it, or, if it is a container network, list it in
+  `CONTAINER_INTERFACES` (its ports then stay isolated like those of every
+  container bridge) and run `--plan`, `--apply` and `--confirm`
+
+Source check (`host-vault-source`, used by `--plan`, `--status` and
+`--probe`): when `VAULT_ADDRESS` is an address of the host, it opens a TCP
+connection to `VAULT_ADDRESS:VAULT_PORT`, sends nothing, and reads the
+accepted side of that connection from `/proc/net/tcp` (or `tcp6`); its
+remote address is what Vault sees. It reports `kept`, `REWRITTEN` (with the
+address Vault sees) or `unknown`.
+
+Validation:
+
+- rendering against the golden ruleset and invariants (including that the
+  identity snat is the only address rewrite), settings and settings file
+  refusals, listener classification, SSH peer and bridge checks, the source
+  check against a local listener, and the apply/confirm/rollback order with
+  fakes
+- real-kernel tests in network namespaces load the rendered ruleset and
+  check real traffic (LAN, containers, Vault, DNS, a Docker-style published
+  port that must stay closed, IPv4 and, where the kernel has it, IPv6); one
+  turns `br_netfilter` off in the lab and sends forged-source IPv4, raw
+  IPv6, VLAN-tagged and ARP frames between two containers, which must not
+  arrive; they run `--apply`, `--confirm`,
+  `--status` and `--rollback`; with Docker's masquerade rule in the lab and
+  the LAN interface created before `docker0`, the source check reports
+  `REWRITTEN` to the LAN address without the firewall and `kept` with it;
+  they need root and skip themselves without it
+- a real-sshd test checks the drop-in with `sshd -t` and `sshd -T`; it needs
+  root, `sshd` and `ssh-keygen`
+- `--probe` on the box itself
+
+Non-claims: not egress lanes (a container still reaches the whole internet),
+not a per-run network grant, not Docker or Nomad hardening, not a full sshd
+hardening, not protection against root on the box, and not a change to the
+router or any other home device.
+
+## Remote ES Upgrade And Nomad Lock
+
+`Bounded slice rule`: the one existing-host migration contract. It moves the
+Remote Alpha box's ES, built from `74748063`, to one named `trunk_dev`
+commit, and in the same run locks the box's Nomad so that only ES can submit
+(the lock of PR #31 and PR #48). Current ES refuses the box's old `es.json`,
+because it decodes its config with unknown fields refused and requires
+`nomad.token_file` and `execution.retained_result_auth`, and the old ES
+cannot read a config that has them, so the binaries, the config and the
+Nomad lock change together. It applies to that host shape only: anything
+the read-only preflight of 2026-11-24 did not see is refused. It does not
+redeploy AGS, ARS or EGS, change a unit file, move ES storage, or add
+Nomad's HTTPS listener (part 2b of the Nomad lock).
+
+Scripts:
+
+- public: `scripts/remote_alpha_upgrade_es.sh`, which runs the Python core
+  with `python3 -I -B`
+- internal: `scripts/internal/remote_alpha_upgrade_es.py`
+- config check: `scripts/internal/esconfigcheck`, a Go program that only
+  calls ES's own `config.Load` on a file and reports its answer, so the
+  upgrade accepts exactly the configs the new ES accepts. Tests keep it to
+  that one call.
+
+Operator interface:
+
+- `scripts/remote_alpha_upgrade_es.sh build --out <dir> --commit <sha>`,
+  unprivileged, in a fresh clone checked out at `<sha>`. It requires Go
+  `go1.26.5` (`/usr/local/go/bin/go` by default; `--go` names another), a
+  clean checkout and an output folder outside it. It builds `es`,
+  `es-runtime-support` and `esconfigcheck` for linux/amd64 with
+  `CGO_ENABLED=0`, `GOTOOLCHAIN=local`, `-mod=readonly` and
+  `-buildvcs=true`, checks that each binary's build info names `<sha>` with
+  `vcs.modified=false`, and writes `provenance.json` with their SHA-256.
+- `sudo scripts/remote_alpha_upgrade_es.sh check --payload <dir> --commit <sha>`
+  reads only. It prints a JSON report (schema
+  `execution-substrate.remote-alpha.es-upgrade-summary.v1`) with every
+  change apply would make, and exits 1 with nothing changed when there is a
+  blocker.
+- `sudo scripts/remote_alpha_upgrade_es.sh apply --payload <dir> --commit <sha>`
+  runs the same checks, then the steps below.
+- `sudo scripts/remote_alpha_upgrade_es.sh rollback --backup-dir <dir>`
+  puts a backup back.
+
+Hand the clone and the payload to root before `check` (`chown -R root:root`)
+so that no other account can change them between the check and the run;
+`check` refuses a payload that is not root's. Run
+`apply` under `systemd-run` so that a dropped SSH session does not stop it;
+its output then goes to the journal, and its summary to the backup folder.
+
+`check` refuses when:
+
+- it does not run as root, or the payload folder, `provenance.json` or a
+  payload file is not `root:root` or is writable by group or others, the
+  provenance names another commit, another Go or a modified checkout, or a
+  file does not match the SHA-256 it records
+- `es` or `es-runtime-support` does not name, in its own Go build info (the
+  `.go.buildinfo` section that `go version -m` reads, read here without
+  running anything), Go `go1.26.5`, `vcs.revision=<commit>` and
+  `vcs.modified=false`. A test keeps that reader in agreement with
+  `go version -m`. `apply` repeats the check and installs copies with the
+  same SHA-256. `esconfigcheck` is bound by its owner and SHA-256 only, since the
+  upgrade runs it and does not install it
+- one of `ars`, `ags`, `egs`, `es`, `vault`, `spire-server`, `spire-agent`,
+  `nomad` and `docker` is not active, or `es.service` does not run
+  `/usr/local/lib/execution-substrate/bin/es -config /etc/execution-substrate/es.json`
+  as `es`
+- `/etc/execution-substrate/es.json` is not `root:es 0640`, its key set is
+  not the box build's 49 key paths, it is already migrated, or the new
+  ES's `config.Load` refuses the migrated config
+- ES's `/health` and `/v1/executions:contract` and AGS's `/health`, at the
+  addresses their configs name and with the operator certificate of
+  `/etc/execution-substrate/healthcheck.env`, do not all answer 200
+  (healthcheck runbook step 4)
+- `/etc/nomad.d/nomad.hcl` is not the exact file the preflight read (its
+  SHA-256 is pinned) or does not pin the wired port that file pins, Nomad is
+  already locked, or `/etc/nomad.d` holds another `.hcl` or `.json` file
+  that Nomad would load
+- `/etc/nomad.d`, `/opt/nomad` or `/opt/nomad/data` is not a directory,
+  Nomad names no leader, or Nomad has a pending or running job
+- a file already stands at the retained-result key path and does not meet
+  ES's rules for that key
+
+`apply`, after a clean check:
+
+1. backs up `es.json`, `es.service` and its `10-account.conf` drop-in, both
+   ES binaries, `nomad.hcl` and `nomad.env` (bytes, owner, mode and
+   SHA-256), and the owner and mode of the three Nomad folders, into a new
+   folder `/var/backups/execution-substrate-es-upgrade/<UTC time>-<commit>`
+   (root, 0700), and copies the verified payload into it
+2. stops ES
+3. checks the locked `nomad.hcl` with `nomad config validate`, stops Nomad,
+   gives every entry of `/opt/nomad/data` that root does not own to
+   `root:root` (recording each old owner and mode in the backup, because a
+   change of owner clears a setuid or setgid bit), and makes
+   `/etc/nomad.d`, `/opt/nomad` (0755) and `/opt/nomad/data` (0700)
+   root-owned (audit INF-16). The locked `nomad.hcl` replaces the legacy
+   Docker client options with `"driver.allowlist" = "docker"`, replaces the
+   wired-port pin `network_interface = "enp1s0"` with the loopback pin
+   `network_interface = "lo"`, and adds the `acl` block and the
+   `plugin "docker"` block of `scripts/70_linux_setup.sh`; it and
+   `nomad.env` become `root:root 0640`. A test keeps those pieces equal to
+   the setup script's. The box runs on Wi-Fi, and its cable may or may not
+   be plugged in: pinned to the wired port, the node has no host network
+   while the cable is out, and no ES job can be placed. Loopback holds on
+   Wi-Fi and on a cable alike (see
+   [configuration.md](configuration.md#nomad-requirements)).
+4. starts Nomad, waits up to 90 seconds for a named leader, and runs
+   `scripts/nomad_acl_setup.sh` with `ES_USER=es`, `NOMAD_USER=root` and
+   `OBSERVER_USER=root`: it bootstraps the ACLs, creates the `es-submit-v1`
+   namespace and the policies, writes the token files under
+   `/etc/execution-substrate/nomad-acl`, and checks the lock. Pass the same
+   `ES_USER` and `OBSERVER_USER` to a later `check`, `rotate` or
+   `placement`: `check` and `placement` refuse token files that other users
+   own, and `rotate` gives the new token files to the users named. It then
+   runs `nomad_acl_setup.sh placement` with `ES_CONFIG` the box's
+   `es.json`, `NOMAD_STARTED_AT` the time just before the Nomad start and
+   `NOMAD_PLACEMENT_WAIT_SECONDS=120`: within 120 seconds the restarted node
+   must have a host-mode network, and plans of both ES job shapes (Docker,
+   `network_mode` `none` and `bridge`) made with ES's token must place.
+   Every other check passes on a Nomad that can place nothing.
+5. creates the retained-result key
+   `/etc/execution-substrate/retained-result-auth/es.key` (32 random bytes,
+   `es`, 0400, folder `root:root 0755`), or keeps an existing valid one
+6. writes `es.json` with `nomad.token_file`
+   `/etc/execution-substrate/nomad-acl/es-token` and
+   `execution.retained_result_auth` `{store_id: remote-alpha, key_id: k1,
+   key_file: <the key>}` added and nothing else changed, after the new
+   ES's `config.Load` accepts it, then installs `es` and
+   `es-runtime-support` (`root:root 0755`); every file is replaced by one
+   rename
+7. starts ES and verifies: within 60 seconds ES is active and the three
+   endpoints answer 200, Nomad answers an anonymous job list with 403, and
+   `nomad_acl_setup.sh check` passes. The summary goes to `summary.json` in
+   the backup folder.
+
+Every command runs in a process group of its own. When a command times out
+or a signal interrupts it, its whole group is ended and drained before
+anything else happens, so no child of it keeps changing the host. If any step
+after the backup fails, or `apply` gets `SIGTERM`, `SIGHUP` or `SIGINT`, it
+ignores further signals and rolls back: it stops ES and Nomad and confirms
+that both are stopped (if either will not stop, nothing is put back and the
+result is `rollback_failed`), puts every backed-up file, owner and mode back,
+starts Nomad and ES, and requires Nomad to name a leader within 90 seconds,
+because ES's `/health` does not ask Nomad. It records `rolled_back`,
+`rolled_back_unhealthy` when the endpoints do not answer 200 within 60
+seconds, or `rollback_failed`, with the failure. `rollback` does the same
+from a backup folder, ignoring `SIGHUP`, and exits 1 on any of those
+failures. Output that can no longer be written never stops either one: a
+terminal that hangs up sends `SIGHUP`, so `apply` rolls back, while a closed
+output pipe alone does not, so `apply` goes on with its output sent to
+`/dev/null`; the summary records `output_lost` either way. Under
+`systemd-run`, give the unit `KillMode=mixed` and a long `TimeoutStopSec`, so
+that stopping the unit signals `apply` alone and leaves it time to roll
+back. Both leave the key, the token files and the backup in
+place: the old config names none of them, Nomad keeps its ACL bootstrap in
+its state, and a later `apply` reuses all three. Nothing prints a key or a
+token.
+
+The tests (`scripts/remote_alpha_upgrade_es_test.go`,
+`scripts/remote_alpha_upgrade_es_host_test.go` and
+`scripts/remote_alpha_upgrade_es_config_check_test.go`) run `check`,
+`apply`, the automatic rollback, an interrupted apply and `rollback` on a
+host-shaped folder with fake `systemctl`, `curl`, `nomad` and ACL setup,
+payload binaries whose Go build info names another commit, another Go or a
+modified build, payload files of another owner or group,
+with Nomad data that another group owns (a setgid file and a link among it),
+an `apply` whose terminal hangs up and one whose output pipe closes, an
+`apply` whose placement check fails after the Nomad start, the box's own
+`nomad.hcl` through the lock (the result is byte for byte the box's
+`nomad.hcl` after the host-network repair of 2026-11-24), and `build` with a
+fake Go against
+a dirty checkout and build info that names another commit or a modified
+build.
+
+## Python In The Scripts
+
+Every Python run that a script under `scripts/` starts, the remote alpha
+scripts and the supported-local ones alike, starts in isolated mode:
+`python3 -I`, and `#!/usr/bin/env -S python3 -I` as the first line of a
+Python file. Without `-I`, Python puts the current folder (for a file, the
+file's folder) first on `sys.path` and reads `PYTHONPATH`, the other
+`PYTHON*` variables and the user's site-packages. A root run started from a
+folder that another account can write would then import that account's
+module in place of a standard one. The scripts' Python uses only the
+standard library, so isolated mode changes nothing else.
+
+`TestScriptsStartPythonInIsolatedMode` fails on every mention of Python
+under `scripts/` that is not followed by `-I`. A child that a script's
+Python starts with `sys.executable` counts too: `"-I"` must be the next
+item of its argument list. The only exceptions are
+mentions that run nothing: a `command -v` or `require_command` check, the
+commands printed for the operator to run in the Infrastructure Manager
+checkout on the Mac (they need `PYTHONPATH=src`), an image, package or
+field name, and a message. The test lists each one with its reason. A line
+that occurs more than once is listed once for each occurrence.
 
 ## Non-Goals
 

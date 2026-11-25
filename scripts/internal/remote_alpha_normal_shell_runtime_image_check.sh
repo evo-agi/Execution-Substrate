@@ -11,6 +11,62 @@ remote_alpha_runtime_image_expected_recipe_builder_script="scripts/build_control
 remote_alpha_runtime_image_expected_dockerfile="es/runtimeprofiles/control_plane_normal_shell/Dockerfile"
 remote_alpha_runtime_image_expected_codex_realization="proof"
 
+# Copy of remote_alpha_prepare_output_dir from scripts/internal/remote_alpha_output_dir.sh,
+# which explains it; TestRemoteAlphaOutputDirCopiesMatch keeps the two identical.
+remote_alpha_prepare_output_dir() {
+  python3 -I - "$1" <<'REMOTE_ALPHA_OUTPUT_DIR_PY'
+import os
+import stat
+import sys
+
+if not sys.argv[1]:
+    sys.exit("remote alpha output folder: no folder given")
+if ".." in sys.argv[1].split("/"):
+    sys.exit(f"remote alpha output folder: {sys.argv[1]} has a '..' component; refusing to check a path that is not canonical")
+# The path is checked as given, never normalized: dropping "link/.." would
+# check another folder than the one a later write through the link reaches.
+parts = [part for part in os.path.join(os.getcwd(), sys.argv[1]).split("/") if part not in ("", ".")]
+trusted = {0, os.geteuid()}
+if os.environ.get("SUDO_UID", "").isdigit():
+    trusted.add(int(os.environ["SUDO_UID"]))
+# O_PATH reads a folder's owner and mode without read permission on it, so a
+# folder that root keeps private still passes and sudo can hand it over.
+flags = getattr(os, "O_PATH", os.O_RDONLY) | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+shown = "/"
+fd = os.open("/", flags)
+try:
+    for index in range(len(parts) + 1):
+        info = os.fstat(fd)
+        last = index == len(parts)
+        if info.st_uid not in trusted:
+            sys.exit(
+                f"remote alpha output folder: {shown} belongs to uid {info.st_uid}, not to root, "
+                "the user running this step or the user who ran sudo; refusing to write under it"
+            )
+        if info.st_mode & (stat.S_IWGRP | stat.S_IWOTH) and (
+            last or info.st_uid != 0 or not info.st_mode & stat.S_ISVTX
+        ):
+            sys.exit(f"remote alpha output folder: {shown} can be written by its group or others; refusing to write under it")
+        if last:
+            break
+        shown = "/" + "/".join(parts[: index + 1])
+        try:
+            next_fd = os.open(parts[index], flags, dir_fd=fd)
+        except FileNotFoundError:
+            try:
+                os.mkdir(parts[index], 0o755, dir_fd=fd)
+            except FileExistsError:
+                pass
+            next_fd = os.open(parts[index], flags, dir_fd=fd)
+        os.close(fd)
+        fd = next_fd
+except OSError as exc:
+    sys.exit(f"remote alpha output folder: {shown} is not a directory or is a symbolic link ({exc.strerror})")
+finally:
+    os.close(fd)
+REMOTE_ALPHA_OUTPUT_DIR_PY
+}
+
 remote_alpha_runtime_image_defaults() {
   REMOTE_ALPHA_RUNTIME_IMAGE_REF="${remote_alpha_runtime_image_expected_ref}"
   REMOTE_ALPHA_CODEX_CLI_PATH="${remote_alpha_runtime_image_expected_codex_cli_path}"
@@ -149,7 +205,7 @@ remote_alpha_runtime_image_ds_not_in_docker_group() {
 }
 
 remote_alpha_runtime_image_build_context_meta() {
-  python3 - "${REPO_ROOT}" \
+  python3 -I - "${REPO_ROOT}" \
     "${remote_alpha_runtime_image_expected_recipe_script}" \
     "${remote_alpha_runtime_image_expected_recipe_builder_script}" \
     "${remote_alpha_runtime_image_expected_ref}" \
@@ -260,7 +316,7 @@ remote_alpha_runtime_image_nomad_meta() {
   local output=""
 
   if ! command -v nomad >/dev/null 2>&1; then
-    python3 - <<'PY'
+    python3 -I - <<'PY'
 import json
 print(json.dumps({"ready": False, "ready_nodes": 0, "error": "nomad command not found"}, sort_keys=True))
 PY
@@ -273,7 +329,7 @@ PY
   if [[ -n "${NOMAD_TOKEN_FILE:-}" ]]; then
     source "${REPO_ROOT}/scripts/internal/nomad_acl.sh"
     if ! token="$(nomad_token_from_file "${NOMAD_TOKEN_FILE}" 2>/dev/null)"; then
-      python3 - <<'PY'
+      python3 -I - <<'PY'
 import json
 print(json.dumps({"ready": False, "ready_nodes": 0, "error": "nomad observer token file is missing or invalid"}, sort_keys=True))
 PY
@@ -284,14 +340,14 @@ PY
   # Nomad serves HTTPS only; the CLI trusts only Nomad's CA.
   if ! output="$(NOMAD_ADDR="${NOMAD_ADDR:-https://127.0.0.1:4646}" NOMAD_CACERT="${NOMAD_CACERT:-/etc/nomad.d/tls/ca.pem}" \
       NOMAD_TOKEN="${token}" nomad node status -json 2>/dev/null)"; then
-    python3 - <<'PY'
+    python3 -I - <<'PY'
 import json
 print(json.dumps({"ready": False, "ready_nodes": 0, "error": "nomad node status did not succeed"}, sort_keys=True))
 PY
     return 0
   fi
 
-  printf '%s' "${output}" | python3 /dev/fd/3 3<<'PY'
+  printf '%s' "${output}" | python3 -I /dev/fd/3 3<<'PY'
 import json
 import sys
 
@@ -325,7 +381,7 @@ remote_alpha_runtime_image_inspect_meta() {
   local output=""
 
   if ! command -v docker >/dev/null 2>&1; then
-    python3 - "${image_ref}" <<'PY'
+    python3 -I - "${image_ref}" <<'PY'
 import json
 import sys
 print(json.dumps({
@@ -345,7 +401,7 @@ PY
   fi
 
   if ! output="$(docker image inspect "${image_ref}" 2>/dev/null)"; then
-    python3 - "${image_ref}" <<'PY'
+    python3 -I - "${image_ref}" <<'PY'
 import json
 import sys
 print(json.dumps({
@@ -364,7 +420,7 @@ PY
     return 0
   fi
 
-  printf '%s' "${output}" | python3 /dev/fd/3 "${image_ref}" 3<<'PY'
+  printf '%s' "${output}" | python3 -I /dev/fd/3 "${image_ref}" 3<<'PY'
 import json
 import sys
 
@@ -393,7 +449,7 @@ remote_alpha_runtime_image_minimal_run() {
   local stderr_path=$4
 
   if ! command -v docker >/dev/null 2>&1; then
-    python3 - <<'PY'
+    python3 -I - <<'PY'
 import json
 print(json.dumps({
     "status": "not_exercised",
@@ -408,14 +464,14 @@ PY
   fi
 
   if docker run --rm --entrypoint /bin/sh -e "CODEX_CLI_PATH=${codex_cli_path}" "${image_ref}" \
-    -lc 'python3 --version 2>&1; git --version 2>&1; if [ -x "$CODEX_CLI_PATH" ]; then "$CODEX_CLI_PATH" --version 2>&1 || "$CODEX_CLI_PATH" --help 2>&1; else echo "missing codex cli: $CODEX_CLI_PATH" >&2; exit 3; fi' \
+    -lc 'python3 -I --version 2>&1; git --version 2>&1; if [ -x "$CODEX_CLI_PATH" ]; then "$CODEX_CLI_PATH" --version 2>&1 || "$CODEX_CLI_PATH" --help 2>&1; else echo "missing codex cli: $CODEX_CLI_PATH" >&2; exit 3; fi' \
     >"${stdout_path}" 2>"${stderr_path}"; then
     REMOTE_ALPHA_RUNTIME_IMAGE_RUN_STATUS="pass"
   else
     REMOTE_ALPHA_RUNTIME_IMAGE_RUN_STATUS="fail"
   fi
 
-  python3 - "${stdout_path}" "${stderr_path}" "${REMOTE_ALPHA_RUNTIME_IMAGE_RUN_STATUS}" <<'PY'
+  python3 -I - "${stdout_path}" "${stderr_path}" "${REMOTE_ALPHA_RUNTIME_IMAGE_RUN_STATUS}" <<'PY'
 import json
 import pathlib
 import re
@@ -461,7 +517,7 @@ PY
 remote_alpha_runtime_image_validate_summary_file() {
   local summary_path=$1
 
-  python3 - "${summary_path}" <<'PY'
+  python3 -I - "${summary_path}" <<'PY'
 import pathlib
 import re
 import sys
@@ -488,7 +544,7 @@ remote_alpha_runtime_image_write_summary() {
   local host_meta_path=$4
   local run_meta_path=$5
 
-  python3 - "${summary_path}" "${build_meta_path}" "${image_meta_path}" "${host_meta_path}" "${run_meta_path}" "${remote_alpha_normal_shell_runtime_image_summary_schema_version}" <<'PY'
+  python3 -I - "${summary_path}" "${build_meta_path}" "${image_meta_path}" "${host_meta_path}" "${run_meta_path}" "${remote_alpha_normal_shell_runtime_image_summary_schema_version}" <<'PY'
 import json
 import sys
 
@@ -595,6 +651,7 @@ remote_alpha_runtime_image_check_main() {
   remote_alpha_runtime_image_parse_args "$@" || return $?
 
   remote_alpha_runtime_image_require_command python3 || return 1
+  remote_alpha_prepare_output_dir "$(dirname "${REMOTE_ALPHA_SUMMARY_PATH}")" || return 1
   remote_alpha_runtime_image_require_command hostname || return 1
   remote_alpha_runtime_image_require_command id || return 1
   remote_alpha_runtime_image_require_command docker || return 1
@@ -628,7 +685,7 @@ remote_alpha_runtime_image_check_main() {
   export REMOTE_ALPHA_HOSTNAME
   REMOTE_ALPHA_HOSTNAME="$(hostname)"
 
-  python3 - "${host_meta_path}" "$(remote_alpha_runtime_image_nomad_meta)" "${ds_not_in_docker_group}" "${passwordless_sudo_for_ds}" <<'PY'
+  python3 -I - "${host_meta_path}" "$(remote_alpha_runtime_image_nomad_meta)" "${ds_not_in_docker_group}" "${passwordless_sudo_for_ds}" <<'PY'
 import json
 import os
 import pathlib
@@ -680,14 +737,14 @@ if failure_reasons:
 host_meta_path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
 PY
 
-  if [[ "$(python3 - "${build_meta_path}" <<'PY'
+  if [[ "$(python3 -I - "${build_meta_path}" <<'PY'
 import json, sys
 print("true" if json.load(open(sys.argv[1], encoding="utf-8")).get("safe") else "false")
 PY
   )" != "true" ]]; then
     overall_ok=false
   fi
-  if [[ "$(python3 - "${build_meta_path}" <<'PY'
+  if [[ "$(python3 -I - "${build_meta_path}" <<'PY'
 import json, sys
 print("true" if json.load(open(sys.argv[1], encoding="utf-8")).get("recipe_matches_slice") else "false")
 PY
@@ -704,7 +761,7 @@ PY
   if [[ "${docker_info_ok}" != "true" ]]; then
     overall_ok=false
   fi
-  if [[ "$(python3 - "${host_meta_path}" <<'PY'
+  if [[ "$(python3 -I - "${host_meta_path}" <<'PY'
 import json, sys
 print("true" if json.load(open(sys.argv[1], encoding="utf-8")).get("nomad_ready") else "false")
 PY
@@ -718,7 +775,7 @@ PY
     overall_ok=false
   fi
 
-  if [[ "$(python3 - "${image_meta_path}" <<'PY'
+  if [[ "$(python3 -I - "${image_meta_path}" <<'PY'
 import json, sys
 print("true" if json.load(open(sys.argv[1], encoding="utf-8")).get("present") else "false")
 PY
@@ -729,7 +786,7 @@ PY
       "${run_stdout_path}" \
       "${run_stderr_path}" >"${run_meta_path}"
   else
-    python3 - "${run_meta_path}" <<'PY'
+    python3 -I - "${run_meta_path}" <<'PY'
 import json
 import sys
 
@@ -755,10 +812,10 @@ PY
 
   remote_alpha_runtime_image_validate_summary_file "${summary_tmp_path}"
 
-  mkdir -p "$(dirname "${REMOTE_ALPHA_SUMMARY_PATH}")"
+  remote_alpha_prepare_output_dir "$(dirname "${REMOTE_ALPHA_SUMMARY_PATH}")" || return 1
   install -m 0644 "${summary_tmp_path}" "${REMOTE_ALPHA_SUMMARY_PATH}"
 
-  if [[ "$(python3 - "${run_meta_path}" <<'PY'
+  if [[ "$(python3 -I - "${run_meta_path}" <<'PY'
 import json, sys
 meta = json.load(open(sys.argv[1], encoding="utf-8"))
 print("true" if meta.get("status") == "pass" and meta.get("safe") and meta.get("codex_realization") == "proof" else "false")
@@ -767,7 +824,7 @@ PY
     overall_ok=false
   fi
 
-  if [[ "$(python3 - "${image_meta_path}" <<'PY'
+  if [[ "$(python3 -I - "${image_meta_path}" <<'PY'
 import json, sys
 print("true" if json.load(open(sys.argv[1], encoding="utf-8")).get("status") == "pass" else "false")
 PY

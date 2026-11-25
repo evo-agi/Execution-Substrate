@@ -289,6 +289,7 @@ server {
 }
 client {
   enabled = true
+`+supportedNomadClientNetworkInterface+`
 `+supportedNomadClientOptions+`
 }
 `+supportedNomadDockerPluginBlock+`ports {
@@ -882,7 +883,11 @@ func runWorkloadZoneVaultBlobReadinessWithFakeCurl(t *testing.T, repoRoot string
 	return string(output), err
 }
 
-func TestHealthCheckScriptRejectsPreManagedDevNomad(t *testing.T) {
+// runFullHealthCheckAgainstFakeNomad runs scripts/10_health_check.sh in the
+// full profile against real control-plane services and a fake pre-managed,
+// ACL-enforcing Nomad whose one ready node has the given networks.
+func runFullHealthCheckAgainstFakeNomad(t *testing.T, devMode bool, nodeNetworks []map[string]any) (string, error) {
+	t.Helper()
 	stack := startSubmitStackWithoutNomad(t)
 
 	repoRoot := executionPlatformRepoRoot(t)
@@ -928,7 +933,7 @@ func TestHealthCheckScriptRejectsPreManagedDevNomad(t *testing.T) {
 		case "/v1/agent/self":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"config": map[string]any{
-					"DevMode":    true,
+					"DevMode":    devMode,
 					"Datacenter": "dc1",
 					"Server":     map[string]any{"Enabled": true},
 					"Client":     map[string]any{"Enabled": true, "Options": map[string]any{"driver.allowlist": "docker"}},
@@ -938,7 +943,7 @@ func TestHealthCheckScriptRejectsPreManagedDevNomad(t *testing.T) {
 			})
 		case "/v1/nodes":
 			_ = json.NewEncoder(w).Encode([]map[string]any{
-				{"ID": "node-1", "Name": "fake-dev-node", "Status": "ready"},
+				{"ID": "node-1", "Name": "fake-node", "Status": "ready"},
 			})
 		case "/v1/node/node-1":
 			_ = json.NewEncoder(w).Encode(map[string]any{
@@ -951,6 +956,7 @@ func TestHealthCheckScriptRejectsPreManagedDevNomad(t *testing.T) {
 						"HealthDescription": "Healthy",
 					},
 				},
+				"NodeResources": map[string]any{"Networks": nodeNetworks},
 			})
 		default:
 			http.NotFound(w, r)
@@ -1031,10 +1037,20 @@ func TestHealthCheckScriptRejectsPreManagedDevNomad(t *testing.T) {
 	)
 
 	output, err := cmd.CombinedOutput()
+	return string(output), err
+}
+
+// The loopback host network of the supported config, as Nomad reports it.
+var fakeNomadLoopbackHostNetworks = []map[string]any{
+	{"Mode": "bridge", "Device": "nomad"},
+	{"Mode": "host", "Device": "lo", "CIDR": "127.0.0.1/32", "IP": "127.0.0.1"},
+}
+
+func TestHealthCheckScriptRejectsPreManagedDevNomad(t *testing.T) {
+	text, err := runFullHealthCheckAgainstFakeNomad(t, true, fakeNomadLoopbackHostNetworks)
 	if err == nil {
-		t.Fatalf("expected full health check to reject pre-managed dev nomad, got output=%s", string(output))
+		t.Fatalf("expected full health check to reject pre-managed dev nomad, got output=%s", text)
 	}
-	text := string(output)
 	if !strings.Contains(text, "nomad-startup-mode: pre-managed") {
 		t.Fatalf("expected pre-managed nomad startup mode, got %s", text)
 	}
@@ -1043,6 +1059,29 @@ func TestHealthCheckScriptRejectsPreManagedDevNomad(t *testing.T) {
 	}
 	if strings.Contains(text, "supported-environment: supported") {
 		t.Fatalf("did not expect supported-environment output for dev nomad, got %s", text)
+	}
+}
+
+// A client pinned to a wired port whose cable is out has only a bridge
+// network, and Nomad cannot place any ES job there ("missing network"), so
+// readiness refuses it and names the loopback pin, which holds on Wi-Fi and on
+// a cable alike.
+func TestHealthCheckScriptRejectsNomadNodeWithoutHostNetwork(t *testing.T) {
+	text, err := runFullHealthCheckAgainstFakeNomad(t, false, []map[string]any{{"Mode": "bridge", "Device": "nomad"}})
+	if err == nil {
+		t.Fatalf("expected full health check to reject a node without a host network, got output=%s", text)
+	}
+	for _, want := range []string{
+		"nomad: no ready client nodes with positive cpu.totalcompute, healthy docker driver and a host-mode network",
+		"nomad: fake-node=no-host-network",
+		`pin network_interface = "lo" (scripts/70_linux_setup.sh), which holds on Wi-Fi and on a cable alike`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected %q in the health check output, got %s", want, text)
+		}
+	}
+	if strings.Contains(text, "supported-environment: supported") || strings.Contains(text, "agent is running in -dev mode") {
+		t.Fatalf("unexpected readiness output for a node without a host network: %s", text)
 	}
 }
 

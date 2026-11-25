@@ -56,6 +56,9 @@ SUPPORTED_LOCAL_NOMAD_CACERT="${SUPPORTED_LOCAL_NOMAD_CACERT:-/etc/nomad.d/tls/c
 SUPPORTED_LOCAL_NOMAD_SERVER_NAME="server.global.nomad"
 SUPPORTED_LOCAL_NOMAD_SERVER_SPKI_SHA256=""
 NOMAD_ACL_DIR="${SUPPORTED_LOCAL_NOMAD_ACL_DIR:-/etc/execution-substrate/nomad-acl}"
+# The user Nomad runs as (root for nomad.service): tokens go only to a
+# listener that user owns.
+NOMAD_USER="${SUPPORTED_LOCAL_NOMAD_USER:-root}"
 GO_REQUIRED_VERSION="go1.26.5"
 
 ARS_PORT=$((PORT_BASE + 2))
@@ -130,6 +133,7 @@ Optional environment variables:
   SUPPORTED_LOCAL_NOMAD_ACL_DIR=/etc/execution-substrate/nomad-acl
   SUPPORTED_LOCAL_NOMAD_PORT=4646   Nomad HTTPS port on 127.0.0.1
   SUPPORTED_LOCAL_NOMAD_CACERT=/etc/nomad.d/tls/ca.pem   Nomad's CA certificate
+  SUPPORTED_LOCAL_NOMAD_USER=root   user Nomad runs as
   SUPPORTED_LOCAL_ES_ROOTS_PROFILE=service-root-v1   only accepted profile
 
 Nomad must enforce access control (ACLs): scripts/70_linux_setup.sh enables
@@ -229,7 +233,7 @@ preflight_supported_local_setup_execution_roots() {
     echo "supported-local service Dockerfile is incompatible" >&2
     return 1
   fi
-  if ! python3 "${ES_ROOTS_HELPER}" preflight "${PROOF_DIR}" "${PROOF_ID}" >/dev/null 2>&1; then
+  if ! python3 -I "${ES_ROOTS_HELPER}" preflight "${PROOF_DIR}" "${PROOF_ID}" >/dev/null 2>&1; then
     echo "supported-local execution-root scope is invalid" >&2
     return 1
   fi
@@ -257,16 +261,16 @@ preflight_supported_local_setup_spire_pin() {
 
 provision_supported_local_execution_roots() {
   local binding
-  if ! binding="$(python3 "${ES_ROOTS_HELPER}" bind "${PROOF_DIR}" "${PROOF_ID}" 2>/dev/null)"; then
+  if ! binding="$(python3 -I "${ES_ROOTS_HELPER}" bind "${PROOF_DIR}" "${PROOF_ID}" 2>/dev/null)"; then
     echo "supported-local execution roots invalid" >&2
     return 1
   fi
   if (( EUID == 0 )); then
-    if ! python3 "${ES_ROOTS_HELPER}" provision "${PROOF_DIR}" "${PROOF_ID}" "${binding}" >/dev/null 2>&1; then
+    if ! python3 -I "${ES_ROOTS_HELPER}" provision "${PROOF_DIR}" "${PROOF_ID}" "${binding}" >/dev/null 2>&1; then
       echo "supported-local execution roots invalid" >&2
       return 1
     fi
-  elif ! sudo -n python3 "${ES_ROOTS_HELPER}" provision "${PROOF_DIR}" "${PROOF_ID}" "${binding}" >/dev/null 2>&1; then
+  elif ! sudo -n python3 -I "${ES_ROOTS_HELPER}" provision "${PROOF_DIR}" "${PROOF_ID}" "${binding}" >/dev/null 2>&1; then
     echo "supported-local execution roots invalid" >&2
     return 1
   fi
@@ -284,6 +288,7 @@ provision_supported_local_nomad_acl() {
     "NOMAD_ADDR=${SUPPORTED_LOCAL_NOMAD_ADDR}"
     "NOMAD_CACERT=${SUPPORTED_LOCAL_NOMAD_CACERT}"
     "NOMAD_ACL_DIR=${NOMAD_ACL_DIR}"
+    "NOMAD_USER=${NOMAD_USER}"
     "ES_USER=root"
     "OBSERVER_USER=${observer_user}"
     bash "${SCRIPT_DIR}/nomad_acl_setup.sh" provision
@@ -326,7 +331,7 @@ observe_supported_local_nomad_server_key() {
 
 write_supported_local_execution_root_evidence() {
   local proof_dir=$1
-  if ! python3 - "${proof_dir}" >/dev/null 2>&1 <<'PY'
+  if ! python3 -I - "${proof_dir}" >/dev/null 2>&1 <<'PY'
 import json
 import os
 import stat
@@ -417,7 +422,7 @@ stop_vault_dev_listener() {
 }
 
 generate_random_hex() {
-  python3 - <<'PY'
+  python3 -I - <<'PY'
 import secrets
 print(secrets.token_hex(16))
 PY
@@ -626,7 +631,7 @@ wait_for_local_tcp_listener() {
   local description=$2
 
   for _ in $(seq 1 50); do
-    if python3 - <<'PY' "${port}"
+    if python3 -I - <<'PY' "${port}"
 import socket
 import sys
 
@@ -1048,7 +1053,7 @@ ensure_vault_auth_mount() {
 
   auth_json="$(proof_vault_api_read "${proof_dir}" "${vault_local_address}" "${vault_root_token}" sys/auth)"
   auth_state="$(
-      python3 - <<'PY' "${auth_mount}" "${auth_type}" "${auth_json}"
+      python3 -I - <<'PY' "${auth_mount}" "${auth_type}" "${auth_json}"
 import json
 import sys
 
@@ -1097,7 +1102,7 @@ ensure_vault_kv_v2_mount() {
   vault_secret_mount="$(kv_v2_mount_from_api_path "${vault_secret_api_path}")"
   mounts_json="$(proof_vault_api_read "${proof_dir}" "${vault_local_address}" "${vault_root_token}" sys/mounts)"
   mount_state="$(
-      python3 - <<'PY' "${vault_secret_mount}" "${mounts_json}"
+      python3 -I - <<'PY' "${vault_secret_mount}" "${mounts_json}"
 import json
 import sys
 
@@ -1233,7 +1238,7 @@ write_runtime_blob_and_configs() {
 
   preflight_supported_local_setup_retained_result_auth "${proof_dir}"
 
-  python3 - <<'PY' \
+  python3 -I - <<'PY' \
     "${proof_dir}" \
     "${tls_dir}" \
     "${ars_storage}" \
@@ -1652,7 +1657,7 @@ setup() {
     "${CODEX_CLI_PATH}" \
     "${CODEX_CREDENTIAL_SECRET_PATH}" \
     "${CODEX_CREDENTIAL_SECRET_FIELD}"
-  if ! python3 "${ES_ROOTS_HELPER}" check "${PROOF_DIR}" "${PROOF_ID}" "${PROOF_DIR}/es.json" >/dev/null 2>&1; then
+  if ! python3 -I "${ES_ROOTS_HELPER}" check "${PROOF_DIR}" "${PROOF_ID}" "${PROOF_DIR}/es.json" >/dev/null 2>&1; then
     echo "supported-local execution roots invalid" >&2
     return 1
   fi

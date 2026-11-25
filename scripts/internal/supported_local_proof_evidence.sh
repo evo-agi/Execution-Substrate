@@ -17,7 +17,7 @@ esac
 
 # FD 3 preserves the archive stream for receive-safe while stdin carries this
 # fixed Python program. collect-safe never reads FD 3.
-python3 - "$@" 3<&0 <<'PY'
+python3 -I - "$@" 3<&0 <<'PY'
 from __future__ import annotations
 
 import hashlib

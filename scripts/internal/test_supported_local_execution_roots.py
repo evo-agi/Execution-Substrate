@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S python3 -I
 """Unprivileged filesystem fixtures with an explicit synthetic owner transport."""
 import importlib.util
 import errno

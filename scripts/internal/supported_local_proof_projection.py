@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S python3 -I
 """Fixed-schema, non-secret supported-local proof projections."""
 
 from __future__ import annotations

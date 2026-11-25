@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -167,6 +168,7 @@ func (n *nomadHarness) provisionACL(rootDir string) string {
 	command := exec.Command("python3", "-I", nomadACLToolPath(), "provision",
 		"--addr", n.addr,
 		"--ca-file", n.tls.caFile,
+		"--nomad-uid", strconv.Itoa(os.Geteuid()),
 		"--management-token-file", managementFile,
 		"--es-token-file", esTokenFile,
 		"--es-token-owner", owner,
@@ -413,14 +415,20 @@ func TestRealNomadRefusesJobsWithoutTheESToken(t *testing.T) {
 		t.Fatalf("ES token could not stop its job: HTTP %d %s", status, body)
 	}
 
-	check := exec.Command("python3", "-I", nomadACLToolPath(), "check", "--addr", harness.addr, "--ca-file", harness.tls.caFile, "--es-token-file", harness.esTokenFile, "--observer-token-file", harness.observerTokenFile)
+	check := exec.Command("python3", "-I", nomadACLToolPath(), "check", "--addr", harness.addr, "--ca-file", harness.tls.caFile, "--nomad-uid", strconv.Itoa(os.Geteuid()), "--es-token-file", harness.esTokenFile, "--observer-token-file", harness.observerTokenFile)
 	if output, err := check.CombinedOutput(); err != nil {
 		t.Fatalf("nomad_acl.py check failed on the provisioned Nomad: %v output=%s", err, output)
 	}
 }
 
+// runNomadACLTool runs the tool. Test Nomads run as the test's own user, so
+// provision, check and placement get --nomad-uid with that uid unless args
+// name one.
 func runNomadACLTool(t *testing.T, args ...string) (string, error) {
 	t.Helper()
+	if len(args) > 0 && slices.Contains([]string{"provision", "check", "placement"}, args[0]) && !slices.Contains(args, "--nomad-uid") {
+		args = append([]string{args[0], "--nomad-uid", strconv.Itoa(os.Geteuid())}, args[1:]...)
+	}
 	command := exec.Command("python3", append([]string{"-I", nomadACLToolPath()}, args...)...)
 	output, err := command.CombinedOutput()
 	return string(output), err
@@ -792,7 +800,7 @@ setup`
 		}
 		want := "sudo -n env NOMAD_ADDR=https://127.0.0.1:" + nomadPort + " NOMAD_CACERT=" + nomadTLS.caFile +
 			" NOMAD_ACL_DIR=" + filepath.Join(r.workspace, "nomad-acl") +
-			" ES_USER=root OBSERVER_USER=" + strings.TrimSpace(string(current)) +
+			" NOMAD_USER=root ES_USER=root OBSERVER_USER=" + strings.TrimSpace(string(current)) +
 			" bash " + filepath.Join(repo, "scripts", "nomad_acl_setup.sh") + " provision\n"
 		if os.Geteuid() == 0 {
 			want = ""

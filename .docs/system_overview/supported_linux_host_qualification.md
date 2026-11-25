@@ -48,6 +48,7 @@ A host is `supported` only when the normal operator/readiness path can honestly 
 - `GET /v1/agent/self` reports `config.DevMode=false`
 - at least one ready Nomad node with positive natural `cpu.totalcompute`
 - healthy Docker driver on that ready node
+- a host-mode network on that ready node, which the loopback pin `client { network_interface = "lo" }` gives on Wi-Fi and on a cable alike
 - operator/readiness labels:
   - `nomad-startup-mode: pre-managed`
   - `submit-ready-mode: natural`
@@ -71,6 +72,7 @@ A host is `unsupported` when the current substrate boundary cannot be honestly q
 - user-started foreground Nomad standing in for a pre-managed service
 - no ready node with positive natural `cpu.totalcompute`
 - unhealthy Docker driver
+- no host-mode network on the ready node (for example a Nomad client pinned to a wired port whose cable is out)
 - a host profile that does not expose enough CPU-performance data for Nomad to detect natural compute under the real root-managed service
 
 ## 3. Supported Host Requirements
@@ -94,6 +96,7 @@ The current supported Linux host profile requires all of the following.
 - at least one ready client node
 - that ready node exposes positive natural `cpu.totalcompute`
 - that ready node reports Docker driver `Healthy`, and no other driver: the client enables only Docker (`client.options["driver.allowlist"] = "docker"`)
+- that ready node has a host-mode network: the client pins `network_interface = "lo"`, so the host qualifies on Wi-Fi or a cable and assumes neither, and `sudo scripts/nomad_acl_setup.sh placement` passes after every Nomad start (ES's job shapes plan with ES's token; see [configuration.md](configuration.md#nomad-requirements))
 - an explicit `plugin "docker"` block: `allow_privileged = false`, `allow_caps` limited to `chown`, `dac_override`, `fowner`, `kill`, `setgid`, `setuid`, `setpcap` (what ES's runtime helper uses), `volumes { enabled = true }` for ES's bind mounts, and, when the current supported-local runtime-profile surface is enabled, `gc { image = false }` so local runtime-profile images survive completed allocations for repeated client runs
 - `/etc/nomad.d` and `nomad.hcl` owned by root (`nomad.hcl` 0640) and the Nomad data directory owned by root with mode 0700
 - no `NOMAD_CLIENT_CPU_TOTAL_COMPUTE`
@@ -126,7 +129,7 @@ while native Linux remained pending when its source and bounded checks were
 defect-free and Tranche B was independent of those native checks. That former
 sequence does not impose a blanket native pre-commit gate on local source
 preservation or integration. The owning acceptance and local-commit split is in
-`PLANS.md` and `.docs/execution_lifecycle/contracts.md`.
+`.docs/standing_rules/execution_admission_and_custody.md` and `.docs/execution_lifecycle/contracts.md`.
 
 For an actual claimed operating environment and architecture, governed Ubuntu
 24.04 linux/amd64 for Remote Alpha and governed Ubuntu 24.04 linux/arm64 for
@@ -165,6 +168,7 @@ The following conditions disqualify a host from `supported`.
 - active Nomad config containing `client.cpu_total_compute`
 - unhealthy or unavailable Docker daemon
 - unhealthy Docker task driver on the ready Nomad node
+- no host-mode network on the ready Nomad node
 - a host profile that exposes no usable CPU-performance data for Nomad to derive natural compute
 
 For the current slice, package installation alone is not qualification. A host that has Docker and Nomad installed but still cannot expose positive natural `cpu.totalcompute` remains unsupported.
@@ -233,6 +237,7 @@ systemctl status nomad --no-pager --full | sed -n '1,80p'
 ps -eo pid,user,args | grep '[n]omad' || true
 ss -ltnp '( sport = :4646 )' || true
 sudo scripts/nomad_acl_setup.sh check
+sudo scripts/nomad_acl_setup.sh placement
 export NOMAD_ADDR=https://127.0.0.1:4646
 export NOMAD_CACERT=/etc/nomad.d/tls/ca.pem
 export NOMAD_TOKEN_FILE=/etc/execution-substrate/nomad-acl/observer-token

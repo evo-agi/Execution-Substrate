@@ -172,7 +172,7 @@ stop_vault_dev_listener_from_dir() {
 
   if [[ -r "${dir}/managed-secrets.conf" ]]; then
     port="$(
-      python3 - <<'PY' "${dir}/managed-secrets.conf"
+      python3 -I - <<'PY' "${dir}/managed-secrets.conf"
 import pathlib
 import re
 import sys

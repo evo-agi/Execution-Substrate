@@ -185,7 +185,7 @@ remote_alpha_stage_es_config_tls_prep_local_file_meta() {
   local output_path=$1
   shift
 
-  python3 - "$output_path" "$@" <<'PY'
+  python3 -I - "$output_path" "$@" <<'PY'
 import hashlib
 import json
 import pathlib
@@ -213,23 +213,37 @@ remote_alpha_stage_es_config_tls_prep_scp() {
   "${REMOTE_ALPHA_STAGE_ES_CONFIG_TLS_PREP_SCP_BIN}" "$@"
 }
 
+# The upload folder sits in /tmp under a name others can guess, so it is made
+# fresh and private (mkdir without -p fails if anyone planted it first) before
+# root copies helpers out of it.
 remote_alpha_stage_es_config_tls_prep_remote_prepare_upload_root() {
   remote_alpha_stage_es_config_tls_prep_ssh /bin/bash -s -- "${REMOTE_ALPHA_STAGE_ES_CONFIG_TLS_PREP_REMOTE_UPLOAD_ROOT}" <<'EOF'
 set -euo pipefail
 upload_root=$1
 rm -rf -- "${upload_root}"
-mkdir -p -- "${upload_root}"
+mkdir -m 0700 -- "${upload_root}"
 EOF
 }
 
+# Prints scripts/internal/remote_alpha_output_dir.sh followed by BODY, so a
+# remote batch can check the host's artifact folder before root stages into it.
+remote_alpha_stage_es_config_tls_prep_remote_batch_with_output_dir_check() {
+  local body=$1
+  local definition
+
+  definition="$(cat -- "${REPO_ROOT}/scripts/internal/remote_alpha_output_dir.sh")" || return 1
+  printf '%s\n%s\n' "${definition}" "${body}"
+}
+
 remote_alpha_stage_es_config_tls_prep_remote_install_staged_tree() {
-  remote_alpha_stage_es_config_tls_prep_ssh /bin/bash -s -- \
-    "${REMOTE_ALPHA_STAGE_ES_CONFIG_TLS_PREP_REMOTE_UPLOAD_ROOT}" \
-    "${REMOTE_ALPHA_STAGE_ES_CONFIG_TLS_PREP_REMOTE_STAGING_ROOT}" <<'EOF'
+  local body script
+
+  body="$(cat <<'EOF'
 set -euo pipefail
 upload_root=$1
 staging_root=$2
 
+remote_alpha_prepare_output_dir_as_root "$(dirname "${staging_root}")"
 sudo rm -rf -- "${staging_root}"
 sudo install -d -m 0755 -o root -g root "${staging_root}"
 sudo install -d -m 0755 -o root -g root "${staging_root}/scripts"
@@ -238,6 +252,11 @@ sudo install -m 0755 -o root -g root "${upload_root}/scripts/remote_alpha_prepar
 sudo install -m 0644 -o root -g root "${upload_root}/scripts/internal/remote_alpha_prepare_es_config_tls.sh" "${staging_root}/scripts/internal/remote_alpha_prepare_es_config_tls.sh"
 rm -rf -- "${upload_root}"
 EOF
+)"
+  script="$(remote_alpha_stage_es_config_tls_prep_remote_batch_with_output_dir_check "${body}")" || return 1
+  remote_alpha_stage_es_config_tls_prep_ssh /bin/bash -s -- \
+    "${REMOTE_ALPHA_STAGE_ES_CONFIG_TLS_PREP_REMOTE_UPLOAD_ROOT}" \
+    "${REMOTE_ALPHA_STAGE_ES_CONFIG_TLS_PREP_REMOTE_STAGING_ROOT}" <<<"${script}"
 }
 
 remote_alpha_stage_es_config_tls_prep_remote_stage_stat() {
@@ -265,7 +284,7 @@ remote_alpha_stage_es_config_tls_prep_validate_stage_stat() {
   local stat_path=$1
   local output_path=$2
 
-  python3 - "$stat_path" "$output_path" "${REMOTE_ALPHA_STAGE_ES_CONFIG_TLS_PREP_REMOTE_STAGING_ROOT}" <<'PY'
+  python3 -I - "$stat_path" "$output_path" "${REMOTE_ALPHA_STAGE_ES_CONFIG_TLS_PREP_REMOTE_STAGING_ROOT}" <<'PY'
 import json
 import pathlib
 import sys
@@ -317,7 +336,7 @@ remote_alpha_stage_es_config_tls_prep_write_provenance() {
   local provenance_path=$3
   local git_commit=$4
 
-  python3 - "$local_meta_path" "$remote_meta_path" "$provenance_path" "$git_commit" "${REMOTE_ALPHA_STAGE_ES_CONFIG_TLS_PREP_MODE}" "${REMOTE_ALPHA_STAGE_ES_CONFIG_TLS_PREP_SSH_TARGET}" "${REMOTE_ALPHA_STAGE_ES_CONFIG_TLS_PREP_REMOTE_STAGING_ROOT}" "${REMOTE_ALPHA_STAGE_ES_CONFIG_TLS_PREP_REMOTE_STAGED_WRAPPER_PATH}" "${REMOTE_ALPHA_STAGE_ES_CONFIG_TLS_PREP_REMOTE_STAGED_INTERNAL_PATH}" "${REMOTE_ALPHA_STAGE_ES_CONFIG_TLS_PREP_REMOTE_SUMMARY_PATH}" "${REMOTE_ALPHA_STAGE_ES_CONFIG_TLS_PREP_RUN_ID}" "${REPO_ROOT}" <<'PY'
+  python3 -I - "$local_meta_path" "$remote_meta_path" "$provenance_path" "$git_commit" "${REMOTE_ALPHA_STAGE_ES_CONFIG_TLS_PREP_MODE}" "${REMOTE_ALPHA_STAGE_ES_CONFIG_TLS_PREP_SSH_TARGET}" "${REMOTE_ALPHA_STAGE_ES_CONFIG_TLS_PREP_REMOTE_STAGING_ROOT}" "${REMOTE_ALPHA_STAGE_ES_CONFIG_TLS_PREP_REMOTE_STAGED_WRAPPER_PATH}" "${REMOTE_ALPHA_STAGE_ES_CONFIG_TLS_PREP_REMOTE_STAGED_INTERNAL_PATH}" "${REMOTE_ALPHA_STAGE_ES_CONFIG_TLS_PREP_REMOTE_SUMMARY_PATH}" "${REMOTE_ALPHA_STAGE_ES_CONFIG_TLS_PREP_RUN_ID}" "${REPO_ROOT}" <<'PY'
 import json
 import pathlib
 from pathlib import PurePosixPath
@@ -391,7 +410,7 @@ EOF
 remote_alpha_stage_es_config_tls_prep_validate_check_only_report() {
   local report_path=$1
 
-  python3 - "$report_path" "${REMOTE_ALPHA_STAGE_ES_CONFIG_TLS_PREP_REMOTE_SUMMARY_PATH}" "${remote_alpha_stage_es_config_tls_prep_config_path}" "${remote_alpha_stage_es_config_tls_prep_tls_dir}" <<'PY'
+  python3 -I - "$report_path" "${REMOTE_ALPHA_STAGE_ES_CONFIG_TLS_PREP_REMOTE_SUMMARY_PATH}" "${remote_alpha_stage_es_config_tls_prep_config_path}" "${remote_alpha_stage_es_config_tls_prep_tls_dir}" <<'PY'
 import json
 import pathlib
 import sys
@@ -488,9 +507,11 @@ remote_alpha_stage_es_config_tls_prep_cleanup_remote() {
     return 0
   fi
 
-  remote_alpha_stage_es_config_tls_prep_ssh /bin/bash -s -- \
-    "${REMOTE_ALPHA_STAGE_ES_CONFIG_TLS_PREP_REMOTE_UPLOAD_ROOT}" \
-    "${REMOTE_ALPHA_STAGE_ES_CONFIG_TLS_PREP_REMOTE_STAGING_ROOT}" <<'EOF' >/dev/null
+  local body script
+
+  # Root removes the staging folder only through an artifact folder that
+  # passes the same check as staging did.
+  body="$(cat <<'EOF'
 set -euo pipefail
 upload_root=$1
 staging_root=$2
@@ -498,10 +519,15 @@ staging_root=$2
 if [[ -n "${upload_root}" ]]; then
   rm -rf -- "${upload_root}" || true
 fi
-if [[ -n "${staging_root}" ]]; then
+if [[ -n "${staging_root}" ]] && remote_alpha_prepare_output_dir_as_root "$(dirname "${staging_root}")"; then
   sudo rm -rf -- "${staging_root}" || true
 fi
 EOF
+)"
+  script="$(remote_alpha_stage_es_config_tls_prep_remote_batch_with_output_dir_check "${body}")" || return 1
+  remote_alpha_stage_es_config_tls_prep_ssh /bin/bash -s -- \
+    "${REMOTE_ALPHA_STAGE_ES_CONFIG_TLS_PREP_REMOTE_UPLOAD_ROOT}" \
+    "${REMOTE_ALPHA_STAGE_ES_CONFIG_TLS_PREP_REMOTE_STAGING_ROOT}" <<<"${script}" >/dev/null
 }
 
 remote_alpha_stage_es_config_tls_prep_cleanup_on_exit() {

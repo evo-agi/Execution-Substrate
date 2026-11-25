@@ -5,6 +5,62 @@ fi
 
 remote_alpha_egs_hardening_summary_schema_version="execution-substrate.remote-alpha.egs-service-hardening-summary.v2"
 
+# Copy of remote_alpha_prepare_output_dir from scripts/internal/remote_alpha_output_dir.sh,
+# which explains it; TestRemoteAlphaOutputDirCopiesMatch keeps the two identical.
+remote_alpha_prepare_output_dir() {
+  python3 -I - "$1" <<'REMOTE_ALPHA_OUTPUT_DIR_PY'
+import os
+import stat
+import sys
+
+if not sys.argv[1]:
+    sys.exit("remote alpha output folder: no folder given")
+if ".." in sys.argv[1].split("/"):
+    sys.exit(f"remote alpha output folder: {sys.argv[1]} has a '..' component; refusing to check a path that is not canonical")
+# The path is checked as given, never normalized: dropping "link/.." would
+# check another folder than the one a later write through the link reaches.
+parts = [part for part in os.path.join(os.getcwd(), sys.argv[1]).split("/") if part not in ("", ".")]
+trusted = {0, os.geteuid()}
+if os.environ.get("SUDO_UID", "").isdigit():
+    trusted.add(int(os.environ["SUDO_UID"]))
+# O_PATH reads a folder's owner and mode without read permission on it, so a
+# folder that root keeps private still passes and sudo can hand it over.
+flags = getattr(os, "O_PATH", os.O_RDONLY) | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+shown = "/"
+fd = os.open("/", flags)
+try:
+    for index in range(len(parts) + 1):
+        info = os.fstat(fd)
+        last = index == len(parts)
+        if info.st_uid not in trusted:
+            sys.exit(
+                f"remote alpha output folder: {shown} belongs to uid {info.st_uid}, not to root, "
+                "the user running this step or the user who ran sudo; refusing to write under it"
+            )
+        if info.st_mode & (stat.S_IWGRP | stat.S_IWOTH) and (
+            last or info.st_uid != 0 or not info.st_mode & stat.S_ISVTX
+        ):
+            sys.exit(f"remote alpha output folder: {shown} can be written by its group or others; refusing to write under it")
+        if last:
+            break
+        shown = "/" + "/".join(parts[: index + 1])
+        try:
+            next_fd = os.open(parts[index], flags, dir_fd=fd)
+        except FileNotFoundError:
+            try:
+                os.mkdir(parts[index], 0o755, dir_fd=fd)
+            except FileExistsError:
+                pass
+            next_fd = os.open(parts[index], flags, dir_fd=fd)
+        os.close(fd)
+        fd = next_fd
+except OSError as exc:
+    sys.exit(f"remote alpha output folder: {shown} is not a directory or is a symbolic link ({exc.strerror})")
+finally:
+    os.close(fd)
+REMOTE_ALPHA_OUTPUT_DIR_PY
+}
+
 remote_alpha_egs_hardening_init_expected_slice_inputs() {
   remote_alpha_egs_hardening_expected_service_name="${remote_alpha_egs_hardening_expected_service_name:-egs}"
   remote_alpha_egs_hardening_expected_service_user="${remote_alpha_egs_hardening_expected_service_user:-egs}"
@@ -160,7 +216,7 @@ remote_alpha_egs_hardening_json_field() {
   local json_path=$1
   local dotted_path=$2
 
-  python3 - "${json_path}" "${dotted_path}" <<'PY'
+  python3 -I - "${json_path}" "${dotted_path}" <<'PY'
 import json
 import sys
 
@@ -239,7 +295,7 @@ remote_alpha_egs_hardening_ds_not_in_docker_group() {
 }
 
 remote_alpha_egs_hardening_service_account_meta() {
-  python3 - "${REMOTE_ALPHA_SERVICE_USER}" "${REMOTE_ALPHA_SERVICE_GROUP}" <<'PY'
+  python3 -I - "${REMOTE_ALPHA_SERVICE_USER}" "${REMOTE_ALPHA_SERVICE_GROUP}" <<'PY'
 import json
 import subprocess
 import sys
@@ -408,7 +464,7 @@ PY
 }
 
 remote_alpha_egs_hardening_runtime_meta() {
-  python3 - "${REMOTE_ALPHA_CONFIG_PATH}" "${REMOTE_ALPHA_BINARY_PATH}" <<'PY'
+  python3 -I - "${REMOTE_ALPHA_CONFIG_PATH}" "${REMOTE_ALPHA_BINARY_PATH}" <<'PY'
 import json
 import ssl
 import sys
@@ -561,7 +617,7 @@ remote_alpha_egs_hardening_assert_runtime_shape() {
 }
 
 remote_alpha_egs_hardening_ags_runtime_meta() {
-  python3 - "${REMOTE_ALPHA_AGS_CONFIG_PATH}" <<'PY'
+  python3 -I - "${REMOTE_ALPHA_AGS_CONFIG_PATH}" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -604,7 +660,7 @@ PY
 }
 
 remote_alpha_egs_hardening_es_runtime_meta() {
-  python3 - "${REMOTE_ALPHA_ES_CONFIG_PATH}" <<'PY'
+  python3 -I - "${REMOTE_ALPHA_ES_CONFIG_PATH}" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -648,7 +704,7 @@ PY
 }
 
 remote_alpha_egs_hardening_health_env_meta() {
-  python3 - "${REMOTE_ALPHA_HEALTHCHECK_ENV_PATH}" <<'PY'
+  python3 -I - "${REMOTE_ALPHA_HEALTHCHECK_ENV_PATH}" <<'PY'
 import json
 import pathlib
 import sys
@@ -819,7 +875,7 @@ remote_alpha_egs_hardening_prepare_tls_material() {
   key_source="$(remote_alpha_egs_hardening_json_field "${runtime_meta_path}" "tls.key_file")"
   ca_source="$(remote_alpha_egs_hardening_json_field "${runtime_meta_path}" "tls.client_ca_file")"
 
-  python3 - \
+  python3 -I - \
     "${cert_source}" "${REMOTE_ALPHA_TLS_CERT_PATH}" \
     "${key_source}" "${REMOTE_ALPHA_TLS_KEY_PATH}" \
     "${ca_source}" "${REMOTE_ALPHA_TLS_CLIENT_CA_PATH}" <<'PY'
@@ -850,7 +906,7 @@ PY
 }
 
 remote_alpha_egs_hardening_rewrite_config() {
-  python3 - "${REMOTE_ALPHA_CONFIG_PATH}" "${REMOTE_ALPHA_TLS_CERT_PATH}" "${REMOTE_ALPHA_TLS_KEY_PATH}" "${REMOTE_ALPHA_TLS_CLIENT_CA_PATH}" <<'PY'
+  python3 -I - "${REMOTE_ALPHA_CONFIG_PATH}" "${REMOTE_ALPHA_TLS_CERT_PATH}" "${REMOTE_ALPHA_TLS_KEY_PATH}" "${REMOTE_ALPHA_TLS_CLIENT_CA_PATH}" <<'PY'
 import json
 import os
 import sys
@@ -898,7 +954,7 @@ remote_alpha_egs_hardening_service_meta() {
     unit_name="${unit_name}.service"
   fi
 
-  python3 - "${service_name}" \
+  python3 -I - "${service_name}" \
     "$(systemctl show "${unit_name}" -p User -p Group -p ExecStart -p FragmentPath -p ActiveState -p SubState 2>/dev/null || true)" \
     "$(remote_alpha_egs_hardening_systemctl_state is-enabled "${unit_name}")" <<'PY'
 import json
@@ -974,7 +1030,7 @@ remote_alpha_egs_hardening_health_probe_meta() {
       --key "${operator_key}" \
       "${curl_args[@]}" \
       "${url}" >"${response_path}" 2>"${error_path}"; then
-      python3 - "${url}" "${error_path}" <<'PY'
+      python3 -I - "${url}" "${error_path}" <<'PY'
 import json
 import pathlib
 import sys
@@ -992,7 +1048,7 @@ PY
     --cert "${operator_cert}" \
     --key "${operator_key}" \
     "${url}" >"${response_path}" 2>"${error_path}"; then
-    python3 - "${url}" "${error_path}" <<'PY'
+    python3 -I - "${url}" "${error_path}" <<'PY'
 import json
 import pathlib
 import sys
@@ -1006,7 +1062,7 @@ PY
     return 1
   fi
 
-  python3 - "${url}" "${response_path}" "${dependency_field}" <<'PY'
+  python3 -I - "${url}" "${response_path}" "${dependency_field}" <<'PY'
 import json
 import pathlib
 import sys
@@ -1030,7 +1086,7 @@ PY
 remote_alpha_egs_hardening_write_publish_request() {
   local request_path=$1
 
-  python3 - "${request_path}" <<'PY'
+  python3 -I - "${request_path}" <<'PY'
 import base64
 import hashlib
 import json
@@ -1113,7 +1169,7 @@ remote_alpha_egs_hardening_publish_probe_meta() {
     --header "content-type: application/json" \
     --data "@${request_path}" \
     "${url}" >"${response_path}" 2>"${error_path}"; then
-    python3 - "${url}" "${response_path}" <<'PY'
+    python3 -I - "${url}" "${response_path}" <<'PY'
 import json
 import pathlib
 import sys
@@ -1131,7 +1187,7 @@ PY
     return 0
   fi
 
-  python3 - "${url}" "${error_path}" <<'PY'
+  python3 -I - "${url}" "${error_path}" <<'PY'
 import json
 import pathlib
 import sys
@@ -1162,7 +1218,7 @@ remote_alpha_egs_hardening_contract_probe_meta() {
     --cert "${operator_cert}" \
     --key "${operator_key}" \
     "${url}" >"${response_path}" 2>"${error_path}"; then
-    python3 - "${url}" "${error_path}" <<'PY'
+    python3 -I - "${url}" "${error_path}" <<'PY'
 import json
 import pathlib
 import sys
@@ -1176,7 +1232,7 @@ PY
     return 1
   fi
 
-  python3 - "${url}" "${response_path}" <<'PY'
+  python3 -I - "${url}" "${response_path}" <<'PY'
 import json
 import pathlib
 import sys
@@ -1210,7 +1266,7 @@ remote_alpha_egs_hardening_ownership_meta() {
   config_path="$(remote_alpha_egs_hardening_json_field "${runtime_meta_path}" "config_path")"
   tls_dir="${REMOTE_ALPHA_TLS_DIR}"
 
-  python3 - \
+  python3 -I - \
     "${config_path}" "root:${REMOTE_ALPHA_SERVICE_GROUP}" "0640" "$(stat -c '%U:%G %a %n' "${config_path}" 2>/dev/null || true)" \
     "${tls_dir}" "root:${REMOTE_ALPHA_SERVICE_GROUP}" "0710" "$(stat -c '%U:%G %a %n' "${tls_dir}" 2>/dev/null || true)" \
     "${REMOTE_ALPHA_TLS_CERT_PATH}" "root:${REMOTE_ALPHA_SERVICE_GROUP}" "0640" "$(stat -c '%U:%G %a %n' "${REMOTE_ALPHA_TLS_CERT_PATH}" 2>/dev/null || true)" \
@@ -1276,7 +1332,7 @@ remote_alpha_egs_hardening_write_summary() {
   local ds_not_in_docker_group=${14}
   local passwordless_sudo_for_ds=${15}
 
-  python3 - "${summary_path}" \
+  python3 -I - "${summary_path}" \
     "${runtime_meta_path}" \
     "${egs_meta_path}" \
     "${ags_meta_path}" \
@@ -1543,6 +1599,7 @@ remote_alpha_egs_hardening_main() {
   remote_alpha_egs_hardening_require_root || return 1
 
   remote_alpha_egs_hardening_require_command python3 || return 1
+  remote_alpha_prepare_output_dir "$(dirname "${REMOTE_ALPHA_SUMMARY_PATH}")" || return 1
   remote_alpha_egs_hardening_require_command curl || return 1
   remote_alpha_egs_hardening_require_command systemctl || return 1
   remote_alpha_egs_hardening_require_command getent || return 1
@@ -1746,6 +1803,7 @@ remote_alpha_egs_hardening_main() {
     overall_ok=false
   fi
 
+  remote_alpha_prepare_output_dir "$(dirname "${REMOTE_ALPHA_SUMMARY_PATH}")" || return 1
   remote_alpha_egs_hardening_write_summary \
     "${REMOTE_ALPHA_SUMMARY_PATH}" \
     "${runtime_meta_path}" \

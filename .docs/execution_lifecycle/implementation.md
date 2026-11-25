@@ -105,7 +105,7 @@ cannot prove exact operation ownership. This candidate has no whole-root
 reclamation policy. Selected native Linux and test-owned installed-source
 evidence is accepted under the original Review-22 identities; actual
 running-deployment topology, key exposure and operating capacity/residence
-remain unqualified. `PLANS.md` and the lifecycle contract own the development
+remain unqualified. `.docs/standing_rules/execution_admission_and_custody.md` and the lifecycle contract own the development
 evidence and separate rollout acceptance boundaries.
 
 ## 2. How to read this document
@@ -1126,6 +1126,7 @@ Operator helper ownership in the current slice:
 - Runtime identity handling is reservation and path protection, not token ownership or endpoint implementation.
 - Authority handoff reporting is non-secret submit/status read evidence, not a live credential observer.
 - Runtime-trust loading is startup-time initialization rather than a live refresh path in the current slice.
+- The private operational handoff path, which has no production caller, confirms its commissioned trust with EGS before a retained first effect and refuses unless the last confirmation is less than 30 seconds old. It does not adopt new trust while running, and ordinary Submit does not confirm.
 - Aggregate evidence is the only first-class admission input for the published artifact path.
 
 These are active implementation choices, not automatically permanent design commitments.

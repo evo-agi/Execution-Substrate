@@ -1,5 +1,61 @@
 remote_alpha_vault_summary_schema_version="execution-substrate.remote-alpha.vault-workload-auth-summary.v1"
 
+# Copy of remote_alpha_prepare_output_dir from scripts/internal/remote_alpha_output_dir.sh,
+# which explains it; TestRemoteAlphaOutputDirCopiesMatch keeps the two identical.
+remote_alpha_prepare_output_dir() {
+  python3 -I - "$1" <<'REMOTE_ALPHA_OUTPUT_DIR_PY'
+import os
+import stat
+import sys
+
+if not sys.argv[1]:
+    sys.exit("remote alpha output folder: no folder given")
+if ".." in sys.argv[1].split("/"):
+    sys.exit(f"remote alpha output folder: {sys.argv[1]} has a '..' component; refusing to check a path that is not canonical")
+# The path is checked as given, never normalized: dropping "link/.." would
+# check another folder than the one a later write through the link reaches.
+parts = [part for part in os.path.join(os.getcwd(), sys.argv[1]).split("/") if part not in ("", ".")]
+trusted = {0, os.geteuid()}
+if os.environ.get("SUDO_UID", "").isdigit():
+    trusted.add(int(os.environ["SUDO_UID"]))
+# O_PATH reads a folder's owner and mode without read permission on it, so a
+# folder that root keeps private still passes and sudo can hand it over.
+flags = getattr(os, "O_PATH", os.O_RDONLY) | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+shown = "/"
+fd = os.open("/", flags)
+try:
+    for index in range(len(parts) + 1):
+        info = os.fstat(fd)
+        last = index == len(parts)
+        if info.st_uid not in trusted:
+            sys.exit(
+                f"remote alpha output folder: {shown} belongs to uid {info.st_uid}, not to root, "
+                "the user running this step or the user who ran sudo; refusing to write under it"
+            )
+        if info.st_mode & (stat.S_IWGRP | stat.S_IWOTH) and (
+            last or info.st_uid != 0 or not info.st_mode & stat.S_ISVTX
+        ):
+            sys.exit(f"remote alpha output folder: {shown} can be written by its group or others; refusing to write under it")
+        if last:
+            break
+        shown = "/" + "/".join(parts[: index + 1])
+        try:
+            next_fd = os.open(parts[index], flags, dir_fd=fd)
+        except FileNotFoundError:
+            try:
+                os.mkdir(parts[index], 0o755, dir_fd=fd)
+            except FileExistsError:
+                pass
+            next_fd = os.open(parts[index], flags, dir_fd=fd)
+        os.close(fd)
+        fd = next_fd
+except OSError as exc:
+    sys.exit(f"remote alpha output folder: {shown} is not a directory or is a symbolic link ({exc.strerror})")
+finally:
+    os.close(fd)
+REMOTE_ALPHA_OUTPUT_DIR_PY
+}
+
 remote_alpha_vault_workload_auth_defaults() {
   REMOTE_ALPHA_VAULT_ADDRESS="${REMOTE_ALPHA_VAULT_ADDRESS:-https://172.17.0.1:8200}"
   REMOTE_ALPHA_VAULT_AUTH_MOUNT="${REMOTE_ALPHA_VAULT_AUTH_MOUNT:-jwt}"
@@ -129,7 +185,7 @@ remote_alpha_vault_json_field() {
   local json_path=$1
   local dotted_path=$2
 
-  python3 - "${json_path}" "${dotted_path}" <<'PY'
+  python3 -I - "${json_path}" "${dotted_path}" <<'PY'
 import json
 import sys
 
@@ -170,7 +226,7 @@ remote_alpha_vault_validate_workload_zone_config() {
   local expected_role=$4
   local expected_audience=$5
 
-  python3 - "${config_path}" "${expected_address}" "${expected_mount}" "${expected_role}" "${expected_audience}" <<'PY'
+  python3 -I - "${config_path}" "${expected_address}" "${expected_mount}" "${expected_role}" "${expected_audience}" <<'PY'
 import hashlib
 import json
 import pathlib
@@ -285,7 +341,7 @@ remote_alpha_vault_write_ca_bundle() {
   local config_meta_path=$1
   local output_path=$2
 
-  python3 - "${config_meta_path}" "${output_path}" <<'PY'
+  python3 -I - "${config_meta_path}" "${output_path}" <<'PY'
 import json
 import pathlib
 import sys
@@ -304,7 +360,7 @@ remote_alpha_vault_health_probe() {
   local vault_address=$1
   local ca_bundle_path=${2:-}
 
-  python3 - "${vault_address}" "${ca_bundle_path}" <<'PY'
+  python3 -I - "${vault_address}" "${ca_bundle_path}" <<'PY'
 import json
 import ssl
 import sys
@@ -367,7 +423,7 @@ remote_alpha_vault_extract_first_jwt() {
     return 1
   fi
 
-  printf '%s' "${output}" | python3 /dev/fd/3 3<<'PY'
+  printf '%s' "${output}" | python3 -I /dev/fd/3 3<<'PY'
 import re
 import sys
 
@@ -384,7 +440,7 @@ remote_alpha_vault_jwt_metadata() {
   local expected_issuer=${3:-}
   local expected_issuer_source=${4:-unknown}
 
-  python3 /dev/fd/3 "${expected_spiffe_id}" "${expected_audience}" "${expected_issuer}" "${expected_issuer_source}" 3<<'PY'
+  python3 -I /dev/fd/3 "${expected_spiffe_id}" "${expected_audience}" "${expected_issuer}" "${expected_issuer_source}" 3<<'PY'
 import base64
 import json
 import sys
@@ -469,7 +525,7 @@ remote_alpha_vault_login_raw() {
   local auth_mount=$3
   local role=$4
 
-  python3 /dev/fd/3 "${vault_address}" "${ca_bundle_path}" "${auth_mount}" "${role}" 3<<'PY'
+  python3 -I /dev/fd/3 "${vault_address}" "${ca_bundle_path}" "${auth_mount}" "${role}" 3<<'PY'
 import json
 import re
 import ssl
@@ -631,7 +687,7 @@ PY
 }
 
 remote_alpha_vault_login_metadata() {
-  python3 /dev/fd/3 3<<'PY'
+  python3 -I /dev/fd/3 3<<'PY'
 import json
 import sys
 
@@ -695,7 +751,7 @@ PY
 }
 
 remote_alpha_vault_login_token() {
-  python3 /dev/fd/3 3<<'PY'
+  python3 -I /dev/fd/3 3<<'PY'
 import json
 import sys
 
@@ -708,7 +764,7 @@ remote_alpha_vault_lookup_self() {
   local vault_address=$1
   local ca_bundle_path=$2
 
-  python3 /dev/fd/3 "${vault_address}" "${ca_bundle_path}" 3<<'PY'
+  python3 -I /dev/fd/3 "${vault_address}" "${ca_bundle_path}" 3<<'PY'
 import json
 import ssl
 import sys
@@ -775,7 +831,7 @@ remote_alpha_vault_proof_read() {
   local ca_bundle_path=$2
   local proof_path=$3
 
-  python3 /dev/fd/3 "${vault_address}" "${ca_bundle_path}" "${proof_path}" 3<<'PY'
+  python3 -I /dev/fd/3 "${vault_address}" "${ca_bundle_path}" "${proof_path}" 3<<'PY'
 import json
 import ssl
 import sys
@@ -831,7 +887,7 @@ remote_alpha_vault_secret_field_probe() {
   local secret_path=$3
   local secret_field=$4
 
-  python3 /dev/fd/3 "${vault_address}" "${ca_bundle_path}" "${secret_path}" "${secret_field}" 3<<'PY'
+  python3 -I /dev/fd/3 "${vault_address}" "${ca_bundle_path}" "${secret_path}" "${secret_field}" 3<<'PY'
 import json
 import ssl
 import sys
@@ -936,7 +992,7 @@ remote_alpha_vault_revoke_self() {
   local vault_address=$1
   local ca_bundle_path=$2
 
-  python3 /dev/fd/3 "${vault_address}" "${ca_bundle_path}" 3<<'PY'
+  python3 -I /dev/fd/3 "${vault_address}" "${ca_bundle_path}" 3<<'PY'
 import json
 import ssl
 import sys
@@ -981,7 +1037,7 @@ remote_alpha_vault_spire_server_command() {
 }
 
 remote_alpha_vault_trust_domain_from_spiffe_id() {
-  python3 - "${1:-}" <<'PY'
+  python3 -I - "${1:-}" <<'PY'
 import sys
 
 value = sys.argv[1].strip()
@@ -1000,7 +1056,7 @@ remote_alpha_vault_spire_trust_domain() {
   local trust_domain=""
 
   if output="$(remote_alpha_vault_spire_server_command bundle show -format spiffe 2>/dev/null)"; then
-    if trust_domain="$(printf '%s' "${output}" | python3 /dev/fd/3 "${REMOTE_ALPHA_WORKLOAD_SPIFFE_ID}" 3<<'PY'
+    if trust_domain="$(printf '%s' "${output}" | python3 -I /dev/fd/3 "${REMOTE_ALPHA_WORKLOAD_SPIFFE_ID}" 3<<'PY'
 import json
 import re
 import sys
@@ -1081,7 +1137,7 @@ remote_alpha_vault_registration_selectors_json() {
     return 0
   fi
 
-  printf '%s' "${output}" | python3 /dev/fd/3 3<<'PY'
+  printf '%s' "${output}" | python3 -I /dev/fd/3 3<<'PY'
 import json
 import re
 import sys
@@ -1097,7 +1153,7 @@ remote_alpha_vault_listener_addresses_json() {
     return 0
   fi
 
-  python3 - "${REMOTE_ALPHA_VAULT_ADDRESS}" <<'PY'
+  python3 -I - "${REMOTE_ALPHA_VAULT_ADDRESS}" <<'PY'
 import sys
 from urllib.parse import urlparse
 
@@ -1116,7 +1172,7 @@ remote_alpha_vault_collect_listener_addresses() {
     return 0
   fi
 
-  printf '%s' "${output}" | python3 /dev/fd/3 3<<'PY'
+  printf '%s' "${output}" | python3 -I /dev/fd/3 3<<'PY'
 import json
 import sys
 
@@ -1143,7 +1199,7 @@ remote_alpha_vault_access_probe_for_user() {
     return 0
   fi
 
-  python3 - "${socket_path}" "${target_user}" <<'PY'
+  python3 -I - "${socket_path}" "${target_user}" <<'PY'
 import os
 import pwd
 import socket
@@ -1191,7 +1247,7 @@ remote_alpha_vault_access_probe_for_uid() {
     return 0
   fi
 
-  python3 - "${socket_path}" "${target_uid}" "${target_gid}" <<'PY'
+  python3 -I - "${socket_path}" "${target_uid}" "${target_gid}" <<'PY'
 import os
 import socket
 import sys
@@ -1298,7 +1354,7 @@ remote_alpha_vault_validate_summary_file() {
   local summary_path=$1
   shift
 
-  python3 - "${summary_path}" "$@" <<'PY'
+  python3 -I - "${summary_path}" "$@" <<'PY'
 import pathlib
 import re
 import sys
@@ -1333,7 +1389,7 @@ remote_alpha_vault_write_summary() {
   local proof_runtime_secret_meta_path=$8
   local revoke_meta_path=$9
 
-  python3 - "${summary_path}" "${config_meta_path}" "${health_meta_path}" "${jwt_meta_path}" "${login_meta_path}" "${lookup_meta_path}" "${proof_read_meta_path}" "${proof_runtime_secret_meta_path}" "${revoke_meta_path}" <<'PY'
+  python3 -I - "${summary_path}" "${config_meta_path}" "${health_meta_path}" "${jwt_meta_path}" "${login_meta_path}" "${lookup_meta_path}" "${proof_read_meta_path}" "${proof_runtime_secret_meta_path}" "${revoke_meta_path}" <<'PY'
 import json
 import os
 import sys
@@ -1606,6 +1662,7 @@ remote_alpha_vault_workload_auth_check_main() {
   remote_alpha_vault_workload_auth_parse_args "$@" || return $?
 
   remote_alpha_vault_require_command python3 || return 1
+  remote_alpha_prepare_output_dir "$(dirname "${REMOTE_ALPHA_SUMMARY_PATH}")" || return 1
   remote_alpha_vault_require_command hostname || return 1
   remote_alpha_vault_require_command id || return 1
   remote_alpha_vault_require_command spire-agent || return 1
@@ -1805,7 +1862,7 @@ remote_alpha_vault_workload_auth_check_main() {
 
   remote_alpha_vault_validate_summary_file "${summary_tmp_path}" "${jwt_value}" "${vault_token}"
 
-  mkdir -p "$(dirname "${REMOTE_ALPHA_SUMMARY_PATH}")"
+  remote_alpha_prepare_output_dir "$(dirname "${REMOTE_ALPHA_SUMMARY_PATH}")" || return 1
   mv "${summary_tmp_path}" "${REMOTE_ALPHA_SUMMARY_PATH}"
   chmod 0644 "${REMOTE_ALPHA_SUMMARY_PATH}" 2>/dev/null || true
 

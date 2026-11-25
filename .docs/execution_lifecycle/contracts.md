@@ -25,6 +25,11 @@ The authoritative Workstream C classification of ES public execution surfaces,
 admission composition, compatibility edges, and reopened seams lives in
 `es_execution_admission_model.md`.
 
+The Workstream C admission and custody rules at `PLANS.md`'s rank are in
+`.docs/standing_rules/execution_admission_and_custody.md`; `AGENTS.md` section
+3 ranks that file with `PLANS.md`. This file holds the detailed lifecycle
+contract for them.
+
 The target submit idempotency, correlation and recovery contract seam is in
 `submit_idempotency_correlation_and_recovery.md`. Its public/operational rules
 remain target-only. Its bounded private codec-3 synthetic custody is source
@@ -490,8 +495,10 @@ object or scheduler handoff.
 - `invocation.output_id` is required.
 - `invocation.derivation_spec_digest` and `invocation.output_id` are the only currently shared derivation authorization inputs ES compares against aggregate artifact evidence during `:prepare`.
 - `timeout_seconds` must be non-negative.
-- If `resources` is present, both CPU and memory must be greater than zero.
+- If `resources` is present, CPU must be greater than zero and `memory_mb` must be at least 10, the least memory Nomad registers a task with.
 - If `mode` is present, it must be `sync` or `async`.
+- `invocation.output_id`, every `argv` element, every environment key and value, and every mount target path must not contain `${`, `%{` or a NUL byte. Nomad's client evaluates `${...}` and `%{...}` in each string of a task's driver configuration as an HCL template (with node attributes, node metadata, the task environment and a set of functions), rewrites the escapes `$${` and `%%{`, and replaces `${name}` in environment and meta values; no process can receive a NUL byte. ES refuses such a request with `400 invalid_request` before anything is staged or sent, so the workload receives exactly the strings ES admitted. Other control bytes are passed on as written.
+- Every `argv` element and every mount target path must also be in Unicode Normalization Form C, must hold only code points that are assigned in the Unicode version of ES's normalization tables (today 15.0.0), and must not begin with a byte order mark (U+FEFF). Nomad's client parses each string of a task's driver configuration with HCL, which drops a byte order mark at the start of a string and holds every string in Normalization Form C, so it would pass such a string on in another form than ES admitted, and two mount targets that differ only in normal form would be one path for the container. A string that holds only assigned code points and is in Normalization Form C stays unchanged under every later version of the normalization tables. ES refuses such a request with `400 invalid_request` before anything is staged or sent. Environment keys and values and `invocation.output_id` are not parsed that way and are not held to this rule.
 - Environment keys must not use reserved runtime/control-plane keys.
 - If the manifest runtime interface declares allowed environment keys, provided keys must stay within that set.
 - If mounts are provided, they must satisfy the current mount contract:
@@ -1057,7 +1064,7 @@ key, retention, architecture and final acceptance gates remain open.
 ### Development-source foundation and acceptance boundaries
 
 The 2026-11-13 `DEVELOPMENT_SOURCE_FOUNDATION_ACCEPTED` disposition in
-`PLANS.md` binds the exact authenticated Review-22 implementation archive and
+`.docs/standing_rules/execution_admission_and_custody.md` binds the exact authenticated Review-22 implementation archive and
 canonical source manifest to the accepted source reviews, selected linux/amd64
 and linux/arm64 N1-N5 native programme, and bounded original-byte Review-17
 proof contribution. The documentation-only successor preserves the reviewed

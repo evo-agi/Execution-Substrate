@@ -1,11 +1,16 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S python3 -I
 """Nomad access control (ACL) setup and check for Execution Substrate.
 
 ES submits Nomad jobs with one least-privilege ACL client token. This tool is
 the one place that sets that up and checks it. It talks to a loopback Nomad
 HTTPS address only (TLS 1.3, trusting only the CA file it is given), never
 prints or passes a token on a command line, and reads and writes token files
-with fixed custody rules.
+with fixed custody rules. While Nomad is down any local account can hold its
+port; TLS keeps such a holder from passing for Nomad. As a second guard, before
+the TLS handshake the tool asks the kernel which user owns the socket that
+accepted the connection, and refuses unless that is Nomad's user (--nomad-uid,
+default root), so a holder never even sees a handshake, let alone a token or a
+bootstrap secret.
 
   provision  Bootstrap Nomad's ACL system when needed (the operator keeps the
              management token in a root-only file), create the ES namespace
@@ -23,6 +28,18 @@ with fixed custody rules.
              auth method or management token holds any job capability there.
              That part writes to Nomad: it creates and deletes short-lived
              probe tokens.
+  placement  Verify that Nomad can place ES's jobs: some ready, eligible
+             client node has a healthy Docker driver and a host-mode network
+             (read with the observer token), and a plan of each job shape ES
+             submits (Docker, network_mode none and bridge, no Nomad network
+             block, no ports) in the ES namespace and ES's datacenter, made
+             with the ES token, places its one allocation. A plan registers
+             nothing. Run it after every Nomad start: Nomad gives the node its
+             host network from the interface its client's network_interface
+             names (or the default route's), and a node without one cannot
+             place any ES job, while every ACL check still passes. After a
+             restart, pass --fresh-after so that the node state the servers
+             kept from before the restart does not count.
 
 Exit status: 0 on success, 1 on a refusal (one line on stderr), 2 on usage.
 """
@@ -30,12 +47,17 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import functools
+import http.client
+import ipaddress
 import json
 import os
 import re
+import socket
 import ssl
 import stat
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -64,6 +86,8 @@ OBSERVER_POLICY_RULES = (
 TOKEN_PATTERN = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\Z", re.ASCII)
 MAX_RESPONSE_BYTES = 1 << 20
 HTTP_TIMEOUT_SECONDS = 10
+DEFAULT_LEADER_WAIT_SECONDS = 30
+PROC_NET_TCP = (("/proc/net/tcp", True), ("/proc/net/tcp6", False))
 DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 FILE_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC
 
@@ -77,6 +101,15 @@ PROBE_JOB_ID = "es-acl-probe"
 # one minute.
 PROBE_TOKEN_NAME = "es-acl-probe"
 PROBE_TOKEN_TTL = "5m"
+# Plans of the job shapes ES submits, for `placement`: ES's runtime helper on
+# the Docker driver with network_mode "none", or "bridge" when the execution
+# has network access, and no Nomad network block. Such a job needs a node with
+# a host-mode network. The image is never pulled: a plan does not run tasks.
+PLACEMENT_PROBE_JOB_PREFIX = "es-placement-probe-"
+PLACEMENT_NETWORK_MODES = ("none", "bridge")
+DEFAULT_PLACEMENT_WAIT_SECONDS = 60
+DATACENTER_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z", re.ASCII)
+MAX_ES_CONFIG_BYTES = 1 << 20
 
 
 class Refusal(Exception):
@@ -86,8 +119,121 @@ class Refusal(Exception):
 # --- HTTP -------------------------------------------------------------------
 
 
+def _proc_net_endpoint(text: str):
+    """Decode a /proc/net/tcp{,6} address: hex words in host byte order, then
+    a hex port. An IPv4-mapped IPv6 address is returned as IPv4."""
+    address_hex, port_hex = text.split(":")
+    raw = bytes.fromhex(address_hex)
+    packed = b"".join(
+        int.from_bytes(raw[i : i + 4], "big").to_bytes(4, sys.byteorder) for i in range(0, len(raw), 4)
+    )
+    address = ipaddress.ip_address(packed)
+    if address.version == 6 and address.ipv4_mapped is not None:
+        address = address.ipv4_mapped
+    return address, int(port_hex, 16)
+
+
+def _endpoint(sockaddr):
+    address = ipaddress.ip_address(sockaddr[0])
+    if address.version == 6 and address.ipv4_mapped is not None:
+        address = address.ipv4_mapped
+    return address, sockaddr[1]
+
+
+def _accepting_socket_owners(sock: socket.socket) -> set[int]:
+    """The owners of the socket(s) on the other end of this loopback
+    connection, from the kernel's TCP tables. The server side of a connection
+    is owned by the user that owns the listening socket, whether it is still
+    a pending request or already accepted."""
+    ours = _endpoint(sock.getsockname())
+    theirs = _endpoint(sock.getpeername())
+    owners: set[int] = set()
+    for path, required in PROC_NET_TCP:
+        try:
+            with open(path, encoding="ascii") as handle:
+                lines = handle.read().splitlines()[1:]
+        except OSError:
+            if required:
+                raise Refusal(f"cannot read {path} to see who holds Nomad's port; no request was sent") from None
+            continue
+        for line in lines:
+            fields = line.split()
+            if len(fields) < 8:
+                continue
+            if _proc_net_endpoint(fields[1]) == theirs and _proc_net_endpoint(fields[2]) == ours:
+                owners.add(int(fields[7]))
+    return owners
+
+
+def require_nomads_socket(sock: socket.socket, nomad_uid: int, base: str) -> None:
+    owners: set[int] = set()
+    for _ in range(20):
+        owners = _accepting_socket_owners(sock)
+        if owners:
+            break
+        time.sleep(0.01)
+    if owners != {nomad_uid}:
+        found = ", ".join(str(owner) for owner in sorted(owners)) or "nobody the kernel lists"
+        raise Refusal(
+            f"the process listening on {base} runs as uid {found}, not Nomad's uid {nomad_uid}: "
+            "another local account may hold Nomad's port while Nomad is down; nothing was sent"
+        )
+
+
+class _NomadsConnection(http.client.HTTPSConnection):
+    """An HTTPS connection that sends nothing, not even a TLS handshake,
+    until the kernel shows that Nomad's user owns the accepting socket."""
+
+    def __init__(self, *args, nomad_uid: int, base: str, tls: ssl.SSLContext, **kwargs) -> None:
+        super().__init__(*args, context=tls, **kwargs)
+        self._nomad_uid = nomad_uid
+        self._base = base
+        self._tls = tls
+
+    def connect(self) -> None:
+        # The TCP connection only (there is never a proxy tunnel: the opener
+        # has no proxies), then the owner check, then TLS.
+        http.client.HTTPConnection.connect(self)
+        try:
+            require_nomads_socket(self.sock, self._nomad_uid, self._base)
+            self.sock = self._tls.wrap_socket(self.sock, server_hostname=self.host)
+        except BaseException:
+            self.close()
+            raise
+
+
+class _NomadsHTTPSHandler(urllib.request.HTTPSHandler):
+    def __init__(self, nomad_uid: int, base: str, tls: ssl.SSLContext) -> None:
+        super().__init__(context=tls)
+        self._connection = functools.partial(_NomadsConnection, nomad_uid=nomad_uid, base=base, tls=tls)
+
+    def https_open(self, req):
+        return self.do_open(self._connection, req)
+
+
+class _NoPlainHTTP(urllib.request.HTTPHandler):
+    """Replaces urllib's default http:// handler: nothing goes out unencrypted."""
+
+    def http_open(self, req):
+        raise urllib.error.URLError("plain http is not used")
+
+
+def nomad_tls_context(ca_file: str) -> ssl.SSLContext:
+    """TLS 1.3, trusting only Nomad's own CA (no system CAs) and checking that
+    the certificate names the loopback address."""
+    try:
+        info = os.lstat(ca_file)
+        if not stat.S_ISREG(info.st_mode):
+            raise OSError("not a regular file")
+        context = ssl.create_default_context(cafile=ca_file)
+    except (OSError, ssl.SSLError, ValueError):
+        raise Refusal("--ca-file must name Nomad's CA certificate file (PEM)") from None
+    context.minimum_version = ssl.TLSVersion.TLSv1_3
+    return context
+
+
 class Nomad:
-    def __init__(self, address: str, ca_file: str) -> None:
+    def __init__(self, address: str, ca_file: str, nomad_uid: int = 0) -> None:
         parsed = urllib.parse.urlsplit(address)
         host = parsed.hostname or ""
         if (
@@ -102,22 +248,16 @@ class Nomad:
         ):
             raise Refusal("nomad address must be https://127.0.0.1:<port> or https://[::1]:<port>")
         self.base = address.rstrip("/")
-        # Trust only Nomad's own CA (no system CAs), over TLS 1.3, checking
-        # that the certificate names the loopback address.
-        try:
-            info = os.lstat(ca_file)
-            if not stat.S_ISREG(info.st_mode):
-                raise OSError("not a regular file")
-            context = ssl.create_default_context(cafile=ca_file)
-        except (OSError, ssl.SSLError, ValueError):
-            raise Refusal("--ca-file must name Nomad's CA certificate file (PEM)") from None
-        context.minimum_version = ssl.TLSVersion.TLSv1_3
-        # Never follow redirects and never use a proxy: a token must reach
-        # only the loopback Nomad named here.
+        tls = nomad_tls_context(ca_file)
+        # Never follow redirects, never use a proxy and never send plain HTTP:
+        # a token must reach only the loopback Nomad named here, over TLS, and
+        # only once the kernel shows that Nomad's user owns the socket that
+        # accepted the connection.
         self.opener = urllib.request.build_opener(
             urllib.request.ProxyHandler({}),
-            urllib.request.HTTPSHandler(context=context),
             _NoRedirect(),
+            _NoPlainHTTP(),
+            _NomadsHTTPSHandler(nomad_uid, self.base, tls),
         )
 
     def request(self, method: str, path: str, token: str | None = None, body=None):
@@ -329,13 +469,44 @@ def token_self(nomad: Nomad, token: str | None):
 
 
 def require_acl_enabled(nomad: Nomad) -> None:
-    status, document = token_self(nomad, None)
+    status, payload = nomad.request("GET", "/v1/acl/token/self", None)
+    document = None
+    if status == 200:
+        try:
+            document = json.loads(payload)
+        except ValueError:
+            raise Refusal("nomad GET /v1/acl/token/self returned a body that is not JSON") from None
     if status == 200 and isinstance(document, dict) and document.get("AccessorID") == "acls-disabled":
         raise Refusal(
             "nomad ACLs are disabled: add `acl { enabled = true }` to the Nomad agent configuration and restart Nomad"
         )
     if status != 200 or not isinstance(document, dict) or document.get("AccessorID") != "anonymous":
-        raise Refusal(f"nomad did not answer as an ACL-enabled agent (GET /v1/acl/token/self returned HTTP {status})")
+        raise Refusal(
+            "nomad did not answer as an ACL-enabled agent "
+            f"(GET /v1/acl/token/self returned HTTP {status}: {_text(payload)})"
+        )
+
+
+def wait_for_leader(nomad: Nomad, seconds: int) -> None:
+    """Nomad bootstraps ACLs only with a leader. It answers "" while it elects
+    one and an error while it has none; only a named leader counts."""
+    deadline = time.monotonic() + seconds
+    while True:
+        status, payload = nomad.request("GET", "/v1/status/leader", None)
+        leader = None
+        if status == 200:
+            try:
+                leader = json.loads(payload)
+            except ValueError:
+                leader = None
+        if isinstance(leader, str) and leader.strip():
+            return
+        if time.monotonic() >= deadline:
+            raise Refusal(
+                f"nomad has no leader after {seconds}s (GET /v1/status/leader returned HTTP {status}: "
+                f"{_text(payload)}); rerun once Nomad has elected one"
+            )
+        time.sleep(1)
 
 
 def require_management(nomad: Nomad, token: str) -> None:
@@ -669,7 +840,7 @@ def require_designed_policy(nomad: Nomad, token: str, name: str, rules: str, req
 
 
 def command_provision(args) -> None:
-    nomad = Nomad(args.addr, args.ca_file)
+    nomad = Nomad(args.addr, args.ca_file, args.nomad_uid)
     es_uid, es_gid = parse_owner(args.es_token_owner)
     observer_owner = None
     if args.observer_token_file:
@@ -680,6 +851,7 @@ def command_provision(args) -> None:
     if len(set(paths)) != len(paths):
         raise Refusal("the management, ES and observer token files must be different files")
 
+    wait_for_leader(nomad, args.leader_wait_seconds)
     require_acl_enabled(nomad)
     management = bootstrap_or_load_management(nomad, args.management_token_file)
     require_no_anonymous_policy(nomad)
@@ -735,7 +907,7 @@ def _probe_plan_body() -> dict:
 
 
 def command_check(args) -> None:
-    nomad = Nomad(args.addr, args.ca_file)
+    nomad = Nomad(args.addr, args.ca_file, args.nomad_uid)
     require_acl_enabled(nomad)
     require_no_anonymous_policy(nomad)
 
@@ -822,23 +994,192 @@ def command_check(args) -> None:
     )
 
 
+def es_config_datacenter(path: str) -> str:
+    """nomad.datacenter from ES's JSON config: the datacenter ES submits to."""
+    _clean_absolute(path, "--es-config")
+    try:
+        fd = os.open(path, FILE_FLAGS)
+    except OSError:
+        raise Refusal(f"ES config {path} is unavailable or is a symbolic link") from None
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise Refusal(f"ES config {path} is not a regular file")
+        data = os.read(fd, MAX_ES_CONFIG_BYTES + 1)
+    finally:
+        os.close(fd)
+    if len(data) > MAX_ES_CONFIG_BYTES:
+        raise Refusal(f"ES config {path} is too large")
+    try:
+        config = json.loads(data)
+    except ValueError:
+        raise Refusal(f"ES config {path} is not JSON") from None
+    datacenter = (config.get("nomad") or {}).get("datacenter") if isinstance(config, dict) else None
+    if not isinstance(datacenter, str) or not DATACENTER_PATTERN.fullmatch(datacenter):
+        raise Refusal(f"ES config {path} names no valid nomad.datacenter")
+    return datacenter
+
+
+def _placement_plan_body(datacenter: str, network_mode: str) -> dict:
+    job_id = PLACEMENT_PROBE_JOB_PREFIX + network_mode
+    return {
+        "Job": {
+            "ID": job_id,
+            "Name": job_id,
+            "Type": "batch",
+            "Namespace": NAMESPACE,
+            "Datacenters": [datacenter],
+            "TaskGroups": [
+                {
+                    "Name": "probe",
+                    "Count": 1,
+                    "Tasks": [
+                        {
+                            "Name": "probe",
+                            "Driver": "docker",
+                            "Config": {"image": "alpine:3.20", "command": "/bin/true", "network_mode": network_mode},
+                            "Resources": {"CPU": 100, "MemoryMB": 64},
+                        }
+                    ],
+                }
+            ],
+        },
+        "Diff": False,
+    }
+
+
+def host_network_nodes(nomad: Nomad, observer: str, fresh_after: int = 0) -> tuple[list[str], list[str]]:
+    """Names of ready, eligible client nodes with a healthy Docker driver and
+    a host-mode network, and why each other node does not count. The
+    scheduler's network check reads NodeResources.Networks.
+
+    For up to about half a minute after a Nomad restart the servers can still
+    serve the node as the client last registered it, before the restart. With
+    fresh_after (Unix seconds), a node counts only once its status changed at
+    or after that time, that is once the restarted client registered again."""
+    nodes = nomad.json("GET", "/v1/nodes", observer)
+    if not isinstance(nodes, list):
+        raise Refusal("nomad GET /v1/nodes returned no node list")
+    ready, reasons = [], []
+    for stub in nodes:
+        if not isinstance(stub, dict):
+            continue
+        node_id = str(stub.get("ID") or "")
+        name = str(stub.get("Name") or node_id[:8] or "unknown")
+        if stub.get("Status") != "ready" or stub.get("SchedulingEligibility") != "eligible":
+            reasons.append(f"{name}={stub.get('Status')}/{stub.get('SchedulingEligibility')}")
+            continue
+        detail = nomad.json("GET", "/v1/node/" + urllib.parse.quote(node_id, safe=""), observer)
+        detail = detail if isinstance(detail, dict) else {}
+        updated = detail.get("StatusUpdatedAt")
+        if fresh_after and not (isinstance(updated, int) and updated >= fresh_after):
+            reasons.append(f"{name}=not-registered-since-the-start")
+            continue
+        docker = (detail.get("Drivers") or {}).get("docker") or {}
+        if docker.get("Healthy") is not True:
+            reasons.append(f"{name}=docker-unhealthy")
+            continue
+        networks = (detail.get("NodeResources") or {}).get("Networks") or []
+        if not any(isinstance(net, dict) and net.get("Mode") == "host" for net in networks):
+            reasons.append(f"{name}=no-host-network")
+            continue
+        ready.append(name)
+    return ready, reasons
+
+
+def plan_failures(nomad: Nomad, es_token: str, datacenter: str) -> list[str]:
+    """For each job shape ES submits, why its plan with the ES token would not
+    place its one allocation; empty when both would."""
+    failures = []
+    for mode in PLACEMENT_NETWORK_MODES:
+        body = _placement_plan_body(datacenter, mode)
+        path = "/v1/job/" + body["Job"]["ID"] + "/plan?namespace=" + NAMESPACE
+        result = nomad.json("POST", path, es_token, body)
+        result = result if isinstance(result, dict) else {}
+        failed = result.get("FailedTGAllocs") or {}
+        place = (((result.get("Annotations") or {}).get("DesiredTGUpdates") or {}).get("probe") or {}).get("Place")
+        if failed or place != 1:
+            details = []
+            for metric in failed.values():
+                metric = metric if isinstance(metric, dict) else {}
+                for key in ("ConstraintFiltered", "ClassFiltered", "DimensionExhausted", "QuotaExhausted"):
+                    if metric.get(key):
+                        details.append(f"{key} {json.dumps(metric[key], sort_keys=True)}")
+                if not metric.get("NodesAvailable"):
+                    details.append(f"no node in datacenter {datacenter}")
+            summary = "its allocation would fail" if failed else f"would place {place if isinstance(place, int) else 0} of 1"
+            failures.append(f"network_mode {mode}: {summary}" + (f" ({'; '.join(details)})" if details else ""))
+    return failures
+
+
+def command_placement(args) -> None:
+    nomad = Nomad(args.addr, args.ca_file, args.nomad_uid)
+    datacenter = es_config_datacenter(args.es_config)
+    es_uid = parse_owner(args.es_token_owner)[0] if args.es_token_owner else None
+    es_token = read_token_file(args.es_token_file, "ES token file", owner_uid=es_uid)
+    observer_uid = parse_owner(args.observer_token_owner)[0] if args.observer_token_owner else None
+    observer = read_token_file(args.observer_token_file, "observer token file", owner_uid=observer_uid)
+    deadline = time.monotonic() + args.wait_seconds
+    while True:
+        ready, reasons = host_network_nodes(nomad, observer, args.fresh_after)
+        failures = plan_failures(nomad, es_token, datacenter) if ready else []
+        if ready and not failures:
+            break
+        if time.monotonic() >= deadline:
+            if not ready:
+                raise Refusal(
+                    f"after {args.wait_seconds} s no ready, eligible client node has a healthy Docker driver and a "
+                    f"host-mode network ({', '.join(reasons) or 'no nodes'}), so no ES job can be placed. A node takes "
+                    "its host network from the interface its client's network_interface names, or from the default "
+                    "route's: pin network_interface = \"lo\" (scripts/70_linux_setup.sh) so that it holds on Wi-Fi "
+                    "and on a cable alike"
+                )
+            raise Refusal(
+                f"after {args.wait_seconds} s a plan of ES's jobs in {NAMESPACE}, datacenter {datacenter}, "
+                "places nothing: " + " | ".join(failures)
+            )
+        time.sleep(2)
+    print(
+        f"nomad placement: ok (host-mode network on {', '.join(ready)}; ES's job shapes, network_mode "
+        f"{' and '.join(PLACEMENT_NETWORK_MODES)}, plan in {NAMESPACE}, datacenter {datacenter}, with the ES token)"
+    )
+
+
+ADDR_HELP = "Nomad's loopback https:// address"
+CA_FILE_HELP = "Nomad's CA certificate (PEM), the only CA trusted"
+NOMAD_UID_HELP = "uid that Nomad's HTTPS listener runs as; nothing is sent to a listener owned by any other user (default 0)"
+
+
+def _non_negative_int(text: str) -> int:
+    if not re.fullmatch(r"[0-9]{1,10}", text, re.ASCII):
+        raise argparse.ArgumentTypeError("must be a non-negative integer")
+    return int(text)
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="nomad_acl.py", description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
 
     provision = sub.add_parser("provision")
-    provision.add_argument("--addr", required=True, help="Nomad's loopback https:// address")
-    provision.add_argument("--ca-file", required=True, help="Nomad's CA certificate (PEM), the only CA trusted")
+    provision.add_argument("--addr", required=True, help=ADDR_HELP)
+    provision.add_argument("--ca-file", required=True, help=CA_FILE_HELP)
+    provision.add_argument("--nomad-uid", type=_non_negative_int, default=0, help=NOMAD_UID_HELP)
     provision.add_argument("--management-token-file", required=True)
     provision.add_argument("--es-token-file", required=True)
     provision.add_argument("--es-token-owner", required=True, help="<uid>:<gid> of the user ES runs as")
     provision.add_argument("--observer-token-file")
     provision.add_argument("--observer-token-owner", help="<uid>:<gid> of the operator who runs readiness checks")
     provision.add_argument("--rotate", action="store_true", help="replace the ES and observer tokens")
+    provision.add_argument(
+        "--leader-wait-seconds",
+        type=_non_negative_int,
+        default=DEFAULT_LEADER_WAIT_SECONDS,
+        help="how long to wait for Nomad to name a leader before bootstrapping (default 30)",
+    )
 
     check = sub.add_parser("check")
-    check.add_argument("--addr", required=True, help="Nomad's loopback https:// address")
-    check.add_argument("--ca-file", required=True, help="Nomad's CA certificate (PEM), the only CA trusted")
+    check.add_argument("--addr", required=True, help=ADDR_HELP)
+    check.add_argument("--ca-file", required=True, help=CA_FILE_HELP)
+    check.add_argument("--nomad-uid", type=_non_negative_int, default=0, help=NOMAD_UID_HELP)
     check.add_argument("--es-token-file", required=True)
     check.add_argument("--es-token-owner", help="<uid>:<gid> expected to own the ES token file (default: current user)")
     check.add_argument("--observer-token-file")
@@ -848,9 +1189,33 @@ def main(argv: list[str]) -> int:
         help="also prove, with the management token, that the ES and observer tokens are the only ones with their policies and that no other policy, role, auth method or management token holds any job capability in the ES namespace (creates and deletes short-lived probe tokens)",
     )
 
+    placement = sub.add_parser("placement")
+    placement.add_argument("--addr", required=True, help=ADDR_HELP)
+    placement.add_argument("--ca-file", required=True, help=CA_FILE_HELP)
+    placement.add_argument("--nomad-uid", type=_non_negative_int, default=0, help=NOMAD_UID_HELP)
+    placement.add_argument("--es-token-file", required=True)
+    placement.add_argument("--es-token-owner", help="<uid>:<gid> expected to own the ES token file (default: current user)")
+    placement.add_argument("--observer-token-file", required=True)
+    placement.add_argument("--observer-token-owner", help="<uid>:<gid> expected to own the observer token file (default: current user)")
+    placement.add_argument("--es-config", required=True, help="ES's JSON config; its nomad.datacenter is where the plans go")
+    placement.add_argument(
+        "--wait-seconds",
+        type=_non_negative_int,
+        default=DEFAULT_PLACEMENT_WAIT_SECONDS,
+        help="how long to wait after a Nomad start for a node that can place ES's jobs (default 60)",
+    )
+    placement.add_argument(
+        "--fresh-after",
+        type=_non_negative_int,
+        default=0,
+        help="Unix time of the latest Nomad start: count a node only once it registered again after it (default 0: any)",
+    )
+
     args = parser.parse_args(argv)
     try:
-        if args.command == "provision":
+        if args.command == "placement":
+            command_placement(args)
+        elif args.command == "provision":
             for path, label in (
                 (args.management_token_file, "--management-token-file"),
                 (args.es_token_file, "--es-token-file"),

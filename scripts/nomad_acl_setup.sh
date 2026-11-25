@@ -10,6 +10,10 @@ set -euo pipefail
 #                                              # namespace, policies, token files
 #   sudo scripts/nomad_acl_setup.sh check      # verify the lock
 #   sudo scripts/nomad_acl_setup.sh rotate     # replace the ES and observer tokens
+#   sudo scripts/nomad_acl_setup.sh placement  # after every Nomad start: a node
+#                                              # with a host-mode network, and
+#                                              # plans of ES's job shapes with
+#                                              # ES's token that place
 #
 # Files, all in NOMAD_ACL_DIR (default /etc/execution-substrate/nomad-acl):
 #   management-token  root only (0600). Nomad's bootstrap management token.
@@ -26,7 +30,17 @@ set -euo pipefail
 #   ES_USER         user ES runs as; default root (the supported-local
 #                   service-root-v1 profile). Remote Alpha's es.service: es
 #   OBSERVER_USER   operator who runs readiness checks; default SUDO_USER, else root
+#   NOMAD_USER      user Nomad runs as; default root (nomad.service). Nothing
+#                   is sent to a listener on NOMAD_ADDR that another user owns.
+#   ES_CONFIG       placement: ES's config, for its nomad.datacenter; default
+#                   /etc/execution-substrate/es.json
+#   NOMAD_STARTED_AT  placement: Unix time just before the latest Nomad start;
+#                   node state the servers kept from before it does not count
+#   NOMAD_PLACEMENT_WAIT_SECONDS  placement: default 60
 #
+# check, rotate and placement need the ES_USER and OBSERVER_USER that
+# provision used: check and placement refuse token files that other users
+# own, and rotate gives the new token files to the users named.
 # ES reads its token only at startup: restart ES after `rotate`.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -37,9 +51,10 @@ NOMAD_CACERT="${NOMAD_CACERT:-/etc/nomad.d/tls/ca.pem}"
 NOMAD_ACL_DIR="${NOMAD_ACL_DIR:-/etc/execution-substrate/nomad-acl}"
 ES_USER="${ES_USER:-root}"
 OBSERVER_USER="${OBSERVER_USER:-${SUDO_USER:-root}}"
+NOMAD_USER="${NOMAD_USER:-root}"
 
 usage() {
-  sed -n '4,28p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '4,44p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 owner_of_user() {
@@ -54,7 +69,7 @@ owner_of_user() {
 }
 
 case "${ACTION}" in
-  provision|check|rotate)
+  provision|check|rotate|placement)
     ;;
   -h|--help|help)
     usage
@@ -77,16 +92,33 @@ fi
 
 ES_OWNER="$(owner_of_user "${ES_USER}")"
 OBSERVER_OWNER="$(owner_of_user "${OBSERVER_USER}")"
+NOMAD_OWNER="$(owner_of_user "${NOMAD_USER}")"
+NOMAD_UID="${NOMAD_OWNER%%:*}"
 
 if [[ "${ACTION}" == "check" ]]; then
   exec python3 -I "${TOOL}" check \
     --addr "${NOMAD_ADDR}" \
     --ca-file "${NOMAD_CACERT}" \
+    --nomad-uid "${NOMAD_UID}" \
     --es-token-file "${NOMAD_ACL_DIR}/es-token" \
     --es-token-owner "${ES_OWNER}" \
     --observer-token-file "${NOMAD_ACL_DIR}/observer-token" \
     --observer-token-owner "${OBSERVER_OWNER}" \
     --management-token-file "${NOMAD_ACL_DIR}/management-token"
+fi
+
+if [[ "${ACTION}" == "placement" ]]; then
+  exec python3 -I "${TOOL}" placement \
+    --addr "${NOMAD_ADDR}" \
+    --ca-file "${NOMAD_CACERT}" \
+    --nomad-uid "${NOMAD_UID}" \
+    --es-token-file "${NOMAD_ACL_DIR}/es-token" \
+    --es-token-owner "${ES_OWNER}" \
+    --observer-token-file "${NOMAD_ACL_DIR}/observer-token" \
+    --observer-token-owner "${OBSERVER_OWNER}" \
+    --es-config "${ES_CONFIG:-/etc/execution-substrate/es.json}" \
+    --fresh-after "${NOMAD_STARTED_AT:-0}" \
+    --wait-seconds "${NOMAD_PLACEMENT_WAIT_SECONDS:-60}"
 fi
 
 if [[ ! -d "${NOMAD_ACL_DIR}" ]]; then
@@ -101,6 +133,7 @@ fi
 python3 -I "${TOOL}" provision \
   --addr "${NOMAD_ADDR}" \
   --ca-file "${NOMAD_CACERT}" \
+  --nomad-uid "${NOMAD_UID}" \
   --management-token-file "${NOMAD_ACL_DIR}/management-token" \
   --es-token-file "${NOMAD_ACL_DIR}/es-token" \
   --es-token-owner "${ES_OWNER}" \
@@ -111,6 +144,7 @@ python3 -I "${TOOL}" provision \
 python3 -I "${TOOL}" check \
   --addr "${NOMAD_ADDR}" \
   --ca-file "${NOMAD_CACERT}" \
+  --nomad-uid "${NOMAD_UID}" \
   --es-token-file "${NOMAD_ACL_DIR}/es-token" \
   --es-token-owner "${ES_OWNER}" \
   --observer-token-file "${NOMAD_ACL_DIR}/observer-token" \
@@ -122,3 +156,4 @@ echo "next:"
 echo "  set nomad.token_file to ${NOMAD_ACL_DIR}/es-token in ES's config and restart ES"
 echo "  ES's nomad.root_ca_file is ${NOMAD_CACERT} (see scripts/70_linux_setup.sh for nomad.server_spki_sha256)"
 echo "  export NOMAD_TOKEN_FILE=${NOMAD_ACL_DIR}/observer-token before readiness checks"
+echo "  after every Nomad start, run this script's placement action: it checks that Nomad can place ES's jobs"

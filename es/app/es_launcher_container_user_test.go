@@ -121,8 +121,8 @@ esac
 exit 97
 `,
 				"python3": `#!/bin/sh
-if [ "$1" = "$LAUNCHER_REPO/scripts/internal/supported_local_execution_roots.py" ]; then
-  printf 'root-check %s\n' "$2" >> "$LAUNCHER_EVENTS"
+if [ "${1:-}" = -I ] && [ "${2:-}" = "$LAUNCHER_REPO/scripts/internal/supported_local_execution_roots.py" ]; then
+  printf 'root-check %s\n' "$3" >> "$LAUNCHER_EVENTS"
   exit 0
 fi
 exec "$LAUNCHER_REAL_PYTHON" "$@"

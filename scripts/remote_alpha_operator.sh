@@ -50,6 +50,7 @@ initialize_operator_paths() {
   REMOTE_ALPHA_VAULT_RESET_HELPER="${SCRIPT_DIR}/remote_alpha_reset_disposable_vault.sh"
   REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_PUBLIC_HELPER="${SCRIPT_DIR}/remote_alpha_vault_workload_auth_bootstrap.sh"
   REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_INTERNAL_HELPER="${SCRIPT_DIR}/internal/remote_alpha_vault_workload_auth_bootstrap.sh"
+  REMOTE_ALPHA_OUTPUT_DIR_DEFINITION="${SCRIPT_DIR}/internal/remote_alpha_output_dir.sh"
   REMOTE_ALPHA_ES_SERVICE_TLS_RENEW_PUBLIC_HELPER="${SCRIPT_DIR}/remote_alpha_es_service_tls_renew.sh"
   REMOTE_ALPHA_ES_SERVICE_TLS_RENEW_INTERNAL_HELPER="${SCRIPT_DIR}/internal/remote_alpha_es_service_tls_renew.sh"
   REMOTE_ALPHA_ES_TLS_STATUS_COLLECTOR="${SCRIPT_DIR}/internal/remote_alpha_es_tls_status.py"
@@ -936,10 +937,15 @@ recovery_session_vault_workload_auth_bootstrap_single_quote_remote() {
 
 recovery_session_vault_workload_auth_bootstrap_prepare_summary_path_remote() {
   local ssh_target=$1
-  local remote_prepare_command remote_prepare_command_quoted summary_dir_literal summary_path_literal
+  local remote_prepare_command remote_prepare_command_quoted summary_dir_literal summary_path_literal output_dir_definition
 
   recovery_session_vault_workload_auth_bootstrap_require_local_tty
   recovery_session_vault_workload_auth_bootstrap_require_command ssh
+  initialize_operator_paths
+  # The remote command checks the summary folder with remote_alpha_prepare_output_dir
+  # before any sudo step, so its definition travels at the front of the command.
+  output_dir_definition="$(cat -- "${REMOTE_ALPHA_OUTPUT_DIR_DEFINITION}")" ||
+    recovery_die "could not read ${REMOTE_ALPHA_OUTPUT_DIR_DEFINITION}"
 
   printf '%s\n' \
     "Preparing Remote Alpha Vault workload-auth bootstrap summary path through an explicit interactive SSH TTY." \
@@ -977,26 +983,26 @@ run_sudo() {
   sudo -n "$@"
 }
 
-if [[ -e "${summary_dir}" && ! -d "${summary_dir}" ]]; then
-  die_prepare "summary_parent_not_directory"
-fi
-
-if [[ ! -d "${summary_dir}" ]]; then
-  if ! (umask 077 && mkdir -p -- "${summary_dir}") 2>/dev/null; then
-    run_sudo install -d -m 0750 -o "${helper_user}" -g "${helper_group}" -- "${summary_dir}" || die_prepare "summary_parent_create_failed"
-  fi
-fi
-
-if [[ ! -d "${summary_dir}" ]]; then
-  die_prepare "summary_parent_missing_after_prepare"
+# The summary folder is the shared Remote Alpha artifact folder that root
+# helpers write into later. remote_alpha_prepare_output_dir creates it (as
+# this user, 0700) when it is missing and refuses a symbolic link on the way, a
+# folder another account owns or a folder its group or others can write, so
+# sudo below only ever acts on a folder root or this user already owns.
+if ! (umask 077 && remote_alpha_prepare_output_dir "${summary_dir}"); then
+  die_prepare "summary_parent_unsafe"
 fi
 
 if [[ ! -w "${summary_dir}" || ! -x "${summary_dir}" ]]; then
-  run_sudo install -d -m 0750 -o "${helper_user}" -g "${helper_group}" -- "${summary_dir}" || die_prepare "summary_parent_sudo_prepare_failed"
+  run_sudo chown -h "${helper_user}:${helper_group}" -- "${summary_dir}" || die_prepare "summary_parent_sudo_prepare_failed"
+  chmod 0750 -- "${summary_dir}" || die_prepare "summary_parent_chmod_failed"
 fi
 
 if [[ ! -w "${summary_dir}" || ! -x "${summary_dir}" ]]; then
   die_prepare "summary_parent_not_writable_after_prepare"
+fi
+
+if [[ -L "${summary_path}" ]]; then
+  die_prepare "summary_path_symlink"
 fi
 
 if [[ -e "${summary_path}" && ! -f "${summary_path}" ]]; then
@@ -1004,8 +1010,8 @@ if [[ -e "${summary_path}" && ! -f "${summary_path}" ]]; then
 fi
 
 if [[ -f "${summary_path}" && ! -w "${summary_path}" ]]; then
-  run_sudo chown "${helper_user}:${helper_group}" -- "${summary_path}" || die_prepare "summary_path_chown_failed"
-  run_sudo chmod 0600 -- "${summary_path}" || die_prepare "summary_path_chmod_failed"
+  run_sudo chown -h "${helper_user}:${helper_group}" -- "${summary_path}" || die_prepare "summary_path_chown_failed"
+  chmod 0600 -- "${summary_path}" || die_prepare "summary_path_chmod_failed"
 fi
 
 if [[ -f "${summary_path}" && ! -w "${summary_path}" ]]; then
@@ -1032,6 +1038,7 @@ REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_PREPARE_SUMMARY
 
   remote_prepare_command="${remote_prepare_command/__REMOTE_ALPHA_BOOTSTRAP_SUMMARY_DIR__/${summary_dir_literal}}"
   remote_prepare_command="${remote_prepare_command/__REMOTE_ALPHA_BOOTSTRAP_SUMMARY_PATH__/${summary_path_literal}}"
+  remote_prepare_command="${output_dir_definition}"$'\n'"${remote_prepare_command}"
   remote_prepare_command_quoted="$(recovery_session_vault_workload_auth_bootstrap_single_quote_remote "${remote_prepare_command}")"
   ssh -tt "${ssh_target}" "/bin/bash -c ${remote_prepare_command_quoted}"
 }
@@ -1316,16 +1323,18 @@ recovery_session_vault_workload_auth_bootstrap_stage_remote() {
   local remote_public_helper_path=$3
   local remote_internal_helper_path=$4
 
-  ssh "${ssh_target}" /bin/bash -s -- "${remote_stage_dir}" <<'REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_PREPARE'
+  ssh "${ssh_target}" /bin/bash -s -- "${remote_stage_dir}" <<'REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_PREPARE' || return 1
 set -euo pipefail
 stage_dir=$1
-rm -rf -- "${stage_dir}"
-mkdir -p -- "${stage_dir}/scripts/internal"
-chmod 0700 "${stage_dir}" "${stage_dir}/scripts" "${stage_dir}/scripts/internal"
+# A new folder directly under /tmp, made with mkdir and no -p: a folder or
+# link someone planted at this name makes staging fail, and nobody but this
+# user (and root) can change what is staged in it.
+mkdir -m 0700 -- "${stage_dir}"
+mkdir -m 0700 -- "${stage_dir}/scripts" "${stage_dir}/scripts/internal"
 REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_PREPARE
 
-  scp "${REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_PUBLIC_HELPER}" "${ssh_target}:${remote_public_helper_path}"
-  scp "${REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_INTERNAL_HELPER}" "${ssh_target}:${remote_internal_helper_path}"
+  scp "${REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_PUBLIC_HELPER}" "${ssh_target}:${remote_public_helper_path}" || return 1
+  scp "${REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_INTERNAL_HELPER}" "${ssh_target}:${remote_internal_helper_path}" || return 1
 }
 
 recovery_session_vault_workload_auth_bootstrap_cleanup_remote() {
@@ -1335,7 +1344,11 @@ recovery_session_vault_workload_auth_bootstrap_cleanup_remote() {
   ssh "${ssh_target}" /bin/bash -s -- "${remote_stage_dir}" <<'REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_CLEANUP'
 set -euo pipefail
 stage_dir=$1
-rm -rf -- "${stage_dir}" || true
+# Remove only a real folder this user owns: when staging failed because
+# something else was at this name, leave it alone.
+if [[ -d "${stage_dir}" && ! -L "${stage_dir}" && -O "${stage_dir}" ]]; then
+  rm -rf -- "${stage_dir}" || true
+fi
 REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_CLEANUP
 }
 
@@ -1346,7 +1359,7 @@ recovery_session_vault_workload_auth_bootstrap_run_remote() {
   local remote_internal_helper_path=$4
   local remote_command remote_shell_command
 
-  printf -v remote_command 'set -euo pipefail; stage_dir=%q; helper_path=%q; internal_helper_path=%q; cleanup() { rm -rf -- "${stage_dir}" || true; }; trap cleanup EXIT; chmod 0700 "${helper_path}"; chmod 0600 "${internal_helper_path}" 2>/dev/null || true; "${helper_path}"' "${remote_stage_dir}" "${remote_public_helper_path}" "${remote_internal_helper_path}"
+  printf -v remote_command 'set -euo pipefail; stage_dir=%q; helper_path=%q; internal_helper_path=%q; [[ -d "${stage_dir}" && ! -L "${stage_dir}" && -O "${stage_dir}" && -n "$(find "${stage_dir}" -maxdepth 0 -perm 0700 -print)" ]] || { printf "%%s\n" "the staged helper folder is not a private folder of this user; not running it" >&2; exit 1; }; cleanup() { rm -rf -- "${stage_dir}" || true; }; trap cleanup EXIT; chmod 0700 "${helper_path}"; chmod 0600 "${internal_helper_path}" 2>/dev/null || true; "${helper_path}"' "${remote_stage_dir}" "${remote_public_helper_path}" "${remote_internal_helper_path}"
   printf -v remote_shell_command 'exec /bin/bash -c %q' "${remote_command}"
   ssh -tt "${ssh_target}" "${remote_shell_command}"
 }
@@ -1371,7 +1384,7 @@ recovery_session_vault_workload_auth_bootstrap_remote() {
   fi
 
   run_id="$(date -u +%Y%m%dT%H%M%SZ)-$$"
-  remote_stage_dir="${REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_STAGE_ROOT}/${run_id}"
+  remote_stage_dir="${REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_STAGE_ROOT}-${run_id}"
   remote_public_helper_path="${remote_stage_dir}/scripts/remote_alpha_vault_workload_auth_bootstrap.sh"
   remote_internal_helper_path="${remote_stage_dir}/scripts/internal/remote_alpha_vault_workload_auth_bootstrap.sh"
 
@@ -1451,15 +1464,16 @@ recovery_session_vault_unseal_existing_stage_remote() {
   local remote_stage_dir=$2
   local remote_helper_path=$3
 
-  ssh "${ssh_target}" /bin/bash -s -- "${remote_stage_dir}" <<'REMOTE_ALPHA_VAULT_UNSEAL_PREPARE'
+  ssh "${ssh_target}" /bin/bash -s -- "${remote_stage_dir}" <<'REMOTE_ALPHA_VAULT_UNSEAL_PREPARE' || return 1
 set -euo pipefail
 stage_dir=$1
-rm -rf -- "${stage_dir}"
-mkdir -p -- "${stage_dir}"
-chmod 0700 "${stage_dir}"
+# A new folder directly under /tmp, made with mkdir and no -p: a folder or
+# link someone planted at this name makes staging fail, and nobody but this
+# user (and root) can change what is staged in it.
+mkdir -m 0700 -- "${stage_dir}"
 REMOTE_ALPHA_VAULT_UNSEAL_PREPARE
 
-  scp "${REMOTE_ALPHA_VAULT_RESET_HELPER}" "${ssh_target}:${remote_helper_path}"
+  scp "${REMOTE_ALPHA_VAULT_RESET_HELPER}" "${ssh_target}:${remote_helper_path}" || return 1
 }
 
 recovery_session_vault_unseal_existing_cleanup_remote() {
@@ -1469,7 +1483,11 @@ recovery_session_vault_unseal_existing_cleanup_remote() {
   ssh "${ssh_target}" /bin/bash -s -- "${remote_stage_dir}" <<'REMOTE_ALPHA_VAULT_UNSEAL_CLEANUP'
 set -euo pipefail
 stage_dir=$1
-rm -rf -- "${stage_dir}" || true
+# Remove only a real folder this user owns: when staging failed because
+# something else was at this name, leave it alone.
+if [[ -d "${stage_dir}" && ! -L "${stage_dir}" && -O "${stage_dir}" ]]; then
+  rm -rf -- "${stage_dir}" || true
+fi
 REMOTE_ALPHA_VAULT_UNSEAL_CLEANUP
 }
 
@@ -1479,7 +1497,7 @@ recovery_session_vault_unseal_existing_run_remote() {
   local remote_helper_path=$3
   local remote_command remote_shell_command
 
-  printf -v remote_command 'set -euo pipefail; stage_dir=%q; helper_path=%q; cleanup() { rm -rf -- "${stage_dir}" || true; }; trap cleanup EXIT; chmod 0700 "${helper_path}"; "${helper_path}" --unseal-only' "${remote_stage_dir}" "${remote_helper_path}"
+  printf -v remote_command 'set -euo pipefail; stage_dir=%q; helper_path=%q; [[ -d "${stage_dir}" && ! -L "${stage_dir}" && -O "${stage_dir}" && -n "$(find "${stage_dir}" -maxdepth 0 -perm 0700 -print)" ]] || { printf "%%s\n" "the staged helper folder is not a private folder of this user; not running it" >&2; exit 1; }; cleanup() { rm -rf -- "${stage_dir}" || true; }; trap cleanup EXIT; chmod 0700 "${helper_path}"; "${helper_path}" --unseal-only' "${remote_stage_dir}" "${remote_helper_path}"
   printf -v remote_shell_command 'exec /bin/bash -c %q' "${remote_command}"
   ssh -tt "${ssh_target}" "${remote_shell_command}"
 }
@@ -1493,7 +1511,7 @@ recovery_session_vault_unseal_existing_remote() {
   recovery_session_vault_unseal_existing_require_command scp
 
   run_id="$(date -u +%Y%m%dT%H%M%SZ)-$$"
-  remote_stage_dir="${REMOTE_ALPHA_VAULT_UNSEAL_STAGE_ROOT}/${run_id}"
+  remote_stage_dir="${REMOTE_ALPHA_VAULT_UNSEAL_STAGE_ROOT}-${run_id}"
   remote_helper_path="${remote_stage_dir}/remote_alpha_reset_disposable_vault.sh"
 
   printf '%s\n' \
@@ -1630,15 +1648,16 @@ recovery_session_vault_reset_disposable_stage_remote() {
   local remote_stage_dir=$2
   local remote_helper_path=$3
 
-  ssh "${ssh_target}" /bin/bash -s -- "${remote_stage_dir}" <<'REMOTE_ALPHA_VAULT_RESET_DRY_RUN_PREPARE'
+  ssh "${ssh_target}" /bin/bash -s -- "${remote_stage_dir}" <<'REMOTE_ALPHA_VAULT_RESET_DRY_RUN_PREPARE' || return 1
 set -euo pipefail
 stage_dir=$1
-rm -rf -- "${stage_dir}"
-mkdir -p -- "${stage_dir}"
-chmod 0700 "${stage_dir}"
+# A new folder directly under /tmp, made with mkdir and no -p: a folder or
+# link someone planted at this name makes staging fail, and nobody but this
+# user (and root) can change what is staged in it.
+mkdir -m 0700 -- "${stage_dir}"
 REMOTE_ALPHA_VAULT_RESET_DRY_RUN_PREPARE
 
-  scp "${REMOTE_ALPHA_VAULT_RESET_HELPER}" "${ssh_target}:${remote_helper_path}"
+  scp "${REMOTE_ALPHA_VAULT_RESET_HELPER}" "${ssh_target}:${remote_helper_path}" || return 1
 }
 
 recovery_session_vault_reset_disposable_cleanup_remote() {
@@ -1648,7 +1667,11 @@ recovery_session_vault_reset_disposable_cleanup_remote() {
   ssh "${ssh_target}" /bin/bash -s -- "${remote_stage_dir}" <<'REMOTE_ALPHA_VAULT_RESET_DRY_RUN_CLEANUP'
 set -euo pipefail
 stage_dir=$1
-rm -rf -- "${stage_dir}" || true
+# Remove only a real folder this user owns: when staging failed because
+# something else was at this name, leave it alone.
+if [[ -d "${stage_dir}" && ! -L "${stage_dir}" && -O "${stage_dir}" ]]; then
+  rm -rf -- "${stage_dir}" || true
+fi
 REMOTE_ALPHA_VAULT_RESET_DRY_RUN_CLEANUP
 }
 
@@ -1661,12 +1684,12 @@ recovery_session_vault_reset_disposable_run_remote() {
 
   case "${helper_mode}" in
     --dry-run)
-      printf -v remote_command 'set -euo pipefail; stage_dir=%q; helper_path=%q; cleanup() { rm -rf -- "${stage_dir}" || true; }; trap cleanup EXIT; chmod 0700 "${helper_path}"; "${helper_path}" --dry-run' "${remote_stage_dir}" "${remote_helper_path}"
+      printf -v remote_command 'set -euo pipefail; stage_dir=%q; helper_path=%q; [[ -d "${stage_dir}" && ! -L "${stage_dir}" && -O "${stage_dir}" && -n "$(find "${stage_dir}" -maxdepth 0 -perm 0700 -print)" ]] || { printf "%%s\n" "the staged helper folder is not a private folder of this user; not running it" >&2; exit 1; }; cleanup() { rm -rf -- "${stage_dir}" || true; }; trap cleanup EXIT; chmod 0700 "${helper_path}"; "${helper_path}" --dry-run' "${remote_stage_dir}" "${remote_helper_path}"
       printf -v remote_shell_command 'exec /bin/bash -c %q' "${remote_command}"
       ssh "${ssh_target}" "${remote_shell_command}"
       ;;
     --execute-reset)
-      printf -v remote_command 'set -euo pipefail; stage_dir=%q; helper_path=%q; cleanup() { rm -rf -- "${stage_dir}" || true; }; trap cleanup EXIT; chmod 0700 "${helper_path}"; "${helper_path}" --execute-reset' "${remote_stage_dir}" "${remote_helper_path}"
+      printf -v remote_command 'set -euo pipefail; stage_dir=%q; helper_path=%q; [[ -d "${stage_dir}" && ! -L "${stage_dir}" && -O "${stage_dir}" && -n "$(find "${stage_dir}" -maxdepth 0 -perm 0700 -print)" ]] || { printf "%%s\n" "the staged helper folder is not a private folder of this user; not running it" >&2; exit 1; }; cleanup() { rm -rf -- "${stage_dir}" || true; }; trap cleanup EXIT; chmod 0700 "${helper_path}"; "${helper_path}" --execute-reset' "${remote_stage_dir}" "${remote_helper_path}"
       printf -v remote_shell_command 'exec /bin/bash -c %q' "${remote_command}"
       ssh -tt "${ssh_target}" "${remote_shell_command}"
       ;;
@@ -1689,9 +1712,9 @@ recovery_session_vault_reset_disposable_remote() {
 
   run_id="$(date -u +%Y%m%dT%H%M%SZ)-$$"
   if [[ "${helper_mode}" == "--execute-reset" ]]; then
-    remote_stage_dir="${REMOTE_ALPHA_VAULT_RESET_EXECUTE_STAGE_ROOT}/${run_id}"
+    remote_stage_dir="${REMOTE_ALPHA_VAULT_RESET_EXECUTE_STAGE_ROOT}-${run_id}"
   else
-    remote_stage_dir="${REMOTE_ALPHA_VAULT_RESET_DRY_RUN_STAGE_ROOT}/${run_id}"
+    remote_stage_dir="${REMOTE_ALPHA_VAULT_RESET_DRY_RUN_STAGE_ROOT}-${run_id}"
   fi
   remote_helper_path="${remote_stage_dir}/remote_alpha_reset_disposable_vault.sh"
 
@@ -1853,7 +1876,11 @@ recovery_session_es_service_tls_cleanup_remote() {
   ssh "${ssh_target}" /bin/bash -s -- "${remote_stage_dir}" <<'REMOTE_ALPHA_ES_SERVICE_TLS_CLEANUP'
 set -euo pipefail
 stage_dir=$1
-rm -rf -- "${stage_dir}" || true
+# Remove only a real folder this user owns: when staging failed because
+# something else was at this name, leave it alone.
+if [[ -d "${stage_dir}" && ! -L "${stage_dir}" && -O "${stage_dir}" ]]; then
+  rm -rf -- "${stage_dir}" || true
+fi
 REMOTE_ALPHA_ES_SERVICE_TLS_CLEANUP
 }
 
@@ -2704,16 +2731,18 @@ recovery_session_operator_healthcheck_tls_stage_remote() {
   local remote_public_helper_path=$3
   local remote_internal_helper_path=$4
 
-  ssh "${ssh_target}" /bin/bash -s -- "${remote_stage_dir}" <<'REMOTE_ALPHA_OPERATOR_HEALTHCHECK_TLS_PREPARE'
+  ssh "${ssh_target}" /bin/bash -s -- "${remote_stage_dir}" <<'REMOTE_ALPHA_OPERATOR_HEALTHCHECK_TLS_PREPARE' || return 1
 set -euo pipefail
 stage_dir=$1
-rm -rf -- "${stage_dir}"
-mkdir -p -- "${stage_dir}/scripts/internal"
-chmod 0700 "${stage_dir}" "${stage_dir}/scripts" "${stage_dir}/scripts/internal"
+# A new folder directly under /tmp, made with mkdir and no -p: a folder or
+# link someone planted at this name makes staging fail, and nobody but this
+# user (and root) can change what is staged in it.
+mkdir -m 0700 -- "${stage_dir}"
+mkdir -m 0700 -- "${stage_dir}/scripts" "${stage_dir}/scripts/internal"
 REMOTE_ALPHA_OPERATOR_HEALTHCHECK_TLS_PREPARE
 
-  scp "${REMOTE_ALPHA_OPERATOR_HEALTHCHECK_TLS_RENEW_PUBLIC_HELPER}" "${ssh_target}:${remote_public_helper_path}"
-  scp "${REMOTE_ALPHA_OPERATOR_HEALTHCHECK_TLS_RENEW_INTERNAL_HELPER}" "${ssh_target}:${remote_internal_helper_path}"
+  scp "${REMOTE_ALPHA_OPERATOR_HEALTHCHECK_TLS_RENEW_PUBLIC_HELPER}" "${ssh_target}:${remote_public_helper_path}" || return 1
+  scp "${REMOTE_ALPHA_OPERATOR_HEALTHCHECK_TLS_RENEW_INTERNAL_HELPER}" "${ssh_target}:${remote_internal_helper_path}" || return 1
 }
 
 recovery_session_operator_healthcheck_tls_run_remote() {
@@ -2732,7 +2761,7 @@ recovery_session_operator_healthcheck_tls_run_remote() {
       ;;
   esac
 
-  printf -v remote_command 'set -euo pipefail; stage_dir=%q; helper_path=%q; internal_helper_path=%q; cleanup() { rm -rf -- "${stage_dir}" || true; }; trap cleanup EXIT; chmod 0700 "${helper_path}"; chmod 0600 "${internal_helper_path}" 2>/dev/null || true; if [[ "$(id -u)" == "0" ]]; then "${helper_path}" %q; else sudo "${helper_path}" %q; fi' "${remote_stage_dir}" "${remote_public_helper_path}" "${remote_internal_helper_path}" "${helper_mode}" "${helper_mode}"
+  printf -v remote_command 'set -euo pipefail; stage_dir=%q; helper_path=%q; internal_helper_path=%q; [[ -d "${stage_dir}" && ! -L "${stage_dir}" && -O "${stage_dir}" && -n "$(find "${stage_dir}" -maxdepth 0 -perm 0700 -print)" ]] || { printf "%%s\n" "the staged helper folder is not a private folder of this user; not running it" >&2; exit 1; }; cleanup() { rm -rf -- "${stage_dir}" || true; }; trap cleanup EXIT; chmod 0700 "${helper_path}"; chmod 0600 "${internal_helper_path}" 2>/dev/null || true; if [[ "$(id -u)" == "0" ]]; then "${helper_path}" %q; else sudo "${helper_path}" %q; fi' "${remote_stage_dir}" "${remote_public_helper_path}" "${remote_internal_helper_path}" "${helper_mode}" "${helper_mode}"
   printf -v remote_shell_command 'exec /bin/bash -c %q' "${remote_command}"
   ssh -tt "${ssh_target}" "${remote_shell_command}"
 }
@@ -2766,7 +2795,7 @@ recovery_session_operator_healthcheck_tls_remote() {
   recovery_session_es_service_tls_require_command scp
 
   run_id="$(date -u +%Y%m%dT%H%M%SZ)-$$"
-  remote_stage_dir="${REMOTE_ALPHA_OPERATOR_HEALTHCHECK_TLS_RENEW_STAGE_ROOT}/${run_id}"
+  remote_stage_dir="${REMOTE_ALPHA_OPERATOR_HEALTHCHECK_TLS_RENEW_STAGE_ROOT}-${run_id}"
   remote_public_helper_path="${remote_stage_dir}/scripts/remote_alpha_operator_healthcheck_tls_renew.sh"
   remote_internal_helper_path="${remote_stage_dir}/scripts/internal/remote_alpha_operator_healthcheck_tls_renew.sh"
 

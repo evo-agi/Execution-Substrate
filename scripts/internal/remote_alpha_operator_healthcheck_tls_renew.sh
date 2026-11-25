@@ -6,6 +6,62 @@ remote_alpha_operator_healthcheck_tls_schema_version="execution-substrate.remote
 remote_alpha_operator_healthcheck_tls_summary_path_default="/var/tmp/execution-substrate-remote-alpha/operator-healthcheck-tls-renew-summary.json"
 remote_alpha_operator_healthcheck_tls_backup_root_default="/var/tmp/execution-substrate-remote-alpha"
 
+# Copy of remote_alpha_prepare_output_dir from scripts/internal/remote_alpha_output_dir.sh,
+# which explains it; TestRemoteAlphaOutputDirCopiesMatch keeps the two identical.
+remote_alpha_prepare_output_dir() {
+  python3 -I - "$1" <<'REMOTE_ALPHA_OUTPUT_DIR_PY'
+import os
+import stat
+import sys
+
+if not sys.argv[1]:
+    sys.exit("remote alpha output folder: no folder given")
+if ".." in sys.argv[1].split("/"):
+    sys.exit(f"remote alpha output folder: {sys.argv[1]} has a '..' component; refusing to check a path that is not canonical")
+# The path is checked as given, never normalized: dropping "link/.." would
+# check another folder than the one a later write through the link reaches.
+parts = [part for part in os.path.join(os.getcwd(), sys.argv[1]).split("/") if part not in ("", ".")]
+trusted = {0, os.geteuid()}
+if os.environ.get("SUDO_UID", "").isdigit():
+    trusted.add(int(os.environ["SUDO_UID"]))
+# O_PATH reads a folder's owner and mode without read permission on it, so a
+# folder that root keeps private still passes and sudo can hand it over.
+flags = getattr(os, "O_PATH", os.O_RDONLY) | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+shown = "/"
+fd = os.open("/", flags)
+try:
+    for index in range(len(parts) + 1):
+        info = os.fstat(fd)
+        last = index == len(parts)
+        if info.st_uid not in trusted:
+            sys.exit(
+                f"remote alpha output folder: {shown} belongs to uid {info.st_uid}, not to root, "
+                "the user running this step or the user who ran sudo; refusing to write under it"
+            )
+        if info.st_mode & (stat.S_IWGRP | stat.S_IWOTH) and (
+            last or info.st_uid != 0 or not info.st_mode & stat.S_ISVTX
+        ):
+            sys.exit(f"remote alpha output folder: {shown} can be written by its group or others; refusing to write under it")
+        if last:
+            break
+        shown = "/" + "/".join(parts[: index + 1])
+        try:
+            next_fd = os.open(parts[index], flags, dir_fd=fd)
+        except FileNotFoundError:
+            try:
+                os.mkdir(parts[index], 0o755, dir_fd=fd)
+            except FileExistsError:
+                pass
+            next_fd = os.open(parts[index], flags, dir_fd=fd)
+        os.close(fd)
+        fd = next_fd
+except OSError as exc:
+    sys.exit(f"remote alpha output folder: {shown} is not a directory or is a symbolic link ({exc.strerror})")
+finally:
+    os.close(fd)
+REMOTE_ALPHA_OUTPUT_DIR_PY
+}
+
 remote_alpha_operator_healthcheck_tls_defaults() {
   REMOTE_ALPHA_OPERATION_MODE="status"
   REMOTE_ALPHA_SUMMARY_PATH="${REMOTE_ALPHA_SUMMARY_PATH:-${remote_alpha_operator_healthcheck_tls_summary_path_default}}"
@@ -129,7 +185,7 @@ remote_alpha_operator_healthcheck_tls_collect_status() {
   local install_meta_path=${5:-}
   local restart_meta_path=${6:-}
 
-  python3 - \
+  python3 -I - \
     "${mode}" \
     "${summary_path}" \
     "${probe_meta_path}" \
@@ -854,7 +910,7 @@ remote_alpha_operator_healthcheck_tls_create_backup() {
   local timestamp backup_dir material_dir path rel target
   shift
   timestamp="$(remote_alpha_operator_healthcheck_tls_timestamp)"
-  mkdir -p -- "${REMOTE_ALPHA_BACKUP_ROOT}"
+  remote_alpha_prepare_output_dir "${REMOTE_ALPHA_BACKUP_ROOT}" || return 1
   backup_dir="$(mktemp -d "${REMOTE_ALPHA_BACKUP_ROOT}/operator-healthcheck-tls-renew-${timestamp}-XXXXXX")"
   material_dir="${backup_dir}/material"
   mkdir -p -- "${material_dir}"
@@ -867,7 +923,7 @@ remote_alpha_operator_healthcheck_tls_create_backup() {
     cp -p -- "${path}" "${target}"
   done
 
-  python3 - "${backup_meta_path}" "${backup_dir}" "${material_dir}" "$@" <<'PY'
+  python3 -I - "${backup_meta_path}" "${backup_dir}" "${material_dir}" "$@" <<'PY'
 import hashlib
 import json
 import pathlib
@@ -912,7 +968,7 @@ PY
 }
 
 remote_alpha_operator_healthcheck_tls_es_client_ca_path() {
-  python3 - "${REMOTE_ALPHA_ES_CONFIG_PATH}" "${REMOTE_ALPHA_HEALTHCHECK_ENV_PATH}" <<'PY'
+  python3 -I - "${REMOTE_ALPHA_ES_CONFIG_PATH}" "${REMOTE_ALPHA_HEALTHCHECK_ENV_PATH}" <<'PY'
 import json
 import pathlib
 import sys
@@ -939,7 +995,7 @@ PY
 
 remote_alpha_operator_healthcheck_tls_file_policy() {
   local cert_meta_path=$1
-  python3 - "${cert_meta_path}" "${REMOTE_ALPHA_OPERATOR_CERT_PATH}" "${REMOTE_ALPHA_OPERATOR_KEY_PATH}" <<'PY'
+  python3 -I - "${cert_meta_path}" "${REMOTE_ALPHA_OPERATOR_CERT_PATH}" "${REMOTE_ALPHA_OPERATOR_KEY_PATH}" <<'PY'
 import json
 import pathlib
 import sys
@@ -967,17 +1023,17 @@ remote_alpha_operator_healthcheck_tls_install_material() {
   local cert_uid cert_gid cert_mode key_uid key_gid key_mode
 
   remote_alpha_operator_healthcheck_tls_file_policy "${policy_path}"
-  cert_uid="$(python3 -c 'import json,sys; p=json.load(open(sys.argv[1])); print(p["items"][0]["uid"])' "${policy_path}")"
-  cert_gid="$(python3 -c 'import json,sys; p=json.load(open(sys.argv[1])); print(p["items"][0]["gid"])' "${policy_path}")"
-  cert_mode="$(python3 -c 'import json,sys; p=json.load(open(sys.argv[1])); print(p["items"][0]["mode"])' "${policy_path}")"
-  key_uid="$(python3 -c 'import json,sys; p=json.load(open(sys.argv[1])); print(p["items"][1]["uid"])' "${policy_path}")"
-  key_gid="$(python3 -c 'import json,sys; p=json.load(open(sys.argv[1])); print(p["items"][1]["gid"])' "${policy_path}")"
-  key_mode="$(python3 -c 'import json,sys; p=json.load(open(sys.argv[1])); print(p["items"][1]["mode"])' "${policy_path}")"
+  cert_uid="$(python3 -I -c 'import json,sys; p=json.load(open(sys.argv[1])); print(p["items"][0]["uid"])' "${policy_path}")"
+  cert_gid="$(python3 -I -c 'import json,sys; p=json.load(open(sys.argv[1])); print(p["items"][0]["gid"])' "${policy_path}")"
+  cert_mode="$(python3 -I -c 'import json,sys; p=json.load(open(sys.argv[1])); print(p["items"][0]["mode"])' "${policy_path}")"
+  key_uid="$(python3 -I -c 'import json,sys; p=json.load(open(sys.argv[1])); print(p["items"][1]["uid"])' "${policy_path}")"
+  key_gid="$(python3 -I -c 'import json,sys; p=json.load(open(sys.argv[1])); print(p["items"][1]["gid"])' "${policy_path}")"
+  key_mode="$(python3 -I -c 'import json,sys; p=json.load(open(sys.argv[1])); print(p["items"][1]["mode"])' "${policy_path}")"
 
   install -o "${cert_uid}" -g "${cert_gid}" -m "${cert_mode}" "${work_dir}/operator-client-cert.pem" "${REMOTE_ALPHA_OPERATOR_CERT_PATH}"
   install -o "${key_uid}" -g "${key_gid}" -m "${key_mode}" "${work_dir}/operator-client-key.pem" "${REMOTE_ALPHA_OPERATOR_KEY_PATH}"
 
-  python3 - "${install_meta_path}" "${policy_path}" <<'PY'
+  python3 -I - "${install_meta_path}" "${policy_path}" <<'PY'
 import json
 import pathlib
 import sys
@@ -994,7 +1050,7 @@ PY
 
 remote_alpha_operator_healthcheck_tls_restart_meta() {
   local restart_meta_path=$1
-  python3 - "${restart_meta_path}" <<'PY'
+  python3 -I - "${restart_meta_path}" <<'PY'
 import json
 import pathlib
 import sys
@@ -1010,7 +1066,7 @@ PY
 }
 
 remote_alpha_operator_healthcheck_tls_probe_urls() {
-  python3 - "${REMOTE_ALPHA_HEALTHCHECK_ENV_PATH}" <<'PY'
+  python3 -I - "${REMOTE_ALPHA_HEALTHCHECK_ENV_PATH}" <<'PY'
 import pathlib
 import sys
 from urllib.parse import urlparse
@@ -1051,7 +1107,7 @@ remote_alpha_operator_healthcheck_tls_run_probes() {
   local -a records=()
 
   if [[ -n "${REMOTE_ALPHA_TEST_SKIP_OPERATOR_HEALTHCHECK_TLS_PROBES:-}" ]]; then
-    python3 - "${probe_meta_path}" <<'PY'
+    python3 -I - "${probe_meta_path}" <<'PY'
 import json
 import pathlib
 import sys
@@ -1062,7 +1118,7 @@ PY
   fi
 
   if ! command -v curl >/dev/null 2>&1; then
-    python3 - "${probe_meta_path}" <<'PY'
+    python3 -I - "${probe_meta_path}" <<'PY'
 import json
 import pathlib
 import sys
@@ -1097,7 +1153,7 @@ PY
     fi
   done
 
-  python3 - "${probe_meta_path}" "${overall}" "${REMOTE_ALPHA_OPERATOR_CERT_PATH}" "${REMOTE_ALPHA_OPERATOR_KEY_PATH}" "${records[@]}" <<'PY'
+  python3 -I - "${probe_meta_path}" "${overall}" "${REMOTE_ALPHA_OPERATOR_CERT_PATH}" "${REMOTE_ALPHA_OPERATOR_KEY_PATH}" "${records[@]}" <<'PY'
 import json
 import pathlib
 import sys
@@ -1143,6 +1199,11 @@ remote_alpha_operator_healthcheck_tls_renew_main() {
   fi
   remote_alpha_operator_healthcheck_tls_require_root || return 1
   remote_alpha_operator_healthcheck_tls_require_command python3 || return 1
+  remote_alpha_prepare_output_dir "$(dirname "${REMOTE_ALPHA_SUMMARY_PATH}")" || return 1
+  # Only a renewal writes backups; status must leave the backup root alone.
+  if [[ "${REMOTE_ALPHA_OPERATION_MODE}" == "execute_renew" ]]; then
+    remote_alpha_prepare_output_dir "${REMOTE_ALPHA_BACKUP_ROOT}" || return 1
+  fi
   remote_alpha_operator_healthcheck_tls_require_command openssl || return 1
 
   tmpdir="$(mktemp -d)"

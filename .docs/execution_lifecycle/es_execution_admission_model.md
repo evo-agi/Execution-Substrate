@@ -31,6 +31,80 @@ Authority for this document follows the repo-wide authority hierarchy:
 If this document disagrees with current code and tests on implemented behavior,
 the code and tests win and this document must be realigned.
 
+### PR #12 private retained-admission refinement
+
+The published codec-5 handoff omitted current ES admission on retained first
+effects. Its repair is a re-derivation on the reliable-submit
+**Reopened redesign seam**, owned by the
+[operational handoff contract](reliable_submit_operational_handoff.md). Ordinary
+unkeyed Submit and public keyed refusal remain **Current invariants**. Fresh
+admission still owns one effectful resolution and verifies ARS discovery, the
+complete signed artifact evidence, current startup-loaded EGS TrustModel and
+the ES local policy. A private immutable owned evidence carrier on
+`preparedArtifact` and separately on `resolvedExecution` transports the same
+successful record to the v2 original builder; it does not enter the plan,
+material, PB1, provider projection or ordinary public result. The carrier's
+256 KiB sealing limit applies only to new private operational originals.
+
+For retained unmarked effects, "current admission" has three parts. The
+store holds one durable admission row: installation, epoch, admission
+generation, admission digest and an enabled or withdrawn state. Service owns
+a view installed at most once by commissioning or advancing that row: the
+returned admission token with deep copies of the normalized trust lists, the
+provenance verifier and the supported built-in policy entries. And the
+process must have confirmed that view's trust with EGS within 30 seconds.
+The verified trust owner pointer prevents a copied Service from
+commissioning the same startup proof, and trust JSON remains within the
+existing 256 KiB dependency response bound. The view is held by the admission
+state package behind its own lock, read under that lock and evaluated locally
+over authenticated frozen inputs at each protected cut, after the store has
+compared its token with the row under the SQLite writer lock. The ordinary
+replaceable `AdmissionPolicyEvaluator` remains available to ordinary
+admission; the private SQLite writer accepts only an exact inspected
+`admissionPolicySet` of supported built-ins, refusing unknown or nested
+implementations before calling them. Nil uses the validated configuration
+default. Replacing trust, verifier or policy does not change the epoch. A
+restarted process advances the generation; a process holding an older token
+commits no further first-effect write, and in-flight claims are judged again
+by the new content. Withdrawal is durable and domain-wide. The private path
+confirms trust before first effects; it does not refresh or adopt trust while
+running, and a confirmation that differs latches the process closed. There is
+no public commissioner or external policy service. Receipt-only and positive
+marked reconciliation never consult mutable execution admission.
+`operational_local_v1` is removed; no compatibility edge is retained on this
+path, so §4C gains no row.
+
+For the private proof, exact typed production inventories require zero
+references to the Service commissioning, advance and withdrawal methods,
+exactly one reference to each of the three store operations that write the
+admission row, from the Service method of the same purpose, zero non-test
+configuration of `Service.operationalProof` and its callbacks, one reference
+to the confirmation with three invocation sites, and the sole
+view construction in the install method of the admission state, which only
+the one function that installs the view calls. The view, the withdrawal and
+supersession latches and the confirmation time are one unexported struct of
+`es/admission/internal/admissionstate`. Other packages hold handles they
+cannot open, so naming, copying or restoring that state does not compile
+outside the package, and every exported function of the package has an exact
+call-site inventory. The protected
+Service trust-owner, verified, state-handle and proof fields, all state and
+view fields inside that package, and handoff-owner
+Service/view links have exact typed read/write/initializer site inventories,
+which also count whole-value construction, assignment, conversion and
+declaration of each owning type. The existing
+`Service.mu` protects mutable Service state and the lock of the admission
+state protects the latches and the confirmation time; the view is immutable
+after one-shot construction, and final owner entry samples it under the
+documented owner-to-state lock order. A finite reference count alone is not a lock
+correctness proof. The nil-default `contextObserved` test hook sees a detached
+completed retained policy context immediately before the existing built-in
+evaluation; it cannot change inputs or a decision and has no non-test
+configuration caller. An independent signed-v2 byte oracle, the published v1
+bytes as a negative vector, validly signed contradictions, populated
+policy-context observation, two and three Services on one domain, two
+processes on one database and a fake signed EGS are maintained acceptance
+evidence.
+
 ## 2. Decision summary
 
 - C0 is the docs and docs-contract-test gate only. It makes no runtime
@@ -604,7 +678,7 @@ no durable lifecycle or retry authority. The selected native Linux and
 test-owned installed-source evidence is accepted under its original source
 and command identities. Actual running-deployment topology, key exposure and
 capacity/residence enforcement remain environment-bound operational/rollout
-gates. `PLANS.md` and the lifecycle contract own the development-source and
+gates. `.docs/standing_rules/execution_admission_and_custody.md` and the lifecycle contract own the development-source and
 local-preservation distinction; no admission or Submit authority changes here.
 
 ### Private replay progress candidate classification
@@ -918,24 +992,51 @@ whole run-root reclamation, adoption, or alternate claim path is selected.
 ### 7.4 Exact synchronized mutable-state inventory
 
 The non-test production source under `./es/...` and `./cmd/es/...` contains
-32 structurally synchronization-bearing fields: five direct lock fields,
-three `atomic.Bool` fields, and 24 transitive reference, request or wrapper
+55 structurally synchronization-bearing fields: eight direct lock fields,
+four `atomic.Bool` fields, and 43 transitive reference, request or wrapper
 fields. The private fixture code is included in this source inventory. The
 private replay path remains runtime-unwired.
+`OperationalCustody.prestageProof` and `operationalProvider.exchangeEntry` are
+nil-default, instance-scoped proof function fields. They add no primitive lock,
+atomic field, shared registry or durable state; only the existing custody lock
+protects proof configuration.
 
 | Category | Exact field and type | Protected fact | Writers | Readers | Lifetime |
 | --- | --- | --- | --- | --- | --- |
-| Lock | `es/admission:Service.mu:sync.RWMutex` | `trustModel *egsmodel.RuntimeTrustPolicy` | `Service.Initialize` | `Service.Health`, `Service.currentTrustModel` | Admission service instance |
+| Lock | `es/admission:Service.mu:sync.RWMutex` | `trustModel *egsmodel.RuntimeTrustPolicy`, verified startup state, and the order of a trust load against the install of the one-shot operational view | `Service.Initialize`, `Service.installOperationalAdmission` | `Service.Health`, `Service.currentTrustModel`, `Service.installOperationalAdmission` | Admission service instance |
+| Lock | `es/admission/internal/admissionstate:state.mu:sync.RWMutex` | The one-shot operational view of one Service, its monotonic withdrawal and supersession latches, and the last confirmation time | `State.Install`, `State.Withdraw`, `State.Confirm` | `State.Commissioned`, `State.Installable`, `State.Confirmable`, `State.Current`, `State.Inspect` | Admission service instance |
 | Lock | `es/app:App.mu:sync.RWMutex` | `started bool`, `listener net.Listener` | `App.Start` writes both. `App.Shutdown` writes `started`. | `App.Started` reads `started`. `App.Addr` reads `listener`. | App instance |
 | Lock | `es/runtimehelper:helperServer.mu:sync.RWMutex` | `token cachedToken` | `helperServer.fetchAndStoreToken` | `helperServer.currentToken` | Runtime-helper process |
 | Lock | `es/admission/internal/reliablesubmit:privateSealPermit.mu:sync.Mutex` | One permit's `used bool` burn latch | `privateSealPermit.consume`, `privateSealPermit.burn` | `privateSealPermit.consume`, `privateSealPermit.matchesAllocation` | One reservation and publication attempt |
 | Lock | `es/admission/internal/reliablesubmit:PrivateReplayProgressCustody.mu:sync.RWMutex` | Scope-2 custody handle, its closed state and coordination with issuer qualification | `OpenPrivateReplayProgressCustody` initializes before publication. `PrivateReplayProgressCustody.Close` clears custody under the write lock. | The read-locked lookup, freeze, reserve, publish, establish, original load, confirmation, progress read and mutation paths qualify through `PrivateReplayProgressCustody.qualified` before using the handle. | One issuing custody handle |
+| Lock | `es/admission/internal/reliablesubmit:OperationalCustody.mu:sync.RWMutex` | Open custody and held original borrows | `OperationalCustody.Close` | `OperationalCustody.WithOperationalOriginal`, `OperationalCustody.EstablishOperational`, `OperationalCustody.operationalAdmissionWrite`, `OperationalCustody.ConfigureOperationalCommitFaultForProof`, `OperationalCustody.ConfigureOperationalPrestageProofForProof`, `OperationalCustody.ConfigureOperationalReleaseProofForProof` | One issuing custody handle. `WithOperationalOriginal`, `EstablishOperational` and `operationalAdmissionWrite` (commission, advance and withdrawal) hold it in read mode; `Close` and the three proof configuration methods hold it in write mode. The lock is not reentrant, so `operationalAdmissionWrite` must not be reached from a callback of a borrow on the same handle. The proof methods configure only nil-default, instance-scoped proof within the test lifetime |
+| Lock | `es/admission:handoffOwner.mu:sync.Mutex` | One callback's open and marker-to-send decision | `handoffOwner.close`, `liveSender.consume` | `liveSender.consume` before transport entry | One synchronous handoff owner |
+| Atomic | `es/admission/internal/reliablesubmit:OperationalAccess.busy:atomic.Bool` | Exclusive use of one authenticated access during a command | `OperationalAccess.Prestage`, `OperationalAccess.applyOperational`, `OperationalAccess.BindVerifiedOperationalObservation`, `OperationalAccess.canBind`, `OperationalAccess.VerifyOperationalReceipt` | The same compare-and-swap operations | One authenticated original borrow |
 | Atomic | `es/admission/internal/reliablesubmit:progressAccessState.used:atomic.Bool` | One authenticated access consumption | `PrivateReplayProgressCustody.consumeProgressAccess` atomically checks and sets | The same compare-and-swap | One callback borrow |
 | Atomic | `es/admission/internal/reliablesubmit:progressAttemptState.used:atomic.Bool` | One establishment confirmation attempt | `PrivateReplayProgressCustody.WithAuthenticatedProgressOriginal` atomically checks and sets | The same compare-and-swap | One establishment invocation |
 | Atomic | `es/admission/internal/reliablesubmit:progressOriginalLifetime.closed:atomic.Bool` | Expiration of one original view or access borrow | Deferred stores in `verifyProgressOriginalMatch` and `PrivateReplayProgressCustody.WithAuthenticatedProgressOriginal` | `progressOriginalLifetime.live` for typed fields and progress use, together with caller-context checks | One verifier or authenticated-use callback |
 
 | Category | Exact field and type | Reference target, creation and use |
 | --- | --- | --- |
+| Reference | `es/admission/internal/admissionstate:State.s:*admissionstate.state` | Names the admission state of one Service. The constructor sets it once for that Service, which rejects copied or foreign Service authority; the zero handle is closed. |
+| Reference | `es/admission/internal/reliablesubmit:OperationalIntentInput.access:*reliablesubmit.OperationalAccess` | Limits the intent input to its authenticated original. |
+| Reference | `es/admission/internal/reliablesubmit:OperationalIntentInput.self:*reliablesubmit.OperationalIntentInput` | Checks the original issued intent capsule. |
+| Reference | `es/admission/internal/reliablesubmit:OperationalStageProof.access:*reliablesubmit.OperationalAccess` | Limits the held stage proof to one access. |
+| Reference | `es/admission/internal/reliablesubmit:OperationalStageProof.self:*reliablesubmit.OperationalStageProof` | Checks the original issued stage capsule. |
+| Reference | `es/admission/internal/reliablesubmit:operationalStepShape.stage:*reliablesubmit.OperationalStageProof` | Carries the live stage capsule into the writer and post-commit qualification. |
+| Reference | `es/admission/internal/reliablesubmit:OperationalMarkerCandidate.self:*reliablesubmit.OperationalMarkerCandidate` | Checks the original issued marker candidate. |
+| Reference | `es/admission/internal/reliablesubmit:OperationalMarkerCandidate.stage:*reliablesubmit.OperationalStageProof` | Binds marker application to the checked stamp and live stage. |
+| Reference | `es/admission/internal/reliablesubmit:OperationalPositiveProof.self:*reliablesubmit.OperationalPositiveProof` | Checks the original issued acceptance command. |
+| Reference | `es/admission/internal/reliablesubmit:OperationalAccess.issuer:*reliablesubmit.OperationalCustody` | Binds reads and commands to the same issuing custody. |
+| Reference | `es/admission/internal/reliablesubmit:OperationalAccess.life:*reliablesubmit.progressOriginalLifetime` | Limits commands and receipt use to the authenticated callback. |
+| Reference | `es/admission/internal/reliablesubmit:OperationalAccess.self:*reliablesubmit.OperationalAccess` | Prevents a copied access from issuing a command or constructing a proof. |
+| Reference | `es/admission/internal/reliablesubmit:OperationalCustody.self:*reliablesubmit.OperationalCustody` | Binds the open handle identity before issuing access. |
+| Reference | `es/admission/internal/reliablesubmit:OperationalOriginalView.life:*reliablesubmit.progressOriginalLifetime` | Expires the same decoder field borrows when verification returns. |
+| Reference | `es/admission/internal/reliablesubmit:OperationalPositiveProof.access:*reliablesubmit.OperationalAccess` | Binds the observation proof to the callback access and exact marker projection. |
+| Reference | `es/admission:liveSender.owner:*admission.handoffOwner` | Binds the single sender to its callback owner. |
+| Reference | `es/admission:liveSender.self:*admission.liveSender` | Rejects a copy of the marker continuation. |
+| Reference | `es/admission:Service.trustModelOwner:*admission.Service` | Binds the verified startup trust publication to its original Service before private commissioning. |
+| Reference | `es/admission:handoffOwner.service:*admission.Service` | Samples that Service's latches and confirmation deadline before transport entry. |
 | Reference | `es/admission/internal/reliablesubmit:PrivateReplayProgressCustody.self:*reliablesubmit.PrivateReplayProgressCustody` | The issuer sets its own identity once at open. Close, lookup and qualification check it for that handle's lifetime. |
 | Reference | `es/admission/internal/reliablesubmit:PrivateReplaySealPermit.permit:*reliablesubmit.privateSealPermit` | Carries the same operation-local burn latch through either scope. See the permit roles below. |
 | Reference | `es/admission/internal/reliablesubmit:ProgressAccess.state:*reliablesubmit.progressAccessState` | Authentication issues the access state. Progress consumption checks it during that callback. |
@@ -963,7 +1064,7 @@ private replay path remains runtime-unwired.
 
 | Permit field | Writes or construction | Reads |
 | --- | --- | --- |
-| `PrivateReplaySealPermit.permit` | `PrivateReplayCustody.ReserveSealUse`, `PrivateReplayProgressCustody.ReserveProgressSealUse` | `PrivateReplayCustody.publishReplayOriginal`, `PrivateReplayProgressCustody.PublishProgressOriginal` |
+| `PrivateReplaySealPermit.permit` | `PrivateReplayCustody.ReserveSealUse`, `PrivateReplayProgressCustody.ReserveProgressSealUse`, `OperationalCustody.EstablishOperational` | `PrivateReplayCustody.publishReplayOriginal`, `PrivateReplayProgressCustody.PublishProgressOriginal` |
 | `ProgressSealPermit.permit` | `PrivateReplayProgressCustody.ReserveProgressSealUse` | `PrivateReplayProgressCustody.PublishProgressOriginal` |
 | `privateSealPermit.used` | `privateSealPermit.consume`, `privateSealPermit.burn` | `privateSealPermit.consume`, `privateSealPermit.matchesAllocation` |
 
@@ -975,14 +1076,43 @@ the existing consume and burn rules. Persistence ADR §15B.5A owns the shared
 allocator and permit preflight ordering.
 
 `currentTrustModel` and `currentToken` return request-local copies. The sole
-package map, `reservedRuntimeEnvKeys`, is static lookup vocabulary. There is
-no map field beside synchronization and no package-level synchronization
-authority. SQLite owns committed claim, progress, key and grant/use state.
+package map, `reservedRuntimeEnvKeys`, is static lookup vocabulary. There is no package-level synchronization authority. The structural map scan
+follows three invocation-local references into the existing descriptor tree:
+`handoffOwner.stage`, `liveSender.owner`, and `liveSender.self`. They retain
+the held stage for revalidation and do not introduce a stage registry. SQLite owns committed claim, progress, key and grant/use state.
 The private primitives protect handle and invocation lifetimes and one-use
 consumption. Reference carriers convey those same protections without
 independent authority. These fields confer no durable run truth, process-global
 state, lease, registry, poison subsystem, worker, or staging/results-root
 authority. The rejected A3 topology in §7.5 remains excluded.
+
+### Selected operational composition and ownership
+
+The integrated candidate adds one custody read/write lock around the held
+database and replay root, and one atomic per-access command latch around the
+held original. The synchronous handoff owner has an invocation-local lifetime. Its mutex protects the open/send/close decision for that callback. The sender carries a self pointer and its
+exact handoff owner pointer. The final owner-protected context sample
+immediately precedes the synchronous transport call. The stage rechecks its
+commissioned parent without changing the ordinary staging identity comparator.
+`OperationalOriginalView` reuses the bounded
+field decoding and close latch without exposing a fixture operation bearer.
+`OperationalPositiveProof` binds the authenticated original access and the
+verified observation to the single acceptance writer. The SQLite opener
+remains behind the internal package. The operational admission test has one
+disposable SQLite connection for synthetic key setup and row observations.
+
+The [Operational Handoff](reliable_submit_operational_handoff.md) defines the bounded
+private composition over the existing durable service, exclusive staging custody
+and typed provider boundary. `Service.composeOperationalOriginal` is one direct
+resolver caller. `verifyOperationalOriginal` directly reconstructs the plan,
+material and host context from the retained original. `Service.advanceOperational`
+directly projects the run and materializes its inputs on a held stage, and
+`operationalDomain.createOperationalStage` directly claims that stage.
+Before the claim, `operationalProvider.fits` directly projects the run once
+more, with a stage, a job name and a correlation value of the lengths every
+run has, only to measure Job0 and the POST body; it sends nothing. The stage measurement
+directly calls the existing held-tree revalidation twice before recording or using the stamp.
+The private `operationalProvider.project` uses the existing job renderer once and verifies the complete result against its separately commissioned template. Ordinary Submit retains its existing resolver and Nomad registration path. Current §7.4 describes current source. Public routing, startup and the rejected A3 topology remain outside the selection.
 
 ### 7.5 Rejected A3 topology inventory
 

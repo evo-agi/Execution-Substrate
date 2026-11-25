@@ -111,9 +111,12 @@ execution-substrate/es/app TestSubmitFlowMountsGovernedArtifactAndLifecycleWithI
 
 # es/admission/internal/reliablesubmit: historical-opener probes. They need
 # test binaries built from older trees with an overlay kept outside this
-# repository (the ES_REPLAY_*_PROBE variables).
+# repository (the ES_REPLAY_*_PROBE variables). The third test needs the
+# opener of schema 4 (ES_REPLAY_SCHEMA4_PROBE) and fails at its first line
+# without it.
 execution-substrate/es/admission/internal/reliablesubmit TestSQLiteV4PreviousSchema3BinaryRefusesWithoutMutation
 execution-substrate/es/admission/internal/reliablesubmit TestSQLiteV3OldBinaryRefusesWithoutMutation
+execution-substrate/es/admission/internal/reliablesubmit TestOperationalHandoffSchema4BinaryRefusesSchema5
 
 
 # Tests that skip themselves on the runner.
@@ -132,8 +135,25 @@ execution-substrate/es/admission/internal/reliablesubmit TestSQLiteV3OldBinaryRe
 # above hold for it. A line must not name an entry, lie inside one or hold
 # one: what lies inside an entry does not run in the gate.
 #
-# These tests do not run in CI. The way to shorten this part of the list is
-# to give the runner what a test needs, or to port the test.
+# These tests do not run in the step "Test". The way to shorten this part of
+# the list is to give the runner what a test needs, or to port the test.
+#
+# The lines of the package execution-substrate/scripts are different. The
+# step "Listed tests pass as root" runs every test that this part names for
+# that package once more through sudo, and fails unless each passes there.
+# So a test of that package belongs here only when it skips itself for want
+# of root. .github/ci/go_test_as_root.py gives the rules.
+
+# scripts: real-kernel tests of the PID-namespace containment of the
+# Remote Alpha TLS status collector. Creating a PID namespace needs root on
+# Linux. Each test asks the kernel by an attempt in a child of its own and
+# skips itself when the kernel refuses. These five run as root in the step
+# named above.
+skips-itself execution-substrate/scripts TestRemoteAlphaESServiceTLSStatusChildNamespaceRealCollectorDeath
+skips-itself execution-substrate/scripts TestRemoteAlphaESServiceTLSStatusChildNamespaceRealDeafAnchor
+skips-itself execution-substrate/scripts TestRemoteAlphaESServiceTLSStatusChildNamespaceRealDescendants
+skips-itself execution-substrate/scripts TestRemoteAlphaESServiceTLSStatusChildNamespaceRealKernel
+skips-itself execution-substrate/scripts TestRemoteAlphaESServiceTLSStatusChildNamespaceRealSiblings
 
 # es/admission: the opt-in stress test of the directory swap race in the
 # startup probe, and the attacker process it starts (finding RT-3 of the
@@ -145,9 +165,28 @@ execution-substrate/es/admission/internal/reliablesubmit TestSQLiteV3OldBinaryRe
 skips-itself execution-substrate/es/admission TestExecutionRootProbeDirectorySwapStress
 skips-itself execution-substrate/es/admission TestExecutionRootProbeDirectorySwapStressAttacker
 
+# es/admission: a helper process of the operational handoff tests. Tests of
+# the package start the test binary a second time with
+# ES_OPERATIONAL_CHILD_FIXTURE set, and only that process runs the body. Run
+# as a test, it has nothing to do. It skips itself on every host.
+skips-itself execution-substrate/es/admission TestOperationalHandoffChildProcess
+
 # es/admission/internal/reliablesubmit: helper processes. Another test of the
 # package starts the test binary a second time with a variable set, and only
 # that process runs the body. Run as a test, each of the two has nothing to
 # do. They skip themselves on every host.
 skips-itself execution-substrate/es/admission/internal/reliablesubmit TestPrivateReplayObjectAllocatorHelperProcess
 skips-itself execution-substrate/es/admission/internal/reliablesubmit TestSQLiteClaimStoreLockHelperProcess
+
+# Scripts package: the Remote Alpha host firewall's real-kernel and real-sshd
+# tests (scripts/remote_alpha_host_firewall.sh). The first three build
+# network namespaces, load the rendered nftables ruleset and check real
+# traffic, so they need root, ip and nft; the fourth runs sshd -t and sshd -T,
+# which need root for sshd's privilege separation checks. The runner runs the tests
+# without root, so they skip themselves there. The rendering, settings,
+# listener, sshd-expectation and apply/confirm/rollback-order tests of the
+# same file run in the gate without root.
+skips-itself execution-substrate/scripts TestRemoteAlphaHostFirewallRealKernelTraffic
+skips-itself execution-substrate/scripts TestRemoteAlphaHostFirewallRealKernelApplyConfirmRollback
+skips-itself execution-substrate/scripts TestRemoteAlphaHostFirewallRealKernelBridgeIsolation
+skips-itself execution-substrate/scripts TestRemoteAlphaHostFirewallSSHDDropInWithRealSSHD

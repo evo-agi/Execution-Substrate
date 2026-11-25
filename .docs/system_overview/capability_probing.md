@@ -196,7 +196,7 @@ ownership or provision roots. The selected native Linux syscall/custody and
 test-owned installed-source witness evidence is accepted for its named source
 and testing environments; actual running-deployment topology remains an
 environment-bound operational/rollout acceptance gate. The development-source
-disposition in `PLANS.md` and `.docs/execution_lifecycle/contracts.md` grants
+disposition in `.docs/standing_rules/execution_admission_and_custody.md` and `.docs/execution_lifecycle/contracts.md` grants
 no startup or workload authority.
 The Review-20 governed-mount test fixture is a bounded native single-host
 qualification witness, not a startup probe or production submit check. Its
@@ -241,7 +241,7 @@ pending package inspection above describe the historical Review-21 report,
 not the current selected programme. The old resource refusal's first offending
 entry remains unknown. A test-owned witness does not observe the running
 deployment, qualify actual key exposure or select a retention policy; source
-and evidence limits remain as recorded in `PLANS.md`.
+and evidence limits remain as recorded in `.docs/standing_rules/execution_admission_and_custody.md`.
 The selected R1 record protocol uses exclusive temporary creation, no-replace
 publication, no-follow reopening and file sync. Configured Submit startup must
 prove any newly required local filesystem behavior on the configured roots by
@@ -430,7 +430,7 @@ This is also test hygiene only. It does not change ES public contracts,
 retained-staging semantics, retained-result semantics, readiness boundaries, or
 production capability probing placement.
 
-Root-package tests of the Remote Alpha TLS status collector use two kinds of
+Tests of the Remote Alpha TLS status collector in `scripts/` use two kinds of
 fixture, and never a mixture. A live fixture uses the collector's real
 process-table reads and pidfd operations on real processes. It first attempts
 to read its own entry of the process table and skips with an explicit reason
@@ -464,5 +464,35 @@ is started. The guard test knows those paths, and one more test holds those
 paths against the collector's source, so that a change of the collector's
 call graph fails there first.
 
+Each fixed command of the collector also runs in a PID namespace of its own,
+which only root can create on Linux. A local fixture and a live fixture
+therefore replace the namespace by one shared stand-in that does nothing,
+together with the namespace part of the capability probe. A fixture replaces
+both or neither, and the same guard test refuses a fixture that replaces only
+one of the two. A fixture that uses the stand-in proves nothing about the
+containment. The containment has tests of its own. One group puts a
+deterministic backend in the place of the kernel operations and runs on every
+host. The other group uses the real kernel: each of its tests attempts to
+create a PID namespace in a child of its own and skips itself, with an
+explicit reason, only when the kernel refuses. The CI job runs that group
+once more as root and fails unless each of its tests passes, so a skip never
+stands in for the proof there. That step is the only use of root in the CI
+job, and only the test binary runs as root.
+
 This is test hygiene only. It changes no collector behavior, capability
 criterion, hold, signal, reap, lock, or publication rule.
+
+The noninteractive remote TLS status collector proves its descendant
+containment the same way: a descendant capability probe at its one validation
+boundary, before any status input is read, sets the capability flag that every
+fixed command requires. Tests in `scripts/` that call its command runner
+directly replace the flag and the descendant drain together, by one shared
+stand-in that proves only that the test process has no child left, and a
+guard test refuses a script that replaces one of the two without the other.
+The drain itself has tests of its own: one group with a deterministic backend
+in place of the kernel operations, which runs on every host, and one group with
+real processes, which runs as an unprivileged user and skips itself, with an
+explicit reason, only when the attempt to make the test process a child
+subreaper and to list its children is refused. The test of the fixed child's
+process limit also skips itself when an attempt shows that the limit does not
+bind the user that runs the tests, as for root.

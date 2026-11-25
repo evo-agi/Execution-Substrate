@@ -2154,6 +2154,7 @@ func setupFakeRemoteAlphaUnsealHarness(t *testing.T) *fakeRemoteAlphaUnsealHarne
 			t.Fatalf("mkdir %s: %v", dir, err)
 		}
 	}
+	mkdirFakeRemoteAlphaHostTmp(t, h.remoteRoot)
 
 	writeExecutable(t, h.localBin, "ssh", fmt.Sprintf(`#!/usr/bin/env bash
 set -euo pipefail
@@ -2334,9 +2335,7 @@ func TestRemoteAlphaOperatorRecoverySessionVaultUnsealExistingMacSideStagesSingl
 	assertContainsAll(t, "fake remote cleanup log", rmLog,
 		"execution-substrate-remote-alpha-vault-unseal-existing",
 	)
-	if entries, err := os.ReadDir(filepath.Join(h.remoteRoot, "tmp", "execution-substrate-remote-alpha-vault-unseal-existing")); err == nil && len(entries) > 0 {
-		t.Fatalf("expected remote staged helper directory to be cleaned, found %d entries", len(entries))
-	}
+	assertRemoteAlphaOperatorStageFoldersGone(t, h.remoteRoot, "execution-substrate-remote-alpha-vault-unseal-existing")
 	assertNoNewPaths(t, "Mac-side fake unseal route", before)
 }
 
@@ -2368,6 +2367,7 @@ func setupFakeRemoteAlphaResetDryRunHarness(t *testing.T) *fakeRemoteAlphaResetD
 			t.Fatalf("mkdir %s: %v", dir, err)
 		}
 	}
+	mkdirFakeRemoteAlphaHostTmp(t, h.remoteRoot)
 
 	writeExecutable(t, h.localBin, "ssh", fmt.Sprintf(`#!/usr/bin/env bash
 set -euo pipefail
@@ -2523,9 +2523,7 @@ func TestRemoteAlphaOperatorRecoverySessionVaultResetDisposableMacSideDryRunStag
 	assertContainsAll(t, "fake reset dry-run remote cleanup log", rmLog,
 		"execution-substrate-remote-alpha-vault-reset-disposable-dry-run",
 	)
-	if entries, err := os.ReadDir(filepath.Join(h.remoteRoot, "tmp", "execution-substrate-remote-alpha-vault-reset-disposable-dry-run")); err == nil && len(entries) > 0 {
-		t.Fatalf("expected remote reset dry-run staged helper directory to be cleaned, found %d entries", len(entries))
-	}
+	assertRemoteAlphaOperatorStageFoldersGone(t, h.remoteRoot, "execution-substrate-remote-alpha-vault-reset-disposable-dry-run")
 	assertNoNewPaths(t, "Mac-side fake reset dry-run route", before)
 }
 
@@ -2627,9 +2625,7 @@ func TestRemoteAlphaOperatorRecoverySessionVaultResetDisposableExecuteResetStage
 	assertContainsAll(t, "fake reset execute remote cleanup log", rmLog,
 		"execution-substrate-remote-alpha-vault-reset-disposable-execute",
 	)
-	if entries, err := os.ReadDir(filepath.Join(h.remoteRoot, "tmp", "execution-substrate-remote-alpha-vault-reset-disposable-execute")); err == nil && len(entries) > 0 {
-		t.Fatalf("expected remote reset execute staged helper directory to be cleaned, found %d entries", len(entries))
-	}
+	assertRemoteAlphaOperatorStageFoldersGone(t, h.remoteRoot, "execution-substrate-remote-alpha-vault-reset-disposable-execute")
 	assertNoNewPaths(t, "Mac-side fake reset execute route", before)
 }
 
@@ -2663,6 +2659,7 @@ func setupFakeRemoteAlphaESServiceTLSHarness(t *testing.T) *fakeRemoteAlphaESSer
 			t.Fatalf("mkdir %s: %v", dir, err)
 		}
 	}
+	mkdirFakeRemoteAlphaHostTmp(t, h.remoteRoot)
 
 	writeExecutable(t, h.localBin, "ssh", fmt.Sprintf(`#!/usr/bin/env bash
 set -euo pipefail
@@ -3470,9 +3467,7 @@ func assertOperatorHealthcheckTLSFakeRoute(t *testing.T, h *fakeRemoteAlphaESSer
 	assertContainsAll(t, "fake operator healthcheck TLS remote cleanup log", rmLog,
 		"execution-substrate-remote-alpha-operator-healthcheck-tls-renew",
 	)
-	if entries, err := os.ReadDir(filepath.Join(h.remoteRoot, "tmp", "execution-substrate-remote-alpha-operator-healthcheck-tls-renew")); err == nil && len(entries) > 0 {
-		t.Fatalf("expected remote operator healthcheck TLS staged helper directory to be cleaned, found %d entries", len(entries))
-	}
+	assertRemoteAlphaOperatorStageFoldersGone(t, h.remoteRoot, "execution-substrate-remote-alpha-operator-healthcheck-tls-renew")
 }
 
 type fakeRemoteAlphaOperatorP0vFacadeHarness struct {
@@ -3791,6 +3786,7 @@ func setupFakeRemoteAlphaWorkloadAuthBootstrapHarness(t *testing.T) *fakeRemoteA
 			t.Fatalf("mkdir %s: %v", dir, err)
 		}
 	}
+	mkdirFakeRemoteAlphaHostTmp(t, h.remoteRoot)
 
 	writeExecutable(t, h.localBin, "ssh", fmt.Sprintf(`#!/usr/bin/env bash
 set -euo pipefail
@@ -4203,10 +4199,11 @@ func TestRemoteAlphaOperatorRecoverySessionVaultWorkloadAuthBootstrapPrepareSumm
 	sudoLog := mustRead(t, h.sudoLogPath)
 	assertContainsAll(t, "fake workload-auth bootstrap prepare sudo log", sudoLog,
 		"-v -p Remote Alpha OS sudo password for summary path preparation: ",
-		"-n install -d -m 0750",
+		"-n chown -h",
 		"execution-substrate-remote-alpha",
 	)
 	assertContainsNone(t, "fake workload-auth bootstrap prepare sudo log forbidden surfaces", sudoLog,
+		"install -d",
 		"vault",
 		"remote_alpha_vault_workload_auth_bootstrap.sh",
 		"remote_alpha_vault_workload_auth_check.sh",
@@ -4808,7 +4805,7 @@ func TestRemoteAlphaOperatorRecoverySessionVaultWorkloadAuthBootstrapPrepareRuns
 	sudoLog := mustRead(t, h.sudoLogPath)
 	assertContainsAll(t, "fake workload-auth bootstrap combined sudo log", sudoLog,
 		"-v -p Remote Alpha OS sudo password for summary path preparation: ",
-		"-n install -d -m 0750",
+		"-n chown -h",
 	)
 	assertNoNewPaths(t, "Mac-side fake workload-auth bootstrap combined route", before)
 }
@@ -4920,9 +4917,7 @@ func TestRemoteAlphaOperatorRecoverySessionVaultWorkloadAuthBootstrapStagesOnlyA
 	assertContainsAll(t, "fake workload-auth bootstrap remote cleanup log", rmLog,
 		"execution-substrate-remote-alpha-vault-workload-auth-bootstrap",
 	)
-	if entries, err := os.ReadDir(filepath.Join(h.remoteRoot, "tmp", "execution-substrate-remote-alpha-vault-workload-auth-bootstrap")); err == nil && len(entries) > 0 {
-		t.Fatalf("expected remote workload-auth bootstrap staged helper directory to be cleaned, found %d entries", len(entries))
-	}
+	assertRemoteAlphaOperatorStageFoldersGone(t, h.remoteRoot, "execution-substrate-remote-alpha-vault-workload-auth-bootstrap")
 	assertNoNewPaths(t, "Mac-side fake workload-auth bootstrap route", before)
 }
 
@@ -4995,7 +4990,12 @@ func TestRemoteAlphaOperatorRecoverySessionVaultWorkloadAuthBootstrapSourceKeeps
 		`ssh -tt "${ssh_target}" "/bin/bash -c ${remote_prepare_command_quoted}"`,
 		`sudo -v -p "Remote Alpha OS sudo password for summary path preparation: "`,
 		`sudo -n "$@"`,
-		"run_sudo install -d -m 0750",
+		"REMOTE_ALPHA_OUTPUT_DIR_DEFINITION",
+		`remote_alpha_prepare_output_dir "${summary_dir}"`,
+		"summary_parent_unsafe",
+		`run_sudo chown -h "${helper_user}:${helper_group}" -- "${summary_dir}"`,
+		"summary_path_symlink",
+		`run_sudo chown -h "${helper_user}:${helper_group}" -- "${summary_path}"`,
 		"final_summary_created=false",
 		"recovery_session_vault_workload_auth_bootstrap_prepare_config_readability_remote",
 		"config_readability_prepare_status=pass",
@@ -5057,17 +5057,19 @@ func TestRemoteAlphaOperatorRecoverySessionVaultWorkloadAuthBootstrapSourceKeeps
 		"operator-summary",
 		"recovery-session-summary",
 		"tee ",
+		"run_sudo install -d",
+		`run_sudo chown "`,
 	)
 }
 
 func TestRemoteAlphaOperatorP0qBootstrapExecutionContractIsImplementedNarrowly(t *testing.T) {
-	plans := compactText(mustRead(t, "PLANS.md"))
+	routeRules := compactText(mustRead(t, standingRouteRulesPath))
 	remoteRaw := mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md")
 	remoteSection := compactDocSection(t, remoteRaw, "### P0q Vault Workload-Auth Bootstrap Execution Route", "### Historical P0d interactive validation evidence — superseded and non-authoritative")
 	source := mustRead(t, remoteAlphaOperatorScriptPath())
 	sourceSection := docSection(t, source, "recovery_session_vault_workload_auth_bootstrap() {", "\nrecovery_session_vault_unseal_existing_require_command() {")
 
-	assertContainsAll(t, "P0q bootstrap execution docs", plans,
+	assertContainsAll(t, "P0q bootstrap execution route rules", routeRules,
 		"The P0q implementation/self-audit/merge-readiness slice may implement exactly one dedicated secret-sensitive workload-auth bootstrap helper, exactly one Mac-side recovery-session execution route, one bounded preparation form for the bootstrap summary path, and one bounded preparation form for fixed workload-zone config readability, and one bounded preparation form for fixed SPIRE server bundle-read access",
 		"`scripts/remote_alpha_operator.sh recovery-session vault-workload-auth-bootstrap --ssh-target <target> --execute-bootstrap --interactive-tty`",
 		"`scripts/remote_alpha_operator.sh recovery-session vault-workload-auth-bootstrap --ssh-target <target> --prepare-summary-path --interactive-tty`",

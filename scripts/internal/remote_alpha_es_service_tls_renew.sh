@@ -8,6 +8,62 @@ remote_alpha_es_service_tls_renew_backup_root_default="/var/tmp/execution-substr
 remote_alpha_es_service_tls_renew_summary_path_default="/var/tmp/execution-substrate-remote-alpha/es-service-tls-renew-summary.json"
 remote_alpha_es_governance_tls_renew_summary_path_default="/var/tmp/execution-substrate-remote-alpha/es-governance-tls-renew-summary.json"
 
+# Copy of remote_alpha_prepare_output_dir from scripts/internal/remote_alpha_output_dir.sh,
+# which explains it; TestRemoteAlphaOutputDirCopiesMatch keeps the two identical.
+remote_alpha_prepare_output_dir() {
+  python3 -I - "$1" <<'REMOTE_ALPHA_OUTPUT_DIR_PY'
+import os
+import stat
+import sys
+
+if not sys.argv[1]:
+    sys.exit("remote alpha output folder: no folder given")
+if ".." in sys.argv[1].split("/"):
+    sys.exit(f"remote alpha output folder: {sys.argv[1]} has a '..' component; refusing to check a path that is not canonical")
+# The path is checked as given, never normalized: dropping "link/.." would
+# check another folder than the one a later write through the link reaches.
+parts = [part for part in os.path.join(os.getcwd(), sys.argv[1]).split("/") if part not in ("", ".")]
+trusted = {0, os.geteuid()}
+if os.environ.get("SUDO_UID", "").isdigit():
+    trusted.add(int(os.environ["SUDO_UID"]))
+# O_PATH reads a folder's owner and mode without read permission on it, so a
+# folder that root keeps private still passes and sudo can hand it over.
+flags = getattr(os, "O_PATH", os.O_RDONLY) | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+shown = "/"
+fd = os.open("/", flags)
+try:
+    for index in range(len(parts) + 1):
+        info = os.fstat(fd)
+        last = index == len(parts)
+        if info.st_uid not in trusted:
+            sys.exit(
+                f"remote alpha output folder: {shown} belongs to uid {info.st_uid}, not to root, "
+                "the user running this step or the user who ran sudo; refusing to write under it"
+            )
+        if info.st_mode & (stat.S_IWGRP | stat.S_IWOTH) and (
+            last or info.st_uid != 0 or not info.st_mode & stat.S_ISVTX
+        ):
+            sys.exit(f"remote alpha output folder: {shown} can be written by its group or others; refusing to write under it")
+        if last:
+            break
+        shown = "/" + "/".join(parts[: index + 1])
+        try:
+            next_fd = os.open(parts[index], flags, dir_fd=fd)
+        except FileNotFoundError:
+            try:
+                os.mkdir(parts[index], 0o755, dir_fd=fd)
+            except FileExistsError:
+                pass
+            next_fd = os.open(parts[index], flags, dir_fd=fd)
+        os.close(fd)
+        fd = next_fd
+except OSError as exc:
+    sys.exit(f"remote alpha output folder: {shown} is not a directory or is a symbolic link ({exc.strerror})")
+finally:
+    os.close(fd)
+REMOTE_ALPHA_OUTPUT_DIR_PY
+}
+
 remote_alpha_es_service_tls_renew_init_expected_inputs() {
   remote_alpha_es_service_tls_renew_expected_ars_config_path="${remote_alpha_es_service_tls_renew_expected_ars_config_path:-/etc/execution-substrate/ars.json}"
   remote_alpha_es_service_tls_renew_expected_ags_config_path="${remote_alpha_es_service_tls_renew_expected_ags_config_path:-/etc/execution-substrate/ags.json}"
@@ -191,7 +247,7 @@ remote_alpha_es_service_tls_renew_timestamp() {
 }
 
 remote_alpha_es_service_tls_renew_topology_json() {
-  python3 - "$@" <<'PY'
+  python3 -I - "$@" <<'PY'
 import json
 import pathlib
 import sys
@@ -339,7 +395,7 @@ PY
 }
 
 remote_alpha_es_governance_tls_renew_topology_json() {
-  python3 - "$@" <<'PY'
+  python3 -I - "$@" <<'PY'
 import json
 import pathlib
 import sys
@@ -498,7 +554,7 @@ remote_alpha_es_service_tls_renew_collect_status() {
   local restart_meta_path=${5:-}
   local curl_meta_path=${6:-}
 
-  python3 - \
+  python3 -I - \
     "${mode}" \
     "${summary_path}" \
     "${topology_path}" \
@@ -880,7 +936,7 @@ remote_alpha_es_service_tls_renew_create_backup() {
   local timestamp backup_dir material_dir path rel target
   shift
   timestamp="$(remote_alpha_es_service_tls_renew_timestamp)"
-  mkdir -p -- "${REMOTE_ALPHA_BACKUP_ROOT}"
+  remote_alpha_prepare_output_dir "${REMOTE_ALPHA_BACKUP_ROOT}" || return 1
   backup_dir="$(mktemp -d "${REMOTE_ALPHA_BACKUP_ROOT}/es-service-tls-renew-${timestamp}-XXXXXX")"
   material_dir="${backup_dir}/material"
   mkdir -p -- "${material_dir}"
@@ -893,7 +949,7 @@ remote_alpha_es_service_tls_renew_create_backup() {
     cp -p -- "${path}" "${target}"
   done
 
-  python3 - "${backup_meta_path}" "${backup_dir}" "${material_dir}" "$@" <<'PY'
+  python3 -I - "${backup_meta_path}" "${backup_dir}" "${material_dir}" "$@" <<'PY'
 import hashlib
 import json
 import pathlib
@@ -1086,7 +1142,7 @@ remote_alpha_es_service_tls_renew_restart_services() {
     fi
   done
 
-  python3 - "${restart_meta_path}" "${overall}" "${statuses[@]}" <<'PY'
+  python3 -I - "${restart_meta_path}" "${overall}" "${statuses[@]}" <<'PY'
 import json
 import pathlib
 import sys
@@ -1129,7 +1185,7 @@ remote_alpha_es_governance_tls_renew_restart_services() {
     overall="fail"
   fi
 
-  python3 - "${restart_meta_path}" "${overall}" "${es_active_status}" "${statuses[@]}" <<'PY'
+  python3 -I - "${restart_meta_path}" "${overall}" "${es_active_status}" "${statuses[@]}" <<'PY'
 import json
 import pathlib
 import sys
@@ -1198,7 +1254,7 @@ remote_alpha_es_service_tls_renew_post_renew_probes() {
   [[ "${ags_result}" == *":pass" ]] || overall="fail"
   [[ "${es_result}" == *":pass" ]] || overall="fail"
 
-  python3 - "${curl_meta_path}" "${overall}" "${ags_result}" "${es_result}" <<'PY'
+  python3 -I - "${curl_meta_path}" "${overall}" "${ags_result}" "${es_result}" <<'PY'
 import json
 import pathlib
 import sys
@@ -1225,7 +1281,7 @@ remote_alpha_es_governance_tls_renew_post_renew_probes() {
   overall="pass"
   [[ "${result}" == *":pass" ]] || overall="fail"
 
-  python3 - "${curl_meta_path}" "${overall}" "${result}" <<'PY'
+  python3 -I - "${curl_meta_path}" "${overall}" "${result}" <<'PY'
 import json
 import pathlib
 import sys
@@ -1291,6 +1347,11 @@ remote_alpha_es_service_tls_renew_main() {
   remote_alpha_es_service_tls_renew_apply_scope_defaults || return $?
   remote_alpha_es_service_tls_renew_require_root || return 1
   remote_alpha_es_service_tls_renew_require_command python3 || return 1
+  remote_alpha_prepare_output_dir "$(dirname "${REMOTE_ALPHA_SUMMARY_PATH}")" || return 1
+  # Only a renewal writes backups; status must leave the backup root alone.
+  if [[ "${REMOTE_ALPHA_OPERATION_MODE}" == "execute_renew" ]]; then
+    remote_alpha_prepare_output_dir "${REMOTE_ALPHA_BACKUP_ROOT}" || return 1
+  fi
   remote_alpha_es_service_tls_renew_require_command openssl || return 1
 
   tmpdir="$(mktemp -d)"
@@ -1312,7 +1373,7 @@ remote_alpha_es_service_tls_renew_main() {
   remote_alpha_es_service_tls_renew_require_command systemctl || return 1
   remote_alpha_es_service_tls_renew_require_command curl || return 1
 
-  if [[ "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["status"])' "${topology_path}")" != "pass" ]]; then
+  if [[ "$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["status"])' "${topology_path}")" != "pass" ]]; then
     remote_alpha_es_service_tls_renew_collect_status "execute_renew" "${REMOTE_ALPHA_SUMMARY_PATH}" "${topology_path}" || true
     return 1
   fi

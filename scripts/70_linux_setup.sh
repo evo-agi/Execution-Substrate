@@ -102,6 +102,11 @@ NOMAD_MANAGED_MARKER="# Managed by Execution Substrate scripts/70_linux_setup.sh
 NOMAD_ACL_DIR="${NOMAD_ACL_DIR:-/etc/execution-substrate/nomad-acl}"
 NOMAD_ACL_MANAGEMENT_TOKEN_FILE="${NOMAD_ACL_DIR}/management-token"
 NOMAD_LEADER_WAIT_SECONDS=30
+# nomad.service runs Nomad as root. While Nomad is down any local account can
+# hold its port, so the management token and the bootstrap secret go only to
+# a listener that root owns (an interim guard: HTTPS with a pinned server key
+# replaces it).
+NOMAD_SERVICE_UID=0
 NOMAD_CONFIG_CHANGED=0
 NOMAD_TLS_ISSUED=0
 NOMAD_QUALIFY_TOKEN=""
@@ -407,6 +412,14 @@ server {
 client {
   enabled = true
   servers = ["127.0.0.1"]
+  # Nomad gives the node its host network from loopback, where it already
+  # binds and advertises. ES jobs ask for no ports and need only that host
+  # network to exist, and loopback exists whether the host is on Wi-Fi or a
+  # cable. Without this line Nomad takes the default route's interface and
+  # does not start while there is none (Wi-Fi not up yet); pinned to a wired
+  # port, the node has no host network while the cable is out, and every ES
+  # job fails to place ("missing network").
+  network_interface = "lo"
   options = {
     "driver.allowlist" = "docker"
   }
@@ -473,11 +486,49 @@ nomad_curl() {
   curl --noproxy '*' --proto =https --tlsv1.3 --cacert "${NOMAD_CACERT}" --capath /dev/null "$@"
 }
 
+# require_nomad_listener: every socket listening where NOMAD_HTTP_ADDR points
+# (127.0.0.1, or a wildcard address, on its port) belongs to NOMAD_SERVICE_UID.
+# It reads the kernel's TCP tables, whose addresses are hex words in host byte
+# order; the supported hosts (x86_64, aarch64) are little-endian.
+require_nomad_listener() {
+  local port
+  local -a tables=()
+  local table
+
+  if [[ ! "${NOMAD_HTTP_ADDR}" =~ ^https://127\.0\.0\.1:([0-9]{1,5})/?$ ]]; then
+    echo "nomad acl: ${NOMAD_HTTP_ADDR} is not https://127.0.0.1:<port>, so its listener cannot be checked; nothing was sent" >&2
+    return 1
+  fi
+  port="$(printf '%04X' "$((10#${BASH_REMATCH[1]}))")"
+  for table in /proc/net/tcp /proc/net/tcp6; do
+    [[ -r "${table}" ]] && tables+=("${table}")
+  done
+  if (( ${#tables[@]} == 0 )) || ! awk -v port="${port}" -v want="${NOMAD_SERVICE_UID}" '
+    FNR == 1 { next }
+    $4 == "0A" {
+      split($2, endpoint, ":")
+      if (endpoint[2] != port) next
+      if (endpoint[1] == "0100007F" || endpoint[1] == "00000000" ||
+          endpoint[1] == "00000000000000000000000000000000" ||
+          endpoint[1] == "0000000000000000FFFF00000100007F") {
+        found = 1
+        if ($8 != want) other = 1
+      }
+    }
+    END { exit !(found && !other) }
+  ' "${tables[@]}"; then
+    echo "nomad acl: the listener on ${NOMAD_HTTP_ADDR} is missing or not owned by Nomad's user (uid ${NOMAD_SERVICE_UID}); another local account may hold Nomad's port while Nomad is down, so nothing was sent" >&2
+    return 1
+  fi
+}
+
 # nomad_token_curl <token> <curl args...>: the token reaches curl through a
-# configuration on a file descriptor, never through a command line.
+# configuration on a file descriptor, never through a command line, and only
+# a listener that Nomad's user owns.
 nomad_token_curl() {
   local token=$1
   shift
+  require_nomad_listener || return 1
   nomad_curl --config <(printf 'header = "X-Nomad-Token: %s"\n' "${token}") "$@"
 }
 
@@ -502,6 +553,7 @@ bootstrap_nomad_acl() {
     sleep 1
     waited=$((waited + 1))
   done
+  require_nomad_listener || return 1
 
   if ! sudo test -d "${NOMAD_ACL_DIR}"; then
     sudo install -d -o root -g root -m 0755 "${NOMAD_ACL_DIR}"
@@ -509,7 +561,7 @@ bootstrap_nomad_acl() {
   if sudo test -e "${NOMAD_ACL_MANAGEMENT_TOKEN_FILE}"; then
     secret="$(sudo cat "${NOMAD_ACL_MANAGEMENT_TOKEN_FILE}")"
   else
-    secret="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+    secret="$(python3 -I -c 'import uuid; print(uuid.uuid4())')"
     printf '%s\n' "${secret}" | sudo sh -c 'umask 077 && cat > "$1"' sh "${NOMAD_ACL_MANAGEMENT_TOKEN_FILE}"
     created=1
   fi
@@ -532,6 +584,10 @@ bootstrap_nomad_acl() {
     return 1
   fi
 
+  if ! require_nomad_listener; then
+    cleanup_tempfiles "${response_path}"
+    return 1
+  fi
   status="$(nomad_curl --silent --output "${response_path}" --write-out '%{http_code}' -X POST --data-binary @- \
     "${NOMAD_HTTP_ADDR}/v1/acl/bootstrap" <<<"{\"BootstrapSecret\":\"${secret}\"}")" || status="000"
   if [[ "${status}" == "200" ]]; then
@@ -583,6 +639,7 @@ docker_ready_for_operator() {
   return 1
 }
 
+# BEGIN nomad_cpu_visibility_diagnostics (the tests run this function on its own)
 report_nomad_cpu_visibility_diagnostics() {
   local arch
   local virt
@@ -590,7 +647,7 @@ report_nomad_cpu_visibility_diagnostics() {
   local proc_cpu_mhz
   local dmi_current_speed="unavailable"
 
-  if ! NOMAD_TOKEN="${NOMAD_QUALIFY_TOKEN}" NOMAD_CACERT="${NOMAD_CACERT}" python3 - <<'PY' "${NOMAD_HTTP_ADDR}" >/dev/null 2>&1
+  if ! require_nomad_listener || ! NOMAD_TOKEN="${NOMAD_QUALIFY_TOKEN}" NOMAD_CACERT="${NOMAD_CACERT}" python3 -I - <<'PY' "${NOMAD_HTTP_ADDR}" >/dev/null 2>&1
 import json
 import os
 import ssl
@@ -670,6 +727,7 @@ PY
       ;;
   esac
 }
+# END nomad_cpu_visibility_diagnostics
 
 qualify_supported_substrate() {
   local leader_path
@@ -723,7 +781,11 @@ qualify_supported_substrate() {
     return 1
   fi
 
-  if ! NOMAD_TOKEN="${NOMAD_QUALIFY_TOKEN}" NOMAD_CACERT="${NOMAD_CACERT}" python3 - <<'PY' "${NOMAD_HTTP_ADDR}" "${leader_path}" "${agent_path}" "${nodes_path}"
+  if ! require_nomad_listener; then
+    cleanup_tempfiles "${leader_path}" "${agent_path}" "${nodes_path}"
+    return 1
+  fi
+  if ! NOMAD_TOKEN="${NOMAD_QUALIFY_TOKEN}" NOMAD_CACERT="${NOMAD_CACERT}" python3 -I - <<'PY' "${NOMAD_HTTP_ADDR}" "${leader_path}" "${agent_path}" "${nodes_path}"
 import json
 import os
 import pathlib
@@ -784,10 +846,15 @@ for node in ready:
     if docker.get("Healthy") is not True:
         reasons.append(f"{node_name}=docker:{docker.get('HealthDescription') or 'unhealthy'}")
         continue
+    # ES's jobs need a host-mode network on the node (network_interface above).
+    networks = (detail.get("NodeResources") or {}).get("Networks") or []
+    if not any(isinstance(network, dict) and network.get("Mode") == "host" for network in networks):
+        reasons.append(f"{node_name}=no-host-network")
+        continue
     schedulable.append((node_name, cpu_total_compute))
 
 if not schedulable:
-    reason = "nomad: no ready client nodes with positive cpu.totalcompute and healthy docker driver"
+    reason = "nomad: no ready client nodes with positive cpu.totalcompute, healthy docker driver and a host-mode network"
     if reasons:
         reason += "; " + ", ".join(reasons)
     raise SystemExit(reason)
@@ -907,7 +974,7 @@ fi
 echo "==> Verifying required tools"
 printf 'git: '; git --version
 printf 'ssh: '; ssh -V 2>&1 | head -n 1
-printf 'python3: '; python3 --version
+printf 'python3: '; python3 -I --version
 printf 'openssl: '; openssl version
 printf 'curl: '; curl --version | head -n 1
 printf 'go: '; env GOTOOLCHAIN=local go version
@@ -927,7 +994,7 @@ echo "3. Keep the legacy compatibility runbook only for older reference-bridge v
 echo "   \"$CLONE_DIR/.runbooks/execution/Governed Execution ES Submit Runtime Identity Reference Workload.md\""
 echo "4. Lock Nomad so only ES can submit: run 'sudo \"$CLONE_DIR/scripts/nomad_acl_setup.sh\"' (ES_USER=<ES's user> if ES does not run as root), set nomad.token_file in ES's config to ${NOMAD_ACL_DIR}/es-token, and export NOMAD_TOKEN_FILE=${NOMAD_ACL_DIR}/observer-token for readiness checks."
 echo "   In ES's config set nomad.base_url to ${NOMAD_HTTP_ADDR}, nomad.server_name to ${NOMAD_TLS_SERVER_NAME}, nomad.root_ca_file to ${NOMAD_CACERT} and nomad.server_spki_sha256 to ${NOMAD_SERVER_SPKI_SHA256}; export NOMAD_ADDR=${NOMAD_HTTP_ADDR} and NOMAD_CACERT=${NOMAD_CACERT} for the scripts and the nomad CLI."
-echo "   Start the Go platform with explicit configs and TLS material."
+echo "   Start the Go platform with explicit configs and TLS material. After every Nomad start, run 'sudo \"$CLONE_DIR/scripts/nomad_acl_setup.sh\" placement' with the same ES_USER and OBSERVER_USER as above (and ES_CONFIG=<ES's config> if not /etc/execution-substrate/es.json): it checks that Nomad can place ES's jobs."
 echo "5. Verify the VM still reports nomad-startup-mode: pre-managed, submit-ready-mode: natural, and supported-environment: supported through scripts/01_bringup.sh check."
 echo "6. Treat script-managed local Nomad startup and any compute override as bounded fallback/troubleshooting, not the supported Linux environment story."
 echo "7. Use the repo-owned proof bootstrap to start the proof-scoped Vault dev/test target used by the runbook."
@@ -936,6 +1003,7 @@ echo
 echo "Environment notes:"
 echo "- This script assumes an apt-based Linux VM."
 echo "- The supported Linux profile is Docker healthy plus a root-managed non-dev nomad.service with positive natural cpu.totalcompute and no override."
+echo "- Nomad takes the node's host network from loopback (network_interface = \"lo\"), so the setup works on Wi-Fi or a cable and assumes neither."
 echo "- This script writes /etc/nomad.d/nomad.hcl for the single-node loopback Nomad service used by the current one-host workload-zone profile."
 echo "- That Nomad config enables ACLs; the bootstrap management token is in ${NOMAD_ACL_MANAGEMENT_TOKEN_FILE} (root only). Keep it out of ES and operator scripts."
 echo "- That Nomad config disables Docker image cleanup so local runtime-profile images survive completed allocations for repeated supported-local client runs."
