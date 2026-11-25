@@ -1369,6 +1369,17 @@ func TestRemoteAlphaUpgradeESApply(t *testing.T) {
 		}
 	}
 
+	// A binary that names the commit but is not the payload's build is no
+	// part of the shape this upgrade leaves.
+	other := stampedBinary("es", "go1.26.5", upgradeTestCommit, "false")
+	other = bytes.Replace(other, []byte("build\t-compiler=gc\n"), []byte("build\t-compiler=xx\n"), 1)
+	h.write("usr/local/lib/execution-substrate/bin/es", string(other), 0o755)
+	report, _, code = h.check()
+	if code != 1 || !strings.Contains(fmt.Sprint(report["blockers"]), "the ES binaries: unknown (es names "+upgradeTestCommit+" but is not the verified payload's build)") {
+		t.Fatalf("check of a migrated host with another build of the commit: exit %d, %v", code, report["blockers"])
+	}
+	h.write("usr/local/lib/execution-substrate/bin/es", string(newESBuild), 0o755)
+
 	// rollback puts the host back exactly: Nomad on plain HTTP, no TLS
 	// directory.
 	h.clearCalls()
