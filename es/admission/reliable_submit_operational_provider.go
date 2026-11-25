@@ -478,7 +478,9 @@ func (p *operationalProvider) prepareRegister(ctx context.Context, body []byte) 
 // prepareExchange builds every request the provider sends to Nomad. Each one
 // carries ES's Nomad token in the X-Nomad-Token header, never in the URL, and
 // names the operational region and namespace. The transport follows no
-// redirect, so the token reaches only the pinned Nomad.
+// redirect, so the token reaches only the pinned Nomad. Like ES's ordinary
+// Nomad client (newNomadTLSConfig), it speaks TLS 1.3 only, the one version
+// the supported Nomad serves.
 func (p *operationalProvider) prepareExchange(ctx context.Context, method, path string, body []byte) (preparedOperationalExchange, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	query := "region=" + p.realm.region + "&namespace=" + operationalNamespace
@@ -509,7 +511,7 @@ func (p *operationalProvider) prepareExchange(ctx context.Context, method, path 
 			}
 			return dialer.DialContext(ctx, "tcp", p.target.String())
 		},
-		TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, ServerName: p.realm.host, RootCAs: p.roots,
+		TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS13, ServerName: p.realm.host, RootCAs: p.roots,
 			VerifyConnection: func(state tls.ConnectionState) error {
 				if len(state.VerifiedChains) == 0 || len(state.PeerCertificates) == 0 || sha256.Sum256(state.PeerCertificates[0].RawSubjectPublicKeyInfo) != p.realm.spki {
 					return errOperationalEvidence
