@@ -108,7 +108,7 @@ func TestCallerAllowlistPrefixRuleIsDocumentedOnce(t *testing.T) {
 	assertContainsAll(t, "PLANS.md", compactText(mustRead(t, "PLANS.md")),
 		"ARS, AGS, and ES check their configured path-prefix allowlists at startup and match callers against them through the one shared package `internal/callerallowlist`",
 	)
-	assertContainsAll(t, "bring-up runbook", compactText(mustRead(t, ".runbooks/system/v1_bringup.md")),
+	assertContainsAll(t, "bring-up runbook", compactText(mustRead(t, ".runbooks/system/Governed Execution ES System Bring-Up.md")),
 		"The current repo-owned AGS and ES configs keep `authorization.allowed_spiffe_path_prefixes=[\"operator/local\"]`",
 	)
 }

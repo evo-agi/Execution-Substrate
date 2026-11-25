@@ -987,7 +987,7 @@ NOMAD_SERVER_SPKI_SHA256="$(nomad_tls_spki_sha256 "${NOMAD_TLS_DIR}/server.pem" 
 echo
 echo "==> Next steps"
 echo "1. Review the governed submit bring-up runbook:"
-echo "   $CLONE_DIR/.runbooks/system/v1_bringup.md"
+echo "   \"$CLONE_DIR/.runbooks/system/Governed Execution ES System Bring-Up.md\""
 echo "2. Review the bounded useful credential flow runbook:"
 echo "   \"$CLONE_DIR/.runbooks/execution/Governed Execution ES Submit Runtime Identity Vault Login Workload.md\""
 echo "3. Keep the legacy compatibility runbook only for older reference-bridge validation:"

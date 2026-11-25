@@ -125,7 +125,7 @@ the runbook covers it.
 
 For the current bounded execution slice, the preferred operator path is:
 
-1. Follow [.runbooks/system/v1_bringup.md](.runbooks/system/v1_bringup.md)
+1. Follow [.runbooks/system/Governed Execution ES System Bring-Up.md](.runbooks/system/Governed%20Execution%20ES%20System%20Bring-Up.md)
 2. Use `scripts/01_bringup.sh up` for the cohesive local bring-up path
 3. Use `scripts/01_bringup.sh check` to re-check service health, prepare-ready state, and submit-ready state
 4. Use `scripts/60_execute_loop.sh .examples/execution_loop/static_script_success.input.json` for the bounded end-to-end smoke path
@@ -135,7 +135,7 @@ For the current bounded execution slice, the preferred operator path is:
 
 The lower-level readiness helper remains `scripts/10_health_check.sh`. In the current slice, ES `/health` proves only admission-oriented service health; the operator path now layers workload-zone Vault runtime-config validation plus Nomad/Docker checks on top before claiming submit readiness.
 For those operator-facing helpers, the current caller credentials are `OPERATOR_CERT` and `OPERATOR_KEY`; `service/deployment` is no longer a co-equal hot-path caller identity for AGS or ES in this bounded slice.
-The operator-facing publish / prepare / submit / lifecycle helpers now classify failures into bounded categories and point back to the compact troubleshooting matrix in [.runbooks/system/v1_bringup.md](.runbooks/system/v1_bringup.md). That matrix is the current operator reference for:
+The operator-facing publish / prepare / submit / lifecycle helpers now classify failures into bounded categories and point back to the compact troubleshooting matrix in [.runbooks/system/Governed Execution ES System Bring-Up.md](.runbooks/system/Governed%20Execution%20ES%20System%20Bring-Up.md). That matrix is the current operator reference for:
 
 - which readiness check is authoritative
 - which service logs matter most

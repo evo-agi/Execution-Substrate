@@ -1,11 +1,8 @@
 # Governed Execution ES Local Runtime Identity Validation
 
-- Version: `v1`
-- Last Updated: `2026-04-05`
+## What is it?
 
-## 1. Objective
-
-Validate the legacy runtime-identity reference plumbing end to end using the existing Go platform plus minimal local infrastructure:
+This runbook validates the legacy runtime-identity reference plumbing end to end using the existing Go platform plus minimal local infrastructure:
 
 `ES -> runtime-identity workspace -> reference workload local bridge -> local identity adapter -> Vault dev mode -> secret read`
 
@@ -18,17 +15,7 @@ This runbook is intentionally local, non-production, and legacy:
 
 It proves only legacy plumbing and contract compatibility for the workload-authored reference path. It does not prove the slice-1 platform-owned runtime identity model.
 
-Run command examples from the repository root unless a step says otherwise.
-
-For a fresh Linux VM, an optional explicit bootstrap helper is available at:
-
-- `scripts/70_linux_setup.sh`
-
-That helper installs dependencies, pauses for GitHub SSH-key setup, clones the repository once, verifies the required tools, and then hands control back to this runbook.
-
-It now also writes the current single-node `nomad.service` config baseline and tries to qualify the narrow supported Linux substrate profile before finishing. If it exits nonzero, treat the VM as not yet supported rather than as a clean Linux proof host.
-
-## 2. Prerequisites
+## What do I need?
 
 The current Go platform must already be up using the primary full bring-up flow:
 
@@ -58,7 +45,19 @@ Use the existing legacy runtime identity reference workload:
 - `.examples/runtime_identity_reference/entrypoint`
 - `.examples/runtime_identity_reference/package.sh`
 
-## 3. Vault Setup Commands
+For a fresh Linux VM, an optional explicit bootstrap helper is available at:
+
+- `scripts/70_linux_setup.sh`
+
+That helper installs dependencies, pauses for GitHub SSH-key setup, clones the repository once, verifies the required tools, and then hands control back to this runbook.
+
+It now also writes the current single-node `nomad.service` config baseline and tries to qualify the narrow supported Linux substrate profile before finishing. If it exits nonzero, treat the VM as not yet supported rather than as a clean Linux proof host.
+
+## How to use it?
+
+Run command examples from the repository root unless a step says otherwise. You need three terminals: one for Vault, one for the identity adapter, and one for the rest. The output to expect is what the named tools print; Test Evidence says what has been run.
+
+### 1. Start Vault in dev mode
 
 Export local Vault env:
 
@@ -75,7 +74,9 @@ vault server -dev \
   -dev-listen-address=127.0.0.1:8200
 ```
 
-Leave that running in its own terminal.
+Leave that running in its own terminal. Expect Vault to report that it started in development mode, unsealed, with root token `root`.
+
+### 2. Make the JWT signing key and the JWT
 
 In a second terminal, create a working directory for the local validation material:
 
@@ -85,12 +86,16 @@ rm -rf "$RI_LOCAL_DIR"
 mkdir -p "$RI_LOCAL_DIR"
 ```
 
+Expect no output. Set `VAULT_ADDR` and `VAULT_TOKEN` in this terminal too, as in step 1.
+
 Generate a local RSA keypair:
 
 ```bash
 openssl genrsa -out "$RI_LOCAL_DIR/jwt-private.pem" 2048
 openssl rsa -in "$RI_LOCAL_DIR/jwt-private.pem" -pubout -out "$RI_LOCAL_DIR/jwt-public.pem"
 ```
+
+Expect `jwt-private.pem` and `jwt-public.pem` in `$RI_LOCAL_DIR`; `openssl rsa` prints `writing RSA key`.
 
 Create one static RS256 JWT with:
 
@@ -138,11 +143,17 @@ print("Wrote", root / "runtime-identity.jwt")
 PY
 ```
 
+Expect `Wrote /tmp/ri-local-validation/runtime-identity.jwt`. The JWT expires one hour after it was made.
+
+### 3. Configure Vault's JWT login and the test secret
+
 Enable Vault JWT auth:
 
 ```bash
 vault auth enable -path=jwt jwt
 ```
+
+Expect `Success! Enabled jwt auth method at: jwt/`.
 
 Configure JWT verification using the generated public key:
 
@@ -180,6 +191,8 @@ Write the test secret:
 vault kv put secret/runtime-identity-reference message=runtime-identity-ok
 ```
 
+Expect a `Success!` line from each `vault write` and from `vault policy write`, and from `vault kv put` a short table with the secret's version.
+
 Optional sanity check:
 
 ```bash
@@ -190,7 +203,7 @@ vault write -field=token auth/jwt/login \
 
 If that returns a token, Vault JWT auth is configured correctly for this local validation path.
 
-## 4. Identity Adapter Script
+### 4. Start the identity adapter
 
 Use the existing minimal adapter:
 
@@ -219,7 +232,7 @@ python3 ".examples/runtime_identity_reference/helpers/mock_identity_endpoint.py"
 
 Leave that running in its own terminal.
 
-## 5. ES Config Snippet
+### 5. Check the ES config
 
 The only local runtime identity plumbing requirement in ES config for this legacy validation path is a base image with `python3`.
 
@@ -246,7 +259,7 @@ Example execution snippet:
 
 The local validation path adds no new TLS or certificate requirements beyond whatever your current Go system bring-up already uses.
 
-## 6. Execution Steps
+### 6. Run the workload
 
 Package the reference workload:
 
@@ -279,7 +292,7 @@ The workload then runs this legacy local flow:
 5. call `GET $VAULT_ADDR/v1/secret/data/runtime-identity-reference`
 6. print the secret value to stdout
 
-## 7. Verification Steps
+### 7. Verify
 
 Inspect the public lifecycle/logs path:
 
@@ -310,7 +323,7 @@ This proves only the legacy reference flow:
 
 It does not prove the slice-1 platform-owned runtime identity helper, the helper-private SPIRE boundary, or the non-root runtime identity enforcement used by the bounded platform-owned path.
 
-## 8. Failure Guide
+## What do the failures mean?
 
 ### Identity bridge not reachable
 
@@ -361,3 +374,16 @@ Common causes:
 - missing or wrong policy
 - wrong secret path
 - secret not written yet
+
+## Test Evidence
+
+- **Automated:** none for this legacy path. No test in this repository runs the reference workload, its identity adapter or this Vault dev-mode setup.
+- **Not run:** the steps above, as written, were not run end to end when this runbook was restructured into this layout on 2026-11-25; no step's commands changed then. The output to expect after the `openssl` and `vault` commands is what those tools print in general, not output recorded from a run of this runbook.
+
+## History
+
+- **2026-04-05:** version `v1` of this runbook, last updated on this date before it came into this repository (from its former header).
+- **2026-04-19:** came into this repository as `v1_runtime_identity_local_validation.md` (PR #1).
+- **2026-11-23:** renamed to its current name (PR #37).
+- **2026-11-25:** Nomad over HTTPS: the example ES config names Nomad by `https://127.0.0.1:4646` with its server name, CA, key pin and ACL token file (PR #60).
+- **2026-11-25:** restructured into the layout of the project's other runbooks (What is it?, What do I need?, How to use it? with numbered steps and the output to expect, What do the failures mean?, Test Evidence, History). The former "Failure Guide" is now "What do the failures mean?". No command changed. One instruction was added: step 2 now says to set `VAULT_ADDR` and `VAULT_TOKEN` in the second terminal too, because the `vault` commands of step 3 run there and need them.
