@@ -1,5 +1,4 @@
-# Test on macOS the packages of the Go module whose tests are meant to run
-# on every host.
+# Test on macOS the packages whose tests also run on the operator's Mac.
 #
 # The job "build, vet and test" in go.yml runs the tests on Linux only. Many
 # tests of the package execution-substrate/scripts run on the operator's Mac

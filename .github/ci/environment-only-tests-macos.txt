@@ -53,10 +53,12 @@ execution-substrate/scripts TestRemoteAlphaVaultServiceUserMigrationPlanRefusesP
 # to check.
 execution-substrate/scripts TestRemoteAlphaOutputDirChecksFoldersItCannotRead
 
-# The box helper's require_vault_owned_raft_dir reads the owner of the raft
-# directory with "stat -c %U", which is the stat of GNU coreutils. The stat
-# of macOS has no -c. The helper runs only on the box. The other subtests of
-# the second test pass.
+# The box helper that these tests run, require_vault_owned_raft_dir in
+# scripts/remote_alpha_reset_disposable_vault.sh:410, reads the owner of the
+# raft directory with "sudo stat -c '%U'", which is the stat of GNU
+# coreutils. The stat of macOS has no -c. The helper runs only on the box.
+# The tests themselves read the owner with the stat of the host. The other
+# subtests of the second test pass.
 execution-substrate/scripts TestRemoteAlphaResetDisposableVaultNeverFollowsALinkAboveTheRaftDirectory
 execution-substrate/scripts TestRemoteAlphaResetDisposableVaultRefusesUnsafeRaftStates/raft_directory_of_the_Vault_account
 
@@ -84,9 +86,10 @@ execution-substrate/scripts TestRemoteAlphaUpgradeESReadsGoBuildInfoLikeGoVersio
 # tests that skip themselves on the runner must be exactly the tests named
 # below, and a line has to go when its test no longer skips itself there.
 # The step "Listed tests pass as root" of go.yml reads only
-# environment-only-tests.txt, and this workflow has no such step, so the
-# lines below are not run as root anywhere. Each group says what its tests
-# need that the runner does not have.
+# environment-only-tests.txt, and this workflow has no such step, so this
+# workflow does not run the lines below as root. Those of them that
+# environment-only-tests.txt also names run as root on Linux in go.yml.
+# Each group says what its tests need that the runner does not have.
 
 # Interfaces of the Linux kernel that macOS does not have. The TLS status
 # collector and its stage run only on the box. The first five tests need PID
