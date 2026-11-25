@@ -103,10 +103,12 @@ if mode=='malformed':
             _,result=consume(c,variant)
             checks[ident+'_'+label]=result is None
     # Original LibreSSL alternatives stay admitted by the same actual consumers.
+    apple=(b'/AppleInternal/Library/BuildRoots/4~CVR0ugD7d_x9KkNiDhb6ZUdowAfhsgliSKtR7QU/Library/Caches/'
+           b'com.apple.xbs/TemporaryDirectory.kapob0/Sources/libressl/libressl-3.3/crypto/pem/pem_lib.c:694')
     old_cert=(b'unable to load certificate\n123:error:09FFF06C:PEM routines:CRYPTO_internal:no start line:'+
-              m.LIBRESSL_PEM_ERROR_PATH+b':Expecting: TRUSTED CERTIFICATE\n')
+              apple+b':Expecting: TRUSTED CERTIFICATE\n')
     old_key=(b'unable to load key\n123:error:09FFF06C:PEM routines:CRYPTO_internal:no start line:'+
-             m.LIBRESSL_PEM_ERROR_PATH+b':Expecting: ANY PRIVATE KEY\n')
+             apple+b':Expecting: ANY PRIVATE KEY\n')
     checks['legacy_cert']=consume(cases['meta_malformed'],(1,b'',old_cert))[1]=='certificate_malformed'
     checks['legacy_key']=consume(cases['key_malformed'],(1,b'',old_key))[1]=='key_malformed'
     assert len(checks)==26

@@ -1890,7 +1890,12 @@ def parse_openssl_time(value: str) -> str | None:
         return None
 
 
-LIBRESSL_PEM_ERROR_PATH = b"/AppleInternal/Library/BuildRoots/4~CVR0ugD7d_x9KkNiDhb6ZUdowAfhsgliSKtR7QU/Library/Caches/com.apple.xbs/TemporaryDirectory.kapob0/Sources/libressl/libressl-3.3/crypto/pem/pem_lib.c:694"
+# The source location in the malformed-PEM error of LibreSSL: the path of
+# crypto/pem/pem_lib.c in the build that made /usr/bin/openssl, and a line
+# number. The path differs from one Apple build of LibreSSL to the next, so
+# only its form is fixed: absolute, ending in /crypto/pem/pem_lib.c, with no
+# colon or control character in it.
+LIBRESSL_PEM_ERROR_LOCATION = rb"(?:/[^/:\x00-\x1f\x7f]+)*/crypto/pem/pem_lib\.c:[0-9]+"
 
 
 def _known_malformed_pem(code: int, output: bytes, error: bytes, kind: str) -> bool:
@@ -1903,7 +1908,7 @@ def _known_malformed_pem(code: int, output: bytes, error: bytes, kind: str) -> b
     expected = b"TRUSTED CERTIFICATE" if kind == "certificate" else b"ANY PRIVATE KEY"
     first = b"unable to load certificate\n" if kind == "certificate" else b"unable to load key\n"
     pattern = (re.escape(first) + rb"[0-9]+:error:09FFF06C:PEM routines:CRYPTO_internal:no start line:" +
-               re.escape(LIBRESSL_PEM_ERROR_PATH) + rb":Expecting: " + re.escape(expected) + rb"\n")
+               LIBRESSL_PEM_ERROR_LOCATION + rb":Expecting: " + re.escape(expected) + rb"\n")
     return re.fullmatch(pattern, error) is not None
 
 
