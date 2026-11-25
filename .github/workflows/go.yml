@@ -25,7 +25,12 @@ jobs:
   test:
     name: build, vet and test
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    # The slowest passing run of this job so far took 57 minutes, and runners
+    # differ by up to half in speed. The limit also has to leave room for the
+    # time limit of each test binary in go_test_gate.py (TIME_LIMIT, 20
+    # minutes) to stop a hung test inside the job, even in the last step that
+    # runs tests, so that the log shows where it hung.
+    timeout-minutes: 90
     env:
       # Use exactly the toolchain installed from go.mod and the committed
       # go.sum; never download a different toolchain or rewrite go.mod.
