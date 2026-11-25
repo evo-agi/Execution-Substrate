@@ -979,6 +979,8 @@ func TestGo1265ToolchainBaselineDocsAndBuildContract(t *testing.T) {
 		"When a listed test panics, the package runs again without it",
 		"The step fails when a run stops and no listed test reported a failure as it stopped: a test that is not listed, or the time limit of `go test`, stopped it",
 		"It also fails the run when the run of an entry for a subtest starts another test under the path of that entry",
+		"Every `go test` of the gate that runs tests gives each test binary a time limit of 20 minutes instead of the default of 10 of `go test`",
+		"A test binary that runs longer panics with the stacks of its goroutines inside the job's own limit of 90 minutes, so the log shows where it hung",
 		"`.github/ci/go_test_gate_selftest.py` checks these behaviors on every run before the tests",
 		"It also holds the workflow file by its SHA-256, so every edit of the workflow has to change that value in the same change",
 		"A green run is validation evidence for the committed tree on that runner image",
@@ -997,6 +999,7 @@ func TestGo1265ToolchainBaselineDocsAndBuildContract(t *testing.T) {
 		"\n  pull_request:\n",
 		"\n  push:\n    branches:\n      - trunk_dev\n",
 		"runs-on: ubuntu-24.04",
+		"timeout-minutes: 90\n",
 		"GOTOOLCHAIN: local",
 		"GOFLAGS: -mod=readonly",
 		"go-version-file: go.mod",
@@ -1040,6 +1043,12 @@ func TestGo1265ToolchainBaselineDocsAndBuildContract(t *testing.T) {
 	assertContainsAll(t, "Go CI gate observed-run toolchain", mustRead(t, ".github/ci/go_test_gate.py"),
 		"\nOBSERVED_GO_VERSION = \"go1.26.5\"\n",
 		"\nMATCH_GO_SHA256 = \"f28418759ed48c72821b5ecc3700041b74151108557618f50d355ea98a1bbebe\"\n",
+	)
+	// The time limit of each test binary that the gate starts, which the
+	// baseline doc states.
+	assertContainsAll(t, "Go CI gate test binary time limit", mustRead(t, ".github/ci/go_test_gate.py"),
+		"\nTIME_LIMIT = \"20m\"\n",
+		"command = [\"go\", \"test\", \"-json\", \"-timeout=\" + TIME_LIMIT] + arguments\n",
 	)
 	for _, path := range []string{
 		".github/ci/environment-only-tests.txt",
