@@ -1034,18 +1034,26 @@ cases=(
     ("missing_expecting",False,"certificate",1,b"",refusal("certificate",expecting=b"\n")),
     ("other_expected_object",False,"certificate",1,b"",refusal("certificate",expecting=b":Expecting: CERTIFICATE\n")),
     ("key_refusal_for_a_certificate",False,"certificate",1,b"",refusal("key")),
+    ("certificate_refusal_for_a_key",False,"key",1,b"",refusal("certificate")),
     ("other_first_line",False,"certificate",1,b"",refusal("certificate",line=b"unable to load key\n")),
     ("extra_line",False,"certificate",1,b"",refusal("certificate")+b"warning\n"),
     ("missing_newline",False,"certificate",1,b"",refusal("certificate")[:-1]),
     ("other_source_file",False,"certificate",1,b"",refusal("certificate",apple.replace(b"pem_lib.c",b"pem_info.c"))),
     ("other_source_folder",False,"certificate",1,b"",refusal("certificate",apple.replace(b"/crypto/pem/",b"/crypto/x509/"))),
     ("relative_path",False,"certificate",1,b"",refusal("certificate",b"crypto/pem/pem_lib.c:694")),
+    ("relative_path_with_a_folder",False,"certificate",1,b"",refusal("certificate",b"build/crypto/pem/pem_lib.c:694")),
+    ("relative_path_from_the_parent",False,"certificate",1,b"",refusal("certificate",b"../crypto/pem/pem_lib.c:694")),
+    ("other_character_for_the_dot",False,"certificate",1,b"",refusal("certificate",apple.replace(b"pem_lib.c",b"pem_libXc"))),
     ("missing_line_number",False,"certificate",1,b"",refusal("certificate",apple.replace(b":694",b":"))),
     ("missing_line",False,"certificate",1,b"",refusal("certificate",apple.replace(b":694",b""))),
     ("newline_in_path",False,"certificate",1,b"",refusal("certificate",apple.replace(b"/Library/Caches/",b"/Library\nCaches/"))),
     ("colon_in_path",False,"certificate",1,b"",refusal("certificate",apple.replace(b"/Library/Caches/",b"/Library:Caches/"))),
     ("nul_in_path",False,"certificate",1,b"",refusal("certificate",apple.replace(b"/Library/Caches/",b"/Library\x00Caches/"))),
     ("carriage_return_in_path",False,"certificate",1,b"",refusal("certificate",apple.replace(b"/Library/Caches/",b"/Library\rCaches/"))),
+    ("tab_in_path",False,"certificate",1,b"",refusal("certificate",apple.replace(b"/Library/Caches/",b"/Library\tCaches/"))),
+    ("escape_in_path",False,"certificate",1,b"",refusal("certificate",apple.replace(b"/Library/Caches/",b"/Library\x1bCaches/"))),
+    ("unit_separator_in_path",False,"certificate",1,b"",refusal("certificate",apple.replace(b"/Library/Caches/",b"/Library\x1fCaches/"))),
+    ("delete_in_path",False,"certificate",1,b"",refusal("certificate",apple.replace(b"/Library/Caches/",b"/Library\x7fCaches/"))),
     ("other_exit_code",False,"certificate",2,b"",refusal("certificate",other_root)),
     ("stdout_output",False,"certificate",1,b"noise",refusal("certificate",other_root)),
 )
@@ -1065,7 +1073,7 @@ print(json.dumps(results,sort_keys=True))
 	if err := json.Unmarshal(output, &results); err != nil {
 		t.Fatalf("LibreSSL location result: %v\n%s", err, output)
 	}
-	if len(results) != 27 {
+	if len(results) != 35 {
 		t.Fatalf("LibreSSL location checks missing: %v", results)
 	}
 	for name, ok := range results {

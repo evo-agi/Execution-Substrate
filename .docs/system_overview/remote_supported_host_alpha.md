@@ -4001,9 +4001,9 @@ exit zero, empty stderr, and exactly
 `/dev/stdin: OK\n` on stdout. A generic nonzero status never
 means malformed certificate, malformed key, or failed chain.
 
-The admitted malformed-material response is the fixture-proven LibreSSL
-3.3.6 tuple: exit 1, empty stdout, and exactly two stderr lines. For `x509`,
-the first is `unable to load certificate`; for `pkey`, it is
+The admitted malformed-material response has the shape first observed with
+LibreSSL 3.3.6 on macOS: exit 1, empty stdout, and exactly two stderr lines.
+For `x509`, the first is `unable to load certificate`; for `pkey`, it is
 `unable to load key`. The second is a decimal thread identifier followed by
 `:error:09FFF06C:PEM routines:CRYPTO_internal:no start line:`, the source
 location, `:Expecting: `, and respectively `TRUSTED CERTIFICATE` or
