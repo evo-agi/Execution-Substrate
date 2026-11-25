@@ -655,6 +655,7 @@ func (h *upgradeHost) apply() (string, string, int) {
 func (h *upgradeHost) systemctl(args ...string) {
 	h.t.Helper()
 	cmd := exec.Command(filepath.Join(h.bin, "systemctl"), args...)
+	cmd.Dir = h.state
 	cmd.Env = h.environ()
 	if out, err := cmd.CombinedOutput(); err != nil {
 		h.t.Fatalf("systemctl %v: %v %s", args, err, out)
@@ -729,6 +730,7 @@ func (h *upgradeHost) issueTLS() {
 		h.t.Fatal("scripts/70_linux_setup.sh has no nomad_tls region")
 	}
 	cmd := exec.Command("bash", "-c", "set -euo pipefail\n"+setup[begin:end]+"nomad_tls_issue \"$1\"\n", "issue", h.path("etc/nomad.d/tls"))
+	cmd.Dir = h.state
 	if out, err := cmd.CombinedOutput(); err != nil {
 		h.t.Fatalf("nomad_tls_issue: %v %s", err, out)
 	}
@@ -1240,6 +1242,7 @@ func TestRemoteAlphaUpgradeESApply(t *testing.T) {
 		}
 	}
 	verify := exec.Command("openssl", "verify", "-CAfile", filepath.Join(tlsDir, "ca.pem"), "-purpose", "sslserver", filepath.Join(tlsDir, "server.pem"))
+	verify.Dir = tlsDir
 	if out, err := verify.CombinedOutput(); err != nil {
 		t.Fatalf("the server certificate does not verify under the CA: %v %s", err, out)
 	}
@@ -1682,7 +1685,9 @@ func TestRemoteAlphaUpgradeESMovesARealNomadToHTTPS(t *testing.T) {
 	if _, err := exec.LookPath("nomad"); err != nil {
 		t.Skipf("nomad binary lookup failed: %v", err)
 	}
-	if output, err := exec.Command("sudo", "-n", "true").CombinedOutput(); err != nil {
+	sudoCheck := exec.Command("sudo", "-n", "true")
+	sudoCheck.Dir = t.TempDir()
+	if output, err := sudoCheck.CombinedOutput(); err != nil {
 		t.Skipf("needs passwordless sudo, which runs scripts/nomad_acl_setup.sh as root: %v: %s", err, strings.TrimSpace(string(output)))
 	}
 	realCurl, err := exec.LookPath("curl")
@@ -1734,6 +1739,7 @@ client {
 	managementFile := h.path("etc/execution-substrate/nomad-acl/management-token")
 	t.Cleanup(func() {
 		cmd := exec.Command(filepath.Join(h.bin, "systemctl"), "stop", "nomad")
+		cmd.Dir = h.state
 		cmd.Env = h.environ()
 		_ = cmd.Run()
 	})
@@ -1799,12 +1805,16 @@ client {
 	// management token root's alone.
 	aclDir := filepath.Dir(managementFile)
 	t.Cleanup(func() {
-		if output, err := exec.Command("sudo", "-n", "rm", "-rf", "--", aclDir).CombinedOutput(); err != nil {
+		remove := exec.Command("sudo", "-n", "rm", "-rf", "--", aclDir)
+		remove.Dir = h.state
+		if output, err := remove.CombinedOutput(); err != nil {
 			t.Errorf("remove the root-owned token directory: %v %s", err, output)
 		}
 	})
 	for _, argv := range [][]string{{"chown", "root:root", aclDir}, {"install", "-o", "root", "-g", "root", "-m", "0600", staged, managementFile}} {
-		if output, err := exec.Command("sudo", append([]string{"-n"}, argv...)...).CombinedOutput(); err != nil {
+		cmd := exec.Command("sudo", append([]string{"-n"}, argv...)...)
+		cmd.Dir = h.state
+		if output, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("sudo %v: %v %s", argv, err, output)
 		}
 	}

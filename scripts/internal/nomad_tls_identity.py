@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S python3 -I
 """Nomad's TLS identity as ES sees it.
 
 usage: nomad_tls_identity.py check <es-config> <nomad-addr>
