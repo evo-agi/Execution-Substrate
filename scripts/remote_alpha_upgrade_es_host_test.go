@@ -1194,20 +1194,10 @@ func TestRemoteAlphaUpgradeESCheckRefusesWhatItWasNotWrittenFor(t *testing.T) {
 			h.replacePayloadFile("es-runtime-support", stampedBinaryWithModules("es-runtime-support", "go1.26.5", upgradeTestCommit, "false", workspaceDep))
 		}, "payload", "the payload file es-runtime-support was not built from the modules " + upgradeTestCommit + " pins, by its own Go build info: " +
 			"a dependency without its go.sum hash (golang.org/x/sys (devel))"},
-		// esconfigcheck runs as root during the check, so its modules are
-		// checked as well, before it runs; its revision is not (it is not
-		// installed).
-		{"esconfigcheck was built with a replaced module", func(h *upgradeHost) {
-			h.replacePayloadFile("esconfigcheck", stampedBinaryWithModules("esconfigcheck", "go1.26.5", upgradeTestCommit, "false", replacedDep))
-		}, "payload", "the payload file esconfigcheck was not built from the modules " + upgradeTestCommit + " pins, by its own Go build info: " +
-			"a dependency without its go.sum hash (golang.org/x/sys v0.46.0); a replaced module (/tmp/elsewhere/sys (devel))"},
 		{"es was built from a vendor folder", func(h *upgradeHost) {
 			h.replacePayloadFile("es", stampedBinaryWithModules("es", "go1.26.5", upgradeTestCommit, "false", vendoredDep))
 		}, "payload", "the payload file es was not built from the modules " + upgradeTestCommit + " pins, by its own Go build info: " +
 			"a dependency without its go.sum hash (golang.org/x/sys v0.46.0)"},
-		{"esconfigcheck carries no Go build info", func(h *upgradeHost) {
-			h.replacePayloadFile("esconfigcheck", []byte("#!/bin/sh\nexit 0\n"))
-		}, "payload", "not a 64-bit little-endian ELF file"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

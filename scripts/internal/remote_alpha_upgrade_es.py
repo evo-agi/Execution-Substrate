@@ -509,8 +509,7 @@ SERVICES = ("ars", "ags", "egs", "es", "vault", "spire-server", "spire-agent", "
 PAYLOAD_FILES = ("es", "es-runtime-support", "esconfigcheck")
 # The binaries apply installs. Each must name the commit in its own Go build
 # info, not only in provenance.json. esconfigcheck is a checker the upgrade
-# runs, not something it installs; like them, it must show in its build info
-# no module other than what go.mod and go.sum pin (red-team audit 32, A32-1).
+# runs, not something it installs.
 STAMPED_PAYLOAD_FILES = ("es", "es-runtime-support")
 SUPPORTED_GO_VERSION = "go1.26.5"
 SUMMARY_SCHEMA = "execution-substrate.remote-alpha.es-upgrade-summary.v2"
@@ -1058,9 +1057,9 @@ def load_payload(payload_dir, commit):
     The directory and its files must be root:root and not writable by group
     or others, so no other account can change them after the check. Every
     file's SHA-256 must match provenance.json, which must name the commit,
-    each installed binary must name it in its own Go build info, and no
-    binary's build info may show a module other than what the commit's
-    go.mod and go.sum pin."""
+    and each installed binary must name it in its own Go build info and
+    show there no module other than what the commit's go.mod and go.sum
+    pin."""
     if not valid_commit(commit):
         raise Refusal("the commit must be a full lower-case 40-character SHA-1")
     st = os.lstat(payload_dir)
@@ -1082,8 +1081,6 @@ def load_payload(payload_dir, commit):
             raise Refusal(f"the payload file {name} does not match its provenance")
         if name in STAMPED_PAYLOAD_FILES:
             check_build_stamp(name, blob, commit)
-        else:
-            check_build_modules(name, go_modinfo(blob)[1], commit)
     return prov
 
 

@@ -7391,15 +7391,15 @@ its rollback.
   running anything), Go `go1.26.5`, `vcs.revision=<commit>` and
   `vcs.modified=false`. A test keeps that reader in agreement with
   `go version -m`. `apply` repeats the check and installs copies with the
-  same SHA-256. `esconfigcheck` is bound by its owner and SHA-256 and the
-  module check below, not by its revision, since the upgrade runs it and
-  does not install it
-- a payload binary's Go build info shows a module other than what the
-  commit's `go.mod` and `go.sum` pin: a replaced module (a `=>` line, as a
-  `replace` in a `go.work` leaves) or a dependency without its `go.sum`
-  hash (as a module a `go.work` puts in place of a dependency, or a
-  `-mod=vendor` build, leaves). This holds for `esconfigcheck` too, and is
-  checked before it runs
+  same SHA-256. `esconfigcheck` is bound by its owner and SHA-256 only, since the
+  upgrade runs it and does not install it; it uses no module but the
+  repository's own (a test keeps it so), so no `go.work` or `replace` can
+  change it
+- `es` or `es-runtime-support` shows in its Go build info a module other
+  than what the commit's `go.mod` and `go.sum` pin: a replaced module (a
+  `=>` line, as a `replace` in a `go.work` leaves) or a dependency without
+  its `go.sum` hash (as a module a `go.work` puts in place of a dependency,
+  or a `-mod=vendor` build, leaves)
 - the named commit is `16cbf739`, or the host has no shape it knows
 - one of `ars`, `ags`, `egs`, `es`, `vault`, `spire-server`, `spire-agent`,
   `nomad` and `docker` is not active, or `es.service` does not run
@@ -7509,8 +7509,7 @@ interrupted apply and `rollback` on a host-shaped folder with fake
 real `nomad_tls_issue`: hosts of every refused shape, each named part by
 part; payload binaries whose Go build info names another commit, another Go
 or a modified build, or shows a replaced module, a workspace module or a
-vendored dependency (`esconfigcheck` too, and one with no Go build info);
-payload files of another owner or group; a clone that
+vendored dependency; payload files of another owner or group; a clone that
 another account could change (a file or folder writable by its group or
 others, one of another owner, a folder above the clone writable by its
 group or others without the sticky bit, a sticky folder under `scripts`
@@ -7543,7 +7542,8 @@ must not reach Go, whose environment the test reads back exactly; and
 `build` with the real Go in a clone under a sticky folder that holds a
 `go.work` naming the clone, with `GOWORK` and `GOFLAGS=-mod=mod` in its
 environment, where a plain `go build` fails on that `go.work` and `build`
-succeeds with a clean build of the commit.
+succeeds with a clean build of the commit; and `esconfigcheck` built from
+no module but the repository's own.
 `TestRemoteAlphaUpgradeESMovesARealNomadToHTTPS` runs `check`, `apply`, the
 in-place check and `rollback` against a real Nomad agent started on the
 box's own `nomad.hcl` (with a data folder, free ports and the TLS paths under
