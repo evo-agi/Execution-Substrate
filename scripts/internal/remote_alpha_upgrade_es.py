@@ -1098,12 +1098,21 @@ def commit_module_pins(repo, commit, owners, env):
     dependency, and the hashes go.sum holds. Only owners may be able to
     change those objects: the clone's .git must be a folder that belongs to
     them, with nothing that makes git read objects from elsewhere, and git
-    runs with env (GIT_ENV), so it reads only that repository's config."""
+    runs with env (GIT_ENV), so it reads only that repository's config.
+    git does not check an object's bytes against its name when it reads
+    it, so the folder git reads objects from decides the pins. A .git file
+    ("gitdir: <path>", as git worktree add and git clone --separate-git-dir
+    leave) or link sends git to another folder, so .git must be a folder
+    itself, as build requires (red-team audit 34, A34-2)."""
     git_dir = os.path.join(repo, ".git")
-    problems = folders_above_problems(git_dir, (0,) + tuple(owners)) + tree_problems(git_dir, owners)
-    for rel in ("commondir", "objects/info/alternates", "objects/info/http-alternates"):
-        if os.path.lexists(os.path.join(git_dir, rel)):
-            problems.append(f"{git_dir}/{rel} exists, which makes git read objects from elsewhere")
+    problems = folders_above_problems(git_dir, (0,) + tuple(owners))
+    if not os.path.lexists(git_dir) or not stat.S_ISDIR(os.lstat(git_dir).st_mode):
+        problems.append(f"{git_dir} is not a folder, so git would read the objects of a folder it names")
+    else:
+        problems += tree_problems(git_dir, owners)
+        for rel in ("commondir", "objects/info/alternates", "objects/info/http-alternates"):
+            if os.path.lexists(os.path.join(git_dir, rel)):
+                problems.append(f"{git_dir}/{rel} exists, which makes git read objects from elsewhere")
     if problems:
         shown = "; ".join(problems[:20])
         more = f" (and {len(problems) - 20} more)" if len(problems) > 20 else ""
@@ -1974,12 +1983,15 @@ def cmd_build(args):
     which cannot change what is compiled: a fixed PATH; GOWORK=off, since
     Go reads a go.work from any folder above the module; no go env file;
     a private HOME, so git reads no user config and Go's caches are not
-    under the user's home or an inherited XDG_CACHE_HOME; a fresh build
-    cache and temporary folder, removed afterwards; and a fresh module
-    cache unless --module-cache names a checked one, which `go mod verify`
-    checks first. Go checks every module against the commit's go.sum, and
-    each binary's build info is compared with the commit's go.mod and
-    go.sum."""
+    under the user's home or an inherited XDG_CACHE_HOME; Go's telemetry
+    off, so Go starts no child that outlives its command; no VCS tool for
+    fetching modules (GOVCS), so modules come only through the module
+    proxy; a fresh build cache and temporary folder, removed afterwards,
+    whether the build succeeds or not (a refusal says when the removal
+    failed); and a fresh module cache unless --module-cache names a checked
+    one, which `go mod verify` checks first. Go checks every module against
+    the commit's go.sum, and each binary's build info is compared with the
+    commit's go.mod and go.sum."""
     os.umask(0o022)
     owners = (0, os.geteuid())
     repo = os.path.realpath(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -1988,6 +2000,9 @@ def cmd_build(args):
         raise Refusal("the payload directory must be outside the checkout, which must stay clean")
     if not valid_commit(args.commit):
         raise Refusal("the commit must be a full lower-case 40-character SHA-1")
+    if os.sep not in args.go:
+        raise Refusal(f"--go names the go command by its path (such as /usr/local/go/bin/go): {args.go!r} would be "
+                      f"a file in the current folder, not a command looked up on PATH")
     go = os.path.realpath(args.go)
     module_cache = os.path.realpath(args.module_cache) if args.module_cache else None
     clone_problems = folders_above_problems(repo, owners) + tree_problems(repo, owners)
@@ -2015,11 +2030,12 @@ def cmd_build(args):
     work = tempfile.mkdtemp(prefix="es-upgrade-build-", dir=os.path.dirname(out_dir))
     try:
         sums, version = build_payload(args, repo, out_dir, go, module_cache, owners, work)
-    except BaseException:
+    except BaseException as exc:
         try:
             remove_build_folder(work)
-        except OSError:
-            pass
+        except OSError as removal:
+            if isinstance(exc, Refusal):
+                raise Refusal(f"{exc}; and the build's private folder {work} could not be removed ({removal})") from None
         raise
     try:
         remove_build_folder(work)
@@ -2032,16 +2048,42 @@ def cmd_build(args):
     say(json.dumps(prov, indent=2, sort_keys=True))
 
 
+def go_config_dir(home):
+    """The folder Go keeps its own settings in (os.UserConfigDir) when HOME
+    is home and XDG_CONFIG_HOME is not set, as in build's environment."""
+    if sys.platform == "darwin":
+        return os.path.join(home, "Library", "Application Support")
+    return os.path.join(home, ".config")
+
+
 def build_payload(args, repo, out_dir, go, module_cache, owners, work):
     folders = {name: os.path.join(work, name) for name in ("home", "tmp", "go-build", "gopath", "go-mod")}
     for path in folders.values():
         os.mkdir(path, 0o700)
+    # Go's telemetry is on (mode "local") unless the mode file in Go's
+    # settings folder says "off". With it on, a go command run under a home
+    # that has no upload token, as each fresh HOME here, starts a child in a
+    # session of its own, which run() cannot end, and that child writes in
+    # HOME after the command has exited, after build may have removed the
+    # folder (red-team audit 34, A34-1). With "off", Go writes nothing there
+    # and starts no child. This file is what `go telemetry off` writes;
+    # GOTELEMETRY is a value go env reports, not a setting it reads.
+    telemetry = os.path.join(go_config_dir(folders["home"]), "go", "telemetry")
+    os.makedirs(telemetry, 0o700)
+    with open(os.path.join(telemetry, "mode"), "x", encoding="utf-8") as handle:
+        handle.write("off\n")
     env = {key: os.environ[key] for key in BUILD_PASSED_VARIABLES if key in os.environ}
     env.update(GIT_ENV)
     env.update(HOME=folders["home"], TMPDIR=folders["tmp"], GOTMPDIR=folders["tmp"], GOCACHE=folders["go-build"],
                GOPATH=folders["gopath"], GOMODCACHE=module_cache or folders["go-mod"],
                GOWORK="off", GOENV="off", GOFLAGS="-mod=readonly", GOTOOLCHAIN="local",
-               CGO_ENABLED="0", GOOS="linux", GOARCH="amd64")
+               CGO_ENABLED="0", GOOS="linux", GOARCH="amd64",
+               # Modules come only through the module proxy: a proxy that
+               # answers "not found" cannot make Go fetch from a server of
+               # its choosing with git or another VCS tool ("direct" in the
+               # toolchain's GOPROXY), as the operator (red-team audit 34,
+               # O34-1).
+               GOVCS="*:off")
     reported = run([go, "env", "GOVERSION", "GOROOT"], env=env, check=True).stdout.splitlines()
     version, goroot = (reported + ["", ""])[:2]
     if version != SUPPORTED_GO_VERSION:

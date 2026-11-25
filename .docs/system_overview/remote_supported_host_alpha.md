@@ -7291,7 +7291,8 @@ Operator interface:
   unprivileged, in a fresh clone checked out at `<sha>` that only you and
   root can change (run `chmod -R go-w` on it if your umask lets your group
   write). It requires Go `go1.26.5` (`/usr/local/go/bin/go` by default;
-  `--go` names another), a clean checkout and an output folder outside it.
+  `--go` names another by its path, not by a name looked up on `PATH`), a
+  clean checkout and an output folder outside it.
   It builds `es`, `es-runtime-support` and `esconfigcheck` for linux/amd64
   with `CGO_ENABLED=0`, `GOTOOLCHAIN=local`, `-mod=readonly`,
   `-buildvcs=true` and `-trimpath` (which keeps the folders it builds in
@@ -7316,16 +7317,24 @@ Operator interface:
     `/usr/bin:/bin`; `GOWORK=off` (Go would otherwise read a `go.work`
     from any folder above the clone, and a `go.work` can put any folder in
     place of a dependency, unchecked by `go.sum`), `GOENV=off` (no go env
-    file), and no other `GO*` variable; git reads neither the system's nor
-    your config (`GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`),
-    so a hook in a config that `XDG_CONFIG_HOME` names never runs, and it
-    reads the objects a commit names, not what `refs/replace` puts in their
-    place (`GIT_NO_REPLACE_OBJECTS=1`); `HOME`,
-    `TMPDIR`, `GOTMPDIR`, `GOPATH` and the build cache (`GOCACHE`) are
+    file), `GOVCS=*:off` (modules come only through the module proxy: a
+    proxy that answers "not found" cannot make Go fetch a module with git
+    from a server of its choosing), and no other `GO*` variable; git
+    reads neither the system's nor your config (`GIT_CONFIG_NOSYSTEM=1`,
+    `GIT_CONFIG_GLOBAL=/dev/null`), so a hook in a config that
+    `XDG_CONFIG_HOME` names never runs, and it reads the objects a commit
+    names, not what `refs/replace` puts in their place
+    (`GIT_NO_REPLACE_OBJECTS=1`); `HOME`, `TMPDIR`, `GOTMPDIR`, `GOPATH`
+    and the build cache (`GOCACHE`) are
     fresh `0700` folders that build makes beside the payload folder for
-    this build and removes before it writes `provenance.json`, so no
+    this build and removes before it writes `provenance.json`, and when it
+    refuses (the refusal says so if the removal failed), so no
     `XDG_CACHE_HOME` or home of yours decides where Go keeps or finds
-    compiled packages, which Go reuses without checking them again;
+    compiled packages, which Go reuses without checking them again; Go's
+    telemetry is off in that `HOME` (build writes `off` to Go's mode file
+    there, as `go telemetry off` does), since with it on a go command
+    under a fresh home starts a child process of its own that writes there
+    after the command has ended (red-team audit 34);
   - the module cache is a fresh private folder too, so every build
     downloads the modules (about 60 MB of zips, about 400 MB once
     extracted) through the module proxy (`proxy.golang.org`, as the
@@ -7374,9 +7383,12 @@ under `scripts`. `check` and `apply` also read the commit's `go.mod` and
 `go.sum` from the clone's git objects (`git cat-file`, with neither the
 system's nor root's git config, no `refs/replace` and `PATH`
 `/usr/bin:/bin`), so they refuse
-unless the clone's `.git` is a folder whose content is root's alone by the
-same rule, holds the commit, and has no `commondir` or object `alternates`
-(which would make git read objects from elsewhere).
+unless the clone's `.git` is a folder (not a `.git` file, which sends git
+to the folder it names) whose content is root's alone by the same rule,
+holds the commit, and has no `commondir` or object `alternates` (which would
+make git read objects from elsewhere): git does not check an object's bytes
+against its name when it reads it, so the folder it reads decides what
+`go.mod` and `go.sum` say.
 
 The wrapper `scripts/remote_alpha_upgrade_es.sh` checks on its own, for
 every command (`build` too, since root installs what it builds), before any
@@ -7594,27 +7606,34 @@ vendored dependency, a version `go.sum` knows but `go.mod` does not
 require, a module `go.mod` does not require, a hash of another kind or
 another hash, another program, another main module or none, and against a
 clone that does not hold the commit, whose git objects others can change,
-or whose git reads objects from elsewhere, all read from a fixture
-repository whose one commit is the payload's; `build` with a fake Go
+whose git reads objects from elsewhere (object `alternates`, a `commondir`
+naming a repository that holds the commit) or whose `.git` is a file naming
+the fixture's own `.git`, all read from a fixture repository whose one
+commit is the payload's; `build` refusing `--go go`; `build` with a fake Go
 against a dirty checkout, an ignored file, build info that names another
 commit, a modified build, another program or another main module or shows
 any of those modules, a commit whose `go.mod` replaces a module, a clone,
 a `.git` file, a `go` command, a toolchain, a payload folder's parent or a
 module cache that others can change, a symbolic link in the clone, a
 clone without its own `.git`, a module cache in the clone and one that
-`go mod verify` refuses; `build` with an environment of `GO*`, `XDG_*`,
-`GIT_*`, `HOME`, `TMPDIR`, `CC` and other variables and a `PATH` whose
-first `git` leaves a mark, none of which may reach Go or git, where the
-fake Go reads back its whole environment (only the fixed settings, the
-proxy and CA variables, and private folders made for this build and gone
-after it), and with a umask of `000`; and `build` with a private copy of
-the real Go in a clone under a sticky folder that holds a `go.work` that
+`go mod verify` refuses, and a refusal after which the private folder
+cannot be removed, which the refusal names; `build` with an environment of
+`GO*`, `XDG_*`, `GIT_*`, `HOME`, `TMPDIR`, `CC` and other variables and a
+`PATH` whose first `git` leaves a mark, none of which may reach Go or git,
+where the fake Go reads back its whole environment (only the fixed
+settings, the proxy and CA variables, and private folders made for this
+build and gone after it, and Go's telemetry mode `off` for every go
+command), and with a umask of `000`; and `build` with a private copy of the
+real Go in a clone under a sticky folder that holds a `go.work` that
 names another module, with `GOWORK` and `GOFLAGS=-mod=mod` in its
 environment, and an `XDG_CONFIG_HOME` whose git config names a hook and an
 `XDG_CACHE_HOME` folder, where a plain `go build` fails on that `go.work`
 and a plain `git status` runs the hook, while `build` succeeds with a
 clean build of the commit, runs no hook and leaves that cache folder
-empty; and `esconfigcheck` built from no module but the repository's own.
+empty, and a second clone of the commit, built through a wrapper that lists
+Go's telemetry folder after each go command (only the mode file `build`
+wrote), gives the same bytes; and `esconfigcheck` built from no module but
+the repository's own.
 `TestRemoteAlphaUpgradeESMovesARealNomadToHTTPS` runs `check`, `apply`, the
 in-place check and `rollback` against a real Nomad agent started on the
 box's own `nomad.hcl` (with a data folder, free ports and the TLS paths under

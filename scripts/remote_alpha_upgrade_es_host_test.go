@@ -1357,6 +1357,32 @@ func TestRemoteAlphaUpgradeESCheckRefusesWhatItWasNotWrittenFor(t *testing.T) {
 			_ = os.MkdirAll(filepath.Dir(path), 0o755)
 			_ = os.WriteFile(path, []byte("/tmp/elsewhere/objects\n"), 0o644)
 		}, "payload", "objects/info/alternates exists, which makes git read objects from elsewhere"},
+		{"the clone's .git is a file naming another folder", func(h *upgradeHost) {
+			// As git worktree add and git clone --separate-git-dir leave it.
+			// The folder it names holds the commit and is the stand-in
+			// root's alone, and the payload is clean, so only the .git file
+			// is refused: git follows it to whatever folder it names
+			// (red-team audit 34, A34-2).
+			clone := filepath.Join(h.t.TempDir(), "clone")
+			if err := os.Mkdir(clone, 0o755); err != nil {
+				h.t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(clone, ".git"), []byte("gitdir: "+filepath.Join(h.modules, ".git")+"\n"), 0o644); err != nil {
+				h.t.Fatal(err)
+			}
+			h.modules = clone
+		}, "payload", string(filepath.Separator) + "clone" + string(filepath.Separator) + ".git is not a folder, so git would read the objects of a folder it names"},
+		{"the clone's git takes its objects from a commondir", func(h *upgradeHost) {
+			// The repository commondir names holds the commit and is the
+			// stand-in root's alone, and the payload is clean, so only the
+			// commondir is refused (red-team audit 34, A34-2).
+			common := filepath.Join(h.t.TempDir(), "common.git")
+			fixtureGit(h.t, h.modules, "clone", "-q", "--bare", h.modules, common)
+			denyGroupOtherWrite(h.t, common)
+			if err := os.WriteFile(filepath.Join(h.modules, ".git", "commondir"), []byte(common+"\n"), 0o644); err != nil {
+				h.t.Fatal(err)
+			}
+		}, "payload", string(filepath.Separator) + filepath.Join(".git", "commondir") + " exists, which makes git read objects from elsewhere"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -2231,6 +2257,8 @@ func TestRemoteAlphaUpgradeESBuildRefusals(t *testing.T) {
 	}{
 		{[]string{"build", "--out", repoPath("scripts/payload"), "--commit", upgradeTestCommit}, "outside the checkout"},
 		{[]string{"build", "--out", filepath.Join(t.TempDir(), "payload"), "--commit", "cacf5c1"}, "full lower-case 40-character SHA-1"},
+		{[]string{"build", "--out", filepath.Join(t.TempDir(), "payload"), "--commit", upgradeTestCommit, "--go", "go"},
+			"--go names the go command by its path (such as /usr/local/go/bin/go): 'go' would be a file in the current folder"},
 	}
 	for _, tc := range cases {
 		_, stderr, code := runUpgradeESPython(t, tc.args...)
@@ -2246,21 +2274,39 @@ func TestRemoteAlphaUpgradeESBuildRefusals(t *testing.T) {
 // fakeGo stands in for the Go toolchain in the build tests. It reads its
 // settings from fake-go.conf beside it (the environment build gives it
 // holds none of the test's): FAKE_GOVERSION and FAKE_GOROOT for `go env
-// GOVERSION GOROOT`, FAKE_VERIFY_EXIT for `go mod verify`, and for `go
+// GOVERSION GOROOT` (with FAKE_BREAK_WORK=1, `go env` also moves the
+// private folder that holds its HOME aside, to moved-<name>, and puts a file
+// in its place, which build then cannot remove as a folder; it refuses any
+// HOME that is not in such a folder), FAKE_VERIFY_EXIT for `go mod verify`,
+// and for `go
 // version -m` the module lines FAKE_MODULES (printf %b escapes), FAKE_PATH
 // (else the package the binary was built from), FAKE_REVISION and
 // FAKE_MODIFIED. `go build` takes only -trimpath, -buildvcs=true and -o, and
 // writes a small binary naming its package. Each
-// run writes the environment it was given to env-<command> beside it, and
-// `ls -ld` of the folders that environment names to folders-<command>.
+// run writes the environment it was given to env-<command> beside it,
+// `ls -ld` of the folders that environment names to folders-<command>, and
+// the telemetry mode file it finds where Go looks for it (os.UserConfigDir
+// under that HOME) to telemetry-<command>.
 const fakeGo = `#!/usr/bin/env bash
 set -eu
 here=$(cd "$(dirname "$0")" && pwd -P)
 . "$here/fake-go.conf"
 env | LC_ALL=C sort > "$here/env-$1"
 ls -ld "$HOME" "$TMPDIR" "$GOTMPDIR" "$GOCACHE" "$GOPATH" "$GOMODCACHE" > "$here/folders-$1" 2>&1 || true
+case "$(uname)" in Darwin) config="$HOME/Library/Application Support" ;; *) config="$HOME/.config" ;; esac
+cat "$config/go/telemetry/mode" > "$here/telemetry-$1" 2>&1 || echo "no mode file" > "$here/telemetry-$1"
 case "$1" in
-  env) [[ "$2 $3" == "GOVERSION GOROOT" ]] && printf '%s\n%s\n' "$FAKE_GOVERSION" "$FAKE_GOROOT" ;;
+  env) if [[ "${FAKE_BREAK_WORK:-}" == 1 ]]; then
+      # Only build's own private folder, found by its name, and moved, not
+      # deleted: a build that gave Go another HOME (the operator's) must
+      # fail here, never touch that home's folder.
+      work=$(dirname "$HOME")
+      case "$(basename "$work")/$(basename "$HOME")" in
+        es-upgrade-build-*/home) mv "$work" "$(dirname "$work")/moved-$(basename "$work")" && echo "not a folder" > "$work" ;;
+        *) echo "fake go: HOME $HOME is not in a private build folder" >&2; exit 2 ;;
+      esac
+    fi
+    [[ "$2 $3" == "GOVERSION GOROOT" ]] && printf '%s\n%s\n' "$FAKE_GOVERSION" "$FAKE_GOROOT" ;;
   mod) [[ "$2" == verify ]] && echo "fake verify" && exit "$FAKE_VERIFY_EXIT" ;;
   build) [[ "$2 $3 $4" == "-trimpath -buildvcs=true -o" ]] || { echo "fake go: unexpected build flags: $*" >&2; exit 2; }
     printf 'binary of %s\n' "$6" > "$5" ;;
@@ -2276,7 +2322,7 @@ esac
 // private folders build makes for one build.
 var (
 	buildGoSettings = []string{"CGO_ENABLED=0", "GIT_CONFIG_GLOBAL=" + os.DevNull, "GIT_CONFIG_NOSYSTEM=1", "GIT_NO_REPLACE_OBJECTS=1", "GOARCH=amd64",
-		"GOENV=off", "GOFLAGS=-mod=readonly", "GOOS=linux", "GOTOOLCHAIN=local", "GOWORK=off", "PATH=/usr/bin:/bin"}
+		"GOENV=off", "GOFLAGS=-mod=readonly", "GOOS=linux", "GOTOOLCHAIN=local", "GOVCS=*:off", "GOWORK=off", "PATH=/usr/bin:/bin"}
 	buildPrivateFolders = []string{"GOCACHE", "GOMODCACHE", "GOPATH", "GOTMPDIR", "HOME", "TMPDIR"}
 )
 
@@ -2516,11 +2562,40 @@ func TestRemoteAlphaUpgradeESBuildIgnoresAGoWorkAbove(t *testing.T) {
 	fixtureGit(t, filepath.Join(again, "repo"), "checkout", "-q", "--detach", head)
 	denyGroupOtherWrite(t, filepath.Join(again, "repo"))
 	againOut := filepath.Join(again, "payload")
+	// This build runs Go through a wrapper that lists, after each go
+	// command, what is in Go's telemetry folder under build's private
+	// HOME: only the mode file build wrote, so Go collected nothing and
+	// started no telemetry child (red-team audit 34, A34-1).
+	config := "$HOME/.config"
+	if runtime.GOOS == "darwin" {
+		config = "$HOME/Library/Application Support"
+	}
+	wrapDir := filepath.Join(t.TempDir(), "wrap")
+	if err := os.Mkdir(wrapDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	telemetryLog := filepath.Join(wrapDir, "telemetry.log")
+	wrapper := filepath.Join(wrapDir, "go")
+	if err := os.WriteFile(wrapper, []byte("#!/bin/sh\n'"+goBin+"' \"$@\"\nrc=$?\nls -A \""+config+"/go/telemetry\" >> '"+telemetryLog+"' 2>&1\nexit $rc\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	rebuild := exec.Command("python3", "-I", filepath.Join(again, "repo", "scripts", "internal", "remote_alpha_upgrade_es.py"),
-		"build", "--out", againOut, "--commit", head, "--go", goBin)
+		"build", "--out", againOut, "--commit", head, "--go", wrapper)
 	rebuild.Dir = again
 	if output, err := rebuild.CombinedOutput(); err != nil {
 		t.Fatalf("build in another clone: %v\n%s", err, output)
+	}
+	listed := strings.Fields(mustRead(t, telemetryLog))
+	if len(listed) == 0 {
+		t.Fatal("the wrapper around go never ran")
+	}
+	for _, name := range listed {
+		if name != "mode" {
+			t.Fatalf("Go wrote in its telemetry folder under build's HOME: %q", listed)
+		}
+	}
+	if leftovers, _ := filepath.Glob(filepath.Join(again, "es-upgrade-build-*")); len(leftovers) != 0 {
+		t.Fatalf("build left its private folder: %v", leftovers)
 	}
 	for _, name := range []string{"es", "es-runtime-support", "esconfigcheck"} {
 		first, second := mustRead(t, filepath.Join(out, name)), mustRead(t, filepath.Join(againOut, name))
@@ -2612,10 +2687,15 @@ func TestRemoteAlphaUpgradeESBuildChecksToolchainCheckoutAndBuildInfo(t *testing
 		umask       string
 		says        string
 		succeeds    bool
-		after       func(t *testing.T, goBin, out, moduleCache string)
+		// leavesWork: the refusal must name the private folder it could
+		// not remove, the one that is left.
+		leavesWork bool
+		after      func(t *testing.T, goBin, out, moduleCache string)
 	}{
 		{name: "a clean build", succeeds: true},
 		{name: "another Go", fake: map[string]string{"FAKE_GOVERSION": "go1.26.1"}, says: "the build needs go1.26.5, found go1.26.1"},
+		{name: "a refusal says when the private folder could not be removed", fake: map[string]string{"FAKE_GOVERSION": "go1.26.1", "FAKE_BREAK_WORK": "1"},
+			says: "the build needs go1.26.5, found go1.26.1; and the build's private folder ", leavesWork: true},
 		{name: "the checkout is at another commit", commit: func(string) string { return strings.Repeat("b", 40) }, says: "the checkout is at"},
 		{name: "an untracked file", prepare: func(t *testing.T, repo, goBin, out string) {
 			_ = os.WriteFile(filepath.Join(repo, "stray.txt"), []byte("x"), 0o644)
@@ -2828,6 +2908,11 @@ func TestRemoteAlphaUpgradeESBuildChecksToolchainCheckoutAndBuildInfo(t *testing
 					}
 				}
 				assertBuildEnvironment(t, goBin, out, moduleCache)
+				required := []string{"env", "build", "version"}
+				if moduleCache != "" {
+					required = append(required, "mod")
+				}
+				assertTelemetryOff(t, goBin, required...)
 				if tc.after != nil {
 					tc.after(t, goBin, out, moduleCache)
 				}
@@ -2841,10 +2926,40 @@ func TestRemoteAlphaUpgradeESBuildChecksToolchainCheckoutAndBuildInfo(t *testing
 			if _, err := os.Lstat(filepath.Join(out, "provenance.json")); err == nil {
 				t.Fatalf("a refused build wrote provenance")
 			}
-			if leftovers, _ := filepath.Glob(filepath.Join(filepath.Dir(out), "es-upgrade-build-*")); len(leftovers) != 0 {
+			leftovers, _ := filepath.Glob(filepath.Join(filepath.Dir(out), "es-upgrade-build-*"))
+			if tc.leavesWork {
+				if len(leftovers) != 1 || !strings.Contains(stderr.String(), string(filepath.Separator)+filepath.Base(leftovers[0])+" could not be removed (") {
+					t.Fatalf("the refusal does not name the private folder left behind (%v): %q", leftovers, stderr.String())
+				}
+			} else if len(leftovers) != 0 {
 				t.Fatalf("a refused build left its private folder: %v", leftovers)
 			}
+			assertTelemetryOff(t, goBin)
 		})
+	}
+}
+
+// assertTelemetryOff checks that every command the fake go ran found Go's
+// telemetry mode "off" in the private HOME, and that the commands named in
+// required ran. With telemetry on, a go command under a fresh HOME starts
+// a child in a session of its own that writes in HOME after the command
+// has exited, after build may have removed the folder (red-team audit 34,
+// A34-1).
+func assertTelemetryOff(t *testing.T, goBin string, required ...string) {
+	t.Helper()
+	ran := map[string]bool{}
+	seen, _ := filepath.Glob(filepath.Join(filepath.Dir(goBin), "telemetry-*"))
+	for _, path := range seen {
+		command := strings.TrimPrefix(filepath.Base(path), "telemetry-")
+		ran[command] = true
+		if mode := mustRead(t, path); mode != "off\n" {
+			t.Errorf("go %s ran with the telemetry mode file %q, want \"off\"", command, mode)
+		}
+	}
+	for _, command := range required {
+		if !ran[command] {
+			t.Errorf("go %s did not run", command)
+		}
 	}
 }
 
