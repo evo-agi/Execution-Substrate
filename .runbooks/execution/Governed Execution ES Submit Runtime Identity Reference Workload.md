@@ -316,10 +316,12 @@ SECRET-READ-SUCCESS:runtime-identity-ok
 
 If the later publish / prepare / submit / lifecycle helpers fail, first re-run `scripts/01_bringup.sh check`, then use the operator troubleshooting matrix in [.runbooks/system/Governed Execution ES System Bring-Up.md](../system/Governed%20Execution%20ES%20System%20Bring-Up.md) to choose the right logs, readiness checks, staging inspection path, and next action for the surfaced failure category. If you want the bounded data bundle for that same guidance, run `scripts/70_diagnostics.sh --category ...` or `scripts/70_diagnostics.sh --run-id ...`, then `scripts/71_diagnostics_summary.sh <bundle_dir|bundle.json>`.
 
-Inspect retained staging whenever exclusive run-root creation may have occurred.
-Every post-claim failure and every accepted run retains its root, including
-partial Submit failures that return no receipt, ambiguous registration, and
-terminal success. Failures before run assignment/claim still create no staging.
+## Notes
+
+- Inspect retained staging whenever exclusive run-root creation may have occurred.
+  Every post-claim failure and every accepted run retains its root, including
+  partial Submit failures that return no receipt, ambiguous registration, and
+  terminal success. Failures before run assignment/claim still create no staging.
 
 ## Test Evidence
 
@@ -332,4 +334,4 @@ terminal success. Failures before run assignment/claim still create no staging.
 - **2026-04-19:** came into this repository as `v1_submit_runtime_identity_reference.md` (PR #1).
 - **2026-11-18:** retained staging: inspect it whenever exclusive run-root creation may have occurred (PR #8).
 - **2026-11-23:** renamed to its current name (PR #37).
-- **2026-11-25:** restructured into the layout of the project's other runbooks (What is it?, What do I need?, How to use it? with numbered steps and the output to expect, Test Evidence, History). Packaging the workload moved from the former section "Reference Workload" to step 1, and the former section "Runtime-Identity Contract In This Legacy Reference Path" is now under "What is it?"; the bring-up runbook was renamed to `Governed Execution ES System Bring-Up.md`. No command changed.
+- **2026-11-25:** restructured into the layout of the project's other runbooks (What is it?, What do I need?, How to use it? with numbered steps and the output to expect, Notes, Test Evidence, History). Packaging the workload moved from the former section "Reference Workload" to step 1, and the former section "Runtime-Identity Contract In This Legacy Reference Path" is now under "What is it?"; the bring-up runbook was renamed to `Governed Execution ES System Bring-Up.md`. The note on inspecting retained staging is under Notes rather than under step 7, because it applies after a success too. No command changed.
