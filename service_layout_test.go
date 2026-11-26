@@ -24,10 +24,11 @@ import (
 //	<svc>/<domain>/   packages named for what they do
 //	<svc>/internal/   packages private to the service
 //
-// Code of one service reaches another service only through that service's
-// contract package. A test may also start another service in-process through
-// its app and config packages. Anything else is listed by file in
-// layoutCrossServiceExceptions, with its reason.
+// Go code lives only in the service directories, cmd/, internal/ and
+// scripts/. Code of one service reaches another service only through that
+// service's contract package. A test may also start another service
+// in-process through its app and config packages. Anything else is listed by
+// file in layoutCrossServiceExceptions, with its reason.
 
 // layoutServices are the services of this repository.
 var layoutServices = []string{"ags", "ars", "cgs", "egs", "es"}
@@ -42,6 +43,10 @@ var layoutGenericPackageNames = map[string]bool{
 	"model": true, "models": true, "shared": true, "types": true, "util": true,
 	"utils": true,
 }
+
+// layoutOtherTopDirectories are the top-level directories besides the
+// services that may hold Go code.
+var layoutOtherTopDirectories = map[string]bool{"cmd": true, "internal": true, "scripts": true}
 
 // layoutCommandService names, for each program under cmd/, the one service
 // whose packages it may import.
@@ -130,6 +135,8 @@ func serviceLayoutViolations(module string, files map[string][]string, exception
 			if _, known := layoutCommandService[command]; !known {
 				violations = append(violations, fmt.Sprintf("%s: program cmd/%s is not in layoutCommandService", file, command))
 			}
+		case len(segments) >= 2 && !layoutOtherTopDirectories[segments[0]]:
+			violations = append(violations, fmt.Sprintf("%s: top-level directory %s/ holds Go code but is not a service in layoutServices, cmd/, internal/ or scripts/", file, segments[0]))
 		}
 		test := strings.HasSuffix(file, "_test.go")
 		contract := owner != "" && segments[1] == "contract"
@@ -179,6 +186,11 @@ func serviceLayoutViolations(module string, files map[string][]string, exception
 		}
 	}
 
+	for command, service := range layoutCommandService {
+		if !isService[service] {
+			violations = append(violations, fmt.Sprintf("program cmd/%s belongs to %s, which is not in layoutServices", command, service))
+		}
+	}
 	for _, service := range layoutServices {
 		for _, required := range layoutRequiredPackages {
 			if !topPackages[service][required] {
@@ -378,6 +390,93 @@ func TestServiceLayoutRefusals(t *testing.T) {
 			}
 		})
 	}
+
+	// Each entry of the rule lists is held here twice: the lists must equal
+	// these, and every entry is shown to refuse what it names. Dropping an
+	// entry from a list, which would let a rule lapse without failing any
+	// other test, fails here.
+	wantServices := []string{"ags", "ars", "cgs", "egs", "es"}
+	wantRequired := []string{"api", "app", "config"}
+	wantGeneric := []string{"common", "helper", "helpers", "lib", "misc", "model", "models", "shared", "types", "util", "utils"}
+	gotGeneric := make([]string, 0, len(layoutGenericPackageNames))
+	for name := range layoutGenericPackageNames {
+		gotGeneric = append(gotGeneric, name)
+	}
+	sort.Strings(gotGeneric)
+	for _, list := range []struct {
+		name      string
+		got, want []string
+	}{
+		{"layoutServices", layoutServices, wantServices},
+		{"layoutRequiredPackages", layoutRequiredPackages, wantRequired},
+		{"layoutGenericPackageNames", gotGeneric, wantGeneric},
+	} {
+		if strings.Join(list.got, " ") != strings.Join(list.want, " ") {
+			t.Fatalf("%s is %q, want %q: change the rule and this test together", list.name, list.got, list.want)
+		}
+	}
+	refuses := func(t *testing.T, files map[string][]string, want string) {
+		t.Helper()
+		got := serviceLayoutViolations(module, files, nil)
+		for _, violation := range got {
+			if strings.Contains(violation, want) {
+				return
+			}
+		}
+		t.Fatalf("got %q, want a violation containing %q", got, want)
+	}
+	for _, service := range wantServices {
+		other := "es"
+		if service == "es" {
+			other = "ars"
+		}
+		t.Run("service "+service+" reached from production code", func(t *testing.T) {
+			files := valid()
+			files[service+"/store/store.go"] = nil
+			files[other+"/zz/zz.go"] = []string{"example/" + service + "/store"}
+			refuses(t, files, other+"/zz/zz.go imports "+service+"/store: another service")
+		})
+		t.Run("service "+service+" reached from a test", func(t *testing.T) {
+			files := valid()
+			files[service+"/store/store.go"] = nil
+			files[other+"/zz/zz_test.go"] = []string{"example/" + service + "/store"}
+			refuses(t, files, other+"/zz/zz_test.go imports "+service+"/store: another service")
+		})
+		t.Run("service "+service+" with a generic package name", func(t *testing.T) {
+			files := valid()
+			files[service+"/util/util.go"] = nil
+			refuses(t, files, service+`/util/util.go: package directory "util" has a generic name`)
+		})
+		for _, required := range wantRequired {
+			t.Run("service "+service+" without "+required, func(t *testing.T) {
+				files := valid()
+				for file := range files {
+					if strings.HasPrefix(file, service+"/"+required+"/") {
+						delete(files, file)
+					}
+				}
+				refuses(t, files, service+" has no "+required+"/ package")
+			})
+		}
+	}
+	for _, name := range wantGeneric {
+		t.Run("generic name "+name, func(t *testing.T) {
+			files := valid()
+			files["egs/"+name+"/a.go"] = nil
+			refuses(t, files, fmt.Sprintf("package directory %q has a generic name", name))
+		})
+	}
+	t.Run("a top-level directory that is not a service", func(t *testing.T) {
+		files := valid()
+		files["pkg/thing/thing.go"] = nil
+		refuses(t, files, "pkg/thing/thing.go: top-level directory pkg/ holds Go code")
+	})
+	t.Run("a program of a service that is not listed", func(t *testing.T) {
+		saved := layoutCommandService["es-workload-api-mock"]
+		layoutCommandService["es-workload-api-mock"] = "zz"
+		defer func() { layoutCommandService["es-workload-api-mock"] = saved }()
+		refuses(t, valid(), "program cmd/es-workload-api-mock belongs to zz, which is not in layoutServices")
+	})
 
 	// A listed exception allows exactly its own file and import.
 	files := valid()
