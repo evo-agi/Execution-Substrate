@@ -936,9 +936,10 @@ F1 - Named Workload Identities And Workload Grants:
   owner and not yet implemented. The decision is section 11 of
   `.docs/system_overview/runtime_identity_handoff.md`; the workload grants it
   adds to C6 are section 5B of `.docs/execution_lifecycle/contracts.md`.
-- It closes two gaps: every workload run shares one SPIFFE ID and one Vault
-  role, so any workload can read any other workload's secrets; and the
-  publisher's signed `network_access` alone decides network access.
+- It closes two gaps that existed before F1: every workload run shared one
+  SPIFFE ID and one Vault role, so any workload could read any other
+  workload's secrets; and the publisher's signed `network_access` alone
+  decided network access.
 - Identity: one identity per named workload,
   `spiffe://execution.internal/workload/<name>`, with its own SPIRE entry
   (Docker label selector plus `unix:uid:0`) and its own Vault role and policy.

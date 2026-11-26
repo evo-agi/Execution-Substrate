@@ -233,14 +233,14 @@ current-behavior text to the new rule in the same change.
 
 ### 11.1 What F1 changes and why
 
-Today:
+Before F1:
 
-- every workload run receives the same SPIFFE ID,
-  `spiffe://execution.internal/workload`, and logs in to Vault with one
-  shared role, so any workload can read any other workload's secrets;
-- the SPIRE registration for that ID matches any root process on the host
+- every workload run received the same SPIFFE ID,
+  `spiffe://execution.internal/workload`, and logged in to Vault with one
+  shared role, so any workload could read any other workload's secrets;
+- the SPIRE registration for that ID matched any root process on the host
   (`unix:uid:0` plus `unix:gid:0`), inside a container or not;
-- the publisher's signed `network_access` alone decides whether a run gets a
+- the publisher's signed `network_access` alone decided whether a run got a
   network.
 
 F1 replaces this with:

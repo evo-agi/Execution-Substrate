@@ -27,6 +27,14 @@ func TestWorkstreamFF1NamedWorkloadIdentityDecisionIsDocumented(t *testing.T) {
 		"Each of those pull requests moves the matching current-behavior text to the new rule in the same change.",
 	)
 
+	// What F1 changes is stated against the time before F1, so landing a
+	// part of F1 leaves it true.
+	assertContainsAll(t, "F1 starting point", f1,
+		"Before F1: - every workload run received the same SPIFFE ID, `spiffe://execution.internal/workload`, and logged in to Vault with one shared role, so any workload could read any other workload's secrets;",
+		"- the SPIRE registration for that ID matched any root process on the host (`unix:uid:0` plus `unix:gid:0`), inside a container or not;",
+		"- the publisher's signed `network_access` alone decided whether a run got a network.",
+	)
+
 	assertContainsAll(t, "F1 names and SPIFFE ID layout", f1,
 		"A workload identity name is a single SPIFFE path segment of 1 to 63 characters from `a-z`, `0-9` and `-`, starting with a letter or a digit.",
 		"A named identity is `spiffe://execution.internal/workload/<name>`.",
@@ -129,6 +137,7 @@ func TestWorkloadGrantsContractIsDocumented(t *testing.T) {
 
 	assertContainsAll(t, "workload grants temporary edge and its removal condition", grants,
 		"While any rule grants the lane `unrestricted`, readiness reports `workload_egress_unrestricted=true`. This is a `Temporary compatibility edge`",
+		"a granted run reaches the internet without an egress filter of its own, through the host firewall on the Remote Supported Host Alpha box and through the full `bridge` network on supported-local hosts.",
 		"WI-4 removes the value, and from then on ES startup refuses a configuration that uses it.",
 	)
 
@@ -159,6 +168,7 @@ func TestWorkstreamFF1IsPlannedAndPointedTo(t *testing.T) {
 
 	assertContainsAll(t, "PLANS Workstream F F1", f1,
 		"F1 is the next behavior-changing Workstream F slice, approved by the project owner and not yet implemented. The decision is section 11 of `.docs/system_overview/runtime_identity_handoff.md`; the workload grants it adds to C6 are section 5B of `.docs/execution_lifecycle/contracts.md`.",
+		"It closes two gaps that existed before F1: every workload run shared one SPIFFE ID and one Vault role, so any workload could read any other workload's secrets; and the publisher's signed `network_access` alone decided network access.",
 		"`spiffe://execution.internal/workload/<name>`, with its own SPIRE entry (Docker label selector plus `unix:uid:0`) and its own Vault role and policy.",
 		"The entry that gives `spiffe://execution.internal/workload` to every root process on the host is removed. ES picks the name from owner grant rules and holds no SPIRE or Vault administrative access; publishers request no name.",
 		"Until lanes land, the only lane is `unrestricted`, a `Temporary compatibility edge` that readiness reports as `workload_egress_unrestricted=true`; its removal condition is WI-4.",
@@ -176,6 +186,11 @@ func TestWorkstreamFF1IsPlannedAndPointedTo(t *testing.T) {
 	)
 
 	contractsRaw := mustRead(t, ".docs/system_overview/contracts.md")
+	sharedKernel := compactDocSection(t, contractsRaw, "## 3. Shared Cross-Service Kernel", "## 3A. Caller Authentication Contract")
+	assertContainsAll(t, "shared kernel publication claim read by workload grants", sharedKernel,
+		"`claims.package.publication` remains AGS-owned publish-time meaning carried inside the signed record; ES must not treat those publication claims as ES public admission grammar.",
+		"From WI-2, workload grants (`.docs/execution_lifecycle/contracts.md`, section 5B) read one of them, `claims.package.publication.invoker.principal`, as an exact-match fact against ES configuration; that read adds nothing to ES request or response grammar, and no other publication claim reaches ES admission.",
+	)
 	callerAuth := compactDocSection(t, contractsRaw, "## 3A. Caller Authentication Contract", "## 4. Workload-Zone Vault Runtime-Config Contract")
 	assertContainsAll(t, "caller authentication F1 rule", callerAuth,
 		"Workstream F slice F1 adds one rule to this section when WI-3a lands",
