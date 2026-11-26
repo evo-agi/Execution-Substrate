@@ -147,9 +147,25 @@ func TestGithubHeadingAnchorsFollowGithubRules(t *testing.T) {
 // name.
 const claimLedgerPath = ".docs/commercialization/claim-ledger.md"
 
-// claimLedgerLineCitation is a citation of this repository by line in the
-// claim ledger: "ES" and a code span that ends in ":<line>" or "#L<line>".
-var claimLedgerLineCitation = regexp.MustCompile("\\bES\\s+`[^`\\n]+(?::|#L)\\d[^`\\n]*`")
+// claimLedgerESCitation is one citation of this repository in a line of the
+// claim ledger: from "ES" to the next ";", the end of the table cell, the
+// start of a Control Plane or Infrastructure Manager citation ("CP `" or
+// "IM `"), or the end of the line.
+var claimLedgerESCitation = regexp.MustCompile("\\bES\\s[^;|]*?(?:;|\\||\\b(?:CP|IM)\\s+`|$)")
+
+// claimLedgerLineSpan is a code span that cites by line: a path that ends in
+// ":<line>" or "#L<line>", or only a line number or range such as `51-82`.
+var claimLedgerLineSpan = regexp.MustCompile("`(?:[^`\\n]*(?::|#L)\\d[^`\\n]*|L?\\d+(?:\\s*[-–]\\s*L?\\d+)?)`")
+
+// claimLedgerLineCitations returns the code spans in a line of the claim
+// ledger that cite this repository by line.
+func claimLedgerLineCitations(line string) []string {
+	var found []string
+	for _, citation := range claimLedgerESCitation.FindAllString(line, -1) {
+		found = append(found, claimLedgerLineSpan.FindAllString(citation, -1)...)
+	}
+	return found
+}
 
 // TestClaimLedgerCitesThisRepositoryBySection keeps the claim ledger's
 // citations of this repository on section headings: its lines move.
@@ -157,7 +173,7 @@ var claimLedgerLineCitation = regexp.MustCompile("\\bES\\s+`[^`\\n]+(?::|#L)\\d[
 func TestClaimLedgerCitesThisRepositoryBySection(t *testing.T) {
 	ledger := mustRead(t, claimLedgerPath)
 	for i, line := range strings.Split(ledger, "\n") {
-		if match := claimLedgerLineCitation.FindString(line); match != "" {
+		for _, match := range claimLedgerLineCitations(line) {
 			t.Errorf("%s:%d cites this repository by line (%s); link the section heading instead", claimLedgerPath, i+1, match)
 		}
 	}
@@ -167,14 +183,15 @@ func TestClaimLedgerCitesThisRepositoryBySection(t *testing.T) {
 			continue
 		}
 		for _, cell := range strings.Split(strings.Trim(line, "|"), "|") {
-			if cell = strings.TrimSpace(cell); numericCell.MatchString(cell) && lineRange.MatchString(cell) {
+			if cell = strings.TrimSpace(cell); numericCell.MatchString(cell) || lineRange.MatchString(cell) || claimLedgerLineSpan.MatchString(cell) {
 				t.Errorf("%s source baseline cites this repository by line: %q", claimLedgerPath, line)
 			}
 		}
 	}
 	assertContainsAll(t, "claim ledger citation rule", compactText(ledger),
 		"References into this repository cite sections, not lines, because lines move with every edit.",
-		"at commit `6300b9591f2f5443a2bd61e05134fd5a425ad3bf`, where each range covered whole sections",
+		"They were mapped from the 53 line ranges this ledger cited when it was written, at commit `6300b9591f2f5443a2bd61e05134fd5a425ad3bf`: each range is linked to the whole sections that contain it, named by their current headings.",
+		"Nine of the distinct ranges stopped inside a section, so their links are wider than the lines first cited, and a claim that cites one of them rests only on the part the range covered.",
 		"The Infrastructure Manager ranges match its commit `3c9d21b03fa5756ca853ecaaf7b0314ade647fea`",
 		"No Control Plane commit was recorded",
 	)
@@ -187,19 +204,30 @@ func TestClaimLedgerCitesThisRepositoryBySection(t *testing.T) {
 		"ES `README.md:1`",
 		"| ES `.docs/execution_lifecycle/contracts.md:77-158`; CP x |",
 		"ES `.docs/mvp.md#L40`",
+		"ES [`x.md` § A](x.md#a), `51-82`",
+		"| ES [`x.md` § A](x.md#a) and [§ B](x.md#b), `L70` |",
+		"ES [`x.md` § A](x.md#a) (CP compatibility), `160-228`; CP `README.md:1-12`",
 	} {
-		if !claimLedgerLineCitation.MatchString(line) {
-			t.Errorf("claimLedgerLineCitation misses %q", line)
+		if len(claimLedgerLineCitations(line)) == 0 {
+			t.Errorf("claimLedgerLineCitations misses %q", line)
 		}
 	}
 	for _, line := range []string{
 		"CP `README.md:1-12`",
-		"IM `.docs/commands.md:545-631`",
+		"IM `.docs/commands.md:545-631`, `118-149`",
 		"ES [`.docs/mvp.md` § Explicit non-claims](../mvp.md#explicit-non-claims)",
 		"ES `AGENTS.md` section 12",
+		"ES [`x.md` § A](x.md#a); CP `README.md:1-12`, `118-149`",
+		"| ES [`x.md` § A](x.md#a) | IM `.docs/commands.md:545-631`, `296` |",
+		"ES [`x.md` § A](x.md#a) and IM `.docs/commands.md:545-631`, `296`",
 	} {
-		if claimLedgerLineCitation.MatchString(line) {
-			t.Errorf("claimLedgerLineCitation refuses %q", line)
+		if found := claimLedgerLineCitations(line); len(found) > 0 {
+			t.Errorf("claimLedgerLineCitations refuses %q (%q)", line, found)
+		}
+	}
+	for _, cell := range []string{"`229`", "Lines `1-229`", "1-229", "`L12`, `L40-L68`"} {
+		if !numericCell.MatchString(cell) && !lineRange.MatchString(cell) && !claimLedgerLineSpan.MatchString(cell) {
+			t.Errorf("the source baseline check misses the cell %q", cell)
 		}
 	}
 }
