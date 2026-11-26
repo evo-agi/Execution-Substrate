@@ -820,8 +820,11 @@ Grants live in ES deployment configuration at
 - `egress_lanes` lists the lanes, each with a `name` under the same rule as
   identity names and a Boolean `reaches_workload_vault`. Until WI-4, the only
   accepted lane is `unrestricted` with `reaches_workload_vault=true`, realized
-  as the current `bridge` network mode under the host firewall of
-  `.docs/system_overview/remote_supported_host_alpha.md`.
+  as the current `bridge` network mode. On the Remote Supported Host Alpha
+  box that network sits under the host firewall of
+  `.docs/system_overview/remote_supported_host_alpha.md`. Supported-local
+  hosts have no host firewall, so there `unrestricted` is the full `bridge`
+  network, which reaches the local network and host services.
 - Each rule has:
   - `id`: unique, at most 64 bytes, starting and ending with an ASCII letter
     or digit, and containing only ASCII letters, digits, dot, underscore and
@@ -831,7 +834,10 @@ Grants live in ES deployment configuration at
     contract in `.docs/system_overview/contracts.md`, section 3A, accepts,
     written in that form), `signer_key_id`, `artifact_type`, and
     `runtime_profile` (the effective profile name, `static-script/default`
-    when the request names none);
+    when the request names none). The publisher principal is the one
+    `claims.package.publication` claim ES admission reads, and only as this
+    match fact: it does not become ES request or response grammar, and no
+    other publication claim reaches admission;
   - two optional grant fields: `workload_identity`, a name from
     `workload_identities`, and `egress_lane`, a name from `egress_lanes`.
 - ES startup refuses: more than 32 rules; a duplicate rule ID; two rules with
@@ -880,9 +886,14 @@ Rules for these policies:
 - Every delivery that can cause an effect evaluates the grants again with the
   configuration ES runs with at that time, and refuses when a grant was
   removed or narrowed. Read-only receipt recovery does not evaluate them.
+  This settles, for workload grants only, the question that
+  `.docs/execution_lifecycle/submit_idempotency_correlation_and_recovery.md`
+  section 11 leaves open for mutable admission policy.
 - While any rule grants the lane `unrestricted`, readiness reports
   `workload_egress_unrestricted=true`. This is a `Temporary compatibility
-  edge`: a granted run reaches the internet through the host firewall only.
+  edge`: a granted run reaches the internet without an egress filter of its
+  own, through the host firewall on the Remote Supported Host Alpha box and
+  through the full `bridge` network on supported-local hosts.
   WI-4 removes the value, and from then on ES startup refuses a configuration
   that uses it.
 
@@ -898,8 +909,9 @@ Rules for these policies:
 - Signed `network_access` stays the publisher's least-privilege request. A
   grant never gives a network to a run that did not request one.
 - Grants are not a sandbox, an egress filter or a firewall. Until WI-4, a
-  granted run's network is the current `bridge` network under the host
-  firewall.
+  granted run's network is the current `bridge` network: under the host
+  firewall on the Remote Supported Host Alpha box, and without one on
+  supported-local hosts.
 
 ## 6. Submit contract
 

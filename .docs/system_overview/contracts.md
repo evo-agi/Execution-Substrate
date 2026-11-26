@@ -70,7 +70,7 @@ Workstream A decision explicitly classifies it that way.
   `payload_digest` identifies payload bytes or payload content identity, while
   `artifact_digest` identifies artifact/package identity as currently derived
   and documented.
-- `claims.package.publication` remains AGS-owned publish-time meaning carried inside the signed record; ES must not treat those publication claims as ES public admission grammar.
+- `claims.package.publication` remains AGS-owned publish-time meaning carried inside the signed record; ES must not treat those publication claims as ES public admission grammar. From WI-2, workload grants (`.docs/execution_lifecycle/contracts.md`, section 5B) read one of them, `claims.package.publication.invoker.principal`, as an exact-match fact against ES configuration; that read adds nothing to ES request or response grammar, and no other publication claim reaches ES admission.
 - `claims.admission.authorization` is intentionally limited to `derivation_spec_digest` and `output_id`.
 - `claims.admission.execution` is intentionally limited to runtime env allowlist, required capabilities, `target_platform`, and `network_access`.
 

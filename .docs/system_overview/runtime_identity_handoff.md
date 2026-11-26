@@ -331,9 +331,11 @@ F1 replaces this with:
   container, and the fixed `10000:10000` workload process do not.
 - The broad entry that gives `spiffe://execution.internal/workload` to every
   root process is removed in the same change. Readiness refuses
-  `submit-ready` while any `workload` entry uses only `unix` selectors, lacks
-  the label selector, or names an identity that ES configuration does not
-  list.
+  `submit-ready` while any `workload` entry uses only `unix` selectors or
+  lacks the label selector, or while the registered names differ from the
+  names ES configuration lists, in either direction: an entry that names an
+  identity ES configuration does not list, and a listed identity with no
+  registered entry, Vault role or Vault policy.
 - The SPIRE agent enables the Docker workload attestor. That attestor reads
   container labels through the Docker API, which is root-equivalent access.
   How the agent gets that access, and how it is limited, is decided and
@@ -376,21 +378,28 @@ open.
   the workload still runs as fixed `10000:10000` with no supplemental groups.
 - SPIRE issues JWT-SVIDs and Vault issues tokens, secrets and leases. ES
   brokers none of them.
-- The ES public execution request and response DTOs,
-  `GET /v1/executions:contract`, `outcome_evidence`, CP compatibility, and M6
-  support-bundle inputs keep their shapes. Admission gains two refusal reason
-  codes, `network_access_not_granted` and `workload_identity_not_granted`, in
-  the existing redacted error envelope.
-- `authority_handoff` stays non-secret evidence. For a run with an identity
+- The ES public execution request DTO, the response DTOs apart from their
+  `authority_handoff` field, `GET /v1/executions:contract`,
+  `outcome_evidence`, and M6 support-bundle inputs keep their shapes.
+  Admission gains two refusal reason codes, `network_access_not_granted` and
+  `workload_identity_not_granted`, in the existing redacted error envelope.
+- `authority_handoff` stays non-secret evidence, and F1 changes its shape.
+  Its field names are a temporary compatibility edge that CP and IM consume
+  (`.docs/execution_lifecycle/es_execution_admission_model.md`, section 4C),
+  so the identity pull request changes them only with a documented
+  replacement handoff vocabulary and an explicit compatibility and
+  versioning plan, for CP and IM consumers alike. For a run with an identity
   it keeps every current field, `workload_vault.auth_role` names that name's
   `workload-<name>` role, and `identity_handoff` gains the non-secret fields
   `workload_identity` (the name) and `spiffe_id` (the expected ID string). For
-  a run without an identity, `identity_handoff.mode` is `none`, and the fields
-  that describe an endpoint or a Vault login are absent. The identity pull
-  request records the exact shape, including `authority_path`, in
+  a run without an identity, including a `static-script/default` run whose
+  grant names no identity, `identity_handoff.mode` is `none`, and the fields
+  that describe an endpoint or a Vault login are absent: that run's response
+  loses fields it carries today. The identity pull request records the exact
+  shape, including `authority_path`, in
   `.docs/execution_lifecycle/contracts.md` before it changes code. A
-  `control-plane-normal-shell/v1` run always has an identity, so every field
-  CP reads today stays present.
+  `control-plane-normal-shell/v1` run always has an identity, so it keeps
+  every field it carries today.
 
 ### 11.10 Delivery
 
