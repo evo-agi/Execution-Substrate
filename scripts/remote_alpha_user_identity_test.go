@@ -111,7 +111,10 @@ sys.exit(mod.main(sys.argv[3:], mod.Layout(**json.load(open(sys.argv[2])))))
 // directory: <unit>.fail-next-restart makes the next restart exit 1 once;
 // <unit>.dead-after-next-restart makes the next restart succeed but leave
 // the unit failed, once; <unit>.fail-restarts makes every restart exit 1;
-// <unit>.flapping gives the unit a new PID at every show.
+// <unit>.flapping gives the unit a new PID at every show;
+// <unit>.block-after-next-restart, which holds a path, lets the next restart
+// succeed and then moves that file to <path>.aside and puts a directory in its
+// place, once, so that a later rename onto the path fails.
 const userIdentityFakeSystemctl = `#!/usr/bin/python3
 import json, os, sys
 STATE = os.path.dirname(os.path.abspath(__file__))
@@ -135,6 +138,12 @@ if cmd == "restart":
         open(pidfile, "w").write("0")
         sys.exit(0)
     open(pidfile, "w").write(str(max(pid, 100) + 1))
+    if os.path.exists(marker("block-after-next-restart")):
+        blocked = open(marker("block-after-next-restart")).read()
+        os.unlink(marker("block-after-next-restart"))
+        os.rename(blocked, blocked + ".aside")
+        os.mkdir(blocked)
+        open(os.path.join(blocked, "blocker"), "w").close()
     sys.exit(0)
 if cmd == "show":
     if pid and os.path.exists(marker("flapping")):
@@ -422,6 +431,44 @@ func (b *userIdentityBox) clearSystemctlLog() {
 
 func (b *userIdentityBox) marker(unit, name string) {
 	writeUserIdentityFile(b.t, filepath.Join(b.units, unit+"."+name), nil, 0o644)
+}
+
+// blockRegistryAfterRestart makes the registry impossible to replace right
+// after unit's next successful restart; unblockRegistry puts it back.
+func (b *userIdentityBox) blockRegistryAfterRestart(unit string) {
+	writeUserIdentityFile(b.t, filepath.Join(b.units, unit+".block-after-next-restart"), []byte(b.registryPath()), 0o644)
+}
+
+func (b *userIdentityBox) unblockRegistry() {
+	b.t.Helper()
+	path := b.registryPath()
+	if err := os.Remove(filepath.Join(path, "blocker")); err != nil {
+		b.t.Fatal(err)
+	}
+	if err := os.Remove(path); err != nil {
+		b.t.Fatal(err)
+	}
+	if err := os.Rename(path+".aside", path); err != nil {
+		b.t.Fatal(err)
+	}
+}
+
+func (b *userIdentityBox) registryPath() string {
+	return filepath.Join(b.userCADir, "registry.json")
+}
+
+// registryState reads the registry state of name.
+func (b *userIdentityBox) registryState(name string) string {
+	b.t.Helper()
+	var registry struct {
+		Names map[string]struct {
+			State string `json:"state"`
+		} `json:"names"`
+	}
+	if err := json.Unmarshal(mustReadUserIdentityFile(b.t, b.registryPath()), &registry); err != nil {
+		b.t.Fatal(err)
+	}
+	return registry.Names[name].State
 }
 
 // snapshot records every entry under the box's /etc/execution-substrate:
@@ -858,12 +905,19 @@ func TestUserIdentityFlowThroughRealESAndAGSHandlers(t *testing.T) {
 	if entry["state"] != "revoked" || entry["spiffe_id"] != "spiffe://execution.internal/user/claude" {
 		t.Fatalf("registry entry: %v", entry)
 	}
-	var modes []string
+	// revoke records the name revoked before it changes AGS and ES, then the
+	// change with its backup; revoke --remove-ca on the revoked name records
+	// only its change.
+	var events []string
 	for _, e := range registry["events"].([]any) {
-		modes = append(modes, e.(map[string]any)["mode"].(string))
+		event := e.(map[string]any)
+		events = append(events, event["mode"].(string)+":"+event["detail"].(string))
 	}
-	if got := strings.Join(modes, ","); got != "init-ca,issue,allow,revoke,revoke" {
-		t.Fatalf("registry events %q", got)
+	issuedSerial, _ := entry["certificates"].([]any)[0].(map[string]any)["serial"].(string)
+	want := "init-ca:created the user CA,issue:serial " + issuedSerial + ",allow:user CA installed," +
+		"revoke:marked revoked,revoke:allowlists updated,revoke:user CA removed"
+	if got := strings.Join(events, ","); got != want {
+		t.Fatalf("registry events %q, want %q", got, want)
 	}
 }
 
@@ -995,7 +1049,7 @@ func TestUserIdentityApplyRollsBackToTheExactBytes(t *testing.T) {
 		})
 	}
 
-	t.Run("revoke that fails says the name may still be allowed", func(t *testing.T) {
+	t.Run("revoke that fails says the name may still be allowed and stays revoked", func(t *testing.T) {
 		t.Parallel()
 		b := newUserIdentityBox(t)
 		b.mint("claude")
@@ -1003,10 +1057,76 @@ func TestUserIdentityApplyRollsBackToTheExactBytes(t *testing.T) {
 		before := b.snapshot()
 		b.marker("es.service", "dead-after-next-restart")
 		run := b.box("revoke", "--name", "claude", "--apply")
-		if run.code != 1 || !strings.Contains(run.message(), "did not take effect") {
+		if run.code != 1 || run.result() != "failed" || !strings.Contains(run.message(), "did not take effect") ||
+			!strings.Contains(run.message(), "run revoke again") {
 			t.Fatalf("failed revoke: %s", run)
 		}
-		requireSameUserIdentitySnapshot(t, withoutUserIdentityBackups(before), withoutUserIdentityBackups(b.snapshot()), "a rolled-back revoke")
+		// The service files are back; only the registry changed, and it
+		// marks the name revoked, so allow refuses it.
+		after := withoutUserIdentityBackups(b.snapshot())
+		registry, _ := filepath.Rel(b.etc, b.registryPath())
+		delete(after, registry)
+		beforeOthers := withoutUserIdentityBackups(before)
+		delete(beforeOthers, registry)
+		requireSameUserIdentitySnapshot(t, beforeOthers, after, "a rolled-back revoke")
+		if got := b.registryState("claude"); got != "revoked" {
+			t.Fatalf("registry state %q after a failed revoke, want revoked", got)
+		}
+		if again := b.box("allow", "--name", "claude", "--apply"); again.code != 1 || !strings.Contains(again.message(), "was revoked") {
+			t.Fatalf("allow after a failed revoke: %s", again)
+		}
+		// Running revoke again finishes it.
+		b.mustOK(b.box("revoke", "--name", "claude", "--apply"), "revoke again")
+		if strings.Contains(string(mustReadUserIdentityFile(t, b.esConfig)), `"user/claude"`) ||
+			strings.Contains(string(mustReadUserIdentityFile(t, b.agsConfig)), `"user/claude"`) {
+			t.Fatal("user/claude is still allowed after revoke ran again")
+		}
+	})
+
+	t.Run("allow whose registry save fails is rolled back", func(t *testing.T) {
+		t.Parallel()
+		b := newUserIdentityBox(t)
+		b.mint("claude")
+		before := b.snapshot()
+		b.clearSystemctlLog()
+		b.blockRegistryAfterRestart("es.service")
+		run := b.box("allow", "--name", "claude", "--apply")
+		if run.code != 1 || run.result() != "failed" || !strings.Contains(run.message(), "could not save") ||
+			!strings.Contains(run.message(), "rolled back") {
+			t.Fatalf("allow with a failing registry save: %s", run)
+		}
+		if got := strings.Join(b.restarts(), ","); got != "ags.service,es.service,ags.service,es.service" {
+			t.Fatalf("restarts %q, want both units restarted again by the rollback", got)
+		}
+		b.unblockRegistry()
+		requireSameUserIdentitySnapshot(t, withoutUserIdentityBackups(before), withoutUserIdentityBackups(b.snapshot()), "an allow whose registry save failed")
+	})
+
+	t.Run("revoke records the name revoked before AGS and ES change", func(t *testing.T) {
+		t.Parallel()
+		b := newUserIdentityBox(t)
+		b.mint("claude")
+		b.mustOK(b.box("allow", "--name", "claude", "--apply"), "allow")
+		b.clearSystemctlLog()
+		b.blockRegistryAfterRestart("es.service")
+		run := b.box("revoke", "--name", "claude", "--apply")
+		if run.code != 1 || run.result() != "attention" || !strings.Contains(run.message(), "is revoked in the registry and at AGS and ES") {
+			t.Fatalf("revoke whose last registry save fails: %s", run)
+		}
+		if got := strings.Join(b.restarts(), ","); got != "ags.service,es.service" {
+			t.Fatalf("restarts %q, want no rollback", got)
+		}
+		b.unblockRegistry()
+		if got := b.registryState("claude"); got != "revoked" {
+			t.Fatalf("registry state %q, want revoked", got)
+		}
+		if strings.Contains(string(mustReadUserIdentityFile(t, b.esConfig)), `"user/claude"`) ||
+			strings.Contains(string(mustReadUserIdentityFile(t, b.agsConfig)), `"user/claude"`) {
+			t.Fatal("user/claude is still allowed")
+		}
+		if again := b.box("allow", "--name", "claude", "--apply"); again.code != 1 || !strings.Contains(again.message(), "was revoked") {
+			t.Fatalf("allow after revoke: %s", again)
+		}
 	})
 }
 

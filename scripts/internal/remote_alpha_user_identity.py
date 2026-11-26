@@ -1382,6 +1382,12 @@ class UserCA:
         data = (json.dumps(self.registry, indent=2, sort_keys=True) + "\n").encode("utf-8")
         atomic_write(self.registry_path, data, 0o600)
 
+    def save_registry_or_fail(self) -> None:
+        try:
+            self.save_registry()
+        except OSError as exc:
+            raise Failure(f"could not save {self.registry_path}: {exc.strerror}") from None
+
     def event(self, mode: str, name: str, detail: str, backup: str = "") -> None:
         entry = {"at": iso_utc(utc_now()), "mode": mode, "name": name, "detail": detail}
         if backup:
@@ -1486,9 +1492,10 @@ class Box:
         fsync_dir(self.ca.backups_dir)
         return directory
 
-    def apply(self, r: Runner, rep: Report, mode: str, name: str) -> str:
+    def apply(self, r: Runner, rep: Report, mode: str, name: str, commit=None) -> str:
         """Back up, write the changed files, restart the affected units in
-        order, and roll back exactly on any failure."""
+        order, run commit(backup) if given, and roll back exactly on any
+        failure, including a failure of commit."""
         backup = self.backup(mode, name)
         rep.action(f"backed up the four service files to {backup}")
         written = []
@@ -1507,6 +1514,8 @@ class Box:
                 attempted.append(unit)
                 pid = restart_and_confirm(r, unit)
                 rep.action(f"restarted {unit}; running as PID {pid}")
+            if commit is not None:
+                commit(backup)
         except (Failure, CommandError, OSError) as exc:
             cause = str(exc) if not isinstance(exc, OSError) else f"{exc.strerror}: {exc.filename}"
             with signals_deferred():
@@ -1795,9 +1804,13 @@ def mode_allow(r: Runner, rep: Report, apply: bool, name: str) -> None:
         rep.result = "planned"
         rep.message = "nothing changed; rerun with --apply"
         return
-    backup = box.apply(r, rep, "allow", name)
-    ca.event("allow", name, "user CA installed" if not present else "allowlists updated", backup)
-    ca.save_registry()
+    def commit(backup: str) -> None:
+        # Inside the transaction: if the registry cannot record the change,
+        # the service files go back too.
+        ca.event("allow", name, "user CA installed" if not present else "allowlists updated", backup)
+        ca.save_registry_or_fail()
+
+    box.apply(r, rep, "allow", name, commit)
     rep.result = "ok"
     rep.message = f"{prefix} is allowed by AGS and ES; check from the caller with: {PUBLIC_SCRIPT} check --name {name} --url https://<box>:<port>"
 
@@ -1851,20 +1864,39 @@ def mode_revoke(r: Runner, rep: Report, apply: bool, name: str, remove_ca: bool)
         rep.result = "planned"
         rep.message = "nothing changed; rerun with --apply"
         return
-    backup = ""
-    if units:
+    done = (f"{prefix} can no longer call AGS or ES; its certificates stay cryptographically valid until they expire. "
+            "Remove any Unix login of the same person separately.")
+    # The registry records the revocation before AGS and ES change, so a
+    # failure later never leaves a name that allow or issue would accept
+    # again. Rerunning revoke finishes a revocation that stopped half way.
+    if entry["state"] != "revoked":
+        entry["state"] = "revoked"
+        entry["revoked_at"] = iso_utc(utc_now())
+        ca.event("revoke", name, "marked revoked")
         try:
-            backup = box.apply(r, rep, "revoke", name)
+            ca.save_registry_or_fail()
         except Failure as exc:
-            raise Failure(f"the revocation did not take effect, {prefix} may still be allowed: {exc}") from None
-    entry["state"] = "revoked"
-    entry.setdefault("revoked_at", iso_utc(utc_now()))
+            raise Failure(f"{exc}; nothing changed") from None
+        rep.action(f"marked {name} revoked")
+    if not units:
+        rep.result = "ok"
+        rep.message = done
+        return
+    try:
+        backup = box.apply(r, rep, "revoke", name)
+    except Failure as exc:
+        raise Failure(f"the revocation did not take effect at AGS and ES, {prefix} may still be allowed; "
+                      f"the registry marks {name} revoked, so run revoke again: {exc}") from None
     ca.event("revoke", name, "user CA removed" if remove_ca and box.files["ags_ca"].changed else "allowlists updated", backup)
-    ca.save_registry()
-    rep.action(f"marked {name} revoked")
+    try:
+        ca.save_registry_or_fail()
+    except Failure as exc:
+        rep.result = "attention"
+        rep.message = (f"{prefix} is revoked in the registry and at AGS and ES, but this run's registry event was not "
+                       f"saved ({exc}); the replaced files are in {backup}")
+        return
     rep.result = "ok"
-    rep.message = (f"{prefix} can no longer call AGS or ES; its certificates stay cryptographically valid until they expire. "
-                   "Remove any Unix login of the same person separately.")
+    rep.message = done
 
 
 def mode_status(r: Runner, rep: Report) -> None:

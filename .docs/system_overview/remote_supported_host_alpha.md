@@ -4697,8 +4697,8 @@ Box modes run as root on the box and change nothing without `--apply`:
 - `allow --name <name> [--apply]`: install the user CA as a client trust
   anchor if it is not installed yet, add the exact prefix `user/<name>` to
   the AGS and ES allowlists, and restart `ags.service` then `es.service`.
-- `revoke --name <name> [--apply] [--remove-ca]`: remove `user/<name>` from
-  both allowlists, restart both services, and mark the name revoked for good.
+- `revoke --name <name> [--apply] [--remove-ca]`: mark the name revoked for
+  good, remove `user/<name>` from both allowlists, and restart both services.
   `--remove-ca` also removes the user CA from both client CA files, and is
   refused while any other name is still active.
 
@@ -4799,8 +4799,14 @@ the old owner, group and mode, edit only the allowlist array in each JSON file
 (every other byte is kept; duplicate JSON keys are refused), then restart
 `ags.service` and `es.service` in that order and require each to be active
 with a stable main process. Any failure restores the exact previous bytes,
-restarts the services this run restarted, and reports the result. The registry
-is updated only after both services are back. The backups hold `ags.json`,
+restarts the services this run restarted, and reports the result. `allow`
+saves the registry after both services are back, inside the same change: if
+the registry cannot be saved, the service files go back too. `revoke` saves the
+registry first, marking the name revoked before AGS and ES change, so a later
+failure never leaves a name that `allow` or `issue` would accept again; the
+report then says the name may still be allowed, and running `revoke` again
+finishes the change. A revocation cannot be undone; a caller who needs access
+again gets a new name. The backups hold `ags.json`,
 which carries the AGS signer key, so they stay root-only (`0600` files in
 `0700` directories), and the report prints digests of the client CA files but
 never of the configs.
