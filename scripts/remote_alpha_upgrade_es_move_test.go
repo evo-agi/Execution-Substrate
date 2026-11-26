@@ -869,6 +869,21 @@ func TestRemoteAlphaUpgradeESRollsBackOnlyTheApplyThatLeftTheHost(t *testing.T) 
 		requireRollbackRefused(t, h, backupDir, "host as it is: /usr/local/lib/execution-substrate/bin/es (a build of no one clean commit) is neither")
 	})
 
+	// Byte for byte, not by commit: another build of the payload's commit,
+	// or of the backup's, was put in place without the upgrade.
+	t.Run("another build of the payload's commit", func(t *testing.T) {
+		h, _, backupDir := applied(t)
+		h.write(esPath, string(stampedBinary("es", "go1.26.4", upgradeTestCommit, "false")), 0o755)
+		requireRollbackRefused(t, h, backupDir, "host as it is: /usr/local/lib/execution-substrate/bin/es (a build of "+upgradeTestCommit+") is neither")
+	})
+
+	t.Run("another build of the backup's commit", func(t *testing.T) {
+		h, _, backupDir := applied(t)
+		h.installBuilds(boxESCommit)
+		h.write(supportPath, string(stampedBinary("es-runtime-support", "go1.26.4", boxESCommit, "false")), 0o755)
+		requireRollbackRefused(t, h, backupDir, "host as it is: /usr/local/bin/es-runtime-support (a build of "+boxESCommit+") is neither")
+	})
+
 	t.Run("the payload's copy gone from the backup", func(t *testing.T) {
 		h, _, backupDir := applied(t)
 		if err := os.RemoveAll(filepath.Join(backupDir, "payload")); err != nil {
@@ -926,4 +941,72 @@ func TestRemoteAlphaUpgradeESRollsBackOnlyTheApplyThatLeftTheHost(t *testing.T) 
 			t.Fatalf("apply did not log its rollback record: %v", summary["events"])
 		}
 	})
+
+	// A record that cannot be written stops the rollback command before a
+	// service stops, but not apply putting back its own backup: a failed
+	// apply must still be undone.
+	t.Run("a rollback that cannot be recorded", func(t *testing.T) {
+		h, before, backupDir := applied(t)
+		afterApply, files := h.snapshot(), backupFiles(t, h)
+		h.clearCalls()
+		_, stderr, code := runWithUnwritableRollbackRecords(h, "rollback", "--backup-dir", backupDir)
+		if code != 1 || !strings.Contains(stderr, "the rollback cannot be recorded in "+backupDir+" (") ||
+			!strings.Contains(stderr, "; nothing was changed") {
+			t.Fatalf("rollback exited %d: %s", code, stderr)
+		}
+		onlyReads(t, h, "a rollback that cannot be recorded")
+		assertRestored(t, afterApply, h.snapshot())
+		if after := backupFiles(t, h); fmt.Sprint(after) != fmt.Sprint(files) {
+			t.Fatalf("a refused rollback changed the backups: %q -> %q", files, after)
+		}
+		requireRollback(t, h, backupDir, [2]string{staged, staged}, named, box)
+		assertRestored(t, before, h.snapshot())
+	})
+
+	t.Run("apply putting back its own backup that it cannot record", func(t *testing.T) {
+		h := newUpgradeHost(t, helper)
+		before := h.snapshot()
+		h.mark("acl-check-fails", "")
+		stdout, stderr, code := runWithUnwritableRollbackRecords(h, "apply", "--payload", h.payload, "--commit", h.commit)
+		if code != 1 || !strings.Contains(stderr, "result rolled_back;") {
+			t.Fatalf("apply exited %d\nstdout %s\nstderr %s", code, stdout, stderr)
+		}
+		backupDir, summary := readSummary(t, h)
+		if records, _ := filepath.Glob(filepath.Join(backupDir, "rollback-*.json")); len(records) != 0 {
+			t.Fatalf("rollback records %q", records)
+		}
+		if !strings.Contains(fmt.Sprint(summary["events"]), "the rollback could not be recorded (FileNotFoundError(") ||
+			!strings.Contains(fmt.Sprint(summary["events"]), "; putting the backup back all the same") {
+			t.Fatalf("apply did not log the record it could not write: %v", summary["events"])
+		}
+		assertRestored(t, before, h.snapshot())
+	})
+}
+
+// runWithUnwritableRollbackRecords runs the upgrade on h as h.run does,
+// with each rollback's record named inside a folder that does not exist,
+// so that writing it fails.
+func runWithUnwritableRollbackRecords(h *upgradeHost, args ...string) (string, string, int) {
+	h.t.Helper()
+	code := `import importlib.util, sys
+spec = importlib.util.spec_from_file_location("upgrade", sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+m.ROLLBACK_RECORD = "no-such-folder/" + m.ROLLBACK_RECORD
+sys.exit(m.main(sys.argv[2:]))`
+	cmd := exec.Command("python3", append([]string{"-I", "-c", code, repoPath(upgradeESPython), "--host-root", h.root}, args...)...)
+	cmd.Dir = h.state
+	cmd.Env = h.environ()
+	var stdout, stderr strings.Builder
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	err := cmd.Run()
+	exitCode := 0
+	if err != nil {
+		exitErr, ok := err.(*exec.ExitError)
+		if !ok {
+			h.t.Fatalf("run %v: %v", args, err)
+		}
+		exitCode = exitErr.ExitCode()
+	}
+	return stdout.String(), stderr.String(), exitCode
 }
