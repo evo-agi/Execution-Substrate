@@ -211,7 +211,7 @@ Pass only if the check reports:
 - `nomad-startup-mode: pre-managed`
 - `submit-ready-mode: natural`
 - `supported-environment: supported`
-- `nomad: drivers=docker docker_privileged=refused docker_caps=chown,dac_override,fowner,kill,setgid,setpcap,setuid`
+- `nomad: drivers=docker docker_privileged=refused docker_caps=chown,dac_override,fowner,kill,setgid,setpcap,setuid tls=1.3 gossip=encrypted`
 - `runtime profile image durability: nomad docker plugin gc.image=false`
 - `submit-ready: true`
 
@@ -255,6 +255,7 @@ What this does:
 - records the ES same-path staging proof at `${BRINGUP_DIR}/staging-invariant.json`
 - verifies Docker readiness
 - starts Nomad from `NOMAD_CONFIG` as a bounded local fallback/troubleshooting path, then waits for a leader plus at least one ready node with positive `cpu.totalcompute`, a healthy Docker driver and a host-mode network
+  - readiness refuses that Nomad unless it encrypts its gossip (`gossip=encrypted`). Before Nomad starts, put a keyring at `server/serf.keyring` in the `data_dir` that `NOMAD_CONFIG` names: mode `0600`, holding a JSON list with one key from `nomad operator gossip keyring generate`, for example `["<key>"]`. Nomad reads the keyring when it starts
 - runs the unified readiness check once more before reporting success as both prepare-ready and submit-ready
 
 Note:

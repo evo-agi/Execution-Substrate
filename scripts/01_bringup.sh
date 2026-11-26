@@ -63,6 +63,9 @@ Notes:
   full-profile up starts Nomad before ES: NOMAD_CONFIG must enable ACLs, and bring-up bootstraps
   them once (management token in BRINGUP_DIR/nomad-acl/management-token, owner only) and writes
   ES's token before ES starts, because ES refuses to start without it
+  full-profile up's Nomad must encrypt its gossip: before it starts, put a keyring (mode 0600, a
+  JSON list holding one key from nomad operator gossip keyring generate) at server/serf.keyring
+  in the data_dir that NOMAD_CONFIG names
   the supported Linux environment story is narrower: pre-managed non-dev Nomad plus natural schedulability without cpu_total_compute override
 EOF
 }

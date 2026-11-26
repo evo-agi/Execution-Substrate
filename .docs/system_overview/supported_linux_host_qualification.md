@@ -259,6 +259,7 @@ Pass only if all of the following hold:
 - the service is pre-managed rather than a user-started foreground agent
 - `DevMode=false`
 - leader is present
+- gossip is encrypted: `/v1/agent/self` reports `stats.serf.encrypted` as `"true"`, from the keyring `scripts/70_linux_setup.sh` writes to `<data_dir>/server/serf.keyring` before Nomad starts
 - the TLS check passes: Nomad presents, over TLS 1.3, a certificate from `nomad.root_ca_file` for `nomad.server_name` whose key matches `nomad.server_spki_sha256`, with at least 14 days left (`nomad tls: tls=1.3 ... key=pinned ...`)
 - the ACL check passes: ACLs enforced, no anonymous policy, ES's token is the `es-submit-v1` client token, and an anonymous plan, ES's token outside its namespace and the observer token's plan are all refused
 
@@ -352,7 +353,7 @@ Pass only if the output includes:
 - `nomad-startup-mode: pre-managed`
 - `submit-ready-mode: natural`
 - `supported-environment: supported`
-- `nomad: drivers=docker docker_privileged=refused docker_caps=chown,dac_override,fowner,kill,setgid,setpcap,setuid`
+- `nomad: drivers=docker docker_privileged=refused docker_caps=chown,dac_override,fowner,kill,setgid,setpcap,setuid tls=1.3 gossip=encrypted`
 - `runtime profile image durability: nomad docker plugin gc.image=false` when `control-plane-normal-shell/v1` is enabled
 - `submit-ready: true`
 
