@@ -26,8 +26,8 @@ Caller modes (the caller, never root, on the machine that calls AGS and ES):
                                check local files, then call the service
 
 The contract is in .docs/system_overview/remote_supported_host_alpha.md,
-section "Remote Alpha User Caller Identities". The caller modes must run on
-the Mac's /usr/bin/python3 (3.9) and its LibreSSL openssl.
+section "Remote Alpha User Caller Identities". The caller modes must also run
+with the Mac's own Python 3.9 in /usr/bin and its LibreSSL openssl.
 
 Every path, account, unit and command is fixed in Layout. The entry point at
 the bottom of this file uses Layout() unchanged and reads no environment
@@ -276,7 +276,16 @@ def require_name(name) -> str:
 
 
 def matches_prefix(path: str, prefix: str) -> bool:
-    """The AGS and ES path-prefix rule (matchesAuthorizedPathPrefix)."""
+    """Whether prefix could authorize path under any AGS or ES build.
+
+    This is the broader rule of the builds before ES PR #38 (their
+    matchesAuthorizedPathPrefix, which ignores leading and trailing slashes),
+    and the box may still run such an AGS. The shared rule since then,
+    internal/callerallowlist.Matches, matches a subset of these pairs, since it
+    first refuses any prefix that is not canonical or has one segment. The
+    helper refuses an entry that covers user/<name> by this rule, so it
+    refuses at least every entry that covers it on either build.
+    """
     p = path.strip("/")
     q = prefix.strip("/")
     if not p or not q:

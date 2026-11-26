@@ -4782,9 +4782,13 @@ Plane access: a recovery reissue that does not know about the user CA can
 only drop the user CA, which locks out user callers and nobody else.
 
 `allow` refuses when an allowlist entry other than `user/<name>` already
-authorizes `user/<name>` (for example a bare `user`), because revoking the
-name could not then take effect. `revoke` checks the same after removing the
-entry.
+authorizes `user/<name>`, because revoking the name could not then take
+effect. `revoke` checks the same after removing the entry. The check uses the
+broader matching rule of the AGS and ES builds before ES PR #38, which also
+lets a bare `user` or `user/` authorize `user/<name>`; builds since then refuse
+such an entry at startup (`internal/callerallowlist`), but the box's AGS may
+be older. Refusing by the broader rule refuses every covering entry under
+either build.
 
 ### Applying, rollback and evidence
 

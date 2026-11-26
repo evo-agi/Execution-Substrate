@@ -1,15 +1,12 @@
 # Governed Execution ES Remote Alpha User Identity
 
-- Version: `v1`
-- Last Updated: `2026-11-23`
-- Contract: `.docs/system_overview/remote_supported_host_alpha.md`, section "Remote Alpha User Caller Identities"
-- Helper: `scripts/remote_alpha_user_identity.sh`
-
 ## What is it?
 
-How to give a person or an agent its own API caller identity on the Remote Alpha box, `spiffe://execution.internal/user/<name>`, so that it calls AGS and ES as itself. The first one is `user/claude`, decided by the box owner on 2026-11-23. It also covers renewal, revocation and what to do when something fails.
+This runbook gives a person or an agent its own API caller identity on the Remote Alpha box, `spiffe://execution.internal/user/<name>`, so that it calls AGS and ES as itself instead of borrowing the operator or Control Plane certificate. The first one is `user/claude`, decided by the box owner on 2026-11-23. It also covers renewal and revocation.
 
-A `user/<name>` identity is an API identity only. It is not a Unix account and gives no SSH or `sudo`. A Unix login of the same name on the box is a separate grant, so taking someone's access away means revoking both (see [Revoke](#revoke)).
+The helper is `scripts/remote_alpha_user_identity.sh`. Its contract is the section "Remote Alpha User Caller Identities" of [.docs/system_overview/remote_supported_host_alpha.md](../../.docs/system_overview/remote_supported_host_alpha.md).
+
+A `user/<name>` identity is an API identity only. It is not a Unix account and gives no SSH or `sudo`. A Unix login of the same name on the box is a separate grant, so taking someone's access away means revoking both (step 9).
 
 Who holds what:
 
@@ -20,15 +17,21 @@ Who holds what:
 | CSR | made on the caller's machine | copied to the box |
 | Certificate | made on the box | copied to the caller's machine |
 
-## Before you start
+## What do I need?
 
 - The pull request that added the helper has merged, and the box owner has said go for this box run. Nothing in this runbook runs on the box before both.
-- The caller's machine reaches the box over SSH (`BOX_SSH` below) and reaches AGS and ES over HTTPS. On the Mac, Claude does this from a Remote Control session, because cloud sessions cannot reach the box.
-- An Execution-Substrate checkout of the merged commit on the caller's machine (`ES_CHECKOUT`), and the AGS/ES server CA bundle the caller already trusts (`SERVER_CA`).
-- The caller's machine needs `/usr/bin/python3` (3.9 or later) and `/usr/bin/openssl` (OpenSSL or LibreSSL). The box needs OpenSSL 3.
-- Avoid a reboot or a Vault restart while doing this: `allow` and `revoke` restart only `ags.service` and `es.service`.
+- The caller's machine reaches the box over SSH and reaches AGS and ES over HTTPS. On the Mac, Claude does this from a Remote Control session, because cloud sessions cannot reach the box.
+- An Execution-Substrate checkout of the merged commit on the caller's machine, and the AGS/ES server CA bundle that the caller already trusts.
+- On the caller's machine, `/usr/bin/python3` (3.9 or later) and `/usr/bin/openssl` (OpenSSL or LibreSSL). On the box, OpenSSL 3 and `sudo`.
+- No reboot and no Vault restart while you do this: `allow` and `revoke` restart only `ags.service` and `es.service`.
 
-Set these in the caller's shell first. Every block below uses them.
+## How to use it?
+
+Run every command on the caller's machine, in one shell: each step reads the variables that step 1 sets. Box commands go through `ssh`. The output to expect is taken from the helper in this repository; Test Evidence says what has been run.
+
+Each helper run prints a report that ends with `Result:`. Steps that change the box print a plan first; add `--apply` to carry it out. What do the failures mean? lists the results and what each check outcome means. Add `--json` for a machine-readable report.
+
+### 1. Set the variables
 
 ```bash
 NAME='claude'                        # the identity is user/$NAME
@@ -37,13 +40,14 @@ BOX_ADDR='<box address AGS and ES listen on>'
 ES_CHECKOUT='<path to the Execution-Substrate checkout of the merged commit>'
 SERVER_CA='<path to the AGS/ES server CA bundle on this machine>'
 TOOL_DIR='/usr/local/lib/execution-substrate-user-identity'   # on the box, root-owned
+CALLER_DIR="$HOME/.config/execution-substrate/callers/$NAME"
 ```
 
-Each helper run prints a report that ends with `Result:`. `ok` means done, `planned` means nothing changed and the plan is shown, `refused` means a check failed and nothing changed, `failed` means a step failed after changes began (the message says what was rolled back). Add `--json` for a machine-readable report.
+Expect no output.
 
-## 1. Put the helper on the box
+### 2. Put the helper on the box
 
-The helper runs as root on the box, so copy exactly the merged files into a root-owned directory and compare their SHA-256 with the checkout.
+The helper runs as root on the box, so copy exactly the merged files into a root-owned directory and compare their SHA-256 with the checkout:
 
 ```bash
 ( cd "$ES_CHECKOUT" && git status --porcelain --untracked-files=no && git log -1 --format='%H %s' )
@@ -56,7 +60,7 @@ ssh "$BOX_SSH" "sudo install -d -o root -g root -m 0755 '$TOOL_DIR/scripts/inter
   sha256sum '$TOOL_DIR/scripts/remote_alpha_user_identity.sh' '$TOOL_DIR/scripts/internal/remote_alpha_user_identity.py'"
 ```
 
-The two digests printed by the box must equal the two printed from the checkout. If they differ, stop.
+Expect no line from `git status`, the merged commit from `git log`, and two digests from the checkout. The two digests that the box prints must equal them. If they differ, stop.
 
 Then look at the box as it is:
 
@@ -64,27 +68,37 @@ Then look at the box as it is:
 ssh "$BOX_SSH" "sudo '$TOOL_DIR/scripts/remote_alpha_user_identity.sh' status"
 ```
 
-Before the first identity, expect `user CA: not created`, both client CA paths `ok`, `client CA files identical: yes`, one certificate in each client CA file, and both units `active/running`. Anything marked `attention` or `fail` is a reason to stop and look.
+Before the first identity, expect `user CA` `not created`, both client CA paths `ok`, `client CA files identical` `yes`, one certificate in each client CA file, and both units `active/running`. Anything marked `attention` or `fail` is a reason to stop and look.
 
-## 2. Make the key and CSR on the caller's machine
+### 3. Make the key and CSR on the caller's machine
 
 ```bash
 "$ES_CHECKOUT/scripts/remote_alpha_user_identity.sh" request --name "$NAME"
 ```
 
-It writes `key.pem` (`0600`) and `request.csr` in `~/.config/execution-substrate/callers/$NAME/` and prints `public_key_sha256`. Note that value. The key never leaves this machine; do not copy it anywhere.
+Expect `Result: ok`. It writes `key.pem` (`0600`) and `request.csr` in `$CALLER_DIR` and prints `public_key_sha256`. Note that value. The key never leaves this machine; do not copy it anywhere.
 
-## 3. Create the user CA (once) and issue the certificate
+### 4. Create the user CA, once
+
+Skip this step when `status` in step 2 showed the user CA as created.
 
 ```bash
-CALLER_DIR="$HOME/.config/execution-substrate/callers/$NAME"
-scp -q "$CALLER_DIR/request.csr" "$BOX_SSH:user-identity-staging/$NAME.csr"
 ssh "$BOX_SSH" "sudo '$TOOL_DIR/scripts/remote_alpha_user_identity.sh' init-ca"
 ssh "$BOX_SSH" "sudo '$TOOL_DIR/scripts/remote_alpha_user_identity.sh' init-ca --apply"
+```
+
+Expect `Result: planned` from the first command and `Result: ok` from the second. A later `init-ca` is refused with "the user CA is created once".
+
+### 5. Issue and install the certificate
+
+Copy the CSR to the box and plan the issue:
+
+```bash
+scp -q "$CALLER_DIR/request.csr" "$BOX_SSH:user-identity-staging/$NAME.csr"
 ssh "$BOX_SSH" "sudo '$TOOL_DIR/scripts/remote_alpha_user_identity.sh' issue --name '$NAME' --csr \"\$HOME/user-identity-staging/$NAME.csr\" --out \"\$HOME/user-identity-staging/$NAME.crt\""
 ```
 
-`init-ca` is needed only the first time; a second run is refused with "the user CA is created once". The `issue` plan prints `csr_public_key_sha256`: it must equal the `public_key_sha256` from step 2, or the CSR is not the one you made. Then issue it:
+Expect `Result: planned`. The plan prints `csr_public_key_sha256`: it must equal the `public_key_sha256` from step 3, or the CSR is not the one you made. Then issue it, copy the certificate back and install it:
 
 ```bash
 ssh "$BOX_SSH" "sudo '$TOOL_DIR/scripts/remote_alpha_user_identity.sh' issue --name '$NAME' --csr \"\$HOME/user-identity-staging/$NAME.csr\" --out \"\$HOME/user-identity-staging/$NAME.crt\" --apply"
@@ -92,9 +106,9 @@ scp -q "$BOX_SSH:user-identity-staging/$NAME.crt" "$CALLER_DIR/issued.crt"
 "$ES_CHECKOUT/scripts/remote_alpha_user_identity.sh" install --name "$NAME" --cert "$CALLER_DIR/issued.crt" --server-ca "$SERVER_CA"
 ```
 
-`install` checks that the certificate names exactly `spiffe://execution.internal/user/$NAME`, is for client authentication, is valid now, and matches `key.pem`, then stores it as `cert.pem` next to the key.
+Expect `Result: ok` from both helper runs. `install` checks that the certificate names exactly `spiffe://execution.internal/user/$NAME`, is for client authentication, is valid now and matches `key.pem`, then stores it as `cert.pem` next to the key.
 
-Before `allow`, a check shows the services do not trust the user CA yet:
+Before `allow`, a check shows that the services do not trust the user CA yet:
 
 ```bash
 "$ES_CHECKOUT/scripts/remote_alpha_user_identity.sh" check --name "$NAME" --url "https://$BOX_ADDR:8445"
@@ -102,21 +116,21 @@ Before `allow`, a check shows the services do not trust the user CA yet:
 
 Expect outcome `client_certificate_refused`.
 
-## 4. Allow the identity
+### 6. Allow the identity
 
 ```bash
 ssh "$BOX_SSH" "sudo '$TOOL_DIR/scripts/remote_alpha_user_identity.sh' allow --name '$NAME'"
 ```
 
-The first time, the plan appends the user CA to the end of both client CA files, adds `user/$NAME` to the AGS and ES allowlists, and restarts `ags.service` then `es.service`. Later names only add their allowlist entry. Read the plan, then apply it:
+Expect `Result: planned`. The first time, the plan appends the user CA to the end of both client CA files, adds `user/$NAME` to the AGS and ES allowlists, and restarts `ags.service` then `es.service`. Later names only add their allowlist entry. Read the plan, then apply it:
 
 ```bash
 ssh "$BOX_SSH" "sudo '$TOOL_DIR/scripts/remote_alpha_user_identity.sh' allow --name '$NAME' --apply"
 ```
 
-If a restart fails, the helper restores the exact previous bytes of all four files, restarts the services again and reports `failed` with what it rolled back. The copies it made first are in `/etc/execution-substrate/user-ca/backups/`.
+Expect `Result: ok`. If a restart fails, the helper restores the exact previous bytes of all four files, restarts the services again and reports `failed` with what it rolled back.
 
-## 5. Check from the caller's machine
+### 7. Check from the caller's machine
 
 ```bash
 "$ES_CHECKOUT/scripts/remote_alpha_user_identity.sh" check --name "$NAME" --url "https://$BOX_ADDR:8445" --service es
@@ -124,52 +138,73 @@ If a restart fails, the helper restores the exact previous bytes of all four fil
 ssh "$BOX_SSH" "sudo '$TOOL_DIR/scripts/remote_alpha_user_identity.sh' status"
 ```
 
-Both checks must say `authorized`. The ES check calls the read-only contract endpoint. The AGS check sends a publish request with an empty body: AGS authorizes the caller first and then refuses the empty body with `400 invalid_request`, so nothing is published. `status` should show `allowlist user/$NAME: allowed by AGS and ES` and the name `active`.
+Expect outcome `authorized` from both checks. The ES check calls the read-only contract endpoint. The AGS check sends a publish request with an empty body: AGS authorizes the caller first and then refuses the empty body with `400 invalid_request`, so nothing is published. `status` should show `allowlist user/$NAME` `allowed by AGS and ES` and the name `active`.
 
-Then remove the staging copies: `ssh "$BOX_SSH" 'rm -rf ~/user-identity-staging'` and `rm "$CALLER_DIR/issued.crt"`.
+Then remove the staging copies:
 
-What a check outcome means:
+```bash
+ssh "$BOX_SSH" 'rm -rf ~/user-identity-staging'
+rm "$CALLER_DIR/issued.crt"
+```
 
-| Outcome | Meaning | What to do |
-| --- | --- | --- |
-| `authorized` | AGS or ES accepted the identity | nothing |
-| `client_certificate_refused` | the TLS handshake failed on the client certificate | the user CA is not installed (run `allow`), or the certificate is expired |
-| `not_authenticated` (401) | TLS passed but the certificate is not an acceptable caller identity | compare the certificate with `install`'s checks; issue a new one |
-| `not_allowed` (403) | authenticated, but `user/$NAME` is not on that service's allowlist | run `allow`; after `revoke` this is the expected outcome |
-| `server_not_trusted` | this machine does not trust the server certificate | pass the right `--server-ca` |
-| `unreachable` | no TCP connection | check `BOX_ADDR`, the port and the network path |
+Expect no output.
 
-## Renew
+### 8. Renew every 90 days
 
-A certificate lasts 90 days. `check` and `status` flag it 14 days before expiry. Renewal makes a new key:
+A certificate lasts 90 days. `check` and `status` flag it 14 days before it expires. Renewal makes a new key:
 
 ```bash
 "$ES_CHECKOUT/scripts/remote_alpha_user_identity.sh" request --name "$NAME" --renew
 ```
 
-It writes the new key and CSR in `pending/`. Copy `pending/request.csr` to the box, run `issue` as in step 3 (plan, compare the public key digest, `--apply`), copy the certificate back and run `install` as in step 3. `install` sees that the certificate matches the pending key, makes it the current key, and moves the old key and certificate to `previous/`. No `allow` is needed: the name is already allowed. Run step 5 again.
+Expect `Result: ok`. It writes the new key and CSR in `$CALLER_DIR/pending/`. Make the staging folder on the box again as in step 2, copy `pending/request.csr` there as `$NAME.csr`, and run step 5 (plan, compare the public key digest, `--apply`, copy back, `install`). `install` sees that the certificate matches the pending key, makes it the current key, and moves the old key and certificate to `previous/`. No `allow` is needed: the name is already allowed. Then run step 7.
 
-## Revoke
+### 9. Revoke
 
 ```bash
 ssh "$BOX_SSH" "sudo '$TOOL_DIR/scripts/remote_alpha_user_identity.sh' revoke --name '$NAME'"
 ssh "$BOX_SSH" "sudo '$TOOL_DIR/scripts/remote_alpha_user_identity.sh' revoke --name '$NAME' --apply"
 ```
 
-This removes `user/$NAME` from both allowlists, restarts AGS and ES, and marks the name revoked for good: it is never issued or allowed again, so a new grant needs a new name. ES has no certificate revocation list, so the name's certificates stay cryptographically valid until they expire, but AGS and ES answer them with `403`. One certificate cannot be revoked alone; revoke the name.
+Expect `Result: planned`, then `Result: ok`. This removes `user/$NAME` from both allowlists, restarts AGS and ES, and marks the name revoked for good: it is never issued or allowed again, so a new grant needs a new name. A `check` afterwards gives `not_allowed`.
 
 For Claude, also remove the box login `claude` with the revoke section of the Archived-Runbooks "Governed Execution Remote Alpha Claude Access" runbook. Each grant can be taken away without the other.
 
 When the last name is revoked, `revoke --name <name> --remove-ca --apply` also removes the user CA from both client CA files, which returns them to the external client CA alone. It is refused while any other name is active. If the user CA key may have leaked, revoke every name and then use `--remove-ca`.
 
-## Interaction with the recovery runbook
+## What do the failures mean?
 
-The Archived-Runbooks "Governed Execution Remote Alpha Linux Recovery" runbook must accept `user/<name>` allowlist entries in its topology check, and its external reissue must append `/etc/execution-substrate/user-ca/ca-cert.pem` to the new client CA before installing it. With an older copy of that runbook, its topology check stops on a box that has user identities, and an external reissue drops user access only (operator and Control Plane keep working). In that case run `allow` again for each active name after the reissue: it appends the user CA once more.
+What a helper run's `Result:` means:
 
-## Undo by hand
+| Result | Meaning | What to do |
+| --- | --- | --- |
+| `ok` | done | go on |
+| `planned` | nothing changed; the plan is shown | read it, then run the same command with `--apply` |
+| `refused` | a check failed before any change; the message says which | fix what it names; nothing needs undoing |
+| `failed` | a step failed after changes began; the message says what was rolled back | read the message and run `status`; see "Undo by hand" under Notes if the rollback itself failed |
 
-The helper rolls back by itself when a step fails. To undo a successful `allow` or `revoke` later, run the opposite mode. If the helper itself cannot run, each backup directory in `/etc/execution-substrate/user-ca/backups/` holds the four files it replaced (`ags_config`, `es_config`, `ags_ca`, `es_ca`) and a `manifest.json` with each file's path, owner, group and mode. Restore them with `install -o <uid> -g <gid> -m <mode> <backup file> <path>`, then `systemctl restart ags.service` and `systemctl restart es.service`, in that order.
+What a `check` outcome means:
+
+| Outcome | Meaning | What to do |
+| --- | --- | --- |
+| `authorized` | AGS or ES accepted the identity | nothing |
+| `client_certificate_refused` | the TLS handshake failed on the client certificate | the user CA is not installed (run `allow`), or the certificate has expired (step 8) |
+| `not_authenticated` (401) | TLS passed, but the certificate is not an acceptable caller identity | compare the certificate with `install`'s checks; issue a new one |
+| `not_allowed` (403) | authenticated, but `user/$NAME` is not on that service's allowlist | run `allow`; after `revoke` this is the expected outcome |
+| `server_not_trusted` | this machine does not trust the server certificate | pass the right `--server-ca` |
+| `unreachable` | no TCP connection | check `BOX_ADDR`, the port and the network path |
+
+## Notes
+
+- **No certificate revocation list.** ES and AGS have none, so a revoked name's certificates stay cryptographically valid until they expire, but AGS and ES answer them with `403`. One certificate cannot be revoked alone; revoke the name.
+- **The recovery runbook.** The Archived-Runbooks "Governed Execution Remote Alpha Linux Recovery" runbook must accept `user/<name>` allowlist entries in its topology check, and its external reissue must append `/etc/execution-substrate/user-ca/ca-cert.pem` to the new client CA before installing it. With an older copy of that runbook, its topology check stops on a box that has user identities, and an external reissue drops user access only (operator and Control Plane keep working). In that case run `allow` again for each active name after the reissue: it appends the user CA once more.
+- **Undo by hand.** The helper rolls back by itself when a step fails. To undo a successful `allow` or `revoke` later, run the opposite mode. If the helper itself cannot run, each backup directory in `/etc/execution-substrate/user-ca/backups/` holds the four files it replaced (`ags_config`, `es_config`, `ags_ca`, `es_ca`) and a `manifest.json` with each file's path, owner, group and mode. Restore them with `install -o <uid> -g <gid> -m <mode> <backup file> <path>`, then run `systemctl restart ags.service` and `systemctl restart es.service`, in that order. The backups hold `ags.json`, which carries the AGS signer key, so keep them root-only.
+
+## Test Evidence
+
+- **Automated, in CI on every pull request:** the Linux job "build, vet and test" runs the twelve tests in `scripts/remote_alpha_user_identity_test.go` against throwaway box trees, a fake `systemctl` and the runner's OpenSSL 3. `TestUserIdentityFlowThroughRealESAndAGSHandlers` runs steps 3 to 7 and step 9 with `--remove-ca`, and after `install`, `allow`, `revoke` and `--remove-ca` calls the real ES and AGS handlers, loaded from the configs as the helper left them. `TestUserIdentityApplyRollsBackToTheExactBytes` makes each restart fail in turn and requires the exact previous bytes back. `TestUserIdentityRefusesAndChangesNothing`, `TestUserIdentityIssueChecksTheCSR`, `TestUserIdentityInstallRefusesCertificatesOffTheProfile` and `TestUserIdentityRefusesACAOffTheProfile` check the refusals; `TestUserIdentityRenewalPromotesTheNewKey` checks step 8. The job "test on macOS" runs the caller's `request` with the runner's LibreSSL (`TestUserIdentityRequestMakesAPrivateKeyAndAMatchingCSR`); the box-mode tests skip themselves there.
+- **Not run:** the steps above have not been run on the box or on a Mac. `install` and `check` have not run with LibreSSL.
 
 ## History
 
-- 2026-11-23: first version, written with the helper. Not run on the box yet.
+- **2026-11-26:** first version, with the helper. Not run on the box yet.

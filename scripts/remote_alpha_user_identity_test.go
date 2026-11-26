@@ -1,4 +1,4 @@
-package executionsubstrate_test
+package scripts_test
 
 // Tests for scripts/remote_alpha_user_identity.sh and its Python core
 // scripts/internal/remote_alpha_user_identity.py.
@@ -200,7 +200,11 @@ func newUserIdentityBox(t *testing.T) *userIdentityBox {
 	_, _, b.extCAPEM = userIdentityTestCA(t, "Remote Alpha External Client Auth CA")
 	writeUserIdentityFile(t, b.agsCA, b.extCAPEM, 0o640)
 	writeUserIdentityFile(t, b.esCA, b.extCAPEM, 0o640)
-	b.writeConfig("ags", b.agsConfig, b.agsCA, []string{"operator", "service/control-plane"})
+	// The box's AGS, an older build, still lists the one-segment "operator";
+	// AGS and ES from ES PR #38 on refuse such a prefix at startup, and the flow
+	// test loads these configs into today's AGS and ES, so the fixture uses two
+	// segments. The helper leaves every other entry as it is either way.
+	b.writeConfig("ags", b.agsConfig, b.agsCA, []string{"operator/local", "service/control-plane"})
 	b.writeConfig("es", b.esConfig, b.esCA, []string{"operator/local", "service/control-plane"})
 	writeUserIdentityFile(t, filepath.Join(b.units, "systemctl"), []byte(userIdentityFakeSystemctl), 0o755)
 	refused := 0
@@ -1018,7 +1022,7 @@ func TestUserIdentityRefusesAndChangesNothing(t *testing.T) {
 		}, 1, "run issue first"},
 		{"AGS client CA path differs", func(t *testing.T, b *userIdentityBox) []string {
 			minted(t, b)
-			b.writeConfig("ags", b.agsConfig, filepath.Join(b.etc, "tls", "combined-service-ca-bundle.pem"), []string{"operator", "service/control-plane"})
+			b.writeConfig("ags", b.agsConfig, filepath.Join(b.etc, "tls", "combined-service-ca-bundle.pem"), []string{"operator/local", "service/control-plane"})
 			return []string{"allow", "--name", "claude", "--apply"}
 		}, 1, "AGS tls.client_ca_file"},
 		{"client CA files differ", func(t *testing.T, b *userIdentityBox) []string {
@@ -1029,7 +1033,7 @@ func TestUserIdentityRefusesAndChangesNothing(t *testing.T) {
 		}, 1, "differ"},
 		{"a bare user prefix already covers the name", func(t *testing.T, b *userIdentityBox) []string {
 			minted(t, b)
-			b.writeConfig("ags", b.agsConfig, b.agsCA, []string{"operator", "service/control-plane", "user"})
+			b.writeConfig("ags", b.agsConfig, b.agsCA, []string{"operator/local", "service/control-plane", "user"})
 			return []string{"allow", "--name", "claude", "--apply"}
 		}, 1, "already authorizes user/claude"},
 		{"a trailing-slash entry already covers the name", func(t *testing.T, b *userIdentityBox) []string {
@@ -1148,7 +1152,7 @@ func TestUserIdentityRefusesAndChangesNothing(t *testing.T) {
 		{"--remove-ca while other user entries remain", func(t *testing.T, b *userIdentityBox) []string {
 			minted(t, b)
 			b.mustOK(b.box("allow", "--name", "claude", "--apply"), "allow")
-			b.writeConfig("ags", b.agsConfig, b.agsCA, []string{"operator", "service/control-plane", "user/claude", "user/ghost"})
+			b.writeConfig("ags", b.agsConfig, b.agsCA, []string{"operator/local", "service/control-plane", "user/claude", "user/ghost"})
 			return []string{"revoke", "--name", "claude", "--remove-ca", "--apply"}
 		}, 1, "user entries remain in the allowlists: user/ghost"},
 		{"a CA that ends before a 90-day certificate", func(t *testing.T, b *userIdentityBox) []string {
