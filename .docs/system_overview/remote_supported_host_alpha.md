@@ -7662,8 +7662,9 @@ backup; an `apply` whose restarted Nomad does not read the keyring, names
 no leader, cannot place ES's jobs or fails the ACL check, after which ES
 does not start, or whose issuer leaves the keyring readable by others (on
 `locked-http` too), each rolled back with the keyring removed; an `apply`
-interrupted while the issuer's temporary file holds the new key, on either
-start, rolled back with no temporary file left; the keyring written before
+interrupted while the issuer's temporary file holds the new key, or before
+the issuer has set the traps that remove that file, on either start, rolled
+back with no temporary file left; the keyring written before
 Nomad's stop on `https`; no gossip key or Nomad token in the output, the
 fakes' logged calls or any `curl` command line; payload binaries whose Go build info names another commit, another Go
 or a modified build, or shows a replaced module, a workspace module or a

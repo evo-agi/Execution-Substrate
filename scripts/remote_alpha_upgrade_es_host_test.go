@@ -506,6 +506,20 @@ fi
 exec "$real_mv" "$@"
 `
 
+// fakeMktemp is mktemp, but for the test host's gossip keyring's temporary
+// file, slow-keyring-name holds it (and marks keyring-naming) once the real
+// mktemp has run, until a signal ends it. newUpgradeHost puts the real
+// mktemp's path in real_mktemp before it.
+const fakeMktemp = `s="$FAKE_STATE"
+if [[ "${@: -1}" == "${FAKE_HOST_ROOT:-}/opt/nomad/data/server/.serf.keyring.XXXXXX" && -e "$s/slow-keyring-name" ]]; then
+  "$real_mktemp" "$@" || exit
+  touch "$s/keyring-naming"
+  sleep 30
+  exit 0
+fi
+exec "$real_mktemp" "$@"
+`
+
 type upgradeHost struct {
 	t       *testing.T
 	root    string
@@ -781,6 +795,13 @@ func newUpgradeHost(t *testing.T, helper string) *upgradeHost {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(h.bin, "mv"), []byte("#!/usr/bin/env bash\nreal_mv="+strconv.Quote(realMv)+"\n"+fakeMv), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	realMktemp, err := exec.LookPath("mktemp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(h.bin, "mktemp"), []byte("#!/usr/bin/env bash\nreal_mktemp="+strconv.Quote(realMktemp)+"\n"+fakeMktemp), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	return h
@@ -1868,7 +1889,9 @@ func TestRemoteAlphaUpgradeESApplyRollsBackOnFailure(t *testing.T) {
 // An interruption while a command runs ends that command's whole process
 // group, grandchildren included, before the rollback starts. One that lands
 // while the setup's nomad_gossip_issue holds the new key in its temporary
-// file (here mv holds the rename) leaves no temporary file behind.
+// file (here mv holds the rename), or before the issuer has set the traps
+// that remove that file (here mktemp holds once it has chosen the file's
+// name, and no file exists yet), leaves no temporary file behind.
 func TestRemoteAlphaUpgradeESApplyRollsBackWhenInterrupted(t *testing.T) {
 	helper := buildESConfigCheck(t)
 	cases := []struct {
@@ -1880,6 +1903,8 @@ func TestRemoteAlphaUpgradeESApplyRollsBackWhenInterrupted(t *testing.T) {
 		{"by two signals in a row", "slow-validate", "validating", false},
 		{"during the gossip keyring's issue", "slow-keyring-rename", "keyring-renaming", false},
 		{"during the gossip keyring's issue on an https host", "slow-keyring-rename", "keyring-renaming", true},
+		{"before the gossip keyring issuer's traps", "slow-keyring-name", "keyring-naming", false},
+		{"before the gossip keyring issuer's traps on an https host", "slow-keyring-name", "keyring-naming", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1902,6 +1927,17 @@ func TestRemoteAlphaUpgradeESApplyRollsBackWhenInterrupted(t *testing.T) {
 					t.Fatalf("apply never reached %s\n%s\n%s", tc.reached, stdout.String(), stderr.String())
 				}
 				time.Sleep(50 * time.Millisecond)
+			}
+			if tc.slow == "slow-keyring-name" {
+				entries, err := os.ReadDir(h.path("opt/nomad/data/server"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, e := range entries {
+					if strings.HasPrefix(e.Name(), ".serf.keyring.") {
+						t.Fatalf("%s exists before the issuer's traps are set", e.Name())
+					}
+				}
 			}
 			if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
 				t.Fatal(err)
