@@ -286,6 +286,24 @@ evidence.
   message, CGS `id.conf` reuse, CP policy input, or request-supplied policy
   entry is added. Denials remain redacted and must not expose the configured
   literal, matched content, or raw payload text.
+- The workload-grant follow-up to C6 is decided in Workstream F slice F1
+  (`.docs/system_overview/runtime_identity_handoff.md`, section 11) and is not
+  yet implemented. It adds two built-in ES policies that read owner grants
+  from ES deployment/admin config, `admission_policy.workload_grants`:
+  `execution-substrate.admission.network-grant/v1` (reason code
+  `network_access_not_granted`, lands with WI-2) and
+  `execution-substrate.admission.workload-identity-grant/v1` (reason code
+  `workload_identity_not_granted`, lands with WI-3). A grant rule matches
+  exactly on the publisher principal, the evidence signer key ID, the
+  artifact type and the effective runtime profile, and grants an egress lane,
+  a workload identity name, both, or neither. Signed `network_access` stays
+  the publisher's request; network needs that request and a grant. Admission
+  produces only scheduler-neutral names, and runtime realization alone maps
+  them to job, label, network and environment values. The contract,
+  including its limits and refusals, is
+  `.docs/execution_lifecycle/contracts.md`, section 5B. These grants add no
+  policy language: the guardrails for configurable inputs below apply to them
+  unchanged.
 - `:prepare` may perform bounded payload-byte reads when an enabled ES
   admission policy requires payload inspection. That read must use the
   explicit ARS payload digest carried by the discovery/evidence relationship
@@ -743,6 +761,12 @@ remain outside this candidate.
   customer-authored policy bundles, request-supplied entries, CP-defined ES
   policy, an external evaluator service, user-defined reason codes,
   user-defined API messages, or CGS `id.conf` reuse.
+- Do not let workload grants become prefix, glob or regex matching, Boolean
+  rule logic, a publisher-requested identity, an identity claim in signed
+  evidence, a switch that turns grants off, or a path for ES to create SPIRE
+  entries, Vault roles or Vault policies. Do not let grant or admission-policy
+  code name Nomad, Docker, or the container label: runtime realization alone
+  translates grants.
 - Do not let the selected static-script content policy claim universal malware
   detection, complete command sandboxing, endpoint security, independent
   audit, public/demo readiness, runtime identity/Vault proof, IM

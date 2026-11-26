@@ -210,6 +210,16 @@ service, CGS `id.conf` reuse, CP-defined ES policy input, request-supplied
 policy entry path, user-defined reason-code path, or user-defined API-message
 path. Denials remain redacted.
 
+The C6 workload-grant follow-up, decided in Workstream F slice F1, adds two
+built-in ES admission policies that read owner grants from ES
+deployment/admin configuration: `execution-substrate.admission.network-grant/v1`
+(reason code `network_access_not_granted`) and
+`execution-substrate.admission.workload-identity-grant/v1` (reason code
+`workload_identity_not_granted`). Section 5B is their contract. They are not
+yet implemented: the network policy lands with WI-2 and the identity policy
+with WI-3. Grants match exactly and keep the same deliberate absences as the
+configured literal deny policy.
+
 Control Plane may consume the accepted lifecycle surface, including the bounded `control-plane-normal-shell/v1` runtime-profile path, but CP documents, probes, examples, and proof harnesses do not define ES lifecycle contracts. Any widening or breaking change must be planned in `PLANS.md` and the ES docs before implementation spreads outward.
 Control Plane owns orchestration, Temporal workflow state, review, checkpoint,
 finalization, intervention, and operator-facing control semantics. CP consumes
@@ -749,6 +759,159 @@ staged byte, because the artifact digest fixes the payload digest; for the
 primary artifact it decides which execution claims apply. ARS's index accepts
 one discovery record per artifact digest, so an ARS that follows its own
 registration contract always names the first registered document.
+
+## 5B. Workload grants contract
+
+### Purpose
+
+Owner-written grants in ES deployment configuration decide, together with
+the publisher's signed request, whether a run gets a network and which named
+workload identity it gets. The design is the F1 decision in
+`.docs/system_overview/runtime_identity_handoff.md`, section 11.
+
+### Status
+
+This contract is decided and not yet implemented. The network part lands
+with WI-2 and the identity part with WI-3
+(`.docs/system_overview/runtime_identity_handoff.md`, section 11.10). Until a
+part lands, sections 5 and 6 describe current behavior for it: signed
+`network_access` maps directly to a network mode, and every run receives the
+shared workload identity. The pull request that lands a part moves that text
+to this contract in the same change.
+
+### Configuration
+
+Grants live in ES deployment configuration at
+`admission_policy.workload_grants`:
+
+```json
+"admission_policy": {
+  "workload_grants": {
+    "workload_identities": ["codex-agent"],
+    "egress_lanes": [
+      {"name": "unrestricted", "reaches_workload_vault": true}
+    ],
+    "rules": [
+      {
+        "id": "cp-codex",
+        "publisher_principal": "spiffe://execution.internal/service/control-plane",
+        "signer_key_id": "<AGS evidence signing key ID>",
+        "artifact_type": "static-script",
+        "runtime_profile": "control-plane-normal-shell/v1",
+        "workload_identity": "codex-agent",
+        "egress_lane": "unrestricted"
+      }
+    ]
+  }
+}
+```
+
+- Grants are ES deployment/admin configuration only, read at startup. A
+  change takes effect when ES restarts. Requests cannot carry grants, CP does
+  not define or supply them, and IM remains readiness, provenance and
+  diagnostics only.
+- No setting turns grants off. A configuration without `workload_grants`, or
+  with no rules, admits only runs that request no network and whose runtime
+  profile needs no credential, and those runs receive no identity.
+- `workload_identities` lists the names the owner registered with the setup
+  scripts (one SPIRE entry, one Vault role and one Vault policy each). A name
+  is 1 to 63 characters from `a-z`, `0-9` and `-`, starting with a letter or a
+  digit.
+- `egress_lanes` lists the lanes, each with a `name` under the same rule as
+  identity names and a Boolean `reaches_workload_vault`. Until WI-4, the only
+  accepted lane is `unrestricted` with `reaches_workload_vault=true`, realized
+  as the current `bridge` network mode. On the Remote Supported Host Alpha
+  box that network sits under the host firewall of
+  `.docs/system_overview/remote_supported_host_alpha.md`. Supported-local
+  hosts have no host firewall, so there `unrestricted` is the full `bridge`
+  network, which reaches the local network and host services.
+- Each rule has:
+  - `id`: unique, at most 64 bytes, starting and ending with an ASCII letter
+    or digit, and containing only ASCII letters, digits, dot, underscore and
+    hyphen (the entry ID rule of the configured literal deny policy);
+  - four required match fields, compared byte for byte:
+    `publisher_principal` (a SPIFFE ID that the caller authentication
+    contract in `.docs/system_overview/contracts.md`, section 3A, accepts,
+    written in that form), `signer_key_id`, `artifact_type`, and
+    `runtime_profile` (the effective profile name, `static-script/default`
+    when the request names none). The publisher principal is the one
+    `claims.package.publication` claim ES admission reads, and only as this
+    match fact: it does not become ES request or response grammar, and no
+    other publication claim reaches admission;
+  - two optional grant fields: `workload_identity`, a name from
+    `workload_identities`, and `egress_lane`, a name from `egress_lanes`.
+- ES startup refuses: more than 32 rules; a duplicate rule ID; two rules with
+  the same four match fields, so at most one rule matches a run; a missing or
+  empty match field; a match value with surrounding white space; a name not
+  in its list; a lane other than `unrestricted` before WI-4; and a rule that
+  grants an identity without a lane that reaches the workload-zone Vault.
+
+### Evaluation
+
+Two built-in ES admission policies read the same grants. They run on
+`:prepare` and on `:submit` alike, in the shared admission path after
+evidence verification:
+
+1. ES finds the rule whose four match fields equal the run's facts: the
+   publisher principal and signer key ID from the verified evidence, the
+   artifact type, and the effective runtime profile.
+2. The effective lane is none when signed `network_access` is false,
+   whatever the rule grants. When `network_access` is true, it is the rule's
+   `egress_lane`.
+3. `network_access=true` with no matching rule, or with a rule that grants no
+   lane, is refused by `execution-substrate.admission.network-grant/v1` with
+   `403`, reason code `network_access_not_granted` and safe message
+   `network access not granted by admission policy`.
+4. The effective identity is the rule's `workload_identity` when the
+   effective lane reaches the workload-zone Vault, and none otherwise.
+5. A runtime profile that needs a credential, today
+   `control-plane-normal-shell/v1`, with no effective identity, is refused by
+   `execution-substrate.admission.workload-identity-grant/v1` with `403`,
+   reason code `workload_identity_not_granted` and safe message
+   `workload identity not granted by admission policy`.
+6. Otherwise the run is admitted with its effective identity and lane. A run
+   without an identity receives no identity handoff
+   (`.docs/system_overview/runtime_identity_handoff.md`, section 11.5).
+
+Rules for these policies:
+
+- The network policy runs first, so a run refused by both reports
+  `network_access_not_granted`.
+- Both refusals are deterministic policy denials in the existing redacted
+  error envelope. A failure to read the workload-zone Vault config remains an
+  unavailable dependency, not a grant denial.
+- The internal decision metadata records the matching rule ID, the effective
+  identity name and the effective lane name. These are safe, non-secret
+  values.
+- Every delivery that can cause an effect evaluates the grants again with the
+  configuration ES runs with at that time, and refuses when a grant was
+  removed or narrowed. Read-only receipt recovery does not evaluate them.
+  This settles, for workload grants only, the question that
+  `.docs/execution_lifecycle/submit_idempotency_correlation_and_recovery.md`
+  section 11 leaves open for mutable admission policy.
+- While any rule grants the lane `unrestricted`, readiness reports
+  `workload_egress_unrestricted=true`. This is a `Temporary compatibility
+  edge`: a granted run reaches the internet without an egress filter of its
+  own, through the host firewall on the Remote Supported Host Alpha box and
+  through the full `bridge` network on supported-local hosts.
+  WI-4 removes the value, and from then on ES startup refuses a configuration
+  that uses it.
+
+### Guardrails
+
+- Matching is exact. Grants do not add regex, glob, prefix matching, Boolean
+  policy logic, OPA/Rego, a DSL, customer policy bundles, an external
+  evaluator, request-supplied grants, CP-defined grants, user-defined reason
+  codes or user-defined API messages.
+- Grant and admission-policy code names no scheduler or container term:
+  runtime realization alone maps an identity name and a lane name to job,
+  label, network and environment values.
+- Signed `network_access` stays the publisher's least-privilege request. A
+  grant never gives a network to a run that did not request one.
+- Grants are not a sandbox, an egress filter or a firewall. Until WI-4, a
+  granted run's network is the current `bridge` network: under the host
+  firewall on the Remote Supported Host Alpha box, and without one on
+  supported-local hosts.
 
 ## 6. Submit contract
 

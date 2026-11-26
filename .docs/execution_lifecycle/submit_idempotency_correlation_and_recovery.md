@@ -1108,7 +1108,7 @@ Replay and lookup remain caller-authorized operations. Revoked or unauthorized c
 
 Exact replay cannot widen originally accepted execution effects. The contract must distinguish returning a prior receipt from admitting a new execution.
 
-Whether mutable admission policy is re-evaluated for read-only receipt recovery remains open. No replay may create a wider second effect.
+Whether mutable admission policy is re-evaluated for read-only receipt recovery remains open. No replay may create a wider second effect. Workload grants settle this question for themselves only: read-only receipt recovery does not evaluate them, and every delivery that can cause an effect does (`.docs/execution_lifecycle/contracts.md`, section 5B). It stays open for every other mutable admission policy.
 
 ## 12. Retention And Expiry
 
