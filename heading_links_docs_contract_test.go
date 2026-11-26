@@ -167,6 +167,15 @@ func claimLedgerLineCitations(line string) []string {
 	return found
 }
 
+// claimLedgerBaselineCellCitesLines reports whether a cell of the claim
+// ledger's Execution Substrate source baseline table cites by line: it holds
+// only line numbers and ranges, it holds a digit range anywhere, or it holds a
+// code span that cites by line.
+func claimLedgerBaselineCellCitesLines(cell string) bool {
+	cell = strings.TrimSpace(cell)
+	return numericCell.MatchString(cell) || lineRange.MatchString(cell) || claimLedgerLineSpan.MatchString(cell)
+}
+
 // TestClaimLedgerCitesThisRepositoryBySection keeps the claim ledger's
 // citations of this repository on section headings: its lines move.
 // TestMarkdownHeadingLinksResolve checks that each linked heading exists.
@@ -183,7 +192,7 @@ func TestClaimLedgerCitesThisRepositoryBySection(t *testing.T) {
 			continue
 		}
 		for _, cell := range strings.Split(strings.Trim(line, "|"), "|") {
-			if cell = strings.TrimSpace(cell); numericCell.MatchString(cell) || lineRange.MatchString(cell) || claimLedgerLineSpan.MatchString(cell) {
+			if claimLedgerBaselineCellCitesLines(cell) {
 				t.Errorf("%s source baseline cites this repository by line: %q", claimLedgerPath, line)
 			}
 		}
@@ -207,6 +216,8 @@ func TestClaimLedgerCitesThisRepositoryBySection(t *testing.T) {
 		"ES [`x.md` § A](x.md#a), `51-82`",
 		"| ES [`x.md` § A](x.md#a) and [§ B](x.md#b), `L70` |",
 		"ES [`x.md` § A](x.md#a) (CP compatibility), `160-228`; CP `README.md:1-12`",
+		"ES [`x.md` § A](x.md#a); ES [`y.md` § B](y.md#b), `51-82`",
+		"| ES [`x.md` § A](x.md#a) | ES [`y.md` § B](y.md#b), `L70` |",
 	} {
 		if len(claimLedgerLineCitations(line)) == 0 {
 			t.Errorf("claimLedgerLineCitations misses %q", line)
@@ -225,9 +236,20 @@ func TestClaimLedgerCitesThisRepositoryBySection(t *testing.T) {
 			t.Errorf("claimLedgerLineCitations refuses %q (%q)", line, found)
 		}
 	}
-	for _, cell := range []string{"`229`", "Lines `1-229`", "1-229", "`L12`, `L40-L68`"} {
-		if !numericCell.MatchString(cell) && !lineRange.MatchString(cell) && !claimLedgerLineSpan.MatchString(cell) {
+	for _, cell := range []string{"`229`", " 229 ", "Lines `1-229`", "Lines 1-229", "1-229", "`L12`, `L40-L68`", "`README.md:12`", "`.docs/mvp.md#L40`"} {
+		if !claimLedgerBaselineCellCitesLines(cell) {
 			t.Errorf("the source baseline check misses the cell %q", cell)
+		}
+	}
+	for _, cell := range []string{
+		"The whole file",
+		"Sections 1, 2, 3, 4 and 8",
+		"Sections 3 to 5, 7 and 10 to 12, cited by section because its lines move",
+		"[§ Primary Program Orientation](../../PLANS.md#primary-program-orientation)",
+		"`.docs/system_overview/boundaries.md`",
+	} {
+		if claimLedgerBaselineCellCitesLines(cell) {
+			t.Errorf("the source baseline check refuses the cell %q", cell)
 		}
 	}
 }
