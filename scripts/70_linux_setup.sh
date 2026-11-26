@@ -319,13 +319,19 @@ nomad_tls_issue() {
       -days "${NOMAD_TLS_VALID_DAYS}" -sha256 -extfile server.ext -out server.pem 2>/dev/null || exit 1
     rm -f ca-key.pem || exit 1
     openssl verify -CAfile ca.pem -purpose sslserver server.pem >/dev/null || exit 1
+    # A link at the folder or at a file's name is not followed: the folder is
+    # refused, and mv -T replaces a link at a name with the new file.
+    if [[ -L "${dir}" ]]; then
+      echo "nomad tls: ${dir} is a link; refusing to write Nomad's key through it" >&2
+      exit 1
+    fi
     mkdir -p "${dir}" && chmod 0755 "${dir}" || exit 1
     chmod 0644 ca.pem server.pem && chmod 0600 server-key.pem || exit 1
     # Replace the key first and the CA last: a reader that sees the new CA
     # also finds the certificate it signed.
-    mv -f server-key.pem "${dir}/server-key.pem" || exit 1
-    mv -f server.pem "${dir}/server.pem" || exit 1
-    mv -f ca.pem "${dir}/ca.pem" || exit 1
+    mv -fT server-key.pem "${dir}/server-key.pem" || exit 1
+    mv -fT server.pem "${dir}/server.pem" || exit 1
+    mv -fT ca.pem "${dir}/ca.pem" || exit 1
   ) || status=$?
   rm -rf "${work}"
   return "${status}"
@@ -372,9 +378,12 @@ nomad_tls_as_root() {
 
 # nomad_needs_restart: record, before a change that Nomad reads only when it
 # starts, that Nomad must restart (NOMAD_RESTART_PENDING); restart_nomad
-# restarts it and removes the record.
+# restarts it and removes the record. The record is written only as a new
+# file: whatever is at its name is removed first (a link, not its target), and
+# set -C creates the name exclusively, so a link the data folder's former
+# owner left there is not followed.
 nomad_needs_restart() {
-  sudo sh -c 'umask 077 && : >"$1"' sh "${NOMAD_RESTART_PENDING}"
+  sudo sh -c 'umask 077 && rm -f -- "$1" && set -C && : >"$1"' sh "${NOMAD_RESTART_PENDING}"
   NOMAD_CONFIG_CHANGED=1
 }
 
@@ -531,6 +540,20 @@ install_nomad_gossip_keyring() {
   NOMAD_GOSSIP_ISSUED=1
 }
 
+# nomad_config_write <path>: write standard input to <path> as a new file,
+# root:root 0640, and rename it into place. HashiCorp's package gives
+# /etc/nomad.d and everything in it to the nomad account on each install or
+# upgrade; a link left at <path> is replaced, not followed, and a handle kept
+# open on the old file no longer reaches the config. Nomad loads only *.hcl
+# and *.json from the folder, so it never reads the temporary name.
+nomad_config_write() {
+  local tmp="$1.execution-substrate-new"
+  if ! sudo sh -c 'umask 027 && rm -f -- "$1" && set -C && cat >"$1" && mv -fT -- "$1" "$2"' sh "${tmp}" "$1"; then
+    sudo rm -f -- "${tmp}" || true
+    return 1
+  fi
+}
+
 install_nomad_service_config() {
   local backup_suffix
 
@@ -540,19 +563,32 @@ install_nomad_service_config() {
   # the keyring) are root-owned.
   sudo install -d -o root -g root -m 0755 "${NOMAD_CONFIG_DIR}"
   sudo install -d -o root -g root -m 0700 "${NOMAD_DATA_DIR}"
+  # The package leaves /etc/nomad.d to the nomad account, which can put a link
+  # at the TLS folder; install -d would re-own and re-mode the link's target
+  # and the issuer would write Nomad's key there. Now that only root can
+  # change /etc/nomad.d, the link is removed and a folder made in its place.
+  if sudo test -L "${NOMAD_TLS_DIR}"; then
+    echo "nomad tls: ${NOMAD_TLS_DIR} is a link; replacing it with a folder"
+    sudo rm -f -- "${NOMAD_TLS_DIR}"
+  fi
   sudo install -d -o root -g root -m 0755 "${NOMAD_TLS_DIR}"
   install_nomad_tls_material
   install_nomad_gossip_keyring
 
-  if sudo test -f "${NOMAD_CONFIG_PATH}" && ! sudo grep -Fq "${NOMAD_MANAGED_MARKER}" "${NOMAD_CONFIG_PATH}"; then
-    backup_suffix="$(date +%Y%m%d%H%M%S)"
-    echo "Backing up existing Nomad config to ${NOMAD_CONFIG_BACKUP_PATH}.${backup_suffix}"
-    sudo cp "${NOMAD_CONFIG_PATH}" "${NOMAD_CONFIG_BACKUP_PATH}.${backup_suffix}"
-  fi
-
+  # nomad.hcl is read, and backed up, only when it is a regular file and not a
+  # link; a link there is replaced by the new file without being followed.
   local previous_config=""
   local config=""
-  previous_config="$(sudo cat "${NOMAD_CONFIG_PATH}" 2>/dev/null || true)"
+  if sudo test -L "${NOMAD_CONFIG_PATH}"; then
+    echo "nomad: ${NOMAD_CONFIG_PATH} is a link; replacing it with the config without following it"
+  elif sudo test -f "${NOMAD_CONFIG_PATH}"; then
+    if ! sudo grep -Fq "${NOMAD_MANAGED_MARKER}" "${NOMAD_CONFIG_PATH}"; then
+      backup_suffix="$(date +%Y%m%d%H%M%S)"
+      echo "Backing up existing Nomad config to ${NOMAD_CONFIG_BACKUP_PATH}.${backup_suffix}"
+      sudo cp --remove-destination -- "${NOMAD_CONFIG_PATH}" "${NOMAD_CONFIG_BACKUP_PATH}.${backup_suffix}"
+    fi
+    previous_config="$(sudo cat -- "${NOMAD_CONFIG_PATH}")"
+  fi
 
   config="$(cat <<EOF
 ${NOMAD_MANAGED_MARKER}
@@ -637,9 +673,7 @@ EOF
   if [[ "${config}" != "${previous_config}" ]]; then
     nomad_needs_restart
   fi
-  printf '%s\n' "${config}" | sudo tee "${NOMAD_CONFIG_PATH}" >/dev/null
-  sudo chown root:root "${NOMAD_CONFIG_PATH}"
-  sudo chmod 0640 "${NOMAD_CONFIG_PATH}"
+  printf '%s\n' "${config}" | nomad_config_write "${NOMAD_CONFIG_PATH}"
 }
 
 # BEGIN nomad_acl_bootstrap (the tests run these functions on their own)
@@ -1180,7 +1214,7 @@ echo "- That Nomad config serves its API and RPC over TLS 1.3 only, with a certi
 if [[ "${SUPPORTED_SUBSTRATE_READY}" == "1" ]]; then
   echo "- Nomad encrypts its gossip with the key in ${NOMAD_GOSSIP_KEYRING} (root-only), so no process without the key can join it as a peer. A rerun keeps the keyring while it is sound."
 else
-  echo "- Nomad's gossip key is in ${NOMAD_GOSSIP_KEYRING} (root-only), but this run did not qualify Nomad, so it has not seen Nomad encrypt its gossip with it. A rerun keeps the keyring while it is sound, and restarts Nomad while a change waits for a restart."
+  echo "- Nomad's gossip key is in ${NOMAD_GOSSIP_KEYRING} (root-only), but this run did not qualify Nomad, so it makes no claim that Nomad encrypts its gossip with it. A rerun keeps the keyring while it is sound, and restarts Nomad while a change waits for a restart."
 fi
 echo "- If supported-substrate qualification failed above, do not treat this VM as supported yet."
 echo "- If nomad.service could not start or remain healthy, fix that with root-managed host investigation instead of falling back to a user-started Nomad proof."
