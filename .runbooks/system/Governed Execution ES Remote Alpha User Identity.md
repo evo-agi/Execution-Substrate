@@ -207,4 +207,4 @@ What a `check` outcome means:
 
 ## History
 
-- **2026-11-26:** first version, with the helper. Not run on the box yet.
+- **2026-11-26:** first version, with the helper (PR #70). Not run on the box yet.
