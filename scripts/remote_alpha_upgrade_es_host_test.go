@@ -597,7 +597,7 @@ func stampedBinaryWithModules(name, goVersion, revision, modified, deps string) 
 		"build\tvcs=git\nbuild\tvcs.revision="+revision+"\nbuild\tvcs.modified="+modified+"\n")
 }
 
-// The dependency lines a go.work leaves (red-team audit 32, A32-1): a
+// The dependency lines a go.work leaves (audit 32, A32-1): a
 // replace (the dependency loses its go.sum hash and a "=>" line names the
 // folder used instead), and a workspace module in place of a dependency.
 // vendoredDep is what a -mod=vendor build leaves: the version, with an
@@ -609,7 +609,7 @@ const (
 )
 
 // Dependency lines that look clean but are not what the module fixture's
-// go.mod and go.sum pin (red-team audit 33, A33-2): a version go.sum has a
+// go.mod and go.sum pin (audit 33, A33-2): a version go.sum has a
 // hash for but go.mod does not require, as a go.work that raises a version
 // leaves; a module go.mod does not require; the required version with a hash
 // of another kind (mutant C4); and with another h1 hash.
@@ -1286,7 +1286,7 @@ func TestRemoteAlphaUpgradeESCheckRefusesWhatItWasNotWrittenFor(t *testing.T) {
 			h.replacePayloadFile("es", []byte("new es build\n"))
 		}, "payload", "not a 64-bit little-endian ELF file"},
 		// Each installed binary's build info against the commit's go.mod and
-		// go.sum (red-team audits 32 and 33, A32-1 and A33-2).
+		// go.sum (audits 32 and 33, A32-1 and A33-2).
 		{"es was built with a replaced module", func(h *upgradeHost) {
 			h.replacePayloadFile("es", stampedBinaryWithModules("es", "go1.26.5", upgradeTestCommit, "false", replacedDep))
 		}, "payload", "the payload file es was not built from the modules " + upgradeTestCommit + " pins, by its own Go build info: " +
@@ -1363,7 +1363,7 @@ func TestRemoteAlphaUpgradeESCheckRefusesWhatItWasNotWrittenFor(t *testing.T) {
 			// The folder it names holds the commit and is the stand-in
 			// root's alone, and the payload is clean, so only the .git file
 			// is refused: git follows it to whatever folder it names
-			// (red-team audit 34, A34-2).
+			// (audit 34, A34-2).
 			clone := filepath.Join(h.t.TempDir(), "clone")
 			if err := os.Mkdir(clone, 0o755); err != nil {
 				h.t.Fatal(err)
@@ -1383,7 +1383,7 @@ func TestRemoteAlphaUpgradeESCheckRefusesWhatItWasNotWrittenFor(t *testing.T) {
 		{"the clone's git takes its objects from a commondir", func(h *upgradeHost) {
 			// The repository commondir names holds the commit and is the
 			// stand-in root's alone, and the payload is clean, so only the
-			// commondir is refused (red-team audit 34, A34-2).
+			// commondir is refused (audit 34, A34-2).
 			common := filepath.Join(h.t.TempDir(), "common.git")
 			fixtureGit(h.t, h.modules, "clone", "-q", "--bare", h.modules, common)
 			denyGroupOtherWrite(h.t, common)
@@ -2327,7 +2327,7 @@ esac
 `
 
 // buildGoSettings are the fixed Go and git settings build gives the
-// toolchain, whatever its own environment holds (red-team audits 32 and 33,
+// toolchain, whatever its own environment holds (audits 32 and 33,
 // A32-1 and A33-1). buildPrivateFolders are the variables that name the
 // private folders build makes for one build.
 var (
@@ -2437,17 +2437,17 @@ func fakeGoEnv(t *testing.T, goBin, command string) map[string]string {
 // account can leave a go.work beside the clone's folder, and Go reads a
 // go.work from any folder above the module unless GOWORK=off; a go.work can
 // put any folder in place of a dependency, unchecked by go.sum, and the
-// build would still be stamped as a clean build of the commit (red-team
-// audit 32, A32-1). The go.work here names only another module, so Go
+// build would still be stamped as a clean build of the commit
+// (audit 32, A32-1). The go.work here names only another module, so Go
 // refuses to build the clone if it reads it; build must not read it, even
 // when its own environment names it. The same account can leave a git
 // config with a hook and a cache folder, and the operator's environment may
 // name them in XDG_CONFIG_HOME and XDG_CACHE_HOME: git must not run the
-// hook and Go must not use that cache (red-team audit 33, A33-1). build
+// hook and Go must not use that cache (audit 33, A33-1). build
 // runs a copy of the toolchain that only the test user can change, since
 // the one a CI runner offers may be writable by any account. Last, that
 // copy's go.env names a private module, whose toolchain build must refuse
-// (red-team audit 35, A35-1).
+// (audit 35, A35-1).
 func TestRemoteAlphaUpgradeESBuildIgnoresAGoWorkAbove(t *testing.T) {
 	pathGo, err := exec.LookPath("go")
 	if err != nil {
@@ -2590,7 +2590,7 @@ func TestRemoteAlphaUpgradeESBuildIgnoresAGoWorkAbove(t *testing.T) {
 	// This build runs Go through a wrapper that lists, after each go
 	// command, what is in Go's telemetry folder under build's private
 	// HOME: only the mode file build wrote, so Go collected nothing and
-	// started no telemetry child (red-team audit 34, A34-1).
+	// started no telemetry child (audit 34, A34-1).
 	config := "$HOME/.config"
 	if runtime.GOOS == "darwin" {
 		config = "$HOME/Library/Application Support"
@@ -2632,9 +2632,9 @@ func TestRemoteAlphaUpgradeESBuildIgnoresAGoWorkAbove(t *testing.T) {
 	// GOPRIVATE in the toolchain's go.env makes Go fetch the modules it
 	// names from the servers their paths name, whatever GOPROXY says, and
 	// build cannot override it with an empty value, so build must refuse
-	// that toolchain (red-team audit 35, A35-1), also when the value starts
+	// that toolchain (audit 35, A35-1), also when the value starts
 	// with a vertical tab and a comma, which Go keeps and skips while it
-	// still names the module after it (red-team audit 36, A36-2).
+	// still names the module after it (audit 36, A36-2).
 	stockEnv, err := os.ReadFile(filepath.Join(goroot, "go.env"))
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		t.Fatal(err)
@@ -2712,7 +2712,7 @@ func copyTree(t *testing.T, src, dst string) {
 
 func TestRemoteAlphaUpgradeESBuildChecksToolchainCheckoutAndBuildInfo(t *testing.T) {
 	// What the operator's environment may hold; none of it may reach Go or
-	// git (red-team audits 32 and 33, A32-1 and A33-1). A git first on PATH
+	// git (audits 32 and 33, A32-1 and A33-1). A git first on PATH
 	// leaves a marker if it runs.
 	hostile := map[string]string{
 		"GOWORK": "/tmp/go.work", "GOFLAGS": "-mod=mod", "GOENV": "/tmp/go-env", "GOROOT": "/tmp/goroot", "GOPATH": "/tmp/gopath",
@@ -2768,8 +2768,8 @@ func TestRemoteAlphaUpgradeESBuildChecksToolchainCheckoutAndBuildInfo(t *testing
 		{name: "build info names another commit", fake: map[string]string{"FAKE_REVISION": strings.Repeat("c", 40)}, says: "es does not carry the commit as a clean build"},
 		{name: "build info says modified", fake: map[string]string{"FAKE_MODIFIED": "true"}, says: "es does not carry the commit as a clean build"},
 
-		// Build info against the commit's go.mod and go.sum (red-team
-		// audits 32 and 33, A32-1 and A33-2).
+		// Build info against the commit's go.mod and go.sum
+		// (audits 32 and 33, A32-1 and A33-2).
 		{name: "build info shows a replaced module", fake: map[string]string{"FAKE_MODULES": `\tmod\texecution-substrate\t(devel)\t\n\tdep\tgolang.org/x/sys\tv0.46.0\n\t=>\t/tmp/elsewhere/sys\t(devel)\t\n`},
 			says: "es was not built from the modules the commit pins: the dependency golang.org/x/sys v0.46.0 without a hash the commit's go.sum holds for it; a replaced module (/tmp/elsewhere/sys (devel))"},
 		{name: "build info shows a workspace module for a dependency", fake: map[string]string{"FAKE_MODULES": `\tmod\texecution-substrate\t(devel)\t\n\tdep\tgolang.org/x/sys\t(devel)\t\n`},
@@ -2802,7 +2802,7 @@ func TestRemoteAlphaUpgradeESBuildChecksToolchainCheckoutAndBuildInfo(t *testing
 			fixtureGit(t, repo, "commit", "-q", "-a", "-m", "unknown line")
 		}, says: "line 6 of the commit's go.mod is not read here: 'frobnicate golang.org/x/sys'"},
 
-		// The environment (red-team audits 32 and 33, A32-1 and A33-1).
+		// The environment (audits 32 and 33, A32-1 and A33-1).
 		{name: "nothing from the environment but the proxy and CA variables reaches the toolchain", env: mergeMaps(hostile, passed), succeeds: true,
 			prepare: func(t *testing.T, repo, goBin, out string) {
 				fakeGit := filepath.Join(filepath.Dir(goBin), "path-bin", "git")
@@ -2833,8 +2833,8 @@ func TestRemoteAlphaUpgradeESBuildChecksToolchainCheckoutAndBuildInfo(t *testing
 				}
 			}},
 
-		// What build compiles and runs, and where the payload goes (red-team
-		// audit 33): nothing that another account can change.
+		// What build compiles and runs, and where the payload goes
+		// (audit 33): nothing that another account can change.
 		{name: "a folder of the clone that others can write", prepare: func(t *testing.T, repo, goBin, out string) {
 			writable(filepath.Join(repo, "scripts"), 0o777)
 		}, says: "can change the clone build compiles: "},
@@ -2859,13 +2859,13 @@ func TestRemoteAlphaUpgradeESBuildChecksToolchainCheckoutAndBuildInfo(t *testing
 		{name: "a Go toolchain whose go.env names modules to fetch from their own servers", fake: map[string]string{"FAKE_GONOPROXY": "example.com/private"},
 			// GOPRIVATE or GONOPROXY in the toolchain's go.env would make Go
 			// fetch those modules from the servers their paths name, not
-			// through the module proxy, whatever GOPROXY says (red-team
-			// audit 35, A35-1).
+			// through the module proxy, whatever GOPROXY says
+			// (audit 35, A35-1).
 			says: "sets GONOPROXY or GOPRIVATE to 'example.com/private' in its go.env, which makes Go fetch the modules it names from their own servers, not through https://proxy.golang.org; build refuses any value there"},
 		// Go keeps a vertical tab, a carriage return or U+2028 in the value
 		// and splits its pattern list only at commas, so each of these
 		// still names example.com/private; a reader of go env's lines
-		// would take them for line ends and see nothing (red-team audit 36,
+		// would take them for line ends and see nothing (audit 36,
 		// A36-2).
 		{name: "a36: GONOPROXY after a vertical tab and a comma", fake: map[string]string{"FAKE_GONOPROXY": "\v,example.com/private"},
 			says: `sets GONOPROXY or GOPRIVATE to '\x0b,example.com/private' in its go.env, which makes Go fetch the modules it names`},
@@ -2877,6 +2877,17 @@ func TestRemoteAlphaUpgradeESBuildChecksToolchainCheckoutAndBuildInfo(t *testing
 			says: "go env -json did not report GOVERSION, GOROOT, GONOPROXY: "},
 		{name: "go env answers in lines, not JSON", fake: map[string]string{"FAKE_GO_ENV_JSON": "go1.26.5\n/nowhere\n"},
 			says: "go env -json did not report GOVERSION, GOROOT, GONOPROXY: 'go1.26.5\\n/nowhere'"},
+		// Audit 37: the reader's other stated rules. Real go1.26.5 prints
+		// one JSON object of strings, so these answers come only from a
+		// Go that is not the one build was written for.
+		{name: "a37: go env -json reports GONOPROXY as null", fake: map[string]string{"FAKE_GO_ENV_JSON": `{"GONOPROXY": null, "GOROOT": "/nowhere", "GOVERSION": "go1.26.5"}`},
+			says: "go env -json did not report GOVERSION, GOROOT, GONOPROXY: "},
+		{name: "a37: go env -json prints more after its answer", fake: map[string]string{"FAKE_GO_ENV_JSON": "{\"GONOPROXY\": \"\", \"GOROOT\": \"/nowhere\", \"GOVERSION\": \"go1.26.5\"}\nmore"},
+			says: "go env -json did not report GOVERSION, GOROOT, GONOPROXY: "},
+		{name: "a37: a Go toolchain whose GONOPROXY is a space", fake: map[string]string{"FAKE_GONOPROXY": " "},
+			says: "sets GONOPROXY or GOPRIVATE to ' ' in its go.env"},
+		{name: "a37: a Go toolchain whose GONOPROXY is none", fake: map[string]string{"FAKE_GONOPROXY": "none"},
+			says: "sets GONOPROXY or GOPRIVATE to 'none' in its go.env"},
 		{name: "a payload folder in a folder others can write", out: func(t *testing.T) string {
 			dir := filepath.Join(t.TempDir(), "open")
 			if err := os.Mkdir(dir, 0o755); err != nil {
@@ -3018,7 +3029,7 @@ func TestRemoteAlphaUpgradeESBuildChecksToolchainCheckoutAndBuildInfo(t *testing
 // telemetry mode "off" in the private HOME, and that the commands named in
 // required ran. With telemetry on, a go command under a fresh HOME starts
 // a child in a session of its own that writes in HOME after the command
-// has exited, after build may have removed the folder (red-team audit 34,
+// has exited, after build may have removed the folder (audit 34,
 // A34-1).
 func assertTelemetryOff(t *testing.T, goBin string, required ...string) {
 	t.Helper()

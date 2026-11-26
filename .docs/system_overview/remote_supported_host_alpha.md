@@ -7298,7 +7298,7 @@ Operator interface:
   out of the binaries, so two builds of one commit give the same bytes
   wherever they run, and a payload can be checked by building it again),
   and it takes nothing that an account other than root and you can change
-  (red-team audits 32 and 33):
+  (audits 32 and 33):
   - it refuses, before Go runs, unless the whole clone (`.git` included),
     the `go` command, the Go toolchain folder that `go` reports
     (`GOROOT`: the standard library's source, the compiler, `go.env`),
@@ -7341,7 +7341,7 @@ Operator interface:
     telemetry is off in that `HOME` (build writes `off` to Go's mode file
     there, as `go telemetry off` does), since with it on a go command
     under a fresh home starts a child process of its own that writes there
-    after the command has ended (red-team audit 34);
+    after the command has ended (audit 34);
   - the module cache is a fresh private folder too, so every build
     downloads the modules (about 60 MB of zips, about 400 MB once
     extracted) through `proxy.golang.org`, unless `--module-cache` names a
@@ -7623,10 +7623,11 @@ any of those modules, a commit whose `go.mod` replaces a module, a clone,
 a `.git` file, a `go` command, a toolchain, a payload folder's parent or a
 module cache that others can change, a toolchain whose `go.env` names
 modules to fetch from their own servers (also after a vertical tab, a
-carriage return or U+2028 and a comma, which Go keeps in the value), a `go
-env -json` answer without `GONOPROXY` or not JSON, a symbolic link in the
-clone, a
-clone without its own `.git`, a module cache in the clone and one that
+carriage return or U+2028 and a comma, which Go keeps in the value) and
+ones whose `GONOPROXY` is a space or `none` (any value is refused), a `go
+env -json` answer without `GONOPROXY`, with `GONOPROXY` null, not JSON, or
+with more after its JSON object, a symbolic link in the clone, a clone
+without its own `.git`, a module cache in the clone and one that
 `go mod verify` refuses, and a refusal after which the private folder
 cannot be removed, which the refusal names; `build` with an environment of
 `GO*`, `XDG_*`, `GIT_*`, `HOME`, `TMPDIR`, `CC` and other variables and a

@@ -208,7 +208,7 @@ func TestESConfigCheckAgreesWithConfigLoad(t *testing.T) {
 // binds by owner and SHA-256 (the tests run a host build of it, a Mach-O
 // file on macOS); build refuses a replaced or unhashed module in all three.
 // With no module outside the repository, neither a go.work nor a replace
-// can change esconfigcheck's code (red-team audit 32, A32-1). A module
+// can change esconfigcheck's code (audit 32, A32-1). A module
 // added here fails this test, and with it that reasoning.
 func TestESConfigCheckNeedsNoModuleButTheRepository(t *testing.T) {
 	cmd := exec.Command("go", "list", "-deps", "-f", "{{with .Module}}{{.Path}}{{end}}", "execution-substrate/scripts/internal/esconfigcheck")

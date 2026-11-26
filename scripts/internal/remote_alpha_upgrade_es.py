@@ -515,8 +515,8 @@ STAMPED_PAYLOAD_FILES = ("es", "es-runtime-support")
 PAYLOAD_PACKAGES = {"es": "cmd/es", "es-runtime-support": "cmd/es-runtime-support",
                     "esconfigcheck": "scripts/internal/esconfigcheck"}
 # The commands build runs, and the git that reads a commit's go.mod and
-# go.sum, take nothing from the environment but what is set here (red-team
-# audit 33, A33-1). PATH holds only root's folders, where git is. git reads
+# go.sum, take nothing from the environment but what is set here
+# (audit 33, A33-1). PATH holds only root's folders, where git is. git reads
 # only the repository's own config: neither the system's nor the user's
 # (XDG_CONFIG_HOME, ~/.gitconfig), where another account's hook could wait.
 # It reads the objects a commit names, not what refs/replace puts in their
@@ -535,9 +535,9 @@ BUILD_PASSED_VARIABLES = ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_prox
 # module the proxy does not have would make Go look the module's path up on
 # the server the path names, whose go-import tag can send Go to any server
 # to download it over the module proxy protocol, which GOVCS cannot forbid
-# (red-team audit 35, A35-1). Without it, such a module fails the build. The
+# (audit 35, A35-1). Without it, such a module fails the build. The
 # proxy itself may answer a download with a redirect to its own storage
-# (storage.googleapis.com), which Go follows (red-team audit 36, A36-1);
+# (storage.googleapis.com), which Go follows (audit 36, A36-1);
 # go.sum checks every byte, wherever they come from.
 BUILD_GOPROXY = "https://proxy.golang.org"
 # What build asks go env for, as JSON.
@@ -1105,7 +1105,7 @@ def go_sum_hashes(text):
 
 def commit_module_pins(repo, commit, owners, env):
     """What a build of commit may hold, read from the commit's own go.mod
-    and go.sum in the git objects of the clone repo (red-team audit 33,
+    and go.sum in the git objects of the clone repo (audit 33,
     A33-2): the module's path, the version go.mod requires of each
     dependency, and the hashes go.sum holds. Only owners may be able to
     change those objects: the clone's .git must be a folder that belongs to
@@ -1115,7 +1115,7 @@ def commit_module_pins(repo, commit, owners, env):
     it, so the folder git reads objects from decides the pins. A .git file
     ("gitdir: <path>", as git worktree add and git clone --separate-git-dir
     leave) or link sends git to another folder, so .git must be a folder
-    itself, as build requires (red-team audit 34, A34-2)."""
+    itself, as build requires (audit 34, A34-2)."""
     git_dir = os.path.join(repo, ".git")
     problems = folders_above_problems(git_dir, (0,) + tuple(owners))
     if not os.path.lexists(git_dir):
@@ -1990,7 +1990,7 @@ def cmd_build(args):
     """Build the payload from this checkout (unprivileged).
 
     The build takes nothing that an account other than root and the user
-    running it can change (red-team audits 32 and 33, A32-1 and A33-1):
+    running it can change (audits 32 and 33, A32-1 and A33-1):
     the clone, .git included; the Go toolchain; the folders the payload
     goes in; and the module cache, when --module-cache names one. Go and
     git get no setting from the environment but proxy and CA variables,
@@ -2082,7 +2082,7 @@ def build_payload(args, repo, out_dir, go, module_cache, owners, work):
     # that has no upload token, as each fresh HOME here, starts a child in a
     # session of its own, which run() cannot end, and that child writes in
     # HOME after the command has exited, after build may have removed the
-    # folder (red-team audit 34, A34-1). With "off", Go writes nothing there
+    # folder (audit 34, A34-1). With "off", Go writes nothing there
     # and starts no child. This file is what `go telemetry off` writes;
     # GOTELEMETRY is a value go env reports, not a setting it reads.
     telemetry = os.path.join(go_config_dir(folders["home"]), "go", "telemetry")
@@ -2096,12 +2096,12 @@ def build_payload(args, repo, out_dir, go, module_cache, owners, work):
                GOWORK="off", GOENV="off", GOFLAGS="-mod=readonly", GOTOOLCHAIN="local",
                CGO_ENABLED="0", GOOS="linux", GOARCH="amd64",
                # Modules come only through BUILD_GOPROXY, in place of the
-               # toolchain's "https://proxy.golang.org,direct" (red-team
-               # audits 35 and 36, A35-1 and A36-1).
+               # toolchain's "https://proxy.golang.org,direct"
+               # (audits 35 and 36, A35-1 and A36-1).
                GOPROXY=BUILD_GOPROXY,
                # And should Go ever fetch a module directly, it runs no git
-               # or other VCS tool to do it, as the operator (red-team
-               # audit 34, O34-1).
+               # or other VCS tool to do it, as the operator
+               # (audit 34, O34-1).
                GOVCS="*:off")
     # GONOPROXY is the one setting left that makes Go fetch a module from
     # its own server rather than through GOPROXY, "direct" or not. Go takes
@@ -2111,7 +2111,7 @@ def build_payload(args, repo, out_dir, go, module_cache, owners, work):
     # for JSON: plain go env prints each value as it is, and a value can
     # hold a carriage return, a vertical tab or U+2028, which a reader of
     # lines takes for a line end while Go keeps them in its pattern list
-    # (red-team audit 36, A36-2).
+    # (audit 36, A36-2).
     answer = run([go, "env", "-json", *BUILD_GO_ENV_KEYS], env=env, check=True).stdout
     try:
         reported = json.loads(answer)
