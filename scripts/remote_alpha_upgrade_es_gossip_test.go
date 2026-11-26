@@ -174,7 +174,7 @@ func TestRemoteAlphaUpgradeESAddsTheGossipKeyringToAnHTTPSHost(t *testing.T) {
 	}
 	log := mustRead(t, filepath.Join(h.state, "calls.log"))
 	at := 0
-	for _, step := range []string{"systemctl stop es", "systemctl stop nomad", "systemctl start nomad", "curl https://127.0.0.1:4646/v1/status/leader",
+	for _, step := range []string{"systemctl stop es", "mv onto the gossip keyring", "systemctl stop nomad", "systemctl start nomad", "curl https://127.0.0.1:4646/v1/status/leader",
 		"acl-setup check", "curl https://127.0.0.1:4646/v1/agent/self", "acl-setup placement", "systemctl start es",
 		"tls-identity check https://127.0.0.1:4646", "acl-setup check", "curl https://127.0.0.1:4646/v1/agent/self"} {
 		next := strings.Index(log[at:], step)
@@ -304,6 +304,8 @@ func TestRemoteAlphaUpgradeESRollsBackTheGossipKeyring(t *testing.T) {
 		{"Nomad cannot place ES's jobs after its restart", "placement-fails", "nomad_acl_setup.sh placement failed"},
 		{"the ACL check fails after Nomad's restart", "acl-check-fails", "nomad_acl_setup.sh check failed"},
 		{"ES does not start", "fail-start-es-once", "systemctl start es"},
+		{"the issuer leaves the keyring readable by others", "issued-keyring-loose",
+			"Nomad's new gossip keyring is present, but it fails the setup's nomad_gossip_keyring_ok"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newUpgradeHost(t, helper)
@@ -350,6 +352,14 @@ func TestRemoteAlphaUpgradeESRefusesAGossipKeyringItDidNotExpect(t *testing.T) {
 			_ = os.Rename(h.path(hostGossipKeyring), h.path("opt/nomad/data/server/elsewhere"))
 			_ = os.Symlink("elsewhere", h.path(hostGossipKeyring))
 		}, "Nomad's gossip keyring: present, but it fails the setup's nomad_gossip_keyring_ok"},
+		{"the keyring is a dangling symbolic link", true, func(h *upgradeHost) { _ = os.Symlink("nowhere", h.path(hostGossipKeyring)) },
+			"Nomad's gossip keyring: present, but it fails the setup's nomad_gossip_keyring_ok"},
+		{"a dangling keyring link on a locked-http host", false, func(h *upgradeHost) { _ = os.Symlink("nowhere", h.path(hostGossipKeyring)) },
+			"Nomad's gossip keyring: present, but it fails the setup's nomad_gossip_keyring_ok"},
+		{"Nomad's server folder is a file", true, func(h *upgradeHost) {
+			_ = os.RemoveAll(h.path("opt/nomad/data/server"))
+			h.write("opt/nomad/data/server", "", 0o755)
+		}, "Nomad's gossip keyring: /opt/nomad/data/server is not a root:root directory only root can write"},
 		{"Nomad's server folder is group-writable", true, func(h *upgradeHost) { _ = os.Chmod(h.path("opt/nomad/data/server"), 0o775) },
 			"Nomad's gossip keyring: /opt/nomad/data/server is not a root:root directory only root can write"},
 		{"Nomad's server folder belongs to another group", true, func(h *upgradeHost) { giveAnotherGroup(h.t, h.path("opt/nomad/data/server")) },
@@ -358,6 +368,12 @@ func TestRemoteAlphaUpgradeESRefusesAGossipKeyringItDidNotExpect(t *testing.T) {
 			"Nomad's gossip keyring: /opt/nomad/data/server is missing"},
 		{"a sound keyring that Nomad has not read", true, func(h *upgradeHost) { writeKeyring(h, soundKeyring, 0o600) },
 			"Nomad has a gossip keyring but does not report its gossip encrypted: stats.serf.encrypted 'false'"},
+		{"Nomad answers its agent read with 500", true, func(h *upgradeHost) {
+			writeKeyring(h, soundKeyring, 0o600)
+			h.systemctl("stop", "nomad")
+			h.systemctl("start", "nomad")
+			h.mark("agent-self-fails", "")
+		}, "Nomad has a gossip keyring but does not report its gossip encrypted: /v1/agent/self answered 500"},
 		{"the observer token is not a secret ID", true, func(h *upgradeHost) {
 			writeKeyring(h, soundKeyring, 0o600)
 			h.write("etc/execution-substrate/nomad-acl/observer-token", "not-a-token\n", 0o400)
@@ -390,26 +406,68 @@ func TestRemoteAlphaUpgradeESRefusesAGossipKeyringItDidNotExpect(t *testing.T) {
 				t.Fatalf("apply: exit %d: %s", code, stderr)
 			}
 			onlyReads(t, h, "a refused check and apply")
+			if dirs, err := filepath.Glob(h.path("var/backups/*")); err != nil || len(dirs) != 0 {
+				t.Fatalf("the refused apply wrote %v (%v)", dirs, err)
+			}
 			assertRestored(t, before, h.snapshot())
 		})
 	}
 }
 
-// A keyring that changes between the check and apply's own reading of it is
-// refused before the backup, with nothing changed.
-func TestRemoteAlphaUpgradeESRefusesAKeyringChangedAfterCheck(t *testing.T) {
-	h := newUpgradeHost(t, buildESConfigCheck(t))
-	h.toHTTPSWithoutKeyring(previousESCommit)
-	h.mark("keyring-after-check", `["`+base64.StdEncoding.EncodeToString(make([]byte, 32))+`"]`)
-	stdout, stderr, code := h.apply()
-	if code != 1 || !strings.Contains(stderr, "refused: Nomad's gossip keyring changed after check: present, but it fails the setup's nomad_gossip_keyring_ok") {
-		t.Fatalf("apply exited %d\nstdout %s\nstderr %s", code, stdout, stderr)
-	}
-	if h.marked("keyring-after-check") {
-		t.Fatal("the check did not list the allocations")
-	}
-	onlyReads(t, h, "an apply refused for a keyring changed after check")
-	if dirs := backupDirs(t, h); len(dirs) != 0 {
-		t.Fatalf("the refused apply wrote a backup: %v", dirs)
+// What apply does follows from what check found, so a host that changes in
+// between is refused before the backup, with nothing changed: a keyring
+// that appears, turns unsound or goes away on either start, and on a
+// locked-http host a TLS directory that appears. The fake docker makes the
+// change once the check has listed the allocations.
+func TestRemoteAlphaUpgradeESRefusesAHostThatChangedAfterCheck(t *testing.T) {
+	helper := buildESConfigCheck(t)
+	soundKeyring := `["` + base64.StdEncoding.EncodeToString(make([]byte, 32)) + `"]`
+	keyringChanged := "refused: Nomad's gossip keyring changed after check: "
+	for _, tc := range []struct {
+		name   string
+		start  string
+		change string
+		says   string
+	}{
+		{"a keyring others can read appears on an https host", "https", "keyring-loose",
+			keyringChanged + "present, but it fails the setup's nomad_gossip_keyring_ok; nothing was changed"},
+		{"a sound keyring appears on an https host", "https", "keyring-sound", keyringChanged + "sound ("},
+		{"the keyring goes away on an https host", "https-keyring", "keyring-taken", keyringChanged + "absent; nothing was changed"},
+		{"a sound keyring appears on a locked-http host", "locked-http", "keyring-sound", keyringChanged + "sound ("},
+		{"Nomad's TLS directory appears on a locked-http host", "locked-http", "tls-dir",
+			"refused: /etc/nomad.d/tls exists already; nothing was changed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newUpgradeHost(t, helper)
+			if tc.start != "locked-http" {
+				h.toHTTPSWithoutKeyring(previousESCommit)
+			}
+			if tc.start == "https-keyring" {
+				h.write(hostGossipKeyring, soundKeyring, 0o600)
+				h.systemctl("stop", "nomad")
+				h.systemctl("start", "nomad")
+				h.clearCalls()
+			}
+			before := h.snapshot()
+			h.mark("after-check", tc.change)
+			stdout, stderr, code := h.apply()
+			if code != 1 || !strings.Contains(stderr, tc.says) || !strings.Contains(stderr, "nothing was changed") {
+				t.Fatalf("apply exited %d, want %q\nstdout %s\nstderr %s", code, tc.says, stdout, stderr)
+			}
+			if h.marked("after-check") || !h.marked("after-check-done") {
+				t.Fatal("the check did not list the allocations")
+			}
+			onlyReads(t, h, "an apply refused for a host changed after check")
+			if dirs, err := filepath.Glob(h.path("var/backups/*")); err != nil || len(dirs) != 0 {
+				t.Fatalf("the refused apply wrote %v (%v)", dirs, err)
+			}
+			// Nothing but the change itself differs.
+			after := h.snapshot()
+			for _, snapshot := range []map[string]string{before, after} {
+				delete(snapshot, hostGossipKeyring)
+				delete(snapshot, "etc/nomad.d/tls")
+			}
+			assertRestored(t, before, after)
+		})
 	}
 }

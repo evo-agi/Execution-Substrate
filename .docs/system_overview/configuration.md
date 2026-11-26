@@ -533,12 +533,14 @@ separately selected fresh-host setup contract, but a
 complete supported fresh-host ES provisioner is not currently implemented.
 Reuse of an old or nonempty host remains blocked without a separately governed
 existing-host migration contract. One such contract exists, for one host:
-`scripts/remote_alpha_upgrade_es.sh` moves the Remote Alpha box's ES from the
-`16cbf739` build that ES PR #54's upgrade installed, or from a later build
-with Nomad already on HTTPS, to one named commit, issuing Nomad's TLS
-material, putting Nomad's API and RPC behind TLS 1.3, adding the Nomad TLS
-keys to its `es.json` and giving Nomad a gossip keyring. On a box it already
-moved it only verifies; it refuses any other host shape and names what each
+`scripts/remote_alpha_upgrade_es.sh` moves the Remote Alpha box's ES to one
+named commit with Nomad's gossip encrypted. From the `16cbf739` build that ES
+PR #54's upgrade installed, it issues Nomad's TLS material, puts Nomad's API
+and RPC behind TLS 1.3, adds the Nomad TLS keys to its `es.json` and gives
+Nomad a gossip keyring. From a later build with Nomad already on HTTPS, it
+leaves the TLS material, `nomad.hcl` and `es.json` as they are and gives
+Nomad a gossip keyring if it has none. On a box it already moved it only
+verifies; it refuses any other host shape and names what each
 part looks like; see `.docs/system_overview/remote_supported_host_alpha.md`,
 section "Remote ES Upgrade And Nomad HTTPS".
 

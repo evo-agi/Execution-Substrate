@@ -7525,6 +7525,14 @@ an `apply` that was cut off before its rollback, a keyring on a
   allocations fails
 - on `https-gossip`: one of the in-place checks above fails
 
+`apply` runs the same check first. What it does to the keyring follows from
+what that check found, so before the backup it reads the keyring once more
+and refuses, with nothing changed, one that no longer has the form the check
+found: one that appeared, went away or no longer passes
+`nomad_gossip_keyring_ok`, on either start. It refuses a path it would
+create that exists already (`/etc/nomad.d/tls` on `locked-http`) at the same
+point, before it writes the backup folder or the folder above it.
+
 `apply`, after a clean check of a `locked-http` host:
 
 1. backs up `es.json`, both ES binaries and `nomad.hcl` (bytes, owner, mode
@@ -7642,15 +7650,22 @@ real `nomad_tls_issue` and `nomad_gossip_issue`: hosts of every refused
 shape, each named part by part; `https` hosts without a keyring (with the
 box's builds of an earlier commit, and with the payload's), with a sound
 keyring and earlier builds, and with a keyring that is readable by others,
-holds a 16-byte key or is a symbolic link, a server folder that is missing
-or group-writable, a sound keyring that Nomad does not report reading, an
-observer token that is not a secret ID, builds of two commits, of
-`16cbf739` or of a modified checkout, and a keyring on a `locked-http`
-host; an `apply` whose restarted Nomad does not read the keyring, names no
-leader, cannot place ES's jobs or fails the ACL check, or after which ES
-does not start, each rolled back with the keyring removed; no gossip key
-or Nomad token in the output, the fakes' logged calls or any `curl`
-command line; payload binaries whose Go build info names another commit, another Go
+holds a 16-byte key, is a symbolic link or is a dangling one (on
+`locked-http` too), a server folder that is missing, group-writable, of
+another group or a file, a sound keyring that Nomad does not report reading
+or whose agent read answers 500, an observer token that is not a secret
+ID, builds of two commits, of `16cbf739` or of a modified checkout, and a
+keyring on a `locked-http` host; a keyring that appears, goes away or turns
+unsound between the check and `apply`'s own reading, and a
+`/etc/nomad.d/tls` that appears on `locked-http`, each refused before the
+backup; an `apply` whose restarted Nomad does not read the keyring, names
+no leader, cannot place ES's jobs or fails the ACL check, after which ES
+does not start, or whose issuer leaves the keyring readable by others (on
+`locked-http` too), each rolled back with the keyring removed; an `apply`
+interrupted while the issuer's temporary file holds the new key, on either
+start, rolled back with no temporary file left; the keyring written before
+Nomad's stop on `https`; no gossip key or Nomad token in the output, the
+fakes' logged calls or any `curl` command line; payload binaries whose Go build info names another commit, another Go
 or a modified build, or shows a replaced module, a workspace module or a
 vendored dependency; payload files of another owner or group; a clone that
 another account could change (a file or folder writable by its group or

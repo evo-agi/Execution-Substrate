@@ -1552,7 +1552,8 @@ def describe_parts(parts):
 
 
 def inspect_host(payload_dir, commit):
-    """Everything check reports. Reads only; returns (report, blockers)."""
+    """Everything check reports. Reads only; returns (report, blockers, the
+    form of each part of the host's shape)."""
     blockers = []
     report = {"schema": SUMMARY_SCHEMA, "commit": commit, "host_root": HOST_ROOT}
 
@@ -1623,7 +1624,7 @@ def inspect_host(payload_dir, commit):
     elif shape == "https-gossip":
         inspect_migrated(report, block, gossip=True)
     report["blockers"] = blockers
-    return report, blockers
+    return report, blockers, forms
 
 
 def acl_files():
@@ -1769,17 +1770,20 @@ def backup_root_ready():
 CREATED_MANIFEST = "created.json"
 
 
-def backup_host(backup_dir, created):
-    """Back up every file apply changes, and name every path it creates:
-    created, a subset of CREATED_BY_APPLY, none of which may exist yet."""
+def backup_host(commit, created):
+    """Back up every file apply changes into a new backup directory, and name
+    every path it creates: created, a subset of CREATED_BY_APPLY, none of
+    which may exist yet. A path that exists already is refused before
+    anything is written. Returns the backup directory."""
     if not set(created) <= set(CREATED_BY_APPLY):
         raise Refusal(f"apply does not create {sorted(set(created) - set(CREATED_BY_APPLY))}")
-    manifest = backup_files(backup_dir, [host(p) for p in (ES_CONFIG, ES_BINARY, RUNTIME_SUPPORT, NOMAD_HCL)])
     for path in created:
         if os.path.lexists(host(path)):
-            raise Refusal(f"{path} exists already")
+            raise Refusal(f"{path} exists already; nothing was changed")
+    backup_dir = os.path.join(backup_root_ready(), time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()) + "-" + commit[:12])
+    backup_files(backup_dir, [host(p) for p in (ES_CONFIG, ES_BINARY, RUNTIME_SUPPORT, NOMAD_HCL)])
     write_new_file(os.path.join(backup_dir, CREATED_MANIFEST), json.dumps(list(created), indent=2) + "\n")
-    return manifest
+    return backup_dir
 
 
 def load_created(backup_dir):
@@ -2080,7 +2084,7 @@ def say(text, stream=None):
 
 
 def cmd_check(args):
-    report, blockers = inspect_host(args.payload, args.commit)
+    report, blockers, _ = inspect_host(args.payload, args.commit)
     report["mode"] = "check"
     if not blockers:
         report["result"] = "nothing to do" if report["shape"] == "https-gossip" else "ready"
@@ -2096,7 +2100,7 @@ def cmd_apply(args):
         events.append({"at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "event": message})
         say(message)
 
-    report, blockers = inspect_host(args.payload, args.commit)
+    report, blockers, forms = inspect_host(args.payload, args.commit)
     report["mode"] = "apply"
     report["events"] = events
     if blockers:
@@ -2109,19 +2113,18 @@ def cmd_apply(args):
         report["result"] = "nothing to do"
         say(json.dumps(report, indent=2, sort_keys=True))
         return
-    if shape == "locked-http":
-        # backup_host refuses a keyring that appeared since the check.
-        keyring_absent = True
-    else:
-        form, state = keyring_shape()
-        if form not in ("absent", "sound"):
-            raise Refusal(f"Nomad's gossip keyring changed after check: {state}")
-        keyring_absent = form == "absent"
+    # What apply does to the keyring follows from the form check found
+    # (absent: write one; sound: keep it), so the keyring must still have
+    # that form now, on either start. Any change since the check, a keyring
+    # that appeared, went away or turned unsound, is refused before the
+    # backup, with nothing changed.
+    form, state = keyring_shape()
+    if form != forms["Nomad's gossip keyring"]:
+        raise Refusal(f"Nomad's gossip keyring changed after check: {state}; nothing was changed")
+    keyring_absent = form == "absent"
     created = ([NOMAD_TLS_DIR] if shape == "locked-http" else []) + ([NOMAD_GOSSIP_KEYRING] if keyring_absent else [])
     prov = load_payload(args.payload, args.commit)
-    backup_dir = os.path.join(backup_root_ready(),
-                              time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()) + "-" + args.commit[:12])
-    backup_host(backup_dir, created)
+    backup_dir = backup_host(args.commit, created)
     report["backup_dir"] = backup_dir
     summary_path = os.path.join(backup_dir, "summary.json")
     log("backup written to " + backup_dir)

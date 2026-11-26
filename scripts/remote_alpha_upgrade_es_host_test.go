@@ -366,7 +366,10 @@ case "$url" in
     token="$(cat "$FAKE_HOST_ROOT/etc/execution-substrate/nomad-acl/observer-token")"
     if [[ "$(cat)" != "header = \"X-Nomad-Token: $token\"" ]]; then code=403; body='Permission denied'
     elif [[ -e "$s/gossip" ]]; then body='{"config":{},"stats":{"serf":{"encrypted":"true"}}}'
-    else body='{"config":{},"stats":{"serf":{"encrypted":"false"}}}'; fi ;;
+    else body='{"config":{},"stats":{"serf":{"encrypted":"false"}}}'; fi
+    # agent-self-fails: Nomad answers 500, with a body that would otherwise
+    # count as encrypted gossip.
+    if [[ -e "$s/agent-self-fails" ]]; then code=500; fi ;;
   http://127.0.0.1:4646/v1/acl/policy/anonymous|https://127.0.0.1:4646/v1/acl/policy/anonymous)
     nomad_up
     # anonymous-policy: Nomad holds an anonymous policy, which it shows to
@@ -463,13 +466,44 @@ s="$FAKE_STATE"
 echo "docker $*" >> "$s/calls.log"
 [[ "$*" == "ps --quiet --no-trunc --filter label=com.hashicorp.nomad.alloc_id" ]] || exit 2
 [[ -e "$s/docker-fails" ]] && { echo "Cannot connect to the Docker daemon" >&2; exit 1; }
-# keyring-after-check holds a keyring that something else writes once the
-# check has listed the allocations, before apply reads the keyring again.
-if [[ -e "$s/keyring-after-check" && -n "${FAKE_HOST_ROOT:-}" ]]; then
-  install -m 0644 "$s/keyring-after-check" "$FAKE_HOST_ROOT/opt/nomad/data/server/serf.keyring"
-  rm -f "$s/keyring-after-check"
+# after-check names what something else does to the host once the check has
+# listed the allocations, before apply reads the host again: keyring-loose
+# writes a keyring that others can read, keyring-sound a sound one,
+# keyring-taken moves the keyring into this fake's state, and tls-dir makes
+# Nomad's TLS directory. The host must be the test's own (a t.TempDir()
+# under the test's folder), and nothing is deleted.
+if [[ -e "$s/after-check" && "${FAKE_HOST_ROOT:-}" =~ /[0-9]{3}$ && "$(basename "$(dirname "$FAKE_HOST_ROOT")")" == Test* ]]; then
+  keyring="$FAKE_HOST_ROOT/opt/nomad/data/server/serf.keyring"
+  printf '["%s"]' "$(head -c 32 /dev/zero | base64)" > "$s/after-check-keyring"
+  case "$(cat "$s/after-check")" in
+    keyring-loose) install -m 0644 "$s/after-check-keyring" "$keyring" ;;
+    keyring-sound) install -m 0600 "$s/after-check-keyring" "$keyring" ;;
+    keyring-taken) [[ -f "$keyring" && ! -L "$keyring" ]] && mv "$keyring" "$s/keyring-taken" ;;
+    tls-dir) mkdir "$FAKE_HOST_ROOT/etc/nomad.d/tls" ;;
+  esac
+  mv "$s/after-check" "$s/after-check-done"
 fi
 cat "$s/allocs" 2>/dev/null || true
+`
+
+// fakeMv is mv, but onto the test host's gossip keyring it logs the call,
+// slow-keyring-rename holds the rename (and marks keyring-renaming) until a signal ends it, and
+// issued-keyring-loose leaves the keyring readable by others (an issuer
+// fault). newUpgradeHost puts the real mv's path in real_mv before it.
+const fakeMv = `s="$FAKE_STATE"
+if [[ "${@: -1}" == "${FAKE_HOST_ROOT:-}/opt/nomad/data/server/serf.keyring" && "${FAKE_HOST_ROOT:-}" =~ /[0-9]{3}$ && "$(basename "$(dirname "$FAKE_HOST_ROOT")")" == Test* ]]; then
+  echo "mv onto the gossip keyring" >> "$s/calls.log"
+  if [[ -e "$s/slow-keyring-rename" ]]; then
+    touch "$s/keyring-renaming"
+    sleep 30
+  fi
+  "$real_mv" "$@" || exit
+  if [[ -e "$s/issued-keyring-loose" ]]; then
+    chmod 0644 "${@: -1}"
+  fi
+  exit 0
+fi
+exec "$real_mv" "$@"
 `
 
 type upgradeHost struct {
@@ -741,6 +775,13 @@ func newUpgradeHost(t *testing.T, helper string) *upgradeHost {
 		if err := os.WriteFile(filepath.Join(h.bin, name), []byte(script), 0o755); err != nil {
 			t.Fatal(err)
 		}
+	}
+	realMv, err := exec.LookPath("mv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(h.bin, "mv"), []byte("#!/usr/bin/env bash\nreal_mv="+strconv.Quote(realMv)+"\n"+fakeMv), 0o755); err != nil {
+		t.Fatal(err)
 	}
 	return h
 }
@@ -1635,7 +1676,7 @@ func TestRemoteAlphaUpgradeESApply(t *testing.T) {
 		t.Fatalf("ACL setup calls %q\nwant %q", got, want)
 	}
 	log := mustRead(t, filepath.Join(h.state, "calls.log"))
-	order := []string{"nomad config validate", "systemctl stop nomad", "systemctl start nomad", "curl https://127.0.0.1:4646/v1/status/leader",
+	order := []string{"nomad config validate", "mv onto the gossip keyring", "systemctl stop nomad", "systemctl start nomad", "curl https://127.0.0.1:4646/v1/status/leader",
 		"acl-setup provision", "curl https://127.0.0.1:4646/v1/agent/self", "acl-setup placement", "systemctl start es",
 		"tls-identity check https://127.0.0.1:4646", "curl https://127.0.0.1:4646/v1/jobs",
 		"curl https://127.0.0.1:4646/v1/acl/policy/anonymous", "acl-setup check", "curl https://127.0.0.1:4646/v1/agent/self"}
@@ -1782,6 +1823,8 @@ func TestRemoteAlphaUpgradeESApplyRollsBackOnFailure(t *testing.T) {
 	}{
 		{"the new Nomad config does not validate", "nomad-invalid", "nomad config validate", tlsOnly},
 		{"Nomad cannot read the TLS files the config names", "tls-unreadable", "Error when parsing TLS configuration", tlsOnly},
+		{"the issuer leaves the keyring readable by others", "issued-keyring-loose",
+			"Nomad's new gossip keyring is present, but it fails the setup's nomad_gossip_keyring_ok", both},
 		{"Nomad names no leader over HTTPS", "https-no-leader", "Nomad named no leader at https://127.0.0.1:4646", both},
 		{"Nomad does not read its gossip keyring", "gossip-ignored", "Nomad does not report its gossip encrypted: stats.serf.encrypted 'false'", both},
 		{"Nomad cannot place ES's jobs after its start", "placement-fails", "nomad_acl_setup.sh placement failed", both},
@@ -1823,19 +1866,27 @@ func TestRemoteAlphaUpgradeESApplyRollsBackOnFailure(t *testing.T) {
 }
 
 // An interruption while a command runs ends that command's whole process
-// group, grandchildren included, before the rollback starts.
+// group, grandchildren included, before the rollback starts. One that lands
+// while the setup's nomad_gossip_issue holds the new key in its temporary
+// file (here mv holds the rename) leaves no temporary file behind.
 func TestRemoteAlphaUpgradeESApplyRollsBackWhenInterrupted(t *testing.T) {
 	helper := buildESConfigCheck(t)
 	cases := []struct {
 		name, slow, reached string
+		https               bool
 	}{
-		{"during the Nomad config validation", "slow-validate", "validating"},
-		{"during the ACL setup", "slow-acl", "acl-running"},
-		{"by two signals in a row", "slow-validate", "validating"},
+		{"during the Nomad config validation", "slow-validate", "validating", false},
+		{"during the ACL setup", "slow-acl", "acl-running", false},
+		{"by two signals in a row", "slow-validate", "validating", false},
+		{"during the gossip keyring's issue", "slow-keyring-rename", "keyring-renaming", false},
+		{"during the gossip keyring's issue on an https host", "slow-keyring-rename", "keyring-renaming", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newUpgradeHost(t, helper)
+			if tc.https {
+				h.toHTTPSWithoutKeyring(previousESCommit)
+			}
 			before := h.snapshot()
 			h.mark(tc.slow, "")
 			cmd := h.command("apply", "--payload", h.payload, "--commit", upgradeTestCommit)
