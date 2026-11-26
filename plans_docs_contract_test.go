@@ -596,6 +596,40 @@ func TestStandingRulesPinEachOtherwiseUncheckedRule(t *testing.T) {
 	}
 }
 
+// TestDocsNameTheStandingRuleFileTheyRelyOn keeps the citations whose text
+// moved out of PLANS.md on the file that now holds it. A reader who followed
+// the old PLANS.md citation would find only a pointer there.
+func TestDocsNameTheStandingRuleFileTheyRelyOn(t *testing.T) {
+	boundaries := compactText(mustRead(t, ".docs/system_overview/boundaries.md"))
+	assertContainsAll(t, "boundaries.md citations of moved rules", boundaries,
+		"Authority-dependent implementation requires the explicit decision and gate in the [outside-observer Stage A rule](../standing_rules/execution_admission_and_custody.md#r6j-r928stage-a--inert-outside-observer-structural-contract);",
+		"the whole path sits on the reliable-submit seam kept open in the [Workstream C admission and custody rules](../standing_rules/execution_admission_and_custody.md) (`PLANS.md` lists it as Correlation And Recovery).",
+	)
+	assertContainsNone(t, "boundaries.md citations of moved rules", boundaries,
+		"explicit decision and gate in `PLANS.md`",
+		"reliable-submit seam kept open in `PLANS.md`",
+	)
+
+	sources := map[string]string{}
+	for _, line := range strings.Split(mustRead(t, ".docs/mvp.md"), "\n") {
+		cells := strings.Split(strings.Trim(strings.TrimSpace(line), "|"), "|")
+		if strings.HasPrefix(line, "|") && len(cells) == 4 {
+			sources[strings.TrimSpace(cells[0])] = strings.TrimSpace(cells[3])
+		}
+	}
+	for surface, want := range map[string]string{
+		"C0 ES public execution/admission/runtime ownership gate": "`.docs/standing_rules/workstream_decisions.md`; `.docs/execution_lifecycle/es_execution_admission_model.md`",
+		"ES Admission Policy Layer v0":                            "`.docs/standing_rules/workstream_decisions.md`; `.docs/execution_lifecycle/es_execution_admission_model.md`; `.docs/execution_lifecycle/contracts.md`",
+	} {
+		got, ok := sources[surface]
+		if !ok {
+			t.Errorf(".docs/mvp.md has no surface row %q", surface)
+		} else if !strings.HasPrefix(got, want) {
+			t.Errorf(".docs/mvp.md row %q cites %q, want it to start with %q: the decision record that holds the row's rule", surface, got, want)
+		}
+	}
+}
+
 var (
 	plansCitedFile          = `(?:PLANS\.md|AGENTS\.md|standing_rules/[A-Za-z0-9_]+\.md)`
 	plansCitedFileName      = regexp.MustCompile(plansCitedFile)
