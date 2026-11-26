@@ -586,6 +586,129 @@ func TestStandingRulesPinEachOtherwiseUncheckedRule(t *testing.T) {
 			"`Reopened redesign seam`: Tranche B must first freeze the supported OpenSSH directive grammar, Include closure and precedence, system-configuration interaction, accepted local filesystem roots and modes, component symlink policy, agent/Keychain/certificate interpretation, and safe optional directives in governing documentation and fake/static contract tests before implementing a validator.",
 			"Tranche A does not claim that any current local profile or operator alias conforms to that still-open static subset.",
 		}},
+		// Read by no test before or after the workstream decision records and the
+		// host and runtime boundary rules moved out of PLANS.md: the deletion
+		// sweep of that move found them. One or more phrases per paragraph.
+		{standingHostRuntimePath, "Remote Alpha hardening retirement", []string{
+			"`Temporary compatibility edge`: archived v1 evidence records an earlier Remote Supported-Host Alpha hardening exercise.",
+			"No v2 replacement is defined for that retired ES writable-state/service-user migration family.",
+		}},
+		{standingHostRuntimePath, "Hardening tranche: AGS and ARS postures", []string{
+			"AGS is already de-rooted and sealed in this tranche; preserve the landed `ags:ags` service posture and its existing host-local summary/evidence shape.",
+			"ARS is already de-rooted in this tranche; preserve the landed `ars:ars` service posture, its dedicated TLS/state ownership model, and its existing host-local summary/evidence shape.",
+		}},
+		{standingHostRuntimePath, "Hardening tranche: ES de-root limits", []string{
+			"ES config/TLS prep is applied and productized for the live host.",
+			"Archived v1 files may record that an earlier host had prepared ES writable roots, ran `es.service` as `User=es`, `Group=es`, `UMask=0027`, and passed bounded checks.",
+			"This tranche does not claim full ES/runtime de-root.",
+			"The root-start runtime helper, Nomad task `User: \"0:0\"`, helper-private SPIRE traversal, broad root selector posture, and Vault/workload-zone handoff remain bounded compatibility edges.",
+			"The long-lived ES startup path keeps `execution.spire_workload_api_socket_path` as a config-shape and submit input only;",
+		}},
+		{standingHostRuntimePath, "Hardening tranche: retired planner and preserved boundaries", []string{
+			"The former old-root cleanup/archive planner is retired. Archived summaries cannot authorize archive, deletion, ownership change, drain, fence, or any other host mutation.",
+			"This tranche must not change ES public contracts or Control Plane/Infrastructure Manager ownership boundaries.",
+			"This tranche preserves the direct Mac -> AGS/ES HTTPS+mTLS posture, the current EGS loopback-only dependency path, the landed AGS/ARS service postures, and the no-bridge/no-shared-filesystem remote posture.",
+			"This tranche is bounded host/service hardening only. Do not widen it into a runtime-boundary redesign or broader proof expansion.",
+		}},
+		{standingHostRuntimePath, "Hardening tranche: Vault helpers", []string{
+			"This tranche may now use one separate operator-owned Vault service-user migration helper.",
+			"This tranche may carry one disposable Remote Alpha Vault reset/rebootstrap operator script for the sealed-and-unrecoverable Shamir-key case.",
+			"The same helper may provide a non-destructive `--unseal-only` path for the case where the operator still has the Shamir unseal key;",
+		}},
+		{standingHostRuntimePath, "Milestone 1 name, archived service-user record and preserved boundaries", []string{
+			"`Bounded slice rule`: Milestone 1 is named `least-privilege runtime/security boundary closeout`.",
+			"Archived v1 evidence records a prior long-lived `es.service` service-user change to `User=es`, `Group=es`, `UMask=0027`. That historical record is not a current invariant, current readiness proof, or migration authority.",
+			"Milestone 1 preserves these current boundaries:",
+		}},
+		{standingHostRuntimePath, "Milestone 1 posture matrix", []string{
+			"| Surface | Posture | Rationale | Current evidence | Removal condition | Explicit non-claim | | --- | --- | --- | --- | --- | --- |",
+			"| Nomad task user | `accepted MVP compatibility edge` | The current runtime companion still needs task-start `0:0` so it can create the helper-private SPIRE boundary and exec the workload as fixed non-root `10000:10000`.",
+			"Revisit only as part of a broader runtime-boundary redesign that re-derives helper launch, workload launch, and SPIRE/Vault handoff together.",
+		}},
+		{standingHostRuntimePath, "Milestone 1 posture checker", []string{
+			"Milestone 1 now also carries one repo-owned Remote Alpha runtime/security boundary posture checker as a bounded host-local evidence surface:",
+			"`scripts/remote_alpha_runtime_security_boundary_check.sh`",
+			"`scripts/internal/remote_alpha_runtime_security_boundary_check.sh`",
+		}},
+		{standingHostRuntimePath, "ES config/TLS prep current invariant", []string{
+			"`Current invariant`: this earlier bounded slice is already applied on the live host and remains the source of truth for the dedicated `root:es` readable config/TLS model consumed by the current `User=es` long-lived ES service.",
+		}},
+		{standingHostRuntimePath, "Host firewall validation", []string{
+			"Validation: rendering against a golden ruleset, real-kernel tests in network namespaces, a real-sshd test of the drop-in, fakes for the apply/confirm/rollback order, and a container probe on the box.",
+		}},
+		{standingHostRuntimePath, "P0q-R1 role limits and proof value", []string{
+			"role `service_execution` gets `token_ttl` (default `15m`), `token_max_ttl` (default `30m`) and `token_bound_cidrs` (default `172.17.0.0/16`), validated before any prompt;",
+			"every earlier version and the metadata of both proof paths are deleted before the new value is written;",
+			"`REMOTE_ALPHA_BOOTSTRAP_PROOF_VALUE=generate` writes a random value nobody sees, which discards the Codex key.",
+		}},
+		{standingHostRuntimePath, "R14 fresh-child custody", []string{
+			"`R14-ROOT-CUSTODY-01` refines only that helper's fresh-child custody:",
+			"No protected creation namespace or proof-parent ownership change is selected here.",
+		}},
+		{standingHostRuntimePath, "Generic ES launcher user", []string{
+			"`GENERIC-ES-LAUNCHER-USER-01` is a **Bounded slice rule** refinement of the generic (no-profile) ES launcher.",
+			"because `docker run --user` with an empty UID runs as root.",
+			"rootless Docker is untested and unsupported for bring-up.",
+		}},
+		{standingWorkstreamsPath, "Workstream A decision status", []string{
+			"Current bounded decision status for Milestone 2A.1:",
+			"AGS publication claims, ARS discoverability/index shapes, ES public execution/lifecycle grammar, and the long-term workload-zone Vault runtime-config owner remain service-owned or reopened elsewhere;",
+		}},
+		{standingWorkstreamsPath, "Workstream B ownership and identity", []string{
+			"Current bounded decision status for Milestone 2B.1:",
+			"AGS owns publish-time fact assembly, caller-bound publication semantics, aggregate evidence assembly, signing, payload/support upload, and registration into ARS.",
+			"ARS owns blob storage, content-addressed integrity, artifact registration, runtime-facing discovery records, index behavior, descriptor/manifest support reads, and the ARS-owned read surfaces ES may later consume.",
+			"`claims.package.identity` is the shared-kernel identity surface ES consumes; AGS-owned publication claims and ARS descriptor/manifest/index/support tuples do not become that identity surface.",
+			"Payload identity and artifact identity remain separate: `payload_digest` identifies payload bytes or payload content identity, while `artifact_digest` identifies artifact/package identity",
+			"ES must consume artifacts through a designed discoverability surface, not by inheriting ARS support tuple grammar as ES public grammar.",
+			"CP examples and proof harness artifacts do not define AGS/ARS/ES core semantics;",
+		}},
+		{standingWorkstreamsPath, "Workstream C decision status", []string{
+			"Current bounded decision status for Milestone 2C.1:",
+		}},
+		{standingWorkstreamsPath, "Workstream D planning direction", []string{
+			"## Workstream D decision record Current bounded planning direction:",
+			"Treat `id.conf` as current-CGS-v1 compatibility/config residue rather than as final repo-wide policy language.",
+		}},
+		{standingWorkstreamsPath, "Workstream E trust material, exclusions and guardrails", []string{
+			"Current docs/tests-only decision status for E0:",
+			"Optional workload-zone Vault CA trust material remains standard non-secret TLS/env-based trust configuration only.",
+			"E0 keeps CGS authorize output, `id.conf`, `policy.id_conf_path`, `audit.policy_version`, EGS `publication.version`, EGS unsigned publication metadata, AGS `policy_decisions`, ES retained bundles,",
+			"and CP review/approval/checkpoint/finalization state outside runtime-config authority.",
+			"Workstream E guardrail status:",
+			"E0 and E1 are sufficient guardrails before Workstream F planning.",
+			"Full Workstream E remains open for long-term runtime-config owner, reference/versioning, and `workload_vault_auth.default_mode` follow-ups.",
+			"Later Workstream E work must not drift into runtime identity handoff, helper behavior, SPIRE/Vault handoff implementation, or Workstream F reserved-path decisions.",
+		}},
+		{standingWorkstreamsPath, "Workstream F planning direction", []string{
+			"## Workstream F decision record Current bounded planning direction:",
+			"Preserve `EXEC_WORKLOAD_IDENTITY_ENDPOINT` as the workload-visible discovery contract unless a later stop-condition justifies reopening it explicitly.",
+			"Prefer a platform-owned runtime identity companion/bridge injected with the workload allocation over direct workload access to SPIRE internals or ES-owned runtime token minting.",
+			"Treat the checked-in workload-authored runtime identity reference as example scaffolding only, not as an acceptable final ownership model.",
+			"Treat the current slice-0 Linux schedulability caveat as an environment qualification issue that should remain explicit, not as a blocker to planning Workstream F.",
+		}},
+		{standingWorkstreamsPath, "Workstream F slices 1A and 1B", []string{
+			"The bounded slice `1A` and slice `1B` implementation is now the same-container runtime helper launched by a platform-owned supervisor inside the workload task.",
+			"Slice `1A` landed the runtime boundary before useful credential flow:",
+			"helper readiness is required before workload start and helper death is task-fatal in the first slice",
+			"Slice `1B` keeps the public endpoint bounded:",
+			"reject arbitrary audience passthrough, raw SPIRE parameter passthrough, and X.509 delivery in this slice",
+			"First-slice workload compatibility is intentionally narrowed:",
+			"no supplemental groups that collapse the helper/workload boundary",
+			"That runtime narrowing is part of the claim-preserving slice boundary, not an accidental compatibility gap.",
+		}},
+		{standingWorkstreamsPath, "Workstream F credential flow, normal-shell profile and supported host", []string{
+			"Useful credential flow is now proved on top of slice `1A` and slice `1B`:",
+			"the slice still avoids platform-owned Vault token brokerage",
+			"The bounded `control-plane-normal-shell/v1` runtime profile builds on that same identity boundary:",
+			"the proof intentionally does not prove real upstream Codex service behavior because this repo cannot own a non-sensitive production Codex credential or external Codex service availability",
+			"The supported-host follow-through after that credential-flow proof is now landed in bounded form:",
+			"distinguish supported, bounded-fallback, and unsupported substrate states in operator output and runbooks",
+		}},
+		{standingWorkstreamsPath, "Workstream F F0 exclusions", []string{
+			"F0 keeps CGS authorize output, `id.conf`, `policy.id_conf_path`, `audit.policy_version`, CGS v1/v2 design docs,",
+			"and CP review/approval/checkpoint/finalization state outside runtime-identity and credential authority.",
+		}},
 	} {
 		text := compactText(mustRead(t, rule.path))
 		for _, phrase := range rule.phrases {
