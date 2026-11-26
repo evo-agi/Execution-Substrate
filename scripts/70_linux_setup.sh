@@ -405,22 +405,32 @@ nomad_gossip_issue() {
   fi
   key="$(openssl rand -base64 32)" || return 1
   [[ "${key}" =~ ^[A-Za-z0-9+/]{43}=$ ]] || return 1
-  # mktemp creates the file 0600 in the keyring's folder, so the key never
-  # leaves it and the rename below is atomic; the key goes in only once the
-  # mode is checked. GNU mv's -T (like GNU stat's -c) renames onto the path
-  # itself: without it, a folder there would take the file in.
-  tmp="$(umask 077 && mktemp "${dir}/.serf.keyring.XXXXXX")" || return 1
-  # Until the rename the temporary file may hold the key. A subshell holds
-  # the traps that remove it on a hangup, interrupt or termination and end
-  # with that signal's status (129, 130, 143), so the caller's own traps
-  # stay as they are.
+  # The temporary file is in the keyring's folder, so the key never leaves it
+  # and the rename below is atomic. mktemp -u only chooses its name; the file
+  # is created below, after the traps that remove it.
+  tmp="$(mktemp -u "${dir}/.serf.keyring.XXXXXX")" || return 1
+  # A subshell holds the traps, so the caller's own traps stay as they are.
+  # On a hangup, interrupt or termination each removes the temporary file and
+  # ends the subshell with that signal's status (129, 130, 143). The file is
+  # created only once all three are set, and from then on the subshell runs
+  # no command substitution: a signal that reaches bash while it starts one
+  # can keep the trap from running. With noclobber the file is created
+  # exclusively (O_EXCL), 0600 under umask 077, and a regular file already
+  # there is refused and kept; the key goes in only once the mode is checked.
+  # GNU mv's -T (like GNU stat's -c) renames onto the path itself: without
+  # it, a folder there would take the file in.
   if ! (
     trap 'rm -f -- "${tmp}"; exit 129' HUP
     trap 'rm -f -- "${tmp}"; exit 130' INT
     trap 'rm -f -- "${tmp}"; exit 143' TERM
-    [[ "$(stat -c '%a' "${tmp}")" == "600" ]] && printf '["%s"]' "${key}" >"${tmp}" && mv -fT "${tmp}" "${keyring}"
+    umask 077
+    set -C
+    : >"${tmp}" || exit 1
+    if ! { stat -c '%a' "${tmp}" | grep -qx 600 && printf '["%s"]' "${key}" >|"${tmp}" && mv -fT "${tmp}" "${keyring}"; }; then
+      rm -f -- "${tmp}"
+      exit 1
+    fi
   ); then
-    rm -f "${tmp}"
     return 1
   fi
 }
