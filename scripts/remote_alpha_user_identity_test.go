@@ -76,6 +76,14 @@ spec.loader.exec_module(mod)
 if sys.argv[2] == "--dump-layout":
     print(json.dumps(dataclasses.asdict(mod.Layout()), sort_keys=True))
     sys.exit(0)
+if sys.argv[2] == "--set-prefixes-tampered":
+    # A faulty array edit: the real one, then one more replacement in its
+    # result, so the checks after the edit have something to catch.
+    for fname in ("array_with_added", "array_with_removed"):
+        def tampered(*args, _real=getattr(mod, fname)):
+            return _real(*args).replace(sys.argv[5], sys.argv[6], 1)
+        setattr(mod, fname, tampered)
+    sys.argv[2] = "--set-prefixes"
 if sys.argv[2] == "--set-prefixes":
     data = open(sys.argv[3], "rb").read()
     try:
@@ -1092,6 +1100,14 @@ func TestUserIdentityRefusesAndChangesNothing(t *testing.T) {
 			writeUserIdentityFile(t, b.esCA, userCA, 0o640)
 			return []string{"allow", "--name", "claude", "--apply"}
 		}, 1, "first certificate"},
+		{"user CA twice at the end of the client CA files", func(t *testing.T, b *userIdentityBox) []string {
+			minted(t, b)
+			userCA := mustReadUserIdentityFile(t, filepath.Join(b.userCADir, "ca-cert.pem"))
+			data := bytes.Join([][]byte{b.extCAPEM, userCA, userCA}, nil)
+			writeUserIdentityFile(t, b.agsCA, data, 0o640)
+			writeUserIdentityFile(t, b.esCA, data, 0o640)
+			return []string{"allow", "--name", "claude", "--apply"}
+		}, 1, "more than once"},
 		{"client CA file without a final newline", func(t *testing.T, b *userIdentityBox) []string {
 			minted(t, b)
 			data := bytes.TrimRight(b.extCAPEM, "\n")
@@ -1373,12 +1389,17 @@ func TestUserIdentityIssueChecksTheCSR(t *testing.T) {
 // edit on several layouts, and that the edited example configs still load.
 func TestUserIdentityAllowlistEditKeepsEveryOtherByte(t *testing.T) {
 	dir := t.TempDir()
-	edit := func(t *testing.T, text string, prefixes []string) (bool, string) {
+	editWith := func(t *testing.T, text string, prefixes []string, tamper ...string) (bool, string) {
 		t.Helper()
 		path := filepath.Join(dir, "config.json")
 		writeUserIdentityFile(t, path, []byte(text), 0o600)
 		list, _ := json.Marshal(prefixes)
-		out, err := exec.Command("/usr/bin/python3", "-I", "-B", "-c", userIdentityDriver, userIdentityModule, "--set-prefixes", path, string(list)).Output()
+		args := []string{"-I", "-B", "-c", userIdentityDriver, userIdentityModule, "--set-prefixes", path, string(list)}
+		if len(tamper) == 2 {
+			args[5] = "--set-prefixes-tampered"
+			args = append(args, tamper...)
+		}
+		out, err := exec.Command("/usr/bin/python3", args...).Output()
 		if err != nil {
 			t.Fatalf("driver: %v", err)
 		}
@@ -1394,6 +1415,10 @@ func TestUserIdentityAllowlistEditKeepsEveryOtherByte(t *testing.T) {
 			return true, result.Text
 		}
 		return false, result.Reason
+	}
+	edit := func(t *testing.T, text string, prefixes []string) (bool, string) {
+		t.Helper()
+		return editWith(t, text, prefixes)
 	}
 	const multi = "{\n  \"tls\": {\"client_ca_file\": \"/x\"},\n  \"authorization\": {\n    \"allowed_spiffe_path_prefixes\": [\n      \"operator/local\",\n      \"service/control-plane\"\n    ]\n  },\n  \"note\": \"caf\\u00e9 \\/ slash\"\n}\n"
 	cases := []struct {
@@ -1439,6 +1464,30 @@ func TestUserIdentityAllowlistEditKeepsEveryOtherByte(t *testing.T) {
 			ok, reason := edit(t, tc.text, []string{"a/b", "c/d", "user/claude"})
 			if ok || !strings.Contains(reason, tc.want) {
 				t.Fatalf("want refusal with %q, got %v %q", tc.want, ok, reason)
+			}
+		})
+	}
+
+	// A faulty array edit is caught after it runs, whether it changes what
+	// the document means or only bytes outside the array, adding or removing.
+	added := []string{"operator/local", "service/control-plane", "user/claude"}
+	withUser := strings.Replace(multi, "\"service/control-plane\"\n", "\"service/control-plane\",\n      \"user/claude\"\n", 1)
+	for _, tc := range []struct {
+		name, text string
+		prefixes   []string
+		old, new   string
+		want       string
+	}{
+		{"meaning after the array", multi, added, "slash", "slosh", "allowlist edit check failed"},
+		{"meaning after the array, removing", withUser, added[:2], "slash", "slosh", "allowlist edit check failed"},
+		{"bytes before the array", multi, added, `{"client_ca_file": "/x"}`, `{"client_ca_file":"/x"}`, "changed bytes before the array"},
+		{"bytes after the array", multi, added, `"note": `, `"note" : `, "changed bytes after the array"},
+		{"bytes after the array, removing", withUser, added[:2], "\n}\n", "\n}\n\n", "changed bytes after the array"},
+	} {
+		t.Run("catches a faulty edit: "+tc.name, func(t *testing.T) {
+			ok, reason := editWith(t, tc.text, tc.prefixes, tc.old, tc.new)
+			if ok || !strings.Contains(reason, tc.want) {
+				t.Fatalf("want failure with %q, got %v %q", tc.want, ok, reason)
 			}
 		})
 	}

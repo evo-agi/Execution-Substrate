@@ -1256,6 +1256,9 @@ class ServiceConfig:
             raise Failure(f"{self.file.path}: allowlist edit check failed: {exc}") from None
         if text[:start] != self.text[:start]:
             raise Failure(f"{self.file.path}: allowlist edit changed bytes before the array")
+        tail = self.text[end:]
+        if not text.endswith(tail) or len(text) - len(tail) <= start:
+            raise Failure(f"{self.file.path}: allowlist edit changed bytes after the array")
         self.file.new = text.encode("utf-8")
 
 
