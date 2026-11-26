@@ -1601,9 +1601,10 @@ def commit_order(installed, commit):
             return "unknown", f"the clone {repo} does not hold the commit {name}"
 
     def is_ancestor(older, newer):
-        # A commit whose parent the clone lacks makes git say so and still
-        # answer "not an ancestor" (exit 1): a damaged history is refused
-        # here, not read as a move that is not forward.
+        # A commit whose parent the clone lacks makes git complain on
+        # standard error, and git 2.43 still answers "not an ancestor"
+        # (exit 1) where git 2.56 exits 128: either way a damaged history is
+        # refused here, not read as a move that is not forward.
         proc = run(git + ["merge-base", "--is-ancestor", older, newer], env=GIT_ENV)
         if proc.returncode not in (0, 1) or proc.stderr.strip():
             raise Refusal(f"git cannot read the history of {older} and {newer} in the clone {repo}: "

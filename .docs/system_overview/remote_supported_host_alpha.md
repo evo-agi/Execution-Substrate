@@ -7485,8 +7485,9 @@ on the command line as `--allow-downgrade <installed commit>..<named commit>`,
 each a full lower-case commit, given once. No file, variable or payload
 stands in for it, and a value that names another move, is malformed, is
 given twice, or names a `forward` or `same` move is refused. A history that
-git cannot read (a commit whose parent the clone lacks, about which git
-still answers "not an ancestor") or that another account could change is
+git cannot read (a commit whose parent the clone lacks, about which some
+git versions complain and still answer "not an ancestor") or that another
+account could change is
 refused whatever the command line says. The report's `move` names both
 commits, the order and why; for a move that `--allow-downgrade` let through,
 also that argument and the user that `SUDO_USER` names (none when `sudo`

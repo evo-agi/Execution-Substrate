@@ -346,7 +346,7 @@ func TestRemoteAlphaUpgradeESRefusesAHistoryOnlyRootCannotVouchFor(t *testing.T)
 			denyGroupOtherWrite(h.t, h.modules)
 			h.toHTTPSWithoutKeyring(broken)
 			return broken
-		}, "git cannot read the history of %s and " + upgradeTestCommit + " in the clone %s: exit 1, "},
+		}, "git cannot read the history of %s and " + upgradeTestCommit + " in the clone %s: exit "}, // 1 on git 2.43, 128 on git 2.56
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -362,11 +362,12 @@ func TestRemoteAlphaUpgradeESRefusesAHistoryOnlyRootCannotVouchFor(t *testing.T)
 			if _, ok := report["move"]; ok {
 				t.Fatalf("check reported a move it could not read: %v", report["move"])
 			}
+			want := "Could not read " + strings.Repeat("cd", 20)
 			if strings.HasPrefix(says, "the history") {
-				want := filepath.Join(h.modules, ".git", "objects") + " is writable by its group or others (0777)"
-				if blockers := moveBlockers(report); !strings.Contains(blockers[0], want) {
-					t.Fatalf("the move blocker %q does not say %q", blockers[0], want)
-				}
+				want = filepath.Join(h.modules, ".git", "objects") + " is writable by its group or others (0777)"
+			}
+			if blockers := moveBlockers(report); !strings.Contains(blockers[0], want) {
+				t.Fatalf("the move blocker %q does not say %q", blockers[0], want)
 			}
 			requireMoveRefused(t, h, says, installed+".."+upgradeTestCommit)
 		})
