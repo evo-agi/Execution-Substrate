@@ -20,7 +20,7 @@ import (
 	"testing"
 	"time"
 
-	egsmodel "execution-substrate/egs/model"
+	egscontract "execution-substrate/egs/contract"
 
 	"execution-substrate/es/admission/internal/admissionstate"
 	"execution-substrate/es/admission/internal/reliablesubmit"
@@ -942,7 +942,7 @@ func TestOperationalAdmissionCommissioning(t *testing.T) {
 		f := makeOperationalFixture(t, "")
 		s, egs := operationalUncommissionedService(t, f, nil)
 		trust := snapshotRuntimeTrustModel(*s.trustModel)
-		egs.serve(egsmodel.RuntimeTrustPolicy{SignerPolicy: egsmodel.SignerPolicy{AllowedSigners: []string{"other-signer"}}})
+		egs.serve(egscontract.RuntimeTrustPolicy{SignerPolicy: egscontract.SignerPolicy{AllowedSigners: []string{"other-signer"}}})
 		entered, release := make(chan struct{}), make(chan struct{})
 		egs.observe(func() {
 			close(entered)
@@ -974,7 +974,7 @@ func TestOperationalAdmissionCommissioning(t *testing.T) {
 	t.Run("trust load during the store write leaves the Service closed", func(t *testing.T) {
 		f := makeOperationalFixture(t, "")
 		s, egs := operationalUncommissionedService(t, f, nil)
-		egs.serve(egsmodel.RuntimeTrustPolicy{SignerPolicy: egsmodel.SignerPolicy{AllowedSigners: []string{"other-signer"}}})
+		egs.serve(egscontract.RuntimeTrustPolicy{SignerPolicy: egscontract.SignerPolicy{AllowedSigners: []string{"other-signer"}}})
 		loaded := false
 		err := s.installOperationalAdmission(ctx, f.domain, func(digest [32]byte) (reliablesubmit.OperationalAdmissionToken, error) {
 			if err := s.Initialize(ctx); err != nil {
@@ -2124,7 +2124,7 @@ func TestOperationalAdmissionChangeAtEachProofHook(t *testing.T) {
 
 func TestOperationalAdmissionFreshness(t *testing.T) {
 	ctx := context.Background()
-	changed := func(f *operationalFixture) egsmodel.RuntimeTrustPolicy {
+	changed := func(f *operationalFixture) egscontract.RuntimeTrustPolicy {
 		trust := snapshotRuntimeTrustModel(operationalInstalledView(f.service).Trust())
 		trust.ArtifactPolicy.RevokedArtifacts = append(trust.ArtifactPolicy.RevokedArtifacts, "sha256:"+strings.Repeat("d", 64))
 		return trust
@@ -4061,9 +4061,9 @@ func TestOperationalAdmissionPolicyContent(t *testing.T) {
 		for i := range key {
 			key[i] = byte(i + 1)
 		}
-		trust := egsmodel.RuntimeTrustPolicy{
-			SignerPolicy:   egsmodel.SignerPolicy{AllowedSigners: []string{"signer-a", "signer-b"}, RevokedSigners: []string{"signer-c"}},
-			ArtifactPolicy: egsmodel.ArtifactPolicy{RevokedArtifacts: []string{"sha256:" + strings.Repeat("0123456789abcdef", 4)}},
+		trust := egscontract.RuntimeTrustPolicy{
+			SignerPolicy:   egscontract.SignerPolicy{AllowedSigners: []string{"signer-a", "signer-b"}, RevokedSigners: []string{"signer-c"}},
+			ArtifactPolicy: egscontract.ArtifactPolicy{RevokedArtifacts: []string{"sha256:" + strings.Repeat("0123456789abcdef", 4)}},
 		}
 		for name, tc := range map[string]struct {
 			set  admissionPolicySet
