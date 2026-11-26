@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -745,11 +746,19 @@ func requireRollback(t *testing.T, h *upgradeHost, backupDir string, installed [
 		t.Fatalf("rollback exited %d\nstdout %s\nstderr %s", code, stdout, stderr)
 	}
 	requireListedAtStop(t, backupsAtStops(t, h), 0, "es", backupDir, "rollback-*.json")
+	// The new record is the one name that was not there before: two
+	// rollbacks in one second sort by their pids, not by when they ran.
 	after, _ := filepath.Glob(filepath.Join(backupDir, "rollback-*.json"))
-	if len(after) != len(records)+1 {
+	var added []string
+	for _, name := range after {
+		if !slices.Contains(records, name) {
+			added = append(added, name)
+		}
+	}
+	if len(added) != 1 || len(after) != len(records)+1 {
 		t.Fatalf("rollback records before %q, after %q", records, after)
 	}
-	path := after[len(after)-1]
+	path := added[0]
 	if !regexp.MustCompile(`/rollback-\d{8}T\d{6}Z-\d+\.json$`).MatchString(path) || modeOf(t, path) != 0o600 {
 		t.Fatalf("rollback record %s, mode %v", path, modeOf(t, path))
 	}
