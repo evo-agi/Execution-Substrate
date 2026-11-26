@@ -4827,6 +4827,25 @@ the external client CA, append `/etc/execution-substrate/user-ca/ca-cert.pem`
 Until it does, its topology check refuses a box with user identities, and an
 external reissue drops user access (and only user access).
 
+### Network grants for user callers
+
+Network grants are not in this build. Today ES admits a run that a
+`user/<name>` caller publishes and submits like any allowed caller's run,
+including one that asks for network access.
+
+Network grants are planned (Workstream F, slice WI-2). With them, ES gives a
+run network access only through an owner rule in
+`admission_policy.workload_grants` that names the run's publisher exactly,
+and refuses other runs that ask for it with `403 network_access_not_granted`.
+An artifact that `user/<name>` publishes then gets no network access until
+the box owner adds a rule that names that identity. `allow` does not add such
+a rule; when grants exist, this section and the runbook will say how to add
+one, and `allow` will name that step instead of adding it. The Remote Alpha
+upgrade that brings grants is planned to write a rule for each allowlist
+entry present at that time, so a name allowed before that upgrade keeps
+network access and a name allowed after it has none until the owner adds a
+rule. Runs that do not ask for network access are not affected.
+
 ### Not claimed
 
 This slice adds no per-caller run ownership, quotas, run listing, CRL, OCSP,

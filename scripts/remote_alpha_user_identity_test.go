@@ -44,6 +44,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"sync/atomic"
@@ -2177,4 +2178,34 @@ func TestUserIdentityIssueChecksWhatOpenSSLSigned(t *testing.T) {
 	}
 	b.mustOK(b.box("issue", "--name", "claude", "--csr", csr, "--out", out, "--apply"), "issue through the fake openssl with no change")
 	b.mustOK(b.caller("install", "--name", "claude", "--cert", out), "install")
+}
+
+// TestUserIdentityDocsTrackWorkloadGrants keeps the user identity docs in
+// step with network grants. While ES has no admission_policy.workload_grants,
+// the docs section and the runbook must say that grants are not in this
+// build. Once ES has them, this fails until both say how the box owner grants
+// a user identity network access, allow names that step, and the sentence
+// goes.
+func TestUserIdentityDocsTrackWorkloadGrants(t *testing.T) {
+	const notYet = "Network grants are not in this build"
+	grants := false
+	policy := reflect.TypeOf(esconfig.AdmissionPolicyConfig{})
+	for i := 0; i < policy.NumField(); i++ {
+		if name, _, _ := strings.Cut(policy.Field(i).Tag.Get("json"), ","); name == "workload_grants" {
+			grants = true
+		}
+	}
+	for _, rel := range []string{
+		".docs/system_overview/remote_supported_host_alpha.md",
+		".runbooks/system/Governed Execution ES Remote Alpha User Identity.md",
+	} {
+		says := strings.Contains(string(mustReadUserIdentityFile(t, filepath.Join(executionSubstrateRepoRoot, filepath.FromSlash(rel)))), notYet)
+		switch {
+		case grants && says:
+			t.Errorf("%s still says %q, but es/config now has admission_policy.workload_grants: say how the box owner "+
+				"grants a user/<name> caller network access, make allow name that step without adding a grant, and drop the sentence", rel, notYet)
+		case !grants && !says:
+			t.Errorf("%s no longer says %q, but es/config has no admission_policy.workload_grants", rel, notYet)
+		}
+	}
 }
