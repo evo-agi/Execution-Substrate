@@ -76,6 +76,15 @@ spec.loader.exec_module(mod)
 if sys.argv[2] == "--dump-layout":
     print(json.dumps(dataclasses.asdict(mod.Layout()), sort_keys=True))
     sys.exit(0)
+if sys.argv[2] == "--render-with-key":
+    # A report that would carry private key text, rendered as text and as
+    # JSON. No mode puts a key in a report; this reaches the last guard.
+    rep = mod.Report("status", False)
+    label = "PRIVATE " + "KEY"
+    rep.facts["leak"] = "-----BEGIN %s-----\nMIIB\n-----END %s-----" % (label, label)
+    rep.result = "ok"
+    print(json.dumps([rep.render(False), rep.render(True)]))
+    sys.exit(0)
 if sys.argv[2] == "--set-prefixes-tampered":
     # A faulty array edit: the real one, then one more replacement in its
     # result, so the checks after the edit have something to catch.
@@ -157,7 +166,9 @@ type userIdentityBox struct {
 
 func requireUserIdentityOpenSSL3(t *testing.T) {
 	t.Helper()
-	out, err := exec.Command("/usr/bin/openssl", "version").Output()
+	cmd := exec.Command("/usr/bin/openssl", "version")
+	cmd.Dir = t.TempDir()
+	out, err := cmd.Output()
 	if err != nil {
 		t.Fatalf("/usr/bin/openssl version: %v", err)
 	}
@@ -1399,7 +1410,9 @@ func TestUserIdentityAllowlistEditKeepsEveryOtherByte(t *testing.T) {
 			args[5] = "--set-prefixes-tampered"
 			args = append(args, tamper...)
 		}
-		out, err := exec.Command("/usr/bin/python3", args...).Output()
+		cmd := exec.Command("/usr/bin/python3", args...)
+		cmd.Dir = t.TempDir()
+		out, err := cmd.Output()
 		if err != nil {
 			t.Fatalf("driver: %v", err)
 		}
@@ -1702,7 +1715,9 @@ func TestUserIdentityStatusFlagsDrift(t *testing.T) {
 // TestUserIdentityDefaultLayoutIsTheBox pins the box values in Layout and
 // the wrapper's interpreter flags.
 func TestUserIdentityDefaultLayoutIsTheBox(t *testing.T) {
-	out, err := exec.Command("/usr/bin/python3", "-I", "-B", "-c", userIdentityDriver, userIdentityModule, "--dump-layout").Output()
+	cmd := exec.Command("/usr/bin/python3", "-I", "-B", "-c", userIdentityDriver, userIdentityModule, "--dump-layout")
+	cmd.Dir = t.TempDir()
+	out, err := cmd.Output()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1983,4 +1998,183 @@ func TestUserIdentityRefusesACAOffTheProfile(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestUserIdentityCheckNamesEachOutcome serves fixed answers on the box's
+// TLS shape and checks how check reads each one. Only ES 200, or AGS 400
+// with the JSON code invalid_request (AGS's refusal of the empty publish
+// body, which comes after authorization), counts as authorized.
+func TestUserIdentityCheckNamesEachOutcome(t *testing.T) {
+	requireUserIdentityOpenSSL3(t)
+	b := newUserIdentityBox(t)
+	serverCA, serverCAKey, serverCAPEM := userIdentityTestCA(t, "Remote Alpha Server CA")
+	serverCert := userIdentityServerCert(t, serverCA, serverCAKey)
+	serverCAFile := filepath.Join(b.root, "server-ca.pem")
+	writeUserIdentityFile(t, serverCAFile, serverCAPEM, 0o644)
+	b.mustOK(b.caller("install", "--name", "claude", "--cert", b.mint("claude"), "--server-ca", serverCAFile), "install")
+
+	const plain = "text/plain; charset=utf-8"
+	for _, tc := range []struct {
+		name, service, contentType, body, want string
+		status                                 int
+	}{
+		{"ES returns its contract", "es", "application/json", `{}`, "authorized", 200},
+		{"AGS refuses the empty body", "ags", "application/json", `{"code":"invalid_request","message":"empty body"}`, "authorized", 400},
+		{"AGS 400 with another code", "ags", "application/json", `{"code":"payload_too_large"}`, "unexpected", 400},
+		{"AGS 400 invalid_request not sent as JSON", "ags", plain, `{"code":"invalid_request"}`, "unexpected", 400},
+		{"AGS 400 with no body", "ags", "", "", "unexpected", 400},
+		{"ES 400 invalid_request", "es", "application/json", `{"code":"invalid_request"}`, "unexpected", 400},
+		{"AGS 200", "ags", "application/json", `{}`, "unexpected", 200},
+		{"not authenticated", "es", plain, "Unauthorized\n", "not_authenticated", 401},
+		{"not on the allowlist", "ags", plain, "Caller not authorized for this operation\n", "not_allowed", 403},
+		{"another refusal", "es", plain, "Forbidden\n", "refused", 403},
+		{"server error", "es", plain, "internal error\n", "unexpected", 500},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			wantMethod, wantPath := http.MethodGet, "/v1/executions:contract"
+			if tc.service == "ags" {
+				wantMethod, wantPath = http.MethodPost, "/v1/artifacts:publish"
+			}
+			var requests atomic.Int32
+			server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests.Add(1)
+				body, _ := io.ReadAll(r.Body)
+				if r.Method != wantMethod || r.URL.Path != wantPath || len(body) != 0 || len(r.TLS.PeerCertificates) != 1 {
+					t.Errorf("check sent %s %s with %d body bytes and %d client certificates", r.Method, r.URL.Path, len(body), len(r.TLS.PeerCertificates))
+				}
+				if tc.contentType != "" {
+					w.Header().Set("Content-Type", tc.contentType)
+				}
+				w.WriteHeader(tc.status)
+				_, _ = io.WriteString(w, tc.body)
+			}))
+			server.TLS = &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{serverCert}, ClientAuth: tls.RequireAnyClientCert}
+			server.StartTLS()
+			defer server.Close()
+
+			run := b.checkOutcome("claude", tc.service, server.URL)
+			wantCode := 1
+			if tc.want == "authorized" {
+				wantCode = 0
+			}
+			var status float64
+			if facts, ok := run.doc["facts"].(map[string]any); ok {
+				status, _ = facts["http_status"].(float64)
+			}
+			if run.code != wantCode || run.fact("outcome") != tc.want || int(status) != tc.status {
+				t.Fatalf("want outcome %s, exit %d, HTTP %d\n%s", tc.want, wantCode, tc.status, run)
+			}
+			if n := requests.Load(); n != 1 {
+				t.Fatalf("check made %d requests, want 1", n)
+			}
+		})
+	}
+}
+
+// TestUserIdentityReportNeverCarriesAPrivateKey hands the report renderer a
+// report that holds private key text. As text and as JSON it comes out as
+// the suppression notice instead. No mode puts a key in a report; this is
+// the last guard behind that.
+func TestUserIdentityReportNeverCarriesAPrivateKey(t *testing.T) {
+	cmd := exec.Command("/usr/bin/python3", "-I", "-B", "-c", userIdentityDriver, userIdentityModule, "--render-with-key")
+	cmd.Dir = t.TempDir()
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(out, []byte("PRIVATE KEY")) {
+		t.Fatalf("a rendered report carries private key text:\n%s", out)
+	}
+	var rendered []string
+	if err := json.Unmarshal(out, &rendered); err != nil || len(rendered) != 2 {
+		t.Fatalf("driver output %q: %v", out, err)
+	}
+	for i, text := range rendered {
+		var doc map[string]any
+		if err := json.Unmarshal([]byte(text), &doc); err != nil {
+			t.Fatalf("rendering %d is not the JSON suppression notice: %v\n%s", i, err, text)
+		}
+		if doc["result"] != "failed" || doc["message"] != "report suppressed: it contained private key text" || doc["mode"] != "status" {
+			t.Fatalf("rendering %d: %v", i, doc)
+		}
+		if _, ok := doc["facts"]; ok {
+			t.Fatalf("rendering %d kept the facts: %v", i, doc)
+		}
+	}
+}
+
+// The fake openssl runs /usr/bin/openssl, except that when openssl.tamper
+// sits next to it, it changes one thing in the signing call (x509 -req), so
+// the certificate issue gets back is not the one it asked for.
+const userIdentityTamperingOpenSSL = `#!/usr/bin/python3
+import os, sys
+HERE = os.path.dirname(os.path.abspath(__file__))
+args = sys.argv[1:]
+marker = os.path.join(HERE, "openssl.tamper")
+if args[:2] == ["x509", "-req"] and os.path.exists(marker):
+    tamper = open(marker).read().strip()
+    if tamper == "days":
+        args[args.index("-days") + 1] = "500"
+    elif tamper == "serial":
+        args[args.index("-set_serial") + 1] = "0x1234"
+    elif tamper == "digest":
+        args[args.index("-sha256")] = "-sha384"
+    elif tamper == "server-auth":
+        i = args.index("-extfile") + 1
+        text = open(args[i]).read().replace("extendedKeyUsage = clientAuth", "extendedKeyUsage = clientAuth, serverAuth")
+        args[i] = os.path.join(HERE, "tampered.cnf")
+        open(args[i], "w").write(text)
+    else:
+        sys.exit("unknown tamper " + tamper)
+os.execv("/usr/bin/openssl", ["/usr/bin/openssl"] + args)
+`
+
+// TestUserIdentityIssueChecksWhatOpenSSLSigned makes openssl sign something
+// other than what issue asked for, one change at a time. issue reads the
+// result back, refuses to record it, and leaves every box file as it was.
+// The same fake openssl with no change gives a certificate issue records.
+func TestUserIdentityIssueChecksWhatOpenSSLSigned(t *testing.T) {
+	requireUserIdentityOpenSSL3(t)
+	b := newUserIdentityBox(t)
+	b.mustOK(b.box("init-ca", "--apply"), "init-ca")
+	b.mustOK(b.caller("request", "--name", "claude"), "request")
+	csr := filepath.Join(b.root, "claude.csr")
+	writeUserIdentityFile(t, csr, mustReadUserIdentityFile(t, filepath.Join(b.callerDir("claude"), "request.csr")), 0o644)
+	fake := filepath.Join(b.root, "fake-openssl")
+	if err := os.Mkdir(fake, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeUserIdentityFile(t, filepath.Join(fake, "openssl"), []byte(userIdentityTamperingOpenSSL), 0o755)
+	fields := b.layoutFields()
+	fields["openssl_bin"] = filepath.Join(fake, "openssl")
+	b.writeLayout(fields)
+	out := filepath.Join(b.root, "claude.crt")
+
+	for _, tc := range []struct{ tamper, want string }{
+		{"days", "outlasts the CA"},
+		{"days", "validity is not the expected window"},
+		{"serial", "serial differs from the one requested"},
+		{"digest", "not signed with sha256WithRSAEncryption"},
+		{"server-auth", "extended key usage is not exactly clientAuth"},
+	} {
+		t.Run(tc.tamper+": "+tc.want, func(t *testing.T) {
+			writeUserIdentityFile(t, filepath.Join(fake, "openssl.tamper"), []byte(tc.tamper), 0o644)
+			before := b.snapshot()
+			run := b.box("issue", "--name", "claude", "--csr", csr, "--out", out, "--apply")
+			if run.code != 1 || run.result() != "failed" ||
+				!strings.Contains(run.message(), "signed certificate check failed, nothing recorded") || !strings.Contains(run.message(), tc.want) {
+				t.Fatalf("issue with openssl changing %s: want failed with %q\n%s", tc.tamper, tc.want, run)
+			}
+			requireSameUserIdentitySnapshot(t, before, b.snapshot(), "issue of a tampered certificate")
+			if _, err := os.Lstat(out); !os.IsNotExist(err) {
+				t.Fatalf("issue wrote %s: %v", out, err)
+			}
+		})
+	}
+
+	if err := os.Remove(filepath.Join(fake, "openssl.tamper")); err != nil {
+		t.Fatal(err)
+	}
+	b.mustOK(b.box("issue", "--name", "claude", "--csr", csr, "--out", out, "--apply"), "issue through the fake openssl with no change")
+	b.mustOK(b.caller("install", "--name", "claude", "--cert", out), "install")
 }
