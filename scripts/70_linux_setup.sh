@@ -398,8 +398,6 @@ nomad_gossip_issue() {
   local dir
   local tmp
   local key
-  local saved_traps
-  local status=0
 
   dir="$(dirname "${keyring}")"
   if [[ ! -d "${dir}" ]]; then
@@ -412,21 +410,19 @@ nomad_gossip_issue() {
   # mode is checked. GNU mv's -T (like GNU stat's -c) renames onto the path
   # itself: without it, a folder there would take the file in.
   tmp="$(umask 077 && mktemp "${dir}/.serf.keyring.XXXXXX")" || return 1
-  # Until the rename, a hangup, interrupt or termination removes the
-  # temporary file, which by then may hold the key, and ends the shell as
-  # that signal would (129, 130, 143). The shell's own traps for them come
-  # back afterwards.
-  saved_traps="$(trap -p HUP INT TERM)"
-  trap "rm -f -- $(printf '%q' "${tmp}"); exit 129" HUP
-  trap "rm -f -- $(printf '%q' "${tmp}"); exit 130" INT
-  trap "rm -f -- $(printf '%q' "${tmp}"); exit 143" TERM
-  if [[ "$(stat -c '%a' "${tmp}")" != "600" ]] || ! printf '["%s"]' "${key}" >"${tmp}" || ! mv -fT "${tmp}" "${keyring}"; then
+  # Until the rename the temporary file may hold the key. A subshell holds
+  # the traps that remove it on a hangup, interrupt or termination and end
+  # with that signal's status (129, 130, 143), so the caller's own traps
+  # stay as they are.
+  if ! (
+    trap 'rm -f -- "${tmp}"; exit 129' HUP
+    trap 'rm -f -- "${tmp}"; exit 130' INT
+    trap 'rm -f -- "${tmp}"; exit 143' TERM
+    [[ "$(stat -c '%a' "${tmp}")" == "600" ]] && printf '["%s"]' "${key}" >"${tmp}" && mv -fT "${tmp}" "${keyring}"
+  ); then
     rm -f "${tmp}"
-    status=1
+    return 1
   fi
-  trap - HUP INT TERM
-  eval "${saved_traps}"
-  return "${status}"
 }
 
 # nomad_gossip_keyring_ok <keyring>: succeed when <keyring> is a regular file

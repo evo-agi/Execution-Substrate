@@ -189,8 +189,10 @@ echo "refused: $(trap -p HUP INT TERM)"`,
 // the issuer while its temporary file held the new key left that file
 // behind. Here stat (before the key goes in) or mv (before the rename)
 // holds; the signal goes to the issuer's whole process group, as a terminal
-// or the box upgrade sends it. The issuer ends with that signal's status,
-// and neither the temporary file nor a keyring is left.
+// or the box upgrade sends it. The issuer fails (bash dies of a hangup or a
+// termination; after an interrupt its subshell's trap ends the subshell, and
+// the issuer returns 1), and once the group is gone, neither the temporary
+// file nor a keyring is left.
 func TestLinuxSetupLeavesNoKeyringTemporaryFileWhenStopped(t *testing.T) {
 	// The held command touches HELD_MARKER and sleeps when its last argument
 	// matches HELD_PATTERN; otherwise it runs the real one.
@@ -221,11 +223,11 @@ exec "${REAL_COMMAND}" "$@"
 		for _, tc := range []struct {
 			name   string
 			signal syscall.Signal
-			status int
+			killed bool
 		}{
-			{"hangup", syscall.SIGHUP, 129},
-			{"interrupt", syscall.SIGINT, 130},
-			{"termination", syscall.SIGTERM, 143},
+			{"hangup", syscall.SIGHUP, true},
+			{"interrupt", syscall.SIGINT, false},
+			{"termination", syscall.SIGTERM, true},
 		} {
 			t.Run(hold.command+"/"+tc.name, func(t *testing.T) {
 				dataDir := t.TempDir()
@@ -299,8 +301,20 @@ exec "${REAL_COMMAND}" "$@"
 					t.Fatalf("the issuer did not end within 15 s of the %s", tc.name)
 				}
 				var exit *exec.ExitError
-				if !errors.As(err, &exit) || exit.ExitCode() != tc.status {
-					t.Fatalf("the issuer after a %s: %v, want exit status %d\n%s", tc.name, err, tc.status, output())
+				if !errors.As(err, &exit) {
+					t.Fatalf("the issuer after a %s: %v\n%s", tc.name, err, output())
+				}
+				status := exit.Sys().(syscall.WaitStatus)
+				if tc.killed && !(status.Signaled() && status.Signal() == tc.signal) || !tc.killed && status.ExitStatus() != 1 {
+					t.Fatalf("the issuer after a %s: %v, want %s\n%s", tc.name, err,
+						map[bool]string{true: "death by that signal", false: "exit status 1"}[tc.killed], output())
+				}
+				// The subshell that held the traps may outlive bash for as
+				// long as it takes to remove the temporary file and be reaped.
+				for deadline := time.Now().Add(15 * time.Second); syscall.Kill(-command.Process.Pid, 0) == nil; time.Sleep(20 * time.Millisecond) {
+					if time.Now().After(deadline) {
+						t.Fatalf("the issuer's process group outlived it by 15 s after a %s", tc.name)
+					}
 				}
 				if entries, err := os.ReadDir(filepath.Dir(keyring)); err != nil || len(entries) != 0 {
 					t.Fatalf("after a %s the keyring's folder holds %v (%v)", tc.name, entries, err)
