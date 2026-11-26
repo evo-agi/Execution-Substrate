@@ -7257,15 +7257,22 @@ router or any other home device.
 ## Remote ES Upgrade And Nomad HTTPS
 
 `Bounded slice rule`: the one existing-host migration contract. It moves the
-Remote Alpha box from where the upgrade of ES PR #54 left it, ES built from
-`16cbf739` and Nomad enforcing ACLs on plain HTTP (the shape `locked-http`),
-to one named `trunk_dev` commit with Nomad serving its API and RPC only over
-TLS 1.3 (the shape `https`): part 2b of the Nomad lock. Current ES requires
-a loopback `https://` `nomad.base_url` with `nomad.server_name`,
+Remote Alpha box to one named `trunk_dev` commit with Nomad serving its API
+and RPC only over TLS 1.3 (part 2b of the Nomad lock) and encrypting its
+gossip with a keyring that the setup's `nomad_gossip_issue` writes (red-team
+RT60-1): the shape `https-gossip`. It starts from where the upgrade of ES PR
+#54 left the box, ES built from `16cbf739` and Nomad enforcing ACLs on plain
+HTTP (the shape `locked-http`), or from where the upgrade of ES PR #60 left
+it, Nomad on HTTPS with ES's pin and no gossip keyring (the shape `https`,
+which also covers a later run of this upgrade for another commit). Current
+ES requires a loopback `https://` `nomad.base_url` with `nomad.server_name`,
 `nomad.root_ca_file` and `nomad.server_spki_sha256`, and decodes its config
-with unknown fields refused, while the box's ES cannot read a config that has
-them, so the binaries, the config and Nomad's listener change together. It
-applies to those two host shapes only. It does not redeploy AGS, ARS or EGS,
+with unknown fields refused, while the box's ES of `16cbf739` cannot read a
+config that has them, so from `locked-http` the binaries, the config and
+Nomad's listener change together. Without a gossip key, Nomad's serf port
+accepts any process that reaches it as a peer: a local account could start
+its own Nomad server and join the box's as a member and a raft non-voter. It
+applies to those host shapes only. It does not redeploy AGS, ARS or EGS,
 change a unit file, move ES storage, or replace Nomad's ACL token files. The
 first upgrade, from `74748063` to `16cbf739` with the Nomad lock, has run on
 the box; the version of this script at `16cbf739` is the one that does it.
@@ -7279,8 +7286,9 @@ Scripts:
   calls ES's own `config.Load` on a file and reports its answer, so the
   upgrade accepts exactly the configs the new ES accepts. Tests keep it to
   that one call.
-- reused: the `nomad_tls` functions of `scripts/70_linux_setup.sh`, which
-  issue and check Nomad's TLS material on every supported host,
+- reused: the `nomad_tls` and `nomad_gossip` functions of
+  `scripts/70_linux_setup.sh`, which issue and check Nomad's TLS material
+  and write and check its gossip keyring on every supported host,
   `scripts/nomad_acl_setup.sh` and `scripts/internal/nomad_tls_identity.py`,
   all from the same checkout.
 
@@ -7377,8 +7385,9 @@ Operator interface:
 Hand the clone and the payload to root before `check` (`chown -R root:root`
 and `chmod -R go-w`) so that no other account can change them between the
 check and the run. `check`, `apply` and `rollback` run code from the clone
-as root (the upgrade itself, the setup's `nomad_tls` functions,
-`nomad_acl_setup.sh` with `nomad_acl.py`, and `nomad_tls_identity.py`), so
+as root (the upgrade itself, the setup's `nomad_tls` and `nomad_gossip`
+functions, `nomad_acl_setup.sh` with `nomad_acl.py`, and
+`nomad_tls_identity.py`), so
 each first refuses, changing nothing, unless no account but root can change
 that code: every folder from `/` down to the clone's `scripts` belongs to
 root and is writable by neither its group nor others, unless it has the
@@ -7421,31 +7430,44 @@ import path), so the upgrade's own checks above see the clone's real path.
 `apply` under `systemd-run` so that a dropped SSH session does not stop it;
 its output then goes to the journal, and its summary to the backup folder.
 
-`check` and `apply` first read the host's shape from four parts, each on its
+`check` and `apply` first read the host's shape from five parts, each on its
 own:
 
-| Part | `locked-http` | `https` |
-| --- | --- | --- |
-| `/etc/nomad.d/nomad.hcl` | the box's file after the lock and the host-network repair of 2026-11-24 (SHA-256 `ea333055…5163`, 1126 bytes) | that file with the `tls` block of `scripts/70_linux_setup.sh` appended |
-| `/etc/nomad.d/tls` | absent | `root:root 0755`, holding exactly `ca.pem`, `server.pem` and `server-key.pem`, which pass the setup's `nomad_tls_material_ok` |
-| `/etc/execution-substrate/es.json` | the box build's 49 key paths and the four that ES PR #54's upgrade added (`nomad.token_file` `/etc/execution-substrate/nomad-acl/es-token`, `execution.retained_result_auth` `{store_id: remote-alpha, key_id: k1, key_file: /etc/execution-substrate/retained-result-auth/es.key}`), with `nomad.base_url` `http://127.0.0.1:4646` | the same, with `nomad.base_url` `https://127.0.0.1:4646` and `nomad.server_name` `server.global.nomad`, `nomad.root_ca_file` `/etc/nomad.d/tls/ca.pem` and `nomad.server_spki_sha256` the SHA-256 of the public key of the certificate on disk |
-| `es` and `es-runtime-support` | clean builds of `16cbf739` by their own Go build info | the verified payload's builds of `<commit>` |
+| Part | `locked-http` | `https` | `https-gossip` |
+| --- | --- | --- | --- |
+| `/etc/nomad.d/nomad.hcl` | the box's file after the lock and the host-network repair of 2026-11-24 (SHA-256 `ea333055…5163`, 1126 bytes) | that file with the `tls` block of `scripts/70_linux_setup.sh` appended | as `https` |
+| `/etc/nomad.d/tls` | absent | `root:root 0755`, holding exactly `ca.pem`, `server.pem` and `server-key.pem`, which pass the setup's `nomad_tls_material_ok` | as `https` |
+| `/etc/execution-substrate/es.json` | the box build's 49 key paths and the four that ES PR #54's upgrade added (`nomad.token_file` `/etc/execution-substrate/nomad-acl/es-token`, `execution.retained_result_auth` `{store_id: remote-alpha, key_id: k1, key_file: /etc/execution-substrate/retained-result-auth/es.key}`), with `nomad.base_url` `http://127.0.0.1:4646` | the same, with `nomad.base_url` `https://127.0.0.1:4646` and `nomad.server_name` `server.global.nomad`, `nomad.root_ca_file` `/etc/nomad.d/tls/ca.pem` and `nomad.server_spki_sha256` the SHA-256 of the public key of the certificate on disk | as `https` |
+| `es` and `es-runtime-support` | clean builds of `16cbf739` by their own Go build info | clean builds of one commit other than `16cbf739` (which `apply` replaces), or the verified payload's builds of `<commit>` | the verified payload's builds of `<commit>` |
+| `/opt/nomad/data/server/serf.keyring` | absent | absent, or sound when the builds are not the payload's | sound |
 
-On `locked-http`, `check` reports what `apply` will change. On `https` for
-the named commit there is nothing to do: `check` and `apply` verify the host
-in place (Nomad names a leader over HTTPS, `nomad_tls_identity.py check`
-passes with the installed `es.json`, Nomad answers an anonymous job list
-with 403, and it answers a request without a token for its `anonymous` ACL
-policy with 404, as ES's own check before each submit requires), write no
-backup, touch no service, and exit 0 with the result `nothing to do`. The job
-list asks only about the namespace `default`, so only the policy request
-shows an anonymous policy that opens ES's namespace. These requests only
-read: `nomad_acl_setup.sh check` is not run here, because it creates and
-deletes short-lived probe tokens. Anything else is refused, and the refusal names the state
-of every part: the pre-lock `nomad.hcl` (SHA-256 `5d5e106c…96b8`, ES PR
-#54's upgrade has not run), a file of unknown content, or parts that
-disagree, such as TLS material left by an `apply` that was cut off before
-its rollback.
+The keyring is sound when it is root's and passes the setup's
+`nomad_gossip_keyring_ok`: a regular file (not a link), mode `0600`, holding
+a JSON list of one or more base64 32-byte keys. Its folder
+`/opt/nomad/data/server`, which Nomad makes when it first starts, must be a
+`root:root` folder that neither its group nor others can write, whatever the
+shape.
+
+On `locked-http` and `https`, `check` reports what `apply` will change. On
+`https-gossip` for the named commit there is nothing to do: `check` and
+`apply` verify the host in place (Nomad names a leader over HTTPS,
+`nomad_tls_identity.py check` passes with the installed `es.json`, Nomad
+answers an anonymous job list with 403, and it answers a request without a
+token for its `anonymous` ACL policy with 404, as ES's own check before each
+submit requires, and its `/v1/agent/self`, read with the observer token,
+reports `stats.serf.encrypted` as the string `"true"`), write no backup,
+touch no service, and exit 0 with the result `nothing to do`. The job list
+asks only about the namespace `default`, so only the policy request shows
+an anonymous policy that opens ES's namespace. These requests only read:
+`nomad_acl_setup.sh check` is not run here, because it creates and deletes
+short-lived probe tokens. The observer token goes to `curl` in its config on
+standard input (`--config -`), never on a command line. Anything else is
+refused, and the refusal names the state of every part: the pre-lock
+`nomad.hcl` (SHA-256 `5d5e106c…96b8`, ES PR #54's upgrade has not run), a
+file of unknown content, a keyring that fails `nomad_gossip_keyring_ok`, a
+missing server folder, or parts that disagree, such as TLS material left by
+an `apply` that was cut off before its rollback, a keyring on a
+`locked-http` host, or builds of `16cbf739` on an `https` one.
 
 `check` refuses when:
 
@@ -7490,19 +7512,27 @@ its rollback.
   file under `/etc/execution-substrate/nomad-acl` is not as provision left it
   (`management-token` root 0600, `es-token` `es` 0400, `observer-token` root
   0400); the retained-result key is missing or breaks ES's rules for it;
-  `openssl` or the setup's `nomad_tls` functions are missing; Nomad names no
+  `openssl` or the setup's `nomad_tls` or `nomad_gossip` functions are
+  missing; Nomad names no
   leader at `http://127.0.0.1:4646`; or a container of a Nomad allocation is
   running (`docker ps --filter label=com.hashicorp.nomad.alloc_id`, which
   needs no Nomad token)
-- on `https`: one of the in-place checks above fails
+- on `https`: one of the in-place checks above fails (the gossip check only
+  when a keyring is in place: a sound keyring that Nomad does not report
+  reading is refused); the new ES's `config.Load` refuses the installed
+  `es.json`; or one of the `locked-http` checks of the token files, the
+  retained-result key, `openssl`, the setup's functions and running
+  allocations fails
+- on `https-gossip`: one of the in-place checks above fails
 
 `apply`, after a clean check of a `locked-http` host:
 
 1. backs up `es.json`, both ES binaries and `nomad.hcl` (bytes, owner, mode
    and SHA-256) into a new folder
    `/var/backups/execution-substrate-es-upgrade/<UTC time>-<commit>` (root,
-   0700), records there that it creates `/etc/nomad.d/tls`
-   (`created.json`), and copies the verified payload into it
+   0700), records there that it creates `/etc/nomad.d/tls` and
+   `/opt/nomad/data/server/serf.keyring` (`created.json`), and copies the
+   verified payload into it
 2. stops ES
 3. issues Nomad's TLS material into `/etc/nomad.d/tls` with the setup's
    `nomad_tls_issue`: a P-256 CA whose key is deleted once it has signed, and
@@ -7511,16 +7541,23 @@ its rollback.
    `nomad_tls_material_ok` and reads the server key's SHA-256, the pin.
 4. checks `nomad.hcl` with the `tls` block appended with
    `nomad config validate`, refusing its warnings about TLS files it cannot
-   read or a config without TLS (it exits 0 with both), stops Nomad, writes
-   the new `nomad.hcl` (`root:root 0640`), starts Nomad and waits up to 90
-   seconds for a named leader over HTTPS (`curl --proto =https --tlsv1.3
-   --cacert /etc/nomad.d/tls/ca.pem --capath /dev/null`). A test keeps the
-   `tls` block equal to the setup script's.
+   read or a config without TLS (it exits 0 with both); writes Nomad's
+   gossip keyring to `/opt/nomad/data/server/serf.keyring` with the setup's
+   `nomad_gossip_issue` (one new 32-byte key from `openssl rand`, as a JSON
+   list, root's, `0600`, through a temporary file and a rename; the key
+   never appears on a command line or in the output) and requires it sound;
+   stops Nomad, writes the new `nomad.hcl` (`root:root 0640`), starts Nomad,
+   which reads the keyring as it starts (`nomad.hcl` names no key), and
+   waits up to 90 seconds for a named leader over HTTPS (`curl
+   --proto =https --tlsv1.3 --cacert /etc/nomad.d/tls/ca.pem --capath
+   /dev/null`). A test keeps the `tls` block equal to the setup script's.
 5. runs `scripts/nomad_acl_setup.sh` against `https://127.0.0.1:4646` with
    `NOMAD_CACERT=/etc/nomad.d/tls/ca.pem`, `ES_USER=es`, `NOMAD_USER=root`
    and `OBSERVER_USER=root`: `provision` keeps the working token files and
    writes the policies again, so the observer policy gains `list-jobs`, and
-   ends with its `check`; then `placement` with `ES_CONFIG` the box's
+   ends with its `check`; requires `/v1/agent/self`, read with the observer
+   token, to report `stats.serf.encrypted` as `"true"`; then `placement`
+   with `ES_CONFIG` the box's
    `es.json`, `NOMAD_STARTED_AT` the time just before the Nomad start and
    `NOMAD_PLACEMENT_WAIT_SECONDS=120`: within 120 seconds the restarted node
    must have a host-mode network, and plans of both ES job shapes (Docker,
@@ -7539,22 +7576,43 @@ its rollback.
    1.3, the CA, the server name, the pin, and at least 14 days of validity)
    passes with the installed `es.json`, Nomad answers an anonymous job list
    over HTTPS with 403 and a request without a token for its `anonymous`
-   ACL policy with 404, and `nomad_acl_setup.sh check` passes. The summary
-   goes to `summary.json` in the backup folder.
+   ACL policy with 404, `nomad_acl_setup.sh check` passes, and Nomad reports
+   its gossip encrypted. The summary goes to `summary.json` in the backup
+   folder.
+
+`apply`, after a clean check of an `https` host:
+
+1. backs up as on `locked-http`; `created.json` names the keyring when the
+   host has none, and nothing otherwise
+2. stops ES and reads the pin from the server certificate on disk
+3. when the host has no keyring: writes it with `nomad_gossip_issue` as in
+   step 4 above, restarts Nomad and waits up to 90 seconds for a named
+   leader over HTTPS, runs `nomad_acl_setup.sh check` (the token files and
+   policies stay as they are), requires Nomad to report its gossip
+   encrypted, and runs `placement` as in step 5 above
+4. requires the retained-result key and ES's token file to be ES's own and
+   the new ES's `config.Load` to accept `es.json`, which it rewrites only if
+   its bytes would change (an `https` host's `es.json` already has its final
+   form), and installs `es` and `es-runtime-support`
+5. starts ES and verifies as in step 7 above
 
 Every command runs in a process group of its own. When a command times out
 or a signal interrupts it, its whole group is ended and drained before
 anything else happens, so no child of it keeps changing the host. If any step
 after the backup fails, or `apply` gets `SIGTERM`, `SIGHUP` or `SIGINT`, it
 ignores further signals and rolls back: it verifies the whole backup (every
-copy's SHA-256, and that `created.json` names only `/etc/nomad.d/tls`)
+copy's SHA-256, and that `created.json` names only `/etc/nomad.d/tls` and
+the keyring)
 before it touches a service, stops ES and Nomad and confirms that both are
 stopped (if either will not stop, nothing is put back and the result is
 `rollback_failed`), puts every backed-up file back with its owner and mode,
-removes `/etc/nomad.d/tls`, starts Nomad and ES, and requires Nomad to name
-a leader within 90 seconds at the address the restored `nomad.hcl` serves
-(plain HTTP after a full restore), because ES's `/health` does not ask
-Nomad. It records `rolled_back`, `rolled_back_unhealthy` when the endpoints
+removes what `created.json` names, starts Nomad and ES, and requires Nomad
+to name a leader within 90 seconds at the address the restored `nomad.hcl`
+serves (plain HTTP after the restore of a `locked-http` host, HTTPS after
+that of an `https` one), because ES's `/health` does not ask Nomad. Nomad
+starts without the keyring it removed, so its gossip is plain again, as it
+was before `apply`; a single server has no peer that still needs the
+key. It records `rolled_back`, `rolled_back_unhealthy` when the endpoints
 do not answer 200 within 60 seconds, or `rollback_failed`, with the failure.
 `rollback` does the same from a backup folder, ignoring `SIGHUP`, and exits
 1 on any of those failures. It refuses a backup of ES PR #54's upgrade
@@ -7570,16 +7628,29 @@ key, the token files or Nomad's ACL policies back: the policies stay as
 So after a rollback, `nomad_acl_setup.sh check` from the checkout of
 `16cbf739` refuses the observer policy until `provision` from that checkout
 writes it back; this script's `check` and `apply` accept the rolled-back host
-as `locked-http`. Nothing prints a key or a token.
+as `locked-http` or `https`, the shape it had. Nothing prints a key or a
+token.
 
 The tests (`scripts/remote_alpha_upgrade_es_test.go`,
-`scripts/remote_alpha_upgrade_es_host_test.go` and
+`scripts/remote_alpha_upgrade_es_host_test.go`,
+`scripts/remote_alpha_upgrade_es_gossip_test.go` and
 `scripts/remote_alpha_upgrade_es_config_check_test.go`) run `check`,
 `apply`, the in-place check of a migrated host, the automatic rollback, an
 interrupted apply and `rollback` on a host-shaped folder with fake
 `systemctl`, `curl`, `nomad`, `docker`, ACL setup and identity check, and the
-real `nomad_tls_issue`: hosts of every refused shape, each named part by
-part; payload binaries whose Go build info names another commit, another Go
+real `nomad_tls_issue` and `nomad_gossip_issue`: hosts of every refused
+shape, each named part by part; `https` hosts without a keyring (with the
+box's builds of an earlier commit, and with the payload's), with a sound
+keyring and earlier builds, and with a keyring that is readable by others,
+holds a 16-byte key or is a symbolic link, a server folder that is missing
+or group-writable, a sound keyring that Nomad does not report reading, an
+observer token that is not a secret ID, builds of two commits, of
+`16cbf739` or of a modified checkout, and a keyring on a `locked-http`
+host; an `apply` whose restarted Nomad does not read the keyring, names no
+leader, cannot place ES's jobs or fails the ACL check, or after which ES
+does not start, each rolled back with the keyring removed; no gossip key
+or Nomad token in the output, the fakes' logged calls or any `curl`
+command line; payload binaries whose Go build info names another commit, another Go
 or a modified build, or shows a replaced module, a workspace module or a
 vendored dependency; payload files of another owner or group; a clone that
 another account could change (a file or folder writable by its group or
@@ -7650,15 +7721,21 @@ and a comma; and `esconfigcheck` built from no module but the repository's
 own.
 `TestRemoteAlphaUpgradeESMovesARealNomadToHTTPS` runs `check`, `apply`, the
 in-place check and `rollback` against a real Nomad agent started on the
-box's own `nomad.hcl` (with a data folder, free ports and the TLS paths under
-the test folder added by `-config` overrides), set up the way ES PR #54's
-upgrade left the box: ACLs bootstrapped over plain HTTP, the token files in
-a root-owned folder, and the observer policy without `list-jobs`. `apply`
-runs the real `scripts/nomad_acl_setup.sh` through `sudo` as root, and the
-real `nomad_tls_identity.py`, so no stand-in can hide a broken step; the
-test then proves that Nomad answers only over HTTPS and that the observer
-token, kept, now lists ES's jobs. CI runs it with Nomad 2.1.1 and
-passwordless `sudo`.
+box's own `nomad.hcl` (with the test host's data folder, free ports and the
+TLS paths under the test folder added by `-config` overrides), set up the
+way ES PR #54's upgrade left the box: ACLs bootstrapped over plain HTTP, the
+token files in a root-owned folder, and the observer policy without
+`list-jobs`. `apply` runs the real `scripts/nomad_acl_setup.sh` through
+`sudo` as root, and the real `nomad_tls_identity.py`, so no stand-in can
+hide a broken step; the test then proves that Nomad answers only over
+HTTPS, that the observer token, kept, now lists ES's jobs, and that Nomad
+read the keyring `apply` wrote and reports its gossip encrypted. It then
+takes the box's own path: with the keyring taken away, builds of an earlier
+commit installed and Nomad restarted (gossip plain, the shape `https`),
+`apply` writes a keyring and Nomad encrypts its gossip, and that apply's
+`rollback` brings back the `https` host with plain gossip; the first
+`rollback` then returns the host to `locked-http`. CI runs it with Nomad
+2.1.1 and passwordless `sudo`.
 
 ## Python In The Scripts
 

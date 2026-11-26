@@ -100,6 +100,18 @@ execution-substrate/scripts TestRemoteAlphaUpgradeESApplyRollsBackOnFailure
 execution-substrate/scripts TestRemoteAlphaUpgradeESApplyRollsBackWhenInterrupted
 execution-substrate/scripts TestRemoteAlphaUpgradeESRollbackFailuresAreReported
 execution-substrate/scripts TestRemoteAlphaUpgradeESApplySurvivesALostSession
+# The gossip keyring tests first move their host to HTTPS with that apply,
+# and the setup's nomad_gossip_issue and nomad_gossip_keyring_ok read modes
+# with "stat -c '%a'" too. The last is listed whole: some of its cases that
+# fail there have names that cannot be listed (they hold "'"), and its case
+# "a keyring on a locked-http host" expects a refusal, so it passes there
+# without reaching the keyring check.
+execution-substrate/scripts TestRemoteAlphaUpgradeESAddsTheGossipKeyringToAnHTTPSHost
+execution-substrate/scripts TestRemoteAlphaUpgradeESKeepsASoundGossipKeyring
+execution-substrate/scripts TestRemoteAlphaUpgradeESAddsOnlyTheMissingKeyring
+execution-substrate/scripts TestRemoteAlphaUpgradeESRollsBackTheGossipKeyring
+execution-substrate/scripts TestRemoteAlphaUpgradeESRefusesAGossipKeyringItDidNotExpect
+execution-substrate/scripts TestRemoteAlphaUpgradeESRefusesAKeyringChangedAfterCheck
 
 
 # Tests that skip themselves on the runner.

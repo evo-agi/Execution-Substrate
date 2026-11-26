@@ -1,17 +1,26 @@
 #!/usr/bin/env -S python3 -I
-"""Remote Alpha ES upgrade: move the box's ES to a named commit and put
-Nomad's API behind HTTPS.
+"""Remote Alpha ES upgrade: move the box's ES to a named commit, with Nomad's
+API behind HTTPS and its gossip encrypted.
 
 This file is the implementation behind scripts/remote_alpha_upgrade_es.sh.
-It takes the box from where the upgrade of ES PR #54 left it, ES built from
-16cbf739 and Nomad enforcing ACLs on plain HTTP (the shape "locked-http"), to
-the named commit with Nomad serving its API and RPC only over TLS 1.3 (the
-shape "https"), part 2b of the Nomad lock. check and apply first read the
-host's shape from nomad.hcl, Nomad's TLS directory, es.json and the installed
-ES binaries. On "locked-http" check reports every change apply would make. On
-"https" for the named commit there is nothing to do: both exit 0 and change
-nothing. Any other shape is refused, naming what each part looks like. The
-host steps:
+It leaves the box at the named commit with Nomad serving its API and RPC only
+over TLS 1.3 (part 2b of the Nomad lock) and encrypting its gossip with a
+keyring the setup's nomad_gossip_issue wrote (red-team RT60-1): the shape
+"https-gossip". check and apply first read the host's shape from nomad.hcl,
+Nomad's TLS directory, es.json, the installed ES binaries and Nomad's gossip
+keyring. They start from either of two shapes:
+
+  locked-http     where the upgrade of ES PR #54 left the box: ES built from
+                  16cbf739, Nomad enforcing ACLs on plain HTTP, no keyring
+  https           where the upgrade of ES PR #60 left it, or a later run of
+                  this one: Nomad on HTTPS with ES's pin, ES a clean build of
+                  any commit but 16cbf739, and either no keyring or a sound
+                  one, but not both the payload's build and a keyring
+
+On either, check reports every change apply would make. On "https-gossip"
+for the named commit there is nothing to do: both exit 0 and change nothing.
+Any other shape is refused, naming what each part looks like. The host
+steps:
 
   build           (unprivileged) build es, es-runtime-support and the
                   config check helper from this clean checkout, with
@@ -19,11 +28,14 @@ host steps:
   check           (root, read-only) verify the payload and the host and
                   print every change apply would make; refuse anything
                   this upgrade was not written for
-  apply           (root) check, back up, stop ES, issue Nomad's TLS
-                  material, restart Nomad on HTTPS, provision its ACLs
-                  again, migrate es.json, install the binaries, start ES
-                  and verify; on any failure, put the backup back
-  rollback        (root) put a backup back and start Nomad and ES
+  apply           (root) check, back up, stop ES; on locked-http issue
+                  Nomad's TLS material; write the gossip keyring if there
+                  is none; restart Nomad when either changed (on HTTPS,
+                  with its ACLs provisioned again or checked); migrate
+                  es.json, install the binaries, start ES and verify; on
+                  any failure, put the backup back
+  rollback        (root) put a backup back, remove what apply created (the
+                  TLS directory, the keyring) and start Nomad and ES
 
 and the host-independent pieces they are built on:
 
@@ -613,9 +625,15 @@ tls {{
   tls_min_version        = "tls13"
 }}
 """
-# The paths apply creates. Its backup names those it created, and a restore
-# removes them; it removes nothing else.
-CREATED_BY_APPLY = (NOMAD_TLS_DIR,)
+# Nomad's gossip keyring, which Nomad reads from its data directory when it
+# starts (scripts/70_linux_setup.sh's NOMAD_GOSSIP_KEYRING on a supported
+# host), and the server folder Nomad keeps it in. Nomad makes that folder
+# 0755 inside its 0700 data directory.
+NOMAD_SERVER_DIR = "/opt/nomad/data/server"
+NOMAD_GOSSIP_KEYRING = NOMAD_SERVER_DIR + "/serf.keyring"
+# The paths apply may create. Its backup names those this run creates, and a
+# restore removes them; it removes nothing else.
+CREATED_BY_APPLY = (NOMAD_TLS_DIR, NOMAD_GOSSIP_KEYRING)
 # `nomad config validate` warns, and still exits 0, when it cannot read the
 # TLS files a config names, and when a config has no TLS at all.
 NOMAD_VALIDATE_REFUSED = ("Error when parsing TLS configuration", "mTLS is not configured")
@@ -820,15 +838,17 @@ class Completed:
         self.args, self.returncode, self.stdout, self.stderr = args, returncode, stdout, stderr
 
 
-def run(args, env=None, timeout=120, check=False, cwd=None):
+def run(args, env=None, timeout=120, check=False, cwd=None, input=None):
     """Run a command in a process group of its own. When it times out, or a
     signal interrupts the wait, the whole group is ended and drained before
     the exception goes on, so no descendant keeps changing the host during
-    a rollback. Descendants left after a normal exit are ended too."""
-    proc = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    a rollback. Descendants left after a normal exit are ended too. input,
+    when given, is the command's standard input."""
+    proc = subprocess.Popen(args, stdin=subprocess.DEVNULL if input is None else subprocess.PIPE,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             text=True, env=env, cwd=cwd, start_new_session=True)
     try:
-        stdout, stderr = proc.communicate(timeout=timeout)
+        stdout, stderr = proc.communicate(input=input, timeout=timeout)
     except BaseException as exc:
         stop_process_group(proc)
         if isinstance(exc, subprocess.TimeoutExpired):
@@ -971,6 +991,44 @@ def anonymous_nomad_problems():
     if code != "404":
         problems.append(f"Nomad answers a request without a token for its anonymous ACL policy over HTTPS with {code}, not 404")
     return problems
+
+
+def nomad_secret_id(text):
+    """Whether text has the form of a Nomad secret ID (a lowercase UUID)."""
+    return (len(text) == 36 and all(text[i] == "-" for i in (8, 13, 18, 23))
+            and set(text.replace("-", "")) <= set("0123456789abcdef"))
+
+
+def nomad_gossip_state():
+    """(encrypted, what Nomad reports) from /v1/agent/self over HTTPS, read
+    with the observer token, which may read the agent. Nomad reports
+    stats.serf.encrypted as the string "true" when it encrypts its gossip.
+    The token goes to curl in its config on standard input, never on a
+    command line."""
+    addr = nomad_https_addr()
+    try:
+        data, _ = read_regular_file(host(f"{NOMAD_ACL_DIR}/observer-token"))
+        token = data.decode("ascii").strip()
+    except (Refusal, OSError, UnicodeDecodeError) as exc:
+        return False, f"cannot read the observer token: {exc}"
+    if not nomad_secret_id(token):
+        return False, "the observer token file does not hold a Nomad secret ID"
+    proc = run(["curl", "--noproxy", "*", "-sS", "-m", "10", "--config", "-", "-w", "\n%{http_code}",
+                *nomad_curl_args(addr), addr + "/v1/agent/self"],
+               timeout=15, input=f'header = "X-Nomad-Token: {token}"\n')
+    if proc.returncode != 0:
+        return False, f"error: {(proc.stderr or '').strip()[:200]}"
+    body, _, code = proc.stdout.rpartition("\n")
+    if code != "200":
+        return False, f"/v1/agent/self answered {code}"
+    try:
+        doc = json.loads(body)
+    except ValueError:
+        return False, "/v1/agent/self did not answer JSON"
+    stats = doc.get("stats") if isinstance(doc, dict) and isinstance(doc.get("stats"), dict) else {}
+    serf = stats.get("serf") if isinstance(stats.get("serf"), dict) else {}
+    value = serf.get("encrypted")
+    return value == "true", f"stats.serf.encrypted {value!r}"
 
 
 def nomad_leader_named(addr):
@@ -1297,16 +1355,22 @@ def owner_mode(st):
     return {"uid": st.st_uid, "gid": st.st_gid, "mode": format(stat.S_IMODE(st.st_mode), "04o")}
 
 
+def setup_functions(region):
+    """The functions of one region of scripts/70_linux_setup.sh, between its
+    "# BEGIN <region>" and "# END <region>" lines."""
+    data, _ = read_regular_file(SETUP_SCRIPT)
+    text = data.decode("utf-8")
+    begin = text.find(f"\n# BEGIN {region}")
+    end = text.find(f"\n# END {region}\n", begin + 1)
+    if begin < 0 or end < 0:
+        raise Refusal(f"scripts/70_linux_setup.sh has no {region} functions")
+    return text[begin + 1:end + 1]
+
+
 def setup_tls_functions():
     """The nomad_tls functions of scripts/70_linux_setup.sh, which issue and
     check Nomad's TLS material on every supported host."""
-    data, _ = read_regular_file(SETUP_SCRIPT)
-    text = data.decode("utf-8")
-    begin = text.find("\n# BEGIN nomad_tls")
-    end = text.find("\n# END nomad_tls\n", begin + 1)
-    if begin < 0 or end < 0:
-        raise Refusal("scripts/70_linux_setup.sh has no nomad_tls functions")
-    return text[begin + 1:end + 1]
+    return setup_functions("nomad_tls")
 
 
 def nomad_tls(function, *args):
@@ -1314,6 +1378,14 @@ def nomad_tls(function, *args):
     script: root on the host, so the material is root's."""
     script = "set -euo pipefail\n" + setup_tls_functions() + '"$@"\n'
     return run(["bash", "-c", script, "nomad-tls", function, *args], timeout=120)
+
+
+def nomad_gossip(function, *args):
+    """Run one of the setup's nomad_gossip functions, which write and check
+    Nomad's gossip keyring on every supported host, as the user running this
+    script: root on the host, so the keyring is root's."""
+    script = "set -euo pipefail\n" + setup_functions("nomad_gossip") + '"$@"\n'
+    return run(["bash", "-c", script, "nomad-gossip", function, *args], timeout=60)
 
 
 def server_spki_sha256():
@@ -1326,9 +1398,10 @@ def server_spki_sha256():
 
 
 # The host's shape. Each part of the host this upgrade changes is read on its
-# own and reports (shape, state): shape is "locked-http" (where ES PR #54's
-# upgrade left it), "https" (where this upgrade leaves it) or None, and state
-# says what was found. The host has a shape only when every part agrees.
+# own and reports (shape, state): shape is the part's form ("locked-http"
+# where ES PR #54's upgrade left it, "https" once Nomad is on HTTPS, and for
+# the binaries and the keyring the forms below) or None, and state says what
+# was found. host_shape puts the parts together.
 
 def nomad_hcl_shape(text):
     digest = sha256_bytes(text)
@@ -1407,14 +1480,44 @@ def binaries_shape(commit, prov):
         return "locked-http", f"locked-http (builds of {BOX_ES_COMMIT})"
     if found == {commit}:
         return "https", f"https (the payload's builds of {commit})"
+    if len(found) == 1 and valid_commit(revisions["es"]):
+        return "other", f"other (clean builds of {revisions['es']}, which apply replaces)"
     return None, "unknown (" + ", ".join(f"{name} built from {rev}" for name, rev in revisions.items()) + ")"
 
 
-SHAPE_PARTS = ("nomad.hcl", "Nomad's TLS directory", "es.json", "the ES binaries")
+def keyring_shape():
+    """Nomad's gossip keyring: "absent", or "sound" when it is root's and the
+    setup's nomad_gossip_keyring_ok accepts it. Nomad's server folder must
+    be root's and writable by no one else either way."""
+    folder = host(NOMAD_SERVER_DIR)
+    try:
+        st = os.lstat(folder)
+    except FileNotFoundError:
+        return None, f"{NOMAD_SERVER_DIR} is missing (Nomad makes it when it first starts)"
+    if not stat.S_ISDIR(st.st_mode) or not owned_by_root(st) or stat.S_IMODE(st.st_mode) & 0o022:
+        return None, f"{NOMAD_SERVER_DIR} is not a root:root directory only root can write ({owner_mode(st)})"
+    if not os.path.lexists(host(NOMAD_GOSSIP_KEYRING)):
+        return "absent", "absent"
+    if nomad_gossip("nomad_gossip_keyring_ok", host(NOMAD_GOSSIP_KEYRING)).returncode != 0:
+        return None, "present, but it fails the setup's nomad_gossip_keyring_ok"
+    return "sound", "sound (root's keyring that passes the setup's nomad_gossip_keyring_ok)"
+
+
+SHAPE_PARTS = ("nomad.hcl", "Nomad's TLS directory", "es.json", "the ES binaries", "Nomad's gossip keyring")
+TLS_PARTS = SHAPE_PARTS[:3]
 
 
 def host_shape(commit, prov):
-    """(shape or None, {part: state}, pin or None). Reads only."""
+    """(shape or None, {part: state}, pin or None, {part: form}). Reads
+    only. The shapes:
+
+      locked-http     every TLS part and the binaries locked-http, no keyring
+      https           every TLS part https, the binaries the payload's
+                      builds or other clean builds, the keyring absent or
+                      sound, but not the payload's builds with a keyring
+      https-gossip    every TLS part https, the payload's builds, a sound
+                      keyring: where apply leaves the host
+    """
     def guarded(read):
         try:
             return read()
@@ -1432,9 +1535,16 @@ def host_shape(commit, prov):
             found["Nomad's TLS directory"] = (None, f"present, but {exc}")
     found["es.json"] = guarded(lambda: es_config_shape(json.loads(read_regular_file(host(ES_CONFIG))[0]), pin))
     found["the ES binaries"] = guarded(lambda: binaries_shape(commit, prov))
-    shapes = {shape for shape, _ in found.values()}
-    shape = shapes.pop() if len(shapes) == 1 else None
-    return shape, {part: found[part][1] for part in SHAPE_PARTS}, pin
+    found["Nomad's gossip keyring"] = guarded(keyring_shape)
+    tls = {found[part][0] for part in TLS_PARTS}
+    binaries, keyring = found["the ES binaries"][0], found["Nomad's gossip keyring"][0]
+    shape = None
+    if tls == {"locked-http"} and binaries == "locked-http" and keyring == "absent":
+        shape = "locked-http"
+    elif tls == {"https"} and binaries in ("https", "other") and keyring in ("absent", "sound"):
+        shape = "https-gossip" if (binaries, keyring) == ("https", "sound") else "https"
+    forms = {part: found[part][0] for part in SHAPE_PARTS}
+    return shape, {part: found[part][1] for part in SHAPE_PARTS}, pin, forms
 
 
 def describe_parts(parts):
@@ -1461,11 +1571,12 @@ def inspect_host(payload_dir, commit):
         prov = None
         block("payload", str(exc))
 
-    shape, parts, pin = host_shape(commit, prov)
+    shape, parts, pin, forms = host_shape(commit, prov)
     report["shape"] = shape or "unknown"
     report["parts"] = parts
     if shape is None:
-        block("shape", "the host is in no shape this upgrade knows; it takes locked-http to https: " + describe_parts(parts))
+        block("shape", "the host is in no shape this upgrade knows; it takes locked-http or https to https-gossip: "
+              + describe_parts(parts))
 
     active = services_active()
     report["services"] = active
@@ -1508,7 +1619,9 @@ def inspect_host(payload_dir, commit):
     if shape == "locked-http":
         inspect_start(report, block, payload_dir, prov)
     elif shape == "https":
-        inspect_migrated(report, block)
+        inspect_https(report, block, payload_dir, prov, pin, forms)
+    elif shape == "https-gossip":
+        inspect_migrated(report, block, gossip=True)
     report["blockers"] = blockers
     return report, blockers
 
@@ -1524,9 +1637,51 @@ def acl_files():
 
 def inspect_start(report, block, payload_dir, prov):
     """The checks of a locked-http host, which apply will change."""
-    try:
+    def migrate():
         data, _ = read_regular_file(host(ES_CONFIG))
-        migrated, changes = migrate_config(json.loads(data), PLACEHOLDER_PIN, START_ES_PATHS)
+        return migrate_config(json.loads(data), PLACEHOLDER_PIN, START_ES_PATHS)
+
+    inspect_ahead(report, block, payload_dir, prov, migrate, nomad_http_addr())
+    report["changes"] = [
+        f"issue Nomad's TLS material into {NOMAD_TLS_DIR} with the setup's nomad_tls_issue",
+        f"write Nomad's gossip keyring to {NOMAD_GOSSIP_KEYRING} with the setup's nomad_gossip_issue",
+        "append the supported config's tls block to nomad.hcl and restart Nomad on HTTPS, with its gossip encrypted",
+        "provision Nomad's ACLs again (the observer policy gains list-jobs) and check placement",
+        "es.json: " + ", ".join(report.get("es_config", {}).get("changes", [])),
+        f"install es and es-runtime-support built from {report['commit']}",
+    ]
+
+
+def inspect_https(report, block, payload_dir, prov, pin, forms):
+    """The checks of an https host, which apply will change: Nomad must run
+    as an https host does (and encrypt its gossip if it has a keyring), and
+    the host must be ready for the change."""
+    keyring_absent = forms["Nomad's gossip keyring"] == "absent"
+    inspect_migrated(report, block, gossip=not keyring_absent)
+
+    def migrate():
+        data, _ = read_regular_file(host(ES_CONFIG))
+        return migrate_config(json.loads(data), pin)
+
+    inspect_ahead(report, block, payload_dir, prov, migrate, None)
+    changes = []
+    if keyring_absent:
+        changes += [f"write Nomad's gossip keyring to {NOMAD_GOSSIP_KEYRING} with the setup's nomad_gossip_issue",
+                    "restart Nomad on HTTPS, which then encrypts its gossip, and check its ACLs and placement"]
+    if forms["the ES binaries"] != "https":
+        changes.append(f"install es and es-runtime-support built from {report['commit']}")
+    report["changes"] = changes
+
+
+def inspect_ahead(report, block, payload_dir, prov, migrate, leader_addr):
+    """The checks of a host that apply will change: the new ES must accept
+    the es.json it will run with (migrate returns it and its changes), the
+    token files and the retained-result key must be as provision and ES PR
+    #54's upgrade left them, the setup's functions must be at hand, Nomad
+    must have a named leader at leader_addr (unless None, when the caller
+    checked it) and no allocation may be running."""
+    try:
+        migrated, changes = migrate()
         report.setdefault("es_config", {})["changes"] = changes
         if prov is not None:
             ok, out = esconfigcheck(os.path.join(payload_dir, "esconfigcheck"), migrated)
@@ -1553,14 +1708,15 @@ def inspect_start(report, block, payload_dir, prov):
         block("retained_result_key", str(exc))
 
     if shutil.which("openssl") is None:
-        block("tools", "openssl is not installed; the setup's nomad_tls functions need it")
-    try:
-        setup_tls_functions()
-    except (Refusal, OSError, UnicodeDecodeError) as exc:
-        block("tools", str(exc))
+        block("tools", "openssl is not installed; the setup's nomad_tls and nomad_gossip functions need it")
+    for region in ("nomad_tls", "nomad_gossip"):
+        try:
+            setup_functions(region)
+        except (Refusal, OSError, UnicodeDecodeError) as exc:
+            block("tools", str(exc))
 
-    if not nomad_leader_named(nomad_http_addr()):
-        block("nomad", f"Nomad has no named leader at {nomad_http_addr()}")
+    if leader_addr is not None and not nomad_leader_named(leader_addr):
+        block("nomad", f"Nomad has no named leader at {leader_addr}")
     proc = run(["docker", "ps", "--quiet", "--no-trunc", "--filter", f"label={NOMAD_ALLOC_LABEL}"], timeout=30)
     if proc.returncode != 0:
         block("nomad", f"cannot list the containers of Nomad's allocations: {proc.stderr.strip()[:200]}")
@@ -1570,17 +1726,11 @@ def inspect_start(report, block, payload_dir, prov):
         if running:
             block("nomad", f"{len(running)} container(s) of Nomad allocations are running; wait until they finish")
 
-    report["changes"] = [
-        f"issue Nomad's TLS material into {NOMAD_TLS_DIR} with the setup's nomad_tls_issue",
-        "append the supported config's tls block to nomad.hcl and restart Nomad on HTTPS",
-        "provision Nomad's ACLs again (the observer policy gains list-jobs) and check placement",
-        "es.json: " + ", ".join(report.get("es_config", {}).get("changes", [])),
-        f"install es and es-runtime-support built from {report['commit']}",
-    ]
 
-
-def inspect_migrated(report, block):
-    """The read-only proof that an https host runs as this upgrade leaves it."""
+def inspect_migrated(report, block, gossip):
+    """The read-only proof that Nomad runs on HTTPS as ES's settings expect,
+    and, when gossip is true (a keyring is in place), that it encrypts its
+    gossip."""
     report["changes"] = []
     if not nomad_leader_named(nomad_https_addr()):
         block("nomad", f"Nomad has no named leader at {nomad_https_addr()}")
@@ -1590,6 +1740,11 @@ def inspect_migrated(report, block):
         block("nomad", f"ES's Nomad TLS settings do not hold against the running Nomad: {out}")
     for problem in anonymous_nomad_problems():
         block("nomad", problem)
+    if gossip:
+        encrypted, state = nomad_gossip_state()
+        report["nomad_gossip"] = state
+        if not encrypted:
+            block("nomad", f"Nomad has a gossip keyring but does not report its gossip encrypted: {state}")
 
 
 def write_summary(path, report):
@@ -1614,13 +1769,16 @@ def backup_root_ready():
 CREATED_MANIFEST = "created.json"
 
 
-def backup_host(backup_dir):
-    """Back up every file apply changes, and name every path it creates."""
+def backup_host(backup_dir, created):
+    """Back up every file apply changes, and name every path it creates:
+    created, a subset of CREATED_BY_APPLY, none of which may exist yet."""
+    if not set(created) <= set(CREATED_BY_APPLY):
+        raise Refusal(f"apply does not create {sorted(set(created) - set(CREATED_BY_APPLY))}")
     manifest = backup_files(backup_dir, [host(p) for p in (ES_CONFIG, ES_BINARY, RUNTIME_SUPPORT, NOMAD_HCL)])
-    for path in CREATED_BY_APPLY:
+    for path in created:
         if os.path.lexists(host(path)):
             raise Refusal(f"{path} exists already")
-    write_new_file(os.path.join(backup_dir, CREATED_MANIFEST), json.dumps(list(CREATED_BY_APPLY), indent=2) + "\n")
+    write_new_file(os.path.join(backup_dir, CREATED_MANIFEST), json.dumps(list(created), indent=2) + "\n")
     return manifest
 
 
@@ -1689,9 +1847,29 @@ def validate_nomad_hcl(text):
             raise Refusal(f"nomad config validate: {line.strip()[:300]}")
 
 
+def issue_gossip_keyring(log):
+    """Write Nomad's gossip keyring with the setup's nomad_gossip_issue. Nomad
+    reads it when it next starts."""
+    proc = nomad_gossip("nomad_gossip_issue", host(NOMAD_GOSSIP_KEYRING))
+    if proc.returncode != 0:
+        raise Refusal(f"nomad_gossip_issue failed: {proc.stderr.strip()[:300]}")
+    shape, state = keyring_shape()
+    if shape != "sound":
+        raise Refusal(f"Nomad's new gossip keyring is {state}")
+    log(f"Nomad's gossip keyring written to {NOMAD_GOSSIP_KEYRING}")
+
+
+def require_gossip_encrypted(log):
+    encrypted, state = nomad_gossip_state()
+    if not encrypted:
+        raise Refusal(f"Nomad does not report its gossip encrypted: {state}")
+    log('Nomad reports its gossip encrypted (stats.serf.encrypted "true")')
+
+
 def apply_nomad_tls(log):
-    """Issue Nomad's TLS material, restart Nomad on HTTPS, provision its ACLs
-    again and prove that it places ES's jobs. Returns the server key's pin."""
+    """Issue Nomad's TLS material and write its gossip keyring, restart Nomad
+    on HTTPS, check that it encrypts its gossip, provision its ACLs again
+    and prove that it places ES's jobs. Returns the server key's pin."""
     text, _ = read_regular_file(host(NOMAD_HCL))
     if sha256_bytes(text) != NOMAD_HCL_LOCKED_SHA256:
         raise Refusal("nomad.hcl changed after check")
@@ -1706,6 +1884,7 @@ def apply_nomad_tls(log):
     new_text = text + NOMAD_TLS_BLOCK.encode()
     validate_nomad_hcl(new_text.decode("utf-8"))
     log("nomad.hcl with the tls block validated")
+    issue_gossip_keyring(log)
     stop_service("nomad")
     log("nomad stopped")
     ruid, rgid = root_ids()
@@ -1718,12 +1897,35 @@ def apply_nomad_tls(log):
     log("nomad started on HTTPS with a named leader")
     acl_setup("provision")
     log("nomad ACLs provisioned again (nomad_acl_setup.sh provision, which ends with its check)")
-    # Every check above passes on a Nomad that can place nothing: prove that
-    # the restarted node has a host-mode network and that ES's job shapes plan.
+    require_gossip_encrypted(log)
+    check_placement(started_at, log)
+    return pin
+
+
+def apply_nomad_gossip(log):
+    """Write Nomad's gossip keyring and restart Nomad on HTTPS, which then
+    encrypts its gossip; check its ACLs and prove that it places ES's jobs."""
+    issue_gossip_keyring(log)
+    stop_service("nomad")
+    log("nomad stopped")
+    started_at = int(time.time())
+    run(["systemctl", "start", "nomad"], timeout=120, check=True)
+    if not wait_for(lambda: nomad_leader_named(nomad_https_addr()), LEADER_WAIT_SECONDS):
+        raise Refusal(f"Nomad named no leader at {nomad_https_addr()} within {LEADER_WAIT_SECONDS} s of its start")
+    log("nomad started on HTTPS with a named leader")
+    acl_setup("check")
+    log("nomad ACLs checked (nomad_acl_setup.sh check)")
+    require_gossip_encrypted(log)
+    check_placement(started_at, log)
+
+
+def check_placement(started_at, log):
+    # Every check before this passes on a Nomad that can place nothing: prove
+    # that the restarted node has a host-mode network and that ES's job
+    # shapes plan.
     acl_setup("placement", ES_CONFIG=host(ES_CONFIG), NOMAD_STARTED_AT=str(started_at),
               NOMAD_PLACEMENT_WAIT_SECONDS=str(PLACEMENT_WAIT_SECONDS))
     log("nomad can place ES's jobs (nomad_acl_setup.sh placement)")
-    return pin
 
 
 def install_es(stage_dir, migrated, log):
@@ -1737,8 +1939,12 @@ def install_es(stage_dir, migrated, log):
     if not ok:
         raise Refusal(f"the new ES refuses the migrated config: {out[:300]}")
     ruid, rgid = root_ids()
-    atomic_replace(host(ES_CONFIG), render_json(migrated).encode(), ruid, group_id(ES_USER), ES_CONFIG_MODE)
-    log("es.json migrated")
+    new_config = render_json(migrated).encode()
+    if new_config != read_regular_file(host(ES_CONFIG))[0]:
+        atomic_replace(host(ES_CONFIG), new_config, ruid, group_id(ES_USER), ES_CONFIG_MODE)
+        log("es.json migrated")
+    else:
+        log("es.json unchanged")
     for name, dest in (("es", ES_BINARY), ("es-runtime-support", RUNTIME_SUPPORT)):
         blob, _ = read_regular_file(os.path.join(stage_dir, name))
         atomic_replace(host(dest), blob, ruid, rgid, BINARY_MODE)
@@ -1784,6 +1990,7 @@ def verify_after(log):
         raise Refusal("; ".join(problems))
     acl_setup("check")
     log("Nomad refuses an anonymous job list and holds no anonymous policy over HTTPS; nomad_acl_setup.sh check passed")
+    require_gossip_encrypted(log)
 
 
 def live_nomad_addr():
@@ -1876,7 +2083,7 @@ def cmd_check(args):
     report, blockers = inspect_host(args.payload, args.commit)
     report["mode"] = "check"
     if not blockers:
-        report["result"] = "nothing to do" if report["shape"] == "https" else "ready"
+        report["result"] = "nothing to do" if report["shape"] == "https-gossip" else "ready"
     say(json.dumps(report, indent=2, sort_keys=True))
     if blockers:
         raise Refusal(f"{len(blockers)} blocker(s); nothing was changed")
@@ -1895,16 +2102,26 @@ def cmd_apply(args):
     if blockers:
         say(json.dumps(report, indent=2, sort_keys=True))
         raise Refusal(f"{len(blockers)} blocker(s); nothing was changed")
-    if report["shape"] == "https":
+    shape = report["shape"]
+    if shape == "https-gossip":
         # Already applied for this commit, and verified in place: no backup,
         # and no service is touched.
         report["result"] = "nothing to do"
         say(json.dumps(report, indent=2, sort_keys=True))
         return
+    if shape == "locked-http":
+        # backup_host refuses a keyring that appeared since the check.
+        keyring_absent = True
+    else:
+        form, state = keyring_shape()
+        if form not in ("absent", "sound"):
+            raise Refusal(f"Nomad's gossip keyring changed after check: {state}")
+        keyring_absent = form == "absent"
+    created = ([NOMAD_TLS_DIR] if shape == "locked-http" else []) + ([NOMAD_GOSSIP_KEYRING] if keyring_absent else [])
     prov = load_payload(args.payload, args.commit)
     backup_dir = os.path.join(backup_root_ready(),
                               time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()) + "-" + args.commit[:12])
-    backup_host(backup_dir)
+    backup_host(backup_dir, created)
     report["backup_dir"] = backup_dir
     summary_path = os.path.join(backup_dir, "summary.json")
     log("backup written to " + backup_dir)
@@ -1923,8 +2140,14 @@ def cmd_apply(args):
         try:
             stop_service("es")
             log("es stopped")
-            pin = apply_nomad_tls(log)
-            migrated, _ = migrate_config(config, pin, START_ES_PATHS)
+            if shape == "locked-http":
+                pin = apply_nomad_tls(log)
+                migrated, _ = migrate_config(config, pin, START_ES_PATHS)
+            else:
+                pin = server_spki_sha256()
+                if keyring_absent:
+                    apply_nomad_gossip(log)
+                migrated, _ = migrate_config(config, pin)
             install_es(stage_dir, migrated, log)
             run(["systemctl", "start", "es"], timeout=120, check=True)
             log("es started")

@@ -534,11 +534,12 @@ complete supported fresh-host ES provisioner is not currently implemented.
 Reuse of an old or nonempty host remains blocked without a separately governed
 existing-host migration contract. One such contract exists, for one host:
 `scripts/remote_alpha_upgrade_es.sh` moves the Remote Alpha box's ES from the
-`16cbf739` build that ES PR #54's upgrade installed to one named commit,
-issuing Nomad's TLS material, putting Nomad's API and RPC behind TLS 1.3 and
-adding the Nomad TLS keys to its `es.json`. On a box it already moved it
-only verifies; it refuses any other host shape and names what each part
-looks like; see `.docs/system_overview/remote_supported_host_alpha.md`,
+`16cbf739` build that ES PR #54's upgrade installed, or from a later build
+with Nomad already on HTTPS, to one named commit, issuing Nomad's TLS
+material, putting Nomad's API and RPC behind TLS 1.3, adding the Nomad TLS
+keys to its `es.json` and giving Nomad a gossip keyring. On a box it already
+moved it only verifies; it refuses any other host shape and names what each
+part looks like; see `.docs/system_overview/remote_supported_host_alpha.md`,
 section "Remote ES Upgrade And Nomad HTTPS".
 
 ## CGS
@@ -610,7 +611,7 @@ The current host-qualification boundary for the supported Linux environment is d
 - when Nomad uses the Docker driver on Linux, HashiCorp's Docker driver guidance treats root-managed Nomad as the compatible mode for CPU-core / NUMA-aware behavior; user-managed Nomad startup may still be useful for bounded proof and troubleshooting, but it is not the supported-environment baseline
 - access control (ACLs) enabled with `acl { enabled = true }` and bootstrapped, with no anonymous policy; see [Nomad access control](#nomad-access-control) below
 - readiness also refuses a Nomad whose agent does not serve HTTP and RPC over TLS 1.3 with server names verified (`tls=1.3` on the posture line)
-- gossip encrypted: without a gossip key, Nomad's serf port accepts any process that reaches it as a peer, so a local account could start its own Nomad server and join this one as a member and a raft non-voter. `scripts/70_linux_setup.sh` writes a keyring holding one random 32-byte key to `<data_dir>/server/serf.keyring` (`/opt/nomad/data/server/serf.keyring`, root, 0600) before Nomad starts. Nomad reads that keyring when it starts, so `nomad.hcl` names no key and the keyring is the key's only copy. Later runs keep a sound keyring (a regular file of root's, 0600, holding a JSON list of base64 32-byte keys). Otherwise they write a new one and restart Nomad: a single server has no peer that needs the old key. Readiness and the setup's qualification refuse an agent whose `/v1/agent/self` does not report `stats.serf.encrypted` as `"true"` (`gossip=encrypted` on the posture line). Remote Supported-Host Alpha's box does not run this setup: its gossip stays unencrypted until its upgrade adds the keyring
+- gossip encrypted: without a gossip key, Nomad's serf port accepts any process that reaches it as a peer, so a local account could start its own Nomad server and join this one as a member and a raft non-voter. `scripts/70_linux_setup.sh` writes a keyring holding one random 32-byte key to `<data_dir>/server/serf.keyring` (`/opt/nomad/data/server/serf.keyring`, root, 0600) before Nomad starts. Nomad reads that keyring when it starts, so `nomad.hcl` names no key and the keyring is the key's only copy. Later runs keep a sound keyring (a regular file of root's, 0600, holding a JSON list of base64 32-byte keys). Otherwise they write a new one and restart Nomad: a single server has no peer that needs the old key. Readiness and the setup's qualification refuse an agent whose `/v1/agent/self` does not report `stats.serf.encrypted` as `"true"` (`gossip=encrypted` on the posture line). Remote Supported-Host Alpha's box does not run this setup: its upgrade (`scripts/remote_alpha_upgrade_es.sh`) writes the keyring with the setup's `nomad_gossip_issue` and rolls back unless Nomad then reports its gossip encrypted; until that upgrade has run there, the box's gossip stays unencrypted
 - if a Linux proof host exposes `cpu.totalcompute=0` because Nomad CPU fingerprinting fails, the bounded slice-0 operator path can provide `NOMAD_CLIENT_CPU_TOTAL_COMPUTE` as a temporary client override for that host; this is deployment troubleshooting, not a new cross-service contract
   - when this override is active, the operator path must surface that host as `submit-ready-mode: bounded-override (...)` rather than implying natural schedulability
   - if the override is absent and the host remains at `cpu.totalcompute=0`, the current bring-up path now fails explicitly instead of claiming submit-ready
