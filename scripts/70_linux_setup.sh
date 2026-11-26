@@ -97,6 +97,12 @@ NOMAD_CACERT="${NOMAD_TLS_DIR}/ca.pem"
 # Nomad's gossip (serf) traffic is encrypted with the key in this keyring,
 # which Nomad reads itself (see nomad_gossip_issue); nomad.hcl names no key.
 NOMAD_GOSSIP_KEYRING="${NOMAD_DATA_DIR}/server/serf.keyring"
+# A marker in Nomad's root-only data directory: a change that Nomad reads only
+# when it starts (its TLS material, its gossip keyring, nomad.hcl) waits for a
+# restart. Each such change writes it first, and the restart removes it, so a
+# run cut off between the two leaves it and the next run restarts Nomad,
+# although that run changes nothing itself (red-team RT66-2).
+NOMAD_RESTART_PENDING="${NOMAD_DATA_DIR}/execution-substrate-restart-pending"
 NOMAD_MANAGED_MARKER="# Managed by Execution Substrate scripts/70_linux_setup.sh for the single-node workload-zone baseline."
 # The supported Nomad enforces ACLs: ES submits only with its own token and
 # refuses a Nomad that accepts jobs without one. This script bootstraps the
@@ -364,6 +370,28 @@ nomad_tls_as_root() {
 }
 # END nomad_tls
 
+# nomad_needs_restart: record, before a change that Nomad reads only when it
+# starts, that Nomad must restart (NOMAD_RESTART_PENDING); restart_nomad
+# restarts it and removes the record.
+nomad_needs_restart() {
+  sudo sh -c 'umask 077 && : >"$1"' sh "${NOMAD_RESTART_PENDING}"
+  NOMAD_CONFIG_CHANGED=1
+}
+
+# restart_nomad: restart nomad.service when this run, or an earlier one that
+# was cut off before its restart, changed what Nomad reads when it starts;
+# then remove the record. A failed restart keeps the record for the next run.
+restart_nomad() {
+  if [[ "${NOMAD_CONFIG_CHANGED}" != "1" ]] && ! sudo test -e "${NOMAD_RESTART_PENDING}"; then
+    return 0
+  fi
+  if ! sudo systemctl restart nomad; then
+    echo "nomad: failed to restart nomad.service after its config changed" >&2
+    return 1
+  fi
+  sudo rm -f -- "${NOMAD_RESTART_PENDING}"
+}
+
 # Keep Nomad's TLS material while it is sound and has at least
 # NOMAD_TLS_RENEW_DAYS left; otherwise issue new material, which changes the
 # key ES pins (nomad.server_spki_sha256) and restarts Nomad.
@@ -373,9 +401,9 @@ install_nomad_tls_material() {
     return 0
   fi
   echo "==> Issuing Nomad's TLS certificate in ${NOMAD_TLS_DIR}"
+  nomad_needs_restart
   nomad_tls_as_root nomad_tls_issue "${NOMAD_TLS_DIR}"
   NOMAD_TLS_ISSUED=1
-  NOMAD_CONFIG_CHANGED=1
 }
 
 # BEGIN nomad_gossip (the tests run these functions on their own)
@@ -390,9 +418,10 @@ install_nomad_tls_material() {
 # nomad_gossip_issue <keyring>: write a keyring holding one new 32-byte key,
 # mode 0600 and owned by the user who runs it (root on a host), replacing any
 # keyring file there, or a link there (not what it points to). A folder there
-# is refused. The keyring's own folder is created 0700 if it is missing. A
-# hangup, interrupt or termination before the keyring is in place leaves no
-# temporary file behind.
+# is refused. The keyring's own folder is created 0700 if it is missing, and
+# refused unless nomad_gossip_folder_ok accepts it, before anything is
+# written. A hangup, interrupt or termination before the keyring is in place
+# leaves no temporary file behind.
 nomad_gossip_issue() {
   local keyring=$1
   local dir
@@ -400,9 +429,10 @@ nomad_gossip_issue() {
   local key
 
   dir="$(dirname "${keyring}")"
-  if [[ ! -d "${dir}" ]]; then
+  if [[ ! -e "${dir}" && ! -L "${dir}" ]]; then
     (umask 077 && mkdir -p "${dir}") || return 1
   fi
+  nomad_gossip_folder_ok "${dir}" || return 1
   key="$(openssl rand -base64 32)" || return 1
   [[ "${key}" =~ ^[A-Za-z0-9+/]{43}=$ ]] || return 1
   # The temporary file is in the keyring's folder, so the key never leaves it
@@ -435,12 +465,31 @@ nomad_gossip_issue() {
   fi
 }
 
+# nomad_gossip_folder_ok <folder>: succeed when <folder> is a folder, not a
+# link, owned by the user who runs it (root on a host), that neither its group
+# nor others can write; otherwise say so and fail. Whoever can write in the
+# keyring's folder can put a file of their own where the key is about to be
+# written and read the key, make root write the key through a link, or replace
+# the keyring once it has been checked (red-team RT66-1). Nomad makes the
+# folder 0755 and the issuer 0700; a Nomad that once ran as another account
+# may have left it that account's.
+nomad_gossip_folder_ok() {
+  local folder=$1
+
+  if [[ -L "${folder}" || ! -d "${folder}" || ! -O "${folder}" ]] ||
+    ! stat -c '%a' "${folder}" | grep -Eqx '[0-7]?[0-7][0145][0145]'; then
+    echo "nomad gossip: ${folder} is not a folder of $(id -un)'s that only $(id -un) can write, so nothing was written there; a Nomad that ran as another account may have left it so: make it $(id -un)'s with mode 0700 and rerun" >&2
+    return 1
+  fi
+}
+
 # nomad_gossip_keyring_ok <keyring>: succeed when <keyring> is a regular file
 # owned by the user who runs it, mode 0600, holding a JSON list of one or
-# more base64 32-byte keys.
+# more base64 32-byte keys, in a folder that nomad_gossip_folder_ok accepts.
 nomad_gossip_keyring_ok() {
   local keyring=$1
 
+  nomad_gossip_folder_ok "$(dirname "${keyring}")" 2>/dev/null || return 1
   [[ -f "${keyring}" && ! -L "${keyring}" && -O "${keyring}" ]] || return 1
   [[ "$(stat -c '%a' "${keyring}")" == "600" ]] || return 1
   python3 -I - "${keyring}" <<'PY'
@@ -464,7 +513,7 @@ PY
 # nomad_gossip_as_root <function> <args...>: run one of the functions above as
 # root, so Nomad's gossip key is created and read only by root.
 nomad_gossip_as_root() {
-  sudo bash -c "set -euo pipefail; $(declare -f nomad_gossip_issue nomad_gossip_keyring_ok); \"\$@\"" nomad-gossip "$@"
+  sudo bash -c "set -euo pipefail; $(declare -f nomad_gossip_folder_ok nomad_gossip_issue nomad_gossip_keyring_ok); \"\$@\"" nomad-gossip "$@"
 }
 # END nomad_gossip
 
@@ -477,9 +526,9 @@ install_nomad_gossip_keyring() {
     return 0
   fi
   echo "==> Writing Nomad's gossip keyring in ${NOMAD_GOSSIP_KEYRING}"
+  nomad_needs_restart
   nomad_gossip_as_root nomad_gossip_issue "${NOMAD_GOSSIP_KEYRING}"
   NOMAD_GOSSIP_ISSUED=1
-  NOMAD_CONFIG_CHANGED=1
 }
 
 install_nomad_service_config() {
@@ -502,9 +551,10 @@ install_nomad_service_config() {
   fi
 
   local previous_config=""
+  local config=""
   previous_config="$(sudo cat "${NOMAD_CONFIG_PATH}" 2>/dev/null || true)"
 
-  cat <<EOF | sudo tee "${NOMAD_CONFIG_PATH}" >/dev/null
+  config="$(cat <<EOF
 ${NOMAD_MANAGED_MARKER}
 data_dir = "${NOMAD_DATA_DIR}"
 bind_addr = "127.0.0.1"
@@ -583,11 +633,13 @@ tls {
   tls_min_version        = "tls13"
 }
 EOF
+)"
+  if [[ "${config}" != "${previous_config}" ]]; then
+    nomad_needs_restart
+  fi
+  printf '%s\n' "${config}" | sudo tee "${NOMAD_CONFIG_PATH}" >/dev/null
   sudo chown root:root "${NOMAD_CONFIG_PATH}"
   sudo chmod 0640 "${NOMAD_CONFIG_PATH}"
-  if [[ "$(sudo cat "${NOMAD_CONFIG_PATH}")" != "${previous_config}" ]]; then
-    NOMAD_CONFIG_CHANGED=1
-  fi
 }
 
 # BEGIN nomad_acl_bootstrap (the tests run these functions on their own)
@@ -851,10 +903,10 @@ qualify_supported_substrate() {
     sudo systemctl status nomad --no-pager --full || true
     return 1
   fi
-  # A running Nomad reads a changed config (such as the acl block) only when
-  # it restarts. Jobs keep running; the client reattaches to them.
-  if [[ "${NOMAD_CONFIG_CHANGED}" == "1" ]] && ! sudo systemctl restart nomad; then
-    echo "nomad: failed to restart nomad.service after its config changed" >&2
+  # A running Nomad reads a changed config (such as the acl block), TLS
+  # material or gossip keyring only when it restarts. Jobs keep running; the
+  # client reattaches to them.
+  if ! restart_nomad; then
     sudo systemctl status nomad --no-pager --full || true
     return 1
   fi
@@ -933,7 +985,7 @@ if config.get("DevMode") is True:
 stats = agent.get("stats") if isinstance(agent.get("stats"), dict) else {}
 serf = stats.get("serf") if isinstance(stats.get("serf"), dict) else {}
 if serf.get("encrypted") != "true":
-    raise SystemExit("nomad: the agent does not encrypt its gossip; it reads the keyring this script writes only when it starts")
+    raise SystemExit("nomad: the agent does not encrypt its gossip; it reads the keyring this script writes only when it starts, so restart nomad.service (sudo systemctl restart nomad) and rerun")
 
 nodes = json.loads(pathlib.Path(sys.argv[4]).read_text(encoding="utf-8"))
 ready = [node for node in nodes if node.get("Status") == "ready"]
@@ -1125,7 +1177,11 @@ echo "- That Nomad config enables ACLs; the bootstrap management token is in ${N
 echo "- That Nomad config disables Docker image cleanup so local runtime-profile images survive completed allocations for repeated supported-local client runs."
 echo "- That Nomad config enables only the Docker driver, refuses privileged containers and allows only the capabilities ES's runtime helper uses; it and Nomad's data directory are root-owned."
 echo "- That Nomad config serves its API and RPC over TLS 1.3 only, with a certificate this script issued in ${NOMAD_TLS_DIR} (key root-only; the CA's key was destroyed after signing). A rerun keeps it until fewer than ${NOMAD_TLS_RENEW_DAYS} days remain, then issues a new one: update nomad.server_spki_sha256 and restart ES after that."
-echo "- Nomad encrypts its gossip with a key this script wrote to ${NOMAD_GOSSIP_KEYRING} (root-only), so no process without the key can join it as a peer. A rerun keeps the keyring while it is sound."
+if [[ "${SUPPORTED_SUBSTRATE_READY}" == "1" ]]; then
+  echo "- Nomad encrypts its gossip with the key in ${NOMAD_GOSSIP_KEYRING} (root-only), so no process without the key can join it as a peer. A rerun keeps the keyring while it is sound."
+else
+  echo "- Nomad's gossip key is in ${NOMAD_GOSSIP_KEYRING} (root-only), but this run did not qualify Nomad, so it has not seen Nomad encrypt its gossip with it. A rerun keeps the keyring while it is sound, and restarts Nomad while a change waits for a restart."
+fi
 echo "- If supported-substrate qualification failed above, do not treat this VM as supported yet."
 echo "- If nomad.service could not start or remain healthy, fix that with root-managed host investigation instead of falling back to a user-started Nomad proof."
 echo "- Some proof VMs may still need manual root investigation or bounded fallback when Nomad fingerprinting leaves cpu.totalcompute at 0."
