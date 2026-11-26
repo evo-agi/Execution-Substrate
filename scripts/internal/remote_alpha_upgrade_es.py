@@ -19,8 +19,13 @@ keyring. They start from either of two shapes:
 
 On either, check reports every change apply would make. On "https-gossip"
 for the named commit there is nothing to do: both exit 0 and change nothing.
-Any other shape is refused, naming what each part looks like. The host
-steps:
+Any other shape is refused, naming what each part looks like. Both also
+read the move, from the commit the installed ES binaries were built from to
+the named one, in the clone's history: one that is not forward (to an older
+commit, to one on another line, or to one whose order the clone cannot
+show) runs only when root names it on the command line as
+--allow-downgrade <installed commit>..<named commit>, and apply records it
+in its backup. The host steps:
 
   build           (unprivileged) build es, es-runtime-support and the
                   config check helper from this clean checkout, with
@@ -663,6 +668,15 @@ def test_mode():
     return HOST_ROOT != "/"
 
 
+def box_es_commit():
+    """BOX_ES_COMMIT. Under a test --host-root, ES_UPGRADE_TEST_BOX_ES_COMMIT
+    may name another: the git history a test builds, which the order of a
+    move is read from, cannot hold BOX_ES_COMMIT itself."""
+    if test_mode() and os.environ.get("ES_UPGRADE_TEST_BOX_ES_COMMIT"):
+        return os.environ["ES_UPGRADE_TEST_BOX_ES_COMMIT"]
+    return BOX_ES_COMMIT
+
+
 def root_ids():
     return (os.getuid(), os.getgid()) if test_mode() else (0, 0)
 
@@ -1161,19 +1175,18 @@ def go_sum_hashes(text):
     return hashes
 
 
-def commit_module_pins(repo, commit, owners, env):
-    """What a build of commit may hold, read from the commit's own go.mod
-    and go.sum in the git objects of the clone repo (audit 33,
-    A33-2): the module's path, the version go.mod requires of each
-    dependency, and the hashes go.sum holds. Only owners may be able to
-    change those objects: the clone's .git must be a folder that belongs to
-    them, with nothing that makes git read objects from elsewhere, and git
-    runs with env (GIT_ENV), so it reads only that repository's config.
-    git does not check an object's bytes against its name when it reads
-    it, so the folder git reads objects from decides the pins. A .git file
-    ("gitdir: <path>", as git worktree add and git clone --separate-git-dir
-    leave) or link sends git to another folder, so .git must be a folder
-    itself, as build requires (audit 34, A34-2)."""
+def module_git(repo, owners, what):
+    """The git command that reads the objects of the clone repo, once only
+    owners can change those objects: the clone's .git must be a folder that
+    belongs to them, with nothing that makes git read objects from
+    elsewhere. Run it with GIT_ENV, so that git reads only that
+    repository's config. git does not check an object's bytes against its
+    name when it reads it, so the folder git reads objects from decides
+    what a commit holds and what its parents are. A .git file ("gitdir:
+    <path>", as git worktree add and git clone --separate-git-dir leave) or
+    link sends git to another folder, so .git must be a folder itself, as
+    build requires (audit 34, A34-2). Otherwise refuses, saying that what
+    (what the caller reads there, with its verb) is not in such objects."""
     git_dir = os.path.join(repo, ".git")
     problems = folders_above_problems(git_dir, (0,) + tuple(owners))
     if not os.path.lexists(git_dir):
@@ -1188,9 +1201,19 @@ def commit_module_pins(repo, commit, owners, env):
     if problems:
         shown = "; ".join(problems[:20])
         more = f" (and {len(problems) - 20} more)" if len(problems) > 20 else ""
-        raise Refusal(f"the commit's go.mod and go.sum are not in git objects that only "
+        raise Refusal(f"{what} not in git objects that only "
                       f"{' and '.join(f'uid {uid}' for uid in owners)} can change: {shown}{more}")
-    git = ["git", "--git-dir=" + git_dir]
+    return ["git", "--git-dir=" + git_dir]
+
+
+def commit_module_pins(repo, commit, owners, env):
+    """What a build of commit may hold, read from the commit's own go.mod
+    and go.sum in the git objects of the clone repo (audit 33,
+    A33-2): the module's path, the version go.mod requires of each
+    dependency, and the hashes go.sum holds. Only owners may be able to
+    change those objects (module_git), and git runs with env (GIT_ENV), so
+    it reads only that repository's config."""
+    git = module_git(repo, owners, "the commit's go.mod and go.sum are")
     found = run(git + ["rev-parse", "--verify", "--quiet", commit + "^{commit}"], env=env)
     if found.returncode != 0 or found.stdout.strip() != commit:
         raise Refusal(f"the clone {repo} does not hold the commit {commit}")
@@ -1461,28 +1484,32 @@ def es_config_shape(doc, pin):
 
 
 def binaries_shape(commit, prov):
+    """(form, state, installed): the form of the installed es and
+    es-runtime-support, and the one commit both are clean builds of, or
+    None when they are not."""
     revisions = {}
     for name, path in (("es", ES_BINARY), ("es-runtime-support", RUNTIME_SUPPORT)):
         try:
             blob, _ = read_regular_file(host(path))
             _, lines = go_build_info(blob)
         except (Refusal, OSError) as exc:
-            return None, f"unknown ({name}: {exc})"
+            return None, f"unknown ({name}: {exc})", None
         settings = dict(line.partition("=")[::2] for line in lines)
         revision = settings.get("vcs.revision")
         if settings.get("vcs.modified") != "false":
-            return None, f"unknown ({name} is a build of a modified checkout of {revision})"
+            return None, f"unknown ({name} is a build of a modified checkout of {revision})", None
         if revision == commit and (prov is None or sha256_bytes(blob) != prov["sha256"].get(name)):
-            return None, f"unknown ({name} names {commit} but is not the verified payload's build)"
+            return None, f"unknown ({name} names {commit} but is not the verified payload's build)", None
         revisions[name] = revision
     found = set(revisions.values())
-    if found == {BOX_ES_COMMIT}:
-        return "locked-http", f"locked-http (builds of {BOX_ES_COMMIT})"
+    box = box_es_commit()
+    if found == {box}:
+        return "locked-http", f"locked-http (builds of {box})", box
     if found == {commit}:
-        return "https", f"https (the payload's builds of {commit})"
+        return "https", f"https (the payload's builds of {commit})", commit
     if len(found) == 1 and valid_commit(revisions["es"]):
-        return "other", f"other (clean builds of {revisions['es']}, which apply replaces)"
-    return None, "unknown (" + ", ".join(f"{name} built from {rev}" for name, rev in revisions.items()) + ")"
+        return "other", f"other (clean builds of {revisions['es']}, which apply replaces)", revisions["es"]
+    return None, "unknown (" + ", ".join(f"{name} built from {rev}" for name, rev in revisions.items()) + ")", None
 
 
 def keyring_shape():
@@ -1508,8 +1535,9 @@ TLS_PARTS = SHAPE_PARTS[:3]
 
 
 def host_shape(commit, prov):
-    """(shape or None, {part: state}, pin or None, {part: form}). Reads
-    only. The shapes:
+    """(shape or None, {part: state}, pin or None, {part: form}, installed):
+    installed is the one commit the installed ES binaries are clean builds
+    of, or None. Reads only. The shapes:
 
       locked-http     every TLS part and the binaries locked-http, no keyring
       https           every TLS part https, the binaries the payload's
@@ -1518,11 +1546,11 @@ def host_shape(commit, prov):
       https-gossip    every TLS part https, the payload's builds, a sound
                       keyring: where apply leaves the host
     """
-    def guarded(read):
+    def guarded(read, *fallback):
         try:
             return read()
         except (Refusal, OSError, ValueError, UnicodeDecodeError) as exc:
-            return None, f"unreadable ({exc})"
+            return (None, f"unreadable ({exc})", *fallback)
 
     found = {}
     found["nomad.hcl"] = guarded(lambda: nomad_hcl_shape(read_regular_file(host(NOMAD_HCL))[0]))
@@ -1534,7 +1562,8 @@ def host_shape(commit, prov):
         except Refusal as exc:
             found["Nomad's TLS directory"] = (None, f"present, but {exc}")
     found["es.json"] = guarded(lambda: es_config_shape(json.loads(read_regular_file(host(ES_CONFIG))[0]), pin))
-    found["the ES binaries"] = guarded(lambda: binaries_shape(commit, prov))
+    binaries_form, binaries_state, installed = guarded(lambda: binaries_shape(commit, prov), None)
+    found["the ES binaries"] = (binaries_form, binaries_state)
     found["Nomad's gossip keyring"] = guarded(keyring_shape)
     tls = {found[part][0] for part in TLS_PARTS}
     binaries, keyring = found["the ES binaries"][0], found["Nomad's gossip keyring"][0]
@@ -1544,14 +1573,105 @@ def host_shape(commit, prov):
     elif tls == {"https"} and binaries in ("https", "other") and keyring in ("absent", "sound"):
         shape = "https-gossip" if (binaries, keyring) == ("https", "sound") else "https"
     forms = {part: found[part][0] for part in SHAPE_PARTS}
-    return shape, {part: found[part][1] for part in SHAPE_PARTS}, pin, forms
+    return shape, {part: found[part][1] for part in SHAPE_PARTS}, pin, forms, installed
 
 
 def describe_parts(parts):
     return "; ".join(f"{part}: {state}" for part, state in parts.items())
 
 
-def inspect_host(payload_dir, commit):
+def commit_order(installed, commit):
+    """(order, why): how the named commit stands to the installed build in
+    the history of the clone (module_repo), read with GIT_ENV from git
+    objects only root can change (module_git): "forward" when installed is
+    an ancestor of commit, "backward" when commit is an ancestor of
+    installed, "sideways" when neither is, and "unknown" when the clone
+    does not hold both or is shallow, so that its history may stop short of
+    either."""
+    repo = module_repo()
+    git = module_git(repo, (root_ids()[0],), "the history of the installed and named commits is")
+    shallow = run(git + ["rev-parse", "--is-shallow-repository"], env=GIT_ENV)
+    if shallow.returncode != 0 or shallow.stdout.strip() not in ("true", "false"):
+        raise Refusal(f"git cannot tell whether the clone {repo} is shallow: {(shallow.stderr or shallow.stdout).strip()[:300]}")
+    if shallow.stdout.strip() == "true":
+        return "unknown", f"the clone {repo} is shallow, so its history may stop short of {installed}"
+    for name in (installed, commit):
+        found = run(git + ["rev-parse", "--verify", "--quiet", name + "^{commit}"], env=GIT_ENV)
+        if found.returncode != 0 or found.stdout.strip() != name:
+            return "unknown", f"the clone {repo} does not hold the commit {name}"
+
+    def is_ancestor(older, newer):
+        # A commit whose parent the clone lacks makes git say so and still
+        # answer "not an ancestor" (exit 1): a damaged history is refused
+        # here, not read as a move that is not forward.
+        proc = run(git + ["merge-base", "--is-ancestor", older, newer], env=GIT_ENV)
+        if proc.returncode not in (0, 1) or proc.stderr.strip():
+            raise Refusal(f"git cannot read the history of {older} and {newer} in the clone {repo}: "
+                          f"exit {proc.returncode}, {proc.stderr.strip()[:300]!r}")
+        return proc.returncode == 0
+
+    if is_ancestor(installed, commit):
+        return "forward", f"{installed} is an ancestor of {commit}"
+    if is_ancestor(commit, installed):
+        return "backward", f"{commit} is an ancestor of {installed}, so older"
+    return "sideways", f"neither of {installed} and {commit} is an ancestor of the other"
+
+
+def inspect_move(report, block, installed, commit, allow_downgrade):
+    """Refuse a move of ES that is not forward along the clone's history:
+    to a commit older than the installed build, on another line of history,
+    or whose order the clone cannot show. Root lets one such move through
+    only by naming it on the command line, as --allow-downgrade
+    <installed commit>..<named commit> (allow_downgrade: every value given),
+    and nowhere else: no file or variable stands in for it. That stops
+    mistakes (a stale clone or payload, a wrong or reused commit) and
+    leaves a record; it cannot stop root, who can install binaries without
+    this script. Reports the move, and records who sudo says ran it."""
+    named = None
+    if allow_downgrade:
+        if len(allow_downgrade) > 1:
+            block("move", "--allow-downgrade is given more than once; name the one move once")
+            return
+        parts = allow_downgrade[0].split("..")
+        if len(parts) != 2 or not all(valid_commit(part) for part in parts):
+            block("move", f"--allow-downgrade {allow_downgrade[0]!r} does not name a move as <installed commit>..<named commit>, "
+                  "each a full lower-case 40-character SHA-1")
+            return
+        named = (parts[0], parts[1])
+    if installed is None:
+        if named is not None:
+            block("move", "--allow-downgrade names a move, but the installed ES binaries are not clean builds of one commit")
+        return
+    if not valid_commit(commit):
+        # The payload check refuses it; git is never handed a name that is
+        # not a full commit.
+        return
+    if installed == commit:
+        order, why = "same", f"the installed ES binaries are builds of {commit} already"
+    else:
+        try:
+            order, why = commit_order(installed, commit)
+        except (Refusal, OSError) as exc:
+            block("move", str(exc))
+            return
+    move = {"from": installed, "to": commit, "order": order, "why": why}
+    report["move"] = move
+    if order in ("forward", "same"):
+        if named is not None:
+            block("move", f"--allow-downgrade is only for a move that is not forward, and this one is {order} ({why}); leave it out")
+        return
+    if named is None:
+        block("move", f"moving ES from {installed} to {commit} is not forward ({order}: {why}); it runs only when root "
+              "names this move on the command line as --allow-downgrade <installed commit>..<named commit>")
+        return
+    if named != (installed, commit):
+        block("move", f"--allow-downgrade names the move {named[0]}..{named[1]}, but this one is {installed}..{commit}")
+        return
+    move["authorized"] = f"--allow-downgrade {installed}..{commit}"
+    move["sudo_user"] = os.environ.get("SUDO_USER") or None
+
+
+def inspect_host(payload_dir, commit, allow_downgrade=None):
     """Everything check reports. Reads only; returns (report, blockers, the
     form of each part of the host's shape)."""
     blockers = []
@@ -1562,8 +1682,8 @@ def inspect_host(payload_dir, commit):
 
     if HOST_ROOT == "/" and not as_root():
         block("privilege", "run as root (sudo -n)")
-    if commit == BOX_ES_COMMIT:
-        block("commit", f"{BOX_ES_COMMIT} is the build ES PR #54's upgrade installed; name the commit to move to")
+    if commit == box_es_commit():
+        block("commit", f"{box_es_commit()} is the build ES PR #54's upgrade installed; name the commit to move to")
 
     try:
         prov = load_payload(payload_dir, commit)
@@ -1572,12 +1692,13 @@ def inspect_host(payload_dir, commit):
         prov = None
         block("payload", str(exc))
 
-    shape, parts, pin, forms = host_shape(commit, prov)
+    shape, parts, pin, forms, installed = host_shape(commit, prov)
     report["shape"] = shape or "unknown"
     report["parts"] = parts
     if shape is None:
         block("shape", "the host is in no shape this upgrade knows; it takes locked-http or https to https-gossip: "
               + describe_parts(parts))
+    inspect_move(report, block, installed, commit, allow_downgrade)
 
     active = services_active()
     report["services"] = active
@@ -1768,6 +1889,9 @@ def backup_root_ready():
 
 
 CREATED_MANIFEST = "created.json"
+# What apply writes into its backup before it changes anything: the move it
+# makes (inspect_move's report).
+MOVE_RECORD = "move.json"
 
 
 def backup_host(commit, created):
@@ -2084,7 +2208,7 @@ def say(text, stream=None):
 
 
 def cmd_check(args):
-    report, blockers, _ = inspect_host(args.payload, args.commit)
+    report, blockers, _ = inspect_host(args.payload, args.commit, args.allow_downgrade)
     report["mode"] = "check"
     if not blockers:
         report["result"] = "nothing to do" if report["shape"] == "https-gossip" else "ready"
@@ -2100,7 +2224,7 @@ def cmd_apply(args):
         events.append({"at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "event": message})
         say(message)
 
-    report, blockers, forms = inspect_host(args.payload, args.commit)
+    report, blockers, forms = inspect_host(args.payload, args.commit, args.allow_downgrade)
     report["mode"] = "apply"
     report["events"] = events
     if blockers:
@@ -2128,6 +2252,15 @@ def cmd_apply(args):
     report["backup_dir"] = backup_dir
     summary_path = os.path.join(backup_dir, "summary.json")
     log("backup written to " + backup_dir)
+    # The record of the move, in the backup before anything changes: a
+    # move that is not forward shows there with the --allow-downgrade that
+    # let it through, even if this run is killed before its summary.
+    move = report["move"]
+    write_new_file(os.path.join(backup_dir, MOVE_RECORD), json.dumps(move, indent=2, sort_keys=True) + "\n")
+    if "authorized" in move:
+        by = f"sudo user {move['sudo_user']}" if move["sudo_user"] else "no sudo user named"
+        log(f"moving ES from {move['from']} to {move['to']}, which is not forward ({move['order']}), "
+            f"as root named it: {move['authorized']} ({by})")
     stage_dir = stage_payload(args.payload, prov, os.path.join(backup_dir, "payload"))
     data, _ = read_regular_file(host(ES_CONFIG))
     config = json.loads(data)
@@ -2427,6 +2560,9 @@ def main(argv):
         sp = sub.add_parser(name)
         sp.add_argument("--payload", required=True)
         sp.add_argument("--commit", required=True)
+        # Every value is kept, so that one given twice is refused rather
+        # than the last taken (inspect_move).
+        sp.add_argument("--allow-downgrade", action="append", metavar="INSTALLED..COMMIT")
         sp.set_defaults(func=func)
 
     rb = sub.add_parser("rollback")

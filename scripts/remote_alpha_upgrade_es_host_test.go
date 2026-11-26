@@ -149,11 +149,33 @@ tls {
 // boxNomadHCLHTTPS is the box's nomad.hcl where this upgrade leaves it.
 const boxNomadHCLHTTPS = boxNomadHCLLocked + boxNomadTLSBlock
 
-// upgradeTestCommit is the commit the payload is built from: the one commit
-// of the module fixture (moduleFixture), whose go.mod and go.sum are what
-// check compares the payload's build info with. Git names a commit by its
-// content, so the fixture always has this name.
-const upgradeTestCommit = "766ab59feb35d8dc1b5443e0639a6c23bed5a4d8"
+// The commits of the module fixture (moduleFixture), the history that check
+// reads the order of a move from. Each holds the fixture go.mod and go.sum.
+// Git names a commit by its content, its parents included, so the fixture
+// always has these names:
+//
+//	boxESCommit ── previousESCommit ── upgradeTestCommit ── newerESCommit
+//	     └── sideESCommit
+const (
+	// boxESCommit stands for BOX_ES_COMMIT, the ES build ES PR #54's
+	// upgrade installed on the box, which a test's history cannot hold:
+	// the tests name it in ES_UPGRADE_TEST_BOX_ES_COMMIT.
+	boxESCommit = "a780210b09a640012820b41ff50ffbf6fa5acb3d"
+	// previousESCommit stands for ES PR #60's merge, whose builds the box
+	// runs.
+	previousESCommit = "a00beed83f6517abbaaa412ed8fae551b7e5f040"
+	// upgradeTestCommit is the commit the payload is built from, whose
+	// go.mod and go.sum are what check compares the payload's build info
+	// with.
+	upgradeTestCommit = "1d9e8fe97f4b107a3d01593befe8b0e880fd9490"
+	// sideESCommit is on a line of history beside upgradeTestCommit's.
+	sideESCommit = "e1e1a035bd7150aff93f94a84d0b7e971b11c736"
+	// newerESCommit comes after upgradeTestCommit.
+	newerESCommit = "12d1718f2b876cd0289bddc6cc2df64539c0e69e"
+)
+
+// realBoxESCommit is BOX_ES_COMMIT itself.
+const realBoxESCommit = "16cbf739eea8c6a673aef8048aefb69cebd5121b"
 
 // The fixture module's go.mod and go.sum: x/sys at v0.46.0 with its real
 // hashes; a go.sum hash for an older x/sys and for x/text, which go.mod does
@@ -205,10 +227,11 @@ func denyGroupOtherWrite(t *testing.T, root string) {
 	}
 }
 
-// moduleFixture makes a git repository whose one commit, upgradeTestCommit,
-// holds the fixture go.mod and go.sum, and that nobody but the test user
-// can change: what check reads the commit's go.mod and go.sum from in
-// place of the clone (ES_UPGRADE_TEST_MODULE_REPO).
+// moduleFixture makes a git repository that holds the fixture's commits
+// and that nobody but the test user can change: what check reads the
+// commit's go.mod and go.sum, and the order of a move, from in place of the
+// clone (ES_UPGRADE_TEST_MODULE_REPO). No ref names the commits, as no ref
+// named the one commit the fixture had before it held a history.
 func moduleFixture(t *testing.T) string {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), "modules")
@@ -222,16 +245,26 @@ func moduleFixture(t *testing.T) string {
 	}
 	fixtureGit(t, dir, "init", "-q")
 	fixtureGit(t, dir, "add", "go.mod", "go.sum")
-	commit := fixtureGit(t, dir, "commit-tree", fixtureGit(t, dir, "write-tree"), "-m", "module fixture")
-	if commit != upgradeTestCommit {
-		t.Fatalf("the module fixture's commit is %s; upgradeTestCommit must name it", commit)
+	tree := fixtureGit(t, dir, "write-tree")
+	commit := func(want, message string, parents ...string) string {
+		t.Helper()
+		args := []string{"commit-tree", tree, "-m", message}
+		for _, parent := range parents {
+			args = append(args, "-p", parent)
+		}
+		if got := fixtureGit(t, dir, args...); got != want {
+			t.Fatalf("the module fixture's commit %q is %s, not %s", message, got, want)
+		}
+		return want
 	}
+	box := commit(boxESCommit, "the box's build")
+	previous := commit(previousESCommit, "the build the box runs", box)
+	named := commit(upgradeTestCommit, "the named commit", previous)
+	commit(sideESCommit, "a build beside the named commit", box)
+	commit(newerESCommit, "a build after the named commit", named)
 	denyGroupOtherWrite(t, dir)
 	return dir
 }
-
-// boxESCommit is the ES build that ES PR #54's upgrade installed on the box.
-const boxESCommit = "16cbf739eea8c6a673aef8048aefb69cebd5121b"
 
 // The fakes stand in for the host's systemctl, curl, nomad and docker, for
 // scripts/nomad_acl_setup.sh and for scripts/internal/nomad_tls_identity.py.
@@ -816,6 +849,8 @@ func (h *upgradeHost) environ() []string {
 		"ES_UPGRADE_TEST_TLS_IDENTITY": filepath.Join(h.bin, "tls-identity"),
 		"ES_UPGRADE_TEST_WAIT_SECONDS": "1",
 		"ES_UPGRADE_TEST_MODULE_REPO":  h.modules,
+		// The fixture's history holds boxESCommit in place of the real one.
+		"ES_UPGRADE_TEST_BOX_ES_COMMIT": boxESCommit,
 	}
 	for key, value := range h.env {
 		env[key] = value

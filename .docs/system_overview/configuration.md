@@ -539,9 +539,11 @@ PR #54's upgrade installed, it issues Nomad's TLS material, puts Nomad's API
 and RPC behind TLS 1.3, adds the Nomad TLS keys to its `es.json` and gives
 Nomad a gossip keyring. From a later build with Nomad already on HTTPS, it
 leaves the TLS material, `nomad.hcl` and `es.json` as they are and gives
-Nomad a gossip keyring if it has none. On a box it already moved it only
-verifies; it refuses any other host shape and names what each
-part looks like; see `.docs/system_overview/remote_supported_host_alpha.md`,
+Nomad a gossip keyring if it has none. It moves ES only forward along the
+clone's history, unless root names a move that is not forward on the
+command line (`--allow-downgrade <installed>..<commit>`), which it records.
+On a box it already moved it only verifies; it refuses any other host shape
+and names what each part looks like; see `.docs/system_overview/remote_supported_host_alpha.md`,
 section "Remote ES Upgrade And Nomad HTTPS".
 
 ## CGS

@@ -2,8 +2,8 @@
 # Move the Remote Alpha box's ES to one named commit and put its Nomad behind
 # HTTPS (from the shape ES PR #54's upgrade left; see the contract).
 #   scripts/remote_alpha_upgrade_es.sh build --out <dir outside the checkout> --commit <sha>
-#   sudo scripts/remote_alpha_upgrade_es.sh check --payload <dir> --commit <sha>
-#   sudo scripts/remote_alpha_upgrade_es.sh apply --payload <dir> --commit <sha>
+#   sudo scripts/remote_alpha_upgrade_es.sh check --payload <dir> --commit <sha> [--allow-downgrade <installed>..<sha>]
+#   sudo scripts/remote_alpha_upgrade_es.sh apply --payload <dir> --commit <sha> [--allow-downgrade <installed>..<sha>]
 #   sudo scripts/remote_alpha_upgrade_es.sh rollback --backup-dir <dir>
 # Contract: .docs/system_overview/remote_supported_host_alpha.md, section
 # "Remote ES Upgrade And Nomad HTTPS".

@@ -7372,13 +7372,14 @@ Operator interface:
   beside it: for example `sudo mkdir -m 0700 /var/lib/es-upgrade/<UTC time>`
   (under a `root:root` `0755` `/var/lib/es-upgrade`) handed to you with
   `sudo chown`, as the box procedure does.
-- `sudo scripts/remote_alpha_upgrade_es.sh check --payload <dir> --commit <sha>`
+- `sudo scripts/remote_alpha_upgrade_es.sh check --payload <dir> --commit <sha> [--allow-downgrade <installed>..<sha>]`
   reads only. It prints a JSON report (schema
   `execution-substrate.remote-alpha.es-upgrade-summary.v2`) with the host's
-  shape, each part's state and every change apply would make, and exits 1
-  with nothing changed when there is a blocker.
-- `sudo scripts/remote_alpha_upgrade_es.sh apply --payload <dir> --commit <sha>`
-  runs the same checks, then the steps below.
+  shape, each part's state, the move and every change apply would make, and
+  exits 1 with nothing changed when there is a blocker.
+- `sudo scripts/remote_alpha_upgrade_es.sh apply --payload <dir> --commit <sha> [--allow-downgrade <installed>..<sha>]`
+  runs the same checks, then the steps below. `--allow-downgrade` is only
+  for a move that is not forward (below).
 - `sudo scripts/remote_alpha_upgrade_es.sh rollback --backup-dir <dir>`
   puts a backup back.
 
@@ -7469,6 +7470,42 @@ missing server folder, or parts that disagree, such as TLS material left by
 an `apply` that was cut off before its rollback, a keyring on a
 `locked-http` host, or builds of `16cbf739` on an `https` one.
 
+`check` and `apply` then read the move: from the commit that the installed
+`es` and `es-runtime-support` are clean builds of (`16cbf739` on
+`locked-http`) to the named commit, in the clone's history, read from the
+same git objects with the same git environment as `go.mod` and `go.sum`
+(`git merge-base --is-ancestor`). The move is `forward` when the installed
+commit is an ancestor of the named one, `same` when they are one commit (an
+`https` host with the payload's builds and no keyring), `backward` when the
+named commit is an ancestor of the installed one, `sideways` when neither
+is, and `unknown` when the clone does not hold both commits or is shallow,
+so that its history may stop short of either. Only a `forward` or `same`
+move runs on its own. Any other is refused unless root names that one move
+on the command line as `--allow-downgrade <installed commit>..<named commit>`,
+each a full lower-case commit, given once. No file, variable or payload
+stands in for it, and a value that names another move, is malformed, is
+given twice, or names a `forward` or `same` move is refused. A history that
+git cannot read (a commit whose parent the clone lacks, about which git
+still answers "not an ancestor") or that another account could change is
+refused whatever the command line says. The report's `move` names both
+commits, the order and why; for a move that `--allow-downgrade` let through,
+also that argument and the user that `SUDO_USER` names (none when `sudo`
+did not start the run itself, as under `systemd-run`, and root can set any
+value). `apply` writes the same record to `move.json` in its backup before
+it changes anything and logs the move, and its summary repeats it. This
+stops mistakes, such as a stale clone or payload or a wrong or reused
+commit, and leaves a record; it cannot stop root, who can install binaries
+without this script, so who may pass `--allow-downgrade` is the operator
+procedure's rule (on the box: only once the owner has agreed to that move,
+naming both commits). Older versions of this script cannot make a move this
+one refuses: the version at `16cbf739` takes only the pre-lock host, and
+those of ES PR #60 (`7e27168`) and before take an `https` host only with the
+payload's builds installed already, so they never put another commit's
+builds in place of the installed ones; only a checkout of an earlier,
+unmerged revision of the change that brought this check could. `rollback`
+puts a backup's binaries back without this check: that move back is the one
+the backup records.
+
 `check` refuses when:
 
 - it does not run as root, or the payload folder, `provenance.json` or a
@@ -7495,6 +7532,9 @@ an `apply` that was cut off before its rollback, a keyring on a
   module (a `=>` line) are all refused. A commit whose `go.mod` replaces a
   module is refused by `build` and `check` alike
 - the named commit is `16cbf739`, or the host has no shape it knows
+- the move is not `forward` or `same` and `--allow-downgrade` does not name
+  it exactly, `--allow-downgrade` is given for a `forward` or `same` move,
+  more than once or malformed, or the clone's history cannot be read
 - one of `ars`, `ags`, `egs`, `es`, `vault`, `spire-server`, `spire-agent`,
   `nomad` and `docker` is not active, or `es.service` does not run
   `/usr/local/lib/execution-substrate/bin/es -config /etc/execution-substrate/es.json`
@@ -7539,8 +7579,8 @@ point, before it writes the backup folder or the folder above it.
    and SHA-256) into a new folder
    `/var/backups/execution-substrate-es-upgrade/<UTC time>-<commit>` (root,
    0700), records there that it creates `/etc/nomad.d/tls` and
-   `/opt/nomad/data/server/serf.keyring` (`created.json`), and copies the
-   verified payload into it
+   `/opt/nomad/data/server/serf.keyring` (`created.json`) and the move
+   (`move.json`), and copies the verified payload into it
 2. stops ES
 3. issues Nomad's TLS material into `/etc/nomad.d/tls` with the setup's
    `nomad_tls_issue`: a P-256 CA whose key is deleted once it has signed, and
@@ -7641,8 +7681,11 @@ token.
 
 The tests (`scripts/remote_alpha_upgrade_es_test.go`,
 `scripts/remote_alpha_upgrade_es_host_test.go`,
-`scripts/remote_alpha_upgrade_es_gossip_test.go` and
-`scripts/remote_alpha_upgrade_es_config_check_test.go`) run `check`,
+`scripts/remote_alpha_upgrade_es_gossip_test.go`,
+`scripts/remote_alpha_upgrade_es_move_test.go` and
+`scripts/remote_alpha_upgrade_es_config_check_test.go`) read the move from
+a git history built for them, in which a stand-in for `16cbf739` comes
+first, and run `check`,
 `apply`, the in-place check of a migrated host, the automatic rollback, an
 interrupted apply and `rollback` on a host-shaped folder with fake
 `systemctl`, `curl`, `nomad`, `docker`, ACL setup and identity check, and the
@@ -7665,7 +7708,16 @@ does not start, or whose issuer leaves the keyring readable by others (on
 interrupted while the issuer's temporary file holds the new key, or before
 the issuer has set the traps that remove that file, on either start, rolled
 back with no temporary file left; the keyring written before
-Nomad's stop on `https`; no gossip key or Nomad token in the output, the
+Nomad's stop on `https`; forward moves from the box's first build and from
+an earlier one, and the payload's own builds; moves to an older commit, to
+one beside the installed build, from a build the clone does not hold or
+from the real `16cbf739`, and through a shallow clone, each refused, and
+each made when `--allow-downgrade` names it, recorded in the report, the
+summary and `move.json`, with and without a sudo user; `--allow-downgrade`
+naming another move, given twice, malformed, or given for a forward move,
+for no move or for builds of two commits, and variables standing in for it,
+each refused; a history another account could change or that lacks a
+commit's parent, refused even when `--allow-downgrade` names the move; no gossip key or Nomad token in the output, the
 fakes' logged calls or any `curl` command line; payload binaries whose Go build info names another commit, another Go
 or a modified build, or shows a replaced module, a workspace module or a
 vendored dependency; payload files of another owner or group; a clone that

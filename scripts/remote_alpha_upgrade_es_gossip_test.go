@@ -100,9 +100,6 @@ func (h *upgradeHost) installBuilds(revision string) {
 	h.write("usr/local/bin/es-runtime-support", string(stampedBinary("es-runtime-support", "go1.26.5", revision, "false")), 0o755)
 }
 
-// previousESCommit stands for ES PR #60's merge, whose builds the box runs.
-var previousESCommit = strings.Repeat("7e", 20)
-
 func TestRemoteAlphaUpgradeESAddsTheGossipKeyringToAnHTTPSHost(t *testing.T) {
 	helper := buildESConfigCheck(t)
 	h := newUpgradeHost(t, helper)
