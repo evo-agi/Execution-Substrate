@@ -390,12 +390,16 @@ install_nomad_tls_material() {
 # nomad_gossip_issue <keyring>: write a keyring holding one new 32-byte key,
 # mode 0600 and owned by the user who runs it (root on a host), replacing any
 # keyring file there, or a link there (not what it points to). A folder there
-# is refused. The keyring's own folder is created 0700 if it is missing.
+# is refused. The keyring's own folder is created 0700 if it is missing. A
+# hangup, interrupt or termination before the keyring is in place leaves no
+# temporary file behind.
 nomad_gossip_issue() {
   local keyring=$1
   local dir
   local tmp
   local key
+  local saved_traps
+  local status=0
 
   dir="$(dirname "${keyring}")"
   if [[ ! -d "${dir}" ]]; then
@@ -408,10 +412,21 @@ nomad_gossip_issue() {
   # mode is checked. GNU mv's -T (like GNU stat's -c) renames onto the path
   # itself: without it, a folder there would take the file in.
   tmp="$(umask 077 && mktemp "${dir}/.serf.keyring.XXXXXX")" || return 1
+  # Until the rename, a hangup, interrupt or termination removes the
+  # temporary file, which by then may hold the key, and ends the shell as
+  # that signal would (129, 130, 143). The shell's own traps for them come
+  # back afterwards.
+  saved_traps="$(trap -p HUP INT TERM)"
+  trap "rm -f -- $(printf '%q' "${tmp}"); exit 129" HUP
+  trap "rm -f -- $(printf '%q' "${tmp}"); exit 130" INT
+  trap "rm -f -- $(printf '%q' "${tmp}"); exit 143" TERM
   if [[ "$(stat -c '%a' "${tmp}")" != "600" ]] || ! printf '["%s"]' "${key}" >"${tmp}" || ! mv -fT "${tmp}" "${keyring}"; then
     rm -f "${tmp}"
-    return 1
+    status=1
   fi
+  trap - HUP INT TERM
+  eval "${saved_traps}"
+  return "${status}"
 }
 
 # nomad_gossip_keyring_ok <keyring>: succeed when <keyring> is a regular file
