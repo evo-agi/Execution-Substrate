@@ -819,9 +819,11 @@ Current successful response shapes:
 - ES startup config validation rejects broad or malformed prefixes under the
   allowlist-prefix rule in section 3A, which ARS and AGS share. Accepted
   prefixes are relative SPIFFE path prefixes with at least two non-empty path
-  segments, no leading or trailing slash, and no `.` or `..` segment, and
-  every segment uses only `A-Z`, `a-z`, `0-9`, `.`, `-`, and `_`. A
-  single-segment prefix such as `service` or `operator` is invalid.
+  segments, no leading or trailing slash, no `.` or `..` segment, and no
+  first segment `workload` in any letter case, and every segment uses only
+  `A-Z`, `a-z`, `0-9`, `.`, `-`, and `_`. A single-segment prefix such as
+  `service` or `operator` is invalid, and so is a workload prefix such as
+  `workload/codex-agent`.
 - `GET /v1/executions:contract` uses that same caller authorization and returns only non-secret, non-run-specific producer compatibility metadata.
 - The current repo-owned runbooks, proofs, and generated helper configs keep that ES caller allowlist operator-only:
   - `spiffe://execution.internal/operator/local`

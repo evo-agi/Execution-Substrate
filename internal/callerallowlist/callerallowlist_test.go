@@ -105,10 +105,11 @@ func TestValidatePrefixRefusesWorkloadIdentities(t *testing.T) {
 		if err := callerallowlist.ValidatePrefix(prefix); !errors.Is(err, callerallowlist.ErrWorkloadPrefix) {
 			t.Errorf("ValidatePrefix(%q) = %v, want ErrWorkloadPrefix", prefix, err)
 		}
-		if callerallowlist.MatchesAny(mustID(t, "operator/local"), []string{prefix}) {
-			t.Errorf("workload prefix %q matched a caller", prefix)
-		}
 	}
+	// No workload caller can reach MatchesAny at all: callerauth.ParseSPIFFEID
+	// refuses every workload identity, so no callerauth.SPIFFEID with a
+	// workload path exists (TestParseSPIFFEIDRefusesEverythingElse). The
+	// guarantee is structural, and this test does not try to restate it.
 	if err := callerallowlist.ValidatePrefixes("allowed_caller_prefixes", []string{"operator/local", "workload/codex-agent"}); !errors.Is(err, callerallowlist.ErrWorkloadPrefix) || !strings.Contains(err.Error(), "allowed_caller_prefixes[1]") {
 		t.Errorf("ValidatePrefixes with a workload prefix = %v, want ErrWorkloadPrefix naming entry 1", err)
 	}

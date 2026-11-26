@@ -42,6 +42,7 @@ func TestWorkstreamFF1NamedWorkloadIdentityDecisionIsDocumented(t *testing.T) {
 		"The shared ID `spiffe://execution.internal/workload` is retired when the identity part of F1 lands.",
 		"The caller authentication contract refuses every caller whose path is `workload` or starts with `workload/`",
 		"for ARS, AGS, EGS, CGS and ES alike, including the reserved per-run paths.",
+		"This part is implemented: WI-3a landed it, and the refusal ignores letter case.",
 	)
 
 	assertContainsAll(t, "F1 owner picks the name", f1,
@@ -196,6 +197,26 @@ func TestWorkstreamFF1IsPlannedAndPointedTo(t *testing.T) {
 		"A caller whose path starts with the segment `workload`, in any letter case, has no caller identity, at every service.",
 		"Workload identities exist so that workloads can log in to the workload-zone Vault; they are never callers, and a later design that lets a workload call a service must change this rule explicitly.",
 		"A configured prefix whose first segment is `workload`, in any letter case, is refused at startup like any other prefix no caller could match, with its own message, and `id.conf` loading refuses a workload identity as a principal the same way.",
+		"A path that only contains the word later, such as `service/workload`, or whose first segment is longer, such as `workloads`, is not affected.",
+	)
+	// Every page that restates the caller identity or the allowlist-prefix
+	// rule restates the workload exclusion too.
+	esContractPrefixes := compactDocSection(t, contractsRaw, "## 7. ES Admission And Execution Contract", "## 8.")
+	assertContainsAll(t, "ES section 7 restates the workload prefix refusal", esContractPrefixes,
+		"no `.` or `..` segment, and no first segment `workload` in any letter case, and every segment uses only `A-Z`, `a-z`, `0-9`, `.`, `-`, and `_`.",
+		"and so is a workload prefix such as `workload/codex-agent`.",
+	)
+	lifecycleCallerAuthorization := compactDocSection(t, mustRead(t, ".docs/execution_lifecycle/contracts.md"), "## 4. Caller authorization contract", "## 5.")
+	assertContainsAll(t, "lifecycle caller authorization restates the workload exclusion", lifecycleCallerAuthorization,
+		"that URI is a conforming SPIFFE ID with a path in the trust domain `execution.internal` whose first segment is not `workload` in any letter case.",
+		"or a workload identity such as `spiffe://execution.internal/workload/codex-agent`, is `401` before allowlist matching.",
+		"no `.` or `..` segment, and no first segment `workload` in any letter case,",
+	)
+	assertContainsAll(t, "PLANS restates the workload exclusion", plans,
+		"exactly one URI SAN that is a conforming SPIFFE ID in the trust domain `execution.internal` and not a workload identity, identifies a caller;",
+	)
+	assertContainsAll(t, "configuration lists the workload prefix refusal", compactText(mustRead(t, ".docs/system_overview/configuration.md")),
+		"- A prefix whose first segment is `workload`, in any letter case, such as `workload/codex-agent`, is rejected: workload identities are never callers (`contracts.md` section 3A).",
 	)
 	esContract := compactDocSection(t, contractsRaw, "## 7. ES Admission And Execution Contract", "## 8.")
 	assertContainsAll(t, "ES network mapping F1 change", esContract,

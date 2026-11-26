@@ -150,9 +150,6 @@ func TestZeroSPIFFEIDIsEmpty(t *testing.T) {
 	}
 }
 
-// referenceAccepts applies the SPIFFE standard as the go-spiffe library
-// implements it, plus this package's two additions: the trust domain must
-// be TrustDomain and the ID must have a path.
 // referenceAccepts is the caller identity rule written with the SPIFFE
 // reference parser: a conforming ID with a path in the trust domain, whose
 // first path segment is not "workload" in any letter case.

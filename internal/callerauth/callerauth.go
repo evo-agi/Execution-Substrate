@@ -2,10 +2,9 @@
 // (ARS, AGS, EGS, CGS and ES). It reads the caller's SPIFFE ID from the
 // verified TLS client certificate and refuses the request when that identity
 // is missing, ambiguous, malformed, outside the ES trust domain or a workload
-// identity, when the
-// verified chain is no longer (or not yet) within its validity period, when
-// the certificate is not an end-entity certificate, or when the certificate
-// was issued by the configured bootstrap issuer.
+// identity, when the verified chain is no longer (or not yet) within its
+// validity period, when the certificate is not an end-entity certificate, or
+// when the certificate was issued by the configured bootstrap issuer.
 //
 // The package owns authentication only: who is calling. Which authenticated
 // callers may use which route (authorization) stays with each service.
