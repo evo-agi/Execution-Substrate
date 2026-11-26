@@ -169,6 +169,40 @@ func TestLinuxSetupIssuesANomadGossipKeyring(t *testing.T) {
 		t.Fatalf("the folder the link pointed to holds %v (%v)", entries, err)
 	}
 
+	// The issuer creates its temporary file only where nothing has the name
+	// mktemp chose: a file of that name (here a mktemp that names an existing
+	// file) is refused and kept as it was, and no keyring is written.
+	occupiedData := t.TempDir()
+	occupiedKeyring := nomadGossipKeyringPath(occupiedData)
+	if err := os.Mkdir(filepath.Dir(occupiedKeyring), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	occupied := filepath.Join(filepath.Dir(occupiedKeyring), ".serf.keyring.TAKEN0")
+	if err := os.WriteFile(occupied, []byte("not the issuer's\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if output, err := nomadGossipSetupFunctions(`occupied=$2; mktemp() { printf '%s\n' "${occupied}"; }; nomad_gossip_issue "$1"`, occupiedKeyring, occupied); err == nil {
+		t.Fatalf("nomad_gossip_issue wrote over a file it did not create: %s", output)
+	}
+	requireFileMode(t, occupied, 0o640)
+	if data, err := os.ReadFile(occupied); err != nil || string(data) != "not the issuer's\n" {
+		t.Fatalf("the file that had the temporary file's name now holds %q (%v)", data, err)
+	}
+	if entries, err := os.ReadDir(filepath.Dir(occupiedKeyring)); err != nil || len(entries) != 1 {
+		t.Fatalf("after the refusal the keyring's folder holds %v (%v)", entries, err)
+	}
+
+	// The key goes in only once the temporary file's mode is 0600: here stat
+	// reports it 0644, and the issuer refuses, leaving no file behind.
+	looseData := t.TempDir()
+	looseKeyring := nomadGossipKeyringPath(looseData)
+	if output, err := nomadGossipSetupFunctions(`stat() { if [[ "${@: -1}" == */.serf.keyring.* ]]; then echo 644; else command stat "$@"; fi; }; nomad_gossip_issue "$1"`, looseKeyring); err == nil {
+		t.Fatalf("nomad_gossip_issue wrote the key into a temporary file of mode 0644: %s", output)
+	}
+	if entries, err := os.ReadDir(filepath.Dir(looseKeyring)); err != nil || len(entries) != 0 {
+		t.Fatalf("after the refusal the keyring's folder holds %v (%v)", entries, err)
+	}
+
 	// The issuer gives the caller's own traps back, after a refusal too.
 	trapsData := t.TempDir()
 	if err := os.MkdirAll(nomadGossipKeyringPath(filepath.Join(trapsData, "refused")), 0o700); err != nil {
@@ -187,17 +221,24 @@ echo "refused: $(trap -p HUP INT TERM)"`,
 
 // Audit 41 of ES PR #67: a hangup, interrupt or termination that reached
 // the issuer while its temporary file held the new key left that file
-// behind. Here stat (before the key goes in) or mv (before the rename)
-// holds; the signal goes to the issuer's whole process group, as a terminal
-// or the box upgrade sends it. The issuer fails (bash dies of a hangup or a
-// termination; after an interrupt its subshell's trap ends the subshell, and
-// the issuer returns 1), and once the group is gone, neither the temporary
-// file nor a keyring is left.
+// behind. Re-audit 42 of ES PR #66: one that reached it before its traps
+// were set left an empty one. Here mktemp (choosing the temporary file's
+// name, before the traps), stat (before the key goes in) or mv (before the
+// rename) holds; the signal goes to the issuer's whole process group, as a
+// terminal or the box upgrade sends it. While mktemp holds, no file exists
+// yet. The issuer fails (bash dies of the signal; but after an interrupt
+// under the traps, the subshell's trap ends the subshell and the issuer
+// returns 1), and once the group is gone, neither a temporary file nor a
+// keyring is left.
 func TestLinuxSetupLeavesNoKeyringTemporaryFileWhenStopped(t *testing.T) {
 	// The held command touches HELD_MARKER and sleeps when its last argument
-	// matches HELD_PATTERN; otherwise it runs the real one.
+	// matches HELD_PATTERN (after running the real one if HELD_AFTER is set);
+	// otherwise it runs the real one.
 	held := `#!/usr/bin/env bash
 if [[ "${@: -1}" == ${HELD_PATTERN} ]]; then
+  if [[ -n "${HELD_AFTER}" ]]; then
+    "${REAL_COMMAND}" "$@" >/dev/null || exit
+  fi
   : >"${HELD_MARKER}"
   exec sleep 30
 fi
@@ -207,10 +248,18 @@ exec "${REAL_COMMAND}" "$@"
 	for _, hold := range []struct {
 		command string
 		pattern string
-		key     bool
+		// file is what the keyring's folder holds while the command holds:
+		// nothing, an empty temporary file, or one holding the key.
+		file string
+		// trapped: the command holds under the issuer's traps.
+		trapped bool
+		// after: the command runs before it holds (mktemp, so that a file it
+		// created would be there).
+		after bool
 	}{
-		{"stat", "*/.serf.keyring.*", false},
-		{"mv", "*/serf.keyring", true},
+		{"mktemp", "*/.serf.keyring.XXXXXX", "nothing", false, true},
+		{"stat", "*/.serf.keyring.*", "empty", true, false},
+		{"mv", "*/serf.keyring", "key", true, false},
 	} {
 		realCommand, err := exec.LookPath(hold.command)
 		if err != nil {
@@ -223,12 +272,12 @@ exec "${REAL_COMMAND}" "$@"
 		for _, tc := range []struct {
 			name   string
 			signal syscall.Signal
-			killed bool
 		}{
-			{"hangup", syscall.SIGHUP, true},
-			{"interrupt", syscall.SIGINT, false},
-			{"termination", syscall.SIGTERM, true},
+			{"hangup", syscall.SIGHUP},
+			{"interrupt", syscall.SIGINT},
+			{"termination", syscall.SIGTERM},
 		} {
+			killed := !(hold.trapped && tc.signal == syscall.SIGINT)
 			t.Run(hold.command+"/"+tc.name, func(t *testing.T) {
 				dataDir := t.TempDir()
 				keyring := nomadGossipKeyringPath(dataDir)
@@ -243,7 +292,8 @@ exec "${REAL_COMMAND}" "$@"
 					`set -euo pipefail; eval "$(sed -n '/^# BEGIN nomad_gossip/,/^# END nomad_gossip/p' "$1")"; nomad_gossip_issue "$2"`,
 					"bash", setup, keyring)
 				command.Env = []string{"PATH=" + bin + string(os.PathListSeparator) + os.Getenv("PATH"),
-					"HELD_PATTERN=" + hold.pattern, "HELD_MARKER=" + marker, "REAL_COMMAND=" + realCommand}
+					"HELD_PATTERN=" + hold.pattern, "HELD_MARKER=" + marker, "REAL_COMMAND=" + realCommand,
+					"HELD_AFTER=" + map[bool]string{true: "1", false: ""}[hold.after]}
 				command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 				// The issuer writes to a file, which the test reads while it runs.
 				outputPath := filepath.Join(t.TempDir(), "output")
@@ -278,14 +328,20 @@ exec "${REAL_COMMAND}" "$@"
 						t.Fatalf("the issuer never ran %s on its temporary file or keyring: %s", hold.command, output())
 					}
 				}
-				// While stat holds, the temporary file is empty; while mv
-				// holds, it holds the new key.
+				// While mktemp holds, the folder is empty; while stat holds,
+				// the temporary file is empty; while mv holds, it holds the
+				// new key.
 				entries, err := os.ReadDir(filepath.Dir(keyring))
-				if err != nil || len(entries) != 1 || !strings.HasPrefix(entries[0].Name(), ".serf.keyring.") {
-					t.Fatalf("the keyring's folder while %s holds: %v (%v)", hold.command, entries, err)
+				if err != nil {
+					t.Fatal(err)
 				}
-				tmp := filepath.Join(filepath.Dir(keyring), entries[0].Name())
-				if hold.key {
+				if hold.file == "nothing" {
+					if len(entries) != 0 {
+						t.Fatalf("the keyring's folder holds %v before the issuer's traps are set", entries)
+					}
+				} else if len(entries) != 1 || !strings.HasPrefix(entries[0].Name(), ".serf.keyring.") {
+					t.Fatalf("the keyring's folder while %s holds: %v", hold.command, entries)
+				} else if tmp := filepath.Join(filepath.Dir(keyring), entries[0].Name()); hold.file == "key" {
 					readIssuedNomadGossipKey(t, tmp)
 				} else if data, err := os.ReadFile(tmp); err != nil || len(data) != 0 {
 					t.Fatalf("the temporary file while stat holds: %d bytes (%v)", len(data), err)
@@ -305,9 +361,9 @@ exec "${REAL_COMMAND}" "$@"
 					t.Fatalf("the issuer after a %s: %v\n%s", tc.name, err, output())
 				}
 				status := exit.Sys().(syscall.WaitStatus)
-				if tc.killed && !(status.Signaled() && status.Signal() == tc.signal) || !tc.killed && status.ExitStatus() != 1 {
+				if killed && !(status.Signaled() && status.Signal() == tc.signal) || !killed && status.ExitStatus() != 1 {
 					t.Fatalf("the issuer after a %s: %v, want %s\n%s", tc.name, err,
-						map[bool]string{true: "death by that signal", false: "exit status 1"}[tc.killed], output())
+						map[bool]string{true: "death by that signal", false: "exit status 1"}[killed], output())
 				}
 				// The subshell that held the traps may outlive bash for as
 				// long as it takes to remove the temporary file and be reaped.
@@ -320,6 +376,81 @@ exec "${REAL_COMMAND}" "$@"
 					t.Fatalf("after a %s the keyring's folder holds %v (%v)", tc.name, entries, err)
 				}
 			})
+		}
+	}
+}
+
+// Re-audit 42 of ES PR #66 found two points no test can hold: a signal
+// between mktemp's creating the temporary file and the subshell's setting
+// its traps, and one while the subshell starts a command substitution
+// (bash then fails to run the trap), each left an empty temporary file.
+// So the issuer's own code must name the file before its traps (mktemp -u
+// creates nothing), create it only once all three traps and noclobber are
+// set, and run no command substitution while the traps are set.
+func TestLinuxSetupIssuerCreatesItsTemporaryFileOnlyUnderItsTraps(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join(executionPlatformRepoRootPath(), "scripts", "70_linux_setup.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	start := strings.Index(text, "\nnomad_gossip_issue() {\n")
+	if start < 0 {
+		t.Fatal("70_linux_setup.sh has no nomad_gossip_issue")
+	}
+	end := strings.Index(text[start:], "\n}\n")
+	if end < 0 {
+		t.Fatal("nomad_gossip_issue does not end")
+	}
+	var code []string
+	for _, line := range strings.Split(text[start:start+end], "\n") {
+		if line = strings.TrimSpace(line); line != "" && !strings.HasPrefix(line, "#") {
+			code = append(code, line)
+		}
+	}
+	at := func(want string) int {
+		t.Helper()
+		found := -1
+		for i, line := range code {
+			if line == want {
+				if found >= 0 {
+					t.Fatalf("nomad_gossip_issue has %q twice", want)
+				}
+				found = i
+			}
+		}
+		if found < 0 {
+			t.Fatalf("nomad_gossip_issue has no line %q", want)
+		}
+		return found
+	}
+	name := at(`tmp="$(mktemp -u "${dir}/.serf.keyring.XXXXXX")" || return 1`)
+	open := at(`if ! (`)
+	traps := []int{
+		at(`trap 'rm -f -- "${tmp}"; exit 129' HUP`),
+		at(`trap 'rm -f -- "${tmp}"; exit 130' INT`),
+		at(`trap 'rm -f -- "${tmp}"; exit 143' TERM`),
+	}
+	noclobber := at(`set -C`)
+	create := at(`: >"${tmp}" || exit 1`)
+	closing := at(`); then`)
+	if !(name < open && open < traps[0] && traps[0] < traps[1] && traps[1] < traps[2] &&
+		traps[2] < noclobber && noclobber < create && create < closing) {
+		t.Fatalf("nomad_gossip_issue's order: name %d, subshell %d, traps %v, noclobber %d, create %d, end %d",
+			name, open, traps, noclobber, create, closing)
+	}
+	for i, line := range code {
+		if strings.Contains(line, "mktemp") && i != name {
+			t.Errorf("nomad_gossip_issue runs mktemp again: %q", line)
+		}
+		if strings.Contains(line, "${tmp}") && i != name && (i < traps[0] || i > traps[2]) && (i < create || i > closing) {
+			t.Errorf("nomad_gossip_issue uses its temporary file outside its traps: %q", line)
+		}
+		if i > open && i < closing {
+			for _, substitution := range []string{"$(", "`", "<(", ">("} {
+				if strings.Contains(line, substitution) {
+					t.Errorf("nomad_gossip_issue runs %s while its traps are set: %q", substitution, line)
+				}
+			}
 		}
 	}
 }
