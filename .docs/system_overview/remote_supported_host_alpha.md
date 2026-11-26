@@ -7381,7 +7381,10 @@ Operator interface:
   runs the same checks, then the steps below. `--allow-downgrade` is only
   for a move that is not forward (below).
 - `sudo scripts/remote_alpha_upgrade_es.sh rollback --backup-dir <dir>`
-  puts a backup back.
+  puts back the backup of the apply that left the host as it is (below).
+
+`check` and `apply` take their options only by their full names, so that
+no prefix stands in for `--allow-downgrade`.
 
 Hand the clone and the payload to root before `check` (`chown -R root:root`
 and `chmod -R go-w`) so that no other account can change them between the
@@ -7402,7 +7405,8 @@ system's nor root's git config, no `refs/replace` and `PATH`
 unless the clone's `.git` is a folder (not a `.git` file, which sends git
 to the folder it names) whose content is root's alone by the same rule,
 holds the commit, and has no `commondir` or object `alternates` (which would
-make git read objects from elsewhere): git does not check an object's bytes
+make git read objects from elsewhere) and no `info/grafts` (which gives
+commits other parents than their own): git does not check an object's bytes
 against its name when it reads it, so the folder it reads decides what
 `go.mod` and `go.sum` say.
 
@@ -7475,8 +7479,9 @@ an `apply` that was cut off before its rollback, a keyring on a
 `locked-http`) to the named commit, in the clone's history, read from the
 same git objects with the same git environment as `go.mod` and `go.sum`
 (`git merge-base --is-ancestor`). The move is `forward` when the installed
-commit is an ancestor of the named one, `same` when they are one commit (an
-`https` host with the payload's builds and no keyring), `backward` when the
+commit is an ancestor of the named one, `same` when they are one commit (the
+payload's builds on an `https` host without a keyring, or on an
+`https-gossip` one, which `apply` leaves as it is), `backward` when the
 named commit is an ancestor of the installed one, `sideways` when neither
 is, and `unknown` when the clone does not hold both commits or is shallow,
 so that its history may stop short of either. Only a `forward` or `same`
@@ -7485,15 +7490,21 @@ on the command line as `--allow-downgrade <installed commit>..<named commit>`,
 each a full lower-case commit, given once. No file, variable or payload
 stands in for it, and a value that names another move, is malformed, is
 given twice, or names a `forward` or `same` move is refused. A history that
-git cannot read (a commit whose parent the clone lacks, about which some
-git versions complain and still answer "not an ancestor") or that another
-account could change is
+git cannot read or warns about (a commit whose parent the clone lacks,
+about which some git versions complain and still answer "not an ancestor",
+or a ref named after a commit), that another
+account could change, or that a grafts file rewrites (above) is
 refused whatever the command line says. The report's `move` names both
 commits, the order and why; for a move that `--allow-downgrade` let through,
-also that argument and the user that `SUDO_USER` names (none when `sudo`
-did not start the run itself, as under `systemd-run`, and root can set any
-value). `apply` writes the same record to `move.json` in its backup before
-it changes anything and logs the move, and its summary repeats it. This
+also that argument and who ran it: `sudo_user`, the user `SUDO_USER` names
+(none when it is unset or empty, as when `sudo` did not start the run
+itself, under `systemd-run` for one); `uid`, the real uid; and
+`login_user`, the user the kernel's audit login uid
+(`/proc/self/loginuid`) names, which `sudo` keeps (none when no login
+started the run, as under `systemd-run`). Root can set any of them, so they
+are a record, not a check. `apply` writes the same record to `move.json` in
+its backup before it changes anything (before it first stops ES) and logs
+the move, and its summary repeats it. This
 stops mistakes, such as a stale clone or payload or a wrong or reused
 commit, and leaves a record; it cannot stop root, who can install binaries
 without this script, so who may pass `--allow-downgrade` is the operator
@@ -7503,9 +7514,26 @@ one refuses: the version at `16cbf739` takes only the pre-lock host, and
 those of ES PR #60 (`7e27168`) and before take an `https` host only with the
 payload's builds installed already, so they never put another commit's
 builds in place of the installed ones; only a checkout of an earlier,
-unmerged revision of the change that brought this check could. `rollback`
-puts a backup's binaries back without this check: that move back is the one
-the backup records.
+unmerged revision of the change that brought this check could.
+
+`rollback` puts back only the backup of the apply that left the installed
+ES binaries as they are: each of `es` and `es-runtime-support` must be,
+byte for byte, either the backup's own copy (that apply stopped before it
+replaced the file, or the backup was put back already) or the copy of the
+payload that apply staged in the backup (it installed that copy). Any other
+backup is refused before a service stops, with nothing changed: an older
+backup after a later apply, a backup after builds were put in place without
+this script, or one whose staged payload is gone, since putting it back
+would move ES to another build without the move check. Put back the newest
+backup first, then the one before it. Each rollback, by `rollback` or by
+`apply` putting back its own backup, is recorded in that backup before a
+service stops, in a new `rollback-<UTC time>-<pid>.json`: what each
+installed binary is (`the backup's copy`, `the payload its apply
+installed`, or nothing for `apply`'s own rollback when it is neither), the
+commits the installed binaries and the backup's copies are clean builds of
+(`from` and `to`), whether `rollback` or `apply` ran it, the time, and who
+ran it, as above. `rollback` refuses, with nothing changed, when it cannot
+write that record; `apply`'s own rollback logs why and goes on.
 
 `check` refuses when:
 
@@ -7663,15 +7691,17 @@ starts without the keyring it removed, so its gossip is plain again, as it
 was before `apply`; a single server has no peer that still needs the
 key. It records `rolled_back`, `rolled_back_unhealthy` when the endpoints
 do not answer 200 within 60 seconds, or `rollback_failed`, with the failure.
-`rollback` does the same from a backup folder, ignoring `SIGHUP`, and exits
-1 on any of those failures. It refuses a backup of ES PR #54's upgrade
+`rollback` does the same from a backup folder, after the check and the
+record above, ignoring `SIGHUP`, and exits 1 on any of those failures. It refuses a backup of ES PR #54's upgrade
 (schema v1), which the script at `16cbf739` restores. Output that can no
 longer be written never stops either one: a terminal that hangs up sends
 `SIGHUP`, so `apply` rolls back, while a closed output pipe alone does not,
 so `apply` goes on with its output sent to `/dev/null`; the summary records
 `output_lost` either way. Under `systemd-run`, give the unit
 `KillMode=mixed` and a long `TimeoutStopSec`, so that stopping the unit
-signals `apply` alone and leaves it time to roll back. Neither changes the
+signals `apply` alone and leaves it time to roll back, and pass it
+`SUDO_USER` (`--setenv=SUDO_USER=$SUDO_USER`), so that the records name
+who started it. Neither changes the
 key, the token files or Nomad's ACL policies back: the policies stay as
 `provision` last wrote them, and the observer's `list-jobs` is a read.
 So after a rollback, `nomad_acl_setup.sh check` from the checkout of
@@ -7711,14 +7741,28 @@ the issuer has set the traps that remove that file, on either start, rolled
 back with no temporary file left; the keyring written before
 Nomad's stop on `https`; forward moves from the box's first build and from
 an earlier one, and the payload's own builds; moves to an older commit, to
-one beside the installed build, from a build the clone does not hold or
+one beside the installed build (also with a `refs/replace` entry that would
+put it after the installed one), from a build the clone does not hold or
 from the real `16cbf739`, and through a shallow clone, each refused, and
 each made when `--allow-downgrade` names it, recorded in the report, the
-summary and `move.json`, with and without a sudo user; `--allow-downgrade`
-naming another move, given twice, malformed, or given for a forward move,
-for no move or for builds of two commits, and variables standing in for it,
-each refused; a history another account could change or that lacks a
-commit's parent, refused even when `--allow-downgrade` names the move; no gossip key or Nomad token in the output, the
+summary and `move.json`, with a sudo user and with only a login user;
+`move.json` in the backup when `apply` first stops ES, whether `apply` then
+goes on or that stop fails; `--allow-downgrade` naming another move, given
+twice, malformed, given for a forward move, for no move or for builds of
+two commits, or as a prefix of its name, and variables standing in for it,
+each refused; a history another account could change, that lacks a
+commit's parent, about which git warns (a ref named after the installed
+commit) or that a grafts file rewrites (with git's hint about it turned
+off), refused even when `--allow-downgrade` names the move; who ran
+a run, with `SUDO_USER` set, empty or unset and a login uid that is unset,
+unreadable, root's or no user's; `rollback` of an older backup after a
+later apply (also one shaped like ES PR #60's), after builds put in place
+without the upgrade, after only `es-runtime-support` changed, over a build
+of a modified checkout and with the staged payload gone, each refused with
+nothing changed and nothing recorded, and of the newest backup and then the
+older one, after an `apply` cut off between the two binaries or before it
+installed either, and of a backup put back already, each recorded before ES
+stops, as `apply`'s own rollback is; no gossip key or Nomad token in the output, the
 fakes' logged calls or any `curl` command line; payload binaries whose Go build info names another commit, another Go
 or a modified build, or shows a replaced module, a workspace module or a
 vendored dependency; payload files of another owner or group; a clone that

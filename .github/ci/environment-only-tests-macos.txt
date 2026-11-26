@@ -112,7 +112,7 @@ execution-substrate/scripts TestRemoteAlphaUpgradeESAddsOnlyTheMissingKeyring
 execution-substrate/scripts TestRemoteAlphaUpgradeESRollsBackTheGossipKeyring
 execution-substrate/scripts TestRemoteAlphaUpgradeESRefusesAGossipKeyringItDidNotExpect
 execution-substrate/scripts TestRemoteAlphaUpgradeESRefusesAHostThatChangedAfterCheck
-# The move tests apply on a locked-http host, or move their host to HTTPS
+# The move and rollback tests apply on a locked-http host, or move their host to HTTPS
 # with that apply first, in at least one case each. They are listed whole:
 # their cases on a locked-http host that only check pass there.
 execution-substrate/scripts TestRemoteAlphaUpgradeESReportsAForwardMove
@@ -120,6 +120,8 @@ execution-substrate/scripts TestRemoteAlphaUpgradeESRefusesAMoveThatIsNotForward
 execution-substrate/scripts TestRemoteAlphaUpgradeESMakesAMoveThatIsNotForwardOnlyWhenRootNamesIt
 execution-substrate/scripts TestRemoteAlphaUpgradeESRefusesAnAllowDowngradeThatDoesNotNameTheMove
 execution-substrate/scripts TestRemoteAlphaUpgradeESRefusesAHistoryOnlyRootCannotVouchFor
+execution-substrate/scripts TestRemoteAlphaUpgradeESRecordsTheMoveBeforeItChangesAnything
+execution-substrate/scripts TestRemoteAlphaUpgradeESRollsBackOnlyTheApplyThatLeftTheHost
 
 
 # Tests that skip themselves on the runner.

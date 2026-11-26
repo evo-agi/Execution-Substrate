@@ -296,6 +296,15 @@ case "$1" in
     printf 'ExecStart={ path=/usr/local/lib/execution-substrate/bin/es ; argv[]=%s ; ignore_errors=no }\n' \
       "$(cat "$s/es-argv" 2>/dev/null || echo '/usr/local/lib/execution-substrate/bin/es -config /etc/execution-substrate/es.json')" ;;
   stop)
+    # backups-at-stop: every stop first logs the files under the backup
+    # root as they are then, to backups-at-stop.log after a "stop <unit>"
+    # line.
+    if [[ -e "$s/backups-at-stop" ]]; then
+      echo "stop $2" >> "$s/backups-at-stop.log"
+      if [[ -d "$FAKE_HOST_ROOT/var/backups/execution-substrate-es-upgrade" ]]; then
+        (cd "$FAKE_HOST_ROOT/var/backups/execution-substrate-es-upgrade" && find . -type f | LC_ALL=C sort) >> "$s/backups-at-stop.log"
+      fi
+    fi
     # fail-stop-<unit> holds how many stops still succeed; after those, the
     # stop fails and the unit keeps running.
     if [[ -e "$s/fail-stop-$2" ]]; then
@@ -772,6 +781,9 @@ func newUpgradeHost(t *testing.T, helper string) *upgradeHost {
 	if err := os.WriteFile(filepath.Join(h.state, "calls.log"), nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// The run's audit login uid (ES_UPGRADE_TEST_LOGINUID_FILE): unset, as
+	// under systemd-run, unless a test writes another.
+	h.mark("loginuid", "4294967295")
 
 	h.mkdir("etc/execution-substrate", 0o755)
 	h.write("etc/execution-substrate/es.json", string(boxStartESConfig(t, "http://127.0.0.1:4646")), 0o640)
@@ -851,6 +863,7 @@ func (h *upgradeHost) environ() []string {
 		"ES_UPGRADE_TEST_MODULE_REPO":  h.modules,
 		// The fixture's history holds boxESCommit in place of the real one.
 		"ES_UPGRADE_TEST_BOX_ES_COMMIT": boxESCommit,
+		"ES_UPGRADE_TEST_LOGINUID_FILE": filepath.Join(h.state, "loginuid"),
 	}
 	for key, value := range h.env {
 		env[key] = value
@@ -2491,7 +2504,21 @@ client {
 		t.Fatalf("check after the box's rollback exited %d: shape %v, blockers %v, %s", code, report["shape"], report["blockers"], stderr)
 	}
 
-	// The first rollback returns the box to plain HTTP with a leader.
+	// The first backup is not of the apply that left the host as it is: the
+	// builds of an earlier commit were put in place without the upgrade. Its
+	// rollback is refused before a service stops.
+	h.clearCalls()
+	stdout, stderr, code = h.run("rollback", "--backup-dir", backupDir)
+	if code != 1 || !strings.Contains(stderr, "is not the backup of the apply that left the host as it is") {
+		t.Fatalf("rollback of the first backup over the box's builds exited %d\nstdout %s\nstderr %s", code, stdout, stderr)
+	}
+	onlyReads(t, h, "a refused rollback of the first backup")
+	assertRestored(t, atHTTPS, h.snapshot())
+
+	// With the builds the first apply installed back in place, its rollback
+	// returns the box to plain HTTP with a leader.
+	h.write("usr/local/lib/execution-substrate/bin/es", string(newESBuild), 0o755)
+	h.write("usr/local/bin/es-runtime-support", string(newRuntimeSupportBuild), 0o755)
 	stdout, stderr, code = h.run("rollback", "--backup-dir", backupDir)
 	if code != 0 {
 		t.Fatalf("rollback exited %d\nstdout %s\nstderr %s\nnomad log:\n%s", code, stdout, stderr, dumpNomad())

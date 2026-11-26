@@ -25,7 +25,9 @@ the named one, in the clone's history: one that is not forward (to an older
 commit, to one on another line, or to one whose order the clone cannot
 show) runs only when root names it on the command line as
 --allow-downgrade <installed commit>..<named commit>, and apply records it
-in its backup. The host steps:
+in its backup. rollback puts back only the backup of the apply that left
+the installed ES binaries as they are, and records each rollback in that
+backup. The host steps:
 
   build           (unprivileged) build es, es-runtime-support and the
                   config check helper from this clean checkout, with
@@ -39,8 +41,9 @@ in its backup. The host steps:
                   with its ACLs provisioned again or checked); migrate
                   es.json, install the binaries, start ES and verify; on
                   any failure, put the backup back
-  rollback        (root) put a backup back, remove what apply created (the
-                  TLS directory, the keyring) and start Nomad and ES
+  rollback        (root) put back the backup of the apply that left the
+                  host as it is, remove what apply created (the TLS
+                  directory, the keyring) and start Nomad and ES
 
 and the host-independent pieces they are built on:
 
@@ -677,6 +680,48 @@ def box_es_commit():
     return BOX_ES_COMMIT
 
 
+# The kernel's audit login uid of this process: the user who logged in to
+# the session it runs in, kept across sudo, and unset (4294967295) in a
+# process that no login started, such as a systemd-run unit.
+LOGINUID_FILE = "/proc/self/loginuid"
+LOGINUID_UNSET = 4294967295
+
+
+def loginuid_file():
+    """LOGINUID_FILE. Under a test --host-root, ES_UPGRADE_TEST_LOGINUID_FILE
+    may name another file, so that a test decides what it holds."""
+    if test_mode() and os.environ.get("ES_UPGRADE_TEST_LOGINUID_FILE"):
+        return os.environ["ES_UPGRADE_TEST_LOGINUID_FILE"]
+    return LOGINUID_FILE
+
+
+def who_ran():
+    """Who ran this, as far as the process can tell, for a record:
+    sudo_user, the user SUDO_USER names (None when it is unset or empty, as
+    when sudo did not start this process itself, under systemd-run for
+    one); uid, the real uid; and login_user, the user the audit login uid
+    names (None when it is unset, as under systemd-run, or cannot be read;
+    the uid itself when no user has it). Root can set either; this is a
+    record, not a check."""
+    login_user = None
+    try:
+        with open(loginuid_file(), encoding="ascii") as handle:
+            login_uid = int(handle.read().strip())
+    except (OSError, ValueError, UnicodeDecodeError):
+        login_uid = None
+    if login_uid is not None and 0 <= login_uid < LOGINUID_UNSET:
+        try:
+            login_user = pwd.getpwuid(login_uid).pw_name
+        except KeyError:
+            login_user = str(login_uid)
+    return {"sudo_user": os.environ.get("SUDO_USER") or None, "uid": os.getuid(), "login_user": login_user}
+
+
+def describe_who(record):
+    return (f"sudo user {record['sudo_user'] or 'not named'}, uid {record['uid']}, "
+            f"login user {record['login_user'] or 'not set'}")
+
+
 def root_ids():
     return (os.getuid(), os.getgid()) if test_mode() else (0, 0)
 
@@ -1185,8 +1230,13 @@ def module_git(repo, owners, what):
     what a commit holds and what its parents are. A .git file ("gitdir:
     <path>", as git worktree add and git clone --separate-git-dir leave) or
     link sends git to another folder, so .git must be a folder itself, as
-    build requires (audit 34, A34-2). Otherwise refuses, saying that what
-    (what the caller reads there, with its verb) is not in such objects."""
+    build requires (audit 34, A34-2). A grafts file (info/grafts) gives
+    commits other parents than their own objects name, which neither
+    "git rev-parse --is-shallow-repository" nor GIT_NO_REPLACE_OBJECTS
+    turns off, and git hints at it on standard error only while
+    advice.graftFileDeprecated is on, so it is refused here (audit 44,
+    O44-2). Otherwise refuses, saying that what (what the caller reads
+    there, with its verb) is not in such objects."""
     git_dir = os.path.join(repo, ".git")
     problems = folders_above_problems(git_dir, (0,) + tuple(owners))
     if not os.path.lexists(git_dir):
@@ -1198,6 +1248,8 @@ def module_git(repo, owners, what):
         for rel in ("commondir", "objects/info/alternates", "objects/info/http-alternates"):
             if os.path.lexists(os.path.join(git_dir, rel)):
                 problems.append(f"{git_dir}/{rel} exists, which makes git read objects from elsewhere")
+        if os.path.lexists(os.path.join(git_dir, "info", "grafts")):
+            problems.append(f"{git_dir}/info/grafts exists, which gives commits other parents than their own")
     if problems:
         shown = "; ".join(problems[:20])
         more = f" (and {len(problems) - 20} more)" if len(problems) > 20 else ""
@@ -1627,7 +1679,8 @@ def inspect_move(report, block, installed, commit, allow_downgrade):
     and nowhere else: no file or variable stands in for it. That stops
     mistakes (a stale clone or payload, a wrong or reused commit) and
     leaves a record; it cannot stop root, who can install binaries without
-    this script. Reports the move, and records who sudo says ran it."""
+    this script. Reports the move, and for one root named, who ran it
+    (who_ran)."""
     named = None
     if allow_downgrade:
         if len(allow_downgrade) > 1:
@@ -1669,7 +1722,7 @@ def inspect_move(report, block, installed, commit, allow_downgrade):
         block("move", f"--allow-downgrade names the move {named[0]}..{named[1]}, but this one is {installed}..{commit}")
         return
     move["authorized"] = f"--allow-downgrade {installed}..{commit}"
-    move["sudo_user"] = os.environ.get("SUDO_USER") or None
+    move.update(who_ran())
 
 
 def inspect_host(payload_dir, commit, allow_downgrade=None):
@@ -2131,13 +2184,115 @@ def live_nomad_addr():
     return nomad_https_addr() if text.endswith(NOMAD_TLS_BLOCK.encode()) else nomad_http_addr()
 
 
-def restore_host(backup_dir, log):
+def build_commit(blob):
+    """The commit a clean Go build names in its own build info, or None."""
+    try:
+        _, lines = go_build_info(blob)
+    except (Refusal, struct.error, ValueError, IndexError):
+        return None
+    settings = dict(line.partition("=")[::2] for line in lines)
+    revision = settings.get("vcs.revision")
+    return revision if settings.get("vcs.modified") == "false" and valid_commit(revision) else None
+
+
+# The ES binaries a rollback puts back, and what each installed one may be
+# for a rollback of a backup to run.
+ROLLBACK_BINARIES = (("es", ES_BINARY), ("es-runtime-support", RUNTIME_SUPPORT))
+BACKUP_COPY = "the backup's copy"
+STAGED_COPY = "the payload its apply installed"
+# The record of each rollback, written into the backup it puts back.
+ROLLBACK_RECORD = "rollback-{at}-{pid}.json"
+
+
+def rollback_move(backup_dir, manifest):
+    """(move, problems): what a rollback of the backup in backup_dir, whose
+    manifest load_backup verified, puts in place of the installed es and
+    es-runtime-support. For each, move names what the installed file is,
+    byte for byte: BACKUP_COPY (the backup's apply stopped before it
+    replaced that file, or this backup was put back already), STAGED_COPY
+    (the copy of the payload that the backup's apply staged in the backup,
+    so that apply installed it), or None; and the commit the installed file
+    and the backup's copy are clean builds of (build_commit). problems names
+    each file that is neither copy: then the backup is not of the apply
+    that left the host as it is (an older backup after a later apply, or
+    builds put in place without this script), and putting it back would
+    move ES to another build without the move check or its record (audit
+    44, A44-1)."""
+    copies = {entry["path"]: entry for entry in manifest["files"]}
+    staged_dir = os.path.join(backup_dir, "payload")
+    try:
+        staged = stat.S_ISDIR(os.lstat(staged_dir).st_mode)
+    except FileNotFoundError:
+        staged = False
+    move = {"installed": {}, "from": {}, "to": {}}
+    problems = []
+    for name, path in ROLLBACK_BINARIES:
+        entry = copies.get(host(path), {"exists": False})
+        backup_copy = None
+        if entry["exists"]:
+            backup_copy, _ = read_regular_file(os.path.join(backup_dir, "files", entry["copy"]))
+        move["to"][name] = build_commit(backup_copy) if backup_copy is not None else None
+        move["installed"][name] = move["from"][name] = None
+        try:
+            blob, _ = read_regular_file(host(path))
+        except (Refusal, OSError) as exc:
+            problems.append(f"{path} cannot be read ({exc})")
+            continue
+        move["from"][name] = build_commit(blob)
+        if backup_copy is not None and blob == backup_copy:
+            move["installed"][name] = BACKUP_COPY
+            continue
+        try:
+            staged_copy = read_regular_file(os.path.join(staged_dir, name))[0] if staged else None
+        except (Refusal, OSError):
+            staged_copy = None
+        if staged_copy is not None and blob == staged_copy:
+            move["installed"][name] = STAGED_COPY
+            continue
+        problems.append(f"{path} (a build of {move['from'][name] or 'no one clean commit'}) is neither "
+                        f"{BACKUP_COPY} nor {STAGED_COPY}")
+    return move, problems
+
+
+def record_rollback(backup_dir, move, by):
+    """Write the record of a rollback of backup_dir (rollback_move's move),
+    with what started it (by: "rollback", or "apply" rolling itself back),
+    the time and who ran it, into a new file in the backup. Returns a line
+    that says so, for the log."""
+    at = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    record = dict(move, by=by, at=at, **who_ran())
+    path = os.path.join(backup_dir, ROLLBACK_RECORD.format(at=at, pid=os.getpid()))
+    write_new_file(path, json.dumps(record, indent=2, sort_keys=True) + "\n")
+    return f"rollback recorded in {path}: ES from {move['from']} to {move['to']} ({describe_who(record)})"
+
+
+def restore_host(backup_dir, log, by):
     """Put back every file the backup holds and remove every path apply
     created, then start Nomad and ES. Nomad's ACL policies stay as provision
-    last wrote them: the observer policy keeps list-jobs, a read."""
+    last wrote them: the observer policy keeps list-jobs, a read. by is
+    "rollback" for the rollback command, which refuses a backup whose apply
+    did not leave the host as it is (rollback_move), or "apply" for apply
+    putting back its own backup, which goes on whatever it finds. Either way
+    the rollback is recorded in the backup before a service is touched;
+    apply goes on, logging why, if that record cannot be written."""
     # The whole backup is verified before a service is touched.
-    load_backup(backup_dir)
+    manifest = load_backup(backup_dir)
     created = load_created(backup_dir)
+    if by == "rollback":
+        move, problems = rollback_move(backup_dir, manifest)
+        if problems:
+            raise Refusal(f"{backup_dir} is not the backup of the apply that left the host as it is: "
+                          + "; ".join(problems) + "; put back the newest backup first; nothing was changed")
+        try:
+            log(record_rollback(backup_dir, move, by))
+        except OSError as exc:
+            raise Refusal(f"the rollback cannot be recorded in {backup_dir} ({exc}); nothing was changed") from None
+    else:
+        try:
+            move, _ = rollback_move(backup_dir, manifest)
+            log(record_rollback(backup_dir, move, by))
+        except Exception as exc:  # noqa: BLE001 - apply's own rollback goes on
+            log(f"the rollback could not be recorded ({exc!r}); putting the backup back all the same")
     # Nothing is put back under a running service: if either will not stop,
     # the restore stops here and reports it.
     stop_service("es")
@@ -2259,9 +2414,8 @@ def cmd_apply(args):
     move = report["move"]
     write_new_file(os.path.join(backup_dir, MOVE_RECORD), json.dumps(move, indent=2, sort_keys=True) + "\n")
     if "authorized" in move:
-        by = f"sudo user {move['sudo_user']}" if move["sudo_user"] else "no sudo user named"
         log(f"moving ES from {move['from']} to {move['to']}, which is not forward ({move['order']}), "
-            f"as root named it: {move['authorized']} ({by})")
+            f"as root named it: {move['authorized']} ({describe_who(move)})")
     stage_dir = stage_payload(args.payload, prov, os.path.join(backup_dir, "payload"))
     data, _ = read_regular_file(host(ES_CONFIG))
     config = json.loads(data)
@@ -2300,7 +2454,7 @@ def cmd_apply(args):
         log(f"apply failed: {failure!r}; rolling back")
         report["failure"] = repr(failure)
         try:
-            report["rollback"] = restore_host(backup_dir, log)
+            report["rollback"] = restore_host(backup_dir, log, "apply")
         except Exception as rexc:  # noqa: BLE001
             report["result"] = "rollback_failed"
             report["rollback_failure"] = repr(rexc)
@@ -2321,7 +2475,7 @@ def cmd_apply(args):
 def cmd_rollback(args):
     # A terminal that hangs up must not break off a restore halfway.
     signal.signal(signal.SIGHUP, signal.SIG_IGN)
-    result = restore_host(args.backup_dir, say)
+    result = restore_host(args.backup_dir, say, "rollback")
     ok, after = health_after_restore()
     say(json.dumps({"restored": result, "after": after}, indent=2, sort_keys=True))
     if not ok:
@@ -2558,7 +2712,9 @@ def main(argv):
     rs.set_defaults(func=cmd_restore)
 
     for name, func in (("check", cmd_check), ("apply", cmd_apply)):
-        sp = sub.add_parser(name)
+        # Only the full names: --allow-downgrade is recorded as root typed
+        # it, not as a prefix argparse would take for it (audit 44, O44-1).
+        sp = sub.add_parser(name, allow_abbrev=False)
         sp.add_argument("--payload", required=True)
         sp.add_argument("--commit", required=True)
         # Every value is kept, so that one given twice is refused rather
