@@ -875,8 +875,9 @@ Grants live in ES deployment configuration at
 - ES startup refuses: more than 32 rules; a duplicate rule ID; two rules with
   the same four match fields, so at most one rule matches a run; a missing or
   empty match field; a match value with surrounding white space; a name not
-  in its list; a lane other than `unrestricted` before WI-4; and a rule that
-  grants an identity without a lane that reaches the workload-zone Vault.
+  in its list; a lane other than `unrestricted`, or `unrestricted` with
+  `reaches_workload_vault=false`, before WI-4; and a rule that grants an
+  identity without a lane that reaches the workload-zone Vault.
 - ES startup also refuses rules that could never match a run, and values
   that differ from a matching one only in what cannot be seen: a
   `signer_key_id` other than `verification.provenance.key_id`, the only key

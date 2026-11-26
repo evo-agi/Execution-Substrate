@@ -126,6 +126,7 @@ func TestWorkloadGrantsContractIsDocumented(t *testing.T) {
 		"`runtime_profile` (the effective profile name, `static-script/default` when the request names none)",
 		"The publisher principal is the one `claims.package.publication` claim ES admission reads, and only as this match fact: it does not become ES request or response grammar, and no other publication claim reaches admission;",
 		"ES startup refuses: more than 32 rules; a duplicate rule ID; two rules with the same four match fields, so at most one rule matches a run;",
+		"a lane other than `unrestricted`, or `unrestricted` with `reaches_workload_vault=false`, before WI-4;",
 		"and a rule that grants an identity without a lane that reaches the workload-zone Vault.",
 		"Until WI-3, ES startup refuses `workload_identities` and a rule's `workload_identity` as unknown keys, so no configuration can name an identity that ES would not give.",
 		"ES startup also refuses rules that could never match a run, and values that differ from a matching one only in what cannot be seen: a `signer_key_id` other than `verification.provenance.key_id`, the only key ES admits artifact evidence from; a `runtime_profile` other than `static-script/default` and `control-plane-normal-shell/v1`;",
