@@ -12,9 +12,11 @@ acl {
 server {
   enabled = true
   bootstrap_expect = 1
-  # Gossip is encrypted with the key in <data_dir>/server/serf.keyring, which
-  # scripts/70_linux_setup.sh writes (root, 0600) and Nomad reads when it
-  # starts, so no key appears here.
+  # Gossip is encrypted with the keyring at <data_dir>/server/serf.keyring,
+  # which must be in place (mode 0600) before Nomad starts: Nomad reads it
+  # then, so no key appears here. scripts/70_linux_setup.sh writes it for its
+  # own data_dir (/opt/nomad/data); for another data_dir, see the bring-up
+  # runbook.
 }
 
 client {
