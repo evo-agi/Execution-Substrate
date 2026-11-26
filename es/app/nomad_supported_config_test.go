@@ -245,8 +245,10 @@ func TestLinuxSetupKeepsNomadConfigAndDataRootOwned(t *testing.T) {
 	for _, want := range []string{
 		`sudo install -d -o root -g root -m 0755 "${NOMAD_CONFIG_DIR}"`,
 		`sudo install -d -o root -g root -m 0700 "${NOMAD_DATA_DIR}"`,
-		`sudo chown root:root "${NOMAD_CONFIG_PATH}"`,
-		`sudo chmod 0640 "${NOMAD_CONFIG_PATH}"`,
+		// nomad.hcl is created root:root 0640 (root's umask 027) under a
+		// temporary name and renamed into place (audit 46, P46-1).
+		`sudo sh -c 'umask 027 && rm -f -- "$1" && set -C && cat >"$1" && mv -fT -- "$1" "$2"' sh "${tmp}" "$1"`,
+		`printf '%s\n' "${config}" | nomad_config_write "${NOMAD_CONFIG_PATH}"`,
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("70_linux_setup.sh is missing %q", want)

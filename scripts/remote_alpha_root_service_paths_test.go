@@ -863,16 +863,21 @@ func byPathOwnershipChangeLines(source string) []string {
 //
 // 70_linux_setup.sh's three lines for Nomad's TLS material came with the
 // Nomad lock's part 2b. install -d makes /etc/nomad.d/tls root:root 0755
-// inside /etc/nomad.d, which setup makes root:root 0755 two lines before. In
+// inside /etc/nomad.d, which setup makes root:root 0755 before, and removes
+// a link at /etc/nomad.d/tls before (Nomad's package gives /etc/nomad.d to
+// the nomad account on every install or upgrade; audit 46, P46-1). In
 // nomad_tls_issue, which runs as root on a host, one line makes the
 // destination folder 0755 (setup's /etc/nomad.d/tls, or the same folder
 // when remote_alpha_upgrade_es.py creates it after checking that
 // /etc/nomad.d is root:root 0755 and that the folder does not exist yet),
 // and the other sets the modes of the new files inside the caller's own
-// mktemp -d folder (0700), which no one else can enter.
+// mktemp -d folder (0700), which no one else can enter. Audit 46 (P46-1)
+// took out its two lines that re-owned and re-moded nomad.hcl by name, which
+// followed a link there: the file is now created root:root 0640 under a
+// temporary name and renamed into place.
 var byPathOwnershipChangeAllowance = map[string]int{
 	"scripts/01_bringup.sh":                                           1,
-	"scripts/70_linux_setup.sh":                                       11,
+	"scripts/70_linux_setup.sh":                                       9,
 	"scripts/72_supported_local_setup.sh":                             7,
 	"scripts/73_supported_local_proof.sh":                             1,
 	"scripts/internal/control_plane.sh":                               3,

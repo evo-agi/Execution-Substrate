@@ -682,7 +682,7 @@ func TestLinuxSetupWritesTheNomadGossipKeyringBeforeNomadStarts(t *testing.T) {
 	service := linuxSetupFunction(t, text, "install_nomad_service_config")
 	dataDir := strings.Index(service, `sudo install -d -o root -g root -m 0700 "${NOMAD_DATA_DIR}"`)
 	install := strings.Index(service, "\n  install_nomad_gossip_keyring\n")
-	config := strings.Index(service, `sudo tee "${NOMAD_CONFIG_PATH}"`)
+	config := strings.Index(service, `| nomad_config_write "${NOMAD_CONFIG_PATH}"`)
 	if dataDir < 0 || install < dataDir || config < install {
 		t.Fatalf("install_nomad_service_config must create the data directory, then write the keyring, then the config (offsets %d %d %d)", dataDir, install, config)
 	}
@@ -947,7 +947,7 @@ func TestLinuxSetupRecordsEveryChangeThatNeedsANomadRestart(t *testing.T) {
 	for name, write := range map[string]string{
 		"install_nomad_tls_material":   `nomad_tls_as_root nomad_tls_issue`,
 		"install_nomad_gossip_keyring": `nomad_gossip_as_root nomad_gossip_issue`,
-		"install_nomad_service_config": `sudo tee "${NOMAD_CONFIG_PATH}"`,
+		"install_nomad_service_config": `| nomad_config_write "${NOMAD_CONFIG_PATH}"`,
 	} {
 		function := linuxSetupFunction(t, text, name)
 		record, change := strings.Index(function, "nomad_needs_restart"), strings.Index(function, write)
@@ -1041,6 +1041,9 @@ func TestLinuxSetupRefusesAGossipKeyringFolderOthersCanChange(t *testing.T) {
 		{"group can write", 0o775},
 		{"others can write, group cannot", 0o707},
 		{"others can write, sticky", os.ModeSticky | 0o777},
+		// With a special bit the mode has four digits, so only a match of
+		// the whole of it refuses this one (audit 46, O46-1).
+		{"others can write, set-group-ID, owner cannot", os.ModeSetgid | 0o557},
 	} {
 		t.Run("issue: "+test.name, func(t *testing.T) {
 			dataDir, server := folder(t, test.mode)
@@ -1052,6 +1055,8 @@ func TestLinuxSetupRefusesAGossipKeyringFolderOthersCanChange(t *testing.T) {
 		})
 		t.Run("check: "+test.name, func(t *testing.T) {
 			dataDir, server := folder(t, 0o700)
+			// The temporary folder's removal needs the owner's write bit.
+			t.Cleanup(func() { _ = os.Chmod(server, 0o700) })
 			keyring := nomadGossipKeyringPath(dataDir)
 			if err := os.WriteFile(keyring, []byte(sound), 0o600); err != nil {
 				t.Fatal(err)
