@@ -389,7 +389,8 @@ install_nomad_tls_material() {
 
 # nomad_gossip_issue <keyring>: write a keyring holding one new 32-byte key,
 # mode 0600 and owned by the user who runs it (root on a host), replacing any
-# keyring there. The folder is created 0700 if it is missing.
+# keyring file there, or a link there (not what it points to). A folder there
+# is refused. The keyring's own folder is created 0700 if it is missing.
 nomad_gossip_issue() {
   local keyring=$1
   local dir
@@ -402,9 +403,12 @@ nomad_gossip_issue() {
   fi
   key="$(openssl rand -base64 32)" || return 1
   [[ "${key}" =~ ^[A-Za-z0-9+/]{43}=$ ]] || return 1
-  # mktemp creates the file 0600; the key goes in only once that is checked.
+  # mktemp creates the file 0600 in the keyring's folder, so the key never
+  # leaves it and the rename below is atomic; the key goes in only once the
+  # mode is checked. GNU mv's -T (like GNU stat's -c) renames onto the path
+  # itself: without it, a folder there would take the file in.
   tmp="$(umask 077 && mktemp "${dir}/.serf.keyring.XXXXXX")" || return 1
-  if [[ "$(stat -c '%a' "${tmp}")" != "600" ]] || ! printf '["%s"]' "${key}" >"${tmp}" || ! mv -f "${tmp}" "${keyring}"; then
+  if [[ "$(stat -c '%a' "${tmp}")" != "600" ]] || ! printf '["%s"]' "${key}" >"${tmp}" || ! mv -fT "${tmp}" "${keyring}"; then
     rm -f "${tmp}"
     return 1
   fi

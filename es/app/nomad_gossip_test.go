@@ -90,8 +90,8 @@ func TestLinuxSetupIssuesANomadGossipKeyring(t *testing.T) {
 	if err := issueNomadGossipKeyring(dataDir); err != nil {
 		t.Fatal(err)
 	}
-	// Nomad creates <data_dir>/server 0700; the issuer does the same when
-	// it writes first.
+	// When the issuer writes first, it creates <data_dir>/server 0700 (Nomad,
+	// when it starts first, creates it 0755 under umask 022).
 	requireFileMode(t, filepath.Dir(keyring), 0o700)
 	requireFileMode(t, keyring, 0o600)
 	first := readIssuedNomadGossipKey(t, keyring)
@@ -100,9 +100,10 @@ func TestLinuxSetupIssuesANomadGossipKeyring(t *testing.T) {
 	}
 
 	// A second issue replaces the keyring with a new key and leaves no
-	// temporary file behind.
-	if err := issueNomadGossipKeyring(dataDir); err != nil {
-		t.Fatal(err)
+	// temporary file behind. Its temporary file is in the keyring's own
+	// folder, whatever TMPDIR says: here TMPDIR names a missing folder.
+	if output, err := nomadGossipSetupFunctions(`TMPDIR="$2" nomad_gossip_issue "$1"`, keyring, filepath.Join(t.TempDir(), "missing")); err != nil {
+		t.Fatalf("nomad_gossip_issue with TMPDIR naming a missing folder: %v %s", err, output)
 	}
 	requireFileMode(t, keyring, 0o600)
 	if second := readIssuedNomadGossipKey(t, keyring); second == first {
@@ -125,6 +126,47 @@ func TestLinuxSetupIssuesANomadGossipKeyring(t *testing.T) {
 		t.Fatal(err)
 	}
 	readIssuedNomadGossipKey(t, nomadGossipKeyringPath(other))
+
+	// A folder in the keyring's place is refused and left as it was, with
+	// no key in it or beside it.
+	folderData := t.TempDir()
+	folder := nomadGossipKeyringPath(folderData)
+	if err := os.MkdirAll(folder, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := issueNomadGossipKeyring(folderData); err == nil {
+		t.Fatal("nomad_gossip_issue wrote a keyring into a folder in the keyring's place")
+	}
+	for _, dir := range []string{folder, filepath.Dir(folder)} {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := map[string]int{folder: 0, filepath.Dir(folder): 1}[dir]; len(entries) != want {
+			t.Fatalf("after the refusal %s holds %v", dir, entries)
+		}
+	}
+
+	// A link in the keyring's place is replaced by the keyring; the folder
+	// it points to gets nothing.
+	linkData, elsewhere := t.TempDir(), t.TempDir()
+	link := nomadGossipKeyringPath(linkData)
+	if err := os.Mkdir(filepath.Dir(link), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(elsewhere, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := issueNomadGossipKeyring(linkData); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Lstat(link); err != nil || !info.Mode().IsRegular() {
+		t.Fatalf("the keyring in place of a link: %v %v", info, err)
+	}
+	readIssuedNomadGossipKey(t, link)
+	if entries, err := os.ReadDir(elsewhere); err != nil || len(entries) != 0 {
+		t.Fatalf("the folder the link pointed to holds %v (%v)", entries, err)
+	}
 }
 
 func TestLinuxSetupChecksTheNomadGossipKeyring(t *testing.T) {
@@ -169,6 +211,8 @@ func TestLinuxSetupChecksTheNomadGossipKeyring(t *testing.T) {
 		}, false},
 		{"not JSON", func(t *testing.T) string { return write(t, key(32), 0o600) }, false},
 		{"an object", func(t *testing.T) string { return write(t, `{"key":"`+key(32)+`"}`, 0o600) }, false},
+		// Its names and values are sound keys: only the list check refuses it.
+		{"an object of sound keys", func(t *testing.T) string { return write(t, `{"`+key(32)+`":"`+key(32)+`"}`, 0o600) }, false},
 		{"an empty list", func(t *testing.T) string { return write(t, `[]`, 0o600) }, false},
 		{"a 16-byte key", func(t *testing.T) string { return write(t, `["`+key(16)+`"]`, 0o600) }, false},
 		{"a key that is not base64", func(t *testing.T) string { return write(t, `["not a key!"]`, 0o600) }, false},
