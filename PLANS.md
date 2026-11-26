@@ -639,6 +639,11 @@ Current bounded decision status for Milestone 2C.1:
   user-defined API messages, CP prompt/workspace parsing, workspace archive
   decoding, binary payload inspection, or raw configured-literal/matched-
   content disclosure. Denials remain redacted.
+- The C6 workload-grant follow-up is part of Workstream F slice F1 and is
+  not yet implemented: two built-in policies read exact-match owner grants
+  from ES deployment/admin configuration, keep every absence listed for the
+  configurable-input follow-up, and cannot be turned off. Their contract is
+  section 5B of `.docs/execution_lifecycle/contracts.md`.
 - C7 is a docs/static-test-only consolidation checkpoint recorded in
   `.docs/execution_lifecycle/workstream_c7_checkpoint.md`. It records that
   Workstream A/B gates are satisfied, C0-C6 are present, Remote Alpha
@@ -925,6 +930,39 @@ F0 - Runtime Identity Handoff Ownership Decision:
   production readiness, production Vault readiness, or generalized remote
   deployment architecture.
 
+F1 - Named Workload Identities And Workload Grants:
+
+- F1 is the next behavior-changing Workstream F slice, approved by the project
+  owner and not yet implemented. The decision is section 11 of
+  `.docs/system_overview/runtime_identity_handoff.md`; the workload grants it
+  adds to C6 are section 5B of `.docs/execution_lifecycle/contracts.md`.
+- It closes two gaps that existed before F1: every workload run shared one
+  SPIFFE ID and one Vault role, so any workload could read any other
+  workload's secrets; and the publisher's signed `network_access` alone
+  decided network access.
+- Identity: one identity per named workload,
+  `spiffe://execution.internal/workload/<name>`, with its own SPIRE entry
+  (Docker label selector plus `unix:uid:0`) and its own Vault role and policy.
+  The entry that gives `spiffe://execution.internal/workload` to every root
+  process on the host is removed. ES picks the name from owner grant rules and
+  holds no SPIRE or Vault administrative access; publishers request no name.
+- Network: `network_access=true` also needs an owner grant naming an egress
+  lane. Until lanes land, the only lane is `unrestricted`, a `Temporary
+  compatibility edge` that readiness reports as
+  `workload_egress_unrestricted=true`; its removal condition is WI-4.
+- Workload identities are never callers, a run without an identity grant
+  gets no identity handoff, admission decides in names only, and runtime
+  realization alone maps names to Nomad and Docker values.
+  `workload/<name>/run/<run_id>` is reserved so per-run identities can be
+  added later without removing code.
+- Delivery, one pull request each: WI-1 docs and contracts; WI-2 network
+  grants; WI-3a caller refusal; WI-3 named identities; WI-4 egress lanes;
+  WI-5 the durable format revision, before D3 makes those formats live state.
+- F1 keeps `EXEC_WORKLOAD_IDENTITY_ENDPOINT`, the root-start helper, the Nomad
+  task user `0:0`, the fixed `10000:10000` workload user, helper-private SPIRE
+  traversal and ES's no-brokering rule. It does not mark full Workstream F
+  complete.
+
 Dependencies:
 
 - Workstream C
@@ -957,7 +995,9 @@ unrelated current EGS hardening v2 schema remains current.
 - This tranche does not claim full ES/runtime de-root.
 - The root-start runtime helper, Nomad task `User: "0:0"`, helper-private
   SPIRE traversal, broad root selector posture, and Vault/workload-zone
-  handoff remain bounded compatibility edges.
+  handoff remain bounded compatibility edges. Workstream F slice F1 removes
+  the broad root selector posture and the one shared Vault role with WI-3; it
+  keeps the other three.
 - The long-lived ES startup path keeps
   `execution.spire_workload_api_socket_path` as a config-shape and submit
   input only; runtime-helper failure to use that helper-private raw SPIRE path
@@ -1026,7 +1066,7 @@ Milestone 1 boundary posture matrix:
 | Surface | Posture | Rationale | Current evidence | Removal condition | Explicit non-claim |
 | --- | --- | --- | --- | --- | --- |
 | Nomad host client/server substrate | `blocker` | The current supported substrate still depends on a pre-managed non-dev Linux Nomad client/server. Upstream least-privilege guidance is to keep Nomad servers as narrow as feasible, but the Linux Nomad client remains a root-managed isolation boundary today and a rootless client is not the current supported/well-tested repo posture. | Supported-host qualification still requires a pre-managed non-dev Nomad baseline, `scripts/01_bringup.sh check` still treats Nomad readiness as an environment gate, and the landed ES happy paths still hand lifecycle authority to Nomad rather than replacing it. | Revisit only if a later separately documented substrate decision proves a supported client posture that does not depend on an unsupported rootless-client assumption while preserving Nomad as lifecycle authority. | Milestone 1 does not claim a rootless Nomad client or full Nomad least-privilege closeout. |
-| SPIRE raw-socket traversal and selector posture | `accepted MVP compatibility edge` | The workload-visible contract is already narrowed to `EXEC_WORKLOAD_IDENTITY_ENDPOINT`, but the helper-private raw SPIRE path and the broad root selector scope remain explicit compatibility edges rather than a finished least-privilege identity model. | Slice `1A`/`1B` proof, runtime-helper source and tests that keep the raw SPIRE path out of workload env, and the remote runtime-identity helper summary preserve the helper-private boundary. Retired existing-host migration artifacts are historical evidence only and are not current boundary proof. | Revisit only through the later runtime-boundary redesign seam after a narrower helper principal or equivalent traversal model is documented and re-proved. | Workloads do not receive the raw SPIRE Workload API socket, and this milestone does not claim final SPIRE selector least privilege. |
+| SPIRE raw-socket traversal and selector posture | `accepted MVP compatibility edge` | The workload-visible contract is already narrowed to `EXEC_WORKLOAD_IDENTITY_ENDPOINT`, but the helper-private raw SPIRE path and the broad root selector scope remain explicit compatibility edges rather than a finished least-privilege identity model. | Slice `1A`/`1B` proof, runtime-helper source and tests that keep the raw SPIRE path out of workload env, and the remote runtime-identity helper summary preserve the helper-private boundary. Retired existing-host migration artifacts are historical evidence only and are not current boundary proof. | Revisit only through the later runtime-boundary redesign seam after a narrower helper principal or equivalent traversal model is documented and re-proved. Workstream F slice F1 removes the broad root selector scope with WI-3 and keeps the helper-private raw SPIRE path. | Workloads do not receive the raw SPIRE Workload API socket, and this milestone does not claim final SPIRE selector least privilege. |
 | Vault workload-side auth / workload-zone handoff | `accepted MVP compatibility edge` | The least-privilege direction is workload-side credential acquisition without ES token brokerage. The repo preserves that handoff boundary; where Vault host posture is operator-owned, the intended direction is a dedicated unprivileged Vault service account rather than root, but Milestone 1 does not widen ES contracts into full remote Vault lifecycle authority. | Useful credential flow completion is already landed, `scripts/remote_alpha_vault_workload_auth_check.sh` records bounded host-local evidence, and the current `authority_handoff` plus `readiness_not_claimed.*` vocabulary already preserve non-brokering, workload-side auth. | Revisit only if a later documented boundary change keeps workload-side auth intact and preserves the no-token-brokerage rule. | ES does not broker Vault tokens, and Vault/readiness summaries do not by themselves prove runtime-profile readiness or governed execution proof. |
 | ES runtime helper | `accepted MVP compatibility edge` | The current helper isolates privileged runtime bootstrap from the long-lived ES service path, but it still starts from root and therefore remains a bounded compatibility edge rather than a full runtime de-root result. | Runtime-helper tests, supported-local proof, helper-death/task-fatal behavior, and the remote runtime-identity helper summary all prove the current fail-closed helper boundary. | Revisit only if a later redesign re-proves equivalent runtime identity delivery, workload launch, and result-path guarantees with a narrower startup privilege model. | Milestone 1 does not claim rootless helper startup or full ES/runtime de-root. |
 | Nomad task user | `accepted MVP compatibility edge` | The current runtime companion still needs task-start `0:0` so it can create the helper-private SPIRE boundary and exec the workload as fixed non-root `10000:10000`. | The landed happy path still uses the current job-spec model, job-spec tests preserve `User: "0:0"`, and the runtime-helper/workload-boundary tests still depend on that task-start contract. | Revisit only as part of a broader runtime-boundary redesign that re-derives helper launch, workload launch, and SPIRE/Vault handoff together. | The current posture is not non-root task launch and not rootless workload orchestration. |
@@ -1101,8 +1141,8 @@ host firewall for the box on the home network, defined in the section
 INF-01 (containers reach the home LAN), INF-13 (ES and AGS listeners open to
 the whole LAN) and INF-23 (SSH password login from everywhere, SSH on public
 IPv6) of the 2026-11-23 infrastructure audit, as a short-term bridge until
-the named workload identities, network grants and egress lanes of the
-workload-identity design land.
+the named workload identities, network grants and egress lanes of
+Workstream F slice F1 land.
 
 - Scripts: `scripts/remote_alpha_host_firewall.sh`,
   `scripts/internal/remote_alpha_host_firewall.sh` and
@@ -1129,6 +1169,11 @@ workload-identity design land.
 - Validation: rendering against a golden ruleset, real-kernel tests in
   network namespaces, a real-sshd test of the drop-in, fakes for the
   apply/confirm/rollback order, and a container probe on the box.
+- Workstream F slice F1 builds on this firewall rather than replacing it.
+  Until WI-4, the only egress lane is `unrestricted`, which is the current
+  `bridge` network under this firewall. WI-4 keeps the firewall as the second
+  wall under egress lanes: lane networks get its rules, and each workload
+  Vault role's bound CIDRs cover the lane subnets.
 
 `Bounded slice rule`: the same tranche refines the P0q workload-auth
 bootstrap helper (INF-04, INF-05, and the root-token half of INF-06):
@@ -1226,6 +1271,10 @@ separate architecture track, not a cleanup follow-on.
   helper-private SPIRE traversal, broad root selector posture, or
   Vault/workload-zone handoff must proceed only as that separately documented
   redesign track.
+- Workstream F slice F1 is the separately documented redesign for the broad
+  root selector posture and the per-workload Vault handoff. It leaves the
+  root-start runtime helper, Nomad task `User: "0:0"` and helper-private SPIRE
+  traversal unchanged.
 
 `Current invariant`: the completed branch-level milestone does not imply a
 `master` merge.
