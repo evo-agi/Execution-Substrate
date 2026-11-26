@@ -24,9 +24,10 @@ import (
 //	<svc>/<domain>/   packages named for what they do
 //	<svc>/internal/   packages private to the service
 //
-// Go code lives only in the service directories, cmd/, internal/ and
-// scripts/. Code of one service reaches another service only through that
-// service's contract package. A test may also start another service
+// Apart from the repository-wide tests at the repository root, Go code
+// lives only in the service directories, cmd/, internal/ and scripts/. Code
+// of one service reaches another service only through that service's
+// contract package. A test may also start another service
 // in-process through its app and config packages. Anything else is listed by
 // file in layoutCrossServiceExceptions, with its reason.
 
@@ -470,6 +471,18 @@ func TestServiceLayoutRefusals(t *testing.T) {
 		files := valid()
 		files["pkg/thing/thing.go"] = nil
 		refuses(t, files, "pkg/thing/thing.go: top-level directory pkg/ holds Go code")
+	})
+	t.Run("a Go file directly in a top-level directory that is not a service", func(t *testing.T) {
+		files := valid()
+		files["pkg/leak.go"] = nil
+		refuses(t, files, "pkg/leak.go: top-level directory pkg/ holds Go code")
+	})
+	t.Run("a test file at the repository root is allowed", func(t *testing.T) {
+		files := valid()
+		files["zz_docs_contract_test.go"] = []string{"example/es/config"}
+		if got := serviceLayoutViolations(module, files, nil); len(got) != 0 {
+			t.Fatalf("a root test file is refused: %v", got)
+		}
 	})
 	t.Run("a program of a service that is not listed", func(t *testing.T) {
 		saved := layoutCommandService["es-workload-api-mock"]

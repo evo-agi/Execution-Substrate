@@ -190,7 +190,7 @@ Every service folder has the same shape:
 - Other packages are named for what they do, such as `ars/store` or `es/admission`.
 - `internal/` holds packages that only that service may use. For example, `es/internal/staticarchive` is shared by ES's admission code and its runtime helper.
 
-Go code lives only in the five service folders, `cmd/`, `internal/` and `scripts/`. One service's code reaches another service only through that service's `contract/` package. A test may also start another service in-process through its `app/` and `config/` packages. `service_layout_test.go` checks these rules and lists by file the few imports that go further: some test files, and the ES upgrade script's config check (`scripts/internal/esconfigcheck`).
+Apart from the repository-wide tests at the repository root, Go code lives only in the five service folders, `cmd/`, `internal/` and `scripts/`. One service's code reaches another service only through that service's `contract/` package. A test may also start another service in-process through its `app/` and `config/` packages. `service_layout_test.go` checks these rules and lists by file the few imports that go further: some test files, and the ES upgrade script's config check (`scripts/internal/esconfigcheck`).
 
 ## Where To Start
 
