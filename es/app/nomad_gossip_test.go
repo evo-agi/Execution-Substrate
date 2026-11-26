@@ -3,6 +3,7 @@ package app_test
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -166,6 +167,146 @@ func TestLinuxSetupIssuesANomadGossipKeyring(t *testing.T) {
 	readIssuedNomadGossipKey(t, link)
 	if entries, err := os.ReadDir(elsewhere); err != nil || len(entries) != 0 {
 		t.Fatalf("the folder the link pointed to holds %v (%v)", entries, err)
+	}
+
+	// The issuer gives the caller's own traps back, after a refusal too.
+	trapsData := t.TempDir()
+	if err := os.MkdirAll(nomadGossipKeyringPath(filepath.Join(trapsData, "refused")), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	output, err := nomadGossipSetupFunctions(`trap 'echo caller' TERM
+nomad_gossip_issue "$1"
+echo "issued: $(trap -p HUP INT TERM)"
+if nomad_gossip_issue "$2" 2>/dev/null; then echo "a folder took the keyring"; fi
+echo "refused: $(trap -p HUP INT TERM)"`,
+		nomadGossipKeyringPath(filepath.Join(trapsData, "issued")), nomadGossipKeyringPath(filepath.Join(trapsData, "refused")))
+	if want := "issued: trap -- 'echo caller' SIGTERM\nrefused: trap -- 'echo caller' SIGTERM\n"; err != nil || output != want {
+		t.Fatalf("the caller's traps after nomad_gossip_issue: %v\n%s\nwant\n%s", err, output, want)
+	}
+}
+
+// Audit 41 of ES PR #67: a hangup, interrupt or termination that reached
+// the issuer while its temporary file held the new key left that file
+// behind. Here stat (before the key goes in) or mv (before the rename)
+// holds; the signal goes to the issuer's whole process group, as a terminal
+// or the box upgrade sends it. The issuer ends with that signal's status,
+// and neither the temporary file nor a keyring is left.
+func TestLinuxSetupLeavesNoKeyringTemporaryFileWhenStopped(t *testing.T) {
+	// The held command touches HELD_MARKER and sleeps when its last argument
+	// matches HELD_PATTERN; otherwise it runs the real one.
+	held := `#!/usr/bin/env bash
+if [[ "${@: -1}" == ${HELD_PATTERN} ]]; then
+  : >"${HELD_MARKER}"
+  exec sleep 30
+fi
+exec "${REAL_COMMAND}" "$@"
+`
+	setup := filepath.Join(executionPlatformRepoRootPath(), "scripts", "70_linux_setup.sh")
+	for _, hold := range []struct {
+		command string
+		pattern string
+		key     bool
+	}{
+		{"stat", "*/.serf.keyring.*", false},
+		{"mv", "*/serf.keyring", true},
+	} {
+		realCommand, err := exec.LookPath(hold.command)
+		if err != nil {
+			t.Fatal(err)
+		}
+		bin := t.TempDir()
+		if err := os.WriteFile(filepath.Join(bin, hold.command), []byte(held), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		for _, tc := range []struct {
+			name   string
+			signal syscall.Signal
+			status int
+		}{
+			{"hangup", syscall.SIGHUP, 129},
+			{"interrupt", syscall.SIGINT, 130},
+			{"termination", syscall.SIGTERM, 143},
+		} {
+			t.Run(hold.command+"/"+tc.name, func(t *testing.T) {
+				dataDir := t.TempDir()
+				keyring := nomadGossipKeyringPath(dataDir)
+				if err := os.Mkdir(filepath.Dir(keyring), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				marker := filepath.Join(dataDir, "held")
+				// GNU env gives bash these three signals' default actions, so
+				// a shell that started this test with them ignored (nohup, or
+				// a background job) cannot keep the issuer from trapping them.
+				command := exec.Command("env", "--default-signal=HUP,INT,TERM", "bash", "-c",
+					`set -euo pipefail; eval "$(sed -n '/^# BEGIN nomad_gossip/,/^# END nomad_gossip/p' "$1")"; nomad_gossip_issue "$2"`,
+					"bash", setup, keyring)
+				command.Env = []string{"PATH=" + bin + string(os.PathListSeparator) + os.Getenv("PATH"),
+					"HELD_PATTERN=" + hold.pattern, "HELD_MARKER=" + marker, "REAL_COMMAND=" + realCommand}
+				command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+				// The issuer writes to a file, which the test reads while it runs.
+				outputPath := filepath.Join(t.TempDir(), "output")
+				outputFile, err := os.Create(outputPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				command.Stdout, command.Stderr = outputFile, outputFile
+				err = command.Start()
+				outputFile.Close()
+				if err != nil {
+					t.Fatal(err)
+				}
+				output := func() string {
+					data, _ := os.ReadFile(outputPath)
+					return string(data)
+				}
+				done := make(chan error, 1)
+				go func() { done <- command.Wait() }()
+				ended := false
+				t.Cleanup(func() {
+					if !ended {
+						_ = syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
+						<-done
+					}
+				})
+				for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+					if _, err := os.Stat(marker); err == nil {
+						break
+					}
+					if time.Now().After(deadline) {
+						t.Fatalf("the issuer never ran %s on its temporary file or keyring: %s", hold.command, output())
+					}
+				}
+				// While stat holds, the temporary file is empty; while mv
+				// holds, it holds the new key.
+				entries, err := os.ReadDir(filepath.Dir(keyring))
+				if err != nil || len(entries) != 1 || !strings.HasPrefix(entries[0].Name(), ".serf.keyring.") {
+					t.Fatalf("the keyring's folder while %s holds: %v (%v)", hold.command, entries, err)
+				}
+				tmp := filepath.Join(filepath.Dir(keyring), entries[0].Name())
+				if hold.key {
+					readIssuedNomadGossipKey(t, tmp)
+				} else if data, err := os.ReadFile(tmp); err != nil || len(data) != 0 {
+					t.Fatalf("the temporary file while stat holds: %d bytes (%v)", len(data), err)
+				}
+
+				if err := syscall.Kill(-command.Process.Pid, tc.signal); err != nil {
+					t.Fatal(err)
+				}
+				select {
+				case err = <-done:
+					ended = true
+				case <-time.After(15 * time.Second):
+					t.Fatalf("the issuer did not end within 15 s of the %s", tc.name)
+				}
+				var exit *exec.ExitError
+				if !errors.As(err, &exit) || exit.ExitCode() != tc.status {
+					t.Fatalf("the issuer after a %s: %v, want exit status %d\n%s", tc.name, err, tc.status, output())
+				}
+				if entries, err := os.ReadDir(filepath.Dir(keyring)); err != nil || len(entries) != 0 {
+					t.Fatalf("after a %s the keyring's folder holds %v (%v)", tc.name, entries, err)
+				}
+			})
+		}
 	}
 }
 
