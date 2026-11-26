@@ -933,7 +933,8 @@ F0 - Runtime Identity Handoff Ownership Decision:
 F1 - Named Workload Identities And Workload Grants:
 
 - F1 is the next behavior-changing Workstream F slice, approved by the project
-  owner and not yet implemented. The decision is section 11 of
+  owner. Its caller refusal (WI-3a) is implemented; the rest is not yet
+  implemented. The decision is section 11 of
   `.docs/system_overview/runtime_identity_handoff.md`; the workload grants it
   adds to C6 are section 5B of `.docs/execution_lifecycle/contracts.md`.
 - It closes two gaps that existed before F1: every workload run shared one

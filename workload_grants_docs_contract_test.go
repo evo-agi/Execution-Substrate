@@ -167,7 +167,7 @@ func TestWorkstreamFF1IsPlannedAndPointedTo(t *testing.T) {
 	plans := compactText(plansRaw)
 
 	assertContainsAll(t, "PLANS Workstream F F1", f1,
-		"F1 is the next behavior-changing Workstream F slice, approved by the project owner and not yet implemented. The decision is section 11 of `.docs/system_overview/runtime_identity_handoff.md`; the workload grants it adds to C6 are section 5B of `.docs/execution_lifecycle/contracts.md`.",
+		"F1 is the next behavior-changing Workstream F slice, approved by the project owner. Its caller refusal (WI-3a) is implemented; the rest is not yet implemented. The decision is section 11 of `.docs/system_overview/runtime_identity_handoff.md`; the workload grants it adds to C6 are section 5B of `.docs/execution_lifecycle/contracts.md`.",
 		"It closes two gaps that existed before F1: every workload run shared one SPIFFE ID and one Vault role, so any workload could read any other workload's secrets; and the publisher's signed `network_access` alone decided network access.",
 		"`spiffe://execution.internal/workload/<name>`, with its own SPIRE entry (Docker label selector plus `unix:uid:0`) and its own Vault role and policy.",
 		"The entry that gives `spiffe://execution.internal/workload` to every root process on the host is removed. ES picks the name from owner grant rules and holds no SPIRE or Vault administrative access; publishers request no name.",
@@ -192,9 +192,10 @@ func TestWorkstreamFF1IsPlannedAndPointedTo(t *testing.T) {
 		"From WI-2, workload grants (`.docs/execution_lifecycle/contracts.md`, section 5B) read one of them, `claims.package.publication.invoker.principal`, as an exact-match fact against ES configuration; that read adds nothing to ES request or response grammar, and no other publication claim reaches ES admission.",
 	)
 	callerAuth := compactDocSection(t, contractsRaw, "## 3A. Caller Authentication Contract", "## 4. Workload-Zone Vault Runtime-Config Contract")
-	assertContainsAll(t, "caller authentication F1 rule", callerAuth,
-		"Workstream F slice F1 adds one rule to this section when WI-3a lands",
-		"a caller whose path is `workload` or starts with `workload/` has no caller identity, at every service.",
+	assertContainsAll(t, "caller authentication workload rule", callerAuth,
+		"A caller whose path starts with the segment `workload`, in any letter case, has no caller identity, at every service.",
+		"Workload identities exist so that workloads can log in to the workload-zone Vault; they are never callers, and a later design that lets a workload call a service must change this rule explicitly.",
+		"A configured prefix whose first segment is `workload`, in any letter case, is refused at startup like any other prefix no caller could match, with its own message, and `id.conf` loading refuses a workload identity as a principal the same way.",
 	)
 	esContract := compactDocSection(t, contractsRaw, "## 7. ES Admission And Execution Contract", "## 8.")
 	assertContainsAll(t, "ES network mapping F1 change", esContract,
@@ -256,8 +257,8 @@ var f1StatusSentences = []struct {
 }{
 	{"PLANS.md", "The C6 workload-grant follow-up is part of Workstream F slice F1 and is not yet implemented",
 		[]string{"network grants (WI-2)", "identity grants (WI-3)"}},
-	{"PLANS.md", "F1 is the next behavior-changing Workstream F slice, approved by the project owner and not yet implemented.",
-		[]string{"network grants (WI-2)", "identity grants (WI-3)", "caller refusal (WI-3a)"}},
+	{"PLANS.md", "Its caller refusal (WI-3a) is implemented; the rest is not yet implemented.",
+		[]string{"network grants (WI-2)", "identity grants (WI-3)"}},
 	{".docs/execution_lifecycle/contracts.md", "They are not yet implemented: the network policy lands with WI-2 and the identity policy with WI-3.",
 		[]string{"network grants (WI-2)", "identity grants (WI-3)"}},
 	{".docs/execution_lifecycle/contracts.md", "This contract is decided and not yet implemented.",

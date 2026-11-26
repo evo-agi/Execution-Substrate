@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -31,7 +32,9 @@ var acceptedIDs = []struct {
 	{raw: "spiffe://execution.internal/operator/local", path: "operator/local"},
 	{raw: "spiffe://execution.internal/service/execution", path: "service/execution"},
 	{raw: "spiffe://execution.internal/service/control-plane/provider", path: "service/control-plane/provider"},
-	{raw: "spiffe://execution.internal/workload", path: "workload"},
+	{raw: "spiffe://execution.internal/workloads/codex-agent", path: "workloads/codex-agent"},
+	{raw: "spiffe://execution.internal/service/workload", path: "service/workload"},
+	{raw: "spiffe://execution.internal/a/workload/b", path: "a/workload/b"},
 	{raw: "spiffe://execution.internal/a", path: "a"},
 	{raw: "spiffe://execution.internal/AZaz09.-_/x", path: "AZaz09.-_/x"},
 	{raw: "spiffe://execution.internal/.../...", path: ".../..."},
@@ -93,6 +96,17 @@ var refusedIDs = []struct {
 	{raw: "spiffe://execution-internal/operator/local", want: callerauth.ErrForeignTrustDomain},
 	{raw: "spiffe://execution_internal/operator/local", want: callerauth.ErrForeignTrustDomain},
 	{raw: "spiffe://0/operator/local", want: callerauth.ErrForeignTrustDomain},
+	{raw: "spiffe://other.internal/workload/codex-agent", want: callerauth.ErrForeignTrustDomain},
+	// Workload identities are never callers (.docs/system_overview/contracts.md,
+	// section 3A): the shared ID, the named IDs, the reserved per-run IDs, and
+	// any letter case of the first segment.
+	{raw: "spiffe://execution.internal/workload", want: callerauth.ErrWorkloadIdentity},
+	{raw: "spiffe://execution.internal/workload/codex-agent", want: callerauth.ErrWorkloadIdentity},
+	{raw: "spiffe://execution.internal/workload/codex-agent/run/r1", want: callerauth.ErrWorkloadIdentity},
+	{raw: "spiffe://execution.internal/workload/operator/local", want: callerauth.ErrWorkloadIdentity},
+	{raw: "spiffe://execution.internal/Workload/codex-agent", want: callerauth.ErrWorkloadIdentity},
+	{raw: "spiffe://execution.internal/WORKLOAD", want: callerauth.ErrWorkloadIdentity},
+	{raw: "spiffe://execution.internal/wOrKlOaD/x", want: callerauth.ErrWorkloadIdentity},
 }
 
 func TestTrustDomainIsTheESTrustDomain(t *testing.T) {
@@ -139,9 +153,20 @@ func TestZeroSPIFFEIDIsEmpty(t *testing.T) {
 // referenceAccepts applies the SPIFFE standard as the go-spiffe library
 // implements it, plus this package's two additions: the trust domain must
 // be TrustDomain and the ID must have a path.
+// referenceAccepts is the caller identity rule written with the SPIFFE
+// reference parser: a conforming ID with a path in the trust domain, whose
+// first path segment is not "workload" in any letter case.
 func referenceAccepts(raw string) bool {
 	id, err := spiffeid.FromString(raw)
-	return err == nil && id.TrustDomain().Name() == callerauth.TrustDomain && id.Path() != ""
+	return err == nil && id.TrustDomain().Name() == callerauth.TrustDomain && id.Path() != "" && !referenceIsWorkloadIdentity(id.Path())
+}
+
+// referenceIsWorkloadIdentity reports whether a SPIFFE ID path, as go-spiffe
+// returns it with its leading slash, starts with the segment "workload" in
+// any letter case.
+func referenceIsWorkloadIdentity(path string) bool {
+	first, _, _ := strings.Cut(strings.TrimPrefix(path, "/"), "/")
+	return strings.EqualFold(first, "workload")
 }
 
 func TestParseSPIFFEIDAgreesWithTheSPIFFEReferenceParser(t *testing.T) {
@@ -207,6 +232,10 @@ func TestCallerFromConnectionStateRefusesEveryListedCredential(t *testing.T) {
 		"foreign_trust_domain":           callerauth.ErrForeignTrustDomain,
 		"trust_domain_as_prefix":         callerauth.ErrForeignTrustDomain,
 		"trust_domain_as_suffix":         callerauth.ErrForeignTrustDomain,
+		"workload_identity_shared":       callerauth.ErrWorkloadIdentity,
+		"workload_identity_named":        callerauth.ErrWorkloadIdentity,
+		"workload_identity_per_run":      callerauth.ErrWorkloadIdentity,
+		"workload_identity_upper_case":   callerauth.ErrWorkloadIdentity,
 	}
 	cases := callerauthtest.RefusedCallers("operator/local")
 	if len(cases) < 30 {
@@ -306,7 +335,8 @@ func (noBundles) GetX509BundleForTrustDomain(spiffeid.TrustDomain) (*x509bundle.
 // cRLSign). Chain verification is the TLS stack's job and is not compared.
 // go-spiffe checks the validity period inside that chain verification, after
 // the bundle lookup, so the comparison adds the leaf's validity period to the
-// reference.
+// reference. The reference also refuses workload identities, which are valid
+// X.509-SVIDs but never callers (referenceIsWorkloadIdentity).
 func TestCallerFromConnectionStateAgreesWithTheSPIFFEReferenceValidator(t *testing.T) {
 	var certs []*x509.Certificate
 	for _, tc := range callerauthtest.RefusedCallers("operator/local") {
@@ -330,7 +360,7 @@ func TestCallerFromConnectionStateAgreesWithTheSPIFFEReferenceValidator(t *testi
 		_, err := callerauth.CallerFromConnectionState(callerauthtest.State(cert), now)
 		ref, _, refErr := x509svid.Verify([]*x509.Certificate{cert}, noBundles{})
 		want := errors.Is(refErr, errNoBundle) && ref.TrustDomain().Name() == callerauth.TrustDomain && ref.Path() != "" &&
-			!now.Before(cert.NotBefore) && !now.After(cert.NotAfter)
+			!referenceIsWorkloadIdentity(ref.Path()) && !now.Before(cert.NotBefore) && !now.After(cert.NotAfter)
 		if got := err == nil; got != want {
 			t.Errorf("URIs %q, CA %v, key usage %b: accepted=%v, reference accepted=%v (%v)", cert.URIs, cert.IsCA, cert.KeyUsage, got, want, refErr)
 		}

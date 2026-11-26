@@ -266,7 +266,8 @@ F1 replaces this with:
   refuses every caller whose path is `workload` or starts with `workload/`
   (`.docs/system_overview/contracts.md`, section 3A), for ARS, AGS, EGS, CGS
   and ES alike, including the reserved per-run paths. A later design that
-  lets a workload call a service must change that rule explicitly.
+  lets a workload call a service must change that rule explicitly. This part
+  is implemented: WI-3a landed it, and the refusal ignores letter case.
 
 ### 11.3 Who picks the name
 
