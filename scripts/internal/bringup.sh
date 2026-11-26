@@ -549,6 +549,34 @@ if normal_shell.get("enabled") is True:
 PY
 }
 
+# workload_egress_line reports the temporary compatibility edge of the
+# workload grants contract (.docs/execution_lifecycle/contracts.md, section
+# 5B): while any grant rule in ES configuration gives the egress lane
+# "unrestricted", granted runs have no egress filter of their own. Egress
+# lanes (Workstream F slice F1, WI-4) remove that lane. ES startup validates
+# the grants; this only reports them.
+workload_egress_line() {
+  local config_path=$1
+  python3 -I - "${config_path}" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    cfg = json.load(handle)
+policy = cfg.get("admission_policy") if isinstance(cfg, dict) else None
+grants = policy.get("workload_grants") if isinstance(policy, dict) else None
+rules = grants.get("rules") if isinstance(grants, dict) else None
+if rules is not None and not isinstance(rules, list):
+    raise SystemExit("es config: admission_policy.workload_grants.rules must be a list")
+unrestricted = [rule for rule in rules or [] if isinstance(rule, dict) and rule.get("egress_lane") == "unrestricted"]
+if unrestricted:
+    print(f"workload_egress_unrestricted=true ({len(unrestricted)} workload grant rule(s) give the egress lane "
+          "unrestricted: granted runs have no egress filter of their own until egress lanes land)")
+else:
+    print("workload_egress_unrestricted=false (no workload grant rule gives the egress lane unrestricted)")
+PY
+}
+
 check_runtime_profile_images_once() {
   local config_path=$1
   local images

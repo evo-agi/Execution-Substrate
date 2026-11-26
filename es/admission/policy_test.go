@@ -339,6 +339,10 @@ func configureConfiguredStaticScriptLiteralDenyServiceMode(service *Service, mod
 			},
 		},
 	}
+	if service.cfg.AdmissionPolicy != nil {
+		// Keep the workload grants the service was built with.
+		cfg.WorkloadGrants = service.cfg.AdmissionPolicy.WorkloadGrants
+	}
 	service.cfg.AdmissionPolicy = cfg
 	service.admissionPolicyEvaluator = admissionPolicyEvaluatorFromConfig(cfg)
 }

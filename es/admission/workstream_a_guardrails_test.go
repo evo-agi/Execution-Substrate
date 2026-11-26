@@ -114,12 +114,14 @@ func TestWorkstreamAAdmissionTreatsPublicationAsSignedButNotESGrammar(t *testing
 		t.Fatalf("expected baseline evidence to prepare, got %+v", err)
 	}
 
+	// Every publication claim but the publisher principal leaves the
+	// prepared artifact as it was.
 	variedPublication := signedWorkstreamAEvidence(t, fixture, func(record *evidencev1.ArtifactEvidence) {
 		record.Claims.Package.Publication = evidencev1.Publication{
 			BuilderService: "alternate-ags-builder",
 			Invoker: evidencev1.Invoker{
 				Service:   "service/other-publisher",
-				Principal: "spiffe://execution.internal/service/other-publisher",
+				Principal: record.Claims.Package.Publication.Invoker.Principal,
 			},
 			PolicyDecisions: []evidencev1.PolicyDecision{
 				{Rule: "z-publication-owned", Result: "recorded"},
@@ -134,6 +136,26 @@ func TestWorkstreamAAdmissionTreatsPublicationAsSignedButNotESGrammar(t *testing
 	}
 	if !reflect.DeepEqual(preparedWithVariedPublication, baseline) {
 		t.Fatalf("expected AGS-owned publication variation not to alter ES prepared artifact\nbaseline=%+v\nvaried=%+v", baseline, preparedWithVariedPublication)
+	}
+
+	// The publisher principal is the one publication claim ES reads, as a
+	// workload grant match fact (.docs/execution_lifecycle/contracts.md,
+	// section 5B). It reaches that grant fact and nothing else.
+	const otherPublisher = "spiffe://execution.internal/service/other-publisher"
+	variedPublisher := signedWorkstreamAEvidence(t, fixture, func(record *evidencev1.ArtifactEvidence) {
+		record.Claims.Package.Publication.Invoker.Principal = otherPublisher
+	})
+	preparedWithVariedPublisher, err := service.prepareArtifactFromDiscovery(request, fixture.trustModel, discoveredArtifactWithEvidence(t, fixture.discovery, variedPublisher))
+	if err != nil {
+		t.Fatalf("expected a validly signed publisher variation to prepare, got %+v", err)
+	}
+	if preparedWithVariedPublisher.grantFacts.publisherPrincipal != otherPublisher ||
+		baseline.grantFacts.publisherPrincipal != fixture.evidence.Claims.Package.Publication.Invoker.Principal {
+		t.Fatalf("publisher principal grant facts = %q and %q, want the signed principals", preparedWithVariedPublisher.grantFacts.publisherPrincipal, baseline.grantFacts.publisherPrincipal)
+	}
+	preparedWithVariedPublisher.grantFacts.publisherPrincipal = baseline.grantFacts.publisherPrincipal
+	if !reflect.DeepEqual(preparedWithVariedPublisher, baseline) {
+		t.Fatalf("expected the publisher principal to alter only the grant fact\nbaseline=%+v\nvaried=%+v", baseline, preparedWithVariedPublisher)
 	}
 
 	tamperedPublication := variedPublication
@@ -688,9 +710,16 @@ func TestWorkstreamAPublicationAllowRuleJudgesTheCodeNotTheLine(t *testing.T) {
 		"\tSignature   string          `json:\"signature\"`\n" +
 		"\tPublication json.RawMessage `json:\"publication,omitempty\"`\n" +
 		"}\n"
+	const grants = "package admission\n\nimport evidencev1 \"execution-substrate/internal/contracts/evidence/v1\"\n\n" +
+		"type workloadGrantEvidenceFacts struct {\n\tpublisherPrincipal string\n\tsignerKeyID        string\n}\n\n" +
+		"func workloadGrantEvidenceFactsFrom(evidence evidencev1.ArtifactEvidence) workloadGrantEvidenceFacts {\n" +
+		"\treturn workloadGrantEvidenceFacts{\n\t\tpublisherPrincipal: evidence.Claims.Package.Publication.Invoker.Principal,\n" +
+		"\t\tsignerKeyID:        evidence.Seal.KeyID,\n\t}\n}\n\n" +
+		"func zzKey(f workloadGrantEvidenceFacts) string { return f.publisherPrincipal }\n"
 	for name, test := range map[string]struct{ file, source string }{
 		"the policy seam type and its constructors":   {"policy.go", policy},
 		"the ignored runtime-trust publication field": {"service.go", service},
+		"the workload grant publisher read":           {"workload_grants.go", grants},
 	} {
 		t.Run("allowed: "+name, func(t *testing.T) {
 			if got := refused(test.file, test.source); len(got) != 0 {
@@ -739,6 +768,32 @@ func TestWorkstreamAPublicationAllowRuleJudgesTheCodeNotTheLine(t *testing.T) {
 			"\nconst zzDecisions = \"policy_decisions\"\n", "10:policy_decisions"},
 		"a second name on the field": {"service.go",
 			strings.Replace(service, "Publication json.RawMessage", "Publication, Zz json.RawMessage", 1), "7:Publication"},
+		"the workload grant publisher read in another file":                            {"service.go", grants, "12:Publication"},
+		"the workload grant publisher read in a workload_grants.go of another package": {"../app/workload_grants.go", grants, "12:Invoker"},
+		"the workload grant publisher read in another function": {"workload_grants.go", strings.Replace(grants,
+			"func workloadGrantEvidenceFactsFrom(", "func zzEvidenceFacts(", 1), "12:Publication"},
+		"the workload grant publisher read as a method": {"workload_grants.go", strings.Replace(grants,
+			"func workloadGrantEvidenceFactsFrom(", "func (workloadGrantEvidenceFacts) workloadGrantEvidenceFactsFrom(", 1), "12:Invoker"},
+		"the workload grant read function with another parameter type": {"workload_grants.go", strings.Replace(grants,
+			"(evidence evidencev1.ArtifactEvidence)", "(evidence evidencev1.Claims)", 1), "12:Publication"},
+		"another publication claim in the read function": {"workload_grants.go", grants +
+			"\nfunc zz(evidence evidencev1.ArtifactEvidence) string { return evidence.Claims.Package.Publication.Invoker.Service }\n", "19:Publication"},
+		"the invoker service in the read function": {"workload_grants.go", strings.Replace(grants,
+			"Publication.Invoker.Principal", "Publication.Invoker.Service", 1), "12:Invoker"},
+		"the builder service in the read function": {"workload_grants.go", strings.Replace(grants,
+			"evidence.Seal.KeyID", "evidence.Claims.Package.Publication.BuilderService", 1), "13:Publication"},
+		"the read rooted at a value other than the parameter": {"workload_grants.go", strings.Replace(grants,
+			"evidence.Claims.Package.Publication.Invoker.Principal", "zzOther.Claims.Package.Publication.Invoker.Principal", 1), "12:Publication"},
+		"a publisher field in another struct": {"workload_grants.go", grants +
+			"\ntype PrepareView struct {\n\tpublisherPrincipal string\n}\n", "20:publisher"},
+		"a publisher field in a function-local struct of the facts type's name": {"workload_grants.go", grants +
+			"\nfunc zz() any {\n\ttype workloadGrantEvidenceFacts struct{ publisherPrincipal string }\n\treturn nil\n}\n", "20:publisher"},
+		"a local variable named like the publisher field": {"workload_grants.go", grants +
+			"\nfunc zz() string { publisherPrincipal := \"\"; return publisherPrincipal }\n", "19:publisher"},
+		"a key of that name in a literal of another type": {"workload_grants.go", grants +
+			"\nvar zz = struct{ publisherPrincipal string }{publisherPrincipal: \"\"}\n", "19:publisher"},
+		"another publisher identifier in workload_grants.go": {"workload_grants.go", grants +
+			"\nvar zzPublisherName = 1\n", "19:Publisher"},
 		"the field in a function-local struct of that name": {"service.go",
 			"package admission\n\nimport \"encoding/json\"\n\nfunc zz() any {\n\ttype signedRuntimeTrustResponse struct {\n" +
 				"\t\tPublication json.RawMessage `json:\"publication,omitempty\"`\n\t}\n\treturn signedRuntimeTrustResponse{}\n}\n", "7:Publication"},
@@ -1372,10 +1427,156 @@ func allowedWorkstreamAPublicationOccurrence(occurrence workstreamASourceOccurre
 		// admission/API/app field. Only the name and the tag of that one field
 		// are allowed.
 		field := workstreamAIgnoredRuntimeTrustPublicationField(occurrence.syntax)
-		return occurrence.file == "service.go" && field != nil &&
-			(occurrence.node == field.Names[0] || occurrence.node == field.Tag)
+		if occurrence.file == "service.go" && field != nil &&
+			(occurrence.node == field.Names[0] || occurrence.node == field.Tag) {
+			return true
+		}
+		return workstreamAWorkloadGrantPublisherRead(occurrence)
+	case "Invoker":
+		return workstreamAWorkloadGrantPublisherRead(occurrence)
+	case "Publisher", "publisher":
+		return workstreamAWorkloadGrantPublisherField(occurrence)
 	}
 	return false
+}
+
+// Workload grants match on one AGS publication claim, the publisher
+// principal claims.package.publication.invoker.principal, and on nothing
+// else from claims.package.publication (.docs/execution_lifecycle/contracts.md,
+// section 5B). ES reads it in one function of workload_grants.go, and keeps
+// it in one field of one grant-facts type there. Nothing else is allowed:
+// not another publication claim, not the same read elsewhere, and not a
+// publisher field of any other type.
+const (
+	workstreamAWorkloadGrantFile          = "workload_grants.go"
+	workstreamAWorkloadGrantReadFunction  = "workloadGrantEvidenceFactsFrom"
+	workstreamAWorkloadGrantFactsType     = "workloadGrantEvidenceFacts"
+	workstreamAWorkloadGrantPublisherName = "publisherPrincipal"
+)
+
+// workstreamAWorkloadGrantPublisherRead allows Publication and Invoker only
+// as the selectors of the one read
+// <parameter>.Claims.Package.Publication.Invoker.Principal in the top-level
+// function workloadGrantEvidenceFactsFrom, whose only parameter is the
+// verified evidencev1.ArtifactEvidence.
+func workstreamAWorkloadGrantPublisherRead(occurrence workstreamASourceOccurrence) bool {
+	identifier, ok := occurrence.node.(*ast.Ident)
+	if !ok || occurrence.file != workstreamAWorkloadGrantFile || occurrence.syntax == nil ||
+		(identifier.Name != "Publication" && identifier.Name != "Invoker") {
+		return false
+	}
+	function := workstreamATopLevelFunction(occurrence.syntax, workstreamAWorkloadGrantReadFunction)
+	if function == nil || function.Body == nil || len(function.Type.Params.List) != 1 ||
+		len(function.Type.Params.List[0].Names) != 1 {
+		return false
+	}
+	parameter := function.Type.Params.List[0]
+	if typeName, ok := parameter.Type.(*ast.SelectorExpr); !ok || typeName.Sel.Name != "ArtifactEvidence" ||
+		!workstreamAIsIdent(typeName.X, "evidencev1") {
+		return false
+	}
+	allowed := false
+	ast.Inspect(function.Body, func(node ast.Node) bool {
+		principal, ok := node.(*ast.SelectorExpr)
+		if !ok || principal.Sel.Name != "Principal" {
+			return true
+		}
+		chain := []string{"Invoker", "Publication", "Package", "Claims"}
+		selectors := make([]*ast.SelectorExpr, 0, len(chain))
+		next := principal.X
+		for _, name := range chain {
+			selector, ok := next.(*ast.SelectorExpr)
+			if !ok || selector.Sel.Name != name {
+				return true
+			}
+			selectors = append(selectors, selector)
+			next = selector.X
+		}
+		if !workstreamAIsIdent(next, parameter.Names[0].Name) {
+			return true
+		}
+		if occurrence.node == selectors[0].Sel || occurrence.node == selectors[1].Sel {
+			allowed = true
+		}
+		return true
+	})
+	return allowed
+}
+
+// workstreamAWorkloadGrantPublisherField allows the identifier
+// publisherPrincipal only as the field of the top-level type
+// workloadGrantEvidenceFacts, as a key in a composite literal of that type,
+// and as a selector, which can name only that field: a field of the same
+// name declared anywhere else is refused.
+func workstreamAWorkloadGrantPublisherField(occurrence workstreamASourceOccurrence) bool {
+	identifier, ok := occurrence.node.(*ast.Ident)
+	if !ok || occurrence.file != workstreamAWorkloadGrantFile || occurrence.syntax == nil ||
+		identifier.Name != workstreamAWorkloadGrantPublisherName {
+		return false
+	}
+	ancestors := workstreamAAncestors(occurrence.syntax, identifier)
+	if len(ancestors) == 0 {
+		return false
+	}
+	switch parent := ancestors[len(ancestors)-1].(type) {
+	case *ast.SelectorExpr:
+		return parent.Sel == identifier
+	case *ast.KeyValueExpr:
+		if parent.Key != identifier || len(ancestors) < 2 {
+			return false
+		}
+		literal, ok := ancestors[len(ancestors)-2].(*ast.CompositeLit)
+		return ok && workstreamAIsIdent(literal.Type, workstreamAWorkloadGrantFactsType)
+	case *ast.Field:
+		if len(parent.Names) != 1 || parent.Names[0] != identifier || len(ancestors) < 5 {
+			return false
+		}
+		// File > GenDecl > TypeSpec > StructType > FieldList > Field.
+		structType, isStruct := ancestors[len(ancestors)-3].(*ast.StructType)
+		typeSpec, isSpec := ancestors[len(ancestors)-4].(*ast.TypeSpec)
+		general, isDecl := ancestors[len(ancestors)-5].(*ast.GenDecl)
+		return isStruct && isSpec && isDecl && len(ancestors) == 6 && general.Tok == token.TYPE &&
+			typeSpec.Type == structType && typeSpec.Name.Name == workstreamAWorkloadGrantFactsType
+	}
+	return false
+}
+
+// workstreamATopLevelFunction returns the top-level function, not method, of
+// that name, or nil.
+func workstreamATopLevelFunction(syntax *ast.File, name string) *ast.FuncDecl {
+	for _, declaration := range syntax.Decls {
+		if function, ok := declaration.(*ast.FuncDecl); ok && function.Recv == nil && function.Name.Name == name {
+			return function
+		}
+	}
+	return nil
+}
+
+func workstreamAIsIdent(expression ast.Expr, name string) bool {
+	identifier, ok := expression.(*ast.Ident)
+	return ok && identifier.Name == name
+}
+
+// workstreamAAncestors returns the nodes that enclose target in syntax,
+// outermost first, or nil when target is not in syntax.
+func workstreamAAncestors(syntax *ast.File, target ast.Node) []ast.Node {
+	var stack, found []ast.Node
+	ast.Inspect(syntax, func(node ast.Node) bool {
+		if found != nil {
+			return false
+		}
+		if node == nil {
+			stack = stack[:len(stack)-1]
+			return false
+		}
+		if node == target {
+			found = append([]ast.Node(nil), stack...)
+			return false
+		}
+		stack = append(stack, node)
+		return true
+	})
+	return found
 }
 
 // workstreamAIgnoredRuntimeTrustPublicationField finds the field

@@ -36,10 +36,30 @@ func runUpgradeESPython(t *testing.T, args ...string) (string, string, int) {
 
 // preHTTPSExample is the submit example as the box's es.json has it before
 // this upgrade: Nomad at its plain-HTTP loopback address, and none of the
-// Nomad TLS keys current ES requires.
+// Nomad TLS keys or workload grants current ES requires.
 func preHTTPSExample(t *testing.T) map[string]any {
 	t.Helper()
-	data, err := os.ReadFile(repoPath(".examples/config/es.json"))
+	return preHTTPSExampleOf(t, ".examples/config/es.json")
+}
+
+func preHTTPSExampleOf(t *testing.T, example string) map[string]any {
+	t.Helper()
+	doc := exampleESConfig(t, example)
+	delete(doc, "admission_policy")
+	nomad := doc["nomad"].(map[string]any)
+	if nomad["base_url"] != "https://127.0.0.1:4646" {
+		t.Fatalf("the submit example's nomad.base_url is %v; this test expects Nomad's loopback HTTPS address", nomad["base_url"])
+	}
+	nomad["base_url"] = "http://127.0.0.1:4646"
+	for _, key := range []string{"server_name", "root_ca_file", "server_spki_sha256"} {
+		delete(nomad, key)
+	}
+	return doc
+}
+
+func exampleESConfig(t *testing.T, example string) map[string]any {
+	t.Helper()
+	data, err := os.ReadFile(repoPath(example))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,14 +70,6 @@ func preHTTPSExample(t *testing.T) map[string]any {
 	// The box verifies with its own keys; the example's are known keys,
 	// which ES refuses (contracts.md section 3B).
 	testutil.WithFreshSigningKeys(t, doc)
-	nomad := doc["nomad"].(map[string]any)
-	if nomad["base_url"] != "https://127.0.0.1:4646" {
-		t.Fatalf("the submit example's nomad.base_url is %v; this test expects Nomad's loopback HTTPS address", nomad["base_url"])
-	}
-	nomad["base_url"] = "http://127.0.0.1:4646"
-	for _, key := range []string{"server_name", "root_ca_file", "server_spki_sha256"} {
-		delete(nomad, key)
-	}
 	return doc
 }
 
@@ -78,7 +90,7 @@ func TestRemoteAlphaUpgradeESMigratedConfigIsAcceptedByES(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("migrate-config exited %d: %s", code, stderr)
 	}
-	if strings.TrimSpace(stdout) != `{"changes": ["nomad.base_url", "nomad.server_name", "nomad.root_ca_file", "nomad.server_spki_sha256"]}` {
+	if strings.TrimSpace(stdout) != `{"changes": ["nomad.base_url", "nomad.server_name", "nomad.root_ca_file", "nomad.server_spki_sha256", "admission_policy.workload_grants"]}` {
 		t.Fatalf("migrate-config reported %q", stdout)
 	}
 	accepts := exec.Command(helper, newPath)
@@ -107,16 +119,21 @@ func TestRemoteAlphaUpgradeESMigratedConfigIsAcceptedByES(t *testing.T) {
 	if err := json.Unmarshal(data, &migrated); err != nil {
 		t.Fatal(err)
 	}
+	// The workload grants follow workload_vault_auth, as in the examples.
+	if !bytes.Contains(data, []byte("\"workload_vault_auth\": {\n    \"default_mode\": \"vault_identity_jwt\"\n  },\n  \"admission_policy\": {")) {
+		t.Fatalf("migrated es.json does not carry admission_policy right after workload_vault_auth:\n%s", data)
+	}
 	// Nothing else changed.
 	nomad := migrated["nomad"].(map[string]any)
 	nomad["base_url"] = "http://127.0.0.1:4646"
 	for _, key := range []string{"server_name", "root_ca_file", "server_spki_sha256"} {
 		delete(nomad, key)
 	}
+	delete(migrated, "admission_policy")
 	want, _ := json.Marshal(preHTTPSExample(t))
 	got, _ := json.Marshal(migrated)
 	if !bytes.Equal(want, got) {
-		t.Fatalf("migrate-config changed more than Nomad's address and TLS keys:\nwant %s\ngot  %s", want, got)
+		t.Fatalf("migrate-config changed more than Nomad's address and TLS keys and the workload grants:\nwant %s\ngot  %s", want, got)
 	}
 	if st, err := os.Stat(newPath); err != nil || st.Mode().Perm() != 0o600 {
 		t.Fatalf("migrated file mode: %v %v", st.Mode(), err)
@@ -130,6 +147,80 @@ func TestRemoteAlphaUpgradeESMigratedConfigIsAcceptedByES(t *testing.T) {
 	_, stderr, code = runUpgradeESPython(t, "migrate-config", "--input", newPath, "--spki-sha256", strings.Repeat("a", 64))
 	if code != 1 || !strings.Contains(stderr, "already has Nomad TLS settings with other values") {
 		t.Fatalf("rerun with another pin: exit %d, stderr %q", code, stderr)
+	}
+}
+
+// Current ES admits a run that requests the network only with a workload
+// grant, and no setting turns grants off, so migrate-config writes today's
+// grants: one exact grant per allowlist entry and runtime profile, sealed
+// with the provenance key. They are the grants each example carries for its
+// own allowlist, and the rules scripts/72_supported_local_setup.sh writes.
+func TestRemoteAlphaUpgradeESWritesTodaysWorkloadGrants(t *testing.T) {
+	for _, example := range []string{".examples/config/es.json", ".examples/config/es.operator_and_control_plane.json"} {
+		dir := t.TempDir()
+		oldPath, newPath := filepath.Join(dir, "old.json"), filepath.Join(dir, "new.json")
+		writeJSONFile(t, oldPath, preHTTPSExampleOf(t, example))
+		if _, stderr, code := runUpgradeESPython(t, "migrate-config", "--input", oldPath, "--output", newPath, "--spki-sha256", upgradeTestPin); code != 0 {
+			t.Fatalf("%s: migrate-config exited %d: %s", example, code, stderr)
+		}
+		data, err := os.ReadFile(newPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var migrated map[string]any
+		if err := json.Unmarshal(data, &migrated); err != nil {
+			t.Fatal(err)
+		}
+		want, _ := json.Marshal(exampleESConfig(t, example)["admission_policy"])
+		got, _ := json.Marshal(migrated["admission_policy"])
+		if !bytes.Equal(want, got) {
+			t.Errorf("%s: migrate-config wrote grants\n%s\nwant the example's\n%s", example, got, want)
+		}
+	}
+
+	// The setup builds its rules the same way from the same allowlist.
+	setup, err := os.ReadFile(repoPath("scripts/72_supported_local_setup.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	upgrade, err := os.ReadFile(repoPath(upgradeESPython))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, shared := range []string{
+		`"id": f"{prefix.replace('/', '-')}-{profile_id}",`,
+		`"publisher_principal": f"spiffe://execution.internal/{prefix}",`,
+		`"artifact_type": "static-script",`,
+		`"runtime_profile": profile,`,
+		`(("default", "static-script/default"), ("normal-shell", "control-plane-normal-shell/v1"))`,
+		`"egress_lanes": [{"name": `,
+		`"reaches_workload_vault": True}],`,
+	} {
+		if !bytes.Contains(setup, []byte(shared)) || !bytes.Contains(upgrade, []byte(shared)) {
+			t.Errorf("the setup and the upgrade do not both build grants with %s", shared)
+		}
+	}
+	for _, want := range []string{
+		"for prefix in operator_and_maybe_control_plane\n",
+		`"authorization": {"allowed_spiffe_path_prefixes": operator_and_maybe_control_plane},`,
+		`"admission_policy": {"workload_grants": workload_grants},`,
+	} {
+		if strings.Count(string(setup), want) < 1 {
+			t.Errorf("the setup lacks %q", want)
+		}
+	}
+	if strings.Count(string(setup), `"authorization": {"allowed_spiffe_path_prefixes": operator_and_maybe_control_plane},`) != 2 {
+		t.Error("the setup's AGS and ES allowlists are no longer the list its grants are built from")
+	}
+
+	// An admission_policy the upgrade did not write is refused.
+	doc := preHTTPSExample(t)
+	doc["admission_policy"] = map[string]any{"workload_grants": map[string]any{}}
+	in := filepath.Join(t.TempDir(), "other-grants.json")
+	writeJSONFile(t, in, doc)
+	if _, stderr, code := runUpgradeESPython(t, "migrate-config", "--input", in, "--spki-sha256", upgradeTestPin); code != 1 ||
+		!strings.Contains(stderr, "already has an admission_policy other than the workload grants this upgrade writes") {
+		t.Fatalf("other grants: exit %d, stderr %q", code, stderr)
 	}
 }
 

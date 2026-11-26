@@ -10,11 +10,11 @@ import (
 )
 
 // The F1 decision of Workstream F (named workload identities and workload
-// grants) is written down before any code changes, in this order: PLANS.md,
+// grants) was written down before any code changed, in this order: PLANS.md,
 // the runtime identity handoff decision, the workload grants contract, and
-// the pages that point to them. These tests pin the decisions that later pull
-// requests implement, so that a change to one of them is a visible change to
-// the contract and not drift.
+// the pages that point to them. These tests pin the decisions, and the
+// current rules of the parts that have landed, so that a change to one of
+// them is a visible change to the contract and not drift.
 
 func TestWorkstreamFF1NamedWorkloadIdentityDecisionIsDocumented(t *testing.T) {
 	decisionRaw := mustRead(t, ".docs/system_overview/runtime_identity_handoff.md")
@@ -33,6 +33,7 @@ func TestWorkstreamFF1NamedWorkloadIdentityDecisionIsDocumented(t *testing.T) {
 		"Before F1: - every workload run received the same SPIFFE ID, `spiffe://execution.internal/workload`, and logged in to Vault with one shared role, so any workload could read any other workload's secrets;",
 		"- the SPIRE registration for that ID matched any root process on the host (`unix:uid:0` plus `unix:gid:0`), inside a container or not;",
 		"- the publisher's signed `network_access` alone decided whether a run got a network.",
+		"- network access that needs both the publisher's signed request and an owner grant. This part is implemented: WI-2 landed it (`.docs/execution_lifecycle/contracts.md`, section 5B).",
 	)
 
 	assertContainsAll(t, "F1 names and SPIFFE ID layout", f1,
@@ -108,8 +109,10 @@ func TestWorkloadGrantsContractIsDocumented(t *testing.T) {
 	grants := compactDocSection(t, lifecycleRaw, "## 5B. Workload grants contract", "## 6. Submit contract")
 
 	assertContainsAll(t, "workload grants status", grants,
-		"This contract is decided and not yet implemented. The network part lands with WI-2 and the identity part with WI-3",
-		"The pull request that lands a part moves that text to this contract in the same change.",
+		"The network part of this contract is implemented: WI-2 landed it.",
+		"The identity part is decided and not yet implemented; it lands with WI-3",
+		"The pull request that lands it moves that text to this contract in the same change. The identity part is `workload_identities`, a rule's `workload_identity`, evaluation steps 4 and 5, and the identity values of the decision.",
+		"Steps 4 and 5 are the identity part.",
 	)
 
 	assertContainsAll(t, "workload grants configuration", grants,
@@ -124,10 +127,15 @@ func TestWorkloadGrantsContractIsDocumented(t *testing.T) {
 		"The publisher principal is the one `claims.package.publication` claim ES admission reads, and only as this match fact: it does not become ES request or response grammar, and no other publication claim reaches admission;",
 		"ES startup refuses: more than 32 rules; a duplicate rule ID; two rules with the same four match fields, so at most one rule matches a run;",
 		"and a rule that grants an identity without a lane that reaches the workload-zone Vault.",
+		"Until WI-3, ES startup refuses `workload_identities` and a rule's `workload_identity` as unknown keys, so no configuration can name an identity that ES would not give.",
+		"ES startup also refuses rules that could never match a run, and values that differ from a matching one only in what cannot be seen: a `signer_key_id` other than `verification.provenance.key_id`, the only key ES admits artifact evidence from; a `runtime_profile` other than `static-script/default` and `control-plane-normal-shell/v1`;",
+		"a lane without `reaches_workload_vault`; and two lanes with the same name.",
 	)
 
 	assertContainsAll(t, "workload grants evaluation", grants,
-		"They run on `:prepare` and on `:submit` alike",
+		"They run on `:prepare` and on `:submit` alike, in the shared admission path after evidence verification and the workload-zone Vault config read, and before the content policies, so a refused run fetches no payload for policy inspection:",
+		"A request that names a runtime profile ES does not support gets no grant decision: the runtime-profile check refuses it with `400 unsupported_runtime_profile`, as it does without grants.",
+		"The decision holds the matching rule ID, the effective identity name and the effective lane name. These are safe, non-secret values. Until WI-3, nothing reads them: the only lane, `unrestricted`, is realized as the network mode signed `network_access` already selects.",
 		"The effective lane is none when signed `network_access` is false, whatever the rule grants.",
 		"is refused by `execution-substrate.admission.network-grant/v1` with `403`, reason code `network_access_not_granted` and safe message `network access not granted by admission policy`.",
 		"is refused by `execution-substrate.admission.workload-identity-grant/v1` with `403`, reason code `workload_identity_not_granted` and safe message `workload identity not granted by admission policy`.",
@@ -139,7 +147,7 @@ func TestWorkloadGrantsContractIsDocumented(t *testing.T) {
 	assertContainsAll(t, "workload grants temporary edge and its removal condition", grants,
 		"While any rule grants the lane `unrestricted`, readiness reports `workload_egress_unrestricted=true`. This is a `Temporary compatibility edge`",
 		"a granted run reaches the internet without an egress filter of its own, through the host firewall on the Remote Supported Host Alpha box and through the full `bridge` network on supported-local hosts.",
-		"WI-4 removes the value, and from then on ES startup refuses a configuration that uses it.",
+		"WI-4 removes the value, and from then on ES startup refuses a configuration that uses it. A test in `es/config` is the trigger: it fails once ES accepts any other lane while it still accepts `unrestricted`.",
 	)
 
 	assertContainsAll(t, "workload grants guardrails", grants,
@@ -158,6 +166,13 @@ func TestWorkloadGrantsContractIsDocumented(t *testing.T) {
 	c6 := compactText(lifecycleRaw)
 	assertContainsAll(t, "lifecycle C6 workload-grant follow-up", c6,
 		"The C6 workload-grant follow-up, decided in Workstream F slice F1, adds two built-in ES admission policies that read owner grants from ES deployment/admin configuration",
+		"Section 5B is their contract. The network policy is implemented; the identity policy is not yet implemented and lands with WI-3.",
+	)
+	assertContainsAll(t, "lifecycle network grant refusal on :prepare and :submit", c6,
+		"- `:prepare` evaluates the network grant policy of section 5B after the workload-zone Vault config read and before the content policies: signed `network_access=true` needs a workload grant that names an egress lane, and is otherwise refused with `403 network_access_not_granted` before any payload read. `:submit` evaluates it again in the same place.",
+		"| Signed `network_access=true` without a workload grant that names an egress lane (section 5B) | `403` | `network_access_not_granted` |",
+		"| Signed `network_access=true` without a workload grant that names an egress lane | `:prepare`, `:submit` | `403` | JSON | `network_access_not_granted` |",
+		"- Submit evaluates the workload grants of section 5B again with the configuration ES runs with at that time. Signed `network_access=true` without a grant that names an egress lane is refused with `403 network_access_not_granted` before payload staging, run ID creation and Nomad submission.",
 	)
 }
 
@@ -168,7 +183,7 @@ func TestWorkstreamFF1IsPlannedAndPointedTo(t *testing.T) {
 	plans := compactText(plansRaw)
 
 	assertContainsAll(t, "PLANS Workstream F F1", f1,
-		"F1 is the next behavior-changing Workstream F slice, approved by the project owner. Its caller refusal (WI-3a) is implemented; the rest is not yet implemented. The decision is section 11 of `.docs/system_overview/runtime_identity_handoff.md`; the workload grants it adds to C6 are section 5B of `.docs/execution_lifecycle/contracts.md`.",
+		"F1 is the next behavior-changing Workstream F slice, approved by the project owner. Its caller refusal (WI-3a) and network grants (WI-2) are implemented; the rest is not yet implemented. The decision is section 11 of `.docs/system_overview/runtime_identity_handoff.md`; the workload grants it adds to C6 are section 5B of `.docs/execution_lifecycle/contracts.md`.",
 		"It closes two gaps that existed before F1: every workload run shared one SPIFFE ID and one Vault role, so any workload could read any other workload's secrets; and the publisher's signed `network_access` alone decided network access.",
 		"`spiffe://execution.internal/workload/<name>`, with its own SPIRE entry (Docker label selector plus `unix:uid:0`) and its own Vault role and policy.",
 		"The entry that gives `spiffe://execution.internal/workload` to every root process on the host is removed. ES picks the name from owner grant rules and holds no SPIRE or Vault administrative access; publishers request no name.",
@@ -180,7 +195,7 @@ func TestWorkstreamFF1IsPlannedAndPointedTo(t *testing.T) {
 	)
 
 	assertContainsAll(t, "PLANS C6 workload-grant follow-up and edges", plans,
-		"The C6 workload-grant follow-up is part of Workstream F slice F1 and is not yet implemented: two built-in policies read exact-match owner grants from ES deployment/admin configuration, keep every absence listed for the configurable-input follow-up, and cannot be turned off.",
+		"The C6 workload-grant follow-up is part of Workstream F slice F1: two built-in policies read exact-match owner grants from ES deployment/admin configuration, keep every absence listed for the configurable-input follow-up, and cannot be turned off. The network policy is implemented; the identity policy is not yet implemented.",
 		"Workstream F slice F1 removes the broad root selector posture and the one shared Vault role with WI-3; it keeps the other three.",
 		"Workstream F slice F1 is the separately documented redesign for the broad root selector posture and the per-workload Vault handoff.",
 		"Workstream F slice F1 builds on this firewall rather than replacing it.",
@@ -190,7 +205,10 @@ func TestWorkstreamFF1IsPlannedAndPointedTo(t *testing.T) {
 	sharedKernel := compactDocSection(t, contractsRaw, "## 3. Shared Cross-Service Kernel", "## 3A. Caller Authentication Contract")
 	assertContainsAll(t, "shared kernel publication claim read by workload grants", sharedKernel,
 		"`claims.package.publication` remains AGS-owned publish-time meaning carried inside the signed record; ES must not treat those publication claims as ES public admission grammar.",
-		"From WI-2, workload grants (`.docs/execution_lifecycle/contracts.md`, section 5B) read one of them, `claims.package.publication.invoker.principal`, as an exact-match fact against ES configuration; that read adds nothing to ES request or response grammar, and no other publication claim reaches ES admission.",
+		"Workload grants (`.docs/execution_lifecycle/contracts.md`, section 5B) read one of them, `claims.package.publication.invoker.principal`, as an exact-match fact against ES configuration; that read adds nothing to ES request or response grammar, and no other publication claim reaches ES admission.",
+	)
+	assertContainsAll(t, "shared kernel classification row for publication claims", compactText(mustRead(t, ".docs/system_overview/shared_kernel.md")),
+		"ES admission reads one of them, `invoker.principal`, only as an exact-match workload grant fact (`.docs/execution_lifecycle/contracts.md`, section 5B). |",
 	)
 	callerAuth := compactDocSection(t, contractsRaw, "## 3A. Caller Authentication Contract", "## 4. Workload-Zone Vault Runtime-Config Contract")
 	assertContainsAll(t, "caller authentication workload rule", callerAuth,
@@ -222,7 +240,7 @@ func TestWorkstreamFF1IsPlannedAndPointedTo(t *testing.T) {
 	)
 	esContract := compactDocSection(t, contractsRaw, "## 7. ES Admission And Execution Contract", "## 8.")
 	assertContainsAll(t, "ES network mapping F1 change", esContract,
-		"From WI-2, a run that requests the network also needs an owner grant in ES configuration and is otherwise refused with `network_access_not_granted`. From WI-4, a granted run joins its egress lane's network instead of `bridge`.",
+		"A run that requests the network is admitted only with an owner grant in ES configuration that names an egress lane, and is otherwise refused with `network_access_not_granted` (`.docs/execution_lifecycle/contracts.md`, section 5B). The only lane, `unrestricted`, is this `bridge` mapping. From WI-4, a granted run joins its egress lane's network instead of `bridge`.",
 	)
 	runtimeIdentity := compactDocSection(t, contractsRaw, "## 10. Runtime Identity Handoff Contract", "## 11. Temporary Compatibility Edges")
 	assertContainsAll(t, "runtime identity contract F1 pointer", runtimeIdentity,
@@ -239,7 +257,12 @@ func TestWorkstreamFF1IsPlannedAndPointedTo(t *testing.T) {
 
 	configuration := compactText(mustRead(t, ".docs/system_overview/configuration.md"))
 	assertContainsAll(t, "configuration workload grants", configuration,
-		"`admission_policy.workload_grants` is decided in Workstream F slice F1 and not yet implemented; ES refuses the key until WI-2 lands.",
+		"`admission_policy.workload_grants` is ES deployment/admin configuration for the owner's workload grants (Workstream F slice F1)",
+		"A run whose signed evidence requests the network needs a rule that names an egress lane, and is otherwise refused with `403 network_access_not_granted`.",
+		"No setting turns grants off: a configuration without grants admits only runs that request no network.",
+		"A rule's `signer_key_id` must be `verification.provenance.key_id`, the only key ES admits artifact evidence from, and its `runtime_profile` must be `static-script/default` or `control-plane-normal-shell/v1`.",
+		"Today's grants, written by the example configurations, `scripts/72_supported_local_setup.sh` and the Remote Alpha ES upgrade (`scripts/internal/remote_alpha_upgrade_es.py migrate-config`), give the lane `unrestricted` to `static-script` runs on both runtime profiles, for each publisher `spiffe://execution.internal/<prefix>` whose `<prefix>` is in `authorization.allowed_spiffe_path_prefixes`, signed with the provenance key.",
+		"While any rule grants the lane `unrestricted`, readiness reports `workload_egress_unrestricted=true`: `scripts/10_health_check.sh` prints that line in its \"workload grants\" section.",
 		"Workstream F slice F1 is that replacement (`.docs/system_overview/runtime_identity_handoff.md`, section 11)",
 	)
 
@@ -254,9 +277,9 @@ func TestWorkstreamFF1IsPlannedAndPointedTo(t *testing.T) {
 // landed, PLANS.md and .docs/ say so in status sentences; the pull request
 // that lands a part puts one of its markers into ES Go code and moves its
 // status sentences to the current rule in the same change. Every status
-// sentence about F1 must be listed in f1StatusSentences with the parts it
-// speaks for, so a reworded or added status sentence fails until it is
-// classified.
+// sentence about F1 that scanF1StatusSentences finds must be listed,
+// exactly as it reads, in f1StatusSentences with the parts it speaks for, so
+// a reworded or added status sentence fails until it is classified.
 var f1PartMarkers = map[string][]string{
 	"network grants (WI-2)": {
 		"network_access_not_granted",
@@ -278,35 +301,33 @@ var f1StatusSentences = []struct {
 	sentence string
 	parts    []string
 }{
-	{"PLANS.md", "The C6 workload-grant follow-up is part of Workstream F slice F1 and is not yet implemented",
-		[]string{"network grants (WI-2)", "identity grants (WI-3)"}},
-	{"PLANS.md", "Its caller refusal (WI-3a) is implemented; the rest is not yet implemented.",
-		[]string{"network grants (WI-2)", "identity grants (WI-3)"}},
-	{".docs/execution_lifecycle/contracts.md", "They are not yet implemented: the network policy lands with WI-2 and the identity policy with WI-3.",
-		[]string{"network grants (WI-2)", "identity grants (WI-3)"}},
-	{".docs/execution_lifecycle/contracts.md", "This contract is decided and not yet implemented.",
-		[]string{"network grants (WI-2)", "identity grants (WI-3)"}},
-	{".docs/execution_lifecycle/contracts.md", "The network part lands with WI-2 and the identity part with WI-3",
-		[]string{"network grants (WI-2)", "identity grants (WI-3)"}},
-	{".docs/execution_lifecycle/es_execution_admission_model.md", "The workload-grant follow-up to C6 is decided in Workstream F slice F1 (`.docs/system_overview/runtime_identity_handoff.md`, section 11) and is not yet implemented.",
-		[]string{"network grants (WI-2)", "identity grants (WI-3)"}},
-	{".docs/execution_lifecycle/es_execution_admission_model.md", "(reason code `network_access_not_granted`, lands with WI-2)",
-		[]string{"network grants (WI-2)"}},
-	{".docs/execution_lifecycle/es_execution_admission_model.md", "(reason code `workload_identity_not_granted`, lands with WI-3)",
+	{"PLANS.md", "The network policy is implemented; the identity policy is not yet implemented.",
 		[]string{"identity grants (WI-3)"}},
-	{".docs/system_overview/configuration.md", "It lands with WI-3",
+	{"PLANS.md", "Its caller refusal (WI-3a) and network grants (WI-2) are implemented; the rest is not yet implemented.",
 		[]string{"identity grants (WI-3)"}},
-	{".docs/system_overview/configuration.md", "`admission_policy.workload_grants` is decided in Workstream F slice F1 and not yet implemented; ES refuses the key until WI-2 lands.",
-		[]string{"network grants (WI-2)"}},
-	{".docs/system_overview/contracts.md", "Workstream F slice F1 adds one rule to this section when WI-3a lands",
-		[]string{"caller refusal (WI-3a)"}},
-	{".docs/system_overview/contracts.md", "Until WI-3a lands, no allowlist or `id.conf`",
-		[]string{"caller refusal (WI-3a)"}},
-	{".docs/system_overview/contracts.md", "From WI-2, a run that requests the network also needs an owner grant",
-		[]string{"network grants (WI-2)"}},
-	{".docs/system_overview/contracts.md", "From WI-2, workload grants (`.docs/execution_lifecycle/contracts.md`, section 5B) read one of them",
-		[]string{"network grants (WI-2)"}},
+	{".docs/execution_lifecycle/contracts.md", "The network policy is implemented; the identity policy is not yet implemented and lands with WI-3.",
+		[]string{"identity grants (WI-3)"}},
+	{".docs/execution_lifecycle/contracts.md", "The identity part is decided and not yet implemented; it lands with WI-3 (`.docs/system_overview/runtime_identity_handoff.md`, section 11.10).",
+		[]string{"identity grants (WI-3)"}},
+	{".docs/execution_lifecycle/contracts.md", "Until it lands, sections 5 and 6 describe current behavior for it: every run receives the shared workload identity.",
+		[]string{"identity grants (WI-3)"}},
+	{".docs/execution_lifecycle/contracts.md", "Until WI-3, the credential condition and the identity do not apply: such a configuration admits every run that requests no network, and every run receives the shared workload identity.",
+		[]string{"identity grants (WI-3)"}},
+	{".docs/execution_lifecycle/contracts.md", "- Until WI-3, ES startup refuses `workload_identities` and a rule's `workload_identity` as unknown keys, so no configuration can name an identity that ES would not give.",
+		[]string{"identity grants (WI-3)"}},
+	{".docs/execution_lifecycle/contracts.md", "Until WI-3, nothing reads them: the only lane, `unrestricted`, is realized as the network mode signed `network_access` already selects.",
+		[]string{"identity grants (WI-3)"}},
+	{".docs/execution_lifecycle/es_execution_admission_model.md", "It adds two built-in ES policies that read owner grants from ES deployment/admin config, `admission_policy.workload_grants`: `execution-substrate.admission.network-grant/v1` (reason code `network_access_not_granted`, implemented by WI-2) and `execution-substrate.admission.workload-identity-grant/v1` (reason code `workload_identity_not_granted`, lands with WI-3).",
+		[]string{"identity grants (WI-3)"}},
+	{".docs/system_overview/configuration.md", "It lands with WI-3; until then this section describes current behavior.",
+		[]string{"identity grants (WI-3)"}},
+	{".docs/system_overview/configuration.md", "- The registered workload identity names (`workload_identities`) and a rule's `workload_identity` land with WI-3; until then ES refuses both as unknown keys.",
+		[]string{"identity grants (WI-3)"}},
+	{".docs/system_overview/configuration.md", "It lands with WI-3.",
+		[]string{"identity grants (WI-3)"}},
 	{".docs/system_overview/contracts.md", "It lands with WI-3.",
+		[]string{"identity grants (WI-3)"}},
+	{".docs/system_overview/contracts.md", "Until then this section describes current behavior.",
 		[]string{"identity grants (WI-3)"}},
 	{".docs/system_overview/remote_supported_host_alpha.md", "It lands with WI-3, with a box run and scripted rollback.",
 		[]string{"identity grants (WI-3)"}},
@@ -318,14 +339,17 @@ type f1StatusSentence struct {
 }
 
 var (
-	f1StatusPhrase = regexp.MustCompile(`not yet implemented|\b(?:[Ll]ands with|[Uu]ntil|[Ff]rom|[Ww]hen) WI-(?:2|3a|3)\b`)
+	f1StatusPhrase = regexp.MustCompile(`not yet implemented|\b(?:[Ll]ands? with|[Uu]ntil|[Ff]rom|[Ww]hen) WI-(?:2|3a|3)\b|\b[Uu]ntil (?:then|it lands)\b`)
 	f1Term         = regexp.MustCompile(`WI-|\bF1\b|[Ww]orkload grant|workload_grants|[Ww]orkload identit`)
 )
 
 // scanF1StatusSentences returns every sentence of PLANS.md and .docs/ that
-// says a part of F1 has not landed: a sentence with a status phrase in a
-// Markdown paragraph, list item or table row that mentions F1. A sentence is
-// read within its block.
+// says a part of F1 has not landed: a sentence with a status phrase ("not
+// yet implemented", "lands with", "until", "from" or "when" followed by
+// WI-2, WI-3a or WI-3, "until then" or "until it lands") in a Markdown
+// paragraph, list item or table row that mentions F1. A sentence is read
+// within its block. Other phrasings, and status text about WI-4 and WI-5,
+// are outside its scope.
 func scanF1StatusSentences(t *testing.T) []f1StatusSentence {
 	t.Helper()
 	files := []string{"PLANS.md"}
@@ -398,7 +422,7 @@ func TestF1StatusSentencesAreAllClassified(t *testing.T) {
 	for _, found := range scanF1StatusSentences(t) {
 		classified := false
 		for _, known := range f1StatusSentences {
-			classified = classified || (known.file == found.file && strings.Contains(found.sentence, known.sentence))
+			classified = classified || (known.file == found.file && found.sentence == known.sentence)
 		}
 		if !classified {
 			t.Errorf("%s: status sentence %q is not listed in f1StatusSentences with the parts of F1 it speaks for", found.file, found.sentence)

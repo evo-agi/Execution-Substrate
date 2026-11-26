@@ -250,7 +250,8 @@ F1 replaces this with:
 - names assigned by owner grant rules in ES deployment configuration, not
   requested by publishers;
 - network access that needs both the publisher's signed request and an owner
-  grant.
+  grant. This part is implemented: WI-2 landed it
+  (`.docs/execution_lifecycle/contracts.md`, section 5B).
 
 ### 11.2 Names and the SPIFFE ID layout
 

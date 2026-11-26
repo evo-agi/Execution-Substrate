@@ -287,11 +287,11 @@ evidence.
   entry is added. Denials remain redacted and must not expose the configured
   literal, matched content, or raw payload text.
 - The workload-grant follow-up to C6 is decided in Workstream F slice F1
-  (`.docs/system_overview/runtime_identity_handoff.md`, section 11) and is not
-  yet implemented. It adds two built-in ES policies that read owner grants
-  from ES deployment/admin config, `admission_policy.workload_grants`:
+  (`.docs/system_overview/runtime_identity_handoff.md`, section 11). It adds
+  two built-in ES policies that read owner grants from ES deployment/admin
+  config, `admission_policy.workload_grants`:
   `execution-substrate.admission.network-grant/v1` (reason code
-  `network_access_not_granted`, lands with WI-2) and
+  `network_access_not_granted`, implemented by WI-2) and
   `execution-substrate.admission.workload-identity-grant/v1` (reason code
   `workload_identity_not_granted`, lands with WI-3). A grant rule matches
   exactly on the publisher principal, the evidence signer key ID, the

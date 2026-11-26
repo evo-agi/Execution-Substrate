@@ -416,8 +416,9 @@ func (h *upgradeHost) marked(name string) bool {
 
 // boxStartESConfig is the box's es.json where this upgrade starts: the
 // operator and control-plane example with Nomad at baseURL over plain HTTP,
-// none of the Nomad TLS keys, and the Nomad token file and retained-result
-// auth that ES PR #54's upgrade set.
+// none of the Nomad TLS keys, no workload grants (the box's build predates
+// them), and the Nomad token file and retained-result auth that ES PR #54's
+// upgrade set.
 func boxStartESConfig(t *testing.T, baseURL string) []byte {
 	t.Helper()
 	data, err := os.ReadFile(repoPath(".examples/config/es.operator_and_control_plane.json"))
@@ -431,6 +432,7 @@ func boxStartESConfig(t *testing.T, baseURL string) []byte {
 	// The box verifies with its own keys; the example's are known keys,
 	// which ES refuses (contracts.md section 3B).
 	testutil.WithFreshSigningKeys(t, doc)
+	delete(doc, "admission_policy")
 	nomad := doc["nomad"].(map[string]any)
 	nomad["base_url"] = baseURL
 	for _, key := range []string{"server_name", "root_ca_file", "server_spki_sha256"} {
@@ -445,6 +447,27 @@ func boxStartESConfig(t *testing.T, baseURL string) []byte {
 		t.Fatal(err)
 	}
 	return append(out, '\n')
+}
+
+// exampleOperatorAndControlPlaneAdmissionPolicy is the admission_policy of
+// the operator and control-plane example: today's workload grants for its
+// allowlist and provenance key, which the upgrade's migrate-config also
+// writes for that es.json.
+func exampleOperatorAndControlPlaneAdmissionPolicy(t *testing.T) map[string]any {
+	t.Helper()
+	data, err := os.ReadFile(repoPath(".examples/config/es.operator_and_control_plane.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(data, &doc); err != nil {
+		t.Fatal(err)
+	}
+	policy, ok := doc["admission_policy"].(map[string]any)
+	if !ok {
+		t.Fatal("the operator and control-plane example has no admission_policy")
+	}
+	return policy
 }
 
 func sha256Hex(data []byte) string {
@@ -977,7 +1000,7 @@ func TestRemoteAlphaUpgradeESCheckChangesNothing(t *testing.T) {
 		}
 	}
 	esConfig := report["es_config"].(map[string]any)
-	if fmt.Sprint(esConfig["changes"]) != "[nomad.base_url nomad.server_name nomad.root_ca_file nomad.server_spki_sha256]" ||
+	if fmt.Sprint(esConfig["changes"]) != "[nomad.base_url nomad.server_name nomad.root_ca_file nomad.server_spki_sha256 admission_policy.workload_grants]" ||
 		esConfig["new_es_accepts_migrated_config"] != true {
 		t.Fatalf("es_config report: %v", esConfig)
 	}
@@ -1057,8 +1080,27 @@ func TestRemoteAlphaUpgradeESCheckRefusesWhatItWasNotWrittenFor(t *testing.T) {
 				nomad := doc["nomad"].(map[string]any)
 				nomad["base_url"], nomad["server_name"] = "https://127.0.0.1:4646", "server.global.nomad"
 				nomad["root_ca_file"], nomad["server_spki_sha256"] = "/etc/nomad.d/tls/ca.pem", strings.Repeat("a", 64)
+				doc["admission_policy"] = exampleOperatorAndControlPlaneAdmissionPolicy(t)
 			})
 		}, "shape", "Nomad's TLS directory: absent; es.json: https keys, but nomad.server_spki_sha256 is not the key of the server certificate on disk"},
+		{"es.json was moved to HTTPS by hand without workload grants", func(h *upgradeHost) {
+			writeESConfig(h, func(doc map[string]any) {
+				nomad := doc["nomad"].(map[string]any)
+				nomad["base_url"], nomad["server_name"] = "https://127.0.0.1:4646", "server.global.nomad"
+				nomad["root_ca_file"], nomad["server_spki_sha256"] = "/etc/nomad.d/tls/ca.pem", strings.Repeat("a", 64)
+			})
+		}, "shape", "es.json: unknown (keys: unexpected ['nomad.root_ca_file', 'nomad.server_name', 'nomad.server_spki_sha256'], missing [])"},
+		{"es.json has workload grants this upgrade did not write", func(h *upgradeHost) {
+			writeESConfig(h, func(doc map[string]any) {
+				nomad := doc["nomad"].(map[string]any)
+				nomad["base_url"], nomad["server_name"] = "https://127.0.0.1:4646", "server.global.nomad"
+				nomad["root_ca_file"], nomad["server_spki_sha256"] = "/etc/nomad.d/tls/ca.pem", strings.Repeat("a", 64)
+				policy := exampleOperatorAndControlPlaneAdmissionPolicy(t)
+				rules := policy["workload_grants"].(map[string]any)["rules"].([]any)
+				rules[0].(map[string]any)["artifact_type"] = "static-service"
+				doc["admission_policy"] = policy
+			})
+		}, "shape", "es.json: unknown (es.json already has an admission_policy other than the workload grants this upgrade writes; it was changed by something other than this upgrade)"},
 		{"the ES binaries are another build", func(h *upgradeHost) {
 			h.write("usr/local/lib/execution-substrate/bin/es", string(stampedBinary("es", "go1.26.5", strings.Repeat("a", 40), "false")), 0o755)
 		}, "shape", "the ES binaries: unknown (es built from " + strings.Repeat("a", 40) + ", es-runtime-support built from " + boxESCommit + ")"},
@@ -1267,7 +1309,8 @@ func TestRemoteAlphaUpgradeESApply(t *testing.T) {
 	}
 
 	// ES's own config loader accepts the migrated es.json, which reaches
-	// Nomad over HTTPS and pins the server key; nothing else changed.
+	// Nomad over HTTPS, pins the server key and carries today's workload
+	// grants; nothing else changed.
 	loadCheck := exec.Command(helper, h.path("etc/execution-substrate/es.json"))
 	loadCheck.Dir = h.state
 	if out, err := loadCheck.CombinedOutput(); err != nil {
@@ -1282,13 +1325,20 @@ func TestRemoteAlphaUpgradeESApply(t *testing.T) {
 		nomad["root_ca_file"] != "/etc/nomad.d/tls/ca.pem" || nomad["server_spki_sha256"] != pin {
 		t.Fatalf("es.json's nomad block %v; the server key's SHA-256 is %s", nomad, pin)
 	}
+	// The grants are those of the operator and control-plane example, whose
+	// allowlist and provenance key the box's es.json shares: one exact grant
+	// per allowlist entry and runtime profile.
+	if want := exampleOperatorAndControlPlaneAdmissionPolicy(t); fmt.Sprint(esConfig["admission_policy"]) != fmt.Sprint(want) {
+		t.Fatalf("es.json's admission_policy %v, want today's workload grants %v", esConfig["admission_policy"], want)
+	}
 	nomad["base_url"] = "http://127.0.0.1:4646"
 	delete(nomad, "server_name")
 	delete(nomad, "root_ca_file")
 	delete(nomad, "server_spki_sha256")
+	delete(esConfig, "admission_policy")
 	_ = json.Unmarshal(boxStartESConfig(t, "http://127.0.0.1:4646"), &startConfig)
 	if fmt.Sprint(esConfig) != fmt.Sprint(startConfig) {
-		t.Fatalf("apply changed more of es.json than Nomad's address and TLS keys:\n%v\n%v", esConfig, startConfig)
+		t.Fatalf("apply changed more of es.json than Nomad's address and TLS keys and the workload grants:\n%v\n%v", esConfig, startConfig)
 	}
 
 	for path, want := range map[string]os.FileMode{

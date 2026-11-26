@@ -47,6 +47,32 @@
           "literal": "replace-me-public-demo-literal"
         }
       ]
+    },
+    "workload_grants": {
+      "egress_lanes": [
+        {
+          "name": "unrestricted",
+          "reaches_workload_vault": true
+        }
+      ],
+      "rules": [
+        {
+          "id": "operator-local-default",
+          "publisher_principal": "spiffe://execution.internal/operator/local",
+          "signer_key_id": "ags-key-1",
+          "artifact_type": "static-script",
+          "runtime_profile": "static-script/default",
+          "egress_lane": "unrestricted"
+        },
+        {
+          "id": "operator-local-normal-shell",
+          "publisher_principal": "spiffe://execution.internal/operator/local",
+          "signer_key_id": "ags-key-1",
+          "artifact_type": "static-script",
+          "runtime_profile": "control-plane-normal-shell/v1",
+          "egress_lane": "unrestricted"
+        }
+      ]
     }
   },
   "runtime_config": {

@@ -78,6 +78,7 @@ type DependencyConfig struct {
 
 type AdmissionPolicyConfig struct {
 	ConfiguredStaticScriptLiteralDeny *ConfiguredStaticScriptLiteralDenyPolicyConfig `json:"configured_static_script_literal_deny,omitempty"`
+	WorkloadGrants                    *WorkloadGrantsConfig                          `json:"workload_grants,omitempty"`
 }
 
 type ConfiguredStaticScriptLiteralDenyPolicyMode string
@@ -288,6 +289,11 @@ func (c Config) Validate() error {
 	if err := c.Verification.WorkloadIdentityBinding.Validate("verification.workload_identity_binding"); err != nil {
 		return err
 	}
+	if c.AdmissionPolicy != nil && c.AdmissionPolicy.WorkloadGrants != nil {
+		if err := c.AdmissionPolicy.WorkloadGrants.validateSignerKeys("admission_policy.workload_grants", c.Verification.Provenance.KeyID); err != nil {
+			return err
+		}
+	}
 
 	if err := c.WorkloadVaultAuth.Validate(); err != nil {
 		return err
@@ -347,6 +353,11 @@ func (c DependencyConfig) Validate(field string) error {
 func (c AdmissionPolicyConfig) Validate() error {
 	if c.ConfiguredStaticScriptLiteralDeny != nil {
 		if err := c.ConfiguredStaticScriptLiteralDeny.Validate("admission_policy.configured_static_script_literal_deny"); err != nil {
+			return err
+		}
+	}
+	if c.WorkloadGrants != nil {
+		if err := c.WorkloadGrants.Validate("admission_policy.workload_grants"); err != nil {
 			return err
 		}
 	}

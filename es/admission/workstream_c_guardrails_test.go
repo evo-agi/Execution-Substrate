@@ -12317,6 +12317,7 @@ func newWorkstreamCTestService(t *testing.T, fixture preparedArtifactFixture) (*
 			SPIREWorkloadAPISocketPath: "/run/spire/sockets/agent.sock",
 		},
 	}
+	grantFixtureNetwork(&service.cfg, fixture)
 	service.workloadZoneVaultConfigRef = service.cfg.RuntimeConfig.WorkloadZoneVaultConfigRef
 	service.trustModel = &fixture.trustModel
 

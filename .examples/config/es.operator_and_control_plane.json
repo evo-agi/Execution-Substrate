@@ -68,6 +68,50 @@
   "workload_vault_auth": {
     "default_mode": "vault_identity_jwt"
   },
+  "admission_policy": {
+    "workload_grants": {
+      "egress_lanes": [
+        {
+          "name": "unrestricted",
+          "reaches_workload_vault": true
+        }
+      ],
+      "rules": [
+        {
+          "id": "operator-local-default",
+          "publisher_principal": "spiffe://execution.internal/operator/local",
+          "signer_key_id": "ags-key-1",
+          "artifact_type": "static-script",
+          "runtime_profile": "static-script/default",
+          "egress_lane": "unrestricted"
+        },
+        {
+          "id": "operator-local-normal-shell",
+          "publisher_principal": "spiffe://execution.internal/operator/local",
+          "signer_key_id": "ags-key-1",
+          "artifact_type": "static-script",
+          "runtime_profile": "control-plane-normal-shell/v1",
+          "egress_lane": "unrestricted"
+        },
+        {
+          "id": "service-control-plane-default",
+          "publisher_principal": "spiffe://execution.internal/service/control-plane",
+          "signer_key_id": "ags-key-1",
+          "artifact_type": "static-script",
+          "runtime_profile": "static-script/default",
+          "egress_lane": "unrestricted"
+        },
+        {
+          "id": "service-control-plane-normal-shell",
+          "publisher_principal": "spiffe://execution.internal/service/control-plane",
+          "signer_key_id": "ags-key-1",
+          "artifact_type": "static-script",
+          "runtime_profile": "control-plane-normal-shell/v1",
+          "egress_lane": "unrestricted"
+        }
+      ]
+    }
+  },
   "nomad": {
     "base_url": "https://127.0.0.1:4646",
     "server_name": "server.global.nomad",

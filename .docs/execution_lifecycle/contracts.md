@@ -215,8 +215,8 @@ built-in ES admission policies that read owner grants from ES
 deployment/admin configuration: `execution-substrate.admission.network-grant/v1`
 (reason code `network_access_not_granted`) and
 `execution-substrate.admission.workload-identity-grant/v1` (reason code
-`workload_identity_not_granted`). Section 5B is their contract. They are not
-yet implemented: the network policy lands with WI-2 and the identity policy
+`workload_identity_not_granted`). Section 5B is their contract. The network
+policy is implemented; the identity policy is not yet implemented and lands
 with WI-3. Grants match exactly and keep the same deliberate absences as the
 configured literal deny policy.
 
@@ -455,7 +455,7 @@ runtime-selection design.
 | `execution_substrate.runtime_profile` | `Temporary compatibility edge` | The only current request annotation key for opt-in runtime-profile selection. Omitted or empty keeps the default current `static-script` runtime behavior. | Not the final runtime-profile selection model, not a shared-kernel grammar, and not CP workflow authority. |
 | omitted or empty `execution_substrate.runtime_profile` | `Bounded slice rule` | Accepted. Resolves to the current default runtime name `static-script/default`, uses `execution.base_image`, and injects no profile-specific Codex credential-location metadata. | Not a package-kind redesign, not proof that every advertised runtime profile can prepare, and not a final default-runtime vocabulary. |
 | `static-script/default` | `Bounded slice rule` | The current default runtime name used in producer declarations, submit metadata, and `authority_handoff`. It is selected by omitting the annotation or leaving it empty; current source does not treat a non-empty annotation value of `static-script/default` as a separate opt-in selector. | Not the final package model and not a promise that the explicit annotation value is accepted unless a future ES-owned migration documents that change. |
-| `control-plane-normal-shell/v1` | `Temporary compatibility edge` | Accepted only as an explicit opt-in annotation when submit is configured, `execution.runtime_profiles.control_plane_normal_shell.enabled=true`, the artifact is `static-script`, and signed evidence has `network_access=true`. | Not the default runtime model, not a package-kind redesign, not a general image/tool marketplace, and not a transfer of CP orchestration, review, checkpoint, or finalization semantics into ES. |
+| `control-plane-normal-shell/v1` | `Temporary compatibility edge` | Accepted only as an explicit opt-in annotation when submit is configured, `execution.runtime_profiles.control_plane_normal_shell.enabled=true`, the artifact is `static-script`, signed evidence has `network_access=true`, and a workload grant for the run names an egress lane (section 5B). | Not the default runtime model, not a package-kind redesign, not a general image/tool marketplace, and not a transfer of CP orchestration, review, checkpoint, or finalization semantics into ES. |
 | `execution.runtime_profiles.control_plane_normal_shell.*` | `Bounded slice rule` | ES deployment/admin config for enabling and parameterizing the bounded Control Plane normal-shell profile image, Codex CLI path metadata, and workload-Vault credential-location metadata. | Not a public runtime-profile name, not credential material, not credential brokerage, and not runtime identity ownership. |
 | `execution-substrate/control-plane-normal-shell:supported-local`, `execution-substrate/control-plane-normal-shell:local`, and the supported-local proof Codex shim | `Proof-only or bounded local proof` | Runtime support image/shim values that can realize the configured Control Plane normal-shell profile in local proof paths. They are not accepted runtime-profile annotation values. | Not production Codex availability, not a runtime-profile vocabulary entry, not submit readiness by itself, and not a long-term image lifecycle architecture. |
 | unsupported or unknown non-empty profile values | `Rejected/unsupported` | Rejected by `:prepare` and by the configured `:submit` path as `unsupported_runtime_profile` before run ID creation, staging, scheduler handoff, or CP run failure. | No fallback profile is selected and no CP review/checkpoint/finalization state is created. |
@@ -558,6 +558,11 @@ Successful response is `200` JSON with these contract fields:
 - `:prepare` verifies publish-time evidence and EGS runtime-trust constraints before success.
 - `:prepare` uses only the narrow shared execution/runtime claims ES currently enforces from aggregate artifact evidence: runtime env allowlist, declared mount targets, required capabilities, `target_platform`, and `network_access`.
 - `:prepare` resolves workload-zone vault information through the configured workload-zone Vault config reference and ARS before success.
+- `:prepare` evaluates the network grant policy of section 5B after the
+  workload-zone Vault config read and before the content policies: signed
+  `network_access=true` needs a workload grant that names an egress lane,
+  and is otherwise refused with `403 network_access_not_granted` before any
+  payload read. `:submit` evaluates it again in the same place.
 - `:prepare` evaluates ES Admission Policy Layer v0 before success. When an
   enabled policy requires payload inspection, `:prepare` may fetch bounded
   payload bytes through the explicit ARS payload digest carried by the
@@ -671,6 +676,7 @@ Successful response is `200` JSON with these contract fields:
 | Aggregate artifact evidence blob or response is unavailable after registration | `503` | `artifact_evidence_unavailable` |
 | Workload-zone vault lookup or blob unavailable | `503` | `workload_zone_vault_unavailable` |
 | Unsupported, disabled, or invalid runtime profile selection | `400` | `unsupported_runtime_profile` |
+| Signed `network_access=true` without a workload grant that names an egress lane (section 5B) | `403` | `network_access_not_granted` |
 | ES admission policy denial | `403` | policy reason code, such as `destructive_shell_command_denied` or `configured_static_script_content_denied` |
 | Required ES admission policy input unavailable | `403` | `admission_policy_input_unavailable` |
 | Dependency payload invalid or dependency request failed | `503` | current endpoint-specific code is preserved and the logical class remains the same as the missing dependency |
@@ -790,13 +796,14 @@ workload identity it gets. The design is the F1 decision in
 
 ### Status
 
-This contract is decided and not yet implemented. The network part lands
-with WI-2 and the identity part with WI-3
-(`.docs/system_overview/runtime_identity_handoff.md`, section 11.10). Until a
-part lands, sections 5 and 6 describe current behavior for it: signed
-`network_access` maps directly to a network mode, and every run receives the
-shared workload identity. The pull request that lands a part moves that text
-to this contract in the same change.
+The network part of this contract is implemented: WI-2 landed it. The
+identity part is decided and not yet implemented; it lands with WI-3
+(`.docs/system_overview/runtime_identity_handoff.md`, section 11.10). Until
+it lands, sections 5 and 6 describe current behavior for it: every run
+receives the shared workload identity. The pull request that lands it moves
+that text to this contract in the same change. The identity part is
+`workload_identities`, a rule's `workload_identity`, evaluation steps 4 and
+5, and the identity values of the decision.
 
 ### Configuration
 
@@ -831,7 +838,13 @@ Grants live in ES deployment configuration at
   diagnostics only.
 - No setting turns grants off. A configuration without `workload_grants`, or
   with no rules, admits only runs that request no network and whose runtime
-  profile needs no credential, and those runs receive no identity.
+  profile needs no credential, and those runs receive no identity. Until
+  WI-3, the credential condition and the identity do not apply: such a
+  configuration admits every run that requests no network, and every run
+  receives the shared workload identity.
+- Until WI-3, ES startup refuses `workload_identities` and a rule's
+  `workload_identity` as unknown keys, so no configuration can name an
+  identity that ES would not give.
 - `workload_identities` lists the names the owner registered with the setup
   scripts (one SPIRE entry, one Vault role and one Vault policy each). A name
   is 1 to 63 characters from `a-z`, `0-9` and `-`, starting with a letter or a
@@ -864,12 +877,22 @@ Grants live in ES deployment configuration at
   empty match field; a match value with surrounding white space; a name not
   in its list; a lane other than `unrestricted` before WI-4; and a rule that
   grants an identity without a lane that reaches the workload-zone Vault.
+- ES startup also refuses rules that could never match a run, and values
+  that differ from a matching one only in what cannot be seen: a
+  `signer_key_id` other than `verification.provenance.key_id`, the only key
+  ES admits artifact evidence from; a `runtime_profile` other than
+  `static-script/default` and `control-plane-normal-shell/v1`; an
+  `artifact_type` or `signer_key_id` longer than 256 bytes, not valid UTF-8,
+  or with control, format or other unprintable characters; a lane without
+  `reaches_workload_vault`; and two lanes with the same name.
 
 ### Evaluation
 
 Two built-in ES admission policies read the same grants. They run on
 `:prepare` and on `:submit` alike, in the shared admission path after
-evidence verification:
+evidence verification and the workload-zone Vault config read, and before
+the content policies, so a refused run fetches no payload for policy
+inspection:
 
 1. ES finds the rule whose four match fields equal the run's facts: the
    publisher principal and signer key ID from the verified evidence, the
@@ -892,16 +915,25 @@ evidence verification:
    without an identity receives no identity handoff
    (`.docs/system_overview/runtime_identity_handoff.md`, section 11.5).
 
+Steps 4 and 5 are the identity part.
+
 Rules for these policies:
 
 - The network policy runs first, so a run refused by both reports
   `network_access_not_granted`.
+- A request that names a runtime profile ES does not support gets no grant
+  decision: the runtime-profile check refuses it with `400
+  unsupported_runtime_profile`, as it does without grants. The grant
+  policies match only the two profile names ES supports.
 - Both refusals are deterministic policy denials in the existing redacted
   error envelope. A failure to read the workload-zone Vault config remains an
   unavailable dependency, not a grant denial.
-- The internal decision metadata records the matching rule ID, the effective
-  identity name and the effective lane name. These are safe, non-secret
-  values.
+- The decision holds the matching rule ID, the effective identity name and
+  the effective lane name. These are safe, non-secret values. Until WI-3,
+  nothing reads them: the only lane, `unrestricted`, is realized as the
+  network mode signed `network_access` already selects. WI-3 hands the
+  identity name to runtime realization, and WI-5 carries the names into
+  durable formats.
 - Every delivery that can cause an effect evaluates the grants again with the
   configuration ES runs with at that time, and refuses when a grant was
   removed or narrowed. Read-only receipt recovery does not evaluate them.
@@ -914,7 +946,8 @@ Rules for these policies:
   own, through the host firewall on the Remote Supported Host Alpha box and
   through the full `bridge` network on supported-local hosts.
   WI-4 removes the value, and from then on ES startup refuses a configuration
-  that uses it.
+  that uses it. A test in `es/config` is the trigger: it fails once ES
+  accepts any other lane while it still accepts `unrestricted`.
 
 ### Guardrails
 
@@ -969,7 +1002,8 @@ bounded receipt, and Nomad submission through ES.
   - `target_platform` unset or `docker`
 - `invocation.annotations["execution_substrate.runtime_profile"]="control-plane-normal-shell/v1"` selects the bounded Control Plane normal-shell runtime profile. That profile remains a `static-script` overlay and additionally requires:
   - explicit ES config under `execution.runtime_profiles.control_plane_normal_shell`
-  - `network_access=true`
+  - `network_access=true`, and therefore a workload grant for the run that
+    names an egress lane (section 5B)
   - a configured profile image
   - an absolute configured Codex CLI path metadata value
   - configured workload-vault secret path and field metadata for Codex credential material
@@ -978,6 +1012,11 @@ bounded receipt, and Nomad submission through ES.
 - Submit resolves payload bytes through the explicit payload digest carried in aggregate evidence, and uses only bytes that hash to that digest (section 5A).
 - Submit reuses the same ES Admission Policy Layer v0 path as `:prepare` and
   cannot bypass a policy that `:prepare` would deny.
+- Submit evaluates the workload grants of section 5B again with the
+  configuration ES runs with at that time. Signed `network_access=true`
+  without a grant that names an egress lane is refused with `403
+  network_access_not_granted` before payload staging, run ID creation and
+  Nomad submission.
 - Policy denial happens before payload staging, mount staging, run ID creation,
   and Nomad submission.
 - Current submit resolves and freezes one private source-grounded semantic plan
@@ -1341,6 +1380,7 @@ Successful response is `202` JSON with these fields:
 | Missing authenticated caller | `401` | plain text |
 | Disallowed or bootstrap caller | `403` | plain text |
 | Prepare-time validation or trust errors | same as `:prepare` | propagated |
+| Signed `network_access=true` without a workload grant that names an egress lane (section 5B) | `403` | `network_access_not_granted` |
 | ES admission policy denial | `403` | policy reason code, such as `destructive_shell_command_denied` or `configured_static_script_content_denied` |
 | Required ES admission policy input unavailable | `403` | `admission_policy_input_unavailable` |
 | Unsupported submission mode | `400` | `unsupported_execution_mode` |
@@ -2114,6 +2154,7 @@ Successful response is `200` JSON with these fields:
 | Unauthorized caller | all lifecycle/execution endpoints | `401` | plain text | authenticated caller identity required |
 | Forbidden caller | all lifecycle/execution endpoints | `403` | plain text | bootstrap or disallowed identity |
 | Aggregate artifact evidence invalid during admission | `:prepare`, `:submit` | `403` | JSON | `artifact_evidence_invalid` |
+| Signed `network_access=true` without a workload grant that names an egress lane | `:prepare`, `:submit` | `403` | JSON | `network_access_not_granted` |
 | Aggregate artifact evidence not registered for admission | `:prepare`, `:submit` | `404` | JSON | `artifact_evidence_not_found` |
 | Invalid `run_id` | `status`, `logs`, `result`, `cancel` | `400` | JSON | `invalid_run_id` |
 | Execution not found | `status`, `logs`, `result`, `cancel` | `404` | JSON | `execution_not_found` |

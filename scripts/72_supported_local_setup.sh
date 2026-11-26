@@ -1452,6 +1452,27 @@ ags_cfg = {
     },
     "signer": ags_signer,
 }
+# Today's workload grants (.docs/execution_lifecycle/contracts.md, section
+# 5B): every caller ES admits may publish static-script runs that request the
+# network, on both runtime profiles, through the only lane before egress
+# lanes land. ES admits a run that requests the network only with a grant,
+# and no setting turns grants off.
+provenance_key_id = ags_signer["key_id"]
+workload_grants = {
+    "egress_lanes": [{"name": "unrestricted", "reaches_workload_vault": True}],
+    "rules": [
+        {
+            "id": f"{prefix.replace('/', '-')}-{profile_id}",
+            "publisher_principal": f"spiffe://execution.internal/{prefix}",
+            "signer_key_id": provenance_key_id,
+            "artifact_type": "static-script",
+            "runtime_profile": profile,
+            "egress_lane": "unrestricted",
+        }
+        for prefix in operator_and_maybe_control_plane
+        for profile_id, profile in (("default", "static-script/default"), ("normal-shell", "control-plane-normal-shell/v1"))
+    ],
+}
 es_cfg = {
     "http": {"bind_address": "127.0.0.1", "port": es_port, "read_timeout_seconds": 5, "write_timeout_seconds": 5, "shutdown_timeout_seconds": 5},
     "tls": {
@@ -1487,6 +1508,7 @@ es_cfg = {
         "workload_identity_binding": verifier(ags_signer),
     },
     "workload_vault_auth": {"default_mode": "vault_identity_jwt"},
+    "admission_policy": {"workload_grants": workload_grants},
     "nomad": {
         "base_url": nomad_base_url,
         "server_name": nomad_server_name,
