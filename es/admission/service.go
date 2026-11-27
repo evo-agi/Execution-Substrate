@@ -196,15 +196,19 @@ var (
 		// modules; programs that other programs start by name; module paths
 		// of R and Tcl; build and archive tool options and helper programs;
 		// the Go toolchain keys that choose which toolchain, compiler or helper
-		// command runs, where modules, sources and build results come from or
-		// go, or how the toolchain builds and fetches, and the two that change
-		// how ES's own Go supervisor runs in the container; the GNU C
-		// compiler's keys that choose the programs it runs, the headers and
-		// libraries it builds with, or extra options; and the directory,
-		// domain and language list bash reads the translations of $"..."
-		// strings from, which it expands as double-quoted text, so a catalog
-		// the caller chooses could run commands in a script that translates
-		// its messages. Upstream glibc's gettext skips a LANGUAGE entry that
+		// command runs, including pkg-config and the Fortran compiler, where
+		// modules, sources and build results come from or go, or how the
+		// toolchain builds and fetches (every such key go help environment
+		// lists, Go 1.26.5), and the two that change how ES's own Go
+		// supervisor runs in the container; the GNU C compiler's keys that
+		// choose the programs it runs, the headers and libraries it builds
+		// with, extra options, or a file it writes with text the caller
+		// chooses (every such key the GCC 14.2 manual lists, and LPATH and
+		// OBJCPLUS_INCLUDE_PATH, which gcc reads and the manual leaves out);
+		// and the directory, domain and language list bash reads the
+		// translations of $"..." strings from, which it expands as
+		// double-quoted text, so a catalog the caller chooses could run
+		// commands in a script that translates its messages. Upstream glibc's gettext skips a LANGUAGE entry that
 		// holds a path only in set-user-ID programs (intl/dcigettext.c, 2.39
 		// and 2.42), so LANGUAGE=../x can name a catalog outside the
 		// directory; the one Ubuntu build tested ignored such entries, and a
@@ -290,6 +294,8 @@ var (
 		"GOEXPERIMENT":                        {},
 		"GOTMPDIR":                            {},
 		"GCCGO":                               {},
+		"GCCGOTOOLDIR":                        {},
+		"FC":                                  {},
 		"GCC_EXEC_PREFIX":                     {},
 		"COMPILER_PATH":                       {},
 		"LIBRARY_PATH":                        {},
@@ -298,6 +304,10 @@ var (
 		"CPLUS_INCLUDE_PATH":                  {},
 		"OBJC_INCLUDE_PATH":                   {},
 		"GCC_COMPARE_DEBUG":                   {},
+		"LPATH":                               {},
+		"OBJCPLUS_INCLUDE_PATH":               {},
+		"DEPENDENCIES_OUTPUT":                 {},
+		"SUNPRO_DEPENDENCIES":                 {},
 		"TEXTDOMAINDIR":                       {},
 		"TEXTDOMAIN":                          {},
 		"LANGUAGE":                            {},
@@ -364,8 +374,11 @@ var (
 		"CARGO_",
 		"RUSTUP_",
 		"RUSTC",
-		// cgo's compiler and linker flags and their allow and deny lists;
+		// cgo's compiler and linker flags and their allow and deny lists, and
+		// the pkg-config program a cgo build runs and the keys that choose
+		// the .pc files that give it flags and libraries;
 		"CGO_",
+		"PKG_CONFIG",
 		// client configuration that names helper programs, sockets or
 		// trust: Docker, ssh, gRPC and curl.
 		"DOCKER_",

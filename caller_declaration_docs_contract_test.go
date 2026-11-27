@@ -4,7 +4,11 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -127,6 +131,28 @@ func reservedEnvironmentEntriesInSource(t *testing.T) (map[string]bool, []string
 	return keys, prefixes, suffixes
 }
 
+// reservedEnvironmentKeyMatcher reports whether es/admission/service.go
+// reserves a key, from the entries reservedEnvironmentEntriesInSource reads.
+func reservedEnvironmentKeyMatcher(keys map[string]bool, prefixes, suffixes []string) func(string) bool {
+	return func(key string) bool {
+		upper := strings.ToUpper(key)
+		if keys[upper] || upper == "EXEC_WORKLOAD_IDENTITY_ENDPOINT" {
+			return true
+		}
+		for _, prefix := range prefixes {
+			if strings.HasPrefix(upper, prefix) {
+				return true
+			}
+		}
+		for _, suffix := range suffixes {
+			if strings.HasSuffix(upper, suffix) {
+				return true
+			}
+		}
+		return false
+	}
+}
+
 func TestLifecycleContractNamesOnlyReservedKeysTheCodeReserves(t *testing.T) {
 	keys, prefixes, suffixes := reservedEnvironmentEntriesInSource(t)
 	contract := prepareRequestContract(t)
@@ -150,23 +176,7 @@ func TestLifecycleContractNamesOnlyReservedKeysTheCodeReserves(t *testing.T) {
 			t.Fatalf("contracts.md section 5 does not name the reserved suffix %q", suffix)
 		}
 	}
-	reservesKey := func(key string) bool {
-		upper := strings.ToUpper(key)
-		if keys[upper] || upper == "EXEC_WORKLOAD_IDENTITY_ENDPOINT" {
-			return true
-		}
-		for _, prefix := range prefixes {
-			if strings.HasPrefix(upper, prefix) {
-				return true
-			}
-		}
-		for _, suffix := range suffixes {
-			if strings.HasSuffix(upper, suffix) {
-				return true
-			}
-		}
-		return false
-	}
+	reservesKey := reservedEnvironmentKeyMatcher(keys, prefixes, suffixes)
 	named := regexp.MustCompile("`([A-Za-z_][A-Za-z0-9_]*)`").FindAllStringSubmatch(reservedText, -1)
 	// Names in the reserved-key text that are not environment keys.
 	notKeys := map[string]bool{"initial_badenv_table": true, "usercustomize": true}
@@ -183,5 +193,59 @@ func TestLifecycleContractNamesOnlyReservedKeysTheCodeReserves(t *testing.T) {
 	}
 	if checked < 30 {
 		t.Fatalf("expected the contract to name at least 30 reserved keys or prefixes, found %d", checked)
+	}
+}
+
+// Re-check 25 on PR #74: a runbook or example that declares a reserved key
+// publishes fine, because AGS signs the declaration as given, and its caller
+// is refused only at submit. This keeps the repository's own publish requests
+// free of reserved keys.
+func TestRunbooksAndExamplesDeclareNoReservedEnvironmentKey(t *testing.T) {
+	reservesKey := reservedEnvironmentKeyMatcher(reservedEnvironmentEntriesInSource(t))
+	declaration := regexp.MustCompile(`"environment_variables"\s*:\s*\[([^\]]*)\]`)
+	quoted := regexp.MustCompile(`"([^"]*)"`)
+	declared := map[string][]string{}
+	for _, root := range []string{".runbooks", ".examples", ".docs", "scripts"} {
+		err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if entry.IsDir() {
+				return nil
+			}
+			switch filepath.Ext(path) {
+			case ".gz", ".tgz", ".tar", ".png", ".svg", ".pdf":
+				return nil
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			for _, list := range declaration.FindAllStringSubmatch(string(data), -1) {
+				for _, key := range quoted.FindAllStringSubmatch(list[1], -1) {
+					declared[key[1]] = append(declared[key[1]], path)
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("walk %s: %v", root, err)
+		}
+	}
+	// The scan must see the declarations it guards.
+	for _, key := range []string{"APP_MODE", "WORKLOAD_VAULT_SECRET_PATH", "REFERENCE_IDENTITY_URL"} {
+		if len(declared[key]) == 0 {
+			t.Fatalf("did not find the declaration of %s in the runbooks and examples", key)
+		}
+	}
+	var refused []string
+	for key, paths := range declared {
+		if reservesKey(key) {
+			refused = append(refused, key+" in "+strings.Join(paths, ", "))
+		}
+	}
+	sort.Strings(refused)
+	if len(refused) > 0 {
+		t.Fatalf("a runbook or example declares a reserved environment key, which ES refuses from every caller: %s", strings.Join(refused, "; "))
 	}
 }

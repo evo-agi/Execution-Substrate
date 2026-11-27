@@ -225,16 +225,17 @@ var mustBeReservedEnvironmentKeys = []string{
 	"CXXFLAGS", "CPPFLAGS", "LDFLAGS", "RUSTFLAGS", "RUSTDOC", "RUSTDOCFLAGS", "GODEBUG", "GOTRACEBACK",
 	"GOFLAGS", "GOENV", "GOTOOLCHAIN", "GOPROXY", "GONOPROXY", "GOPRIVATE", "GOINSECURE", "GOSUMDB",
 	"GONOSUMDB", "GONOSUMCHECK", "GOROOT", "GOPATH", "GOBIN", "GOCACHE", "GOCACHEPROG", "GOMODCACHE",
-	"GOWORK", "GOAUTH", "GOVCS", "GOEXPERIMENT", "GOTMPDIR", "GCCGO", "GCC_EXEC_PREFIX", "COMPILER_PATH",
-	"LIBRARY_PATH", "CPATH", "C_INCLUDE_PATH", "CPLUS_INCLUDE_PATH", "OBJC_INCLUDE_PATH",
-	"GCC_COMPARE_DEBUG", "TEXTDOMAINDIR", "TEXTDOMAIN", "LANGUAGE",
+	"GOWORK", "GOAUTH", "GOVCS", "GOEXPERIMENT", "GOTMPDIR", "GCCGO", "GCCGOTOOLDIR", "FC",
+	"GCC_EXEC_PREFIX", "COMPILER_PATH", "LIBRARY_PATH", "CPATH", "C_INCLUDE_PATH", "CPLUS_INCLUDE_PATH",
+	"OBJC_INCLUDE_PATH", "GCC_COMPARE_DEBUG", "LPATH", "OBJCPLUS_INCLUDE_PATH", "DEPENDENCIES_OUTPUT",
+	"SUNPRO_DEPENDENCIES", "TEXTDOMAINDIR", "TEXTDOMAIN", "LANGUAGE",
 }
 
 var mustBeReservedEnvironmentPrefixes = []string{
 	"EXEC_", "EXEC_WORKLOAD_VAULT_", "LD_", "_RLD", "KRB5_CONFIG", "PYTHON", "GIT_", "BASH_FUNC_",
 	"VAULT_", "XDG_", "OPENSSL_", "NPM_CONFIG_", "NOMAD_", "CODEX_", "OPENAI_", "PIP_", "PYTEST_",
 	"PERL", "RUBY", "GEM_", "BUNDLE_", "JAVA_", "MAVEN_", "GRADLE_", "DOTNET_", "CORECLR_", "COMPLUS_",
-	"PHP", "LUA_", "CARGO_", "RUSTUP_", "RUSTC", "CGO_", "DOCKER_", "SSH_", "GRPC_", "CURL_",
+	"PHP", "LUA_", "CARGO_", "RUSTUP_", "RUSTC", "CGO_", "PKG_CONFIG", "DOCKER_", "SSH_", "GRPC_", "CURL_",
 }
 
 var mustBeReservedEnvironmentSuffixes = []string{"INSECURE_SKIP_VERIFY"}
@@ -367,6 +368,10 @@ func TestReservedEnvironmentKeysAreRefusedEvenWhenTheArtifactDeclaresThem(t *tes
 		// Go and gcc keys that change what runs or gets built (re-check 23).
 		"GOCACHEPROG", "GOAUTH", "GOROOT", "GOWORK", "cgo_cflags", "CGO_LDFLAGS", "GCC_EXEC_PREFIX",
 		"COMPILER_PATH", "CPATH",
+		// Re-check 25: the rest of the go command's and gcc's keys of these
+		// kinds, and pkg-config's search keys.
+		"FC", "PKG_CONFIG", "pkg_config_path", "PKG_CONFIG_LIBDIR", "GCCGOTOOLDIR", "LPATH",
+		"OBJCPLUS_INCLUDE_PATH", "DEPENDENCIES_OUTPUT", "SUNPRO_DEPENDENCIES",
 	} {
 		t.Run(key, func(t *testing.T) {
 			fixture := base.withEnvironmentVariables(t, []string{key})
@@ -387,8 +392,8 @@ func TestOrdinaryEnvironmentKeysAreNotReserved(t *testing.T) {
 		// and CPATH are exact keys.
 		"SKIP_VERIFY", "INSECURE_SKIP_VERIFY_NOTE", "TEXTDOMAIN_LABEL", "GOROOT_LABEL", "CPATHS", "CGO",
 		// Go keys that choose only among code the artifact already holds or
-		// tune the Go runtime.
-		"GOOS", "GOARCH",
+		// tune the Go runtime, and gcc keys that change only text it prints.
+		"GOOS", "GOARCH", "GO111MODULE", "GOFIPS140", "SOURCE_DATE_EPOCH", "GCC_EXTRA_DIAGNOSTIC_OUTPUT",
 		// Report 19 on PR #74 listed these. LANG and LC_ALL select only
 		// installed locales: glibc refuses a locale name that climbs out of
 		// the locale directory and looks a name up only under that directory
