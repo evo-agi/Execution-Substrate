@@ -577,9 +577,10 @@ PY
 # Nomad's unit reads as root the caller's (root's, under sudo), with no write
 # for group or others and no ACL. HashiCorp's nomad.service reads nomad.env
 # as its EnvironmentFile and runs `nomad agent -config /etc/nomad.d`, which
-# loads each *.hcl and *.json there (not folders, nor an editor's ".#" lock
-# files); the package's postinst gives them all to the nomad account (chown
-# -R) on each install or upgrade. Once the folder is root's
+# loads each *.hcl and *.json there, names that look hidden (".x.hcl") or
+# temporary ("#x.hcl") included: it skips only folders and an editor's ".#"
+# lock files, so those are all this skips. The package's postinst gives them
+# all to the nomad account (chown -R) on each install or upgrade. Once the folder is root's
 # (nomad_folder_take_back), no other account can add, rename or replace an
 # entry in it, but one can still write a file it owns, or through a handle it
 # opened before. So each such file is copied into a new file that is renamed
@@ -590,7 +591,8 @@ PY
 # link, say) stops the setup. nomad.hcl is left to nomad_config_write, which
 # writes it new. As there, Nomad does not load the temporary name, and
 # nothing is synced: a run killed part way leaves the old file or the new
-# one at the name, and a rerun takes back what is left.
+# one at the name, perhaps with the temporary name beside it, and a rerun
+# removes that name first and takes back what is left.
 nomad_config_files_take_back() {
   sudo python3 -I - "$1" <<'PY'
 import os
