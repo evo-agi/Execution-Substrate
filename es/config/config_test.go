@@ -10,6 +10,7 @@ import (
 	"unicode"
 
 	runtimeconfigv1 "execution-substrate/internal/contracts/runtimeconfig/v1"
+	"execution-substrate/internal/testutil"
 )
 
 func TestExecutionConfigValidateAllowsDefaultRuntimeIdentityTmpfsSize(t *testing.T) {
@@ -131,8 +132,24 @@ func TestRetainedResultAuditF1SubmitExamplesPassFullConfigValidation(t *testing.
 		"es.operator_and_control_plane.json",
 	} {
 		t.Run(name, func(t *testing.T) {
-			data, err := os.ReadFile(filepath.Join("..", "..", ".examples", "config", name))
+			data, err := os.ReadFile(testutil.Path(filepath.Join(".examples", "config", name)))
 			if err != nil {
+				t.Fatal(err)
+			}
+			// The examples carry known verification keys, which ES refuses
+			// (contracts.md section 3B); everything else validates.
+			var asIs Config
+			if err := json.Unmarshal(data, &asIs); err != nil {
+				t.Fatalf("decode example: %v", err)
+			}
+			if err := asIs.Validate(); err == nil || !strings.Contains(err.Error(), "is a known key") {
+				t.Fatalf("example with its known keys: got %v, want the known-key refusal", err)
+			}
+			var doc map[string]any
+			if err := json.Unmarshal(data, &doc); err != nil {
+				t.Fatalf("decode example: %v", err)
+			}
+			if data, err = json.Marshal(testutil.WithFreshSigningKeys(t, doc)); err != nil {
 				t.Fatal(err)
 			}
 			var cfg Config
@@ -430,7 +447,7 @@ func TestAdmissionPolicyConfigValidateAcceptsHarmlessStaticScriptLiteralMarker(t
 }
 
 func TestConfiguredLiteralPolicyDemoExampleActivatesAdmissionPolicy(t *testing.T) {
-	examplePath := filepath.Join("..", "..", ".examples", "config", "es.configured_literal_policy_demo.json")
+	examplePath := testutil.Path(filepath.Join(".examples", "config", "es.configured_literal_policy_demo.json"))
 	raw, err := os.ReadFile(examplePath)
 	if err != nil {
 		t.Fatalf("read configured literal policy demo example: %v", err)

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
@@ -25,6 +26,7 @@ import (
 	egsmodel "execution-substrate/egs/model"
 	esconfig "execution-substrate/es/config"
 	runtimeconfigv1 "execution-substrate/internal/contracts/runtimeconfig/v1"
+	"execution-substrate/internal/knownkeys"
 )
 
 func TestNewServiceRejectsDualMissingExecutionRootsBeforeMutation(t *testing.T) {
@@ -214,6 +216,14 @@ func TestRetainedResultAuditF1RenderedConfigConstructsConfiguredService(t *testi
 	// sets it, and the renderer refuses to write es.json without one.
 	nomadPKI := newTestNomadPKI(t)
 	_, nomadPin := nomadPKI.serverCert(t, testNomadServerCertOptions{})
+	// Setup generates this install's own signing keys before it renders;
+	// the renderer refuses to write configs without them.
+	keygen := exec.Command("/bin/bash", "-c", `source "$1"
+generate_supported_local_signing_keys "$SUPPORTED_LOCAL_PROOF_DIR"`, "bash", script)
+	keygen.Env = append(os.Environ(), "SUPPORTED_LOCAL_PROOF_DIR="+proofDir)
+	if output, err := keygen.CombinedOutput(); err != nil {
+		t.Fatalf("generate supported-local signing keys: %v output=%s", err, output)
+	}
 	render := func(pin string) ([]byte, error) {
 		command := exec.Command("/bin/bash", "-c", `source "$1"
 SUPPORTED_LOCAL_NOMAD_SERVER_SPKI_SHA256="$TEST_NOMAD_PIN"
@@ -282,6 +292,7 @@ write_env_file "$SUPPORTED_LOCAL_PROOF_DIR/env.sh"`, "bash", script)
 	if err := rendered.Validate(); err != nil {
 		t.Fatalf("full rendered ES config rejected: %v", err)
 	}
+	assertRenderedSigningKeysAreThisInstalls(t, proofDir, rendered)
 	// The renderer owns auth metadata. Only dependency/TLS test fixtures replace
 	// unrelated external files before real service construction.
 	rendered.TLS = fixture.TLS
@@ -999,4 +1010,87 @@ func mustParseURL(t *testing.T, raw string) *url.URL {
 		t.Fatalf("parse url %q: %v", raw, err)
 	}
 	return parsed
+}
+
+// assertRenderedSigningKeysAreThisInstalls checks that the supported-local
+// renderer wrote the keys setup generated, not fixed ones: AGS and EGS sign
+// with their own keys, ES verifies with their public halves, EGS allows the
+// AGS key, every config is 0600, and the generated key files are gone.
+func assertRenderedSigningKeysAreThisInstalls(t *testing.T, proofDir string, rendered esconfig.Config) {
+	t.Helper()
+	type signer struct {
+		Algorithm     string `json:"algorithm"`
+		KeyID         string `json:"key_id"`
+		PrivateKeyHex string `json:"private_key_hex"`
+		PublicKeyHex  string `json:"public_key_hex"`
+	}
+	read := func(name string, target any) {
+		t.Helper()
+		path := filepath.Join(proofDir, name)
+		info, err := os.Lstat(path)
+		if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
+			t.Fatalf("%s must be a regular file with mode 0600: info=%v err=%v", name, info, err)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(data, target); err != nil {
+			t.Fatalf("decode %s: %v", name, err)
+		}
+	}
+	var ags struct {
+		Signer signer `json:"signer"`
+	}
+	var egs struct {
+		Signer       signer `json:"signer"`
+		RuntimeTrust struct {
+			SignerPolicy struct {
+				AllowedSigners []string `json:"allowed_signers"`
+			} `json:"signer_policy"`
+		} `json:"runtime_trust"`
+	}
+	read("ags.json", &ags)
+	read("egs.json", &egs)
+	read("ars.json", &map[string]any{})
+	read("es.json", &map[string]any{})
+	for role, s := range map[string]signer{"ags": ags.Signer, "egs": egs.Signer} {
+		seed, err := hex.DecodeString(s.PrivateKeyHex)
+		if err != nil || len(seed) != ed25519.SeedSize {
+			t.Fatalf("%s signer has no 32-byte seed", role)
+		}
+		public := ed25519.NewKeyFromSeed(seed).Public().(ed25519.PublicKey)
+		if hex.EncodeToString(public) != s.PublicKeyHex {
+			t.Fatalf("%s signer public key does not match its private key", role)
+		}
+		sum := sha256.Sum256(public)
+		if s.Algorithm != "ed25519" || s.KeyID != role+"-"+hex.EncodeToString(sum[:8]) {
+			t.Fatalf("%s signer key ID %q is not derived from its public key", role, s.KeyID)
+		}
+		if err := knownkeys.Check(role+" signer", public); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if ags.Signer.PublicKeyHex == egs.Signer.PublicKeyHex {
+		t.Fatal("AGS and EGS share one signing key")
+	}
+	if got := egs.RuntimeTrust.SignerPolicy.AllowedSigners; len(got) != 1 || got[0] != ags.Signer.KeyID {
+		t.Fatalf("EGS allows signers %q, want only this install's AGS key %q", got, ags.Signer.KeyID)
+	}
+	verification := rendered.Verification
+	if verification.TrustModel.KeyID != egs.Signer.KeyID || verification.TrustModel.PublicKeyHex != egs.Signer.PublicKeyHex {
+		t.Fatal("ES does not verify the trust model with this install's EGS key")
+	}
+	for name, v := range map[string]esconfig.SignerVerifierConfig{
+		"provenance":                verification.Provenance,
+		"derivation_attestation":    verification.DerivationAttestation,
+		"workload_identity_binding": verification.WorkloadIdentityBinding,
+	} {
+		if v.KeyID != ags.Signer.KeyID || v.PublicKeyHex != ags.Signer.PublicKeyHex {
+			t.Fatalf("ES does not verify %s with this install's AGS key", name)
+		}
+	}
+	if _, err := os.Lstat(filepath.Join(proofDir, "signing")); !os.IsNotExist(err) {
+		t.Fatalf("the renderer left the generated signing keys outside the configs: %v", err)
+	}
 }

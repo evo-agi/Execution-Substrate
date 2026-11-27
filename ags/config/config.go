@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"execution-substrate/internal/callerallowlist"
+	"execution-substrate/internal/knownkeys"
 )
 
 type Config struct {
@@ -189,7 +190,12 @@ func (s SignerConfig) Validate() error {
 	if len(publicKeyBytes) != ed25519.PublicKeySize {
 		return fmt.Errorf("signer.public_key_hex must be a %d-byte Ed25519 public key", ed25519.PublicKeySize)
 	}
-	return nil
+	// A known key would let anyone seal evidence as this AGS
+	// (.docs/system_overview/contracts.md, section 3B).
+	if err := knownkeys.CheckPrivate("signer.private_key_hex", privateKeyBytes); err != nil {
+		return err
+	}
+	return knownkeys.Check("signer.public_key_hex", publicKeyBytes)
 }
 
 func (c Config) ReadTimeout() time.Duration {

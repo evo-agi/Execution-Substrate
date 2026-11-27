@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"execution-substrate/egs/model"
+	"execution-substrate/internal/knownkeys"
 )
 
 type Config struct {
@@ -133,16 +134,23 @@ func (s SignerConfig) Validate() error {
 	if strings.TrimSpace(s.PrivateKeyHex) == "" {
 		return fmt.Errorf("signer.private_key_hex is required")
 	}
-	if _, err := hex.DecodeString(strings.TrimSpace(s.PrivateKeyHex)); err != nil {
+	privateKeyBytes, err := hex.DecodeString(strings.TrimSpace(s.PrivateKeyHex))
+	if err != nil {
 		return fmt.Errorf("signer.private_key_hex must be valid hex")
 	}
 	if strings.TrimSpace(s.PublicKeyHex) == "" {
 		return fmt.Errorf("signer.public_key_hex is required")
 	}
-	if _, err := hex.DecodeString(strings.TrimSpace(s.PublicKeyHex)); err != nil {
+	publicKeyBytes, err := hex.DecodeString(strings.TrimSpace(s.PublicKeyHex))
+	if err != nil {
 		return fmt.Errorf("signer.public_key_hex must be valid hex")
 	}
-	return nil
+	// A known key would let anyone sign a trust policy as this EGS
+	// (.docs/system_overview/contracts.md, section 3B).
+	if err := knownkeys.CheckPrivate("signer.private_key_hex", privateKeyBytes); err != nil {
+		return err
+	}
+	return knownkeys.Check("signer.public_key_hex", publicKeyBytes)
 }
 
 func (c Config) ReadTimeout() time.Duration {

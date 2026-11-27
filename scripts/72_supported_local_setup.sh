@@ -86,7 +86,8 @@ What it writes under /tmp/execution-substrate-supported-local-proof by default:
   - runtime CA and leaf certs
   - proof-scoped real SPIRE server/agent binaries, config, data, and sockets
   - SPIRE bundle-derived JWT validation material for Vault dev/test
-  - ARS/EGS/AGS/ES JSON configs
+  - ARS/EGS/AGS/ES JSON configs, mode 0600; ags.json and egs.json hold
+    this install's own freshly generated AGS and EGS signing keys
   - ARS storage root plus workload-zone Vault blob
   - managed-secrets.conf for generated proof bootstrap material
   - operator env.sh for scripts/01_bringup.sh and scripts/60_execute_loop.sh
@@ -1218,6 +1219,27 @@ EOF
   vault_with_proof_env "${proof_dir}" "${vault_local_address}" "${vault_root_token}" kv put "${codex_secret_logical_path}" "${codex_secret_field}=${codex_secret_value}" >/dev/null
 }
 
+# Each install signs with its own keys (.docs/system_overview/configuration.md,
+# "Signing keys"). This generates the AGS and EGS keys of this proof root with
+# scripts/internal/signingkeygen, into a folder only this user can open; the
+# config renderer below moves each key into its service's config, written
+# 0600, and removes the folder. AGS, EGS and ES refuse the keys of the
+# repository's example configurations (contracts.md, section 3B).
+generate_supported_local_signing_keys() {
+  local proof_dir=$1
+  local signing_dir="${proof_dir}/signing"
+  local role
+
+  require_supported_go_toolchain
+  (umask 077 && mkdir -- "${signing_dir}")
+  for role in ags egs; do
+    (
+      cd "${REPO_ROOT}"
+      env GOTOOLCHAIN=local go run ./scripts/internal/signingkeygen "${role}" "${signing_dir}/${role}-signer.json" >/dev/null
+    )
+  done
+}
+
 write_runtime_blob_and_configs() {
   local proof_dir=$1
   local vault_address=$2
@@ -1276,6 +1298,8 @@ import hashlib
 import json
 import os
 import pathlib
+import re
+import stat
 import sys
 
 proof_dir = pathlib.Path(sys.argv[1])
@@ -1315,6 +1339,45 @@ nomad_server_spki_sha256 = sys.argv[33]
 # in the preflight); es.json is never written without it.
 if len(nomad_server_spki_sha256) != 64 or any(c not in "0123456789abcdef" for c in nomad_server_spki_sha256):
     raise SystemExit("supported-local Nomad server key pin is missing; the preflight observes it from the running Nomad")
+# This install's own AGS and EGS signing keys, which
+# generate_supported_local_signing_keys made; configs are never written with
+# any other key.
+signing_dir = proof_dir / "signing"
+
+
+def read_signer(role):
+    path = signing_dir / f"{role}-signer.json"
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError:
+        raise SystemExit(f"supported-local {role} signing key is missing; generate_supported_local_signing_keys makes it")
+    with os.fdopen(fd, "rb") as handle:
+        info = os.fstat(handle.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o077:
+            raise SystemExit(f"supported-local {role} signing key must be a regular file that only this user can read")
+        try:
+            signer = json.loads(handle.read().decode("utf-8"))
+        except ValueError:
+            signer = None
+    if (
+        not isinstance(signer, dict)
+        or set(signer) != {"algorithm", "key_id", "private_key_hex", "public_key_hex"}
+        or signer["algorithm"] != "ed25519"
+        or not isinstance(signer["key_id"], str)
+        or not re.fullmatch(rf"{role}-[0-9a-f]{{16}}", signer["key_id"])
+        or not all(isinstance(signer[k], str) and re.fullmatch(r"[0-9a-f]{64}", signer[k]) for k in ("private_key_hex", "public_key_hex"))
+    ):
+        raise SystemExit(f"supported-local {role} signing key is not what scripts/internal/signingkeygen writes")
+    return signer
+
+
+ags_signer = read_signer("ags")
+egs_signer = read_signer("egs")
+
+
+def verifier(signer):
+    return {"algorithm": signer["algorithm"], "key_id": signer["key_id"], "public_key_hex": signer["public_key_hex"]}
+
 allow_control_plane = os.environ.get("SUPPORTED_LOCAL_ALLOW_CONTROL_PLANE", "0").strip().lower() in {"1", "true", "yes"}
 operator_and_maybe_control_plane = ["operator/local"]
 if allow_control_plane:
@@ -1358,14 +1421,9 @@ egs_cfg = {
         "client_ca_file": str(tls_dir / "runtime-ca.pem"),
     },
     "security": {"bootstrap_issuer_common_name": "Bootstrap Root CA Example"},
-    "signer": {
-        "algorithm": "ed25519",
-        "key_id": "egs-key-1",
-        "private_key_hex": "3333333333333333333333333333333333333333333333333333333333333333",
-        "public_key_hex": "17cb79fb2b4120f2b1ec65e4198d6e08b28e813feb01e4a400839b85e18080ce",
-    },
+    "signer": egs_signer,
     "runtime_trust": {
-        "signer_policy": {"allowed_signers": ["ags-key-1"], "revoked_signers": []},
+        "signer_policy": {"allowed_signers": [ags_signer["key_id"]], "revoked_signers": []},
         "artifact_policy": {"revoked_artifacts": []},
     },
     "publication": {"update_revision": 1, "version": "v1"},
@@ -1389,12 +1447,7 @@ ags_cfg = {
             "timeout_seconds": 5,
         }
     },
-    "signer": {
-        "algorithm": "ed25519",
-        "key_id": "ags-key-1",
-        "private_key_hex": "1111111111111111111111111111111111111111111111111111111111111111",
-        "public_key_hex": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737",
-    },
+    "signer": ags_signer,
 }
 es_cfg = {
     "http": {"bind_address": "127.0.0.1", "port": es_port, "read_timeout_seconds": 5, "write_timeout_seconds": 5, "shutdown_timeout_seconds": 5},
@@ -1425,10 +1478,10 @@ es_cfg = {
     },
     "runtime_config": {"workload_zone_vault_config_ref": {"digest": digest}},
     "verification": {
-        "trust_model": {"algorithm": "ed25519", "key_id": "egs-key-1", "public_key_hex": "17cb79fb2b4120f2b1ec65e4198d6e08b28e813feb01e4a400839b85e18080ce"},
-        "provenance": {"algorithm": "ed25519", "key_id": "ags-key-1", "public_key_hex": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737"},
-        "derivation_attestation": {"algorithm": "ed25519", "key_id": "ags-key-1", "public_key_hex": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737"},
-        "workload_identity_binding": {"algorithm": "ed25519", "key_id": "ags-key-1", "public_key_hex": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737"},
+        "trust_model": verifier(egs_signer),
+        "provenance": verifier(ags_signer),
+        "derivation_attestation": verifier(ags_signer),
+        "workload_identity_binding": verifier(ags_signer),
     },
     "workload_vault_auth": {"default_mode": "vault_identity_jwt"},
     "nomad": {
@@ -1463,13 +1516,24 @@ es_cfg = {
     },
 }
 
+# ags.json and egs.json hold this install's private signing keys, so every
+# config is created new, 0600, without following a link; only the user who
+# runs the services can read it.
 for name, payload in (
     ("ars.json", ars_cfg),
     ("egs.json", egs_cfg),
     ("ags.json", ags_cfg),
     ("es.json", es_cfg),
 ):
-    (proof_dir / name).write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    data = (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    fd = os.open(proof_dir / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "wb") as handle:
+        os.fchmod(handle.fileno(), 0o600)
+        handle.write(data)
+# Each key now lives only in its service's config.
+for role in ("ags", "egs"):
+    (signing_dir / f"{role}-signer.json").unlink()
+signing_dir.rmdir()
 PY
 }
 
@@ -1645,6 +1709,9 @@ setup() {
     "${CODEX_CREDENTIAL_SECRET_PATH}" \
     "${CODEX_CREDENTIAL_SECRET_FIELD}" \
     "${codex_credential_value}"
+
+  echo "==> generating this install's own AGS and EGS signing keys"
+  generate_supported_local_signing_keys "${PROOF_DIR}"
 
   echo "==> writing proof configs and workload-zone Vault blob"
   write_runtime_blob_and_configs \
