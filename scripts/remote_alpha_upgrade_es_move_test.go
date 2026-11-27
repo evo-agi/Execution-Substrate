@@ -912,6 +912,33 @@ func TestRemoteAlphaUpgradeESRollsBackOnlyTheApplyThatLeftTheHost(t *testing.T) 
 		}
 	})
 
+	// A folder standing where a backed-up file goes back cannot be replaced
+	// by the restore's rename: it is refused before a service is touched
+	// (re-check 52 of #67, O52-1), not found by the rename once ES and Nomad
+	// are stopped and the first file is back.
+	t.Run("a folder where a file goes back, made since the apply", func(t *testing.T) {
+		h, _, backupDir := applied(t)
+		config := h.path("etc/execution-substrate/es.json")
+		if err := os.Remove(config); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(config, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		before, files := h.snapshot(), backupFiles(t, h)
+		h.clearCalls()
+		_, stderr, code := h.run("rollback", "--backup-dir", backupDir)
+		want := "remote alpha ES upgrade refused: " + config + ", which the backup puts back as a file, is a folder now; remove it; nothing was changed"
+		if code != 1 || strings.Contains(stderr, "Traceback") || !strings.Contains(stderr, want) {
+			t.Fatalf("rollback exited %d, want %q: %s", code, want, stderr)
+		}
+		onlyReads(t, h, "a refused rollback")
+		assertRestored(t, before, h.snapshot())
+		if after := backupFiles(t, h); fmt.Sprint(after) != fmt.Sprint(files) {
+			t.Fatalf("a refused rollback changed the backups: %q -> %q", files, after)
+		}
+	})
+
 	t.Run("an older backup after a later apply, in and out of order", func(t *testing.T) {
 		h, before, first := applied(t)
 		afterFirst := h.snapshot()
@@ -1082,6 +1109,18 @@ m.backup_files = _cut`, "/manifest.json is missing: "},
 	fixed := func(text string) func(*testing.T, []byte) []byte {
 		return func(*testing.T, []byte) []byte { return []byte(text) }
 	}
+	// loneSurrogateIn ends the first value of key in the manifest with JSON's
+	// "\ud800", byte for byte: Go's JSON encoder cannot write a lone surrogate.
+	loneSurrogateIn := func(key string) func(*testing.T, []byte) []byte {
+		return func(t *testing.T, manifest []byte) []byte {
+			value := regexp.MustCompile(`"` + key + `": "[^"]+`)
+			at := value.FindIndex(manifest)
+			if at == nil {
+				t.Fatalf("the manifest has no %s: %s", key, manifest)
+			}
+			return slices.Concat(manifest[:at[1]], []byte(`\ud800`), manifest[at[1]:])
+		}
+	}
 	for _, bad := range []struct {
 		name, document string
 		write          func(t *testing.T, was []byte) []byte
@@ -1173,6 +1212,12 @@ m.backup_files = _cut`, "/manifest.json is missing: "},
 			entryWith(func(entry map[string]any) { entry["path"] = "etc/execution-substrate/es.json" }), "path, 'etc/execution-substrate/es.json', is not a clean absolute path); nothing was changed"},
 		{"manifest.json naming a copy that is not in files/", "manifest.json",
 			entryWith(func(entry map[string]any) { entry["copy"] = "99-missing" }), "/files/99-missing, is missing; nothing was changed"},
+		// Re-check 52 of #67 (N67-10): a string no file name can hold, which
+		// open() refuses with UnicodeEncodeError, not OSError.
+		{"manifest.json with a lone surrogate in a copy's name", "manifest.json", loneSurrogateIn("copy"),
+			"copy name holds a character no file name can hold); nothing was changed"},
+		{"manifest.json with a lone surrogate in a path", "manifest.json", loneSurrogateIn("path"),
+			"path holds a character no file name can hold); nothing was changed"},
 		{"created.json naming a list", "created.json", fixed(`[["/etc/nomad.d/tls"]]`), "the backup's created.json names paths that apply does not create"},
 		{"created.json naming a number", "created.json", fixed(`[7]`), "the backup's created.json names paths that apply does not create"},
 	} {

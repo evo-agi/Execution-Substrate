@@ -7589,13 +7589,19 @@ and nothing recorded:
   four-digit octal mode and an owner and group that are non-negative
   integers below 2^32 - 1 (Linux's largest owner and group; `chown` reads
   2^32 - 1 as "leave it as it is"), with no NUL in a path or a
-  copy name; one that does not name exactly the four files `apply` backs up
+  copy name and no character a file name cannot hold (a lone surrogate,
+  JSON's `"\ud800"`; a byte that is not UTF-8, which Python reads as a
+  surrogate that stands for that byte, is a file name's and passes); one
+  that does not name exactly the four files `apply` backs up
   (`es.json`, `es`, `es-runtime-support` and `nomad.hcl`, in that order);
   one whose copy is missing from `files/`, is not a regular file there or
   does not match its digest and size; and a `created.json` that is not a
   list of the paths `apply` creates. It also refuses a backup with a file
-  whose folder is gone from the host, since the file cannot go back there.
-  Each is refused before a service is
+  that existed at backup time whose folder is gone from the host or is not
+  a folder, or whose path is a folder now (a rename cannot replace a
+  folder; a link or another non-file there is replaced) or cannot be looked
+  at, since the file cannot go back there; a file that was absent at backup
+  time is not put back and needs neither. Each is refused before a service is
   stopped, so no value the check admits ends a restore part way; one cut off
   after `earlier.json` counts as a later backup, so it is put back first
   (it puts back the files it found). If
@@ -7919,9 +7925,17 @@ fraction), and values of the right type that a restore could not use (an
 owner of 2^32 - 1, which `chown` reads as "leave it as it is", a group far too large, an empty or relative
 path, a copy missing from `files/`), and a `created.json` naming a list or
 a number, each refused with nothing changed, a `rollback` with a folder a
-file goes back into gone since the apply, refused before a service is
-touched, and a `restore` into a folder that is gone refused before the
-first file is put back; an https restore
+file goes back into gone since the apply, and a `manifest.json` with a
+lone surrogate in a copy's name or a path, and a folder made where a file
+goes back, each refused before a service is touched, and a `restore` into
+a folder that is gone refused before the first file is put back; a
+`restore` refusing, before the first file is put back, a lone surrogate in
+a copy's name or a path, a copy too long a name to open, a file where a
+file's folder was, a mode that is not four octal digits (`640`, `00640`,
+`17777` and thirteen digits), a folder where a file goes back (leaving no
+temporary file beside it) and a path too long to look at, and putting back
+the others when the folder of a file absent at backup time is gone, and a
+file whose name holds a byte that is not UTF-8 (Linux); an https restore
 whose `es.json` does not hold against Nomad, by `rollback` and by `apply`'s
 own rollback; a rollback after which ES does not answer; an installed
 binary missing, and a rollback record's name taken, each refused; the
