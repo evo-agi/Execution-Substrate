@@ -197,3 +197,12 @@ skips-itself execution-substrate/scripts TestRemoteAlphaHostFirewallSSHDDropInWi
 # without root, so the test skips itself there. It makes the key files
 # itself, since the go command never runs as root in the step that runs it.
 skips-itself execution-substrate/scripts TestSupportedLocalRendererRefusesASigningKeyFileAnotherUserOwns
+
+# Scripts package: the Remote Alpha signing key rotation must keep the owner
+# and group of every file it rewrites or restores, and refuse a config, an
+# index or a backup root that another account owns
+# (scripts/internal/remote_alpha_rotate_signing_keys.py). Giving files to
+# other owners and groups needs root, and the runner runs the tests without
+# root, so the test skips itself there. The rest of the rotation's tests run
+# in the gate without root.
+skips-itself execution-substrate/scripts TestSigningKeyRotationKeepsOwnersAndGroupsAsRoot

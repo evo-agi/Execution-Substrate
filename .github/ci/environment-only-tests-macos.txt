@@ -165,6 +165,11 @@ skips-itself execution-substrate/scripts TestRemoteAlphaUpgradeESMovesARealNomad
 # runs only on the box. go.yml runs the test.
 skips-itself execution-substrate/scripts TestSigningKeyRotationKeysFromOpenSSL
 
+# The signing key rotation's owner and group test gives files to other
+# owners and groups, which needs root. The macOS runner runs the tests
+# without root, so it skips itself. go.yml runs it as root.
+skips-itself execution-substrate/scripts TestSigningKeyRotationKeepsOwnersAndGroupsAsRoot
+
 # The supported-local renderer's signing key tests source
 # scripts/72_supported_local_setup.sh, which runs on Linux; a Mac runs it in
 # its Lima guest. Both tests skip themselves on any other system. go.yml runs

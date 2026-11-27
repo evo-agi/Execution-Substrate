@@ -336,6 +336,17 @@ BACKUP_ROOT_DIR = sys.argv[10]
 REPO_ROOT = pathlib.Path(sys.argv[11])
 CURRENT_SUPPORTED_SERVICE_IDENTITY = ("es", "es")
 SUPPORTED_GO_VERSION = "go1.26.5"
+# The config checks the payload carries, built from the same tree as the
+# binaries, and the config each one judges. The new ES refuses an es.json
+# that the running one accepted, such as one that still verifies with the
+# repository's published keys (.docs/system_overview/contracts.md, section
+# 3B); the new AGS and EGS refuse the same of ags.json and egs.json. So apply
+# installs nothing, and restarts nothing, until all three pass.
+CONFIG_CHECKS = (
+    ("es", "esconfigcheck", CONFIG_PATH),
+    ("ags", "agsconfigcheck", os.path.join(os.path.dirname(CONFIG_PATH), "ags.json")),
+    ("egs", "egsconfigcheck", os.path.join(os.path.dirname(CONFIG_PATH), "egs.json")),
+)
 
 
 def utc_now():
@@ -615,6 +626,11 @@ def compute_source_digest_manifest(repo_root):
         repo_root / "cmd" / "es-runtime-support",
         repo_root / "es",
         repo_root / "internal",
+        repo_root / "ags",
+        repo_root / "egs",
+        repo_root / "scripts" / "internal" / "esconfigcheck",
+        repo_root / "scripts" / "internal" / "agsconfigcheck",
+        repo_root / "scripts" / "internal" / "egsconfigcheck",
     ]
     files = []
     for item in interesting:
@@ -648,6 +664,9 @@ def build_local_payload(repo_root):
         ["env", "GOTOOLCHAIN=local", "CGO_ENABLED=0", "GOOS=linux", "GOARCH=amd64", "go", "build", "-o", os.fspath(es_path), "./cmd/es"],
         ["env", "GOTOOLCHAIN=local", "CGO_ENABLED=0", "GOOS=linux", "GOARCH=amd64", "go", "build", "-o", os.fspath(runtime_path), "./cmd/es-runtime-support"],
     ]
+    for _service, checker, _config in CONFIG_CHECKS:
+        build_commands.append(["env", "GOTOOLCHAIN=local", "CGO_ENABLED=0", "GOOS=linux", "GOARCH=amd64", "go", "build", "-o",
+                               os.fspath(tmpdir / checker), "./scripts/internal/" + checker])
     for command in build_commands:
         proc = run_command(command, cwd=os.fspath(repo_root))
         if proc.returncode != 0:
@@ -668,6 +687,7 @@ def build_local_payload(repo_root):
     return {
         "es_path": es_path,
         "runtime_path": runtime_path,
+        "config_checks": {checker: tmpdir / checker for _service, checker, _config in CONFIG_CHECKS},
         "provenance": provenance,
     }, make_status("pass", "built repo-owned linux/amd64 payload through the established build path")
 
@@ -679,6 +699,10 @@ def load_staged_payload(repo_root):
     provenance_path = payload_dir / "build-provenance.json"
     if not es_path.exists() or not runtime_path.exists():
         return None, make_status("blocker", "staged payload binaries are missing from the sealed helper payload directory")
+    config_checks = {checker: payload_dir / checker for _service, checker, _config in CONFIG_CHECKS}
+    missing = [name for name, path in config_checks.items() if not path.exists()]
+    if missing:
+        return None, make_status("blocker", "staged payload config checks are missing from the sealed helper payload directory: " + ", ".join(missing))
     provenance = {}
     if provenance_path.exists():
         try:
@@ -688,6 +712,7 @@ def load_staged_payload(repo_root):
     return {
         "es_path": es_path,
         "runtime_path": runtime_path,
+        "config_checks": config_checks,
         "provenance": provenance,
     }, make_status("pass", "loaded staged linux/amd64 payload binaries")
 
@@ -701,8 +726,38 @@ def discover_payload():
     return None, staged_status
 
 
+def run_config_checks(payload):
+    """Run each config check of the payload on the config it judges, with an
+    environment of its own. A config the new binary would refuse, and a
+    check that cannot run, are blockers."""
+    results = {}
+    for service, checker, config_path in CONFIG_CHECKS:
+        fields = {"config_path": config_path, "checker": checker}
+        if payload is None:
+            results[service] = make_status("not_observed", "no payload, so the config check did not run", **fields)
+            continue
+        try:
+            proc = subprocess.run([os.fspath(payload["config_checks"][checker]), config_path], capture_output=True, text=True,
+                                  env={"PATH": "/usr/bin:/bin", "LC_ALL": "C"}, timeout=60, check=False)
+        except (OSError, subprocess.SubprocessError) as exc:
+            results[service] = make_status("blocker", f"the config check {checker} could not run: {exc}", **fields)
+            continue
+        if proc.returncode == 0:
+            results[service] = make_status("pass", f"the new {service} accepts {config_path}", **fields)
+            continue
+        reason = (proc.stderr.strip() or proc.stdout.strip() or f"exit status {proc.returncode}")[:600]
+        results[service] = make_status(
+            "blocker",
+            f"the new {service} would refuse {config_path}, so nothing is installed: {reason}",
+            exit_status=proc.returncode,
+            **fields,
+        )
+    return results
+
+
 def compute_check_summary():
     payload, payload_status = discover_payload()
+    config_check_status = run_config_checks(payload)
     service_status = parse_systemctl_show()
     runtime_config_status = load_runtime_config()
     health_env_status = load_healthcheck_env()
@@ -734,7 +789,7 @@ def compute_check_summary():
         ("healthcheck_env", health_env_status),
         ("live_es_binary", binary_status),
         ("live_runtime_support_binary", runtime_status),
-    ]:
+    ] + [(f"{service}_config_check", config_check_status[service]) for service, _checker, _config in CONFIG_CHECKS]:
         if status["classification"] == "blocker":
             blockers.append({"scope": scope, "summary": status["summary"]})
 
@@ -809,6 +864,7 @@ def compute_check_summary():
             "es_service_posture": service_status,
             "runtime_config": runtime_config_status,
             "healthcheck_env": health_env_status,
+            "config_checks": config_check_status,
         },
         "plan": plan,
         "blockers": blockers,
@@ -1140,6 +1196,9 @@ remote_alpha_deploy_es_binaries_stage_required_upload_paths() {
     "scripts/internal/remote_alpha_deploy_es_binaries.sh" \
     "payload/es" \
     "payload/es-runtime-support" \
+    "payload/esconfigcheck" \
+    "payload/agsconfigcheck" \
+    "payload/egsconfigcheck" \
     "payload/build-provenance.json"
 }
 
@@ -1169,6 +1228,11 @@ remote_alpha_deploy_es_binaries_stage_make_local_payload_tree() {
   remote_alpha_deploy_es_binaries_require_supported_go_toolchain || return 1
   env GOTOOLCHAIN=local CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o "${payload_dir}/es" ./cmd/es || return 1
   env GOTOOLCHAIN=local CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o "${payload_dir}/es-runtime-support" ./cmd/es-runtime-support || return 1
+  # The config checks of ES, AGS and EGS from the same tree: apply runs them
+  # on the box's configs before it installs anything.
+  env GOTOOLCHAIN=local CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o "${payload_dir}/esconfigcheck" ./scripts/internal/esconfigcheck || return 1
+  env GOTOOLCHAIN=local CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o "${payload_dir}/agsconfigcheck" ./scripts/internal/agsconfigcheck || return 1
+  env GOTOOLCHAIN=local CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o "${payload_dir}/egsconfigcheck" ./scripts/internal/egsconfigcheck || return 1
 
   python3 -I - "${payload_dir}/build-provenance.json" "${REPO_ROOT}" <<'PY'
 import hashlib
@@ -1190,6 +1254,11 @@ paths = [
     repo_root / "cmd" / "es-runtime-support",
     repo_root / "es",
     repo_root / "internal",
+    repo_root / "ags",
+    repo_root / "egs",
+    repo_root / "scripts" / "internal" / "esconfigcheck",
+    repo_root / "scripts" / "internal" / "agsconfigcheck",
+    repo_root / "scripts" / "internal" / "egsconfigcheck",
 ]
 manifest = []
 for item in paths:
@@ -1221,6 +1290,9 @@ payload = {
     "build_commands": [
         "env GOTOOLCHAIN=local CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o payload/es ./cmd/es",
         "env GOTOOLCHAIN=local CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o payload/es-runtime-support ./cmd/es-runtime-support",
+        "env GOTOOLCHAIN=local CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o payload/esconfigcheck ./scripts/internal/esconfigcheck",
+        "env GOTOOLCHAIN=local CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o payload/agsconfigcheck ./scripts/internal/agsconfigcheck",
+        "env GOTOOLCHAIN=local CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o payload/egsconfigcheck ./scripts/internal/egsconfigcheck",
     ],
     "source_file_digests": manifest,
 }
@@ -1445,6 +1517,9 @@ ${sudo_cmd} install -m 0755 -o root -g root "\${upload_root}/scripts/remote_alph
 ${sudo_cmd} install -m 0644 -o root -g root "\${upload_root}/scripts/internal/remote_alpha_deploy_es_binaries.sh" "\${staging_root}/scripts/internal/remote_alpha_deploy_es_binaries.sh"
 ${sudo_cmd} install -m 0755 -o root -g root "\${upload_root}/payload/es" "\${staging_root}/payload/es"
 ${sudo_cmd} install -m 0755 -o root -g root "\${upload_root}/payload/es-runtime-support" "\${staging_root}/payload/es-runtime-support"
+${sudo_cmd} install -m 0755 -o root -g root "\${upload_root}/payload/esconfigcheck" "\${staging_root}/payload/esconfigcheck"
+${sudo_cmd} install -m 0755 -o root -g root "\${upload_root}/payload/agsconfigcheck" "\${staging_root}/payload/agsconfigcheck"
+${sudo_cmd} install -m 0755 -o root -g root "\${upload_root}/payload/egsconfigcheck" "\${staging_root}/payload/egsconfigcheck"
 ${sudo_cmd} install -m 0644 -o root -g root "\${upload_root}/payload/build-provenance.json" "\${staging_root}/payload/build-provenance.json"
 rm -rf -- "\${upload_root}"
 EOF
@@ -1489,6 +1564,9 @@ sudo install -m 0755 -o root -g root "\${upload_root}/scripts/remote_alpha_deplo
 sudo install -m 0644 -o root -g root "\${upload_root}/scripts/internal/remote_alpha_deploy_es_binaries.sh" "\${staging_root}/scripts/internal/remote_alpha_deploy_es_binaries.sh"
 sudo install -m 0755 -o root -g root "\${upload_root}/payload/es" "\${staging_root}/payload/es"
 sudo install -m 0755 -o root -g root "\${upload_root}/payload/es-runtime-support" "\${staging_root}/payload/es-runtime-support"
+sudo install -m 0755 -o root -g root "\${upload_root}/payload/esconfigcheck" "\${staging_root}/payload/esconfigcheck"
+sudo install -m 0755 -o root -g root "\${upload_root}/payload/agsconfigcheck" "\${staging_root}/payload/agsconfigcheck"
+sudo install -m 0755 -o root -g root "\${upload_root}/payload/egsconfigcheck" "\${staging_root}/payload/egsconfigcheck"
 sudo install -m 0644 -o root -g root "\${upload_root}/payload/build-provenance.json" "\${staging_root}/payload/build-provenance.json"
 rm -rf -- "\${upload_root}"
 
@@ -1501,6 +1579,9 @@ for path in \
   "\${staging_root}/scripts/internal/remote_alpha_deploy_es_binaries.sh" \
   "\${staging_root}/payload/es" \
   "\${staging_root}/payload/es-runtime-support" \
+  "\${staging_root}/payload/esconfigcheck" \
+  "\${staging_root}/payload/agsconfigcheck" \
+  "\${staging_root}/payload/egsconfigcheck" \
   "\${staging_root}/payload/build-provenance.json"
 do
   owner=\$(sudo stat -c '%U' "\${path}")
@@ -1581,14 +1662,14 @@ for raw_line in stat_path.read_text(encoding="utf-8").splitlines():
     if not inside_staging_root:
         errors.append(f"path is outside the staged helper root: {path}")
 
-if len(items) != 9:
-    errors.append(f"expected 9 staged helper paths, found {len(items)}")
+if len(items) != 12:
+    errors.append(f"expected 12 staged helper paths, found {len(items)}")
 
 payload = {
     "staged_root": staging_root,
     "items": items,
     "validation_errors": errors,
-    "root_owned_before_execution": not errors and len(items) == 9,
+    "root_owned_before_execution": not errors and len(items) == 12,
 }
 output_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
@@ -1711,6 +1792,9 @@ sudo install -m 0755 -o root -g root "\${upload_root}/scripts/remote_alpha_deplo
 sudo install -m 0644 -o root -g root "\${upload_root}/scripts/internal/remote_alpha_deploy_es_binaries.sh" "\${staging_root}/scripts/internal/remote_alpha_deploy_es_binaries.sh"
 sudo install -m 0755 -o root -g root "\${upload_root}/payload/es" "\${staging_root}/payload/es"
 sudo install -m 0755 -o root -g root "\${upload_root}/payload/es-runtime-support" "\${staging_root}/payload/es-runtime-support"
+sudo install -m 0755 -o root -g root "\${upload_root}/payload/esconfigcheck" "\${staging_root}/payload/esconfigcheck"
+sudo install -m 0755 -o root -g root "\${upload_root}/payload/agsconfigcheck" "\${staging_root}/payload/agsconfigcheck"
+sudo install -m 0755 -o root -g root "\${upload_root}/payload/egsconfigcheck" "\${staging_root}/payload/egsconfigcheck"
 sudo install -m 0644 -o root -g root "\${upload_root}/payload/build-provenance.json" "\${staging_root}/payload/build-provenance.json"
 rm -rf -- "\${upload_root}"
 
@@ -1880,6 +1964,18 @@ payload = {
             "local_path": "payload/es-runtime-support",
             "remote_path": remote_staged_path + "/payload/es-runtime-support",
         },
+        {
+            "local_path": "payload/esconfigcheck",
+            "remote_path": remote_staged_path + "/payload/esconfigcheck",
+        },
+        {
+            "local_path": "payload/agsconfigcheck",
+            "remote_path": remote_staged_path + "/payload/agsconfigcheck",
+        },
+        {
+            "local_path": "payload/egsconfigcheck",
+            "remote_path": remote_staged_path + "/payload/egsconfigcheck",
+        },
     ],
 }
 pathlib.Path(output_path).write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -1939,6 +2035,9 @@ remote_alpha_deploy_es_binaries_stage_main() {
     "${REPO_ROOT}/scripts/internal/remote_alpha_deploy_es_binaries.sh"
     "${local_upload_dir}/payload/es"
     "${local_upload_dir}/payload/es-runtime-support"
+    "${local_upload_dir}/payload/esconfigcheck"
+    "${local_upload_dir}/payload/agsconfigcheck"
+    "${local_upload_dir}/payload/egsconfigcheck"
     "${local_upload_dir}/payload/build-provenance.json"
   )
   remote_alpha_deploy_es_binaries_stage_local_file_meta "${REMOTE_ALPHA_STAGE_ES_BINARY_DEPLOY_LOCAL_FILE_META_PATH}" "${helper_paths[@]}"
@@ -2011,6 +2110,9 @@ for path in \
   "${staging_root}/scripts/internal/remote_alpha_deploy_es_binaries.sh" \
   "${staging_root}/payload/es" \
   "${staging_root}/payload/es-runtime-support" \
+  "${staging_root}/payload/esconfigcheck" \
+  "${staging_root}/payload/agsconfigcheck" \
+  "${staging_root}/payload/egsconfigcheck" \
   "${staging_root}/payload/build-provenance.json"
 do
   owner=$(sudo -n stat -c "%U" "${path}")

@@ -44,17 +44,27 @@ const esConfigCheckMainBody = `{
 // it needs to report the result; and main must be exactly
 // esConfigCheckMainBody.
 func TestESConfigCheckOnlyCallsConfigLoad(t *testing.T) {
+	requireThinConfigCheck(t, "esconfigcheck", esConfigCheckSource, "execution-substrate/es/config", esConfigCheckMainBody)
+}
+
+// requireThinConfigCheck holds the config check of one service, in the one
+// file source, to these rules: it imports only fmt, os and the service's
+// config package (configImport), declares only main, calls only
+// config.Load (once), len, and the fmt and os functions it needs to report
+// the result, and its main is exactly mainBody.
+func requireThinConfigCheck(t *testing.T, name, source, configImport, mainBody string) {
+	t.Helper()
 	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, repoPath(esConfigCheckSource), nil, parser.SkipObjectResolution)
+	file, err := parser.ParseFile(fset, repoPath(source), nil, parser.SkipObjectResolution)
 	if err != nil {
 		t.Fatal(err)
 	}
-	entries, err := os.ReadDir(filepath.Dir(repoPath(esConfigCheckSource)))
+	entries, err := os.ReadDir(filepath.Dir(repoPath(source)))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(entries) != 1 || entries[0].Name() != "main.go" {
-		t.Fatalf("esconfigcheck must be the one file main.go, found %d entries", len(entries))
+		t.Fatalf("%s must be the one file main.go, found %d entries", name, len(entries))
 	}
 
 	var imports []string
@@ -69,26 +79,26 @@ func TestESConfigCheckOnlyCallsConfigLoad(t *testing.T) {
 		imports = append(imports, path)
 	}
 	sort.Strings(imports)
-	if got, want := strings.Join(imports, " "), "execution-substrate/es/config fmt os"; got != want {
-		t.Fatalf("esconfigcheck imports %q, want %q", got, want)
+	if got, want := strings.Join(imports, " "), configImport+" fmt os"; got != want {
+		t.Fatalf("%s imports %q, want %q", name, got, want)
 	}
 
 	for _, decl := range file.Decls {
 		switch d := decl.(type) {
 		case *ast.GenDecl:
 			if d.Tok != token.IMPORT {
-				t.Fatalf("esconfigcheck declares a %s at %s; only main is allowed", d.Tok, fset.PositionFor(d.Pos(), false))
+				t.Fatalf("%s declares a %s at %s; only main is allowed", name, d.Tok, fset.PositionFor(d.Pos(), false))
 			}
 		case *ast.FuncDecl:
 			if d.Name.Name != "main" || d.Recv != nil {
-				t.Fatalf("esconfigcheck declares func %s at %s; only main is allowed", d.Name.Name, fset.PositionFor(d.Pos(), false))
+				t.Fatalf("%s declares func %s at %s; only main is allowed", name, d.Name.Name, fset.PositionFor(d.Pos(), false))
 			}
 			var body bytes.Buffer
 			if err := format.Node(&body, fset, d.Body); err != nil {
 				t.Fatal(err)
 			}
-			if body.String() != esConfigCheckMainBody {
-				t.Errorf("esconfigcheck's main changed; it must stay exactly:\n%s\ngot:\n%s", esConfigCheckMainBody, body.String())
+			if body.String() != mainBody {
+				t.Errorf("%s's main changed; it must stay exactly:\n%s\ngot:\n%s", name, mainBody, body.String())
 			}
 		}
 	}
@@ -101,28 +111,28 @@ func TestESConfigCheckOnlyCallsConfigLoad(t *testing.T) {
 	ast.Inspect(file, func(n ast.Node) bool {
 		switch node := n.(type) {
 		case *ast.FuncLit:
-			t.Errorf("esconfigcheck has a function literal at %s", fset.PositionFor(node.Pos(), false))
+			t.Errorf("%s has a function literal at %s", name, fset.PositionFor(node.Pos(), false))
 		case *ast.CallExpr:
-			name := ""
+			called := ""
 			switch fun := node.Fun.(type) {
 			case *ast.Ident:
-				name = fun.Name
+				called = fun.Name
 			case *ast.SelectorExpr:
 				if pkg, ok := fun.X.(*ast.Ident); ok {
-					name = pkg.Name + "." + fun.Sel.Name
+					called = pkg.Name + "." + fun.Sel.Name
 				}
 			}
-			if !allowed[name] {
-				t.Errorf("esconfigcheck calls %q at %s; it may call only config.Load and the reporting functions", name, fset.PositionFor(node.Pos(), false))
+			if !allowed[called] {
+				t.Errorf("%s calls %q at %s; it may call only config.Load and the reporting functions", name, called, fset.PositionFor(node.Pos(), false))
 			}
-			if name == "config.Load" {
+			if called == "config.Load" {
 				loads++
 			}
 		}
 		return true
 	})
 	if loads != 1 {
-		t.Fatalf("esconfigcheck calls config.Load %d times, want once", loads)
+		t.Fatalf("%s calls config.Load %d times, want once", name, loads)
 	}
 }
 
@@ -217,12 +227,19 @@ func TestESConfigCheckAgreesWithConfigLoad(t *testing.T) {
 
 func buildESConfigCheck(t *testing.T) string {
 	t.Helper()
-	out := filepath.Join(t.TempDir(), "esconfigcheck")
-	cmd := exec.Command("go", "build", "-o", out, "execution-substrate/scripts/internal/esconfigcheck")
+	return buildConfigCheck(t, "esconfigcheck")
+}
+
+// buildConfigCheck builds scripts/internal/<name> for the machine running
+// the test.
+func buildConfigCheck(t *testing.T, name string) string {
+	t.Helper()
+	out := filepath.Join(t.TempDir(), name)
+	cmd := exec.Command("go", "build", "-o", out, "execution-substrate/scripts/internal/"+name)
 	cmd.Dir = executionSubstrateRepoRoot
 	cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
 	if output, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("build esconfigcheck: %v\n%s", err, output)
+		t.Fatalf("build %s: %v\n%s", name, err, output)
 	}
 	return out
 }

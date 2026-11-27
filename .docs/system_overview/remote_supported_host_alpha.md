@@ -5909,6 +5909,9 @@ for this surface:
 - `scripts/internal/remote_alpha_deploy_es_binaries.sh`
 - one staged payload file for `/usr/local/lib/execution-substrate/bin/es`
 - one staged payload file for `/usr/local/bin/es-runtime-support`
+- three staged config checks, `payload/esconfigcheck`,
+  `payload/agsconfigcheck` and `payload/egsconfigcheck`, built from the same
+  tree as the binaries
 - one staged payload provenance file `payload/build-provenance.json`
 
 The repo-side upload step must preserve the exact remote relative paths the
@@ -5918,6 +5921,9 @@ root-owned install step later consumes:
 - `<upload-root>/scripts/internal/remote_alpha_deploy_es_binaries.sh`
 - `<upload-root>/payload/es`
 - `<upload-root>/payload/es-runtime-support`
+- `<upload-root>/payload/esconfigcheck`
+- `<upload-root>/payload/agsconfigcheck`
+- `<upload-root>/payload/egsconfigcheck`
 - `<upload-root>/payload/build-provenance.json`
 
 Execution must still run only from a root-owned staged path under
@@ -5950,6 +5956,17 @@ The required operator flow for this binary-deployment surface is:
 3. Use `--apply` only after explicit approval and after the helper reports no
    blockers other than `deployment_needed`, with
    `plan.service_identity_matches_current_supported_posture=true`.
+   Check-only and apply both run the payload's three config checks on
+   `/etc/execution-substrate/es.json`, `ags.json` and `egs.json` first. Each
+   is a thin wrapper around its service's own `config.Load`
+   (`scripts/internal/esconfigcheck`, `agsconfigcheck`, `egsconfigcheck`),
+   so a config that the ES, AGS or EGS of the payload's tree would refuse at
+   startup, such as one still on the repository's published signing keys
+   (`.docs/system_overview/contracts.md`, section 3B), is the blocker
+   `es_config_check`, `ags_config_check` or `egs_config_check`, and apply
+   then installs nothing and restarts nothing. On the box this puts the
+   signing key rotation ("Remote Signing Key Rotation") before a binary
+   deployment from a tree that refuses the published keys.
 4. Preserve the apply summary, backup path, rollback notes, exact changed
    binary paths, preserved live `es.service` identity, and post-restart
    `/health` plus `GET /v1/executions:contract` validation as the bounded
@@ -7484,14 +7501,16 @@ passwordless `sudo`.
 ## Remote Signing Key Rotation
 
 `Bounded slice rule`: gives the Remote Alpha box's AGS and EGS new signing
-keys, and points EGS and ES at them, in one step with a backup. Each host
-signs with its own keys (`.docs/system_overview/configuration.md`, "Signing
-keys"), and AGS, EGS and ES refuse the keys of the repository's example
-configurations at startup (`.docs/system_overview/contracts.md`, section
-3B). The box was set up with those keys (read-only check of 2026-11-27), so
-the ES upgrade's config check refuses it until this rotation has run. The
-rotation changes only `ags.json`, `egs.json` and `es.json`; it does not
-change a binary, a unit file, TLS material, ARS, or anything ARS stores.
+keys, points EGS and ES at them, and retires ARS's index, in one step with a
+backup. Each host signs with its own keys
+(`.docs/system_overview/configuration.md`, "Signing keys"), and AGS, EGS and
+ES refuse the keys of the repository's example configurations at startup
+(`.docs/system_overview/contracts.md`, section 3B). The box was set up with
+those keys (read-only check of 2026-11-27), so the ES upgrade's config check
+and the ES binary deployment's config checks refuse it until this rotation
+has run. The rotation changes only `ags.json`, `egs.json`, `es.json` and
+ARS's index file; it does not change a binary, a unit file, TLS material,
+`ars.json`, or a blob ARS stores.
 
 Scripts:
 
@@ -7499,98 +7518,191 @@ Scripts:
   Python core with `python3 -I -B`
 - internal: `scripts/internal/remote_alpha_rotate_signing_keys.py`
 
-Operator interface, all as root from a clone root owns:
+Operator interface, all as root from a clone root owns (each command first
+refuses a clone that another account could change, as the ES upgrade does):
 
 - `sudo scripts/remote_alpha_rotate_signing_keys.sh check` reads only. It
   prints a JSON report (schema
   `execution-substrate.remote-alpha.signing-key-rotation.v1`) with each
   config's SHA-256, owner and mode, the current AGS and EGS key IDs and
-  public keys and whether each private seed is one byte repeated, the state
-  of the `egs`, `ags` and `es` units and the health answers, how many
-  records ARS's index holds, every change `apply` would make, and the
-  problems, and exits 1 with nothing changed when there is one. A config it
-  cannot read as a regular JSON file (a symbolic link, say) stops it with
-  that reason and no report.
+  public keys and whether each private seed is one byte repeated, ARS's
+  index and how many records it holds, the state of the `ars`, `egs`, `ags`
+  and `es` units and their answers, every change `apply` would make, and the
+  problems, and exits 1 with nothing changed when there is one.
 - `sudo scripts/remote_alpha_rotate_signing_keys.sh apply` runs the same
   checks, then the steps below.
 - `sudo scripts/remote_alpha_rotate_signing_keys.sh rollback --backup-dir <dir>`
   puts a backup back.
 
 Run `apply` under `systemd-run`, as for the ES upgrade, so that a dropped
-SSH session does not stop it.
+SSH session does not stop it, and give the unit `KillMode=mixed` and a long
+`TimeoutStopSec` (`-p KillMode=mixed -p TimeoutStopSec=300`), so that
+stopping the unit signals `apply` alone and leaves it time to roll back.
+
+The configs are read strictly. The services read them with Go's
+`encoding/json`, which matches a field name in any letter case and lets a
+later duplicate win, so `check` refuses a config with a key that is not
+ASCII, two keys that differ only in letter case, a repeated key, `NaN` or
+`Infinity`, bytes that are not UTF-8, or deeper nesting than a config has:
+each of those could make the services read a key the rotation does not see.
 
 `check` and `apply` refuse a host where:
 
-- a config is not a regular file `root:<service> 0640` with one link (the
-  service being `ags`, `egs` or `es`), or not a JSON object;
-- AGS's or EGS's `signer` is not an Ed25519 key in lower-case hex, or AGS
-  and EGS share a key;
-- ES's `verification.trust_model` is not exactly EGS's algorithm, key ID and
-  public key, or `verification.provenance`,
-  `verification.derivation_attestation` or
-  `verification.workload_identity_binding` is not exactly AGS's;
-- EGS's `runtime_trust.signer_policy.allowed_signers` does not hold AGS's
-  key ID, or EGS has no positive `publication.update_revision`;
+- a folder from `/` down to `/etc/execution-substrate` is not root's, is
+  writable by its group or others, or is a link; `ags.json`, `egs.json` or
+  `es.json` is not a regular file `root:<service> 0640` with one link, or
+  `ars.json` is not `root:ars 0640`; or `healthcheck.env` is not a regular
+  file root owns with one link that neither its group nor others can write;
+- a unit (`ars`, `egs`, `ags`, `es`) does not have exactly one `ExecStart`,
+  starting `/usr/local/lib/execution-substrate/bin/<unit>` with
+  `-config /etc/execution-substrate/<unit>.json`, so that the files the
+  rotation writes are the files the services read;
+- AGS's or EGS's `signer` is not exactly an Ed25519 key in lower-case hex
+  with its four fields, or AGS and EGS share a key;
+- ES's `verification` does not have exactly its four entries,
+  `verification.trust_model` is not exactly EGS's algorithm, key ID and
+  public key, or `provenance`, `derivation_attestation` or
+  `workload_identity_binding` is not exactly AGS's;
+- EGS's `runtime_trust.signer_policy` has a field other than
+  `allowed_signers` and `revoked_signers`, does not allow AGS's key ID, or
+  EGS has no positive `publication.update_revision`;
 - a rule of ES's `admission_policy.workload_grants` names a
   `signer_key_id` other than AGS's key ID;
-- the `egs`, `ags` or `es` unit is not active, or ES's `/health` and
+- ARS's index (`storage.index_file` of `ars.json`) is not a regular file
+  with one link that root or ARS's account owns and neither its group nor
+  others can write, in a folder root or ARS's account owns under folders
+  root owns, none writable by its group or others;
+- a rotation did not finish: a backup folder has neither `summary.json` nor
+  `rollback.json`, a backup folder is still being built, or a temporary file
+  of the rotation is left next to a config or the index (see below);
+- the four units are not active, ARS and EGS do not accept connections on
+  the address their configs name, or ES's `/health` and
   `/v1/executions:contract` and AGS's `/health` do not answer 200 with the
   operator certificate of `/etc/execution-substrate/healthcheck.env`.
+
+The record count of the index is only reported: an index the count cannot
+read does not stop the rotation, since the rotation retires it whole.
 
 `apply` then:
 
 1. makes a new AGS key and a new EGS key with `/usr/bin/openssl genpkey
    -algorithm ED25519` and `openssl pkey -pubout`, so nothing built from a
-   checkout runs as root to make them. The private key passes only through
-   pipes. Each key is the `signer` object `scripts/internal/signingkeygen`
-   writes, with its key ID (the role, a hyphen, and the first 16 hex digits
-   of the SHA-256 of the public key). A seed that is one byte repeated, or
-   the same key twice, is refused before anything changes;
-2. copies the three configs into a new folder
+   checkout runs as root to make them; every child process gets only `PATH`
+   and `LC_ALL`. The private key passes only through pipes. Each key is the
+   `signer` object `scripts/internal/signingkeygen` writes, with its key ID
+   (the role, a hyphen, and the first 16 hex digits of the SHA-256 of the
+   public key). Output that is not an Ed25519 key, a seed that is one byte
+   repeated, or the same key twice is refused before anything changes;
+2. copies the three configs, as `check` read them, into a new folder
    `/var/backups/execution-substrate-signing-keys/<UTC time>-<new AGS key ID>`
-   (`0700`; copies `0600` with their SHA-256, owner and mode in
-   `manifest.json`). The copies hold the old private keys;
-3. writes each config in one rename with its owner and mode kept, and
-   checks the bytes: AGS's and EGS's new `signer`; in EGS's signer policy the
-   new AGS key ID in place of the old one, the old one added to
-   `revoked_signers`, and `publication.update_revision` one higher; ES's four
-   `verification` entries; and the new AGS key ID in every workload grant
-   rule. Nothing else in the configs changes;
-4. stops `es`, restarts `egs` and `ags`, and starts `es`, which fetches
-   EGS's trust policy and verifies it with `verification.trust_model` before
-   it listens (`es/app/app.go`, `Start`), so ES answering shows that ES and
-   the new EGS key agree;
-5. waits up to 60 seconds for the three units to be active and the three
-   endpoints to answer 200, and writes `summary.json` (`0600`) into the
-   backup folder.
+   (`0700`; copies `0600`, with each one's SHA-256, owner and mode and the
+   SHA-256 of the config that will replace it in `manifest.json`). The folder
+   is built under a `.incomplete-` name and gets its final name only once
+   every copy is on disk and each config still holds what `check` read. The
+   copies hold the old private keys;
+3. writes each config in one rename with its owner and mode kept, after
+   checking once more that it still holds what `check` read, and checks the
+   bytes: AGS's and EGS's new `signer`; in EGS's signer policy the new AGS
+   key ID in place of the old one, the old one added to `revoked_signers`,
+   and `publication.update_revision` one higher; ES's four `verification`
+   entries; and the new AGS key ID in every workload grant rule. Nothing else
+   in the configs changes;
+4. stops `es`, `ags` and `ars`, and checks that `ars` is stopped;
+5. copies ARS's index into the backup (`ars-index.json`, with
+   `ars-index.manifest.json`) and replaces the index with an empty one in
+   one rename, keeping its owner and mode. Every record in it is sealed with
+   the AGS key being retired, so ES would refuse each of them, and ARS keeps
+   one record per artifact digest (`.docs/system_overview/contracts.md`,
+   section 6): an artifact published before the rotation can be published
+   again only into an index without its old record. The blobs stay where
+   they are;
+6. starts `ars` and waits for it to accept connections, restarts `egs` and
+   waits for it the same way, then starts `ags` and `es`. ES fetches EGS's
+   trust policy and verifies it with `verification.trust_model` before it
+   listens (`es/app/app.go`, `Start`), so ES answering shows that ES and the
+   new EGS key agree;
+7. waits up to 60 seconds for the four units to be active, ARS and EGS to
+   accept connections, and the three endpoints to answer 200, then prints
+   the report and writes it as `summary.json` (`0600`) into the backup
+   folder.
 
-From the backup on, any failure or interruption puts the backup back,
-restarts the units in the same order and waits for them the same way: the
-result is `rotated`, `rolled_back`, `rolled_back_unhealthy` or
-`rollback_failed`, with the failure, and `apply` exits 1 on any but the
-first. `rollback` does the same from a backup folder and refuses a folder
-that is not a `0700` backup of this rotation with copies matching its
-manifest. No output, report or summary holds a private key.
+Each file the rotation replaces is written as a new file next to it, named
+`.<name>.signing-key-rotation.<random>`, created exclusively without
+following a link, synced, and renamed over the old one.
 
-After the rotation ES refuses evidence sealed with the old AGS key, so every
-artifact published before it is refused at prepare. The rotation does not
-re-sign them: anyone could seal evidence with a known key, so re-signing it
-would vouch for evidence that may be forged. An artifact still needed is
-published again from its source through AGS. The report's
-`ars_index_entries` counts the records this applies to. Once the rotated
-host has run its smoke test, delete the backup folder, since it holds the
-old private keys.
+From the backup on, any failure puts the backup back: the configs it wrote,
+and the index once it was moved. `SIGTERM`, `SIGHUP`, `SIGINT` and `SIGQUIT`
+are recorded while `apply` runs and turn into the same rollback at its next
+step; the rollback itself does not stop for them. The rollback tries every
+step even when one fails: it stops `es`, `ags` and `ars`, removes the
+rotation's temporary files, puts the files back, starts the services in the
+order of step 6, and waits for them as in step 7. The result is `rotated`,
+`rolled_back` (every step worked and the services answer),
+`rolled_back_unhealthy` (the files are back, but a service step failed or
+the services do not answer) or `rollback_failed` (a file could not be put
+back), with the failure and each step's outcome; `apply` exits 1 on any but
+the first. The report is printed before `summary.json` is written, so a
+summary that cannot be written is said on its own line without hiding the
+result; `check` then names that backup as unfinished until the printed
+report is saved there.
+
+A `SIGKILL`, a crash or a power loss can stop `apply` where nothing can roll
+back. `check` and `apply` then name the unfinished rotation, its backup
+folder and any temporary file it left, and refuse to run until it is
+settled. `rollback --backup-dir` of that folder puts the backup back and
+removes the temporary files; of a `.incomplete-` folder, which `apply` never
+got past, it removes the folder and changes nothing else.
+
+`rollback --backup-dir <dir>` takes only a folder directly under
+`/var/backups/execution-substrate-signing-keys`, `0700` and root's, with a
+manifest and copies that match each other, and it puts a backup back only
+while every config is still the one that backup's rotation wrote or the one
+it replaced. So it refuses the backup of an earlier rotation, and a backup
+whose configs were changed since, for example by an ES upgrade. It says on
+standard error which keys it puts back in place of which, writes its report
+to `rollback.json` in the backup folder, and puts the index back as well.
+Records ARS took after the rotation are then gone from the index; their blobs
+stay.
+
+After the rotation ES refuses evidence sealed with the old AGS key. The
+rotation does not re-sign it: anyone could seal evidence with a known key,
+so re-signing it would vouch for evidence that may be forged. An artifact
+still needed is published again from its source through AGS, and prepares
+again once it is (`ags/app/signing_key_rotation_e2e_test.go`). The report's
+`ars_index_entries` counts the records this applies to.
+
+Other copies of the configs hold keys too. An ES-upgrade backup made before
+the rotation (`/var/backups/execution-substrate-es-upgrade/`) holds an
+`es.json` that trusts the published keys, and a copy of
+`/etc/execution-substrate` made by hand or by the recovery runbook holds
+whatever keys it held then: none of them is a valid rollback target after
+the rotation, and those made after it hold the box's real private keys.
+Once the rotated host has run its smoke test, delete the rotation's backup
+folder, since it holds the old private keys, and treat any later copy of
+`/etc/execution-substrate` as secret.
 
 The tests (`scripts/remote_alpha_rotate_signing_keys_test.go`) run `check`,
 `apply` and `rollback` on a host-shaped folder holding the example
-configurations, with fake `systemctl` and `curl` and an `openssl` that makes
-keys with `crypto/ed25519`: the rotated configs, checked against Go's
+configurations and an ARS index, with a fake `systemctl` that runs
+stand-in listeners for ARS and EGS, a fake `curl`, and an `openssl` that
+makes keys with `crypto/ed25519`: the rotated configs, checked against Go's
 Ed25519, the key ID rule and the known-key rule, and accepted by AGS's,
-EGS's and ES's own `config.Load`; the restart order; the backup; no private
-key in any output; a rollback after each failing restart or health check;
-workload grants moved to the new key; and every refused host above, each
-leaving the configs, the backups and the units alone. One test makes the
-keys with the machine's own `/usr/bin/openssl`.
+EGS's and ES's own `config.Load`; the retired index and its backup; the
+restart order; no private key in any output; a rollback after each failing
+stop, start, restart, readiness or health check, after a stop of `ars` that
+reports success but leaves it running, after a config changed by hand while
+`apply` runs (the change is kept), after each of the four signals, and after
+a kill at each point that leaves something behind; a rollback whose service
+step fails reported as `rolled_back_unhealthy` even when every service
+answers; every
+refused host and every refused backup above, each leaving the configs, the
+index, the backups and the units alone; and, as root, the owners and groups
+kept. One test makes the keys with the machine's own `/usr/bin/openssl`.
+`ags/app/signing_key_rotation_e2e_test.go` runs the real script against
+real ARS, EGS, AGS and ES that load the files it writes: an artifact
+published before the rotation publishes and prepares again after it, a
+record sealed with the old AGS key is refused, ES refuses an EGS still on
+its old key, and a rollback brings back the old keys and the old index.
 
 ## Python In The Scripts
 
