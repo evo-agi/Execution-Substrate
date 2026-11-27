@@ -6910,10 +6910,16 @@ and if not, whether that matters: a file that lacks an unexpired server CA
 issued more than 12 hours ago, or holds an unexpired CA the server no longer
 publishes, is attention; one that lacks only a CA issued in the last 12
 hours is info (the timer's next run adds it); one that differs only in
-expired CAs is ok; on a pinned host, whether the bundle refresh timer is
+expired CAs is ok; a file larger than 1 MiB or not a PEM bundle is
+attention; on a pinned host, whether the bundle refresh timer is
 installed as `pin` installs it (the helper copy and both unit files present
-with `pin`'s bytes, owner `root` and mode `0644`, the timer enabled and
-active) and whether its last run succeeded (attention otherwise);
+with `pin`'s bytes, owner `root` and mode `0644`; `/usr/local`,
+`/usr/local/libexec` and `/usr/local/libexec/execution-substrate` owned by
+`root` and writable by no one else; systemd loading each unit from its file
+in `/etc/systemd/system`, with no drop-in and nothing changed on disk since
+it last loaded them, as `systemctl show` reports `FragmentPath`,
+`DropInPaths` and `NeedDaemonReload`; the timer enabled and active) and
+whether its last run succeeded (attention otherwise);
 whether every SPIRE runtime directory (`/run/spire`, `/run/spire/server`,
 `/run/spire/server/private`, `/run/spire/sockets`) is recreated at boot by a
 tmpfiles.d rule (as `systemd-tmpfiles --cat-config` merges them) or by a
@@ -6965,20 +6971,39 @@ valid SVID and an unbanned server record. In this order it:
    `/usr/local/libexec/execution-substrate/remote_alpha_spire_agent.py`
    (`root:root 0644`; it creates `/usr/local/libexec` and
    `/usr/local/libexec/execution-substrate` as `root:root 0755` if they
-   are missing, and refuses either when it exists with another owner or is
-   writable by group or others). It writes
+   are missing, and refuses either, or `/usr/local`, when it exists with
+   another owner or is writable by group or others). It writes
    `execution-substrate-spire-bundle-refresh.service` and
    `execution-substrate-spire-bundle-refresh.timer` in `/etc/systemd/system`
    (`root:root 0644`), each starting with a marker line; a file of that name
-   without the marker is refused for a hand check. It then runs
-   `systemctl daemon-reload` and `systemctl enable --now
+   without the marker, a drop-in for either unit, or a unit of that name
+   that systemd loads from another directory is refused for a hand check. It
+   then runs `systemctl daemon-reload` and `systemctl enable --now
    execution-substrate-spire-bundle-refresh.timer`, and requires both units
-   loaded and the timer enabled and active. The service is a oneshot that
-   runs `/usr/bin/python3 -I -B
+   loaded from their files with no drop-in and the timer enabled and active.
+   The service is a oneshot that runs `/usr/bin/python3 -I -B -S
    /usr/local/libexec/execution-substrate/remote_alpha_spire_agent.py
-   refresh --apply` as root with `NoNewPrivileges=yes`, `PrivateTmp=yes`,
-   `ProtectHome=yes` and `ProtectSystem=strict`, writable only in
-   `/etc/spire/agent` and `/run`. The timer, `OnCalendar=*-*-* 00/6:00:00`
+   refresh --apply` as root (`-S`: no site directory, so no `.pth` file runs
+   in the unattended run) with `TimeoutStartSec=5min`. Its sandbox:
+   `ProtectSystem=strict` with write access only to `/etc/spire/agent` and
+   to the helper's lock directory
+   `/run/execution-substrate-remote-alpha-spire-agent`, which the unit names
+   as `RuntimeDirectory=` (`RuntimeDirectoryMode=0700`,
+   `RuntimeDirectoryPreserve=yes`), so the rest of `/run`, including
+   `/run/systemd`, is read-only; `ProtectHome=yes`, `PrivateTmp=yes`,
+   `PrivateDevices=yes`, `NoNewPrivileges=yes`;
+   `CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_DAC_READ_SEARCH` (what
+   `setpriv` needs to run commands as `spire`, and what root needs to reach
+   the admin socket inside `spire`'s `0700` directory);
+   `RestrictAddressFamilies=AF_UNIX`, `RestrictNamespaces=yes`,
+   `RestrictSUIDSGID=yes`, `RestrictRealtime=yes`, `LockPersonality=yes`,
+   `MemoryDenyWriteExecute=yes`, `ProtectKernelTunables=yes`,
+   `ProtectKernelModules=yes`, `ProtectControlGroups=yes`, and
+   `SystemCallFilter=@system-service` with `SystemCallErrorNumber=EPERM`.
+   The sandbox confines code that runs in the unit, should the parsing of
+   the `spire` account's output ever be exploited; what that code could
+   still change is the bundle file and `agent.conf` in `/etc/spire/agent`.
+   The timer, `OnCalendar=*-*-* 00/6:00:00`
    with `RandomizedDelaySec=15min` and `Persistent=true`, runs it every 6
    hours and once after a boot that missed a run. On a failure `pin` puts
    each of these files and directories back as it was, disables the timer
@@ -6997,10 +7022,21 @@ validate` as for `status`; it refuses an `insecure_bootstrap` or
 unrecognized `agent.conf` (that is `pin`'s job). It does not need a healthy
 agent. It reads the server bundle as `pin` step 1 does and, only when the
 file does not already hold exactly those certificates, writes it atomically
-as `root:root 0644`. It edits no config, unit or boot rule and restarts
-nothing, since SPIRE reads the file only at a fresh bootstrap. A run that
+as `root:root 0644`; a file that is larger than 1 MiB or not a PEM bundle
+is replaced too, while a symlink or other non-regular file is refused. It
+edits no config, unit or boot rule and restarts nothing, since SPIRE reads
+the file only at a fresh bootstrap. A run that
 another run of the helper holds the lock for is refused, and the timer's
 next run tries again.
+
+Every mode bounds what it reads from a command: a command that prints more
+than 4 MiB on stdout or stderr is stopped and the run fails. The server
+bundle is bounded before any certificate is parsed or written: `bundle show`
+output over 1 MiB, more than 16 certificates, or a PEM file over 1 MiB is
+refused. The helper's lock is
+`/run/execution-substrate-remote-alpha-spire-agent/lock`; a run creates the
+directory as `root 0700` when it is missing and refuses one that is not
+root's directory or that others can write.
 
 `recover --apply` runs only when the server is active and the agent's own
 SVID has expired or the agent never attested; it refuses a valid SVID, an

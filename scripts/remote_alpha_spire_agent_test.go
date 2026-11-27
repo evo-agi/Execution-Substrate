@@ -149,7 +149,10 @@ sys.exit(mod.main(sys.argv[3:], mod.Layout(**overrides)))
 // loaded only while that file exists; "enable --now" and "disable --now"
 // mark a timer enabled and active (<unit>.fail-next-enable makes the next
 // enable fail once); a "oneshot" unit's start runs its argv to the end and
-// records its result and start time; "daemon-reload" is logged.
+// records its result and start time; "daemon-reload" is logged and records
+// what it loaded. Such a unit reports its file as FragmentPath, the .conf
+// files in <unit file>.d as DropInPaths, and NeedDaemonReload=yes while its
+// file or drop-ins differ from what the last daemon-reload loaded.
 const spireAgentHelperFakeSystemctl = `import json, os, signal, stat, subprocess, sys, time
 STATE = %q
 cfg = json.load(open(os.path.join(STATE, "units.json")))
@@ -253,10 +256,27 @@ def state_file(u, name, default=""):
     except OSError:
         return default
 
+def dropins(u):
+    f = cfg[u].get("unit_file")
+    d = f + ".d" if f else ""
+    return sorted(os.path.join(d, n) for n in os.listdir(d) if n.endswith(".conf")) if d and os.path.isdir(d) else []
+
+def definition(u):
+    # What a daemon-reload loads: the unit file's bytes and its drop-ins.
+    parts = []
+    for path in ([cfg[u]["unit_file"]] if cfg[u].get("unit_file") else []) + dropins(u):
+        try:
+            parts.append(path + "\0" + open(path, "rb").read().hex())
+        except OSError:
+            parts.append(path + "\0absent")
+    return "\n".join(parts)
+
 args = sys.argv[1:]
 if args == ["daemon-reload"]:
     with open(os.path.join(STATE, "daemon-reloads"), "a") as fh:
         fh.write("reload\n")
+    for u in cfg:
+        open(os.path.join(STATE, u + ".loaded-definition"), "w").write(definition(u))
     sys.exit(0)
 if len(args) == 3 and args[0] in ("enable", "disable") and args[1] == "--now":
     unit = args[2]
@@ -285,7 +305,10 @@ if cmd == "show":
               "LoadState": "loaded" if loaded(unit) else "not-found",
               "UnitFileState": "enabled" if enabled else ("disabled" if loaded(unit) else ""),
               "Result": state_file(unit, "result", "success"), "ExecMainStartTimestamp": state_file(unit, "started"),
-              "ExecMainStatus": state_file(unit, "status", "0")}
+              "ExecMainStatus": state_file(unit, "status", "0"),
+              "FragmentPath": cfg[unit]["unit_file"] if cfg[unit].get("unit_file") and loaded(unit) else "",
+              "DropInPaths": " ".join(dropins(unit)),
+              "NeedDaemonReload": "yes" if cfg[unit].get("unit_file") and loaded(unit) and definition(unit) != state_file(unit, "loaded-definition", None) else "no"}
     for p in props:
         print(p + "=" + values.get(p, ""))
     sys.exit(0)
@@ -672,7 +695,7 @@ func newSPIREAgentHelperBox(t *testing.T, svidTTL string) *spireAgentHelperBox {
 		// unit text pin writes names the box paths, which
 		// TestRemoteAlphaSPIREAgentRefreshUnitTexts pins.
 		spireAgentHelperRefreshUnit + ".service": map[string]any{"oneshot": true, "requires": []string{}, "unit_file": filepath.Join(b.unitDir, spireAgentHelperRefreshUnit+".service"),
-			"argv": []string{python, "-I", "-B", driver, b.module, b.layoutPath, "refresh", "--apply"}},
+			"argv": []string{python, "-I", "-B", "-S", driver, b.module, b.layoutPath, "refresh", "--apply"}},
 		spireAgentHelperRefreshUnit + ".timer": map[string]any{"timer": true, "requires": []string{}, "unit_file": filepath.Join(b.unitDir, spireAgentHelperRefreshUnit+".timer")},
 	}
 	b.writeJSON(filepath.Join(b.stateDir, "units.json"), units)
@@ -703,7 +726,7 @@ func newSPIREAgentHelperBox(t *testing.T, svidTTL string) *spireAgentHelperBox {
 		"installed_helper_path": b.copyPath,
 		"installed_helper_dirs": []string{filepath.Join(root, "usr/local/libexec"), filepath.Dir(b.copyPath)},
 		"scratch_parent":        b.scratch,
-		"lock_path":             filepath.Join(root, "helper.lock"),
+		"lock_path":             filepath.Join(root, "run/execution-substrate-remote-alpha-spire-agent/lock"),
 		"spire_server_bin":      shimServer,
 		"spire_agent_bin":       shimAgent,
 		"systemctl_bin":         b.systemctl,
@@ -1657,6 +1680,17 @@ func TestRemoteAlphaSPIREAgentPinAgainstRealSPIRE(t *testing.T) {
 		t.Fatalf("refreshed bundle file is %o %s", mode, owner)
 	}
 	b.helper("refresh", "--apply").expect(t, 0, "ok")
+	// An oversized file is attention, and refresh replaces it.
+	b.write(b.bundlePath, strings.Repeat("#", 1<<20+1), 0o644)
+	oversized := b.helper("status")
+	oversized.expect(t, 1, "attention")
+	if c := oversized.check("bundle file"); c == nil || c["state"] != "attention" || !strings.Contains(fmt.Sprint(c["detail"]), "oversized; run sudo scripts/remote_alpha_spire_agent.sh refresh --apply") {
+		t.Fatalf("status did not report an oversized bundle file:\n%s", oversized)
+	}
+	b.helper("refresh", "--apply").expect(t, 0, "ok")
+	if serverCerts() != fileCerts() {
+		t.Fatalf("refresh did not replace an oversized bundle file")
+	}
 	b.setLayout("bundle_refresh_grace_seconds", 12*3600)
 
 	// pin refuses to replace a unit file it did not write, and status
@@ -1674,6 +1708,63 @@ func TestRemoteAlphaSPIREAgentPinAgainstRealSPIRE(t *testing.T) {
 		t.Fatalf("pin did not refuse a unit file it did not write:\n%s", refusedForeign)
 	}
 	b.write(timerFile, string(ours), 0o644)
+	b.helper("status").expect(t, 0, "ok")
+
+	// systemd must run the files pin wrote. A drop-in (here one replacing
+	// ExecStart) is attention in status, and pin refuses to install around
+	// it; nothing changes.
+	serviceFile := b.refreshFiles()[1]
+	dropin := filepath.Join(serviceFile+".d", "override.conf")
+	if err := os.Mkdir(serviceFile+".d", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	b.write(dropin, "[Service]\nExecStart=\nExecStart=/bin/true\n", 0o644)
+	dropped := b.helper("status")
+	dropped.expect(t, 1, "attention")
+	if c := dropped.check("refresh timer"); c == nil || !strings.Contains(fmt.Sprint(c["detail"]), spireAgentHelperRefreshUnit+".service has drop-ins that change it: "+dropin) {
+		t.Fatalf("status did not flag a drop-in:\n%s", dropped)
+	}
+	refusedDropin := b.helper("pin", "--apply")
+	refusedDropin.expect(t, 1, "refused")
+	if !strings.Contains(refusedDropin.report["message"].(string), spireAgentHelperRefreshUnit+".service has drop-ins") {
+		t.Fatalf("pin did not refuse to install around a drop-in:\n%s", refusedDropin)
+	}
+	if err := os.RemoveAll(serviceFile + ".d"); err != nil {
+		t.Fatal(err)
+	}
+	// A unit systemd has not reloaded since its file changed: attention,
+	// and pin --apply reloads it without rewriting anything.
+	if err := os.Remove(filepath.Join(b.stateDir, spireAgentHelperRefreshUnit+".service.loaded-definition")); err != nil {
+		t.Fatal(err)
+	}
+	unloaded := b.helper("status")
+	unloaded.expect(t, 1, "attention")
+	if c := unloaded.check("refresh timer"); c == nil || !strings.Contains(fmt.Sprint(c["detail"]), spireAgentHelperRefreshUnit+".service changed on disk since systemd last loaded it") {
+		t.Fatalf("status did not flag a unit systemd has not loaded:\n%s", unloaded)
+	}
+	reloads = strings.Count(b.commandLog(), `["daemon-reload"]`)
+	reloaded := b.helper("pin", "--apply")
+	reloaded.expect(t, 0, "ok")
+	if strings.Count(b.commandLog(), `["daemon-reload"]`) != reloads+1 || strings.Contains(fmt.Sprint(reloaded.report["actions"]), "wrote ") {
+		t.Fatalf("pin did not reload systemd alone:\n%s", reloaded)
+	}
+	b.helper("status").expect(t, 0, "ok")
+	// A directory holding the copy that others can write is attention.
+	if err := os.Chmod(filepath.Dir(b.copyPath), 0o775); err != nil {
+		t.Fatal(err)
+	}
+	writable := b.helper("status")
+	writable.expect(t, 1, "attention")
+	if c := writable.check("refresh timer"); c == nil || !strings.Contains(fmt.Sprint(c["detail"]), filepath.Dir(b.copyPath)+" is ") {
+		t.Fatalf("status did not flag a writable helper directory:\n%s", writable)
+	}
+	if err := os.Chmod(filepath.Dir(b.copyPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// The helper keeps its lock in a 0700 directory of its own.
+	if mode, owner := spireAgentHelperMode(t, filepath.Join(b.root, "run/execution-substrate-remote-alpha-spire-agent")); mode != 0o700 || owner != b.user+":"+b.group {
+		t.Fatalf("lock directory is %o %s, want 0700 %s:%s", mode, owner, b.user, b.group)
+	}
 
 	// A timer install that fails leaves the pin in place and puts the
 	// timer's files back as they were (here: none, and no directories).
@@ -2330,7 +2421,7 @@ func TestRemoteAlphaSPIREAgentLayoutPinsBoxValues(t *testing.T) {
 		"tmpfiles_path":          "/etc/tmpfiles.d/spire.conf",
 		"account_db_dir":         "/etc",
 		"scratch_parent":         "/run",
-		"lock_path":              "/run/execution-substrate-remote-alpha-spire-agent.lock",
+		"lock_path":              "/run/execution-substrate-remote-alpha-spire-agent/lock",
 		"spire_server_bin":       "/usr/local/bin/spire-server",
 		"spire_agent_bin":        "/usr/local/bin/spire-agent",
 		"systemctl_bin":          "/usr/bin/systemctl",
@@ -2345,10 +2436,13 @@ func TestRemoteAlphaSPIREAgentLayoutPinsBoxValues(t *testing.T) {
 		"refresh_on_calendar":    "*-*-* 00/6:00:00",
 		"installed_helper_path":  "/usr/local/libexec/execution-substrate/remote_alpha_spire_agent.py",
 		"installed_helper_dirs":  []any{"/usr/local/libexec", "/usr/local/libexec/execution-substrate"},
-		"python_argv":            []any{"/usr/bin/python3", "-I", "-B"},
+		"python_argv":            []any{"/usr/bin/python3", "-I", "-B", "-S"},
 		// A third of the host's 168h CA lifetime is 56 h between a new CA
 		// appearing and its use; 12 h of grace leaves the timer two runs.
-		"bundle_refresh_grace_seconds": float64(12 * 3600),
+		"bundle_refresh_grace_seconds":   float64(12 * 3600),
+		"bundle_max_bytes":               float64(1 << 20),
+		"server_bundle_max_certificates": float64(16),
+		"command_output_max_bytes":       float64(4 << 20),
 	}
 	for key, value := range want {
 		if fmt.Sprint(layout[key]) != fmt.Sprint(value) {
@@ -2729,12 +2823,29 @@ After=spire-server.service
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/python3 -I -B /usr/local/libexec/execution-substrate/remote_alpha_spire_agent.py refresh --apply
-NoNewPrivileges=yes
-PrivateTmp=yes
-ProtectHome=yes
+ExecStart=/usr/bin/python3 -I -B -S /usr/local/libexec/execution-substrate/remote_alpha_spire_agent.py refresh --apply
+TimeoutStartSec=5min
+RuntimeDirectory=execution-substrate-remote-alpha-spire-agent
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
 ProtectSystem=strict
-ReadWritePaths=/etc/spire/agent /run
+ReadWritePaths=/etc/spire/agent
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_DAC_READ_SEARCH
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
 `,
 		"/etc/systemd/system/execution-substrate-spire-bundle-refresh.timer": marker + `[Unit]
 Description=Refresh the SPIRE agent bootstrap bundle every 6 hours (Execution Substrate)

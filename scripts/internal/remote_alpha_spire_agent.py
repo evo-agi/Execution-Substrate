@@ -43,6 +43,7 @@ import json
 import os
 import pwd
 import re
+import selectors
 import shutil
 import signal
 import ssl
@@ -104,7 +105,10 @@ class Layout:
     account_db_dir: str = "/etc"
     # tmpfs parent for the private directory that holds the join token.
     scratch_parent: str = "/run"
-    lock_path: str = "/run/execution-substrate-remote-alpha-spire-agent.lock"
+    # The lock file sits in a directory of its own directly in /run, so the
+    # refresh unit can get write access to that directory alone (as its
+    # RuntimeDirectory=) and not to the rest of /run.
+    lock_path: str = "/run/execution-substrate-remote-alpha-spire-agent/lock"
 
     spire_server_bin: str = "/usr/local/bin/spire-server"
     spire_agent_bin: str = "/usr/local/bin/spire-agent"
@@ -126,12 +130,22 @@ class Layout:
     # Directories pin may create for the copy, outermost first; each must be
     # owned by file_owner and writable by no one else.
     installed_helper_dirs: tuple = ("/usr/local/libexec", "/usr/local/libexec/execution-substrate")
-    # The interpreter and its isolation options for the timer's runs, as the
-    # wrapper script uses them.
-    python_argv: tuple = ("/usr/bin/python3", "-I", "-B")
+    # The interpreter and its options for the timer's runs: isolated mode
+    # and no bytecode files as the wrapper script uses them, and -S, so that
+    # no .pth file in a site directory runs code in the unattended root run.
+    python_argv: tuple = ("/usr/bin/python3", "-I", "-B", "-S")
     # status: a server CA missing from the bundle file that was issued longer
     # ago than this is attention, since the timer should have added it.
     bundle_refresh_grace_seconds: int = 12 * 3600
+    # Bounds on the server bundle, checked before any certificate is parsed
+    # or written: its PEM text (and so the bundle file) at most this many
+    # bytes, and at most this many certificates (the server publishes two or
+    # three: the active CA, a prepared one, perhaps an old one).
+    bundle_max_bytes: int = 1 << 20
+    server_bundle_max_certificates: int = 16
+    # Most bytes of stdout, and of stderr, kept from any command; a command
+    # that prints more is stopped and the run fails.
+    command_output_max_bytes: int = 4 << 20
 
     join_token_ttl_seconds: int = 120
     # status reports "attention" below this many seconds of agent SVID life.
@@ -415,6 +429,67 @@ def take_new_dir(path: str, uid: int, gid: int, mode: int) -> None:
 # Commands
 
 
+class OutputTooLarge(CommandError):
+    pass
+
+
+def collect_output(proc: subprocess.Popen, stdin: bytes | None, limit: int, timeout: float) -> tuple[bytes, bytes]:
+    """Feed stdin to a started process and read its stdout and stderr until
+    it exits. A process that prints more than limit bytes on either, or runs
+    past the timeout, is killed, and so is one this run stops waiting for
+    (a stop signal)."""
+    deadline = time.monotonic() + timeout
+    pending = memoryview(stdin or b"")
+    bufs = {proc.stdout: bytearray(), proc.stderr: bytearray()}
+    sel = selectors.DefaultSelector()
+    try:
+        for f in bufs:
+            sel.register(f, selectors.EVENT_READ)
+        if proc.stdin is not None:
+            os.set_blocking(proc.stdin.fileno(), False)
+            if pending:
+                sel.register(proc.stdin, selectors.EVENT_WRITE)
+            else:
+                proc.stdin.close()
+        while sel.get_map():
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise subprocess.TimeoutExpired(proc.args, timeout)
+            for key, _ in sel.select(left):
+                f = key.fileobj
+                if f is proc.stdin:
+                    try:
+                        written = os.write(f.fileno(), pending[:65536])
+                    except BlockingIOError:
+                        continue
+                    except BrokenPipeError:
+                        written = len(pending)
+                    pending = pending[written:]
+                    if not pending:
+                        sel.unregister(f)
+                        f.close()
+                    continue
+                chunk = os.read(f.fileno(), 65536)
+                if not chunk:
+                    sel.unregister(f)
+                    continue
+                bufs[f] += chunk
+                if len(bufs[f]) > limit:
+                    raise OutputTooLarge("output limit")
+        proc.wait(timeout=max(deadline - time.monotonic(), 0.001))
+        return bytes(bufs[proc.stdout]), bytes(bufs[proc.stderr])
+    except BaseException:
+        proc.kill()
+        proc.wait()
+        raise
+    finally:
+        sel.close()
+        for f in (proc.stdin, proc.stdout, proc.stderr):
+            if f is not None:
+                with contextlib.suppress(OSError):
+                    f.close()
+
+
 class Runner:
     def __init__(self, layout: Layout, report: Report):
         self.L = layout
@@ -434,24 +509,28 @@ class Runner:
         ] + argv
 
     def run(self, argv: list[str], *, spire: bool = False, stdin: bytes | None = None,
-            timeout: float | None = None, check: bool = True) -> subprocess.CompletedProcess:
+            timeout: float | None = None, check: bool = True, max_output: int | None = None) -> subprocess.CompletedProcess:
         full = self.as_spire(argv) if spire else list(argv)
+        name = f"{os.path.basename(argv[0])} {' '.join(argv[1:3])}"
+        limit = max_output if max_output is not None else self.L.command_output_max_bytes
         try:
-            proc = subprocess.run(
+            child = subprocess.Popen(
                 full,
-                input=stdin,
-                stdin=None if stdin is not None else subprocess.DEVNULL,
+                stdin=subprocess.PIPE if stdin is not None else subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 env=self.env(),
                 cwd="/",
-                timeout=timeout if timeout is not None else self.L.command_timeout_seconds,
-                check=False,
             )
-        except subprocess.TimeoutExpired:
-            raise CommandError(f"{os.path.basename(argv[0])} {' '.join(argv[1:3])} timed out") from None
         except OSError as exc:
             raise CommandError(f"cannot run {argv[0]}: {exc.strerror}") from None
+        try:
+            out, err = collect_output(child, stdin, limit, timeout if timeout is not None else self.L.command_timeout_seconds)
+        except subprocess.TimeoutExpired:
+            raise CommandError(f"{name} timed out") from None
+        except OutputTooLarge:
+            raise OutputTooLarge(f"{name} printed more than {limit} bytes; it was stopped") from None
+        proc = subprocess.CompletedProcess(full, child.returncode, out, err)
         if check and proc.returncode != 0:
             output = (proc.stderr or b"").decode("utf-8", "replace").strip() or (proc.stdout or b"").decode("utf-8", "replace").strip()
             raise CommandError(
@@ -677,11 +756,19 @@ def export_server_bundle(r: Runner) -> list[bytes]:
     socket. A process that only holds the server's TCP port cannot answer
     there. Each authority must be a CA certificate for the trust domain, and
     at least one must not have expired."""
-    out = r.text([r.L.spire_server_bin, "bundle", "show", "-socketPath", r.L.server_socket, "-format", "pem"], spire=True)
+    L = r.L
+    try:
+        out = r.text([L.spire_server_bin, "bundle", "show", "-socketPath", L.server_socket, "-format", "pem"], spire=True, max_output=L.bundle_max_bytes)
+    except OutputTooLarge:
+        raise Refusal(f"spire-server bundle show printed more than {L.bundle_max_bytes} bytes") from None
     try:
         ders = parse_pem_certificates(out)
     except ValueError as exc:
         raise Refusal(f"spire-server bundle show output is not a PEM bundle: {exc}") from None
+    if len(ders) > L.server_bundle_max_certificates:
+        raise Refusal(f"the server bundle holds {len(ders)} certificates, more than the {L.server_bundle_max_certificates} this helper accepts")
+    if len(pem_encode(ders)) > L.bundle_max_bytes:
+        raise Refusal(f"the server bundle is larger than {L.bundle_max_bytes} bytes as a PEM file")
     now = utc_now()
     current = 0
     for der in ders:
@@ -704,7 +791,11 @@ def bundle_file_state(r: Runner, server_ders: list[bytes] | None) -> dict:
         return {"state": "absent"}
     if not stat.S_ISREG(st.st_mode):
         return {"state": "not_regular", "meta": describe(st)}
-    got = read_regular_file(L.bundle_path)
+    if st.st_size > L.bundle_max_bytes:
+        return {"state": "oversized", "meta": describe(st)}
+    got = read_regular_file(L.bundle_path, limit=L.bundle_max_bytes)
+    if got is None:
+        return {"state": "absent"}
     meta = describe(got[1])
     try:
         file_ders = parse_pem_certificates(got[0].decode("ascii"))
@@ -1007,6 +1098,14 @@ def require_commands(L: Layout) -> None:
 
 
 def take_lock(L: Layout):
+    """The lock file lives in a directory of its own, which the refresh unit
+    names as its RuntimeDirectory=; a missing one is created here."""
+    lock_dir = os.path.dirname(L.lock_path)
+    with contextlib.suppress(FileExistsError):
+        os.mkdir(lock_dir, 0o700)
+    dst = os.lstat(lock_dir)
+    if not stat.S_ISDIR(dst.st_mode) or dst.st_uid != os.geteuid() or stat.S_IMODE(dst.st_mode) & 0o022:
+        raise Refusal(f"lock directory {lock_dir} is {describe(dst)}; it must be a directory owned by this user that no one else can write")
     fd = os.open(L.lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
     st = os.fstat(fd)
     if st.st_uid != os.geteuid() or not stat.S_ISREG(st.st_mode):
@@ -1149,8 +1248,12 @@ def write_bundle(r: Runner, rep: Report, server_ders: list[bytes]) -> None:
     L = r.L
     uid, gid = resolve_ids(L.file_owner, L.file_group)
     atomic_write(L.bundle_path, pem_encode(server_ders), 0o644, uid, gid)
-    if bundle_file_state(r, server_ders)["state"] != "matches":
-        raise Failure(f"{L.bundle_path} does not match the server bundle after writing it")
+    try:
+        state = bundle_file_state(r, server_ders)["state"]
+    except Refusal as exc:
+        state = str(exc)
+    if state != "matches":
+        raise Failure(f"{L.bundle_path} was written but does not read back as the server bundle ({state})")
     rep.action(f"wrote {L.bundle_path} ({len(server_ders)} CA certificate(s))")
 
 
@@ -1170,11 +1273,17 @@ def refresh_unit_paths(L: Layout) -> tuple[str, str]:
 
 
 def refresh_unit_texts(L: Layout) -> dict:
-    """The two unit files pin writes. The service runs refresh as root with
-    the rest of the file system read-only: refresh writes only the bundle
-    file (through a temporary file in its directory) and the lock file."""
+    """The two unit files pin writes. The service runs refresh as root in a
+    sandbox. refresh writes only the bundle file (through a temporary file in
+    its directory) and the lock file, so the file system is read-only except
+    the bundle file's directory and the lock directory (the unit's
+    RuntimeDirectory=, which systemd creates and keeps). The capability
+    bounding set keeps only what setpriv needs to run commands as spire and
+    what root needs to reach the admin socket inside spire's 0700 directory.
+    The system call filter, the address families and the other restrictions
+    confine code that runs in it, should the parsing of spire's data ever be
+    exploited."""
     service, timer = refresh_unit_paths(L)
-    writable = " ".join(sorted({os.path.dirname(L.bundle_path), os.path.dirname(L.lock_path)}))
     service_text = (
         f"{UNIT_MARKER}\n"
         "[Unit]\n"
@@ -1184,11 +1293,28 @@ def refresh_unit_texts(L: Layout) -> dict:
         "[Service]\n"
         "Type=oneshot\n"
         f"ExecStart={' '.join(L.python_argv)} {L.installed_helper_path} refresh --apply\n"
-        "NoNewPrivileges=yes\n"
-        "PrivateTmp=yes\n"
-        "ProtectHome=yes\n"
+        "TimeoutStartSec=5min\n"
+        f"RuntimeDirectory={os.path.basename(os.path.dirname(L.lock_path))}\n"
+        "RuntimeDirectoryMode=0700\n"
+        "RuntimeDirectoryPreserve=yes\n"
         "ProtectSystem=strict\n"
-        f"ReadWritePaths={writable}\n"
+        f"ReadWritePaths={os.path.dirname(L.bundle_path)}\n"
+        "ProtectHome=yes\n"
+        "PrivateTmp=yes\n"
+        "PrivateDevices=yes\n"
+        "NoNewPrivileges=yes\n"
+        "CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_DAC_READ_SEARCH\n"
+        "RestrictAddressFamilies=AF_UNIX\n"
+        "RestrictNamespaces=yes\n"
+        "RestrictSUIDSGID=yes\n"
+        "RestrictRealtime=yes\n"
+        "LockPersonality=yes\n"
+        "MemoryDenyWriteExecute=yes\n"
+        "ProtectKernelTunables=yes\n"
+        "ProtectKernelModules=yes\n"
+        "ProtectControlGroups=yes\n"
+        "SystemCallFilter=@system-service\n"
+        "SystemCallErrorNumber=EPERM\n"
     )
     timer_text = (
         f"{UNIT_MARKER}\n"
@@ -1218,6 +1344,47 @@ def read_own_helper(L: Layout, *, for_install: bool) -> bytes:
     return data
 
 
+def helper_copy_dirs(L: Layout) -> tuple[list[str], list[str]]:
+    """The directories that hold the helper copy, and the one above them:
+    the ones missing that pin may create, and a problem for each that exists
+    but is not a directory owned by root or file_owner that no one else can
+    write. Whoever can write one of them can replace the file root runs."""
+    uid, _ = resolve_ids(L.file_owner, L.file_group)
+    missing, problems = [], []
+    for d in (os.path.dirname(L.installed_helper_dirs[0]),) + tuple(L.installed_helper_dirs):
+        st = lstat_or_none(d)
+        if st is None and d in L.installed_helper_dirs:
+            missing.append(d)
+            continue
+        if st is None or not stat.S_ISDIR(st.st_mode) or st.st_uid not in (0, uid) or stat.S_IMODE(st.st_mode) & 0o022:
+            what = describe(st) if st is not None else "missing"
+            problems.append(f"{d} is {what}; the refresh timer's helper copy needs directories owned by {L.file_owner} that no one else can write")
+    return missing, problems
+
+
+# What systemd reports about the definition it runs for each refresh unit.
+UNIT_DEFINITION_PROPS = ["FragmentPath", "DropInPaths", "NeedDaemonReload"]
+
+
+def unit_definition_problems(state: dict) -> list[str]:
+    """systemd must run the unit files pin wrote and nothing else: each
+    loaded unit from its file in systemd_unit_dir, with no drop-in, and no
+    change on disk that systemd has not loaded."""
+    problems = []
+    for key in ("service", "timer"):
+        props, path = state[key], state["unit_paths"][key]
+        unit = os.path.basename(path)
+        if props.get("LoadState") != "loaded":
+            continue
+        if props.get("FragmentPath") != path:
+            problems.append(f"systemd loads {unit} from {props.get('FragmentPath') or 'nowhere'}, not {path}")
+        if props.get("DropInPaths"):
+            problems.append(f"{unit} has drop-ins that change it: {props['DropInPaths']}")
+        if props.get("NeedDaemonReload") == "yes":
+            problems.append(f"{unit} changed on disk since systemd last loaded it")
+    return problems
+
+
 def refresh_timer_state(r: Runner, own: bytes) -> dict:
     """The helper copy and the two unit files (each absent, matches,
     differs, foreign or unreadable; matches includes owner file_owner and
@@ -1240,9 +1407,11 @@ def refresh_timer_state(r: Runner, own: bytes) -> dict:
             files[path] = "foreign"
         else:
             files[path] = "differs"
-    timer = r.unit_props(L.refresh_unit_name + ".timer", ["LoadState", "ActiveState", "UnitFileState"])
-    service = r.unit_props(L.refresh_unit_name + ".service", ["LoadState", "Result", "ExecMainStartTimestamp", "ExecMainStatus"])
-    return {"files": files, "wanted": dict(wanted), "timer": timer, "service": service}
+    timer = r.unit_props(L.refresh_unit_name + ".timer", ["LoadState", "ActiveState", "UnitFileState"] + UNIT_DEFINITION_PROPS)
+    service = r.unit_props(L.refresh_unit_name + ".service", ["LoadState", "Result", "ExecMainStartTimestamp", "ExecMainStatus"] + UNIT_DEFINITION_PROPS)
+    service_path, timer_path = refresh_unit_paths(L)
+    return {"files": files, "wanted": dict(wanted), "timer": timer, "service": service,
+            "unit_paths": {"service": service_path, "timer": timer_path}}
 
 
 def timer_enabled(state: dict) -> bool:
@@ -1258,7 +1427,9 @@ def check_refresh_timer(r: Runner, rep: Report) -> None:
     except (Refusal, CommandError) as exc:
         rep.check("refresh timer", "fail", str(exc))
         return
-    problems = [f"{path} is {s}" for path, s in state["files"].items() if s != "matches"]
+    _, problems = helper_copy_dirs(L)
+    problems += [f"{path} is {s}" for path, s in state["files"].items() if s != "matches"]
+    problems += unit_definition_problems(state)
     if not timer_enabled(state):
         problems.append(f"{timer_unit} is {state['timer'].get('UnitFileState') or 'unknown'} and {state['timer'].get('ActiveState') or 'unknown'}")
     hints = [f"run sudo {PUBLIC_SCRIPT} pin --apply"] if problems else []
@@ -1296,15 +1467,9 @@ class TimerInstall:
         if os.path.dirname(L.installed_helper_path) != L.installed_helper_dirs[-1]:
             raise Refusal(f"{L.installed_helper_path} is not directly in {L.installed_helper_dirs[-1]}")
         self.own = read_own_helper(L, for_install=True)
-        uid, _ = resolve_ids(L.file_owner, L.file_group)
-        for d in (os.path.dirname(L.installed_helper_dirs[0]),) + tuple(L.installed_helper_dirs):
-            st = lstat_or_none(d)
-            if st is None and d in L.installed_helper_dirs:
-                self.new_dirs.append(d)
-                continue
-            if st is None or not stat.S_ISDIR(st.st_mode) or st.st_uid not in (0, uid) or stat.S_IMODE(st.st_mode) & 0o022:
-                what = describe(st) if st is not None else "missing"
-                raise Refusal(f"{d} is {what}; the refresh timer's helper copy needs directories owned by {L.file_owner} that no one else can write")
+        self.new_dirs, problems = helper_copy_dirs(L)
+        if problems:
+            raise Refusal(problems[0])
         ust = lstat_or_none(L.systemd_unit_dir)
         if ust is None or not stat.S_ISDIR(ust.st_mode):
             raise Refusal(f"{L.systemd_unit_dir} is not a directory")
@@ -1316,7 +1481,16 @@ class TimerInstall:
                 raise Refusal(f"{path} exists and is not a regular file")
             if s != "matches":
                 self.writes.append(path)
-        self.enable = bool(self.writes) or not timer_enabled(self.state)
+        # A drop-in or a unit file elsewhere would change what systemd runs;
+        # pin does not install around one.
+        for key in ("service", "timer"):
+            props, path = self.state[key], self.state["unit_paths"][key]
+            if props.get("DropInPaths"):
+                raise Refusal(f"{os.path.basename(path)} has drop-ins ({props['DropInPaths']}) that would change what the refresh timer runs; remove them by hand")
+            if props.get("FragmentPath") not in ("", path):
+                raise Refusal(f"systemd loads {os.path.basename(path)} from {props['FragmentPath']}, which pin does not manage; remove it by hand")
+        reload_needed = any(self.state[k].get("NeedDaemonReload") == "yes" for k in ("service", "timer"))
+        self.enable = bool(self.writes) or reload_needed or not timer_enabled(self.state)
         if not self.needed():
             self.rep.check("refresh timer", "ok", f"{timer_unit} installed, enabled and active")
             return
@@ -1353,6 +1527,7 @@ class TimerInstall:
             off = [f"{p} is {s}" for p, s in after["files"].items() if s != "matches"]
             if after["service"].get("LoadState") != "loaded" or after["timer"].get("LoadState") != "loaded" or not timer_enabled(after):
                 off.append(f"{timer_unit} is {after['timer'].get('LoadState')}, {after['timer'].get('UnitFileState')} and {after['timer'].get('ActiveState')}")
+            off += unit_definition_problems(after)
             if off:
                 raise Failure("; ".join(off))
             self.rep.action(f"enabled and started {timer_unit}: systemd runs refresh --apply at {L.refresh_on_calendar}")
@@ -1477,6 +1652,8 @@ def mode_status(r: Runner, rep: Report) -> None:
             rep.check("bundle file", coverage["state"], f"{L.bundle_path} ({bstate['meta']}) {coverage['detail']}")
         except CommandError as exc:
             rep.check("bundle file", "fail", f"{L.bundle_path} differs from the server bundle, and its certificates cannot be read: {exc}")
+    elif bstate["state"] in ("oversized", "unparseable") and analysis.get("state") == "pinned":
+        rep.check("bundle file", "attention", f"{L.bundle_path} ({bstate['meta']}): {bstate['state']}; run sudo {PUBLIC_SCRIPT} refresh --apply")
     else:
         rep.check("bundle file", "info" if bstate["state"] in ("absent", "unknown") else "attention", f"{L.bundle_path}: {bstate['state']}")
 
