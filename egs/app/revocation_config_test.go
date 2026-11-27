@@ -26,7 +26,10 @@ func TestEGSRefusesToStartOnEntriesTheRevocationRunbookWarnsAbout(t *testing.T) 
 	}{
 		{"unlabeled digest", func(cfg *config.Config) {
 			cfg.RuntimeTrust.ArtifactPolicy.RevokedArtifacts = []string{strings.Repeat("a", 64)}
-		}, "runtime_trust.artifact_policy.revoked_artifacts must contain labeled sha256 digests"},
+		}, `runtime_trust.artifact_policy.revoked_artifacts must contain labeled sha256 digests in lower-case hex (sha256: and 64 lower-case hex characters); got "` + strings.Repeat("a", 64) + `"`},
+		{"upper-case digest", func(cfg *config.Config) {
+			cfg.RuntimeTrust.ArtifactPolicy.RevokedArtifacts = []string{"sha256:" + strings.Repeat("A", 64)}
+		}, `runtime_trust.artifact_policy.revoked_artifacts must contain labeled sha256 digests in lower-case hex (sha256: and 64 lower-case hex characters); got "sha256:` + strings.Repeat("A", 64) + `"`},
 		{"duplicate revoked signer", func(cfg *config.Config) {
 			cfg.RuntimeTrust.SignerPolicy.RevokedSigners = []string{"k1", "k1"}
 		}, "runtime_trust.signer_policy.revoked_signers cannot contain duplicate values"},
