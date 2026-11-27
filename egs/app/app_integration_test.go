@@ -13,6 +13,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"io"
 	"math/big"
 	"net/http"
@@ -49,6 +50,76 @@ func TestLoadConfigRejectsMalformedJSON(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "decode config") {
 		t.Fatalf("expected malformed-json error, got %v", err)
 	}
+}
+
+// A revoked-artifact digest in any spelling other than the one ES admits would
+// never match, so it would revoke nothing. EGS refuses it at config load
+// rather than normalizing it, names the entry, and checks every entry of the
+// list, not only the first or the last.
+func TestLoadConfigRejectsRevokedArtifactDigestNotInLowerCaseHex(t *testing.T) {
+	t.Parallel()
+
+	const lower = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	const otherLower = "sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
+	upper := "sha256:" + strings.ToUpper(strings.TrimPrefix(lower, "sha256:"))
+	cases := map[string]struct {
+		digests []string
+		refused string
+	}{
+		"upper-case hex":                  {[]string{upper}, upper},
+		"one upper-case hex":              {[]string{lower[:len(lower)-1] + "F"}, lower[:len(lower)-1] + "F"},
+		"upper-case label":                {[]string{"SHA256:" + strings.TrimPrefix(lower, "sha256:")}, "SHA256:" + strings.TrimPrefix(lower, "sha256:")},
+		"leading space":                   {[]string{" " + lower}, " " + lower},
+		"trailing space":                  {[]string{lower + " "}, lower + " "},
+		"trailing newline":                {[]string{lower + "\n"}, lower + "\n"},
+		"one hex digit too many":          {[]string{lower + "0"}, lower + "0"},
+		"one hex digit too few":           {[]string{lower[:len(lower)-1]}, lower[:len(lower)-1]},
+		"a letter that is not a hex":      {[]string{lower[:len(lower)-1] + "g"}, lower[:len(lower)-1] + "g"},
+		"no label":                        {[]string{strings.TrimPrefix(lower, "sha256:")}, strings.TrimPrefix(lower, "sha256:")},
+		"upper-case entry after a valid":  {[]string{otherLower, upper}, upper},
+		"upper-case entry before a valid": {[]string{upper, otherLower}, upper},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			fixture := newTLSFixture(t)
+			cfg := buildConfig(fixture)
+			cfg.RuntimeTrust.ArtifactPolicy.RevokedArtifacts = tc.digests
+			payload, err := json.MarshalIndent(cfg, "", "  ")
+			if err != nil {
+				t.Fatalf("marshal config: %v", err)
+			}
+			path := filepath.Join(t.TempDir(), "egs.json")
+			if err := os.WriteFile(path, payload, 0o600); err != nil {
+				t.Fatalf("write config: %v", err)
+			}
+
+			want := fmt.Sprintf("runtime_trust.artifact_policy.revoked_artifacts must contain labeled sha256 digests in lower-case hex (sha256: and 64 lower-case hex characters); got %q", tc.refused)
+			if _, err := config.Load(path); err == nil || err.Error() != want {
+				t.Fatalf("config.Load() with revoked artifacts %q = %v, want %q", tc.digests, err, want)
+			}
+		})
+	}
+
+	t.Run("lower-case hex is accepted", func(t *testing.T) {
+		t.Parallel()
+
+		fixture := newTLSFixture(t)
+		cfg := buildConfig(fixture)
+		cfg.RuntimeTrust.ArtifactPolicy.RevokedArtifacts = []string{lower}
+		payload, err := json.MarshalIndent(cfg, "", "  ")
+		if err != nil {
+			t.Fatalf("marshal config: %v", err)
+		}
+		path := filepath.Join(t.TempDir(), "egs.json")
+		if err := os.WriteFile(path, payload, 0o600); err != nil {
+			t.Fatalf("write config: %v", err)
+		}
+		if _, err := config.Load(path); err != nil {
+			t.Fatalf("expected the lower-case digest to load, got %v", err)
+		}
+	})
 }
 
 func TestLoadConfigRejectsTrailingData(t *testing.T) {
