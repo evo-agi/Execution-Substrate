@@ -1256,7 +1256,7 @@ func TestUserIdentityApplyRollsBackToTheExactBytes(t *testing.T) {
 			t.Fatalf("pending restarts %q, want es.service", got)
 		}
 		status := b.box("status")
-		if status.result() != "attention" || !strings.Contains(status.stdout, "es.service") {
+		if status.result() != "attention" || !strings.Contains(status.stdout, "es.service did not confirm a restart without it; run revoke again to finish") {
 			t.Fatalf("status after a failed revoke does not show the unfinished restart:\n%s", status)
 		}
 		if again := b.box("allow", "--name", "claude", "--apply"); again.code != 1 || !strings.Contains(again.message(), "revoke") {

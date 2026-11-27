@@ -356,6 +356,28 @@ func TestUserIdentityRefusesUnsafeStates(t *testing.T) {
 			bothClientCAFiles(t, b, func(data []byte) []byte { return append(data, stray...) })
 			return []string{"allow", "--name", "claude", "--apply"}
 		}, 1, "hold another user CA"},
+		{"allow while a retired CA under another name is trusted", func(t *testing.T, b *userIdentityBox) []string {
+			minted(t, b)
+			// A CA the registry lists as retired is a stray whatever its
+			// name, for example after a layout with another Common Name.
+			old, _, oldPEM := userIdentityTestCA(t, "Earlier User CA")
+			bothClientCAFiles(t, b, func(data []byte) []byte { return append(data, oldPEM...) })
+			editUserIdentityFile(t, b.registryPath(), func(s string) string {
+				var registry map[string]any
+				if err := json.Unmarshal([]byte(s), &registry); err != nil {
+					t.Fatal(err)
+				}
+				sum := sha256.Sum256(old.Raw)
+				registry["retired_cas"] = append(registry["retired_cas"].([]any), map[string]any{
+					"sha256": hex.EncodeToString(sum[:]), "public_key_sha256": strings.Repeat("0", 64), "retired_at": "2026-01-01T00:00:00Z"})
+				data, err := json.MarshalIndent(registry, "", "  ")
+				if err != nil {
+					t.Fatal(err)
+				}
+				return string(data) + "\n"
+			})
+			return []string{"allow", "--name", "claude", "--apply"}
+		}, 1, "hold another user CA"},
 		{"allow while ARS reads the AGS client CA file", func(t *testing.T, b *userIdentityBox) []string {
 			minted(t, b)
 			editUserIdentityFile(t, b.arsConfig, func(s string) string { return mustReplaceOnce(t, s, "/abs/path/tls/runtime-ca.pem", b.agsCA) })
@@ -476,6 +498,12 @@ func TestUserIdentityRefusesUnsafeStates(t *testing.T) {
 			writeUserIdentityFile(t, path, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leaf.Certificate[0]}), 0o644)
 			return []string{"install", "--name", "claude", "--cert", issued, "--server-ca", path}
 		}, 1, "holds a certificate that is not a CA"},
+		{"install with a certificate that has carriage returns", func(t *testing.T, b *userIdentityBox) []string {
+			issued := b.mint("claude")
+			crlf := filepath.Join(b.root, "crlf.crt")
+			writeUserIdentityFile(t, crlf, bytes.ReplaceAll(mustReadUserIdentityFile(t, issued), []byte("\n"), []byte("\r\n")), 0o644)
+			return []string{"install", "--name", "claude", "--cert", crlf}
+		}, 1, "has carriage returns"},
 		{"issue when the user CA directory's parent is writable by its group", func(t *testing.T, b *userIdentityBox) []string {
 			b.mustOK(b.box("init-ca", "--apply"), "init-ca")
 			b.mustOK(b.caller("request", "--name", "claude"), "request")
