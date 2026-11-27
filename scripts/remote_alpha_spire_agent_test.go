@@ -51,6 +51,7 @@ import (
 )
 
 const (
+	spireAgentHelperRefreshUnit = "execution-substrate-spire-bundle-refresh"
 	spireAgentHelperTrustDomain = "execution.internal"
 	spireAgentHelperAlias       = "spiffe://execution.internal/spire-agent"
 	spireAgentHelperWorkload    = "spiffe://execution.internal/workload"
@@ -64,7 +65,13 @@ var spireAgentHelperModule = filepath.Join(executionSubstrateRepoRoot, "scripts"
 // pinned check with a Layout from a JSON file, or runs the server bundle
 // checks on a PEM file standing in for "spire-server bundle show" output
 // (only the spire-server call is replaced; openssl runs for real), or hands
-// a directory over with take_new_dir. It is test code only.
+// a directory over with take_new_dir, or prints the refresh unit texts for
+// the default Layout, or classifies a bundle file against a server bundle
+// (bundle_coverage, openssl for real), or reads its own module file the way
+// pin does before installing a copy. The bundle checks are the SPIRE data
+// check's code, so the driver marks itself as that check before it calls
+// them (they refuse to run in root's process otherwise). It is test code
+// only.
 const spireAgentHelperDriver = `import dataclasses, importlib.util, json, sys
 spec = importlib.util.spec_from_file_location("ra_spire_agent", sys.argv[1])
 mod = importlib.util.module_from_spec(spec)
@@ -94,6 +101,23 @@ if sys.argv[2] == "--take-new-dir":
     except (mod.Failure, OSError) as exc:
         print(json.dumps({"ok": False, "reason": str(exc)}))
     sys.exit(0)
+if sys.argv[2] == "--unit-texts":
+    print(json.dumps({k: v.decode("ascii") for k, v in mod.refresh_unit_texts(mod.Layout()).items()}, sort_keys=True))
+    sys.exit(0)
+if sys.argv[2] == "--coverage":
+    mod._IN_SPIRE_VIEW = True
+    layout = mod.Layout(openssl_bin=sys.argv[5], bundle_refresh_grace_seconds=int(sys.argv[6]))
+    runner = mod.Runner(layout, mod.Report("status", False))
+    files = [mod.parse_pem_certificates(open(p, newline="").read()) for p in sys.argv[3:5]]
+    print(json.dumps(mod.bundle_coverage(runner, files[0], files[1])))
+    sys.exit(0)
+if sys.argv[2] == "--own-helper":
+    try:
+        data = mod.read_own_helper(mod.Layout(file_owner=sys.argv[3], file_group=sys.argv[4]), for_install=True)
+        print(json.dumps({"ok": True, "size": len(data)}))
+    except mod.Refusal as exc:
+        print(json.dumps({"ok": False, "reason": str(exc)}))
+    sys.exit(0)
 if sys.argv[2] == "--export-bundle":
     pem = open(sys.argv[3], newline="").read()
     real_text = mod.Runner.text
@@ -102,6 +126,7 @@ if sys.argv[2] == "--export-bundle":
             return pem
         return real_text(self, argv, **kwargs)
     mod.Runner.text = fake_text
+    mod._IN_SPIRE_VIEW = True
     layout = mod.Layout(openssl_bin=sys.argv[4])
     try:
         ders = mod.export_server_bundle(mod.Runner(layout, mod.Report("status", False)))
@@ -125,6 +150,14 @@ sys.exit(mod.main(sys.argv[3:], mod.Layout(**overrides)))
 // that unit fail once. While a file hold-restart exists there, a restart
 // stops the unit, adds a line to held-restarts and waits before it starts
 // the unit again, so a test can signal the helper inside a restart.
+// The bundle refresh units are plain records: a unit with "unit_file" is
+// loaded only while that file exists; "enable --now" and "disable --now"
+// mark a timer enabled and active (<unit>.fail-next-enable makes the next
+// enable fail once); a "oneshot" unit's start runs its argv to the end and
+// records its result and start time; "daemon-reload" is logged and records
+// what it loaded. Such a unit reports its file as FragmentPath, the .conf
+// files in <unit file>.d as DropInPaths, and NeedDaemonReload=yes while its
+// file or drop-ins differ from what the last daemon-reload loaded.
 const spireAgentHelperFakeSystemctl = `import json, os, signal, stat, subprocess, sys, time
 STATE = %q
 cfg = json.load(open(os.path.join(STATE, "units.json")))
@@ -151,7 +184,23 @@ def pid_of(u):
 def dependents(u):
     return [x for x in cfg if u in cfg[x]["requires"]]
 
+def loaded(u):
+    f = cfg[u].get("unit_file")
+    return not f or os.path.exists(f)
+
+def oneshot(u):
+    if not loaded(u):
+        return 5
+    open(os.path.join(STATE, u + ".started"), "w").write(time.strftime("%%a %%Y-%%m-%%d %%H:%%M:%%S UTC", time.gmtime()))
+    with open(os.path.join(STATE, u + ".log"), "ab") as log:
+        rc = subprocess.run(cfg[u]["argv"], stdin=subprocess.DEVNULL, stdout=log, stderr=log, cwd="/").returncode
+    open(os.path.join(STATE, u + ".result"), "w").write("success" if rc == 0 else "exit-code")
+    open(os.path.join(STATE, u + ".status"), "w").write(str(rc))
+    return 0 if rc == 0 else 1
+
 def start(u):
+    if cfg[u].get("oneshot"):
+        return oneshot(u)
     if pid_of(u):
         return 0
     marker = os.path.join(STATE, u + ".fail-next-start")
@@ -206,15 +255,65 @@ def active_dependents(u):
         out.extend(active_dependents(d))
     return out
 
-cmd, unit = sys.argv[1], sys.argv[2]
+def state_file(u, name, default=""):
+    try:
+        return open(os.path.join(STATE, u + "." + name)).read()
+    except OSError:
+        return default
+
+def dropins(u):
+    f = cfg[u].get("unit_file")
+    d = f + ".d" if f else ""
+    return sorted(os.path.join(d, n) for n in os.listdir(d) if n.endswith(".conf")) if d and os.path.isdir(d) else []
+
+def definition(u):
+    # What a daemon-reload loads: the unit file's bytes and its drop-ins.
+    parts = []
+    for path in ([cfg[u]["unit_file"]] if cfg[u].get("unit_file") else []) + dropins(u):
+        try:
+            parts.append(path + "\0" + open(path, "rb").read().hex())
+        except OSError:
+            parts.append(path + "\0absent")
+    return "\n".join(parts)
+
+args = sys.argv[1:]
+if args == ["daemon-reload"]:
+    with open(os.path.join(STATE, "daemon-reloads"), "a") as fh:
+        fh.write("reload\n")
+    for u in cfg:
+        open(os.path.join(STATE, u + ".loaded-definition"), "w").write(definition(u))
+    sys.exit(0)
+if len(args) == 3 and args[0] in ("enable", "disable") and args[1] == "--now":
+    unit = args[2]
+    if unit not in cfg or not loaded(unit):
+        sys.exit(1)
+    marker = os.path.join(STATE, unit + ".enabled")
+    if args[0] == "enable":
+        fail = os.path.join(STATE, unit + ".fail-next-enable")
+        if os.path.exists(fail):
+            os.unlink(fail)
+            sys.exit(1)
+        open(marker, "w").close()
+    elif os.path.exists(marker):
+        os.unlink(marker)
+    sys.exit(0)
+cmd, unit = args[0], args[1]
 if unit not in cfg:
     sys.exit(5)
 if cmd == "show":
     props = sys.argv[3].split("=", 1)[1].split(",")
     pid = pid_of(unit)
-    values = {"ActiveState": "active" if pid else "inactive", "SubState": "running" if pid else "dead",
+    enabled = os.path.exists(os.path.join(STATE, unit + ".enabled"))
+    active = enabled if cfg[unit].get("timer") else bool(pid)
+    values = {"ActiveState": "active" if active else "inactive", "SubState": "running" if pid else "dead",
               "MainPID": str(pid), "NRestarts": "0", "RuntimeDirectory": cfg[unit].get("runtime_directory", ""),
-              "LoadState": "loaded"}
+              "LoadState": "loaded" if loaded(unit) else "not-found",
+              "UnitFileState": "enabled" if enabled else ("disabled" if loaded(unit) else ""),
+              "Result": state_file(unit, "result", "success"), "ExecMainStartTimestamp": state_file(unit, "started"),
+              "ExecMainStatus": state_file(unit, "status", "0"),
+              "FragmentPath": cfg[unit]["unit_file"] if cfg[unit].get("unit_file") and loaded(unit) else "",
+              "DropInPaths": " ".join(dropins(unit)),
+              "NeedDaemonReload": "yes" if cfg[unit].get("unit_file") and loaded(unit) and definition(unit) != state_file(unit, "loaded-definition", None) else "no"}
     for p in props:
         print(p + "=" + values.get(p, ""))
     sys.exit(0)
@@ -349,6 +448,9 @@ type spireAgentHelperBox struct {
 	agentSock   string
 	bundlePath  string
 	tmpfilesDir string
+	unitDir     string
+	copyPath    string
+	module      string
 	scratch     string
 	layoutPath  string
 	user        string
@@ -538,7 +640,7 @@ func newSPIREAgentHelperBox(t *testing.T, svidTTL string) *spireAgentHelperBox {
 	}
 	b.user, b.group = cur.Username, grpEntry.Name
 	b.uid, _ = strconv.Atoi(cur.Uid)
-	for _, d := range []string{"bin", "real", "state", "logs", "etc/spire/agent", "etc/spire/server", "tmpfiles/etc/tmpfiles.d", "var/lib/spire/server", "var/lib/spire/agent", "run/spire/server/private", "run/spire/sockets", "scratch"} {
+	for _, d := range []string{"bin", "real", "state", "logs", "etc/spire/agent", "etc/spire/server", "etc/systemd/system", "usr/local", "src", "tmpfiles/etc/tmpfiles.d", "var/lib/spire/server", "var/lib/spire/agent", "run/spire/server/private", "run/spire/sockets", "scratch"} {
 		if err := os.MkdirAll(filepath.Join(root, d), 0o755); err != nil {
 			t.Fatalf("mkdir %s: %v", d, err)
 		}
@@ -569,6 +671,8 @@ func newSPIREAgentHelperBox(t *testing.T, svidTTL string) *spireAgentHelperBox {
 	b.dataDir = filepath.Join(root, "var/lib/spire/agent")
 	b.bundlePath = filepath.Join(root, "etc/spire/agent/bootstrap-bundle.pem")
 	b.tmpfilesDir = filepath.Join(root, "tmpfiles")
+	b.unitDir = filepath.Join(root, "etc/systemd/system")
+	b.copyPath = filepath.Join(root, "usr/local/libexec/execution-substrate/remote_alpha_spire_agent.py")
 	b.scratch = filepath.Join(root, "scratch")
 	b.write(b.serverConf, spireAgentHelperServerConf(filepath.Join(root, "var/lib/spire/server"), b.serverSock, b.port, svidTTL), 0o644)
 	b.write(b.agentConf, spireAgentHelperAgentConf(b.dataDir, b.agentSock, b.port), 0o644)
@@ -579,10 +683,25 @@ func newSPIREAgentHelperBox(t *testing.T, svidTTL string) *spireAgentHelperBox {
 	if err != nil {
 		t.Fatalf("sleep: %v", err)
 	}
+	b.layoutPath = filepath.Join(root, "layout.json")
+	driver := filepath.Join(root, "driver.py")
+	b.write(driver, spireAgentHelperDriver, 0o644)
+	// The runs use a staged 0644 copy of the helper, as the box run stages
+	// one: pin refuses to install a copy of a helper file others can write,
+	// so running the checkout's file would make these tests depend on the
+	// umask it was checked out with.
+	b.module = filepath.Join(root, "src", "remote_alpha_spire_agent.py")
+	b.write(b.module, string(spireAgentHelperRead(t, spireAgentHelperModule)), 0o644)
 	units := map[string]any{
 		"spire-server.service": map[string]any{"argv": []string{b.realServer, "run", "-config", b.serverConf}, "requires": []string{}, "socket": b.serverSock},
 		"spire-agent.service":  map[string]any{"argv": []string{b.realAgent, "run", "-config", b.agentConf}, "requires": []string{"spire-server.service"}, "socket": b.agentSock},
 		"es.service":           map[string]any{"argv": []string{sleepBin, "100000"}, "requires": []string{"spire-agent.service"}},
+		// The refresh service runs refresh --apply with the test Layout; the
+		// unit text pin writes names the box paths, which
+		// TestRemoteAlphaSPIREAgentRefreshUnitTexts pins.
+		spireAgentHelperRefreshUnit + ".service": map[string]any{"oneshot": true, "requires": []string{}, "unit_file": filepath.Join(b.unitDir, spireAgentHelperRefreshUnit+".service"),
+			"argv": []string{python, "-I", "-B", "-S", driver, b.module, b.layoutPath, "refresh", "--apply"}},
+		spireAgentHelperRefreshUnit + ".timer": map[string]any{"timer": true, "requires": []string{}, "unit_file": filepath.Join(b.unitDir, spireAgentHelperRefreshUnit+".timer")},
 	}
 	b.writeJSON(filepath.Join(b.stateDir, "units.json"), units)
 	setpriv := filepath.Join(root, "bin", "setpriv")
@@ -594,29 +713,33 @@ func newSPIREAgentHelperBox(t *testing.T, svidTTL string) *spireAgentHelperBox {
 	openssl, _ := exec.LookPath("openssl")
 
 	layout := map[string]any{
-		"spire_user":       b.user,
-		"spire_group":      b.group,
-		"file_owner":       b.user,
-		"file_group":       b.group,
-		"required_euid":    os.Geteuid(),
-		"server_socket":    b.serverSock,
-		"agent_socket":     b.agentSock,
-		"agent_config":     b.agentConf,
-		"bundle_path":      b.bundlePath,
-		"agent_data_dir":   b.dataDir,
-		"runtime_dirs":     []string{filepath.Join(root, "run/spire"), filepath.Join(root, "run/spire/server"), filepath.Join(root, "run/spire/server/private"), filepath.Join(root, "run/spire/sockets")},
-		"runtime_dir_root": filepath.Join(root, "run"),
-		"tmpfiles_root":    b.tmpfilesDir,
-		"tmpfiles_path":    filepath.Join(b.tmpfilesDir, "etc/tmpfiles.d/spire.conf"),
-		"scratch_parent":   b.scratch,
-		"lock_path":        filepath.Join(root, "helper.lock"),
-		"spire_server_bin": shimServer,
-		"spire_agent_bin":  shimAgent,
-		"systemctl_bin":    b.systemctl,
-		"setpriv_bin":      setpriv,
-		"openssl_bin":      openssl,
-		"tmpfiles_bin":     tmpfiles,
-		"command_path_env": filepath.Dir(python) + ":/usr/sbin:/usr/bin:/sbin:/bin",
+		"spire_user":            b.user,
+		"spire_group":           b.group,
+		"file_owner":            b.user,
+		"file_group":            b.group,
+		"required_euid":         os.Geteuid(),
+		"server_socket":         b.serverSock,
+		"agent_socket":          b.agentSock,
+		"agent_config":          b.agentConf,
+		"bundle_path":           b.bundlePath,
+		"agent_data_dir":        b.dataDir,
+		"runtime_dirs":          []string{filepath.Join(root, "run/spire"), filepath.Join(root, "run/spire/server"), filepath.Join(root, "run/spire/server/private"), filepath.Join(root, "run/spire/sockets")},
+		"runtime_dir_root":      filepath.Join(root, "run"),
+		"tmpfiles_root":         b.tmpfilesDir,
+		"tmpfiles_path":         filepath.Join(b.tmpfilesDir, "etc/tmpfiles.d/spire.conf"),
+		"systemd_unit_dir":      b.unitDir,
+		"installed_helper_path": b.copyPath,
+		"installed_helper_dirs": []string{filepath.Join(root, "usr/local/libexec"), filepath.Dir(b.copyPath)},
+		"scratch_parent":        b.scratch,
+		"lock_path":             filepath.Join(root, "run/execution-substrate-remote-alpha-spire-agent/lock"),
+		"spire_server_bin":      shimServer,
+		"spire_agent_bin":       shimAgent,
+		"systemctl_bin":         b.systemctl,
+		"setpriv_bin":           setpriv,
+		"openssl_bin":           openssl,
+		"tmpfiles_bin":          tmpfiles,
+		"command_path_env":      filepath.Dir(python) + ":/usr/sbin:/usr/bin:/sbin:/bin",
+		"python_argv":           []string{python, "-I", "-B", "-S"},
 		// The agent renews at about half of a 15 s or 60 s life, so a
 		// threshold above 0 would make "attention" depend on timing.
 		"svid_attention_seconds":         0,
@@ -626,7 +749,6 @@ func newSPIREAgentHelperBox(t *testing.T, svidTTL string) *spireAgentHelperBox {
 		"dependent_unit_timeout_seconds": 20,
 		"poll_interval_seconds":          0.3,
 	}
-	b.layoutPath = filepath.Join(root, "layout.json")
 	b.writeJSON(b.layoutPath, layout)
 	return b
 }
@@ -639,6 +761,43 @@ func (b *spireAgentHelperBox) write(path, content string, mode os.FileMode) {
 	if err := os.Chmod(path, mode); err != nil {
 		b.t.Fatalf("chmod %s: %v", path, err)
 	}
+}
+
+// setLayout changes one field of the test Layout, for the helper runs and
+// the refresh service's runs that follow.
+func (b *spireAgentHelperBox) setLayout(key string, value any) {
+	b.t.Helper()
+	var layout map[string]any
+	if err := json.Unmarshal(spireAgentHelperRead(b.t, b.layoutPath), &layout); err != nil {
+		b.t.Fatal(err)
+	}
+	layout[key] = value
+	b.writeJSON(b.layoutPath, layout)
+}
+
+// refreshFiles are the helper copy and the two unit files pin installs.
+func (b *spireAgentHelperBox) refreshFiles() []string {
+	return []string{b.copyPath, filepath.Join(b.unitDir, spireAgentHelperRefreshUnit+".service"), filepath.Join(b.unitDir, spireAgentHelperRefreshUnit+".timer")}
+}
+
+func (b *spireAgentHelperBox) timerEnabled() bool {
+	_, err := os.Stat(filepath.Join(b.stateDir, spireAgentHelperRefreshUnit+".timer.enabled"))
+	return err == nil
+}
+
+// startRefresh starts the refresh service the way the timer does and
+// returns the fake systemctl's exit status.
+func (b *spireAgentHelperBox) startRefresh() int {
+	b.t.Helper()
+	cmd := exec.Command(b.systemctl, "start", spireAgentHelperRefreshUnit+".service")
+	cmd.Dir = executionSubstrateRepoRoot
+	if err := cmd.Run(); err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			return exitErr.ExitCode()
+		}
+		b.t.Fatalf("start the refresh service: %v", err)
+	}
+	return 0
 }
 
 func (b *spireAgentHelperBox) writeJSON(path string, v any) {
@@ -852,7 +1011,7 @@ func (b *spireAgentHelperBox) helper(args ...string) spireAgentHelperRun {
 	if _, err := os.Stat(driver); err != nil {
 		b.write(driver, spireAgentHelperDriver, 0o644)
 	}
-	full := append([]string{"-I", "-B", driver, spireAgentHelperModule, b.layoutPath}, args...)
+	full := append([]string{"-I", "-B", driver, b.module, b.layoutPath}, args...)
 	full = append(full, "--json")
 	cmd := exec.Command(b.python, full...)
 	cmd.Dir = executionSubstrateRepoRoot
@@ -879,7 +1038,7 @@ func (b *spireAgentHelperBox) startHelper(args ...string) (*exec.Cmd, *bytes.Buf
 	if _, err := os.Stat(driver); err != nil {
 		b.write(driver, spireAgentHelperDriver, 0o644)
 	}
-	cmd := exec.Command(b.python, append([]string{"-I", "-B", driver, spireAgentHelperModule, b.layoutPath}, append(args, "--json")...)...)
+	cmd := exec.Command(b.python, append([]string{"-I", "-B", driver, b.module, b.layoutPath}, append(args, "--json")...)...)
 	cmd.Dir = executionSubstrateRepoRoot
 	cmd.Env = []string{"PATH=/usr/bin:/bin", "LC_ALL=C"}
 	var out bytes.Buffer
@@ -1115,6 +1274,17 @@ func TestRemoteAlphaSPIREAgentPinAgainstRealSPIRE(t *testing.T) {
 	if strings.Contains(status.stdout, tokenPart) {
 		t.Fatalf("status printed the join token part of the agent ID")
 	}
+	if c := status.check("refresh timer"); c != nil {
+		t.Fatalf("status reported the refresh timer on a host that is not pinned:\n%s", status)
+	}
+
+	// refresh only maintains a pinned bundle file: on the insecure
+	// agent.conf it refuses and writes nothing.
+	refusedRefresh := b.helper("refresh", "--apply")
+	refusedRefresh.expect(t, 1, "refused")
+	if !strings.Contains(refusedRefresh.report["message"].(string), "is not pinned to "+b.bundlePath) || len(spireAgentHelperGlob(t, b.bundlePath)) != 0 {
+		t.Fatalf("refresh on an insecure agent.conf was not refused before any change:\n%s", refusedRefresh)
+	}
 
 	// The bundle is trusted because only root and the SPIRE account can
 	// answer on the admin socket: a socket directory others can write, or a
@@ -1150,10 +1320,11 @@ func TestRemoteAlphaSPIREAgentPinAgainstRealSPIRE(t *testing.T) {
 	agentPid, esPid := b.pid("spire-agent.service"), b.pid("es.service")
 	plan := b.helper("pin")
 	plan.expect(t, 0, "planned")
-	if steps, _ := plan.report["plan"].([]any); len(steps) != 4 {
-		t.Fatalf("expected 4 planned steps (bundle, boot rule, config, restart):\n%s", plan)
+	if steps, _ := plan.report["plan"].([]any); len(steps) != 5 || !strings.Contains(fmt.Sprint(steps[4]), "install the bundle refresh timer") {
+		t.Fatalf("expected 5 planned steps (bundle, boot rule, config, restart, refresh timer):\n%s", plan)
 	}
-	if !bytes.Equal(spireAgentHelperRead(t, b.agentConf), original) || len(spireAgentHelperGlob(t, b.bundlePath)) != 0 || len(spireAgentHelperGlob(t, filepath.Join(b.tmpfilesDir, "etc/tmpfiles.d/*"))) != 0 {
+	if !bytes.Equal(spireAgentHelperRead(t, b.agentConf), original) || len(spireAgentHelperGlob(t, b.bundlePath)) != 0 || len(spireAgentHelperGlob(t, filepath.Join(b.tmpfilesDir, "etc/tmpfiles.d/*"))) != 0 ||
+		len(spireAgentHelperGlob(t, filepath.Join(b.unitDir, "*"))) != 0 || len(spireAgentHelperGlob(t, filepath.Join(b.root, "usr/local/*"))) != 0 {
 		t.Fatalf("pin without --apply changed a file")
 	}
 	if b.pid("spire-agent.service") != agentPid {
@@ -1328,6 +1499,33 @@ func TestRemoteAlphaSPIREAgentPinAgainstRealSPIRE(t *testing.T) {
 
 	pinned := b.helper("pin", "--apply")
 	pinned.expect(t, 0, "ok")
+	if pinned.report["message"] != "pinned; the agent restarted with its original identity; the bundle refresh timer is installed" {
+		t.Fatalf("pin --apply message:\n%s", pinned)
+	}
+	// The timer: a copy of exactly this helper's bytes and the two units,
+	// each file_owner 0644, then daemon-reload and enable --now.
+	module := spireAgentHelperRead(t, spireAgentHelperModule)
+	for _, path := range b.refreshFiles() {
+		if mode, owner := spireAgentHelperMode(t, path); mode != 0o644 || owner != b.user+":"+b.group {
+			t.Fatalf("%s is %o %s, want 0644 %s:%s", path, mode, owner, b.user, b.group)
+		}
+	}
+	if !bytes.Equal(spireAgentHelperRead(t, b.copyPath), module) {
+		t.Fatalf("the helper copy is not this helper's bytes")
+	}
+	for _, dir := range []string{filepath.Join(b.root, "usr/local/libexec"), filepath.Dir(b.copyPath)} {
+		if mode, owner := spireAgentHelperMode(t, dir); mode != 0o755 || owner != b.user+":"+b.group {
+			t.Fatalf("%s is %o %s, want 0755 %s:%s", dir, mode, owner, b.user, b.group)
+		}
+	}
+	for _, path := range b.refreshFiles()[1:] {
+		if !strings.HasPrefix(string(spireAgentHelperRead(t, path)), "# Written by scripts/remote_alpha_spire_agent.sh pin, which rewrites it; do not edit.\n") {
+			t.Fatalf("%s lacks the marker line", path)
+		}
+	}
+	if !b.timerEnabled() || !strings.Contains(b.commandLog(), `["daemon-reload"]`) || !strings.Contains(b.commandLog(), `["enable", "--now", "`+spireAgentHelperRefreshUnit+`.timer"]`) {
+		t.Fatalf("pin did not reload systemd and enable the timer:\n%s", b.commandLog())
+	}
 	after := spireAgentHelperRead(t, b.agentConf)
 	wantConf := strings.Replace(string(original), "    insecure_bootstrap = true\n", "    trust_bundle_path = \""+b.bundlePath+"\"\n", 1)
 	if string(after) != wantConf {
@@ -1389,14 +1587,224 @@ func TestRemoteAlphaSPIREAgentPinAgainstRealSPIRE(t *testing.T) {
 
 	healthy := b.helper("status")
 	healthy.expect(t, 0, "ok")
+	if c := healthy.check("refresh timer"); c == nil || c["state"] != "ok" || !strings.Contains(fmt.Sprint(c["detail"]), "last run: none") {
+		t.Fatalf("status did not report the installed timer:\n%s", healthy)
+	}
 
 	// pin is idempotent.
 	agentPid, esPid = b.pid("spire-agent.service"), b.pid("es.service")
+	reloads := strings.Count(b.commandLog(), `["daemon-reload"]`)
 	again := b.helper("pin", "--apply")
 	again.expect(t, 0, "ok")
-	if again.report["message"] != "nothing to change" || len(spireAgentHelperGlob(t, b.agentConf+".bak-*")) != 1 || !bytes.Equal(spireAgentHelperRead(t, b.agentConf), after) || b.pid("spire-agent.service") != agentPid || b.pid("es.service") != esPid {
+	if again.report["message"] != "nothing to change" || len(spireAgentHelperGlob(t, b.agentConf+".bak-*")) != 1 || !bytes.Equal(spireAgentHelperRead(t, b.agentConf), after) || b.pid("spire-agent.service") != agentPid || b.pid("es.service") != esPid ||
+		strings.Count(b.commandLog(), `["daemon-reload"]`) != reloads {
 		t.Fatalf("second pin --apply was not a no-op:\n%s", again)
 	}
+
+	// The server prepares its next CA: the file now lacks it. status calls
+	// that info while the CA is younger than the grace period and attention
+	// after it, and plans nothing; refresh without --apply only plans.
+	serverCerts := func() string {
+		return strings.Join(spireAgentHelperCertSet(t, b.server("bundle", "show", "-format", "pem")), ",")
+	}
+	fileCerts := func() string {
+		return strings.Join(spireAgentHelperCertSet(t, spireAgentHelperRead(t, b.bundlePath)), ",")
+	}
+	b.server("localauthority", "x509", "prepare")
+	if serverCerts() == fileCerts() {
+		t.Fatalf("localauthority x509 prepare added no CA to the server bundle")
+	}
+	young := b.helper("status")
+	young.expect(t, 0, "ok")
+	if c := young.check("bundle file"); c == nil || c["state"] != "info" || !strings.Contains(fmt.Sprint(c["detail"]), "issued in the last 12 h") {
+		t.Fatalf("status did not report a young missing CA as info:\n%s", young)
+	}
+	b.setLayout("bundle_refresh_grace_seconds", 0)
+	stale := b.helper("status")
+	stale.expect(t, 1, "attention")
+	if c := stale.check("bundle file"); c == nil || c["state"] != "attention" || !strings.Contains(fmt.Sprint(c["detail"]), "lacks 1 unexpired server CA certificate(s) issued more than 0 h ago") ||
+		!strings.Contains(fmt.Sprint(c["detail"]), "refresh --apply") {
+		t.Fatalf("status did not report a missing CA past the grace period:\n%s", stale)
+	}
+	stalePlan := b.helper("refresh")
+	stalePlan.expect(t, 0, "planned")
+	if serverCerts() == fileCerts() {
+		t.Fatalf("refresh without --apply wrote the bundle file")
+	}
+
+	// The timer's run (the refresh service) brings the file back to the
+	// server bundle without restarting anything.
+	if rc := b.startRefresh(); rc != 0 {
+		t.Fatalf("the refresh service failed (%d):\n%s", rc, spireAgentHelperRead(t, filepath.Join(b.stateDir, spireAgentHelperRefreshUnit+".service.log")))
+	}
+	if serverCerts() != fileCerts() || b.pid("spire-agent.service") != agentPid || b.pid("es.service") != esPid {
+		t.Fatalf("the refresh service did not refresh the file, or restarted a unit")
+	}
+	ran := b.helper("status")
+	ran.expect(t, 0, "ok")
+	if c := ran.check("refresh timer"); c == nil || c["state"] != "ok" || strings.Contains(fmt.Sprint(c["detail"]), "last run: none") {
+		t.Fatalf("status did not report the refresh run:\n%s", ran)
+	}
+
+	// A refresh run that fails (here: the admin socket is usable by
+	// others) shows in status until a run succeeds.
+	if err := os.Chmod(b.serverSock, 0o666); err != nil {
+		t.Fatal(err)
+	}
+	if rc := b.startRefresh(); rc == 0 {
+		t.Fatalf("the refresh service succeeded with an admin socket others can use")
+	}
+	if err := os.Chmod(b.serverSock, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	failedRun := b.helper("status")
+	failedRun.expect(t, 1, "attention")
+	if c := failedRun.check("refresh timer"); c == nil || c["state"] != "attention" || !strings.Contains(fmt.Sprint(c["detail"]), "its last run failed (Result=exit-code") ||
+		!strings.Contains(fmt.Sprint(c["detail"]), "journalctl -u "+spireAgentHelperRefreshUnit+".service") {
+		t.Fatalf("status did not report the failed refresh run:\n%s", failedRun)
+	}
+	if rc := b.startRefresh(); rc != 0 {
+		t.Fatalf("the refresh service failed after the socket was fixed")
+	}
+	b.helper("status").expect(t, 0, "ok")
+
+	// The file trusts an unexpired CA the server does not publish: status
+	// calls it attention, and refresh --apply removes it.
+	stray := spireAgentHelperTestCert(t, true, "spiffe://"+spireAgentHelperTrustDomain, time.Now().Add(time.Hour))
+	b.write(b.bundlePath, string(spireAgentHelperRead(t, b.bundlePath))+string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: stray})), 0o644)
+	extra := b.helper("status")
+	extra.expect(t, 1, "attention")
+	if c := extra.check("bundle file"); c == nil || c["state"] != "attention" || !strings.Contains(fmt.Sprint(c["detail"]), "trusts 1 unexpired CA certificate(s) the server no longer publishes") {
+		t.Fatalf("status did not report a CA the server does not publish:\n%s", extra)
+	}
+	refreshed := b.helper("refresh", "--apply")
+	refreshed.expect(t, 0, "ok")
+	if refreshed.report["message"] != "refreshed; SPIRE reads the file only at a fresh bootstrap, so nothing restarted" || serverCerts() != fileCerts() || b.pid("spire-agent.service") != agentPid {
+		t.Fatalf("refresh --apply did not rewrite the file alone:\n%s", refreshed)
+	}
+	if mode, owner := spireAgentHelperMode(t, b.bundlePath); mode != 0o644 || owner != b.user+":"+b.group {
+		t.Fatalf("refreshed bundle file is %o %s", mode, owner)
+	}
+	b.helper("refresh", "--apply").expect(t, 0, "ok")
+	// An oversized file is attention, and refresh replaces it.
+	b.write(b.bundlePath, strings.Repeat("#", 1<<20+1), 0o644)
+	oversized := b.helper("status")
+	oversized.expect(t, 1, "attention")
+	if c := oversized.check("bundle file"); c == nil || c["state"] != "attention" || !strings.Contains(fmt.Sprint(c["detail"]), "oversized; run sudo scripts/remote_alpha_spire_agent.sh refresh --apply") {
+		t.Fatalf("status did not report an oversized bundle file:\n%s", oversized)
+	}
+	b.helper("refresh", "--apply").expect(t, 0, "ok")
+	if serverCerts() != fileCerts() {
+		t.Fatalf("refresh did not replace an oversized bundle file")
+	}
+	b.setLayout("bundle_refresh_grace_seconds", 12*3600)
+
+	// pin refuses to replace a unit file it did not write, and status
+	// flags it; nothing changes.
+	timerFile := b.refreshFiles()[2]
+	ours := spireAgentHelperRead(t, timerFile)
+	b.write(timerFile, "[Timer]\nOnCalendar=daily\n", 0o644)
+	foreign := b.helper("status")
+	if c := foreign.check("refresh timer"); c == nil || c["state"] != "attention" || !strings.Contains(fmt.Sprint(c["detail"]), timerFile+" is foreign") {
+		t.Fatalf("status did not flag a unit file pin did not write:\n%s", foreign)
+	}
+	refusedForeign := b.helper("pin", "--apply")
+	refusedForeign.expect(t, 1, "refused")
+	if !strings.Contains(refusedForeign.report["message"].(string), "was not written by scripts/remote_alpha_spire_agent.sh") || string(spireAgentHelperRead(t, timerFile)) != "[Timer]\nOnCalendar=daily\n" {
+		t.Fatalf("pin did not refuse a unit file it did not write:\n%s", refusedForeign)
+	}
+	b.write(timerFile, string(ours), 0o644)
+	b.helper("status").expect(t, 0, "ok")
+
+	// systemd must run the files pin wrote. A drop-in (here one replacing
+	// ExecStart) is attention in status, and pin refuses to install around
+	// it; nothing changes.
+	serviceFile := b.refreshFiles()[1]
+	dropin := filepath.Join(serviceFile+".d", "override.conf")
+	if err := os.Mkdir(serviceFile+".d", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	b.write(dropin, "[Service]\nExecStart=\nExecStart=/bin/true\n", 0o644)
+	dropped := b.helper("status")
+	dropped.expect(t, 1, "attention")
+	if c := dropped.check("refresh timer"); c == nil || !strings.Contains(fmt.Sprint(c["detail"]), spireAgentHelperRefreshUnit+".service has drop-ins that change it: "+dropin) {
+		t.Fatalf("status did not flag a drop-in:\n%s", dropped)
+	}
+	refusedDropin := b.helper("pin", "--apply")
+	refusedDropin.expect(t, 1, "refused")
+	if !strings.Contains(refusedDropin.report["message"].(string), spireAgentHelperRefreshUnit+".service has drop-ins") {
+		t.Fatalf("pin did not refuse to install around a drop-in:\n%s", refusedDropin)
+	}
+	if err := os.RemoveAll(serviceFile + ".d"); err != nil {
+		t.Fatal(err)
+	}
+	// A unit systemd has not reloaded since its file changed: attention,
+	// and pin --apply reloads it without rewriting anything.
+	if err := os.Remove(filepath.Join(b.stateDir, spireAgentHelperRefreshUnit+".service.loaded-definition")); err != nil {
+		t.Fatal(err)
+	}
+	unloaded := b.helper("status")
+	unloaded.expect(t, 1, "attention")
+	if c := unloaded.check("refresh timer"); c == nil || !strings.Contains(fmt.Sprint(c["detail"]), spireAgentHelperRefreshUnit+".service changed on disk since systemd last loaded it") {
+		t.Fatalf("status did not flag a unit systemd has not loaded:\n%s", unloaded)
+	}
+	reloads = strings.Count(b.commandLog(), `["daemon-reload"]`)
+	reloaded := b.helper("pin", "--apply")
+	reloaded.expect(t, 0, "ok")
+	if strings.Count(b.commandLog(), `["daemon-reload"]`) != reloads+1 || strings.Contains(fmt.Sprint(reloaded.report["actions"]), "wrote ") {
+		t.Fatalf("pin did not reload systemd alone:\n%s", reloaded)
+	}
+	b.helper("status").expect(t, 0, "ok")
+	// A directory holding the copy that others can write is attention.
+	if err := os.Chmod(filepath.Dir(b.copyPath), 0o775); err != nil {
+		t.Fatal(err)
+	}
+	writable := b.helper("status")
+	writable.expect(t, 1, "attention")
+	if c := writable.check("refresh timer"); c == nil || !strings.Contains(fmt.Sprint(c["detail"]), filepath.Dir(b.copyPath)+" is ") {
+		t.Fatalf("status did not flag a writable helper directory:\n%s", writable)
+	}
+	if err := os.Chmod(filepath.Dir(b.copyPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// The helper keeps its lock in a 0700 directory of its own.
+	if mode, owner := spireAgentHelperMode(t, filepath.Join(b.root, "run/execution-substrate-remote-alpha-spire-agent")); mode != 0o700 || owner != b.user+":"+b.group {
+		t.Fatalf("lock directory is %o %s, want 0700 %s:%s", mode, owner, b.user, b.group)
+	}
+
+	// A timer install that fails leaves the pin in place and puts the
+	// timer's files back as they were (here: none, and no directories).
+	b.ctl("disable", "--now", spireAgentHelperRefreshUnit+".timer")
+	for _, path := range b.refreshFiles() {
+		if err := os.Remove(path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, dir := range []string{filepath.Dir(b.copyPath), filepath.Join(b.root, "usr/local/libexec")} {
+		if err := os.Remove(dir); err != nil {
+			t.Fatal(err)
+		}
+	}
+	b.write(filepath.Join(b.stateDir, spireAgentHelperRefreshUnit+".timer.fail-next-enable"), "", 0o644)
+	failedTimer := b.helper("pin", "--apply")
+	failedTimer.expect(t, 1, "failed")
+	if msg := failedTimer.report["message"].(string); !strings.HasPrefix(msg, "pinned; no restart needed, but the bundle refresh timer was not installed") || !strings.Contains(msg, "its files were put back as they were") {
+		t.Fatalf("a failed timer install was not reported as such:\n%s", failedTimer)
+	}
+	if len(spireAgentHelperGlob(t, filepath.Join(b.root, "usr/local/*"))) != 0 || len(spireAgentHelperGlob(t, filepath.Join(b.unitDir, "*"))) != 0 || b.timerEnabled() ||
+		!bytes.Equal(spireAgentHelperRead(t, b.agentConf), after) || b.pid("spire-agent.service") != agentPid {
+		t.Fatalf("a failed timer install left files behind or touched the pin:\n%s", failedTimer)
+	}
+	missing := b.helper("status")
+	if c := missing.check("refresh timer"); c == nil || c["state"] != "attention" || !strings.Contains(fmt.Sprint(c["detail"]), "is absent") || !strings.Contains(fmt.Sprint(c["detail"]), "pin --apply") {
+		t.Fatalf("status did not flag the missing timer:\n%s", missing)
+	}
+	reinstalled := b.helper("pin", "--apply")
+	reinstalled.expect(t, 0, "ok")
+	if reinstalled.report["message"] != "pinned; no restart needed; the bundle refresh timer is installed" || !b.timerEnabled() || b.pid("spire-agent.service") != agentPid {
+		t.Fatalf("pin --apply did not install the timer alone:\n%s", reinstalled)
+	}
+	b.helper("status").expect(t, 0, "ok")
 
 	// SPIRE's own reading decides whether a config counts as pinned. The
 	// pinned file passes. The original, and a heredoc that hides an
@@ -1717,7 +2125,7 @@ func TestRemoteAlphaSPIREAgentRecoverAgainstRealSPIRE(t *testing.T) {
 	// attesting run at its start, so the signal lands during attestation.
 	b.write(b.holdAttest, "", 0o644)
 	driver := filepath.Join(b.root, "driver.py")
-	sigCmd := exec.Command(b.python, "-I", "-B", driver, spireAgentHelperModule, b.layoutPath, "recover", "--apply", "--json")
+	sigCmd := exec.Command(b.python, "-I", "-B", driver, b.module, b.layoutPath, "recover", "--apply", "--json")
 	sigCmd.Dir = executionSubstrateRepoRoot
 	sigCmd.Env = []string{"PATH=/usr/bin:/bin", "LC_ALL=C"}
 	var sigOut bytes.Buffer
@@ -1765,7 +2173,7 @@ func TestRemoteAlphaSPIREAgentRecoverAgainstRealSPIRE(t *testing.T) {
 	b.writeJSON(shortLayout, short)
 	b.write(b.holdAttest, "", 0o644)
 	b.write(b.linger, "", 0o644)
-	cleanCmd := exec.Command(b.python, "-I", "-B", driver, spireAgentHelperModule, shortLayout, "recover", "--apply", "--json")
+	cleanCmd := exec.Command(b.python, "-I", "-B", driver, b.module, shortLayout, "recover", "--apply", "--json")
 	cleanCmd.Dir = executionSubstrateRepoRoot
 	cleanCmd.Env = []string{"PATH=/usr/bin:/bin", "LC_ALL=C"}
 	var cleanOut bytes.Buffer
@@ -1908,6 +2316,21 @@ func TestRemoteAlphaSPIREAgentRecoverAgainstRealSPIRE(t *testing.T) {
 	if !oldPresent || len(b.entries()) != entriesBefore+1 {
 		t.Fatalf("recover without --evict-old-agent removed something (old record present=%v, entries %d -> %d)", oldPresent, entriesBefore, len(b.entries()))
 	}
+	// recover pins but leaves the refresh timer to pin: status asks for it,
+	// and pin --apply then installs it alone.
+	untimed := b.helper("status")
+	untimed.expect(t, 1, "attention")
+	for _, c := range untimed.report["checks"].([]any) {
+		m := c.(map[string]any)
+		if (m["state"] == "attention" || m["state"] == "fail") && m["name"] != "refresh timer" {
+			t.Fatalf("status after recover flags more than the refresh timer:\n%s", untimed)
+		}
+	}
+	timed := b.helper("pin", "--apply")
+	timed.expect(t, 0, "ok")
+	if timed.report["message"] != "pinned; no restart needed; the bundle refresh timer is installed" {
+		t.Fatalf("pin after recover did more or less than install the timer:\n%s", timed)
+	}
 	healthy := b.helper("status")
 	healthy.expect(t, 0, "ok")
 	again := b.helper("recover", "--apply")
@@ -2004,7 +2427,7 @@ func TestRemoteAlphaSPIREAgentLayoutPinsBoxValues(t *testing.T) {
 		"tmpfiles_path":          "/etc/tmpfiles.d/spire.conf",
 		"account_db_dir":         "/etc",
 		"scratch_parent":         "/run",
-		"lock_path":              "/run/execution-substrate-remote-alpha-spire-agent.lock",
+		"lock_path":              "/run/execution-substrate-remote-alpha-spire-agent/lock",
 		"spire_server_bin":       "/usr/local/bin/spire-server",
 		"spire_agent_bin":        "/usr/local/bin/spire-agent",
 		"systemctl_bin":          "/usr/bin/systemctl",
@@ -2014,6 +2437,19 @@ func TestRemoteAlphaSPIREAgentLayoutPinsBoxValues(t *testing.T) {
 		"command_path_env":       "/usr/sbin:/usr/bin:/sbin:/bin",
 		"join_token_ttl_seconds": float64(120),
 		"svid_attention_seconds": float64(12 * 3600),
+		"systemd_unit_dir":       "/etc/systemd/system",
+		"refresh_unit_name":      "execution-substrate-spire-bundle-refresh",
+		"refresh_on_calendar":    "*-*-* 00/6:00:00",
+		"installed_helper_path":  "/usr/local/libexec/execution-substrate/remote_alpha_spire_agent.py",
+		"installed_helper_dirs":  []any{"/usr/local/libexec", "/usr/local/libexec/execution-substrate"},
+		"python_argv":            []any{"/usr/bin/python3", "-I", "-B", "-S"},
+		// A third of the host's 168h CA lifetime is 56 h between a new CA
+		// appearing and its use; 12 h of grace leaves the timer two runs.
+		"bundle_refresh_grace_seconds":   float64(12 * 3600),
+		"bundle_max_bytes":               float64(1 << 20),
+		"server_bundle_max_certificates": float64(16),
+		"command_output_max_bytes":       float64(4 << 20),
+		"spire_view_timeout_seconds":     float64(120),
 	}
 	for key, value := range want {
 		if fmt.Sprint(layout[key]) != fmt.Sprint(value) {
@@ -2371,6 +2807,206 @@ func TestRemoteAlphaSPIREAgentBundleExportChecks(t *testing.T) {
 	}
 }
 
+// The refresh units pin writes on the box: a oneshot service that runs
+// refresh --apply from the root-owned copy with the rest of the file
+// system read-only (refresh writes only the bundle file, through a
+// temporary file next to it, and the lock file in /run), and a timer every
+// 6 hours that catches up after downtime. pin rewrites a unit that starts
+// with the marker line and refuses one that does not.
+func TestRemoteAlphaSPIREAgentRefreshUnitTexts(t *testing.T) {
+	code, out, stderr := spireAgentHelperDriverRun(t, "--unit-texts")
+	if code != 0 {
+		t.Fatalf("unit texts: %d %s", code, stderr)
+	}
+	var got map[string]string
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("parse unit texts: %v", err)
+	}
+	marker := "# Written by scripts/remote_alpha_spire_agent.sh pin, which rewrites it; do not edit.\n"
+	want := map[string]string{
+		"/etc/systemd/system/execution-substrate-spire-bundle-refresh.service": marker + `[Unit]
+Description=Refresh the SPIRE agent bootstrap bundle from the SPIRE server (Execution Substrate)
+After=spire-server.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 -I -B -S /usr/local/libexec/execution-substrate/remote_alpha_spire_agent.py refresh --apply
+TimeoutStartSec=5min
+RuntimeDirectory=execution-substrate-remote-alpha-spire-agent
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
+ProtectSystem=strict
+ReadWritePaths=/etc/spire/agent
+ReadOnlyPaths=/run
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_DAC_READ_SEARCH
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+`,
+		"/etc/systemd/system/execution-substrate-spire-bundle-refresh.timer": marker + `[Unit]
+Description=Refresh the SPIRE agent bootstrap bundle every 6 hours (Execution Substrate)
+
+[Timer]
+OnCalendar=*-*-* 00/6:00:00
+RandomizedDelaySec=15min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+`,
+	}
+	if len(got) != len(want) {
+		t.Fatalf("unit texts for %d files, want %d: %v", len(got), len(want), got)
+	}
+	for path, text := range want {
+		if got[path] != text {
+			t.Errorf("%s:\n%s\nwant:\n%s", path, got[path], text)
+		}
+	}
+}
+
+// bundle_coverage decides how a bundle file that differs from the server
+// bundle serves a fresh bootstrap. Test certificates are issued 2 h before
+// they expire, so the ones that expire in 1 h were issued 1 h ago.
+func TestRemoteAlphaSPIREAgentBundleCoverage(t *testing.T) {
+	openssl, err := exec.LookPath("openssl")
+	if err != nil {
+		t.Skipf("needs openssl: %v", err)
+	}
+	td := "spiffe://" + spireAgentHelperTrustDomain
+	now := time.Now()
+	active := spireAgentHelperTestCert(t, true, td, now.Add(time.Hour))
+	next := spireAgentHelperTestCert(t, true, td, now.Add(time.Hour))
+	stray := spireAgentHelperTestCert(t, true, td, now.Add(time.Hour))
+	expired := spireAgentHelperTestCert(t, true, td, now.Add(-time.Hour))
+	fix := "; run sudo scripts/remote_alpha_spire_agent.sh refresh --apply"
+	cases := []struct {
+		name         string
+		file, server [][]byte
+		grace        int
+		state        string
+		detail       []string
+	}{
+		{"missing_ca_within_grace", [][]byte{active}, [][]byte{active, next}, 7200, "info", []string{"lacks 1 server CA certificate(s) issued in the last 2 h", "the refresh timer adds it, or run sudo"}},
+		{"missing_ca_past_grace", [][]byte{active}, [][]byte{active, next}, 1800, "attention", []string{"lacks 1 unexpired server CA certificate(s) issued more than 0.5 h ago", "a fresh bootstrap fails once the server signs with it" + fix}},
+		{"unpublished_ca", [][]byte{active, stray}, [][]byte{active}, 7200, "attention", []string{"trusts 1 unexpired CA certificate(s) the server no longer publishes" + " (valid until", fix}},
+		{"both", [][]byte{active, stray}, [][]byte{active, next}, 1800, "attention", []string{"lacks 1 unexpired server CA", "; trusts 1 unexpired CA", fix}},
+		{"extra_expired_ca", [][]byte{active, expired}, [][]byte{active}, 7200, "ok", []string{"differs from the server bundle only in expired CA certificates"}},
+		{"missing_expired_ca", [][]byte{active}, [][]byte{active, expired}, 7200, "ok", []string{"differs from the server bundle only in expired CA certificates"}},
+	}
+	dir := t.TempDir()
+	pemFile := func(name string, ders [][]byte) string {
+		var buf bytes.Buffer
+		for _, der := range ders {
+			if err := pem.Encode(&buf, &pem.Block{Type: "CERTIFICATE", Bytes: der}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, buf.Bytes(), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			code, out, stderr := spireAgentHelperDriverRun(t, "--coverage", pemFile(tc.name+"-file.pem", tc.file), pemFile(tc.name+"-server.pem", tc.server), openssl, strconv.Itoa(tc.grace))
+			if code != 0 {
+				t.Fatalf("driver exited %d: %s", code, stderr)
+			}
+			var got struct {
+				State  string `json:"state"`
+				Detail string `json:"detail"`
+			}
+			if err := json.Unmarshal([]byte(out), &got); err != nil {
+				t.Fatalf("driver output %q: %v", out, err)
+			}
+			if got.State != tc.state {
+				t.Fatalf("state %q, want %q (%s)", got.State, tc.state, got.Detail)
+			}
+			for _, part := range tc.detail {
+				if !strings.Contains(got.Detail, part) {
+					t.Fatalf("detail %q lacks %q", got.Detail, part)
+				}
+			}
+		})
+	}
+}
+
+// pin installs a copy of its own file for the timer only when that file is
+// owned by file_owner and writable by no one else, so nobody but root can
+// have changed what root then runs every 6 hours.
+func TestRemoteAlphaSPIREAgentInstallsOnlyAnOwnFileNoOneElseCanWrite(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skipf("needs python3: %v", err)
+	}
+	cur, err := user.Current()
+	if err != nil {
+		t.Fatal(err)
+	}
+	grpEntry, err := user.LookupGroupId(cur.Gid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := "root"
+	if cur.Uid == "0" {
+		other = "nobody"
+	}
+	dir := t.TempDir()
+	driver := filepath.Join(dir, "driver.py")
+	module := filepath.Join(dir, "remote_alpha_spire_agent.py")
+	if err := os.WriteFile(driver, []byte(spireAgentHelperDriver), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(module, spireAgentHelperRead(t, spireAgentHelperModule), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		mode   os.FileMode
+		owner  string
+		reason string
+	}{
+		{0o644, cur.Username, ""},
+		{0o600, cur.Username, ""},
+		{0o664, cur.Username, "writable by no one else"},
+		{0o646, cur.Username, "writable by no one else"},
+		{0o644, other, "owned by " + other},
+	} {
+		if err := os.Chmod(module, tc.mode); err != nil {
+			t.Fatal(err)
+		}
+		cmd := exec.Command(python, "-I", "-B", driver, module, "--own-helper", tc.owner, grpEntry.Name)
+		cmd.Dir = executionSubstrateRepoRoot
+		out, err := cmd.Output()
+		if err != nil {
+			t.Fatalf("mode %o owner %s: %v", tc.mode, tc.owner, err)
+		}
+		var got struct {
+			OK     bool   `json:"ok"`
+			Reason string `json:"reason"`
+		}
+		if err := json.Unmarshal(out, &got); err != nil {
+			t.Fatalf("driver output %q: %v", out, err)
+		}
+		if tc.reason == "" && !got.OK || tc.reason != "" && (got.OK || !strings.Contains(got.Reason, tc.reason)) {
+			t.Fatalf("mode %o owner %s: got %+v, want refusal %q", tc.mode, tc.owner, got, tc.reason)
+		}
+	}
+}
+
 func TestRemoteAlphaSPIREAgentUsageAndRootRefusal(t *testing.T) {
 	dir := t.TempDir()
 	layout := filepath.Join(dir, "layout.json")
@@ -2381,7 +3017,7 @@ func TestRemoteAlphaSPIREAgentUsageAndRootRefusal(t *testing.T) {
 	if code != 2 || !strings.Contains(stderr, "must run as root") || out != "" {
 		t.Fatalf("expected a root refusal with exit 2, got %d %q %q", code, out, stderr)
 	}
-	for _, args := range [][]string{{"status", "--apply"}, {"pin", "--evict-old-agent"}, {"bogus"}, {}} {
+	for _, args := range [][]string{{"status", "--apply"}, {"pin", "--evict-old-agent"}, {"refresh", "--evict-old-agent"}, {"bogus"}, {}} {
 		code, _, _ := spireAgentHelperDriverRun(t, append([]string{layout}, args...)...)
 		if code != 2 {
 			t.Fatalf("args %v: exit %d, want 2", args, code)
@@ -2390,7 +3026,7 @@ func TestRemoteAlphaSPIREAgentUsageAndRootRefusal(t *testing.T) {
 	cmd := exec.Command(filepath.Join(executionSubstrateRepoRoot, "scripts", "remote_alpha_spire_agent.sh"), "--help")
 	cmd.Dir = executionSubstrateRepoRoot
 	out2, err := cmd.CombinedOutput()
-	if err != nil || !strings.Contains(string(out2), "{status,pin,recover}") {
+	if err != nil || !strings.Contains(string(out2), "{status,pin,recover,refresh}") {
 		t.Fatalf("wrapper --help: %v %s", err, out2)
 	}
 }
@@ -2406,6 +3042,9 @@ func TestRemoteAlphaSPIREAgentHelperIsDocumented(t *testing.T) {
 		"`sudo scripts/remote_alpha_spire_agent.sh status`",
 		"`sudo scripts/remote_alpha_spire_agent.sh pin --apply`",
 		"`sudo scripts/remote_alpha_spire_agent.sh recover --apply`",
+		"`sudo scripts/remote_alpha_spire_agent.sh refresh --apply`",
+		"`execution-substrate-spire-bundle-refresh.timer`",
+		"`/usr/local/libexec/execution-substrate/remote_alpha_spire_agent.py`",
 		"`--evict-old-agent`",
 		"`execution-substrate.remote-alpha.spire-agent.v1`",
 		"`/etc/spire/agent/bootstrap-bundle.pem`",
