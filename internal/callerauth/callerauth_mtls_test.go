@@ -80,17 +80,33 @@ func newRootCA(t *testing.T) testCA {
 // serveMutualTLS starts a TLS server that requires a client certificate
 // verified against root and answers 200 with the authenticated caller's ID.
 // It returns the status and body of one request that presents chain, the
-// client's certificates leaf first, with key.
-func serveMutualTLS(t *testing.T, root testCA, chain [][]byte, key *ecdsa.PrivateKey) (int, string) {
+// client's certificates leaf first, with key. With connection set, the server
+// sets callerauth.ConnContext as its ConnContext hook and the handler calls
+// AuthenticateConnection, as ES does; otherwise the handler calls
+// Authenticate, as the other four services do.
+func serveMutualTLS(t *testing.T, root testCA, chain [][]byte, key *ecdsa.PrivateKey, connection bool) (int, string) {
 	t.Helper()
 	auth := callerauth.NewAuthenticator("callerauth-mtls-bootstrap")
 	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		caller, ok := auth.Authenticate(w, r)
-		if !ok {
-			return
+		var id callerauth.SPIFFEID
+		if connection {
+			caller, ok := auth.AuthenticateConnection(w, r)
+			if !ok {
+				return
+			}
+			id = caller.ID()
+		} else {
+			caller, ok := auth.Authenticate(w, r)
+			if !ok {
+				return
+			}
+			id = caller.ID()
 		}
-		io.WriteString(w, caller.ID().String())
+		io.WriteString(w, id.String())
 	}))
+	if connection {
+		server.Config.ConnContext = callerauth.ConnContext
+	}
 	pool := x509.NewCertPool()
 	pool.AddCert(root.cert)
 	server.TLS = &tls.Config{ClientAuth: tls.RequireAndVerifyClientCert, ClientCAs: pool, MinVersion: tls.VersionTLS12}
@@ -111,6 +127,14 @@ func serveMutualTLS(t *testing.T, root testCA, chain [][]byte, key *ecdsa.Privat
 	return response.StatusCode, string(body)
 }
 
+// bothReadPaths runs check for Authenticate behind a server without a
+// ConnContext hook, and for AuthenticateConnection behind one with
+// callerauth.ConnContext.
+func bothReadPaths(t *testing.T, check func(t *testing.T, connection bool)) {
+	t.Run("request", func(t *testing.T) { check(t, false) })
+	t.Run("connection", func(t *testing.T) { check(t, true) })
+}
+
 // X.509-SVID section 5.2: a CA certificate that carries an ES identity must
 // not authenticate as that caller, although Go's verifier accepts it as the
 // client certificate (it has no extended key usage). Found by the audit of
@@ -127,10 +151,12 @@ func TestAuthenticateRefusesACACertificatePresentedAsTheClientCertificate(t *tes
 		URIs:                  []*url.URL{mustURL(t, "spiffe://execution.internal/operator/local")},
 	}, key, &root)
 
-	status, body := serveMutualTLS(t, root, [][]byte{intermediate.der}, key)
-	if status != http.StatusUnauthorized || body != unauthenticatedBody {
-		t.Fatalf("CA certificate as the client certificate: %d %q, want 401 %q", status, body, unauthenticatedBody)
-	}
+	bothReadPaths(t, func(t *testing.T, connection bool) {
+		status, body := serveMutualTLS(t, root, [][]byte{intermediate.der}, key, connection)
+		if status != http.StatusUnauthorized || body != unauthenticatedBody {
+			t.Fatalf("CA certificate as the client certificate: %d %q, want 401 %q", status, body, unauthenticatedBody)
+		}
+	})
 }
 
 // The same refusal when the CA certificate sits below an intermediate and
@@ -156,10 +182,12 @@ func TestAuthenticateRefusesACACertificateBelowAnIntermediate(t *testing.T) {
 		URIs:                  []*url.URL{mustURL(t, "spiffe://execution.internal/operator/local")},
 	}, key, &intermediate)
 
-	status, body := serveMutualTLS(t, root, [][]byte{signer.der, intermediate.der}, key)
-	if status != http.StatusUnauthorized || body != unauthenticatedBody {
-		t.Fatalf("CA certificate below an intermediate: %d %q, want 401 %q", status, body, unauthenticatedBody)
-	}
+	bothReadPaths(t, func(t *testing.T, connection bool) {
+		status, body := serveMutualTLS(t, root, [][]byte{signer.der, intermediate.der}, key, connection)
+		if status != http.StatusUnauthorized || body != unauthenticatedBody {
+			t.Fatalf("CA certificate below an intermediate: %d %q, want 401 %q", status, body, unauthenticatedBody)
+		}
+	})
 }
 
 // A SPIRE-style client chain: the leaf carries the caller's ID and the
@@ -185,8 +213,10 @@ func TestAuthenticateReadsTheLeafOfAClientChainWithAnIntermediate(t *testing.T) 
 		URIs:                  []*url.URL{mustURL(t, "spiffe://execution.internal/operator/local")},
 	}, leafKey, &intermediate)
 
-	status, body := serveMutualTLS(t, root, [][]byte{leaf.der, intermediate.der}, leafKey)
-	if status != http.StatusOK || body != "spiffe://execution.internal/operator/local" {
-		t.Fatalf("leaf and intermediate: %d %q, want 200 with the leaf's ID", status, body)
-	}
+	bothReadPaths(t, func(t *testing.T, connection bool) {
+		status, body := serveMutualTLS(t, root, [][]byte{leaf.der, intermediate.der}, leafKey, connection)
+		if status != http.StatusOK || body != "spiffe://execution.internal/operator/local" {
+			t.Fatalf("leaf and intermediate: %d %q, want 200 with the leaf's ID", status, body)
+		}
+	})
 }

@@ -1,28 +1,36 @@
-// Package callerauthtest builds client certificates and TLS connection
-// states for tests of the caller authentication rule in package callerauth.
-// It is test support: only test files of this module import it, and no
-// command or service links it.
+// Package callerauthtest builds client certificates, TLS connection states
+// and real TLS connections for tests of the caller authentication rule in
+// package callerauth. It is test support: only test files of this module
+// import it, and no command or service links it.
 //
 // RefusedCallers is the shared list of caller credentials that every ES
 // service must refuse with 401. Each service's own tests run the list
 // against that service's handler, so one list pins the rule at all five
-// call sites.
+// call sites. CheckRoute runs it on the request's TLS state, for the
+// services that call callerauth's Authenticate; CheckConnectionRoute runs it
+// over real TLS connections, for ES, which calls AuthenticateConnection.
 package callerauthtest
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
+	"errors"
+	"fmt"
 	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
 	"time"
+
+	"execution-substrate/internal/callerauth"
 )
 
 // RuntimeIssuer is the issuer common name of the certificates that the
@@ -59,7 +67,11 @@ func CertificateOrError(issuerCommonName string, uris ...string) (*x509.Certific
 // CertificateDER returns the DER bytes of the certificate that Certificate
 // parses.
 func CertificateDER(issuerCommonName string, uris ...string) ([]byte, error) {
-	return certificateDER(issuerCommonName, LeafProfile{}, uris)
+	credential, err := issueCredential(issuerCommonName, LeafProfile{}, uris)
+	if err != nil {
+		return nil, err
+	}
+	return credential.der, nil
 }
 
 // LeafProfile sets the basic constraints, key usage and validity period of
@@ -78,24 +90,81 @@ type LeafProfile struct {
 	// NotBefore and NotAfter replace the default validity period when they
 	// are not zero.
 	NotBefore, NotAfter time.Time
+	// IssuerNotBefore and IssuerNotAfter replace the validity period of the
+	// CA that issues the leaf when they are not zero. By default the CA is
+	// valid from an hour ago to an hour from now, and for the whole validity
+	// period of the leaf.
+	IssuerNotBefore, IssuerNotAfter time.Time
 }
 
 // CertificateWithProfile is Certificate with the leaf's basic constraints
 // and key usage set by profile.
 func CertificateWithProfile(t testing.TB, issuerCommonName string, profile LeafProfile, uris ...string) *x509.Certificate {
 	t.Helper()
-	der, err := certificateDER(issuerCommonName, profile, uris)
-	if err == nil {
-		var cert *x509.Certificate
-		if cert, err = x509.ParseCertificate(der); err == nil {
-			return cert
-		}
-	}
-	t.Fatalf("callerauthtest: certificate with profile %+v and URI SANs %q: %v", profile, uris, err)
-	return nil
+	return IssueCredential(t, issuerCommonName, profile, uris...).Leaf
 }
 
-func certificateDER(issuerCommonName string, profile LeafProfile, uris []string) ([]byte, error) {
+// Credential is a client certificate with its private key and the CA
+// certificate that issued it, for a real TLS handshake: a server that trusts
+// CA verifies the chain at a time inside the validity period of both.
+type Credential struct {
+	// Leaf is the client certificate, as x509.ParseCertificate returns it.
+	Leaf *x509.Certificate
+	// CA is the certificate of the fresh CA that issued Leaf.
+	CA *x509.Certificate
+
+	der      []byte
+	key      ed25519.PrivateKey
+	verifyAt time.Time
+}
+
+// State returns a TLS connection state whose only verified chain holds the
+// credential's leaf, as State does for a certificate.
+func (c *Credential) State() *tls.ConnectionState {
+	return State(c.Leaf)
+}
+
+// IssueCredential returns a client credential whose leaf is the certificate
+// CertificateWithProfile describes. The test fails when the certificate
+// parser refuses the leaf.
+func IssueCredential(t testing.TB, issuerCommonName string, profile LeafProfile, uris ...string) *Credential {
+	t.Helper()
+	credential, err := IssueCredentialOrError(issuerCommonName, profile, uris...)
+	if err != nil {
+		t.Fatalf("callerauthtest: credential with profile %+v and URI SANs %q: %v", profile, uris, err)
+	}
+	return credential
+}
+
+// IssueCredentialOrError is IssueCredential for callers that handle the
+// parser's refusal themselves.
+func IssueCredentialOrError(issuerCommonName string, profile LeafProfile, uris ...string) (*Credential, error) {
+	return issueCredential(issuerCommonName, profile, uris)
+}
+
+func issueCredential(issuerCommonName string, profile LeafProfile, uris []string) (*Credential, error) {
+	now := time.Now()
+	leafNotBefore, leafNotAfter := now.Add(-time.Hour), now.Add(time.Hour)
+	if !profile.NotBefore.IsZero() {
+		leafNotBefore = profile.NotBefore
+	}
+	if !profile.NotAfter.IsZero() {
+		leafNotAfter = profile.NotAfter
+	}
+	caNotBefore, caNotAfter := now.Add(-time.Hour), now.Add(time.Hour)
+	if leafNotBefore.Before(caNotBefore) {
+		caNotBefore = leafNotBefore
+	}
+	if leafNotAfter.After(caNotAfter) {
+		caNotAfter = leafNotAfter
+	}
+	if !profile.IssuerNotBefore.IsZero() {
+		caNotBefore = profile.IssuerNotBefore
+	}
+	if !profile.IssuerNotAfter.IsZero() {
+		caNotAfter = profile.IssuerNotAfter
+	}
+
 	caPublic, caPrivate, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		return nil, err
@@ -103,8 +172,8 @@ func certificateDER(issuerCommonName string, profile LeafProfile, uris []string)
 	caTemplate := &x509.Certificate{
 		SerialNumber:          big.NewInt(1),
 		Subject:               pkix.Name{CommonName: issuerCommonName},
-		NotBefore:             time.Now().Add(-time.Hour),
-		NotAfter:              time.Now().Add(time.Hour),
+		NotBefore:             caNotBefore,
+		NotAfter:              caNotAfter,
 		KeyUsage:              x509.KeyUsageCertSign,
 		BasicConstraintsValid: true,
 		IsCA:                  true,
@@ -117,7 +186,7 @@ func certificateDER(issuerCommonName string, profile LeafProfile, uris []string)
 	if err != nil {
 		return nil, err
 	}
-	leafPublic, _, err := ed25519.GenerateKey(rand.Reader)
+	leafPublic, leafPrivate, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		return nil, err
 	}
@@ -128,8 +197,8 @@ func certificateDER(issuerCommonName string, profile LeafProfile, uris []string)
 	leafTemplate := &x509.Certificate{
 		SerialNumber:    big.NewInt(2),
 		Subject:         pkix.Name{CommonName: "client.callerauthtest"},
-		NotBefore:       time.Now().Add(-time.Hour),
-		NotAfter:        time.Now().Add(time.Hour),
+		NotBefore:       leafNotBefore,
+		NotAfter:        leafNotAfter,
 		KeyUsage:        x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:     []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 		ExtraExtensions: []pkix.Extension{{Id: oidSubjectAltName, Value: san}},
@@ -141,13 +210,30 @@ func certificateDER(issuerCommonName string, profile LeafProfile, uris []string)
 		leafTemplate.BasicConstraintsValid = true
 		leafTemplate.IsCA = profile.IsCA
 	}
-	if !profile.NotBefore.IsZero() {
-		leafTemplate.NotBefore = profile.NotBefore
+	der, err := x509.CreateCertificate(rand.Reader, leafTemplate, ca, leafPublic, caPrivate)
+	if err != nil {
+		return nil, err
 	}
-	if !profile.NotAfter.IsZero() {
-		leafTemplate.NotAfter = profile.NotAfter
+	leaf, err := x509.ParseCertificate(der)
+	if err != nil {
+		return nil, err
 	}
-	return x509.CreateCertificate(rand.Reader, leafTemplate, ca, leafPublic, caPrivate)
+
+	// The server verifies the chain in the middle of the time both
+	// certificates are valid, so a leaf or CA that is expired or not yet
+	// valid now still completes a handshake, as on a connection that has
+	// outlived its certificates.
+	from, until := leafNotBefore, leafNotAfter
+	if caNotBefore.After(from) {
+		from = caNotBefore
+	}
+	if caNotAfter.Before(until) {
+		until = caNotAfter
+	}
+	if !from.Before(until) {
+		return nil, errors.New("callerauthtest: the leaf and its CA are never valid at the same time")
+	}
+	return &Credential{Leaf: leaf, CA: ca, der: der, key: leafPrivate, verifyAt: from.Add(until.Sub(from) / 2)}, nil
 }
 
 // subjectAltNameValue encodes a GeneralNames value with one DNS name and the
@@ -178,6 +264,13 @@ type RefusedCaller struct {
 	// State builds the TLS state of the request; nil means a request
 	// without TLS.
 	State func(t testing.TB) *tls.ConnectionState
+	// Credential issues a client credential that a real TLS handshake
+	// verifies and that the rule refuses for the same reason as State. It
+	// is nil for the states that Go's TLS server never reports after a
+	// handshake: no TLS, no verified chain, an empty chain, a nil leaf and
+	// a nil URI SAN. CheckConnectionRoute has connection cases of its own
+	// for those.
+	Credential func(t testing.TB) *Credential
 }
 
 // SPIFFEID returns the SPIFFE ID of allowedPath in the ES trust domain.
@@ -196,20 +289,34 @@ func RefusedCallers(allowedPath string) []RefusedCaller {
 	last := path[strings.LastIndex(path, "/")+1:]
 	parent := strings.TrimSuffix(strings.TrimSuffix(path, last), "/")
 
-	withURIs := func(uris ...string) func(testing.TB) *tls.ConnectionState {
-		return func(t testing.TB) *tls.ConnectionState {
+	issued := func(name string, profile LeafProfile, uris ...string) RefusedCaller {
+		credential := func(t testing.TB) *Credential {
 			t.Helper()
-			return State(Certificate(t, RuntimeIssuer, uris...))
+			return IssueCredential(t, RuntimeIssuer, profile, uris...)
 		}
+		state := func(t testing.TB) *tls.ConnectionState {
+			t.Helper()
+			return credential(t).State()
+		}
+		return RefusedCaller{Name: name, State: state, Credential: credential}
+	}
+	withURIs := func(name string, uris ...string) RefusedCaller {
+		return issued(name, LeafProfile{}, uris...)
 	}
 	fixed := func(state *tls.ConnectionState) func(testing.TB) *tls.ConnectionState {
 		return func(testing.TB) *tls.ConnectionState { return state }
 	}
-	withProfile := func(profile LeafProfile) func(testing.TB) *tls.ConnectionState {
-		return func(t testing.TB) *tls.ConnectionState {
-			t.Helper()
-			return State(CertificateWithProfile(t, RuntimeIssuer, profile, id))
-		}
+	withProfile := func(name string, profile LeafProfile) RefusedCaller {
+		return issued(name, profile, id)
+	}
+	// The issuer expired a minute ago; the leaf is still valid. The
+	// connection form completes its handshake half an hour ago, when both
+	// were valid.
+	expiredIssuer := issued("expired_issuer_in_chain", LeafProfile{IssuerNotBefore: time.Now().Add(-2 * time.Hour), IssuerNotAfter: time.Now().Add(-time.Minute)}, id)
+	expiredIssuer.State = func(t testing.TB) *tls.ConnectionState {
+		t.Helper()
+		credential := expiredIssuer.Credential(t)
+		return &tls.ConnectionState{HandshakeComplete: true, PeerCertificates: []*x509.Certificate{credential.Leaf}, VerifiedChains: [][]*x509.Certificate{{credential.Leaf, credential.CA}}}
 	}
 
 	cases := []RefusedCaller{
@@ -223,65 +330,60 @@ func RefusedCallers(allowedPath string) []RefusedCaller {
 		// Outside its validity period at the time of the request, even with
 		// exactly the allowed identity: a connection can outlive the
 		// certificates its handshake verified.
-		{Name: "expired_leaf", State: withProfile(LeafProfile{NotBefore: time.Now().Add(-2 * time.Hour), NotAfter: time.Now().Add(-time.Minute)})},
-		{Name: "not_yet_valid_leaf", State: withProfile(LeafProfile{NotBefore: time.Now().Add(time.Hour), NotAfter: time.Now().Add(2 * time.Hour)})},
-		{Name: "expired_issuer_in_chain", State: func(t testing.TB) *tls.ConnectionState {
-			t.Helper()
-			leaf := Certificate(t, RuntimeIssuer, id)
-			issuer := &x509.Certificate{Subject: pkix.Name{CommonName: RuntimeIssuer}, BasicConstraintsValid: true, IsCA: true, NotBefore: time.Now().Add(-2 * time.Hour), NotAfter: time.Now().Add(-time.Minute)}
-			return &tls.ConnectionState{HandshakeComplete: true, PeerCertificates: []*x509.Certificate{leaf}, VerifiedChains: [][]*x509.Certificate{{leaf, issuer}}}
-		}},
+		withProfile("expired_leaf", LeafProfile{NotBefore: time.Now().Add(-2 * time.Hour), NotAfter: time.Now().Add(-time.Minute)}),
+		withProfile("not_yet_valid_leaf", LeafProfile{NotBefore: time.Now().Add(time.Hour), NotAfter: time.Now().Add(2 * time.Hour)}),
+		expiredIssuer,
 
 		// Not an end-entity certificate (X.509-SVID section 5.2), even with
 		// exactly the allowed identity.
-		{Name: "CA_leaf", State: withProfile(LeafProfile{IsCA: true})},
-		{Name: "keyCertSign_leaf", State: withProfile(LeafProfile{KeyUsage: x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign})},
-		{Name: "cRLSign_leaf", State: withProfile(LeafProfile{KeyUsage: x509.KeyUsageDigitalSignature | x509.KeyUsageCRLSign})},
+		withProfile("CA_leaf", LeafProfile{IsCA: true}),
+		withProfile("keyCertSign_leaf", LeafProfile{KeyUsage: x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign}),
+		withProfile("cRLSign_leaf", LeafProfile{KeyUsage: x509.KeyUsageDigitalSignature | x509.KeyUsageCRLSign}),
 
 		// No identity, or more than one.
-		{Name: "no_URI_SAN", State: withURIs()},
-		{Name: "two_URI_SANs_allowed_first", State: withURIs(id, "spiffe://execution.internal/service/other")},
-		{Name: "two_URI_SANs_allowed_second", State: withURIs("spiffe://execution.internal/service/other", id)},
-		{Name: "two_URI_SANs_foreign_first", State: withURIs("spiffe://other.internal/"+path, id)},
-		{Name: "two_URI_SANs_same_ID_twice", State: withURIs(id, id)},
-		{Name: "two_URI_SANs_second_not_SPIFFE", State: withURIs(id, "https://client.example/"+path)},
+		withURIs("no_URI_SAN"),
+		withURIs("two_URI_SANs_allowed_first", id, "spiffe://execution.internal/service/other"),
+		withURIs("two_URI_SANs_allowed_second", "spiffe://execution.internal/service/other", id),
+		withURIs("two_URI_SANs_foreign_first", "spiffe://other.internal/"+path, id),
+		withURIs("two_URI_SANs_same_ID_twice", id, id),
+		withURIs("two_URI_SANs_second_not_SPIFFE", id, "https://client.example/"+path),
 
 		// Outside the trust domain.
-		{Name: "foreign_trust_domain", State: withURIs("spiffe://other.internal/" + path)},
-		{Name: "trust_domain_as_prefix", State: withURIs("spiffe://execution.internal.evil/" + path)},
-		{Name: "trust_domain_as_suffix", State: withURIs("spiffe://evil.execution.internal/" + path)},
-		{Name: "trust_domain_with_port", State: withURIs("spiffe://execution.internal:8443/" + path)},
-		{Name: "trust_domain_with_user", State: withURIs("spiffe://user@execution.internal/" + path)},
-		{Name: "trust_domain_upper_case", State: withURIs("spiffe://EXECUTION.INTERNAL/" + path)},
-		{Name: "other_scheme", State: withURIs("https://execution.internal/" + path)},
+		withURIs("foreign_trust_domain", "spiffe://other.internal/"+path),
+		withURIs("trust_domain_as_prefix", "spiffe://execution.internal.evil/"+path),
+		withURIs("trust_domain_as_suffix", "spiffe://evil.execution.internal/"+path),
+		withURIs("trust_domain_with_port", "spiffe://execution.internal:8443/"+path),
+		withURIs("trust_domain_with_user", "spiffe://user@execution.internal/"+path),
+		withURIs("trust_domain_upper_case", "spiffe://EXECUTION.INTERNAL/"+path),
+		withURIs("other_scheme", "https://execution.internal/"+path),
 
 		// Workload identities are never callers, even one that carries the
 		// allowed path below the workload segment.
-		{Name: "workload_identity_shared", State: withURIs("spiffe://execution.internal/workload")},
-		{Name: "workload_identity_named", State: withURIs("spiffe://execution.internal/workload/" + path)},
-		{Name: "workload_identity_per_run", State: withURIs("spiffe://execution.internal/workload/" + last + "/run/r1")},
-		{Name: "workload_identity_upper_case", State: withURIs("spiffe://execution.internal/Workload/" + path)},
+		withURIs("workload_identity_shared", "spiffe://execution.internal/workload"),
+		withURIs("workload_identity_named", "spiffe://execution.internal/workload/"+path),
+		withURIs("workload_identity_per_run", "spiffe://execution.internal/workload/"+last+"/run/r1"),
+		withURIs("workload_identity_upper_case", "spiffe://execution.internal/Workload/"+path),
 
 		// Not a conforming SPIFFE ID, or no workload path.
-		{Name: "trust_domain_ID_only", State: withURIs("spiffe://execution.internal")},
-		{Name: "root_path_only", State: withURIs("spiffe://execution.internal/")},
-		{Name: "trailing_slash", State: withURIs(id + "/")},
-		{Name: "leading_empty_segment", State: withURIs("spiffe://execution.internal//" + path)},
-		{Name: "inner_empty_segment", State: withURIs("spiffe://execution.internal/" + parent + "//" + last)},
-		{Name: "dot_segment", State: withURIs(id + "/.")},
-		{Name: "dot_dot_segment", State: withURIs(id + "/..")},
-		{Name: "dot_dot_back_into_path", State: withURIs(id + "/x/../" + last)},
-		{Name: "query", State: withURIs(id + "?x=1")},
-		{Name: "query_after_slash", State: withURIs(id + "/?x=1")},
-		{Name: "empty_query", State: withURIs(id + "?")},
-		{Name: "fragment", State: withURIs(id + "#x")},
-		{Name: "fragment_after_slash", State: withURIs(id + "/#x")},
-		{Name: "percent_encoded_slash", State: withURIs("spiffe://execution.internal/" + strings.ReplaceAll(path, "/", "%2F"))},
-		{Name: "percent_encoded_letter", State: withURIs("spiffe://execution.internal/" + parent + "/%" + hexByte(last[0]) + last[1:])},
-		{Name: "colon_in_segment", State: withURIs(id + "/a:b")},
-		{Name: "at_in_segment", State: withURIs(id + "/a@b")},
-		{Name: "tilde_in_segment", State: withURIs(id + "/a~b")},
-		{Name: "plus_in_segment", State: withURIs(id + "/a+b")},
+		withURIs("trust_domain_ID_only", "spiffe://execution.internal"),
+		withURIs("root_path_only", "spiffe://execution.internal/"),
+		withURIs("trailing_slash", id+"/"),
+		withURIs("leading_empty_segment", "spiffe://execution.internal//"+path),
+		withURIs("inner_empty_segment", "spiffe://execution.internal/"+parent+"//"+last),
+		withURIs("dot_segment", id+"/."),
+		withURIs("dot_dot_segment", id+"/.."),
+		withURIs("dot_dot_back_into_path", id+"/x/../"+last),
+		withURIs("query", id+"?x=1"),
+		withURIs("query_after_slash", id+"/?x=1"),
+		withURIs("empty_query", id+"?"),
+		withURIs("fragment", id+"#x"),
+		withURIs("fragment_after_slash", id+"/#x"),
+		withURIs("percent_encoded_slash", "spiffe://execution.internal/"+strings.ReplaceAll(path, "/", "%2F")),
+		withURIs("percent_encoded_letter", "spiffe://execution.internal/"+parent+"/%"+hexByte(last[0])+last[1:]),
+		withURIs("colon_in_segment", id+"/a:b"),
+		withURIs("at_in_segment", id+"/a@b"),
+		withURIs("tilde_in_segment", id+"/a~b"),
+		withURIs("plus_in_segment", id+"/a+b"),
 	}
 	return cases
 }
@@ -314,21 +416,179 @@ type Route struct {
 // the response. A handler panic fails the test.
 func Serve(t testing.TB, handler http.Handler, method, target, body string, state *tls.ConnectionState) *httptest.ResponseRecorder {
 	t.Helper()
+	request := newRequest(method, target, body)
+	request.TLS = state
+	return serve(t, handler, request)
+}
+
+// ServeConnection sends one request to handler over a TLS connection on which
+// the client presented credential, or no certificate when credential is nil,
+// and returns the response. The request reaches handler as a service's server
+// hands it over when it sets callerauth.ConnContext as its ConnContext hook:
+// its context carries the connection, and r.TLS holds the connection's
+// state, as Go's TLS server records it. A handler panic fails the test, and
+// so does a handshake the server refuses.
+func ServeConnection(t testing.TB, handler http.Handler, method, target, body string, credential *Credential) *httptest.ResponseRecorder {
+	t.Helper()
+	conn, err := connect(credential, tls.VerifyClientCertIfGiven)
+	if err != nil {
+		t.Fatalf("%s %s: %v", method, target, err)
+	}
+	return serve(t, handler, requestOn(conn, method, target, body))
+}
+
+// ConnectionContext returns ctx as a service's server hands it to every
+// request of a TLS connection on which the client presented credential: it
+// completes a real TLS handshake in memory, in which the server trusts the
+// credential's CA and verifies the client's chain, and passes the server
+// side to callerauth.ConnContext, as http.Server does with its ConnContext
+// hook. With a nil credential the client presents no certificate, so the
+// connection has no verified chain.
+func ConnectionContext(ctx context.Context, credential *Credential) (context.Context, error) {
+	conn, err := connect(credential, tls.VerifyClientCertIfGiven)
+	if err != nil {
+		return nil, err
+	}
+	return callerauth.ConnContext(ctx, conn), nil
+}
+
+// connectionCallerBootstrapIssuer is the bootstrap issuer of the
+// Authenticator that ConnectionCaller uses. No credential of this package
+// names it unless a test asks for it.
+const connectionCallerBootstrapIssuer = "callerauthtest-bootstrap-ca"
+
+// ConnectionCaller returns what callerauth's AuthenticateConnection returns
+// for a TLS connection on which the client presented a certificate from
+// RuntimeIssuer whose only URI SAN is uri: the caller a service's API reads
+// from such a connection. It returns an error when the rule refuses uri.
+func ConnectionCaller(uri string) (callerauth.ConnectionCaller, error) {
+	credential, err := IssueCredentialOrError(RuntimeIssuer, LeafProfile{}, uri)
+	if err != nil {
+		return callerauth.ConnectionCaller{}, err
+	}
+	ctx, err := ConnectionContext(context.Background(), credential)
+	if err != nil {
+		return callerauth.ConnectionCaller{}, err
+	}
+	request := httptest.NewRequest(http.MethodGet, "/", nil).WithContext(ctx)
+	recorder := httptest.NewRecorder()
+	caller, ok := callerauth.NewAuthenticator(connectionCallerBootstrapIssuer).AuthenticateConnection(recorder, request)
+	if !ok {
+		return callerauth.ConnectionCaller{}, fmt.Errorf("callerauthtest: caller %q refused: %d %q", uri, recorder.Code, recorder.Body.String())
+	}
+	return caller, nil
+}
+
+func newRequest(method, target, body string) *http.Request {
 	request := httptest.NewRequest(method, target, strings.NewReader(body))
 	if body != "" {
 		request.Header.Set("Content-Type", "application/json")
 	}
-	request.TLS = state
+	return request
+}
+
+// requestOn returns a request that arrived on conn, as Go's TLS server hands
+// it to a handler whose server sets callerauth.ConnContext.
+func requestOn(conn *tls.Conn, method, target, body string) *http.Request {
+	request := newRequest(method, target, body)
+	state := conn.ConnectionState()
+	request.TLS = &state
+	return request.WithContext(callerauth.ConnContext(request.Context(), conn))
+}
+
+func serve(t testing.TB, handler http.Handler, request *http.Request) *httptest.ResponseRecorder {
+	t.Helper()
 	recorder := httptest.NewRecorder()
 	func() {
 		defer func() {
 			if p := recover(); p != nil {
-				t.Fatalf("%s %s: handler panicked: %v", method, target, p)
+				t.Fatalf("%s %s: handler panicked: %v", request.Method, request.URL, p)
 			}
 		}()
 		handler.ServeHTTP(recorder, request)
 	}()
 	return recorder
+}
+
+// serverName is the DNS name in the certificate that connect's server
+// presents.
+const serverName = "server.callerauthtest"
+
+// connect completes a TLS handshake over an in-memory pipe, as a service's
+// TLS listener does for a client that presents credential, and returns the
+// server side of the connection. The server asks for a client certificate
+// with clientAuth, trusts only the credential's CA, and verifies the chain at
+// a time when the leaf and its CA are both valid. With a nil credential the
+// client presents no certificate.
+func connect(credential *Credential, clientAuth tls.ClientAuthType) (*tls.Conn, error) {
+	serverPublic, serverPrivate, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return nil, err
+	}
+	serverTemplate := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: serverName},
+		DNSNames:              []string{serverName},
+		NotBefore:             time.Now().Add(-24 * time.Hour),
+		NotAfter:              time.Now().Add(24 * time.Hour),
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}
+	serverDER, err := x509.CreateCertificate(rand.Reader, serverTemplate, serverTemplate, serverPublic, serverPrivate)
+	if err != nil {
+		return nil, err
+	}
+	serverCert, err := x509.ParseCertificate(serverDER)
+	if err != nil {
+		return nil, err
+	}
+	roots := x509.NewCertPool()
+	roots.AddCert(serverCert)
+	serverConfig := &tls.Config{
+		Certificates:           []tls.Certificate{{Certificate: [][]byte{serverDER}, PrivateKey: serverPrivate, Leaf: serverCert}},
+		ClientAuth:             clientAuth,
+		ClientCAs:              x509.NewCertPool(),
+		MinVersion:             tls.VersionTLS12,
+		SessionTicketsDisabled: true,
+	}
+	clientConfig := &tls.Config{RootCAs: roots, ServerName: serverName, MinVersion: tls.VersionTLS12}
+	verifyAt := time.Now()
+	if credential != nil {
+		serverConfig.ClientCAs.AddCert(credential.CA)
+		clientConfig.Certificates = []tls.Certificate{{Certificate: [][]byte{credential.der}, PrivateKey: credential.key, Leaf: credential.Leaf}}
+		verifyAt = credential.verifyAt
+	}
+	serverConfig.Time = func() time.Time { return verifyAt }
+
+	serverSide, clientSide := net.Pipe()
+	deadline := time.Now().Add(30 * time.Second)
+	if err := serverSide.SetDeadline(deadline); err != nil {
+		return nil, err
+	}
+	if err := clientSide.SetDeadline(deadline); err != nil {
+		return nil, err
+	}
+	server := tls.Server(serverSide, serverConfig)
+	client := tls.Client(clientSide, clientConfig)
+	clientDone := make(chan error, 1)
+	go func() { clientDone <- client.Handshake() }()
+	serverErr := server.Handshake()
+	if serverErr != nil {
+		clientSide.Close()
+	}
+	clientErr := <-clientDone
+	// The connection state stays readable after the pipe is closed.
+	serverSide.Close()
+	clientSide.Close()
+	if serverErr != nil {
+		return nil, fmt.Errorf("callerauthtest: the server refused the handshake: %w", serverErr)
+	}
+	if clientErr != nil {
+		return nil, fmt.Errorf("callerauthtest: the client refused the handshake: %w", clientErr)
+	}
+	return server, nil
 }
 
 // CheckRoute pins the caller authentication rule at one route. reached
@@ -384,6 +644,110 @@ func CheckRoute(t *testing.T, handler http.Handler, route Route, bootstrapIssuer
 				}
 			})
 		}
+	})
+}
+
+// connectionlessRefusedCallers are the RefusedCallers entries whose state
+// no TLS handshake reports. CheckConnectionRoute covers them with its own
+// connection cases: no connection, a connection without a client
+// certificate, and a client certificate the server did not verify.
+var connectionlessRefusedCallers = []string{"no_TLS", "no_verified_chain", "empty_verified_chain", "nil_leaf", "nil_URI_entry"}
+
+// CheckConnectionRoute pins the caller authentication rule at one route of a
+// service that reads its caller from the connection with callerauth's
+// AuthenticateConnection (ES). Every request goes over a real TLS
+// connection, as ServeConnection sends it. reached returns how many requests
+// have gone past authentication into the service so far.
+//
+//   - A caller with one URI SAN, the SPIFFE ID of route.AllowedPath, from
+//     RuntimeIssuer is neither refused with 401 nor with 403, and reaches
+//     the service, with and without an explicit CA:FALSE basic constraint.
+//   - The same identity from bootstrapIssuer gets 403 BootstrapIssuerBody.
+//   - Every RefusedCallers credential gets 401 UnauthenticatedBody.
+//   - So do: a request whose context holds no connection, with or without
+//     r.TLS naming the allowed caller; a connection on which the client
+//     presented no certificate; a connection whose client certificate, with
+//     the allowed identity, the server asked for but did not verify; and a
+//     connection that presented a refused credential while r.TLS names the
+//     allowed caller. The route reads the connection, never r.TLS.
+//
+// Refused requests must not reach the service.
+func CheckConnectionRoute(t *testing.T, handler http.Handler, route Route, bootstrapIssuer string, reached func() int) {
+	t.Helper()
+	t.Run(route.Name, func(t *testing.T) {
+		refused := func(t *testing.T, request *http.Request, status int, body string) {
+			t.Helper()
+			before := reached()
+			expectRefusal(t, serve(t, handler, request), status, body)
+			if reached() != before {
+				t.Fatalf("refused caller reached the service")
+			}
+		}
+		over := func(t *testing.T, credential *Credential, clientAuth tls.ClientAuthType) *http.Request {
+			t.Helper()
+			conn, err := connect(credential, clientAuth)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return requestOn(conn, route.Method, route.Target, route.Body)
+		}
+		allowed := func(t *testing.T, profile LeafProfile) *Credential {
+			t.Helper()
+			return IssueCredential(t, RuntimeIssuer, profile, SPIFFEID(route.AllowedPath))
+		}
+		for name, profile := range map[string]LeafProfile{
+			"allowed_caller":          {},
+			"allowed_caller_CA_false": {BasicConstraints: true, KeyUsage: x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment},
+		} {
+			t.Run(name, func(t *testing.T) {
+				before := reached()
+				response := serve(t, handler, over(t, allowed(t, profile), tls.VerifyClientCertIfGiven))
+				if response.Code == http.StatusUnauthorized || response.Code == http.StatusForbidden {
+					t.Fatalf("allowed caller refused: %d %q", response.Code, response.Body.String())
+				}
+				if reached() == before {
+					t.Fatalf("allowed caller did not reach the service: %d %q", response.Code, response.Body.String())
+				}
+			})
+		}
+		t.Run("bootstrap_issuer", func(t *testing.T) {
+			credential := IssueCredential(t, bootstrapIssuer, LeafProfile{}, SPIFFEID(route.AllowedPath))
+			refused(t, over(t, credential, tls.VerifyClientCertIfGiven), http.StatusForbidden, BootstrapIssuerBody)
+		})
+		for _, tc := range RefusedCallers(route.AllowedPath) {
+			if tc.Credential == nil {
+				known := false
+				for _, name := range connectionlessRefusedCallers {
+					known = known || name == tc.Name
+				}
+				if !known {
+					t.Errorf("RefusedCallers entry %s has no credential and is not one of the states no handshake reports", tc.Name)
+				}
+				continue
+			}
+			t.Run(tc.Name, func(t *testing.T) {
+				refused(t, over(t, tc.Credential(t), tls.VerifyClientCertIfGiven), http.StatusUnauthorized, UnauthenticatedBody)
+			})
+		}
+		t.Run("no_connection", func(t *testing.T) {
+			refused(t, newRequest(route.Method, route.Target, route.Body), http.StatusUnauthorized, UnauthenticatedBody)
+		})
+		t.Run("request_TLS_without_connection", func(t *testing.T) {
+			request := newRequest(route.Method, route.Target, route.Body)
+			request.TLS = allowed(t, LeafProfile{}).State()
+			refused(t, request, http.StatusUnauthorized, UnauthenticatedBody)
+		})
+		t.Run("no_client_certificate", func(t *testing.T) {
+			refused(t, over(t, nil, tls.VerifyClientCertIfGiven), http.StatusUnauthorized, UnauthenticatedBody)
+		})
+		t.Run("unverified_client_certificate", func(t *testing.T) {
+			refused(t, over(t, allowed(t, LeafProfile{}), tls.RequestClientCert), http.StatusUnauthorized, UnauthenticatedBody)
+		})
+		t.Run("request_TLS_differs_from_connection", func(t *testing.T) {
+			request := over(t, IssueCredential(t, RuntimeIssuer, LeafProfile{}, "spiffe://other.internal/"+strings.Trim(route.AllowedPath, "/")), tls.VerifyClientCertIfGiven)
+			request.TLS = allowed(t, LeafProfile{}).State()
+			refused(t, request, http.StatusUnauthorized, UnauthenticatedBody)
+		})
 	})
 }
 

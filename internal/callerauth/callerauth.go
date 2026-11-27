@@ -9,15 +9,24 @@
 // The package owns authentication only: who is calling. Which authenticated
 // callers may use which route (authorization) stays with each service.
 //
+// ES reads its caller from the TLS connection its server accepted, not from
+// the request: its server sets ConnContext as its ConnContext hook, and its
+// API calls AuthenticateConnection, which returns a ConnectionCaller. Only
+// this package can make a ConnectionCaller, and only from a connection that
+// ConnContext kept, so no code elsewhere can build one from a SPIFFE ID, a
+// string, a connection state or a request.
+//
 // The rules are the contract in .docs/system_overview/contracts.md, section
 // "3A. Caller Authentication". The five services use this package and keep
 // no copy of these rules.
 package callerauth
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -215,8 +224,70 @@ func NewAuthenticator(bootstrapIssuerCommonName string) Authenticator {
 //     identity" when the client certificate's issuer common name is the
 //     bootstrap issuer.
 //
-// Both bodies are plain text.
+// Both bodies are plain text. Authenticate reads r.TLS, the connection state
+// Go's TLS server records on the request.
 func (a Authenticator) Authenticate(w http.ResponseWriter, r *http.Request) (Caller, bool) {
+	return a.authenticateState(w, r.TLS)
+}
+
+// connectionKey is the context key under which ConnContext keeps the TLS
+// connection a server accepted. It is unexported, so no code outside this
+// package can put a connection, or anything else, there.
+type connectionKey struct{}
+
+// ConnContext is the ConnContext hook of an http.Server whose handler calls
+// AuthenticateConnection. The server calls it once for each connection it
+// accepts, before the TLS handshake, and every request on that connection
+// carries the context it returns. When c is a *tls.Conn, as every connection
+// of a listener made by tls.NewListener is, ConnContext keeps c in the
+// context; otherwise it returns ctx unchanged, and requests on c have no
+// caller identity.
+func ConnContext(ctx context.Context, c net.Conn) context.Context {
+	if conn, ok := c.(*tls.Conn); ok && conn != nil {
+		return context.WithValue(ctx, connectionKey{}, conn)
+	}
+	return ctx
+}
+
+// ConnectionCaller is a caller that AuthenticateConnection read from the TLS
+// connection a server accepted. Its field is unexported and
+// AuthenticateConnection is the only code that makes a non-zero one, so the
+// Go compiler keeps code outside this package from making one from a SPIFFE
+// ID, a string, a Caller, a connection state or a request. The zero
+// ConnectionCaller is no caller: its ID is the zero SPIFFEID.
+type ConnectionCaller struct {
+	caller Caller
+}
+
+// ID returns the caller's SPIFFE ID.
+func (c ConnectionCaller) ID() SPIFFEID {
+	return c.caller.id
+}
+
+// AuthenticateConnection is Authenticate for a server that sets ConnContext:
+// it reads the caller from the TLS connection that ConnContext kept in r's
+// context, at the time of the request, and never reads r.TLS. A *tls.Conn's
+// peer certificates and verified chains are set by its own handshake only,
+// so the caller is the identity whose certificate chain the server verified
+// on that connection. A request whose context holds no connection has no
+// caller identity. The refusals are Authenticate's.
+func (a Authenticator) AuthenticateConnection(w http.ResponseWriter, r *http.Request) (ConnectionCaller, bool) {
+	var state *tls.ConnectionState
+	if conn, ok := r.Context().Value(connectionKey{}).(*tls.Conn); ok && conn != nil {
+		current := conn.ConnectionState()
+		state = &current
+	}
+	caller, ok := a.authenticateState(w, state)
+	if !ok {
+		return ConnectionCaller{}, false
+	}
+	return ConnectionCaller{caller: caller}, true
+}
+
+// authenticateState applies the caller authentication rules to state, the
+// TLS connection state of a request, and writes the refusal when they refuse
+// it (see Authenticate).
+func (a Authenticator) authenticateState(w http.ResponseWriter, state *tls.ConnectionState) (Caller, bool) {
 	if a.bootstrapIssuerCommonName == "" {
 		httpx.WriteText(w, http.StatusUnauthorized, unauthenticatedBody)
 		return Caller{}, false
@@ -225,7 +296,7 @@ func (a Authenticator) Authenticate(w http.ResponseWriter, r *http.Request) (Cal
 	if a.now != nil {
 		now = a.now
 	}
-	caller, err := CallerFromConnectionState(r.TLS, now())
+	caller, err := CallerFromConnectionState(state, now())
 	if err != nil {
 		httpx.WriteText(w, http.StatusUnauthorized, unauthenticatedBody)
 		return Caller{}, false
