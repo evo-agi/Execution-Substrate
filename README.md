@@ -43,9 +43,10 @@ the Execution Governance Service, and ES the Execution Substrate service
 itself. [Components](#components) below says what each part does.
 
 1. **Publish.** A publisher sends a workload package to AGS: an archive with
-   the code to run, plus what it declares it needs (environment variables,
-   network access, and so on). AGS records signed evidence of exactly what was
-   published and stores both in ARS.
+   the code to run, plus what it declares (the environment variables and mount
+   points a caller may fill in, whether it needs the network, and so on). AGS
+   records signed evidence of exactly what was published and stores both in
+   ARS. A caller can set or mount only what the package declares.
 2. **Admit.** A caller asks ES to run that exact package. ES reads the package
    and its evidence from ARS and checks them against the signed runtime trust
    that EGS publishes. ES loads that trust once, when it starts. Missing or

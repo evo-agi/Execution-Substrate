@@ -464,18 +464,18 @@ witness. The separate private v1 producer now selects only an unwired encoding,
 commitment and completeness assessment. It does not supply durable
 material/replay-envelope custody, host-context replay treatment, or reliable
 runtime orchestration. It does not synthesize `PrepareRequest` or `Manifest`
-proof from the plan, create a parallel admission engine, tighten the current
-empty-environment-allowlist contract, or infer authority-handoff
-inapplicability contrary to current Submit. The producer uses source-normalized
+proof from the plan, create a parallel admission engine, change environment or
+mount admission, or infer authority-handoff inapplicability contrary to current
+Submit. The producer uses source-normalized
 semantic names without a second transformation before ordering and collision
 checks.
 
-Current environment validation remains unchanged: reserved runtime/control keys
-are forbidden; when a manifest declares allowed environment keys, invocation
-keys must stay within that set; when that list is empty, current source does not
-enforce explicit allowlist membership. If a future project decision makes an
-empty list mean no environment additions, that requires a separate owning
-admission-contract change and compatibility review.
+Environment and mount validation belong to the shared admission path, which
+the plan consumes and does not repeat: a caller environment key must be a
+portable name, must not be reserved and must be in the artifact's signed
+environment allowlist, and a caller mount must use a target the artifact
+declares; an empty list admits nothing (`.docs/execution_lifecycle/contracts.md`,
+section 5).
 
 Current supported `Submit` constructs `authority_handoff`. The private v1
 producer derives category 14 as resolved from that current source-owned
