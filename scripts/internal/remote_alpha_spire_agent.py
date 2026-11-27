@@ -1864,8 +1864,9 @@ class TimerInstall:
             self.r.run([L.systemctl_bin, "enable", "--now", timer_unit], timeout=120)
             after = refresh_timer_state(self.r, self.own)
             off = [f"{p} is {s}" for p, s in after["files"].items() if s != "matches"]
-            if after["service"].get("LoadState") != "loaded" or after["timer"].get("LoadState") != "loaded" or not timer_enabled(after):
-                off.append(f"{timer_unit} is {after['timer'].get('LoadState')}, {after['timer'].get('UnitFileState')} and {after['timer'].get('ActiveState')}")
+            if not timer_enabled(after):
+                off.append(f"{timer_unit} is {after['timer'].get('UnitFileState') or 'unknown'} and {after['timer'].get('ActiveState') or 'unknown'}")
+            # Includes each unit's LoadState.
             off += unit_definition_problems(after)
             if off:
                 raise Failure("; ".join(off))

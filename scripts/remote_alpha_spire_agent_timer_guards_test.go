@@ -500,8 +500,9 @@ func TestRemoteAlphaSPIREAgentTimerAndRefreshGuards(t *testing.T) {
 		a := newSPIREAgentGuardRoot(t, python, openssl)
 		a.units[spireAgentHelperRefreshUnit+".service"] = map[string]string{"LoadState": "not-found"}
 		_, doc := a.run("install")
-		if doc["ok"] != false || doc["kind"] != "Failure" || !strings.Contains(doc["reason"].(string), "its files were put back as they were") {
-			t.Fatalf("an install whose service did not load was not a failure: %v", doc)
+		if doc["ok"] != false || doc["kind"] != "Failure" || !strings.Contains(doc["reason"].(string), "its files were put back as they were") ||
+			!strings.Contains(doc["reason"].(string), "systemd reports "+spireAgentHelperRefreshUnit+".service as not-found, not loaded") {
+			t.Fatalf("an install whose service did not load was not a failure naming its load state: %v", doc)
 		}
 		timer := a.state()["units"].(map[string]any)[spireAgentHelperRefreshUnit+".timer"].(map[string]any)
 		if timer["UnitFileState"] != "disabled" || timer["ActiveState"] != "inactive" {
