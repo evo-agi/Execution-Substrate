@@ -79,6 +79,7 @@ The current bounded system still assumes:
 
 - ES startup config includes `runtime_config.workload_zone_vault_config_ref.digest`
 - ARS already contains the workload-zone Vault JSON blob referenced by that digest
+- AGS and EGS sign with this host's own keys, generated on it with `scripts/internal/signingkeygen`; AGS, EGS and ES refuse the keys of the example templates
 - EGS TrustModel `allowed_signers` includes the AGS signer key ID
 - ES verification keys match EGS and AGS signing keys
 - ES `workload_vault_auth.default_mode` is `vault_identity_jwt`
@@ -106,7 +107,14 @@ export ES_CONFIG="/abs/path/es.json"
 export NOMAD_CONFIG="/abs/path/nomad.hcl"
 ```
 
-Build these from the current validators and the configuration matrix in [configuration.md](../../.docs/system_overview/configuration.md). Example templates live under [.examples/config](../../.examples/config), but they are templates only.
+Build these from the current validators and the configuration matrix in [configuration.md](../../.docs/system_overview/configuration.md). Example templates live under [.examples/config](../../.examples/config), but they are templates only: their signing keys are keys the services refuse. Generate this host's AGS and EGS keys, each into a new file only you can read, and copy each file's content into the `signer` object of `ags.json` and `egs.json`:
+
+```bash
+go run ./scripts/internal/signingkeygen ags /abs/path/private/ags-signer.json
+go run ./scripts/internal/signingkeygen egs /abs/path/private/egs-signer.json
+```
+
+Each command prints the key's public part. Put the AGS one into the ES `verification` entries `provenance`, `derivation_attestation` and `workload_identity_binding`, the EGS one into `verification.trust_model`, and the AGS `key_id` into the EGS `runtime_trust.signer_policy.allowed_signers`. `ags.json` and `egs.json` now hold private keys: make each readable only by the account that runs its service (for example `chmod 0600`), since AGS and EGS refuse to start on a config other users can read. Remove the two key files once the configs hold the keys. `scripts/72_supported_local_setup.sh` does all of this itself.
 
 For the clean supported-host path, use `BRINGUP_PROFILE=prepare-only scripts/01_bringup.sh up` for the control plane and `BRINGUP_PROFILE=full scripts/01_bringup.sh check` against the already-running pre-managed Nomad endpoint.
 

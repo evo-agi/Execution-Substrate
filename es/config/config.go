@@ -19,6 +19,7 @@ import (
 
 	"execution-substrate/internal/callerallowlist"
 	runtimeconfigv1 "execution-substrate/internal/contracts/runtimeconfig/v1"
+	"execution-substrate/internal/knownkeys"
 )
 
 type Config struct {
@@ -709,7 +710,9 @@ func (s SignerVerifierConfig) Validate(field string) error {
 	if len(decoded) != ed25519.PublicKeySize {
 		return fmt.Errorf("%s.public_key_hex must be a %d-byte Ed25519 public key", field, ed25519.PublicKeySize)
 	}
-	return nil
+	// ES trusting a known key would admit evidence or a trust policy that
+	// anyone signed (.docs/system_overview/contracts.md, section 3B).
+	return knownkeys.Check(field+".public_key_hex", decoded)
 }
 
 func (c WorkloadVaultAuthConfig) Validate() error {
