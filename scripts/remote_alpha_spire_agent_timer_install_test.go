@@ -67,10 +67,13 @@ def world(layout_overrides=None, make_dirs=True, file_owner=None):
             os.mkdir(d); os.chmod(d, 0o755)
     fake = os.path.join(root, "systemctl")
     open(fake, "w").write(FAKE % {"py": sys.executable, "state": state, "units": units}); os.chmod(fake, 0o755)
+    # a stub of its own for the commands these scenarios never run (macOS has no /bin/true)
+    true = os.path.join(root, "true")
+    open(true, "w").write("#!/bin/sh\nexit 0\n"); os.chmod(true, 0o755)
     kw = dict(file_owner=file_owner or USER, file_group=GROUP, required_euid=os.geteuid(), systemd_unit_dir=units,
               installed_helper_path=os.path.join(lib2, "remote_alpha_spire_agent.py"), installed_helper_dirs=(lib, lib2),
-              systemctl_bin=fake, lock_path=lock, spire_server_bin="/bin/true", spire_agent_bin="/bin/true",
-              setpriv_bin="/bin/true", openssl_bin="/bin/true", tmpfiles_bin="/bin/true")
+              systemctl_bin=fake, lock_path=lock, spire_server_bin=true, spire_agent_bin=true,
+              setpriv_bin=true, openssl_bin=true, tmpfiles_bin=true)
     kw.update(layout_overrides or {})
     L = mod.Layout(**kw)
     rep = mod.Report("pin", True); r = mod.Runner(L, rep)
