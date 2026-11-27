@@ -492,7 +492,7 @@ func TestReliableSubmitBindingCapturedMaterialProvenance(t *testing.T) {
 }
 
 func TestReliableSubmitBindingRejectsMismatchedSignedMountArtifact(t *testing.T) {
-	fixtureA := newPreparedArtifactFixture(t)
+	fixtureA := newPreparedArtifactFixture(t).withMountTargets(t, "/execution/mounts/config")
 	payloadP := buildAdmissionPolicyStaticScriptArchive(t, map[string][]byte{
 		staticScriptEntrypointName: []byte(benignPolicyFixtureText()),
 	})
