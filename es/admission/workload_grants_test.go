@@ -773,10 +773,11 @@ func TestARunNoGrantNamesReachesNoContentPolicyWhateverItsRuntimeProfile(t *test
 // grantcaller.FromConnection, which takes a callerauth.ConnectionCaller, or
 // from grantcaller.FromDelivery, which takes the URI a private delivery's
 // claim is bound to. Only callerauth can make a ConnectionCaller, and only
-// from a TLS connection that ES's server handed it through its ConnContext
-// hook, under a context key no other package can set; callerauth's typed
-// guard (TestCallerIdentityIsReadOnlyByCallerauthByType) checks, by what each
-// identifier refers to, which code refers to that hook and to
+// from a TLS connection that ES's server accepted through
+// callerauth.NewListener and handed it through its ConnContext hook, under a
+// context key no other package can set; callerauth's typed guard
+// (TestCallerIdentityIsReadOnlyByCallerauthByType) checks, by what each
+// identifier refers to, which code refers to that listener, that hook and
 // AuthenticateConnection. This test is the backstop for what the compiler
 // cannot see on the grant side:
 //   - WithAuthenticatedCaller takes a callerauth.ConnectionCaller;

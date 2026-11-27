@@ -1452,8 +1452,9 @@ func lifecycleRequestWithCaller(method string, target string, callerPath string)
 
 // lifecycleRequestWithCallerAndBody returns a request that arrived on a TLS
 // connection whose client presented a verified certificate naming callerPath,
-// as ES's server hands it to the handler: the connection is in the request's
-// context, where callerauth's ConnContext hook keeps it.
+// as ES's server hands it to the handler: the connection, accepted through
+// callerauth.NewListener, is in the request's context, where callerauth's
+// ConnContext hook keeps it, and the request carries no TLS state.
 func lifecycleRequestWithCallerAndBody(method string, target string, callerPath string, body string) *http.Request {
 	var reader *strings.Reader
 	if body == "" {

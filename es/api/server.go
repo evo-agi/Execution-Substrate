@@ -275,8 +275,9 @@ func (s *Server) authorizeExecutionCaller(w http.ResponseWriter, r *http.Request
 }
 
 // authorizedExecutionCaller authenticates the caller from the TLS connection
-// the request arrived on, which ES's server hands callerauth through its
-// ConnContext hook (es/app), and checks it against the allowlist.
+// the request arrived on, which ES's server accepts through
+// callerauth.NewListener and hands callerauth through its ConnContext hook
+// (es/app), and checks it against the allowlist.
 func (s *Server) authorizedExecutionCaller(w http.ResponseWriter, r *http.Request) (callerauth.ConnectionCaller, bool) {
 	caller, ok := s.callers.AuthenticateConnection(w, r)
 	if !ok {

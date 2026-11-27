@@ -147,16 +147,18 @@ func newWorkloadGrantFacts(caller grantcaller.Caller, runtimeProfile string, art
 // request body, the evidence or a header.
 //
 // It takes a callerauth.ConnectionCaller, which only callerauth can make,
-// and only from the TLS connection that ES's server handed it through its
-// ConnContext hook, under a context key no other package can set; a TLS
-// connection's verified chain is set by its own handshake only. Admission
-// keeps the caller as a grantcaller.Caller, whose fields only package
-// grantcaller can set. So the Go compiler keeps a value from a request, a
-// header, the evidence, configuration or a built connection state from
-// becoming the caller a connection hands admission here. Which code hands
-// connections to callerauth, and which code reads a caller from them, is
-// checked by type in callerauth's typed guard
-// (TestCallerIdentityIsReadOnlyByCallerauthByType).
+// and only from a TLS connection that ES's server accepted through
+// callerauth.NewListener and handed it through its ConnContext hook, under a
+// context key no other package can set. That listener does the handshake
+// and hands the connection's TLS state to no other code, so the verified
+// chain is set by the handshake only and no other package can reach it.
+// Admission keeps the caller as a grantcaller.Caller, whose fields only
+// package grantcaller can set. So the Go compiler keeps a value from a
+// request, a header, the evidence, configuration or a built connection
+// state from becoming the caller a connection hands admission here. Which
+// code accepts connections through callerauth and hands them to it, and
+// which code reads a caller from them, is checked by type in callerauth's
+// typed guard (TestCallerIdentityIsReadOnlyByCallerauthByType).
 //
 // A zero ConnectionCaller carries no caller. ES admission reads the caller
 // only to match workload grants, and it never becomes ES request or response

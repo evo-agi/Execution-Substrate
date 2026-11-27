@@ -22,8 +22,8 @@ var connectionCallers sync.Map
 // authenticatedCaller returns the caller that ES's API reads from a TLS
 // connection on which the client's verified certificate names caller. Tests
 // build callers the way production does, from a real TLS connection that
-// callerauth's ConnContext hook kept: the grant caller of a request has no
-// other way in.
+// callerauth.NewListener accepted and callerauth's ConnContext hook kept: the
+// grant caller of a request has no other way in.
 func authenticatedCaller(caller string) callerauth.ConnectionCaller {
 	if cached, ok := connectionCallers.Load(caller); ok {
 		return cached.(callerauth.ConnectionCaller)

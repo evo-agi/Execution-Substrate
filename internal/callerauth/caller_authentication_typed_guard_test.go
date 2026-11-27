@@ -92,10 +92,11 @@ var callerIdentityAPIPackages = func() []string {
 	return paths
 }()
 
-// callerConnectionServerPackages are the packages whose http.Server hands
-// the TLS connections it accepts to callerauth.ConnContext: ES's server
-// setup. Each sets the hook exactly once, as the ConnContext field of an
-// http.Server composite literal, and no other code refers to ConnContext.
+// callerConnectionServerPackages are the packages whose http.Server accepts
+// TLS connections through callerauth.NewListener and hands them to
+// callerauth.ConnContext: ES's server setup. Each refers to NewListener
+// exactly once and sets the hook exactly once, as the ConnContext field of an
+// http.Server composite literal, and no other code refers to either.
 var callerConnectionServerPackages = []string{callerIdentityModule + "/es/app"}
 
 // callerConnectionAPIPackages are the service API packages that read their
@@ -167,6 +168,30 @@ func connContextHooks(files []*ast.File, info *types.Info) map[*ast.Ident]bool {
 		})
 	}
 	return hooks
+}
+
+// calledFunctions returns the identifiers in files that name the function
+// a call expression calls, as f or as pkg.f: the one way ES's server setup
+// may refer to callerauth.NewListener, so the listener constructor cannot
+// leave it as a value.
+func calledFunctions(files []*ast.File) map[*ast.Ident]bool {
+	called := map[*ast.Ident]bool{}
+	for _, file := range files {
+		ast.Inspect(file, func(node ast.Node) bool {
+			call, ok := node.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			switch function := call.Fun.(type) {
+			case *ast.Ident:
+				called[function] = true
+			case *ast.SelectorExpr:
+				called[function.Sel] = true
+			}
+			return true
+		})
+	}
+	return called
 }
 
 type callerIdentityBuildTarget struct {
@@ -309,6 +334,7 @@ func callerIdentityTypedViolations(t *testing.T, target callerIdentityBuildTarge
 	var violations []callerIdentityViolation
 	var checked []string
 	connContextHooksSet := map[string]int{}
+	newListenerUses := map[string]int{}
 	authenticateConnectionUses := map[string]int{}
 	for _, item := range selected {
 		checked = append(checked, item.ImportPath)
@@ -366,9 +392,9 @@ func callerIdentityTypedViolations(t *testing.T, target callerIdentityBuildTarge
 		}
 		connectionServer := slices.Contains(callerConnectionServerPackages, item.ImportPath)
 		connectionAPI := slices.Contains(callerConnectionAPIPackages, item.ImportPath)
-		hooks := map[*ast.Ident]bool{}
+		hooks, called := map[*ast.Ident]bool{}, map[*ast.Ident]bool{}
 		if connectionServer {
-			hooks = connContextHooks(files, info)
+			hooks, called = connContextHooks(files, info), calledFunctions(files)
 		}
 		for ident, object := range info.Uses {
 			function, ok := object.(*types.Func)
@@ -396,6 +422,15 @@ func callerIdentityTypedViolations(t *testing.T, target callerIdentityBuildTarge
 				} else {
 					authenticateConnectionUses[item.ImportPath]++
 				}
+			case "NewListener":
+				switch {
+				case !connectionServer:
+					at(ident.Pos(), "refers to callerauth.NewListener outside ES's server setup")
+				case !called[ident]:
+					at(ident.Pos(), "refers to callerauth.NewListener other than by calling it")
+				default:
+					newListenerUses[item.ImportPath]++
+				}
 			case "ConnContext":
 				if !hooks[ident] {
 					at(ident.Pos(), "refers to callerauth.ConnContext other than as the ConnContext hook of an http.Server literal in ES's server setup")
@@ -419,14 +454,23 @@ func callerIdentityTypedViolations(t *testing.T, target callerIdentityBuildTarge
 			switch {
 			case object.Pkg().Path() == "net/http" && object.Name() == "TLS" && isFieldOf(field, "Request"):
 				at(selector.Sel.Pos(), "reads net/http.Request.TLS")
+			case object.Pkg().Path() == "net/http" && object.Name() == "ConnContext" && isFieldOf(field, "Server"):
+				// The hook is set as a field of an http.Server literal
+				// (connContextHooks), which is no selection; reading the
+				// field would hand callerauth.ConnContext on as a value.
+				at(selector.Sel.Pos(), "reads or sets net/http.Server.ConnContext")
 			case object.Pkg().Path() == "crypto/x509" && slices.Contains(callerIdentityCertificateFields, object.Name()) && isFieldOf(field, "Certificate"):
 				at(selector.Sel.Pos(), "reads crypto/x509.Certificate."+object.Name())
 			}
 		}
 	}
-	// The wiring itself: ES's server hands callerauth its connections once,
-	// and ES's API reads its caller from them.
+	// The wiring itself: ES's server accepts its connections through
+	// callerauth once and hands them to callerauth once, and ES's API reads
+	// its caller from them.
 	for _, importPath := range callerConnectionServerPackages {
+		if count := newListenerUses[importPath]; count != 1 {
+			violations = append(violations, callerIdentityViolation{file: strings.TrimPrefix(importPath, callerIdentityModule+"/"), rule: fmt.Sprintf("refers to callerauth.NewListener %d times, want once", count)})
+		}
 		if count := connContextHooksSet[importPath]; count != 1 {
 			violations = append(violations, callerIdentityViolation{file: strings.TrimPrefix(importPath, callerIdentityModule+"/"), rule: fmt.Sprintf("sets callerauth.ConnContext as an http.Server's ConnContext hook %d times, want once", count)})
 		}
@@ -452,14 +496,18 @@ func callerIdentityTypedViolations(t *testing.T, target callerIdentityBuildTarge
 // NewAuthenticator, and only the four that read r.TLS to Authenticate. Only
 // ES's API (callerConnectionAPIPackages) refers to AuthenticateConnection,
 // and it does. Only ES's server setup (callerConnectionServerPackages)
-// refers to ConnContext, exactly once, as the ConnContext field of an
-// http.Server composite literal. A call through an interface that an
+// refers to NewListener, exactly once, by calling it, and to ConnContext,
+// exactly once, as the ConnContext field of an http.Server composite
+// literal; no code selects an http.Server's ConnContext field, so neither
+// leaves ES's server setup as a value. A call through an interface that an
 // Authenticator satisfies does not refer to callerauth's method: it needs an
 // Authenticator value, and AuthenticateConnection reads only a connection
-// that ConnContext kept, whatever request it is given. With the compiler's
-// part (a ConnectionCaller has no exported field, and the context key
-// ConnContext uses is unexported), a caller that ES's API hands on comes
-// from a connection that ES's server accepted. Reflection, unsafe and cgo
+// that NewListener accepted and ConnContext kept, whatever request it is
+// given. With the compiler's part (a ConnectionCaller has no exported field,
+// and neither do NewListener's connections or the context key ConnContext
+// uses), a caller that ES's API hands on comes from a connection that ES's
+// server accepted, read from certificates no code outside callerauth can
+// reach. Reflection, unsafe and cgo
 // are outside what this sees; the import inventory in es/admission
 // (TestOperationalGuardImportInventoryIsExact) pins each production file
 // that imports one. Edits to callerauth itself, and to ES's server setup
@@ -772,10 +820,11 @@ func TestCallerIdentityTypedGuardCoversTheScriptsBuildTargets(t *testing.T) {
 // the shapes that re-checks 33 of ES PR #73 used to forge a caller one layer
 // below the grant caller (a dot import, an import alias, a function or
 // method value, a method expression, a new package), moved onto the
-// connection path: a new reference to ConnContext or AuthenticateConnection
-// outside the places the rules allow, a second ConnContext hook in ES's
-// server setup, a hook set other than as an http.Server literal's field, and
-// Authenticate in ES's API. The probe files exist only in a go build
+// connection path: a new reference to NewListener, ConnContext or
+// AuthenticateConnection outside the places the rules allow, a second
+// listener or ConnContext hook in ES's server setup, a hook set or read other
+// than as an http.Server literal's field, the listener constructor taken as
+// a value, and Authenticate in ES's API. The probe files exist only in a go build
 // overlay. The rules do not depend on the platform, so one target is enough
 // here; TestCallerIdentityIsReadOnlyByCallerauthByType runs them on all
 // three.
@@ -800,6 +849,8 @@ func zzDotCaller(w http.ResponseWriter, r *http.Request) context.Context {
 }
 
 func zzDotState() error { _, err := CallerFromConnectionState(nil, time.Time{}); return err }
+
+var zzDotListener = NewListener
 `,
 		"es/admission/zz_connprobe_alias.go": `package admission
 
@@ -820,6 +871,8 @@ func zzMethodValue(ctx context.Context, w http.ResponseWriter, r *http.Request, 
 	caller, _ := read(w, r)
 	return WithAuthenticatedCaller(zzconnprobe.Hook(ctx, nil), caller)
 }
+
+var zzAliasListener = ca.NewListener
 `,
 		"internal/zzconnprobe/probe.go": `package zzconnprobe
 
@@ -837,6 +890,8 @@ func State() error {
 	_, err := callerauth.CallerFromConnectionState(nil, time.Time{})
 	return err
 }
+
+var Listen = callerauth.NewListener
 `,
 		"es/api/zz_connprobe.go": `package api
 
@@ -873,6 +928,14 @@ type zzHooks struct {
 var zzOtherStruct = zzHooks{ConnContext: callerauth.ConnContext}
 
 func zzAssignHook(server *http.Server) { server.ConnContext = callerauth.ConnContext }
+
+var zzSecondListener = callerauth.NewListener
+
+func zzLeakHook(server *http.Server) func(context.Context, net.Conn) context.Context {
+	return server.ConnContext
+}
+
+func zzSecondListen(inner net.Listener) (net.Listener, error) { return callerauth.NewListener(inner, nil) }
 `,
 	}
 	dir := t.TempDir()
@@ -900,6 +963,7 @@ func zzAssignHook(server *http.Server) { server.ConnContext = callerauth.ConnCon
 	const app = "es/app/zz_connprobe.go"
 	const hook = "refers to callerauth.ConnContext other than as the ConnContext hook of an http.Server literal in ES's server setup"
 	const read = "refers to callerauth.Authenticator.AuthenticateConnection outside ES's API"
+	const listen = "refers to callerauth.NewListener outside ES's server setup"
 	want := []string{
 		dot + ":12: " + hook,
 		dot + ":15: refers to callerauth.NewAuthenticator outside the service API packages",
@@ -915,6 +979,13 @@ func zzAssignHook(server *http.Server) { server.ConnContext = callerauth.ConnCon
 		app + ":19: " + hook,
 		app + ":21: " + hook,
 		"es/app:0: sets callerauth.ConnContext as an http.Server's ConnContext hook 2 times, want once",
+		dot + ":21: " + listen,
+		alias + ":21: " + listen,
+		newPackage + ":18: " + listen,
+		app + ":21: reads or sets net/http.Server.ConnContext",
+		app + ":23: refers to callerauth.NewListener other than by calling it",
+		app + ":26: reads or sets net/http.Server.ConnContext",
+		"es/app:0: refers to callerauth.NewListener 2 times, want once",
 	}
 	target := callerIdentityBuildTarget{"linux", "amd64"}
 	violations, _ := callerIdentityTypedViolations(t, target, overlayPath)
