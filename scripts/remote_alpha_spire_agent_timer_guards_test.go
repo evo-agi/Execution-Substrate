@@ -81,7 +81,7 @@ try:
     elif case == "write-then-unreadable":
         # The bundle is written, then reading it back is refused: the run
         # must say that the file was written, never "nothing was changed".
-        ders = mod.parse_pem_certificates(open(os.path.join(root, "server-bundle.pem")).read())
+        bundle = mod.ServerBundle(open(os.path.join(root, "server-bundle.pem"), "rb").read(), 1)
         def refuse(*args, **kwargs):
             raise mod.Refusal("cannot open it")
         real_atomic_write = mod.atomic_write
@@ -89,8 +89,74 @@ try:
             real_atomic_write(*args, **kwargs)
             mod.read_regular_file = refuse
         mod.atomic_write = write_then_refuse
-        mod.write_bundle(r, rep, ders)
+        mod.write_bundle(r, rep, bundle)
         out = {"ok": True}
+    elif case == "write-checks":
+        # write_bundle's own checks, past the reply checks: the size bound,
+        # and the bytes read back after the write.
+        out = {"ok": True}
+        for name, pem in (("empty", b""), ("oversized", b"A" * (L.bundle_max_bytes + 1))):
+            try:
+                mod.write_bundle(r, rep, mod.ServerBundle(pem, 1))
+                out[name] = "written"
+            except mod.Failure as exc:
+                out[name] = "failed: " + str(exc)
+            out[name + "_file"] = os.path.lexists(L.bundle_path)
+        real_atomic_write = mod.atomic_write
+        def write_other(path, data, *args):
+            real_atomic_write(path, data + b"#", *args)
+        mod.atomic_write = write_other
+        try:
+            mod.write_bundle(r, rep, mod.ServerBundle(b"AAAA\n", 1))
+            out["readback"] = "written"
+        except mod.Failure as exc:
+            out["readback"] = "failed: " + str(exc)
+    elif case == "agent":
+        out = {"ok": True, "agent": mod.read_local_agent(r)}
+    elif case == "root-parse":
+        # The parsers of SPIRE's data, called in root's process.
+        out = {"ok": True}
+        for name, call in (("pem", lambda: mod.parse_pem_certificates(open(os.path.join(root, "server-bundle.pem")).read())),
+                           ("openssl", lambda: mod.openssl_cert_fields(r, b"", der=True))):
+            try:
+                call()
+                out[name] = "ran"
+            except AssertionError as exc:
+                out[name] = "refused: " + str(exc)
+    elif case == "check-replies":
+        # Root's checks of replies from the SPIRE data check, one per entry
+        # of replies.json.
+        results = []
+        for item in json.load(open(os.path.join(root, "replies.json"))):
+            try:
+                if item["kind"] == "bundle":
+                    server, file_state = mod.check_bundle_reply(L, item["reply"], item["fetch_server"], item["sent_file"])
+                    if "bundle" in server:
+                        server = dict(server, bundle={"pem": server["bundle"].pem.decode("ascii"), "count": server["bundle"].count})
+                    results.append({"ok": True, "server": server, "file": file_state})
+                else:
+                    results.append({"ok": True, "agent": mod.check_agent_reply(L, item["reply"])})
+            except mod.CommandError as exc:
+                results.append({"ok": False, "reason": str(exc)})
+        out = {"ok": True, "results": results}
+    elif case == "list-agents":
+        try:
+            out = {"ok": True, "agents": mod.list_agents(r)}
+        except mod.CommandError as exc:
+            out = {"ok": False, "kind": "CommandError", "reason": str(exc)}
+    elif case == "render":
+        rep.check("quoted", "info", "a\x1b[2Jb\x07c\x9bd\x7fe\tf\ng")
+        out = {"ok": True, "text": rep.render_text()}
+    elif case == "view-other-account":
+        # The SPIRE data check started for an account it is not running as
+        # (the fake setpriv runs it as the test user).
+        import dataclasses
+        other = "nobody" if os.geteuid() == 0 else "root"
+        try:
+            mod.agent_view(mod.Runner(dataclasses.replace(L, spire_user=other), rep), b"{}")
+            out = {"ok": True}
+        except mod.CommandError as exc:
+            out = {"ok": False, "kind": "CommandError", "reason": str(exc)}
 except (mod.Refusal, mod.Failure) as exc:
     out = {"ok": False, "kind": type(exc).__name__, "reason": str(exc)}
 out["checks"] = rep.checks
@@ -131,8 +197,12 @@ if args[0] == "show":
 sys.exit(1)
 `
 
-const spireAgentGuardSetpriv = `import os, sys
+// The fake setpriv logs the first two words of each command it runs.
+const spireAgentGuardSetpriv = `import json, os, sys
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 i = sys.argv.index("--")
+with open(os.path.join(ROOT, "setpriv.log"), "a") as log:
+    log.write(json.dumps(sys.argv[i + 1:i + 3]) + "\n")
 os.execv(sys.argv[i + 1], sys.argv[i + 1:])
 `
 
@@ -140,6 +210,9 @@ const spireAgentGuardServer = `import os, sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if sys.argv[1:3] == ["bundle", "show"]:
     sys.stdout.write(open(os.path.join(ROOT, "server-bundle.pem")).read())
+    sys.exit(0)
+if sys.argv[1:3] == ["agent", "list"] and os.path.exists(os.path.join(ROOT, "agent-list.json")):
+    sys.stdout.write(open(os.path.join(ROOT, "agent-list.json")).read())
     sys.exit(0)
 sys.exit(1)
 `
@@ -211,6 +284,7 @@ func newSPIREAgentGuardRoot(t *testing.T, python, openssl string) *spireAgentGua
 		"systemctl_bin": filepath.Join(root, "bin/systemctl"), "setpriv_bin": filepath.Join(root, "bin/setpriv"),
 		"openssl_bin": openssl, "tmpfiles_bin": filepath.Join(root, "bin/tmpfiles"),
 		"command_path_env": filepath.Dir(python) + ":/usr/bin:/bin",
+		"python_argv":      []string{python, "-I", "-B", "-S"},
 	}
 	a.setAgentConf(bundle)
 	a.write(filepath.Join(root, "validate-rc"), "0", 0o644)
@@ -395,7 +469,7 @@ func TestRemoteAlphaSPIREAgentTimerAndRefreshGuards(t *testing.T) {
 		a := newSPIREAgentGuardRoot(t, python, openssl)
 		a.enabledTimer()
 		_, doc := a.run("timer-check-0666")
-		if state, detail := spireAgentGuardCheck(doc, "refresh timer"); state != "attention" || !strings.Contains(detail, "remote_alpha_spire_agent.py is differs") {
+		if state, detail := spireAgentGuardCheck(doc, "refresh timer"); state != "attention" || !strings.Contains(detail, "remote_alpha_spire_agent.py is not as pin writes it") {
 			t.Fatalf("status accepted a world-writable copy: %s %s", state, detail)
 		}
 	})
@@ -443,7 +517,7 @@ func TestRemoteAlphaSPIREAgentTimerAndRefreshGuards(t *testing.T) {
 		a := newSPIREAgentGuardRoot(t, python, openssl)
 		a.extra["reload_mutates"] = filepath.Join(a.root, "etc/systemd/system", spireAgentHelperRefreshUnit+".service")
 		_, doc := a.run("install")
-		if doc["ok"] != false || !strings.Contains(doc["reason"].(string), spireAgentHelperRefreshUnit+".service is differs") {
+		if doc["ok"] != false || !strings.Contains(doc["reason"].(string), spireAgentHelperRefreshUnit+".service is not as pin writes it") {
 			t.Fatalf("an install whose unit file changed was accepted: %v", doc)
 		}
 	})
@@ -830,4 +904,34 @@ func spireAgentGuardBigCACert(t *testing.T, padding int) []byte {
 		t.Fatal(err)
 	}
 	return der
+}
+
+// status must not call the refresh timer ok when systemd could not load
+// one of its units or has it masked: a drop-in that clears the timer's
+// OnCalendar= leaves it LoadState=bad-setting, active, with no next run.
+// (Re-check 26, S26-2, and re-check 25, N25-1.)
+func TestRemoteAlphaSPIREAgentStatusFlagsAUnitSystemdDoesNotLoad(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skipf("needs python3: %v", err)
+	}
+	openssl, err := exec.LookPath("openssl")
+	if err != nil {
+		t.Skipf("needs openssl: %v", err)
+	}
+	for _, suffix := range []string{".service", ".timer"} {
+		for _, load := range []string{"bad-setting", "error", "masked"} {
+			t.Run(suffix[1:]+"_"+load, func(t *testing.T) {
+				a := newSPIREAgentGuardRoot(t, python, openssl)
+				a.enabledTimer()
+				a.units[spireAgentHelperRefreshUnit+suffix]["LoadState"] = load
+				a.units[spireAgentHelperRefreshUnit+suffix]["DropInPaths"] = a.unitPath(suffix) + ".d/o.conf"
+				_, doc := a.run("timer-check-0644")
+				state, detail := spireAgentGuardCheck(doc, "refresh timer")
+				if state != "attention" || !strings.Contains(detail, load) {
+					t.Fatalf("status calls a %s unit that systemd reports as %s: %s %s", suffix, load, state, detail)
+				}
+			})
+		}
+	}
 }

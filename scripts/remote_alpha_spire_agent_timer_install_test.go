@@ -119,7 +119,7 @@ rec("foreign_service_unit_refused", msg is not None and "was not written by" in 
 # a full install, then what status sees
 w = installed(); st = status_state(w); rec("installed_status_ok", st["state"] == "ok", st["detail"][:120])
 os.chmod(w["L"].installed_helper_path, 0o666); st = status_state(w)
-rec("status_flags_copy_mode_0666", st["state"] == "attention" and "differs" in st["detail"], st["detail"][:120])
+rec("status_flags_copy_mode_0666", st["state"] == "attention" and "is not as pin writes it" in st["detail"], st["detail"][:120])
 w = installed(); flagfile(w, "stopped"); st = status_state(w)
 rec("status_flags_enabled_but_inactive_timer", st["state"] == "attention" and "inactive" in st["detail"], st["detail"][:120])
 

@@ -68,7 +68,10 @@ var spireAgentHelperModule = filepath.Join(executionSubstrateRepoRoot, "scripts"
 // a directory over with take_new_dir, or prints the refresh unit texts for
 // the default Layout, or classifies a bundle file against a server bundle
 // (bundle_coverage, openssl for real), or reads its own module file the way
-// pin does before installing a copy. It is test code only.
+// pin does before installing a copy. The bundle checks are the SPIRE data
+// check's code, so the driver marks itself as that check before it calls
+// them (they refuse to run in root's process otherwise). It is test code
+// only.
 const spireAgentHelperDriver = `import dataclasses, importlib.util, json, sys
 spec = importlib.util.spec_from_file_location("ra_spire_agent", sys.argv[1])
 mod = importlib.util.module_from_spec(spec)
@@ -102,6 +105,7 @@ if sys.argv[2] == "--unit-texts":
     print(json.dumps({k: v.decode("ascii") for k, v in mod.refresh_unit_texts(mod.Layout()).items()}, sort_keys=True))
     sys.exit(0)
 if sys.argv[2] == "--coverage":
+    mod._IN_SPIRE_VIEW = True
     layout = mod.Layout(openssl_bin=sys.argv[5], bundle_refresh_grace_seconds=int(sys.argv[6]))
     runner = mod.Runner(layout, mod.Report("status", False))
     files = [mod.parse_pem_certificates(open(p, newline="").read()) for p in sys.argv[3:5]]
@@ -122,6 +126,7 @@ if sys.argv[2] == "--export-bundle":
             return pem
         return real_text(self, argv, **kwargs)
     mod.Runner.text = fake_text
+    mod._IN_SPIRE_VIEW = True
     layout = mod.Layout(openssl_bin=sys.argv[4])
     try:
         ders = mod.export_server_bundle(mod.Runner(layout, mod.Report("status", False)))
@@ -734,6 +739,7 @@ func newSPIREAgentHelperBox(t *testing.T, svidTTL string) *spireAgentHelperBox {
 		"openssl_bin":           openssl,
 		"tmpfiles_bin":          tmpfiles,
 		"command_path_env":      filepath.Dir(python) + ":/usr/sbin:/usr/bin:/sbin:/bin",
+		"python_argv":           []string{python, "-I", "-B", "-S"},
 		// The agent renews at about half of a 15 s or 60 s life, so a
 		// threshold above 0 would make "attention" depend on timing.
 		"svid_attention_seconds":         0,
@@ -2443,6 +2449,7 @@ func TestRemoteAlphaSPIREAgentLayoutPinsBoxValues(t *testing.T) {
 		"bundle_max_bytes":               float64(1 << 20),
 		"server_bundle_max_certificates": float64(16),
 		"command_output_max_bytes":       float64(4 << 20),
+		"spire_view_timeout_seconds":     float64(120),
 	}
 	for key, value := range want {
 		if fmt.Sprint(layout[key]) != fmt.Sprint(value) {
@@ -2830,6 +2837,7 @@ RuntimeDirectoryMode=0700
 RuntimeDirectoryPreserve=yes
 ProtectSystem=strict
 ReadWritePaths=/etc/spire/agent
+ReadOnlyPaths=/run
 ProtectHome=yes
 PrivateTmp=yes
 PrivateDevices=yes

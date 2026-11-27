@@ -6917,13 +6917,18 @@ with `pin`'s bytes, owner `root` and mode `0644`; `/usr/local`,
 `/usr/local/libexec` and `/usr/local/libexec/execution-substrate` owned by
 `root` and writable by no one else; systemd loading each unit from its file
 in `/etc/systemd/system`, with no drop-in and nothing changed on disk since
-it last loaded them, as `systemctl show` reports `FragmentPath`,
-`DropInPaths` and `NeedDaemonReload`; the timer enabled and active) and
+it last loaded them, as `systemctl show` reports `LoadState`,
+`FragmentPath`, `DropInPaths` and `NeedDaemonReload`, so a masked unit or
+one that systemd refuses for a bad setting is attention; systemd 255 shows
+a drop-in added since its last `daemon-reload` only after the next one; the
+timer enabled and active) and
 whether its last run succeeded (attention otherwise);
 whether every SPIRE runtime directory (`/run/spire`, `/run/spire/server`,
 `/run/spire/server/private`, `/run/spire/sockets`) is recreated at boot by a
 tmpfiles.d rule (as `systemd-tmpfiles --cat-config` merges them) or by a
-unit's `RuntimeDirectory=`; and `spire-agent healthcheck`.
+unit's `RuntimeDirectory=`; and `spire-agent healthcheck`. The agent's
+SVID, the server bundle and the bundle file are parsed in the SPIRE data
+check described below, never by root.
 
 `pin --apply` requires an active server, an active and healthy agent with a
 valid SVID and an unbanned server record. In this order it:
@@ -6932,12 +6937,13 @@ valid SVID and an unbanned server record. In this order it:
    that only holds TCP 127.0.0.1:8081 cannot answer. The socket must be
    `spire:spire 0600`, and every directory from its own up to `/run` must be
    writable only by root or `spire` (group-writable only for a `spire` group
-   with no other member, listed or by primary group). Every certificate must
-   be a CA certificate whose only URI SAN is the trust domain, at least one
-   must be unexpired, and nothing but CERTIFICATE blocks may appear. It
-   writes the bundle atomically to `/etc/spire/agent/bootstrap-bundle.pem`,
+   with no other member, listed or by primary group). The SPIRE data check
+   reads and checks the bundle: every certificate must be a CA certificate
+   whose only URI SAN is the trust domain, at least one must be unexpired,
+   and nothing but CERTIFICATE blocks may appear. Root writes the PEM text
+   the check returns atomically to `/etc/spire/agent/bootstrap-bundle.pem`,
    `root:root 0644`, unless the file already holds exactly those
-   certificates.
+   certificates, and reads the file back to compare its bytes.
 2. If some runtime directory has no boot-time rule, writes
    `/etc/tmpfiles.d/spire.conf` with one `d` line per missing directory,
    copying its current owner and mode, after the host's own
@@ -6989,8 +6995,11 @@ valid SVID and an unbanned server record. In this order it:
    to the helper's lock directory
    `/run/execution-substrate-remote-alpha-spire-agent`, which the unit names
    as `RuntimeDirectory=` (`RuntimeDirectoryMode=0700`,
-   `RuntimeDirectoryPreserve=yes`), so the rest of `/run`, including
-   `/run/systemd`, is read-only; `ProtectHome=yes`, `PrivateTmp=yes`,
+   `RuntimeDirectoryPreserve=yes`); `ReadOnlyPaths=/run`, so the rest of
+   `/run`, including `/run/systemd`, is read-only (on systemd 255,
+   `ProtectSystem=strict` alone leaves `/run` writable once
+   `ProtectKernelTunables=` or `ProtectControlGroups=` is set);
+   `ProtectHome=yes`, `PrivateTmp=yes`,
    `PrivateDevices=yes`, `NoNewPrivileges=yes`;
    `CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_DAC_READ_SEARCH` (what
    `setpriv` needs to run commands as `spire`, and what root needs to reach
@@ -7000,9 +7009,16 @@ valid SVID and an unbanned server record. In this order it:
    `MemoryDenyWriteExecute=yes`, `ProtectKernelTunables=yes`,
    `ProtectKernelModules=yes`, `ProtectControlGroups=yes`, and
    `SystemCallFilter=@system-service` with `SystemCallErrorNumber=EPERM`.
-   The sandbox confines code that runs in the unit, should the parsing of
-   the `spire` account's output ever be exploited; what that code could
-   still change is the bundle file and `agent.conf` in `/etc/spire/agent`.
+   The sandbox stops the run's own processes from writing outside
+   `/etc/spire/agent` and the lock directory, from using capabilities
+   beyond those three, sockets other than UNIX ones, and system calls
+   outside `@system-service`. It does not confine root: a root process in
+   the unit can still ask systemd over D-Bus (`/run/systemd/private`, the
+   system bus; connecting to a socket is not a write, and the helper's own
+   `systemctl` calls need them) to start a command outside the sandbox,
+   connect to any UNIX socket that root owns, and read any file
+   (`CAP_DAC_READ_SEARCH`). What keeps a flaw in parsing SPIRE's data from
+   root is that root parses none of it (the SPIRE data check, below).
    The timer, `OnCalendar=*-*-* 00/6:00:00`
    with `RandomizedDelaySec=15min` and `Persistent=true`, runs it every 6
    hours and once after a boot that missed a run. On a failure `pin` puts
@@ -7029,11 +7045,33 @@ the file only at a fresh bootstrap. A run that
 another run of the helper holds the lock for is refused, and the timer's
 next run tries again.
 
+The SPIRE data check: everything SPIRE produces that the helper parses as
+certificates (the server bundle, the bundle file it was copied into, the
+agent's SVID in `agent-data.json`) is parsed in a separate process that
+root starts as `spire` with `setpriv` (`/usr/bin/python3 -I -B -S -c`, with
+the helper's own code and the request on stdin). That process runs
+`spire-server bundle show` and every `openssl x509` itself, refuses to run
+as any account other than `spire`, and has 120 s to answer. A flaw in
+`openssl` or in the PEM parsing therefore gives no more than the `spire`
+account already has, and `spire` already decides what the server bundle
+is. Root reads only the files' bytes and the check's JSON reply. It
+accepts a reply only in the exact shapes the check produces (every key,
+type, state and length checked; the PEM text only base64, `=`, `-`, space
+and newline characters, 1 byte to 1 MiB; at most 16 certificates; an agent
+ID under `spiffe://execution.internal/spire/agent/`; a finite SVID
+expiry), and writes the PEM text as opaque bytes. Root still decodes JSON
+from SPIRE with Python's decoder: the check's reply, and in `pin`,
+`recover` and `status` the output of `spire-server agent list`, `entry
+show` and `token generate`. A wrong shape or nesting too deep for the
+decoder is a command error, never a crash, and the text report replaces
+control characters that a detail quotes.
+
 Every mode bounds what it reads from a command: a command that prints more
-than 4 MiB on stdout or stderr is stopped and the run fails. The server
-bundle is bounded before any certificate is parsed or written: `bundle show`
-output over 1 MiB, more than 16 certificates, or a PEM file over 1 MiB is
-refused. The helper's lock is
+than 4 MiB on stdout or stderr is stopped and the run fails, and so is one
+that runs past its time limit. The server bundle is bounded before any
+certificate is parsed or written: `bundle show` output over 1 MiB, more
+than 16 certificates, or a PEM file over 1 MiB is refused. The helper's
+lock is
 `/run/execution-substrate-remote-alpha-spire-agent/lock`; a run creates the
 directory as `root 0700` when it is missing and refuses one that is not
 root's directory or that others can write.
@@ -7107,7 +7145,10 @@ lifetimes. They include a fresh bootstrap with the pinned `agent.conf`
 refusing an impostor server on the real server's port, while the same
 bootstrap with the original `agent.conf` attests to it, and a server that
 prepares a new CA (`spire-server localauthority x509 prepare`), which
-`status` reports and the refresh service's run copies into the file. systemd
+`status` reports and the refresh service's run copies into the file. Other
+tests check that root's process refuses to parse certificates, that every
+`openssl` run comes from the SPIRE data check, and that root refuses every
+reply outside the check's shapes and writes nothing. systemd
 and `setpriv` are replaced by test fakes there, so `Requires=` propagation,
 privilege dropping, boot-time directory creation and the refresh units'
 sandbox and schedule are proved only by a run on the host.

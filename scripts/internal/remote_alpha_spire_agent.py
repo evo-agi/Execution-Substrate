@@ -26,6 +26,13 @@ section "Remote SPIRE Agent Bootstrap Trust And Recovery Helper".
 Every path, account, unit and command is fixed in Layout. The entry point at
 the bottom of this file uses Layout() unchanged and reads no environment
 variable; tests import this file and pass their own Layout.
+
+Root parses nothing that SPIRE produces. The server bundle, the bundle file
+and the agent's own SVID are read and parsed (PEM, base64, openssl x509) only
+in the SPIRE data check: this file's own code, run by root as the SPIRE
+account through setpriv (spire_view_main). Root hands it the bytes it reads,
+takes back a small JSON reply that it checks field by field, and writes the
+bundle file from the reply after a size check, without parsing it.
 """
 
 from __future__ import annotations
@@ -40,6 +47,7 @@ import fcntl
 import grp
 import hashlib
 import json
+import math
 import os
 import pwd
 import re
@@ -146,6 +154,10 @@ class Layout:
     # Most bytes of stdout, and of stderr, kept from any command; a command
     # that prints more is stopped and the run fails.
     command_output_max_bytes: int = 4 << 20
+    # Time limit for one run of the SPIRE data check (spire_view_main), which
+    # runs spire-server bundle show and openssl for each certificate as the
+    # SPIRE account; each of those commands has command_timeout_seconds.
+    spire_view_timeout_seconds: int = 120
 
     join_token_ttl_seconds: int = 120
     # status reports "attention" below this many seconds of agent SVID life.
@@ -277,7 +289,12 @@ class Report:
             lines.append("Changes made:")
             lines.extend(f"  - {step}" for step in doc["actions"])
         lines.append(f"Result: {doc['result']}" + (f" - {doc['message']}" if doc["message"] else ""))
-        return "\n".join(lines) + "\n"
+        # Details can quote what SPIRE, systemd or openssl printed; control
+        # characters in them must not reach the terminal as escapes.
+        return _TERMINAL_UNSAFE_RE.sub("?", "\n".join(lines)) + "\n"
+
+
+_TERMINAL_UNSAFE_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
 
 
 # --------------------------------------------------------------------------
@@ -490,6 +507,18 @@ def collect_output(proc: subprocess.Popen, stdin: bytes | None, limit: int, time
                     f.close()
 
 
+# True only in the SPIRE data check (spire_view_main), which root starts as
+# the SPIRE account. The functions that parse what SPIRE produces call
+# require_spire_view first, so a root process that reached one would stop
+# with an error instead of parsing.
+_IN_SPIRE_VIEW = False
+
+
+def require_spire_view(what: str) -> None:
+    if not _IN_SPIRE_VIEW:
+        raise AssertionError(f"{what} parses data from SPIRE and runs only in the SPIRE data check, as the SPIRE account, never as root")
+
+
 class Runner:
     def __init__(self, layout: Layout, report: Report):
         self.L = layout
@@ -499,6 +528,9 @@ class Runner:
         return {"PATH": self.L.command_path_env, "LC_ALL": "C"}
 
     def as_spire(self, argv: list[str]) -> list[str]:
+        if _IN_SPIRE_VIEW:
+            # The SPIRE data check already runs as the SPIRE account.
+            return list(argv)
         return [
             self.L.setpriv_bin,
             f"--reuid={self.L.spire_user}",
@@ -575,11 +607,201 @@ class Runner:
         out = self.text([self.L.spire_server_bin] + args + ["-socketPath", self.L.server_socket, "-output", "json"], spire=True)
         try:
             doc = json.loads(out)
-        except ValueError:
+        except (ValueError, RecursionError):
+            # RecursionError: JSON nested deeper than Python's decoder goes.
             raise CommandError(f"spire-server {' '.join(args[:2])} printed no JSON") from None
         if not isinstance(doc, dict):
             raise CommandError(f"spire-server {' '.join(args[:2])} printed unexpected JSON")
         return doc
+
+
+# --------------------------------------------------------------------------
+# The SPIRE data check
+#
+# Everything SPIRE produces that the helper parses as certificates (the
+# server bundle, the bundle file it was copied into, the agent's own SVID)
+# is parsed in a separate process that root starts as the SPIRE account:
+# setpriv, then python_argv with SPIRE_VIEW_BOOT, which reads this file's
+# own code from stdin, runs it as a module and calls spire_view_main with
+# the request that follows. That process runs spire-server and openssl
+# itself, so a flaw in openssl or in the PEM parsing gives no more than the
+# SPIRE account already has. Root reads its reply as JSON, checks every
+# field (check_bundle_reply, check_agent_reply), and takes the bundle's PEM
+# text as opaque bytes: it checks their size and characters and writes them,
+# and parses nothing in them.
+
+SPIRE_VIEW_BOOT = (
+    "import sys, types\n"
+    "data = sys.stdin.buffer\n"
+    "source = data.read(int(data.readline()))\n"
+    "mod = types.ModuleType('remote_alpha_spire_agent_view')\n"
+    "mod.__file__ = 'remote_alpha_spire_agent.py'\n"
+    "sys.modules[mod.__name__] = mod\n"
+    "exec(compile(source, mod.__file__, 'exec'), mod.__dict__)\n"
+    "sys.exit(mod.spire_view_main(data.read()))\n"
+)
+
+# This file's bytes, read once per run, for the SPIRE data check.
+_OWN_SOURCE: bytes | None = None
+
+
+def own_source(L: Layout) -> bytes:
+    global _OWN_SOURCE
+    if _OWN_SOURCE is None:
+        _OWN_SOURCE = read_own_helper(L, for_install=False)
+    return _OWN_SOURCE
+
+
+def printable(text: str, limit: int) -> str:
+    """text with every character outside printable ASCII replaced, cut to
+    limit characters, for a reply that root shows in its report."""
+    return re.sub(r"[^\x20-\x7e]", "?", text)[:limit]
+
+
+def spire_view(r: Runner, request: dict, max_output: int) -> dict:
+    """Root side: run the SPIRE data check as the SPIRE account and return
+    its reply, a JSON object that the caller checks field by field."""
+    L = r.L
+    source = own_source(L)
+    body = json.dumps(dict(request, layout=dataclasses.asdict(L)), sort_keys=True).encode("ascii")
+    stdin = str(len(source)).encode("ascii") + b"\n" + source + body
+    what = f"the SPIRE data check ({request['op']}) as {L.spire_user}"
+    try:
+        proc = r.run(list(L.python_argv) + ["-c", SPIRE_VIEW_BOOT], spire=True, stdin=stdin,
+                     timeout=L.spire_view_timeout_seconds, max_output=max_output, check=False)
+    except OutputTooLarge:
+        raise CommandError(f"{what} printed more than {max_output} bytes; it was stopped") from None
+    except CommandError as exc:
+        raise CommandError(f"{what}: {exc}") from None
+    if proc.returncode != 0:
+        tail = printable((proc.stderr or b"").decode("utf-8", "replace").strip()[-600:], 600)
+        raise CommandError(f"{what} exited {proc.returncode}: {tail}")
+    try:
+        reply = json.loads(proc.stdout)
+    except (ValueError, RecursionError):
+        raise CommandError(f"{what} printed no JSON") from None
+    if not isinstance(reply, dict):
+        raise CommandError(f"{what} printed JSON that is not an object")
+    return reply
+
+
+_REPLY_TEXT_RE = re.compile(r"[\x20-\x7e]*")
+_REPLY_PEM_RE = re.compile(r"[A-Za-z0-9+/= \n-]+")
+
+
+def _bad_reply(why: str):
+    raise CommandError(f"the SPIRE data check's reply is not one root accepts: {why}")
+
+
+def _reply_keys(value, keys: tuple, what: str) -> dict:
+    if not isinstance(value, dict) or set(value) != set(keys):
+        _bad_reply(f"{what} must be an object with exactly the keys {', '.join(keys)}")
+    return value
+
+
+def _reply_text(value, limit: int, what: str) -> str:
+    if not isinstance(value, str) or len(value) > limit or not _REPLY_TEXT_RE.fullmatch(value):
+        _bad_reply(f"{what} must be printable ASCII text of at most {limit} characters")
+    return value
+
+
+def check_bundle_reply(L: Layout, reply: dict, fetch_server: bool, sent_file: bool) -> tuple[dict, dict]:
+    """Root side: the server and file parts of a bundle reply, each checked
+    against the only shapes view_bundle produces."""
+    _reply_keys(reply, ("server", "file"), "the reply")
+    srv = reply["server"]
+    if not fetch_server:
+        if srv is not None:
+            _bad_reply("it holds a server bundle that was not asked for")
+        server = {"state": "skipped"}
+    elif isinstance(srv, dict) and srv.get("ok") is True:
+        _reply_keys(srv, ("ok", "pem", "count"), "the server part")
+        pem, count = srv["pem"], srv["count"]
+        if not isinstance(pem, str) or not 0 < len(pem) <= L.bundle_max_bytes or not _REPLY_PEM_RE.fullmatch(pem):
+            _bad_reply(f"the server bundle must be PEM characters only, 1 to {L.bundle_max_bytes} of them")
+        if type(count) is not int or not 1 <= count <= L.server_bundle_max_certificates:
+            _bad_reply(f"the certificate count must be a whole number from 1 to {L.server_bundle_max_certificates}")
+        server = {"state": "ok", "bundle": ServerBundle(pem.encode("ascii"), count)}
+    elif isinstance(srv, dict) and srv.get("ok") is False:
+        _reply_keys(srv, ("ok", "kind", "error"), "the server part")
+        if srv["kind"] not in ("refusal", "command"):
+            _bad_reply("the server error kind must be refusal or command")
+        server = {"state": "refused" if srv["kind"] == "refusal" else "failed",
+                  "reason": _reply_text(srv["error"], 2000, "the server error")}
+    else:
+        _bad_reply("the server part must say ok true or false")
+    f = reply["file"]
+    if not sent_file:
+        if f is not None:
+            _bad_reply("it holds a file state for a file that was not sent")
+        return server, {}
+    state = f.get("state") if isinstance(f, dict) else None
+    ok = server["state"] == "ok"
+    if state == "unparseable" or (state == "unknown" and not ok) or (state == "matches" and ok):
+        _reply_keys(f, ("state",), "the file part")
+        return server, {"state": state}
+    if state == "differs" and ok and isinstance(f, dict) and "coverage" in f:
+        _reply_keys(f, ("state", "coverage"), "the file part")
+        cov = _reply_keys(f["coverage"], ("state", "detail"), "the coverage verdict")
+        if cov["state"] not in ("ok", "info", "attention"):
+            _bad_reply("the coverage state must be ok, info or attention")
+        return server, {"state": "differs", "coverage": {"state": cov["state"], "detail": _reply_text(cov["detail"], 8000, "the coverage detail")}}
+    if state == "differs" and ok:
+        _reply_keys(f, ("state", "error"), "the file part")
+        return server, {"state": "differs", "error": _reply_text(f["error"], 2000, "the file error")}
+    _bad_reply(f"the file state {state!r} does not fit the server part ({server['state']})")
+
+
+def agent_view(r: Runner, data: bytes) -> dict:
+    """Root side: the SPIRE data check's reading of agent-data.json."""
+    reply = spire_view(r, {"op": "agent", "data": base64.b64encode(data).decode("ascii")}, max_output=64 << 10)
+    return check_agent_reply(r.L, reply)
+
+
+def check_agent_reply(L: Layout, reply: dict) -> dict:
+    state = reply.get("state")
+    if state == "not_json":
+        _reply_keys(reply, ("state",), "the reply")
+        return {"state": state}
+    if state in ("unattested", "unreadable"):
+        _reply_keys(reply, ("state", "reason"), "the reply")
+        return {"state": state, "reason": _reply_text(reply["reason"], 500, "the reason")}
+    if state != "attested":
+        _bad_reply(f"the agent state {state!r} is not one view_agent gives")
+    _reply_keys(reply, ("state", "agent_id", "not_after", "reattestable"), "the reply")
+    agent_id, not_after, reattestable = reply["agent_id"], reply["not_after"], reply["reattestable"]
+    prefix = f"spiffe://{L.trust_domain}/spire/agent/"
+    if not isinstance(agent_id, str) or len(agent_id) > 2048 or not re.fullmatch(re.escape(prefix) + r"[\x21-\x7e]+", agent_id):
+        _bad_reply(f"the agent ID must be printable ASCII without spaces under {prefix}")
+    if type(not_after) not in (int, float) or not math.isfinite(not_after):
+        _bad_reply("the SVID expiry must be a finite number")
+    if type(reattestable) is not bool:
+        _bad_reply("reattestable must be true or false")
+    return {"state": state, "agent_id": agent_id, "not_after": float(not_after), "reattestable": reattestable}
+
+
+def spire_view_main(raw: bytes) -> int:
+    """The SPIRE data check's entry point. Root starts it as the SPIRE
+    account (spire_view); it never runs in root's process. raw is the JSON
+    request: the op, root's Layout, and the bytes root read."""
+    global _IN_SPIRE_VIEW
+    request = json.loads(raw)
+    L = Layout(**{k: tuple(v) if isinstance(v, list) else v for k, v in request["layout"].items()})
+    if os.geteuid() != pwd.getpwnam(L.spire_user).pw_uid:
+        sys.stderr.write(f"the SPIRE data check runs only as {L.spire_user}, not as uid {os.geteuid()}\n")
+        return 3
+    _IN_SPIRE_VIEW = True
+    r = Runner(L, Report("spire-view", False))
+    if request["op"] == "bundle":
+        reply = view_bundle(r, request)
+    elif request["op"] == "agent":
+        reply = view_agent(r, base64.b64decode(request["data"], validate=True))
+    else:
+        sys.stderr.write(f"unknown SPIRE data check {request['op']!r}\n")
+        return 2
+    sys.stdout.write(json.dumps(reply, sort_keys=True))
+    sys.stdout.flush()
+    return 0
 
 
 # --------------------------------------------------------------------------
@@ -589,7 +811,20 @@ class Runner:
 def spiffe_id(td_path: dict) -> str:
     if not isinstance(td_path, dict):
         return ""
-    return f"spiffe://{td_path.get('trust_domain', '')}{td_path.get('path', '')}"
+    td, path = td_path.get("trust_domain", ""), td_path.get("path", "")
+    if not isinstance(td, str) or not isinstance(path, str):
+        return ""
+    return f"spiffe://{td}{path}"
+
+
+def server_items(doc: dict, key: str, what: str) -> list[dict]:
+    """doc[key] from spire-server's JSON: a list of objects, or none."""
+    items = doc.get(key)
+    if items is None:
+        return []
+    if not isinstance(items, list) or not all(isinstance(item, dict) for item in items):
+        raise CommandError(f"spire-server {what} printed {key} that is not a list of objects")
+    return items
 
 
 def list_agents(r: Runner) -> list[dict]:
@@ -597,10 +832,10 @@ def list_agents(r: Runner) -> list[dict]:
     if doc.get("next_page_token"):
         raise CommandError("spire-server agent list returned more than one page")
     agents = []
-    for item in doc.get("agents") or []:
+    for item in server_items(doc, "agents", "agent list"):
         try:
             expires = int(item.get("x509svid_expires_at", "0"))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             expires = 0
         agents.append({
             "id": spiffe_id(item.get("id")),
@@ -617,7 +852,7 @@ def list_entries(r: Runner) -> list[dict]:
     if doc.get("next_page_token"):
         raise CommandError("spire-server entry show returned more than one page")
     entries = []
-    for item in doc.get("entries") or []:
+    for item in server_items(doc, "entries", "entry show"):
         entries.append({
             "id": str(item.get("id", "")),
             "spiffe_id": spiffe_id(item.get("spiffe_id")),
@@ -627,6 +862,7 @@ def list_entries(r: Runner) -> list[dict]:
 
 
 def openssl_cert_fields(r: Runner, data: bytes, der: bool) -> dict:
+    require_spire_view("openssl x509")
     argv = [r.L.openssl_bin, "x509", "-noout", "-startdate", "-enddate", "-ext", "subjectAltName,basicConstraints"]
     if der:
         argv[2:2] = ["-inform", "DER"]
@@ -648,6 +884,7 @@ _PEM_CERT_RE = re.compile(r"-----BEGIN CERTIFICATE-----\n([A-Za-z0-9+/=\n]+?)---
 
 def parse_pem_certificates(text: str) -> list[bytes]:
     """Strict: the text must hold only CERTIFICATE blocks and whitespace."""
+    require_spire_view("PEM parsing")
     if "\r" in text:
         raise ValueError("carriage return in PEM text")
     ders = []
@@ -677,7 +914,8 @@ def pem_encode(ders: list[bytes]) -> bytes:
 
 def read_local_agent(r: Runner) -> dict:
     """The agent's own identity from its data directory: state is one of
-    valid, expired, unattested, unreadable."""
+    valid, expired, unattested, unreadable. Root reads agent-data.json and
+    the SPIRE data check parses it (view_agent)."""
     L = r.L
     data_dir_st = lstat_or_none(L.agent_data_dir)
     if data_dir_st is None:
@@ -693,12 +931,30 @@ def read_local_agent(r: Runner) -> dict:
         if got is None:
             return {"state": "unattested", "reason": "agent-data.json is missing"}
         try:
-            doc = json.loads(got[0])
+            view = agent_view(r, got[0])
+        except CommandError as exc:
+            return {"state": "unreadable", "reason": str(exc)}
+        if view["state"] != "not_json":
             break
-        except ValueError:
-            if attempt == 2:
-                return {"state": "unreadable", "reason": "agent-data.json is not JSON"}
-            time.sleep(L.poll_interval_seconds)
+        if attempt == 2:
+            return {"state": "unreadable", "reason": "agent-data.json is not JSON"}
+        # The agent may be rewriting the file.
+        time.sleep(L.poll_interval_seconds)
+    if view["state"] != "attested":
+        return view
+    state = "valid" if view["not_after"] > utc_now() else "expired"
+    return {"state": state, "agent_id": view["agent_id"], "not_after": view["not_after"],
+            "reattestable": view["reattestable"]}
+
+
+def view_agent(r: Runner, data: bytes) -> dict:
+    """In the SPIRE data check: the agent ID and SVID expiry in the bytes of
+    agent-data.json (state attested), or why there is none."""
+    L = r.L
+    try:
+        doc = json.loads(data)
+    except (ValueError, RecursionError):
+        return {"state": "not_json"}
     svid = doc.get("svid") if isinstance(doc, dict) else None
     if not isinstance(svid, list) or not svid:
         return {"state": "unattested", "reason": "agent-data.json holds no SVID"}
@@ -711,9 +967,7 @@ def read_local_agent(r: Runner) -> dict:
     prefix = f"spiffe://{L.trust_domain}/spire/agent/"
     if len(fields["uris"]) != 1 or not fields["uris"][0].startswith(prefix):
         return {"state": "unreadable", "reason": "the agent SVID does not name one agent ID in the trust domain"}
-    agent_id = fields["uris"][0]
-    state = "valid" if fields["not_after"] > utc_now() else "expired"
-    return {"state": state, "agent_id": agent_id, "not_after": fields["not_after"],
+    return {"state": "attested", "agent_id": fields["uris"][0], "not_after": fields["not_after"],
             "reattestable": bool(doc.get("reattestable"))}
 
 
@@ -752,10 +1006,10 @@ def group_members(group: str) -> set[str]:
 
 
 def export_server_bundle(r: Runner) -> list[bytes]:
-    """The trust domain's X.509 authorities, read as spire over the admin
-    socket. A process that only holds the server's TCP port cannot answer
-    there. Each authority must be a CA certificate for the trust domain, and
-    at least one must not have expired."""
+    """In the SPIRE data check: the trust domain's X.509 authorities, read as
+    spire over the admin socket. A process that only holds the server's TCP
+    port cannot answer there. Each authority must be a CA certificate for the
+    trust domain, and at least one must not have expired."""
     L = r.L
     try:
         out = r.text([L.spire_server_bin, "bundle", "show", "-socketPath", L.server_socket, "-format", "pem"], spire=True, max_output=L.bundle_max_bytes)
@@ -784,28 +1038,91 @@ def export_server_bundle(r: Runner) -> list[bytes]:
     return ders
 
 
-def bundle_file_state(r: Runner, server_ders: list[bytes] | None) -> dict:
+@dataclasses.dataclass(frozen=True)
+class ServerBundle:
+    """The server bundle as the SPIRE data check checked it: its canonical
+    PEM text, which root writes to the bundle file without parsing, and the
+    number of CA certificates in it."""
+
+    pem: bytes
+    count: int
+
+
+def bundle_file_bytes(r: Runner) -> tuple[dict, bytes | None]:
+    """Root side: what lstat says about the bundle file, and its bytes when
+    it is a regular file within the size bound."""
     L = r.L
     st = lstat_or_none(L.bundle_path)
     if st is None:
-        return {"state": "absent"}
+        return {"state": "absent"}, None
     if not stat.S_ISREG(st.st_mode):
-        return {"state": "not_regular", "meta": describe(st)}
+        return {"state": "not_regular", "meta": describe(st)}, None
     if st.st_size > L.bundle_max_bytes:
-        return {"state": "oversized", "meta": describe(st)}
+        return {"state": "oversized", "meta": describe(st)}, None
     got = read_regular_file(L.bundle_path, limit=L.bundle_max_bytes)
     if got is None:
-        return {"state": "absent"}
-    meta = describe(got[1])
+        return {"state": "absent"}, None
+    return {"state": "read", "meta": describe(got[1])}, got[0]
+
+
+def bundle_view(r: Runner, *, fetch_server: bool) -> tuple[dict, dict]:
+    """Root side: the server bundle, fetched and checked by the SPIRE data
+    check when fetch_server, and the bundle file's state against it. The
+    server part is skipped, ok (with a ServerBundle), refused or failed (with
+    a reason). The file part's state is absent, not_regular or oversized
+    (from lstat, never parsed) or unparseable, unknown, matches or differs
+    (from the SPIRE data check, with its coverage verdict or an error)."""
+    file_state, data = bundle_file_bytes(r)
+    if not fetch_server and data is None:
+        return {"state": "skipped"}, file_state
+    request = {"op": "bundle", "fetch_server": fetch_server,
+               "file": None if data is None else base64.b64encode(data).decode("ascii")}
+    reply = spire_view(r, request, max_output=2 * r.L.bundle_max_bytes + (64 << 10))
+    server, file_reply = check_bundle_reply(r.L, reply, fetch_server, data is not None)
+    if data is not None:
+        file_state = dict(file_reply, meta=file_state["meta"])
+    return server, file_state
+
+
+def require_server_bundle(server: dict) -> ServerBundle:
+    if server["state"] == "refused":
+        raise Refusal(server["reason"])
+    if server["state"] != "ok":
+        raise CommandError(server.get("reason") or "the server bundle was not read")
+    return server["bundle"]
+
+
+def view_bundle(r: Runner, request: dict) -> dict:
+    """In the SPIRE data check: the server bundle (when asked), checked by
+    export_server_bundle, and the bundle file's bytes against it."""
+    server, server_ders = None, None
+    if request["fetch_server"]:
+        try:
+            server_ders = export_server_bundle(r)
+            server = {"ok": True, "pem": pem_encode(server_ders).decode("ascii"), "count": len(server_ders)}
+        except Refusal as exc:
+            server = {"ok": False, "kind": "refusal", "error": printable(str(exc), 2000)}
+        except CommandError as exc:
+            server = {"ok": False, "kind": "command", "error": printable(str(exc), 2000)}
+    file = None
+    if request["file"] is not None:
+        file = view_bundle_file(r, base64.b64decode(request["file"], validate=True), server_ders)
+    return {"server": server, "file": file}
+
+
+def view_bundle_file(r: Runner, data: bytes, server_ders: list[bytes] | None) -> dict:
     try:
-        file_ders = parse_pem_certificates(got[0].decode("ascii"))
+        file_ders = parse_pem_certificates(data.decode("ascii"))
     except (ValueError, UnicodeDecodeError):
-        return {"state": "unparseable", "meta": meta}
+        return {"state": "unparseable"}
     if server_ders is None:
-        return {"state": "unknown", "meta": meta}
+        return {"state": "unknown"}
     if set(file_ders) == set(server_ders) and len(file_ders) == len(server_ders):
-        return {"state": "matches", "meta": meta}
-    return {"state": "differs", "meta": meta, "ders": file_ders}
+        return {"state": "matches"}
+    try:
+        return {"state": "differs", "coverage": bundle_coverage(r, file_ders, server_ders)}
+    except CommandError as exc:
+        return {"state": "differs", "error": printable(str(exc), 2000)}
 
 
 def bundle_coverage(r: Runner, file_ders: list[bytes], server_ders: list[bytes]) -> dict:
@@ -819,6 +1136,9 @@ def bundle_coverage(r: Runner, file_ders: list[bytes], server_ders: list[bytes])
     earlier, or an extra CA, needs attention. A difference in expired CAs
     alone is harmless (ok)."""
     L = r.L
+    fix = f"run sudo {PUBLIC_SCRIPT} refresh --apply"
+    if len(file_ders) > L.server_bundle_max_certificates:
+        return {"state": "attention", "detail": f"holds {len(file_ders)} certificates, more than the {L.server_bundle_max_certificates} this helper accepts in a bundle; {fix}"}
     now = utc_now()
     fresh, stale, extra = [], [], []
     for der in server_ders:
@@ -834,7 +1154,6 @@ def bundle_coverage(r: Runner, file_ders: list[bytes], server_ders: list[bytes])
         fields = openssl_cert_fields(r, der, der=True)
         if fields["not_after"] > now:
             extra.append(fields)
-    fix = f"run sudo {PUBLIC_SCRIPT} refresh --apply"
     hours = L.bundle_refresh_grace_seconds / 3600
     problems = []
     if stale:
@@ -1091,8 +1410,9 @@ class UsageError(Exception):
 
 
 def require_commands(L: Layout) -> None:
-    for name in ("spire_server_bin", "spire_agent_bin", "systemctl_bin", "setpriv_bin", "openssl_bin", "tmpfiles_bin"):
-        path = getattr(L, name)
+    paths = [getattr(L, name) for name in ("spire_server_bin", "spire_agent_bin", "systemctl_bin", "setpriv_bin", "openssl_bin", "tmpfiles_bin")]
+    # python_argv[0] runs the SPIRE data check.
+    for path in paths + [L.python_argv[0]]:
         if not os.path.isabs(path) or not os.access(path, os.X_OK):
             raise Refusal(f"required command {path} is missing or not executable")
 
@@ -1134,7 +1454,7 @@ class Pinning:
         self.r = r
         self.rep = rep
         self.L = r.L
-        self.server_ders: list[bytes] = []
+        self.server_bundle: ServerBundle | None = None
         self.bundle_state: dict = {}
         self.config_bytes = b""
         self.config_stat: os.stat_result | None = None
@@ -1160,12 +1480,12 @@ class Pinning:
             if not confirmed:
                 raise Refusal(f"{L.agent_config} reads as pinned to this helper, but SPIRE's own parser does not confirm it ({detail}); inspect it by hand")
             self.rep.check("bootstrap", "ok", f"trust_bundle_path = \"{L.bundle_path}\" (confirmed by spire-agent validate, plain and with -trustBundle)")
-        self.server_ders = export_server_bundle(self.r)
-        self.bundle_state = bundle_file_state(self.r, self.server_ders)
+        server, self.bundle_state = bundle_view(self.r, fetch_server=True)
+        self.server_bundle = require_server_bundle(server)
         if self.bundle_state["state"] == "not_regular":
             raise Refusal(f"{L.bundle_path} exists and is not a regular file")
         if self.bundle_state["state"] != "matches":
-            self.rep.planned(f"write the server bundle ({len(self.server_ders)} CA certificate(s), read over the admin socket) to {L.bundle_path} as {L.file_owner}:{L.file_group} 0644 (file is {self.bundle_state['state']})")
+            self.rep.planned(f"write the server bundle ({self.server_bundle.count} CA certificate(s), read over the admin socket and checked as {L.spire_user}) to {L.bundle_path} as {L.file_owner}:{L.file_group} 0644 (file is {self.bundle_state['state']})")
         self.rep.check("bundle file", "ok" if self.bundle_state["state"] == "matches" else "info", f"{self.bundle_state['state']}")
         self.tmpfiles = tmpfiles_coverage(self.r)
         if self.tmpfiles["missing"]:
@@ -1184,7 +1504,7 @@ class Pinning:
     def apply_bundle(self) -> None:
         if self.bundle_state["state"] == "matches":
             return
-        write_bundle(self.r, self.rep, self.server_ders)
+        write_bundle(self.r, self.rep, self.server_bundle)
 
     def apply_config(self) -> None:
         L = self.L
@@ -1244,17 +1564,23 @@ class Pinning:
 
 
 
-def write_bundle(r: Runner, rep: Report, server_ders: list[bytes]) -> None:
+def write_bundle(r: Runner, rep: Report, bundle: ServerBundle) -> None:
+    """Root's one use of the server bundle: write the PEM text the SPIRE data
+    check produced, after a size check, and read the bytes back. Nothing in
+    them is parsed here."""
     L = r.L
+    if not 0 < len(bundle.pem) <= L.bundle_max_bytes:
+        raise Failure(f"the server bundle is {len(bundle.pem)} bytes, outside 1 to {L.bundle_max_bytes}; {L.bundle_path} was not written")
     uid, gid = resolve_ids(L.file_owner, L.file_group)
-    atomic_write(L.bundle_path, pem_encode(server_ders), 0o644, uid, gid)
+    atomic_write(L.bundle_path, bundle.pem, 0o644, uid, gid)
     try:
-        state = bundle_file_state(r, server_ders)["state"]
+        got = read_regular_file(L.bundle_path, limit=L.bundle_max_bytes)
+        state = "absent" if got is None else "matches" if got[0] == bundle.pem else "different bytes"
     except Refusal as exc:
         state = str(exc)
     if state != "matches":
         raise Failure(f"{L.bundle_path} was written but does not read back as the server bundle ({state})")
-    rep.action(f"wrote {L.bundle_path} ({len(server_ders)} CA certificate(s))")
+    rep.action(f"wrote {L.bundle_path} ({bundle.count} CA certificate(s))")
 
 
 # --------------------------------------------------------------------------
@@ -1277,12 +1603,21 @@ def refresh_unit_texts(L: Layout) -> dict:
     sandbox. refresh writes only the bundle file (through a temporary file in
     its directory) and the lock file, so the file system is read-only except
     the bundle file's directory and the lock directory (the unit's
-    RuntimeDirectory=, which systemd creates and keeps). The capability
-    bounding set keeps only what setpriv needs to run commands as spire and
-    what root needs to reach the admin socket inside spire's 0700 directory.
-    The system call filter, the address families and the other restrictions
-    confine code that runs in it, should the parsing of spire's data ever be
-    exploited."""
+    RuntimeDirectory=, which systemd creates and keeps). ReadOnlyPaths=/run
+    keeps the rest of /run read-only: on systemd 255, ProtectSystem=strict
+    leaves /run writable once ProtectKernelTunables= or ProtectControlGroups=
+    is set. The capability bounding set keeps only what setpriv needs to run
+    commands as spire and what root needs to reach the admin socket inside
+    spire's 0700 directory; the system call filter, the address families and
+    the other restrictions narrow what the run can do directly.
+
+    The sandbox is not what keeps a flaw in parsing SPIRE's data from root:
+    root in the unit can still ask systemd over D-Bus (/run/systemd/private,
+    the system bus), which the helper's own systemctl calls need, to start a
+    command outside the sandbox, connect to any UNIX socket root owns, and
+    read any file (CAP_DAC_READ_SEARCH). What keeps such a flaw from root is
+    that root parses none of SPIRE's data: the SPIRE data check does, as the
+    SPIRE account."""
     service, timer = refresh_unit_paths(L)
     service_text = (
         f"{UNIT_MARKER}\n"
@@ -1299,6 +1634,7 @@ def refresh_unit_texts(L: Layout) -> dict:
         "RuntimeDirectoryPreserve=yes\n"
         "ProtectSystem=strict\n"
         f"ReadWritePaths={os.path.dirname(L.bundle_path)}\n"
+        "ReadOnlyPaths=/run\n"
         "ProtectHome=yes\n"
         "PrivateTmp=yes\n"
         "PrivateDevices=yes\n"
@@ -1367,15 +1703,18 @@ UNIT_DEFINITION_PROPS = ["FragmentPath", "DropInPaths", "NeedDaemonReload"]
 
 
 def unit_definition_problems(state: dict) -> list[str]:
-    """systemd must run the unit files pin wrote and nothing else: each
-    loaded unit from its file in systemd_unit_dir, with no drop-in, and no
-    change on disk that systemd has not loaded."""
+    """systemd must run the unit files pin wrote and nothing else: each unit
+    loaded (not masked, not failed to load) from its file in
+    systemd_unit_dir, with no drop-in, and no change on disk that systemd has
+    not loaded."""
     problems = []
     for key in ("service", "timer"):
         props, path = state[key], state["unit_paths"][key]
         unit = os.path.basename(path)
         if props.get("LoadState") != "loaded":
-            continue
+            problems.append(f"systemd reports {unit} as {props.get('LoadState') or 'unknown'}, not loaded")
+            if props.get("LoadState") in ("not-found", "", None):
+                continue
         if props.get("FragmentPath") != path:
             problems.append(f"systemd loads {unit} from {props.get('FragmentPath') or 'nowhere'}, not {path}")
         if props.get("DropInPaths"):
@@ -1406,7 +1745,7 @@ def refresh_timer_state(r: Runner, own: bytes) -> dict:
         elif path != L.installed_helper_path and not got[0].startswith(UNIT_MARKER.encode("ascii") + b"\n"):
             files[path] = "foreign"
         else:
-            files[path] = "differs"
+            files[path] = "not as pin writes it"
     timer = r.unit_props(L.refresh_unit_name + ".timer", ["LoadState", "ActiveState", "UnitFileState"] + UNIT_DEFINITION_PROPS)
     service = r.unit_props(L.refresh_unit_name + ".service", ["LoadState", "Result", "ExecMainStartTimestamp", "ExecMainStatus"] + UNIT_DEFINITION_PROPS)
     service_path, timer_path = refresh_unit_paths(L)
@@ -1597,7 +1936,7 @@ def mode_status(r: Runner, rep: Report) -> None:
     else:
         rep.check("agent identity", "fail", f"{local['state']}: {local['reason']}")
 
-    server_ders = None
+    fetch_server = False
     if server_ok:
         try:
             agents = list_agents(r)
@@ -1617,9 +1956,17 @@ def mode_status(r: Runner, rep: Report) -> None:
                     rep.check("server agent record", "fail", detail)
             stale = [a for a in agents if a["id"] != local.get("agent_id")]
             rep.check("other agent records", "info", f"{len(stale)} ({sum(1 for a in stale if a['expires_at'] <= now)} expired)", count=len(stale))
-            server_ders = export_server_bundle(r)
+            fetch_server = True
         except (CommandError, Refusal) as exc:
             rep.check("server queries", "fail", str(exc))
+    try:
+        server, bstate = bundle_view(r, fetch_server=fetch_server)
+    except Refusal as exc:
+        server, bstate = {"state": "skipped"}, {"state": "unreadable", "reason": str(exc)}
+    except CommandError as exc:
+        server, bstate = {"state": "failed", "reason": str(exc)}, {"state": "unreadable", "reason": str(exc)}
+    if fetch_server and server["state"] in ("refused", "failed"):
+        rep.check("server queries", "fail", server["reason"])
 
     try:
         _, cst, analysis = read_agent_config(r)
@@ -1638,24 +1985,21 @@ def mode_status(r: Runner, rep: Report) -> None:
         analysis = {"state": "unreadable"}
         rep.check("bootstrap", "fail", str(exc))
 
-    try:
-        bstate = bundle_file_state(r, server_ders)
-    except Refusal as exc:
-        bstate = {"state": "unreadable", "reason": str(exc)}
     if bstate["state"] == "matches":
         rep.check("bundle file", "ok", f"{L.bundle_path} matches the server bundle ({bstate['meta']})")
     elif bstate["state"] == "absent" and analysis.get("state") == "pinned":
         rep.check("bundle file", "attention", f"{L.bundle_path} is absent although agent.conf names it; a fresh bootstrap would fail; recover writes it")
     elif bstate["state"] == "differs":
-        try:
-            coverage = bundle_coverage(r, bstate["ders"], server_ders)
+        if "coverage" in bstate:
+            coverage = bstate["coverage"]
             rep.check("bundle file", coverage["state"], f"{L.bundle_path} ({bstate['meta']}) {coverage['detail']}")
-        except CommandError as exc:
-            rep.check("bundle file", "fail", f"{L.bundle_path} differs from the server bundle, and its certificates cannot be read: {exc}")
+        else:
+            rep.check("bundle file", "fail", f"{L.bundle_path} differs from the server bundle, and its certificates cannot be read: {bstate['error']}")
     elif bstate["state"] in ("oversized", "unparseable") and analysis.get("state") == "pinned":
         rep.check("bundle file", "attention", f"{L.bundle_path} ({bstate['meta']}): {bstate['state']}; run sudo {PUBLIC_SCRIPT} refresh --apply")
     else:
-        rep.check("bundle file", "info" if bstate["state"] in ("absent", "unknown") else "attention", f"{L.bundle_path}: {bstate['state']}")
+        reason = f" ({bstate['reason']})" if bstate.get("reason") else ""
+        rep.check("bundle file", "info" if bstate["state"] in ("absent", "unknown") else "attention", f"{L.bundle_path}: {bstate['state']}{reason}")
 
     if analysis.get("state") == "pinned":
         check_refresh_timer(r, rep)
@@ -1752,22 +2096,22 @@ def mode_refresh(r: Runner, rep: Report, apply: bool) -> None:
     dst = lstat_or_none(bundle_dir)
     if dst is None or not stat.S_ISDIR(dst.st_mode):
         raise Refusal(f"{bundle_dir} is not a directory")
-    server_ders = export_server_bundle(r)
-    state = bundle_file_state(r, server_ders)
+    server, state = bundle_view(r, fetch_server=True)
+    bundle = require_server_bundle(server)
     if state["state"] == "not_regular":
         raise Refusal(f"{L.bundle_path} exists and is not a regular file")
     if state["state"] == "matches":
-        rep.check("bundle file", "ok", f"{L.bundle_path} matches the server bundle ({len(server_ders)} CA certificate(s))")
+        rep.check("bundle file", "ok", f"{L.bundle_path} matches the server bundle ({bundle.count} CA certificate(s))")
         rep.result = "ok"
         rep.message = "nothing to change"
         return
     rep.check("bundle file", "info", f"{L.bundle_path}: {state['state']}")
-    rep.planned(f"write the server bundle ({len(server_ders)} CA certificate(s), read over the admin socket) to {L.bundle_path} as {L.file_owner}:{L.file_group} 0644 (file is {state['state']})")
+    rep.planned(f"write the server bundle ({bundle.count} CA certificate(s), read over the admin socket and checked as {L.spire_user}) to {L.bundle_path} as {L.file_owner}:{L.file_group} 0644 (file is {state['state']})")
     if not apply:
         rep.result = "planned"
         rep.message = "no changes made; rerun with --apply"
         return
-    write_bundle(r, rep, server_ders)
+    write_bundle(r, rep, bundle)
     rep.result = "ok"
     rep.message = "refreshed; SPIRE reads the file only at a fresh bootstrap, so nothing restarted"
 
