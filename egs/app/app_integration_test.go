@@ -51,6 +51,62 @@ func TestLoadConfigRejectsMalformedJSON(t *testing.T) {
 	}
 }
 
+// A revoked-artifact digest in any spelling other than the one ES accepts in a
+// request would never match, so it would revoke nothing. EGS refuses it at
+// config load rather than normalizing it.
+func TestLoadConfigRejectsRevokedArtifactDigestNotInLowerCaseHex(t *testing.T) {
+	t.Parallel()
+
+	const lower = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	cases := map[string]string{
+		"upper-case hex":     "sha256:" + strings.ToUpper(strings.TrimPrefix(lower, "sha256:")),
+		"one upper-case hex": lower[:len(lower)-1] + "F",
+		"upper-case label":   "SHA256:" + strings.TrimPrefix(lower, "sha256:"),
+		"surrounding space":  " " + lower,
+	}
+	for name, digest := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			fixture := newTLSFixture(t)
+			cfg := buildConfig(fixture)
+			cfg.RuntimeTrust.ArtifactPolicy.RevokedArtifacts = []string{digest}
+			payload, err := json.MarshalIndent(cfg, "", "  ")
+			if err != nil {
+				t.Fatalf("marshal config: %v", err)
+			}
+			path := filepath.Join(t.TempDir(), "egs.json")
+			if err := os.WriteFile(path, payload, 0o600); err != nil {
+				t.Fatalf("write config: %v", err)
+			}
+
+			_, err = config.Load(path)
+			if err == nil || !strings.Contains(err.Error(), "runtime_trust.artifact_policy.revoked_artifacts must contain labeled sha256 digests") {
+				t.Fatalf("expected the revoked-artifact digest %q to be refused, got %v", digest, err)
+			}
+		})
+	}
+
+	t.Run("lower-case hex is accepted", func(t *testing.T) {
+		t.Parallel()
+
+		fixture := newTLSFixture(t)
+		cfg := buildConfig(fixture)
+		cfg.RuntimeTrust.ArtifactPolicy.RevokedArtifacts = []string{lower}
+		payload, err := json.MarshalIndent(cfg, "", "  ")
+		if err != nil {
+			t.Fatalf("marshal config: %v", err)
+		}
+		path := filepath.Join(t.TempDir(), "egs.json")
+		if err := os.WriteFile(path, payload, 0o600); err != nil {
+			t.Fatalf("write config: %v", err)
+		}
+		if _, err := config.Load(path); err != nil {
+			t.Fatalf("expected the lower-case digest to load, got %v", err)
+		}
+	})
+}
+
 func TestLoadConfigRejectsTrailingData(t *testing.T) {
 	t.Parallel()
 

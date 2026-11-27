@@ -221,6 +221,12 @@ AGS no longer exposes a legacy-signing compatibility control. The current publis
 - `publication.update_revision` must be greater than `0`
 - `runtime_trust.signer_policy.allowed_signers` and `revoked_signers` must not contain duplicates or empty values
 - `runtime_trust.artifact_policy.revoked_artifacts`, if present, must contain labeled SHA-256 digests
+  in the one spelling ES accepts in a request: `sha256:` and 64 lower-case hex
+  characters. EGS refuses to start on any other spelling, upper-case hex
+  included, and ES refuses a trust model that carries one, because such an
+  entry would never match a request's digest and so would revoke nothing.
+  Before upgrading a host, check its `revoked_artifacts` for upper-case hex
+  and write any such entry in lower case.
 - `publication.version` and `publication.update_revision` configure
   EGS-owned publication metadata. They are not trust-contract/schema/API
   versioning for the current EGS v1 surface.
