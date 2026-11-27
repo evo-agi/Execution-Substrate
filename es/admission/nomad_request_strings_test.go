@@ -171,6 +171,7 @@ func nomadJobStrings(value any, path string, out map[string][]string) {
 // is checked too.
 func TestSubmitPlacesOnlyTheCheckedRequestStringsInTheNomadJob(t *testing.T) {
 	fixture, payload := nomadStringsFixture(t, "ZZMARK_ENV_KEY", "zzmark-output-id")
+	fixture = fixture.withMountTargets(t, runtimeMountRoot+"/zzmark-mount")
 	request := fixture.prepareRequest()
 	request.Invocation.Argv = []string{"zzmark-argv"}
 	request.Invocation.Env = map[string]string{"ZZMARK_ENV_KEY": "zzmark-env-value"}
