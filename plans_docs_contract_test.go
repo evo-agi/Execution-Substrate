@@ -37,16 +37,44 @@ func plansAndStandingRules(t *testing.T) string {
 		compactText(mustRead(t, standingRouteRulesPath))
 }
 
+// The last section of each standing rule file moved out of PLANS.md after the
+// rest of that file, unreworded: the paired-root custody and acceptance scope
+// into the admission rules, and the Remote Alpha access contract v1 with the
+// rules that followed it into the route rules. Checks of that text read the
+// section through standingRuleSection.
+const (
+	pairedRootCustodyHeading = "### Current paired-root custody and acceptance scope"
+	remoteAlphaAccessHeading = "### Remote Alpha access contract v1 — Tranche A"
+)
+
+// standingRuleSection returns the section of the standing rule file at path
+// that opens with heading, compacted: from the heading to the next heading, or
+// to the end of the file. The heading must open exactly one line of the file.
+func standingRuleSection(t *testing.T, path, heading string) string {
+	t.Helper()
+	doc := "\n" + mustRead(t, path)
+	marker := "\n" + heading + "\n"
+	if count := strings.Count(doc, marker); count != 1 {
+		t.Fatalf("%s has %d lines %q, want exactly 1", path, count, heading)
+	}
+	section := doc[strings.Index(doc, marker)+1:]
+	if next := strings.Index(section[len(heading):], "\n#"); next >= 0 {
+		section = section[:len(heading)+next]
+	}
+	return compactText(section)
+}
+
 // plansRecordSHA256 pins the record. It is closed: no entry is added to it,
 // so an edit to it changes this value in the same reviewed change.
 const plansRecordSHA256 = "0b13566795d1233f91c293f4b5ea79134af73013d75fea2e7f74f7df57ed0561"
 
-// plansMaxBytes caps PLANS.md a little above its size once the record and
-// then the standing rules moved out (145,045 bytes). PLANS.md holds intent
-// and order, is edited in place to stay current, and must not regrow into a
-// log or a rule book. Raising the cap is a deliberate, reviewed change;
-// prefer putting a standing rule in the file that owns it.
-const plansMaxBytes = 150000
+// plansMaxBytes caps PLANS.md a little above its size once the record, the
+// standing rules and then the last two standing-rule sections moved out
+// (127,250 bytes). PLANS.md holds intent and order, is edited in place to
+// stay current, and must not regrow into a log or a rule book. Raising the
+// cap is a deliberate, reviewed change; prefer putting a standing rule in the
+// file that owns it.
+const plansMaxBytes = 132000
 
 // plansOpeningSections are the first top-level sections of PLANS.md, in
 // order: the plan an agent needs before any change comes first.
@@ -144,27 +172,19 @@ func TestPlansOpensWithTheCurrentPlan(t *testing.T) {
 		"This file holds the current plan, its intent and order:",
 		"Put a standing rule in the file that owns it, not here.",
 		"[`execution_admission_and_custody.md`]("+standingAdmissionRulesPath+") holds the Workstream C admission and custody rules",
-		"[`remote_alpha_operator_routes.md`]("+standingRouteRulesPath+") holds the Remote Alpha operator route rules P0i to P0v",
+		"[`remote_alpha_operator_routes.md`]("+standingRouteRulesPath+") holds the Remote Alpha operator route rules P0i to P0v and the Remote Alpha access contract v1.",
 		"Do not add dated status entries",
 		"Cite this file by section heading, never by line number",
 		"("+plansRecordPath+")",
 		"The record is closed and is historical evidence only. Read it when a change touches a surface one of its entries names.",
-		"Two standing-rule sections are still here and are to move the same way: \"Current paired-root custody and acceptance scope\" and \"Remote Alpha access contract v1 — Tranche A\".",
 	)
-	// The opening names the standing-rule sections still in this file. When
-	// one moves out, this fails until the opening says so.
-	headings := map[string]bool{}
-	for _, heading := range markdownHeadingTitles(plans) {
-		headings[heading] = true
-	}
-	for _, heading := range []string{
-		"### Current paired-root custody and acceptance scope",
-		"### Remote Alpha access contract v1 — Tranche A",
-	} {
-		if !headings[heading] {
-			t.Errorf("PLANS.md no longer has %q; update the opening, which names it as a standing-rule section still here", heading)
-		}
-	}
+	// The last two standing-rule sections moved out of PLANS.md too, so the
+	// opening no longer names any as still here.
+	assertContainsNone(t, "PLANS.md introduction", compactText(intro),
+		"standing-rule sections are still here",
+		"Current paired-root custody and acceptance scope",
+		"Remote Alpha access contract v1 — Tranche A",
+	)
 }
 
 // TestPlansHoldsNoDatedStatusEntries keeps the status log from coming back:
@@ -273,7 +293,7 @@ func TestPlansRecordIsNamedWhereAgentsStart(t *testing.T) {
 // each file, and no section is held in two places.
 func TestStandingRulesKeepPlansAuthority(t *testing.T) {
 	assertContainsAll(t, "AGENTS.md standing rules", compactText(mustRead(t, "AGENTS.md")),
-		"The files in `"+standingRulesDir+"` hold standing rules that moved unreworded out of `PLANS.md`: `execution_admission_and_custody.md` holds the Workstream C admission and custody rules, and `remote_alpha_operator_routes.md` holds the Remote Alpha operator route rules P0i to P0v. They keep `PLANS.md`'s authority, second in the list above: only their location changed, and the rules above apply to them as they apply to `PLANS.md`.",
+		"The files in `"+standingRulesDir+"` hold standing rules that moved unreworded out of `PLANS.md`: `execution_admission_and_custody.md` holds the Workstream C admission and custody rules, and `remote_alpha_operator_routes.md` holds the Remote Alpha operator route rules P0i to P0v and the Remote Alpha access contract v1. They keep `PLANS.md`'s authority, second in the list above: only their location changed, and the rules above apply to them as they apply to `PLANS.md`.",
 		"consult the `"+standingRulesDir+"` file that holds the rules of the surface you change",
 		"update the `"+standingRulesDir+"` file in place when a standing rule it holds changed, also without a dated status entry",
 	)
@@ -301,19 +321,25 @@ func TestStandingRulesKeepPlansAuthority(t *testing.T) {
 	}
 	for _, rule := range []struct {
 		path, owner, pointer, ownerPointer, ownerNamed string
-		sections                                       int
+		// lastSection moved out of PLANS.md after the rest of the file, at
+		// trunk_dev commit 923e9c3; pointerNames is how the PLANS.md pointer
+		// section names it.
+		lastSection, pointerNames string
+		sections                  int
 	}{
 		{
 			standingAdmissionRulesPath, ".docs/execution_lifecycle/contracts.md", "### Workstream C admission and custody rules",
 			"The standing Workstream C admission and custody rules are in `" + standingAdmissionRulesPath + "`. This file holds the detailed lifecycle contract for them.",
 			"The detailed lifecycle contract for these rules is `.docs/execution_lifecycle/contracts.md`.",
-			1,
+			pairedRootCustodyHeading, "the current paired-root custody and acceptance scope",
+			2,
 		},
 		{
 			standingRouteRulesPath, ".docs/system_overview/remote_supported_host_alpha.md", "### Remote Alpha operator facade route rules (P0i to P0v)",
 			"The standing route rules for P0i to P0v are in `" + standingRouteRulesPath + "`. The sections below hold the detailed route contracts.",
 			"The detailed route contracts are in `.docs/system_overview/remote_supported_host_alpha.md`.",
-			3,
+			remoteAlphaAccessHeading, "in the section \"Remote Alpha access contract v1 — Tranche A\"",
+			4,
 		},
 	} {
 		text := mustRead(t, rule.path)
@@ -322,6 +348,8 @@ func TestStandingRulesKeepPlansAuthority(t *testing.T) {
 			rule.ownerNamed,
 			"Edit a rule here in place when it changes. Do not add dated status entries",
 			"Cite this file by section heading, never by line number.",
+			"The last section, \""+strings.TrimPrefix(rule.lastSection, "### ")+"\",",
+			"moved here the same way, unreworded, from `PLANS.md` at `trunk_dev` commit `923e9c3366775664c8a85f19273e3dd4fc04eb22`.",
 		)
 
 		if !plansHeadings[rule.pointer] {
@@ -333,20 +361,26 @@ func TestStandingRulesKeepPlansAuthority(t *testing.T) {
 		}
 		assertContainsAll(t, "PLANS.md pointer to "+rule.path, compactText(pointer),
 			"["+"`"+rule.path+"`"+"]("+rule.path+")",
+			rule.pointerNames,
 		)
 
 		sections := 0
+		last := ""
 		for _, heading := range markdownHeadingTitles(text) {
 			if !strings.HasPrefix(heading, "### ") {
 				continue
 			}
 			sections++
+			last = heading
 			if plansHeadings[heading] {
 				t.Errorf("heading %q is in both PLANS.md and %s", heading, rule.path)
 			}
 		}
 		if sections != rule.sections {
 			t.Errorf("%s has %d sections, want the %d that moved", rule.path, sections, rule.sections)
+		}
+		if last != rule.lastSection {
+			t.Errorf("the last section of %s is %q, want %q, the section that moved last", rule.path, last, rule.lastSection)
 		}
 
 		assertContainsAll(t, rule.owner+" pointer to "+rule.path, compactText(mustRead(t, rule.owner)),
@@ -428,6 +462,12 @@ func TestStandingRulesPinEachOtherwiseUncheckedRule(t *testing.T) {
 		{standingRouteRulesPath, "P0v cross-repo consumers", []string{
 			"Bridge/MA/CP/IM consumers must not wrap missing ES prerequisites into ES status truth.",
 			"P0v does not renew, mutate cert/profile/key/trust/env/state, run live proof, or widen any cross-repo authority boundary.",
+		}},
+		// Read by no test before or after the access contract section moved
+		// out of PLANS.md: the deletion sweep of that move found it.
+		{standingRouteRulesPath, "Tranche B access validator gate", []string{
+			"`Reopened redesign seam`: Tranche B must first freeze the supported OpenSSH directive grammar, Include closure and precedence, system-configuration interaction, accepted local filesystem roots and modes, component symlink policy, agent/Keychain/certificate interpretation, and safe optional directives in governing documentation and fake/static contract tests before implementing a validator.",
+			"Tranche A does not claim that any current local profile or operator alias conforms to that still-open static subset.",
 		}},
 	} {
 		text := compactText(mustRead(t, rule.path))

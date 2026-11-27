@@ -6,7 +6,7 @@ import (
 )
 
 func TestRemoteAlphaAccessContract(t *testing.T) {
-	plans := compactText(mustRead(t, "PLANS.md"))
+	access := standingRuleSection(t, standingRouteRulesPath, remoteAlphaAccessHeading)
 	remoteAlpha := compactText(mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md"))
 	contractRaw := mustRead(t, ".docs/system_overview/remote_alpha_access_contract.md")
 	contract := compactText(contractRaw)
@@ -22,7 +22,7 @@ func TestRemoteAlphaAccessContract(t *testing.T) {
 	}
 
 	t.Run("governing scope", func(t *testing.T) {
-		require(t, "PLANS.md", plans,
+		require(t, "access contract standing rules", access,
 			"Reopened redesign seam",
 			"ES has no implemented Remote Alpha access-profile validator, access-status schema, or fixed identity-only access route",
 			"es.remote-alpha.access-profile/v1",
