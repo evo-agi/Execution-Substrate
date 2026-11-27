@@ -1348,9 +1348,9 @@ func TestLinuxSetupInstallsTheNomadPackageHook(t *testing.T) {
 	requireRegularFile(t, program, expected, 0o755)
 	requireFolder(t, filepath.Dir(program), os.Getuid(), os.Getgid(), 0o755)
 	wantHook := "# Written by Execution Substrate (scripts/70_linux_setup.sh, or the box upgrade). After each dpkg\n" +
-		"# run, take Nomad's folders and the files it reads back from the nomad account, which the nomad\n" +
-		"# package's postinst gives them to. Remove this file and the program together.\n" +
-		"post-invoke=\"if [ -e " + program + " ]; then " + program + " " + config + " " + data + "; fi\"\n"
+		"# run as root, take Nomad's folders and the files it reads back from the nomad account, which the\n" +
+		"# nomad package's postinst gives them to. Remove this file and the program together.\n" +
+		"post-invoke=\"if [ -e " + program + " ] && [ $(id -u) = 0 ]; then " + program + " " + config + " " + data + "; fi\"\n"
 	requireRegularFile(t, hook, wantHook, 0o644)
 	requireRegularFile(t, outside, "outside\n", 0o644)
 	// The program ran once: nomad.hcl and the data folder are taken back.
@@ -1361,17 +1361,34 @@ func TestLinuxSetupInstallsTheNomadPackageHook(t *testing.T) {
 	}
 
 	// dpkg strips the quotes around the option's value and runs it with
-	// sh -c: so run, it runs the program, and runs nothing once the
-	// program is gone.
+	// sh -c, as the user who runs dpkg: so run as root (an id that says 0
+	// stands in for root here), it runs the program, and it runs nothing
+	// once the program is gone, or for any other user, such as one who runs
+	// dpkg --dry-run (re-check 52 of #83, S52-3).
 	value := strings.TrimSuffix(strings.TrimPrefix(strings.Split(wantHook, "\n")[3], "post-invoke=\""), "\"")
 	if err := os.Chmod(nomadHCL, 0o666); err != nil {
 		t.Fatal(err)
 	}
-	if output, err := exec.Command("sh", "-c", value).CombinedOutput(); err != nil || !strings.Contains(string(output), "took "+nomadHCL+" back") {
+	fakeRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(fakeRoot, "id"), []byte("#!/bin/sh\n[ \"$1\" = -u ] && echo 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	asRoot := func(script string) *exec.Cmd {
+		command := exec.Command("sh", "-c", script)
+		command.Env = append(os.Environ(), "PATH="+fakeRoot+string(os.PathListSeparator)+os.Getenv("PATH"))
+		return command
+	}
+	if os.Getuid() != 0 {
+		if output, err := exec.Command("sh", "-c", value).CombinedOutput(); err != nil || len(output) != 0 {
+			t.Fatalf("as uid %d, sh -c %q: %v %s", os.Getuid(), value, err, output)
+		}
+		requireRegularFile(t, nomadHCL, "x\n", 0o666)
+	}
+	if output, err := asRoot(value).CombinedOutput(); err != nil || !strings.Contains(string(output), "took "+nomadHCL+" back") {
 		t.Fatalf("sh -c %q: %v %s", value, err, output)
 	}
 	gone := strings.ReplaceAll(value, program, program+".gone")
-	if output, err := exec.Command("sh", "-c", gone).CombinedOutput(); err != nil || len(output) != 0 {
+	if output, err := asRoot(gone).CombinedOutput(); err != nil || len(output) != 0 {
 		t.Fatalf("with the program gone, sh -c %q: %v %s", gone, err, output)
 	}
 

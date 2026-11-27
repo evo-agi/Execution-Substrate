@@ -783,6 +783,12 @@ DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
 # not copied: a sparse file costs its owner no disk, and a copy of it would
 # cost root its whole size.
 LARGEST = 1 << 20
+# All the files one run takes back hold at most this much together (Nomad's
+# config and TLS files: a handful, of a few KiB each). Past it a file is set
+# aside, not copied, so that many small sparse files cannot cost root what
+# one large one cannot. COPIED counts what this run has copied so far.
+RUN_BUDGET = 4 << 20
+COPIED = [0]
 # The start of this program's temporary file names. The rest is random and
 # short, so no name planted in a folder can take or lengthen one. Nomad loads
 # none of them (they do not end in .hcl or .json), and they are never taken
@@ -949,19 +955,25 @@ def take_back_file(path, uid, gid):
         return False
     if st.st_size > LARGEST:
         raise Odd(f"{st.st_size} bytes, more than the {LARGEST} a file Nomad reads may hold")
+    left = RUN_BUDGET - COPIED[0]
+    if st.st_size > left:
+        raise Odd(f"{st.st_size} bytes, more than the {left} left of the {RUN_BUDGET} this run copies in all")
+    room = min(LARGEST, left)
     source = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     try:
         opened = os.fstat(source)
         if (opened.st_dev, opened.st_ino) != (st.st_dev, st.st_ino):
             raise Odd("it changed while it was taken back")
         chunks, size = [], 0
-        while size <= LARGEST and (chunk := os.read(source, 65536)):
+        while size <= room and (chunk := os.read(source, 65536)):
             chunks.append(chunk)
             size += len(chunk)
     finally:
         os.close(source)
     if size > LARGEST:
         raise Odd(f"more than the {LARGEST} bytes a file Nomad reads may hold, once read")
+    if size > left:
+        raise Odd(f"more than the {left} bytes left of the {RUN_BUDGET} this run copies in all, once read")
     tmp = os.path.join(os.path.dirname(path), TEMPORARY + secrets.token_hex(8))
     target = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     try:
@@ -983,6 +995,7 @@ def take_back_file(path, uid, gid):
         except OSError:
             pass
         raise
+    COPIED[0] += size
     was = f"uid {st.st_uid}, gid {st.st_gid}, {stat.S_IMODE(st.st_mode):04o}" + (", with an ACL" if acl else "")
     say(f"took {shown(path)} back (it was {was}); Nomad reads it as root, so check what it sets")
     return True
@@ -1103,14 +1116,17 @@ PY
 }
 
 # nomad_dpkg_hook_text <program> <config folder> <data folder>: print the
-# dpkg configuration that runs the program after each dpkg run. When the
-# program is gone (removed by hand), dpkg runs nothing rather than failing.
+# dpkg configuration that runs the program after each dpkg run, as root
+# only. When the program is gone (removed by hand), dpkg runs nothing rather
+# than failing. dpkg runs post-invoke for an unprivileged run too (a
+# --dry-run), as that user, who cannot take root's folders back and changes
+# nothing: the program would fail it (re-check 52 of ES PR #83, S52-3).
 nomad_dpkg_hook_text() {
   printf '%s\n' \
     "# Written by Execution Substrate (scripts/70_linux_setup.sh, or the box upgrade). After each dpkg" \
-    "# run, take Nomad's folders and the files it reads back from the nomad account, which the nomad" \
-    "# package's postinst gives them to. Remove this file and the program together." \
-    "post-invoke=\"if [ -e $1 ]; then $1 $2 $3; fi\""
+    "# run as root, take Nomad's folders and the files it reads back from the nomad account, which the" \
+    "# nomad package's postinst gives them to. Remove this file and the program together." \
+    "post-invoke=\"if [ -e $1 ] && [ \$(id -u) = 0 ]; then $1 $2 $3; fi\""
 }
 
 # nomad_new_file_write <mode> <path>: write standard input to <path> as a
