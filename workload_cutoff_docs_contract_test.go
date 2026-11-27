@@ -43,4 +43,10 @@ func TestWorkstreamFF1WorkloadCutOffIsRequiredOfWI3(t *testing.T) {
 	assertContainsAll(t, "F1 delivery carries the cut-off", delivery,
 		"and the cut-off of one named workload with its tests and runbook (section 11.7) |",
 	)
+
+	// The F1 decision record, which keeps PLANS.md's authority, carries the
+	// same gate, so the plan and the decision say the same thing.
+	assertContainsAll(t, "F1 record carries the cut-off", workstreamRecord(t, "F"),
+		"WI-3 also delivers the owner's cut-off of one named workload, proved by CI integration tests with real SPIRE, Vault and Docker and rehearsed in its host run. No named identity goes live on a host before those tests pass (`.docs/system_overview/runtime_identity_handoff.md`, section 11.7).",
+	)
 }
