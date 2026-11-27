@@ -363,24 +363,26 @@ ES holds no SPIRE or Vault administrative access (section 11.3).
 
 A cut-off runs four steps, in this order:
 
-1. Vault: the policy `workload-<name>` is deleted, then the role
+1. ES configuration: in one change, the name joins the record of cut-off
+   names, leaves the configured list, and every grant rule that names it is
+   removed, lane included. ES reads its configuration at startup, so this
+   step restarts ES.
+2. Vault: the policy `workload-<name>` is deleted, then the role
    `workload-<name>`.
-2. ES configuration: the name leaves the configured list, every grant rule
-   that names it is removed, lane included, and the name joins the record of
-   cut-off names. ES reads its configuration at startup, so this step
-   restarts ES.
 3. Runs in flight: each is cancelled through ES and followed to a terminal
    status.
 4. SPIRE: the name's entry is deleted.
 
 Cutting off a name has these outcomes:
 
-- ES hands the identity to no run. A run whose profile needs a credential is
-  refused with `403 workload_identity_not_granted` (section 11.5). Every
-  delivery that can cause an effect evaluates the grants again with the
-  configuration ES runs with (`.docs/execution_lifecycle/contracts.md`,
-  section 5B), so after the restart a replay, or a prepared run not yet
-  submitted, is refused too.
+- ES hands the identity to no run. A run can hold an identity only with a
+  lane, so only with network access, and the network policy runs first
+  (`.docs/execution_lifecycle/contracts.md`, section 5B). So once the grant
+  rule is gone, lane included, ES refuses a run that held the identity with
+  `403 network_access_not_granted`. Every delivery that can cause an effect
+  evaluates the grants again with the configuration ES runs with (section
+  5B), so after the restart a replay, or a prepared run not yet submitted, is
+  refused too.
 - A Vault token issued before the cut-off loses access to the name's secrets
   at once. Deleting the policy `workload-<name>` is expected to do this,
   because Vault looks up a token's policies on every request; WI-3's tests
@@ -396,7 +398,8 @@ Cutting off a name has these outcomes:
   one can start. It finds every such run from the Nomad jobs whose task
   carries the container label of section 11.4, including jobs not yet
   placed; a job's ID is `exec-<run_id>`. It cancels each run through ES and
-  reads its status until it is terminal. A run that is not terminal within
+  reads its status until it is terminal, then searches again until it finds
+  none. A run that is not terminal within
   the limit the WI-3 pull request sets is reported by its run ID, and the
   step fails.
 - SPIRE issues no new JWT-SVID for the name once its agent has seen the
@@ -408,17 +411,32 @@ Cutting off a name has these outcomes:
   the runbook says to rotate it where it was issued.
 - The name is never registered again. The record of cut-off names lives in
   ES deployment configuration, next to the configured list, not in Vault or
-  SPIRE, so a Vault reset or a new SPIRE datastore does not lose it, and a
-  full re-setup carries it over. ES startup refuses a configuration that
+  SPIRE, so a Vault reset or a new SPIRE datastore does not lose it. A full
+  re-setup needs that configuration anyway, to know which names to register,
+  so it carries the record over. ES startup refuses a configuration that
   lists a recorded name, the setup scripts refuse to register one, and
   readiness refuses `submit-ready` while SPIRE or Vault holds an entry, role
   or policy for one, including one made by hand. So an old grant, an old
   record or the old secrets under `<name>/shared/` never apply to a
   different workload.
-- A cut-off that stops halfway leaves the workload without secrets, because
-  the Vault step runs first. Readiness refuses `submit-ready` until every
-  step is done, because until then the names registered in SPIRE and Vault
-  differ from the names ES configuration lists.
+- Restoring Vault or SPIRE from a backup taken before a cut-off brings back
+  what the cut-off deleted, and a Vault restore also brings back the tokens
+  issued before it. So the first thing the setup scripts do after such a
+  restore is delete again the role, policy and entry of every recorded name,
+  and readiness refuses `submit-ready` until they have.
+- The record is written in step 1, before anything is deleted, so from then
+  on nothing registers the name again, not even a run of the setup scripts
+  meant to repair a cut-off that stopped halfway. A cut-off that stops after
+  step 1 leaves ES handing the identity to no run, and a token issued before
+  the cut-off keeps the name's secrets until the Vault step runs. Once the
+  Vault step is done, no token has them. Running the cut-off again finishes
+  it.
+- Readiness refuses `submit-ready` until every step is done. ES does not
+  start with a configuration that lists a recorded name, which covers step
+  1. Readiness refuses while a recorded name has a SPIRE entry, a Vault role
+  or a Vault policy, which covers steps 2 and 4, and while a Nomad job whose
+  task carries a recorded name's container label is not terminal, which
+  covers step 3.
 - Every other name keeps working: its Vault role, policy and secrets, its
   SPIRE entry, its grants and its runs in flight are not touched.
 
@@ -427,9 +445,9 @@ register two names, one a prefix of the other (such as `codex` and
 `codex-agent`), cut off the shorter one with the setup scripts, and prove
 each outcome:
 
-- ES refuses a run that needs the cut-off identity with
-  `403 workload_identity_not_granted`, and ES configuration holds no grant
-  rule that names it.
+- ES admits a run with the cut-off identity before the cut-off and refuses
+  the same submission after it with `403 network_access_not_granted`, and ES
+  configuration holds no grant rule that names the identity.
 - A Vault token issued before the cut-off can no longer read
   `<name>/shared/`, and the secrets are still in Vault.
 - A Vault login with a JWT-SVID issued before the cut-off fails.
@@ -437,19 +455,29 @@ each outcome:
   cancelled and reaches a terminal status.
 - Once the SPIRE agent has seen the deletion, a runtime helper cannot obtain
   a JWT-SVID for the name's ID.
-- A cut-off stopped after each of its four steps leaves a token issued before
-  it unable to read `<name>/shared/`, and readiness refusing `submit-ready`.
+- A cut-off stopped after each of its four steps leaves readiness refusing
+  `submit-ready`; from step 2 on, a token issued before the cut-off cannot
+  read `<name>/shared/`; and running the cut-off again finishes it.
 - Registering the name again is refused; an entry, role or policy made for it
   by hand makes readiness refuse `submit-ready`; and after a fresh setup from
   scratch with the same ES configuration, registering it is still refused.
-- Readiness reports `submit-ready` only once every step is done.
-- The other name still logs in and reads its own secrets, ES still admits a
-  run for it, and a run of it in flight keeps running through the cut-off.
+- After Vault is restored from a snapshot taken before the cut-off,
+  readiness refuses `submit-ready` until the setup scripts have deleted the
+  name's role and policy again, and then a token issued before the cut-off
+  cannot read `<name>/shared/`.
+- Readiness reports `submit-ready` only once every step is done, and refuses
+  it while a run of the cut-off name is not yet terminal.
+- The other name still logs in and reads its own secrets; ES still admits a
+  run for it, whose runtime helper obtains that name's JWT-SVID and which
+  reads its own secrets; and a run of it in flight keeps running through the
+  cut-off.
 
 No named identity goes live on any host, the Remote Alpha box or a
 supported-local host, before these tests pass. WI-3's box run (section
-11.10) also cuts off one throwaway name, with one of its runs in flight, and
-WI-3 adds the cut-off to the runbooks.
+11.10) also cuts off one throwaway name while one of its runs is in flight,
+and shows that run found by its label, cancelled and terminal, and readiness
+back at `submit-ready` once every step is done. WI-3 adds the cut-off to the
+runbooks.
 
 ### 11.8 Adding per-run identities later
 
