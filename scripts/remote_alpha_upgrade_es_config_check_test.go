@@ -17,6 +17,7 @@ import (
 	"testing"
 
 	"execution-substrate/es/config"
+	"execution-substrate/internal/testutil"
 )
 
 const esConfigCheckSource = "scripts/internal/esconfigcheck/main.go"
@@ -130,7 +131,17 @@ func TestESConfigCheckOnlyCallsConfigLoad(t *testing.T) {
 // helper's answer and reason to be config.Load's own.
 func TestESConfigCheckAgreesWithConfigLoad(t *testing.T) {
 	helper := buildESConfigCheck(t)
-	example, err := os.ReadFile(repoPath(".examples/config/es.json"))
+	published, err := os.ReadFile(repoPath(".examples/config/es.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The example verifies with known keys, which ES refuses (contracts.md
+	// section 3B); the cases start from it with fresh keys.
+	var fresh map[string]any
+	if err := json.Unmarshal(published, &fresh); err != nil {
+		t.Fatal(err)
+	}
+	example, err := json.MarshalIndent(testutil.WithFreshSigningKeys(t, fresh), "", "  ")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,6 +177,12 @@ func TestESConfigCheckAgreesWithConfigLoad(t *testing.T) {
 			section(d, "nomad")["token_file"] = section(d, "execution")["results_root_dir"].(string) + "/es-token"
 		})},
 		{"trailing data", append(append([]byte{}, example...), []byte("{}")...)},
+		// A host of the shape the upgrade checks that is still on the
+		// repository's published keys is refused here, so its upgrade stops
+		// before apply until its keys are rotated. (The Remote Alpha box has
+		// another shape and never reaches this check; AGS, EGS and ES
+		// refusing to start on the new binaries is what stops it.)
+		{"published signing keys", published},
 	}
 	refused := 0
 	for _, tc := range cases {
