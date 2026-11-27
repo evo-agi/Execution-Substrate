@@ -19,6 +19,7 @@ import (
 	"sync"
 	"testing"
 
+	"execution-substrate/es/admission/internal/grantcaller"
 	esconfig "execution-substrate/es/config"
 	"execution-substrate/internal/callerauth"
 )
@@ -29,10 +30,10 @@ func testWorkloadGrantFacts() workloadGrantFacts {
 			publisherPrincipal: "spiffe://execution.internal/operator/local",
 			signerKeyID:        "ags-artifact-signer",
 		},
-		callerPrincipal: testGrantCaller,
-		artifactType:    "static-script",
-		runtimeProfile:  runtimeProfileDefaultStaticScript,
-		networkAccess:   true,
+		caller:         grantCaller(testGrantCaller),
+		artifactType:   "static-script",
+		runtimeProfile: runtimeProfileDefaultStaticScript,
+		networkAccess:  true,
 	}
 }
 
@@ -98,12 +99,14 @@ func TestWorkloadGrantDecisionFollowsTheNetworkGrantPolicy(t *testing.T) {
 			"publisher longer": func(f *workloadGrantFacts) {
 				f.evidence.publisherPrincipal = "spiffe://execution.internal/operator/local/x"
 			},
-			"caller":          func(f *workloadGrantFacts) { f.callerPrincipal = "spiffe://execution.internal/service/control-plane" },
-			"caller sub-path": func(f *workloadGrantFacts) { f.callerPrincipal = testGrantCaller + "/x" },
-			"caller case":     func(f *workloadGrantFacts) { f.callerPrincipal = "spiffe://execution.internal/Operator/local" },
-			"no caller":       func(f *workloadGrantFacts) { f.callerPrincipal = "" },
+			"caller": func(f *workloadGrantFacts) {
+				f.caller = grantCaller("spiffe://execution.internal/service/control-plane")
+			},
+			"caller sub-path": func(f *workloadGrantFacts) { f.caller = grantCaller(testGrantCaller + "/x") },
+			"caller case":     func(f *workloadGrantFacts) { f.caller = grantCaller("spiffe://execution.internal/Operator/local") },
+			"no caller":       func(f *workloadGrantFacts) { f.caller = grantcaller.Caller{} },
 			"publisher and caller": func(f *workloadGrantFacts) {
-				f.evidence.publisherPrincipal, f.callerPrincipal = "spiffe://execution.internal/service/control-plane", "spiffe://execution.internal/operator/local"
+				f.evidence.publisherPrincipal, f.caller = "spiffe://execution.internal/service/control-plane", grantCaller("spiffe://execution.internal/operator/local")
 			},
 			"signer":            func(f *workloadGrantFacts) { f.evidence.signerKeyID = "other-signer" },
 			"signer padded":     func(f *workloadGrantFacts) { f.evidence.signerKeyID = "ags-artifact-signer " },
@@ -132,7 +135,7 @@ func TestWorkloadGrantRuleKeysAgreeWithRunFacts(t *testing.T) {
 	rule := esconfig.WorkloadGrantRuleConfig{
 		ID:                 "operator-default",
 		PublisherPrincipal: facts.evidence.publisherPrincipal,
-		CallerPrincipal:    facts.callerPrincipal,
+		CallerPrincipal:    facts.caller.Principal(),
 		SignerKeyID:        facts.evidence.signerKeyID,
 		ArtifactType:       facts.artifactType,
 		RuntimeProfile:     facts.runtimeProfile,
@@ -359,7 +362,6 @@ func TestNetworkRunWithoutAGrantIsRefusedOnPrepareAndSubmitBeforeAnyEffect(t *te
 		"a caller below the rule's":    {granted.AdmissionPolicy.WorkloadGrants, callerContext(context.Background(), testGrantCaller+"/sub")},
 		"no authenticated caller":      {granted.AdmissionPolicy.WorkloadGrants, context.Background()},
 		"a zero authenticated caller":  {granted.AdmissionPolicy.WorkloadGrants, WithAuthenticatedCaller(context.Background(), callerauth.Caller{})},
-		"a caller of another type":     {granted.AdmissionPolicy.WorkloadGrants, context.WithValue(context.Background(), authenticatedCallerKey{}, testGrantCaller)},
 	} {
 		for _, operation := range []string{"prepare", "submit"} {
 			t.Run(name+"/"+operation, func(t *testing.T) {
@@ -638,7 +640,10 @@ func TestPrivateDeliveryMatchesGrantsOnTheCallerItIsBoundTo(t *testing.T) {
 		"workload bound caller":               {testCallerContext(), "spiffe://execution.internal/workload/codex-agent", ""},
 		"workload bound caller in other case": {testCallerContext(), "spiffe://execution.internal/Workload/codex-agent", ""},
 	} {
-		if got := AuthenticatedCallerPrincipal(withDeliveryCaller(test.ctx, test.bound)); got != test.want {
+		// A URI the delivery parser refuses makes no caller fact; the zero
+		// fact stands for it, and carries no caller either.
+		fact, _ := newSyntheticCallerFact(test.bound)
+		if got := AuthenticatedCallerPrincipal(withDeliveryCaller(test.ctx, fact)); got != test.want {
 			t.Errorf("%s: grant caller %q, want %q", name, got, test.want)
 		}
 	}
@@ -763,23 +768,31 @@ func TestARunNoGrantNamesReachesNoContentPolicyWhateverItsRuntimeProfile(t *test
 }
 
 // The caller that workload grants match on comes from the connection ES is
-// serving (re-audit 18 of ES PR #73, L-2, and re-check 21, N-2). This test
-// pins how a callerauth.Caller can come to exist:
+// serving (re-audit 18 of ES PR #73, L-2; re-check 21, N-2; final checks 22
+// and 26). The Go compiler keeps a callerauth.Caller from being built from
+// a string: it has no exported field. This test checks the rest of how one
+// can come to exist:
 //   - WithAuthenticatedCaller takes a callerauth.Caller, not a SPIFFE ID or a
-//     string, and callerauth.Caller has no exported field;
+//     string;
 //   - in callerauth and callerauthtest, the only exported functions, methods,
 //     variables and constants that produce a Caller are
 //     CallerFromConnectionState and Authenticator.Authenticate, both of which
-//     read a TLS connection state;
-//   - no non-test file of ES (es/ and cmd/es) builds a tls.ConnectionState,
-//     assigns a TLS, VerifiedChains or PeerCertificates field, or calls
-//     CallerFromConnectionState, and every call of Authenticate passes the
-//     *http.Request its handler is serving, whose connection state Go's TLS
-//     server filled in after verifying the client's certificate chain;
+//     read a TLS connection state, and no type alias names Caller;
+//   - no non-test Go file of the module outside internal/callerauth calls
+//     CallerFromConnectionState;
+//   - no non-test Go file of ES (es/ and cmd/es) builds a
+//     tls.ConnectionState, or assigns to or takes the address of anything
+//     reached through a TLS, VerifiedChains or PeerCertificates field, and
+//     every call of Authenticate passes the *http.Request parameter of the
+//     handler it is in, whose connection state Go's TLS server filled in
+//     after verifying the client's certificate chain;
 //   - no non-test file outside es/admission reads the grant caller back.
 //
-// TestTheGrantCallerHasOneWayIntoAContextAndOneWayOut pins the path inside
-// es/admission.
+// It checks the source forms it names, not every way Go can write memory:
+// reflection, unsafe and edits to callerauth itself are outside what it
+// sees, and callerauth is reviewed as the trust root it is.
+// TestOnlyAConnectionOrADeliveryMakesAGrantCaller covers the grant caller
+// inside es/admission.
 func TestTheGrantCallerCanComeOnlyFromAVerifiedConnection(t *testing.T) {
 	want := reflect.TypeOf(func(context.Context, callerauth.Caller) context.Context { return nil })
 	if got := reflect.TypeOf(WithAuthenticatedCaller); got != want {
@@ -829,20 +842,23 @@ func TestTheGrantCallerCanComeOnlyFromAVerifiedConnection(t *testing.T) {
 					}
 				case *ast.GenDecl:
 					for _, spec := range decl.Specs {
-						value, ok := spec.(*ast.ValueSpec)
-						if !ok {
-							continue
-						}
-						for i, name := range value.Names {
-							if !name.IsExported() {
-								continue
+						switch spec := spec.(type) {
+						case *ast.TypeSpec:
+							if spec.Assign.IsValid() && mentionsCaller(pkg, spec.Type) {
+								t.Errorf("%s.%s is a type alias of callerauth.Caller", pkg, spec.Name.Name)
 							}
-							named := value.Type != nil && mentionsCaller(pkg, value.Type)
-							if i < len(value.Values) {
-								named = named || mentionsCaller(pkg, value.Values[i])
-							}
-							if named {
-								producers[pkg+"."+name.Name] = true
+						case *ast.ValueSpec:
+							for i, name := range spec.Names {
+								if !name.IsExported() {
+									continue
+								}
+								named := spec.Type != nil && mentionsCaller(pkg, spec.Type)
+								if i < len(spec.Values) {
+									named = named || mentionsCaller(pkg, spec.Values[i])
+								}
+								if named {
+									producers[pkg+"."+name.Name] = true
+								}
 							}
 						}
 					}
@@ -859,6 +875,71 @@ func TestTheGrantCallerCanComeOnlyFromAVerifiedConnection(t *testing.T) {
 		t.Fatalf("exported functions, methods, variables and constants that produce a callerauth.Caller: %q, want %q", got, want)
 	}
 
+	// No Go code of the module outside internal/callerauth calls
+	// CallerFromConnectionState, so no code can hand it a state of its own.
+	moduleWalkErr := filepath.WalkDir("../..", func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		slashed := filepath.ToSlash(path)
+		if entry.IsDir() {
+			name := entry.Name()
+			if path != "../.." && (strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_") || name == "testdata" || name == "vendor") {
+				return filepath.SkipDir
+			}
+			if slashed == "../../internal/callerauth" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		fset := token.NewFileSet()
+		parsed, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
+		if err != nil {
+			return err
+		}
+		ast.Inspect(parsed, func(node ast.Node) bool {
+			if selector, ok := node.(*ast.SelectorExpr); ok && selector.Sel.Name == "CallerFromConnectionState" {
+				t.Errorf("%s uses CallerFromConnectionState; only callerauth's Authenticator calls it", fset.PositionFor(selector.Pos(), false))
+			}
+			return true
+		})
+		return nil
+	})
+	if moduleWalkErr != nil {
+		t.Fatal(moduleWalkErr)
+	}
+
+	// reachesConnectionState reports the TLS, VerifiedChains or
+	// PeerCertificates field that the access path expr goes through, at any
+	// depth (such as r.TLS.VerifiedChains[0][0]), or "".
+	reachesConnectionState := func(expr ast.Expr) string {
+		for expr != nil {
+			switch node := expr.(type) {
+			case *ast.SelectorExpr:
+				switch node.Sel.Name {
+				case "TLS", "VerifiedChains", "PeerCertificates":
+					return node.Sel.Name
+				}
+				expr = node.X
+			case *ast.IndexExpr:
+				expr = node.X
+			case *ast.IndexListExpr:
+				expr = node.X
+			case *ast.SliceExpr:
+				expr = node.X
+			case *ast.StarExpr:
+				expr = node.X
+			case *ast.ParenExpr:
+				expr = node.X
+			default:
+				return ""
+			}
+		}
+		return ""
+	}
 	authenticateCalls := 0
 	for _, root := range []string{"..", "../../cmd/es"} {
 		walkErr := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
@@ -897,11 +978,14 @@ func TestTheGrantCallerCanComeOnlyFromAVerifiedConnection(t *testing.T) {
 						}
 					case *ast.AssignStmt:
 						for _, lhs := range node.Lhs {
-							if selector, ok := lhs.(*ast.SelectorExpr); ok {
-								switch selector.Sel.Name {
-								case "TLS", "VerifiedChains", "PeerCertificates":
-									t.Errorf("%s assigns a connection state field %s", at, selector.Sel.Name)
-								}
+							if field := reachesConnectionState(lhs); field != "" {
+								t.Errorf("%s assigns through a connection state field %s", at, field)
+							}
+						}
+					case *ast.UnaryExpr:
+						if node.Op == token.AND {
+							if field := reachesConnectionState(node.X); field != "" {
+								t.Errorf("%s takes an address through a connection state field %s", at, field)
 							}
 						}
 					case *ast.CallExpr:
@@ -917,12 +1001,14 @@ func TestTheGrantCallerCanComeOnlyFromAVerifiedConnection(t *testing.T) {
 							if len(node.Args) == 1 && types.ExprString(node.Args[0]) == "tls.ConnectionState" {
 								t.Errorf("%s builds a tls.ConnectionState", at)
 							}
-						case "CallerFromConnectionState":
-							t.Errorf("%s calls CallerFromConnectionState; ES authenticates callers only through Authenticator.Authenticate", at)
 						case "Authenticate":
 							authenticateCalls++
-							request, ok := node.Args[len(node.Args)-1].(*ast.Ident)
-							if len(node.Args) != 2 || !ok || !requestParams[request.Name] {
+							passesRequest := false
+							if len(node.Args) == 2 {
+								request, ok := node.Args[1].(*ast.Ident)
+								passesRequest = ok && requestParams[request.Name]
+							}
+							if !passesRequest {
 								t.Errorf("%s calls Authenticate with something other than the request its handler serves", at)
 							}
 						case "AuthenticatedCallerPrincipal":
@@ -945,141 +1031,228 @@ func TestTheGrantCallerCanComeOnlyFromAVerifiedConnection(t *testing.T) {
 	}
 }
 
-// The grant caller has one way into a context and one way out, in every
-// non-test file of es/admission (re-check 21 of ES PR #73, R21-1):
-//   - only withCallerID uses the context key to put a caller there, and only
-//     WithAuthenticatedCaller and withDeliveryCaller call withCallerID;
-//   - withDeliveryCaller is called only by the three private delivery entry
-//     points, each with the canonical URI of the caller fact it was handed
-//     and never reassigns, or, for the operational handoff, of the fact it
-//     built from its authenticated peer;
-//   - only AuthenticatedCallerPrincipal reads the key;
-//   - the grant facts are built once, in decideWorkloadGrants, with
-//     AuthenticatedCallerPrincipal(...) as their caller, and only
-//     newWorkloadGrantFacts sets a facts value's caller, from its own
-//     parameter;
-//   - none of these functions is used as a value, so none runs under
-//     another name.
-func TestTheGrantCallerHasOneWayIntoAContextAndOneWayOut(t *testing.T) {
-	allowedKeyUse := map[string]bool{"": true, "withCallerID": true, "AuthenticatedCallerPrincipal": true}
-	allowedSetter := map[string]bool{"WithAuthenticatedCaller": true, "withDeliveryCaller": true}
-	deliveryEntryPoints := map[string]bool{"admitPrivateSyntheticReplay": true, "admitPrivateProgressReplay": true, "operatePrivateHandoff": true}
-	callOnly := map[string]bool{"withCallerID": true, "withDeliveryCaller": true, "newWorkloadGrantFacts": true, "AuthenticatedCallerPrincipal": true}
-	var factsCalls, setterCalls, deliveryCalls, keyUses int
+// The grant caller is a grantcaller.Caller (final checks 22 and 26 of ES PR
+// #73, R22-1 and R26-1). Its fields and its context key are unexported, so
+// the Go compiler keeps every other package, es/admission included, from
+// writing a caller into a Caller or into a context: a Caller comes only from
+// grantcaller.FromConnection, which takes a callerauth.Caller, or from
+// grantcaller.FromDelivery, which takes the URI a private delivery's claim
+// is bound to. Moving a Caller from one variable to another inside
+// admission cannot make a new one. This test is the backstop for what the
+// compiler cannot see:
+//   - package grantcaller's exported surface is exactly Caller,
+//     FromConnection(callerauth.Caller), FromDelivery(string), With,
+//     From and Caller.Principal; Caller has no exported field, and the
+//     package declares no type alias;
+//   - no Go package but es/admission imports grantcaller;
+//   - in es/admission, FromDelivery is used once: called by
+//     newSyntheticCallerFact with its own parameter, which it never changes;
+//   - outside tests, newSyntheticCallerFact is used once: called by
+//     operatePrivateHandoff with peer.String() for its spiffeid.ID
+//     parameter peer, which the function never assigns, redeclares or takes
+//     the address of. Synthetic replays get their caller fact from their own
+//     caller, which today is only tests.
+//
+// It checks the source forms it names. Reflection, unsafe and edits to
+// grantcaller itself are outside what it sees; grantcaller is reviewed as
+// part of the trust root.
+func TestOnlyAConnectionOrADeliveryMakesAGrantCaller(t *testing.T) {
+	signature := func(fields *ast.FieldList) string {
+		if fields == nil {
+			return ""
+		}
+		var parts []string
+		for _, field := range fields.List {
+			count := len(field.Names)
+			if count == 0 {
+				count = 1
+			}
+			for i := 0; i < count; i++ {
+				parts = append(parts, types.ExprString(field.Type))
+			}
+		}
+		return strings.Join(parts, ", ")
+	}
+	surface := map[string]string{}
+	for _, parsed := range parseNonTestGoFiles(t, "internal/grantcaller") {
+		for _, decl := range parsed.Decls {
+			switch decl := decl.(type) {
+			case *ast.FuncDecl:
+				if !decl.Name.IsExported() {
+					continue
+				}
+				name := decl.Name.Name
+				if decl.Recv != nil {
+					name = types.ExprString(decl.Recv.List[0].Type) + "." + name
+				}
+				surface[name] = "func(" + signature(decl.Type.Params) + ") (" + signature(decl.Type.Results) + ")"
+			case *ast.GenDecl:
+				for _, spec := range decl.Specs {
+					switch spec := spec.(type) {
+					case *ast.TypeSpec:
+						if spec.Assign.IsValid() {
+							t.Errorf("grantcaller declares the type alias %s", spec.Name.Name)
+						}
+						if !spec.Name.IsExported() {
+							continue
+						}
+						surface[spec.Name.Name] = "type " + types.ExprString(spec.Type)
+					case *ast.ValueSpec:
+						for _, name := range spec.Names {
+							if name.IsExported() {
+								surface[name.Name] = "value"
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	wantSurface := map[string]string{
+		"Caller":           "type struct{id callerauth.SPIFFEID}",
+		"FromConnection":   "func(callerauth.Caller) (Caller)",
+		"FromDelivery":     "func(string) (Caller)",
+		"With":             "func(context.Context, Caller) (context.Context)",
+		"From":             "func(context.Context) (Caller)",
+		"Caller.Principal": "func() (string)",
+	}
+	if !reflect.DeepEqual(surface, wantSurface) {
+		t.Errorf("grantcaller's exported surface is %q, want %q", surface, wantSurface)
+	}
+
+	importers := map[string]bool{}
+	walkErr := filepath.WalkDir("../..", func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			name := entry.Name()
+			if path != "../.." && (strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_") || name == "testdata" || name == "vendor") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		parsed, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.ImportsOnly)
+		if err != nil {
+			return err
+		}
+		for _, spec := range parsed.Imports {
+			if spec.Path.Value == strconv.Quote("execution-substrate/es/admission/internal/grantcaller") {
+				importers[filepath.ToSlash(filepath.Dir(path))] = true
+			}
+		}
+		return nil
+	})
+	if walkErr != nil {
+		t.Fatal(walkErr)
+	}
+	if want := map[string]bool{"../../es/admission": true}; !reflect.DeepEqual(importers, want) {
+		t.Errorf("packages that import grantcaller: %v, want only es/admission", importers)
+	}
+
+	// assigned reports whether body assigns, redeclares or takes the address
+	// of name.
+	assigned := func(body ast.Node, name string) bool {
+		found := false
+		is := func(expr ast.Expr) bool {
+			ident, ok := expr.(*ast.Ident)
+			return ok && ident.Name == name
+		}
+		ast.Inspect(body, func(node ast.Node) bool {
+			switch node := node.(type) {
+			case *ast.AssignStmt:
+				for _, lhs := range node.Lhs {
+					found = found || is(lhs)
+				}
+			case *ast.IncDecStmt:
+				found = found || is(node.X)
+			case *ast.RangeStmt:
+				found = found || (node.Key != nil && is(node.Key)) || (node.Value != nil && is(node.Value))
+			case *ast.UnaryExpr:
+				found = found || (node.Op == token.AND && is(node.X))
+			case *ast.ValueSpec:
+				for _, ident := range node.Names {
+					found = found || ident.Name == name
+				}
+			case *ast.FuncLit:
+				for _, field := range node.Type.Params.List {
+					for _, ident := range field.Names {
+						found = found || ident.Name == name
+					}
+				}
+			}
+			return true
+		})
+		return found
+	}
+	var fromDeliveryUses, factUses int
 	for _, parsed := range parseNonTestGoFiles(t, ".") {
 		for _, decl := range parsed.Decls {
-			enclosing := ""
-			firstParam := ""
+			function, ok := decl.(*ast.FuncDecl)
+			if !ok {
+				ast.Inspect(decl, func(node ast.Node) bool {
+					if ident, ok := node.(*ast.Ident); ok && (ident.Name == "FromDelivery" || ident.Name == "newSyntheticCallerFact") {
+						t.Errorf("a package-level declaration uses %s", ident.Name)
+					}
+					return true
+				})
+				continue
+			}
 			params := map[string]string{}
-			var declName *ast.Ident
-			assignments := map[string]int{}
-			fromPeer := map[string]int{}
-			if function, ok := decl.(*ast.FuncDecl); ok {
-				enclosing = function.Name.Name
-				declName = function.Name
-				for _, field := range function.Type.Params.List {
-					for _, name := range field.Names {
-						params[name.Name] = types.ExprString(field.Type)
-						if firstParam == "" {
-							firstParam = name.Name
-						}
+			var firstParam string
+			for _, field := range function.Type.Params.List {
+				for _, name := range field.Names {
+					params[name.Name] = types.ExprString(field.Type)
+					if firstParam == "" {
+						firstParam = name.Name
 					}
 				}
-				if function.Body != nil {
-					ast.Inspect(function.Body, func(node ast.Node) bool {
-						assign, ok := node.(*ast.AssignStmt)
-						if !ok {
-							return true
-						}
-						for i, lhs := range assign.Lhs {
-							name, ok := lhs.(*ast.Ident)
-							if !ok {
-								continue
-							}
-							assignments[name.Name]++
-							if i == 0 && len(assign.Rhs) == 1 && isSyntheticCallerFactFromPeer(assign.Rhs[0], params) {
-								fromPeer[name.Name]++
-							}
-						}
-						return true
-					})
-				}
 			}
-			// boundCaller reports whether name is a caller fact this function
-			// was handed and never reassigns, or one it built only from its
-			// authenticated peer with newSyntheticCallerFact(peer.String()).
-			boundCaller := func(name string) bool {
-				if params[name] == "syntheticCallerFact" {
-					return assignments[name] == 0
-				}
-				return fromPeer[name] > 0 && fromPeer[name] == assignments[name]
-			}
-			callFuns := map[*ast.Ident]bool{}
-			ast.Inspect(decl, func(node ast.Node) bool {
+			callArgs := map[*ast.Ident][]ast.Expr{}
+			ast.Inspect(function, func(node ast.Node) bool {
 				switch node := node.(type) {
-				case *ast.Ident:
-					if node.Name == "authenticatedCallerKey" {
-						keyUses++
-						if !allowedKeyUse[enclosing] {
-							t.Errorf("%s uses the grant caller's context key", enclosing)
-						}
-					}
-					if callOnly[node.Name] && !callFuns[node] && node != declName {
-						t.Errorf("%s uses %s as a value", enclosing, node.Name)
-					}
-				case *ast.KeyValueExpr:
-					if key, ok := node.Key.(*ast.Ident); ok && key.Name == "callerPrincipal" {
-						value, ok := node.Value.(*ast.Ident)
-						if enclosing != "newWorkloadGrantFacts" || !ok || value.Name != firstParam {
-							t.Errorf("%s sets a grant facts caller other than newWorkloadGrantFacts' own parameter", enclosing)
-						}
-					}
-				case *ast.AssignStmt:
-					for _, lhs := range node.Lhs {
-						if selector, ok := lhs.(*ast.SelectorExpr); ok && selector.Sel.Name == "callerPrincipal" {
-							t.Errorf("%s assigns a grant facts caller", enclosing)
-						}
-					}
 				case *ast.CallExpr:
-					name := ""
 					switch fun := node.Fun.(type) {
 					case *ast.Ident:
-						name = fun.Name
-						callFuns[fun] = true
+						callArgs[fun] = node.Args
 					case *ast.SelectorExpr:
-						name = fun.Sel.Name
+						callArgs[fun.Sel] = node.Args
 					}
-					switch name {
-					case "withCallerID":
-						setterCalls++
-						if !allowedSetter[enclosing] {
-							t.Errorf("%s puts a grant caller on a context", enclosing)
+				case *ast.Ident:
+					if node == function.Name {
+						return true
+					}
+					switch node.Name {
+					case "FromDelivery":
+						fromDeliveryUses++
+						args, called := callArgs[node]
+						ok := called && function.Name.Name == "newSyntheticCallerFact" && len(args) == 1 && function.Body != nil
+						if ok {
+							arg, isIdent := args[0].(*ast.Ident)
+							ok = isIdent && arg.Name == firstParam && params[firstParam] == "string" && !assigned(function.Body, firstParam)
 						}
-					case "withDeliveryCaller":
-						deliveryCalls++
-						bound := false
-						if deliveryEntryPoints[enclosing] && len(node.Args) == 2 {
-							if selector, ok := node.Args[1].(*ast.SelectorExpr); ok && selector.Sel.Name == "canonicalURI" {
-								if fact, ok := selector.X.(*ast.Ident); ok {
-									bound = boundCaller(fact.Name)
+						if !ok {
+							t.Errorf("%s uses grantcaller.FromDelivery other than in newSyntheticCallerFact, with its own unchanged parameter", function.Name.Name)
+						}
+					case "newSyntheticCallerFact":
+						factUses++
+						args, called := callArgs[node]
+						ok := called && function.Name.Name == "operatePrivateHandoff" && len(args) == 1 && function.Body != nil
+						if ok {
+							ok = false
+							if inner, isCall := args[0].(*ast.CallExpr); isCall && len(inner.Args) == 0 {
+								if selector, isSelector := inner.Fun.(*ast.SelectorExpr); isSelector && selector.Sel.Name == "String" {
+									if peer, isIdent := selector.X.(*ast.Ident); isIdent {
+										ok = params[peer.Name] == "spiffeid.ID" && !assigned(function.Body, peer.Name)
+									}
 								}
 							}
 						}
-						if !bound {
-							t.Errorf("%s binds a delivery to a caller other than the caller fact it was handed or built from its authenticated peer", enclosing)
-						}
-					case "newWorkloadGrantFacts":
-						factsCalls++
-						reader := false
-						if len(node.Args) > 0 {
-							if call, ok := node.Args[0].(*ast.CallExpr); ok {
-								if id, ok := call.Fun.(*ast.Ident); ok && id.Name == "AuthenticatedCallerPrincipal" && len(call.Args) == 1 {
-									reader = true
-								}
-							}
-						}
-						if enclosing != "decideWorkloadGrants" || !reader {
-							t.Errorf("%s builds grant facts with a caller that AuthenticatedCallerPrincipal did not return", enclosing)
+						if !ok {
+							t.Errorf("%s makes a delivery caller fact other than from operatePrivateHandoff's unchanged authenticated peer", function.Name.Name)
 						}
 					}
 				}
@@ -1087,33 +1260,9 @@ func TestTheGrantCallerHasOneWayIntoAContextAndOneWayOut(t *testing.T) {
 			})
 		}
 	}
-	if factsCalls != 1 || setterCalls < 3 || deliveryCalls < 3 || keyUses < 3 {
-		t.Fatalf("control: %d calls of newWorkloadGrantFacts, %d of withCallerID, %d of withDeliveryCaller, %d uses of the context key; the scan no longer reads the package", factsCalls, setterCalls, deliveryCalls, keyUses)
+	if fromDeliveryUses != 1 || factUses != 1 {
+		t.Fatalf("control: grantcaller.FromDelivery used %d times and newSyntheticCallerFact %d times outside tests, want 1 each; the scan no longer reads the package", fromDeliveryUses, factUses)
 	}
-}
-
-// isSyntheticCallerFactFromPeer reports whether expr is
-// newSyntheticCallerFact(peer.String()) for a parameter peer of type
-// spiffeid.ID: the operational handoff's caller, which its transport
-// authenticated.
-func isSyntheticCallerFactFromPeer(expr ast.Expr, params map[string]string) bool {
-	call, ok := expr.(*ast.CallExpr)
-	if !ok || len(call.Args) != 1 {
-		return false
-	}
-	if fun, ok := call.Fun.(*ast.Ident); !ok || fun.Name != "newSyntheticCallerFact" {
-		return false
-	}
-	inner, ok := call.Args[0].(*ast.CallExpr)
-	if !ok || len(inner.Args) != 0 {
-		return false
-	}
-	selector, ok := inner.Fun.(*ast.SelectorExpr)
-	if !ok || selector.Sel.Name != "String" {
-		return false
-	}
-	peer, ok := selector.X.(*ast.Ident)
-	return ok && params[peer.Name] == "spiffeid.ID"
 }
 
 // parseNonTestGoFiles parses every non-test Go file directly in dir.

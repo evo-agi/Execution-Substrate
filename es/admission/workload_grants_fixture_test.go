@@ -3,24 +3,45 @@ package admission
 import (
 	"context"
 	"fmt"
+	"time"
 
+	"execution-substrate/es/admission/internal/grantcaller"
 	esconfig "execution-substrate/es/config"
 	"execution-substrate/internal/callerauth"
+	"execution-substrate/internal/callerauth/callerauthtest"
 )
 
 // testGrantCaller is the ES caller the test grants name: the caller the ES
 // API would have authenticated for a test's :prepare or :submit.
 const testGrantCaller = "spiffe://execution.internal/operator/local"
 
-// callerContext returns a context that carries caller as the authenticated
-// ES caller, as the ES API's WithAuthenticatedCaller would for a connection
-// that authenticated as caller.
-func callerContext(parent context.Context, caller string) context.Context {
-	id, err := callerauth.ParseSPIFFEID(caller)
+// authenticatedCaller returns the caller that caller authentication builds
+// for a connection whose verified client certificate names caller. Tests
+// build callers the way production does, from a TLS connection state: the
+// grant caller has no other way in.
+func authenticatedCaller(caller string) callerauth.Caller {
+	cert, err := callerauthtest.CertificateOrError("admission-test-issuer", caller)
 	if err != nil {
 		panic(fmt.Sprintf("test caller %q: %v", caller, err))
 	}
-	return withCallerID(parent, id)
+	authenticated, err := callerauth.CallerFromConnectionState(callerauthtest.State(cert), time.Now())
+	if err != nil {
+		panic(fmt.Sprintf("test caller %q: %v", caller, err))
+	}
+	return authenticated
+}
+
+// grantCaller returns caller as the grant caller of a connection that
+// authenticated as caller.
+func grantCaller(caller string) grantcaller.Caller {
+	return grantcaller.FromConnection(authenticatedCaller(caller))
+}
+
+// callerContext returns a context that carries caller as the authenticated
+// ES caller, as the ES API's WithAuthenticatedCaller does for a connection
+// that authenticated as caller.
+func callerContext(parent context.Context, caller string) context.Context {
+	return WithAuthenticatedCaller(parent, authenticatedCaller(caller))
 }
 
 // testCallerContext is context.Background() with testGrantCaller as the

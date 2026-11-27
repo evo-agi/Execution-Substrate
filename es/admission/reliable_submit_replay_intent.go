@@ -5,13 +5,20 @@ import (
 	"strconv"
 	"strings"
 	"unicode/utf8"
+
+	"execution-substrate/es/admission/internal/grantcaller"
 )
 
 var errPrivateReplayInvalidDelivery = errors.New("private replay: invalid synthetic delivery")
 
+// syntheticCallerFact is the caller a private reliable submit delivery is
+// bound to. canonicalURI keys the delivery's claim refs; grant is the
+// caller its workload grants match on, built from the same URI when the
+// fact is made (withDeliveryCaller).
 type syntheticCallerFact struct {
 	privateExecutionValue
 	canonicalURI string
+	grant        grantcaller.Caller
 	valid        bool
 }
 
@@ -19,7 +26,7 @@ func newSyntheticCallerFact(canonicalURI string) (syntheticCallerFact, error) {
 	if !validReliableSubmitCallerURI(canonicalURI) {
 		return syntheticCallerFact{}, errPrivateReplayInvalidDelivery
 	}
-	return syntheticCallerFact{canonicalURI: canonicalURI, valid: true}, nil
+	return syntheticCallerFact{canonicalURI: canonicalURI, grant: grantcaller.FromDelivery(canonicalURI), valid: true}, nil
 }
 
 type replayPresence[T any] struct {

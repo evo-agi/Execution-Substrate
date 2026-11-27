@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 
+	"execution-substrate/es/admission/internal/grantcaller"
 	esconfig "execution-substrate/es/config"
 	"execution-substrate/internal/callerauth"
 	evidencev1 "execution-substrate/internal/contracts/evidence/v1"
@@ -48,21 +49,22 @@ func workloadGrantEvidenceFactsFrom(evidence evidencev1.ArtifactEvidence) worklo
 }
 
 // workloadGrantFacts are the facts a grant rule matches on, plus the
-// publisher's signed network request. callerPrincipal is the caller the ES
-// API authenticated, or empty when the delivery has none; runtimeProfile is
-// the effective runtime profile the runtime-profile gate resolved.
+// publisher's signed network request. caller is a grantcaller.Caller, a type
+// only package grantcaller can fill in: the caller the ES API authenticated,
+// a private delivery's bound caller, or no caller. runtimeProfile is the
+// effective runtime profile the runtime-profile gate resolved.
 type workloadGrantFacts struct {
-	evidence        workloadGrantEvidenceFacts
-	callerPrincipal string
-	artifactType    string
-	runtimeProfile  string
-	networkAccess   bool
+	evidence       workloadGrantEvidenceFacts
+	caller         grantcaller.Caller
+	artifactType   string
+	runtimeProfile string
+	networkAccess  bool
 }
 
 // matchKey returns the five match facts in the order of
 // esconfig.WorkloadGrantRuleConfig.MatchKey.
 func (f workloadGrantFacts) matchKey() [5]string {
-	return [5]string{f.evidence.publisherPrincipal, f.callerPrincipal, f.evidence.signerKeyID, f.artifactType, f.runtimeProfile}
+	return [5]string{f.evidence.publisherPrincipal, f.caller.Principal(), f.evidence.signerKeyID, f.artifactType, f.runtimeProfile}
 }
 
 type workloadGrantRule struct {
@@ -127,74 +129,58 @@ func (g workloadGrants) decide(facts workloadGrantFacts) (workloadGrantDecision,
 }
 
 // newWorkloadGrantFacts reads the grant facts of a run from its verified
-// artifact, its authenticated caller and the runtime profile the
-// runtime-profile gate resolved.
-func newWorkloadGrantFacts(callerPrincipal string, runtimeProfile string, artifact preparedArtifact) workloadGrantFacts {
+// artifact, its caller and the runtime profile the runtime-profile gate
+// resolved.
+func newWorkloadGrantFacts(caller grantcaller.Caller, runtimeProfile string, artifact preparedArtifact) workloadGrantFacts {
 	return workloadGrantFacts{
-		evidence:        artifact.grantFacts,
-		callerPrincipal: callerPrincipal,
-		artifactType:    strings.TrimSpace(artifact.manifest.ArtifactType),
-		runtimeProfile:  runtimeProfile,
-		networkAccess:   artifact.networkAccess,
+		evidence:       artifact.grantFacts,
+		caller:         caller,
+		artifactType:   strings.TrimSpace(artifact.manifest.ArtifactType),
+		runtimeProfile: runtimeProfile,
+		networkAccess:  artifact.networkAccess,
 	}
 }
-
-type authenticatedCallerKey struct{}
 
 // WithAuthenticatedCaller returns ctx carrying the caller the ES API
 // authenticated over mTLS for this :prepare or :submit. The ES API is its
 // only caller: the caller identity comes from the connection, never from the
 // request body, the evidence or a header. It takes a callerauth.Caller, not
-// a SPIFFE ID or a string. A Caller comes only from callerauth's two
-// producers, CallerFromConnectionState and Authenticator.Authenticate, which
-// read a TLS connection state; the ES API passes Authenticate the request it
-// is serving, whose connection state Go's TLS server filled in after
-// verifying the client's certificate chain, and no ES code builds or edits a
-// connection state. TestTheGrantCallerCanComeOnlyFromAVerifiedConnection
-// pins that, and TestTheGrantCallerHasOneWayIntoAContextAndOneWayOut pins
-// the path from here to the grant facts. A zero Caller carries no caller. ES admission reads it only to match workload grants,
-// and it never becomes ES request or response grammar. A context without one
-// matches no grant, so its run gets no network.
+// a SPIFFE ID or a string, and admission keeps it as a grantcaller.Caller,
+// whose fields only package grantcaller can set, so the Go compiler keeps
+// any other value out of the grant facts.
+//
+// A callerauth.Caller comes only from callerauth's two producers,
+// CallerFromConnectionState and Authenticator.Authenticate, which read a TLS
+// connection state; the ES API passes Authenticate the request it is
+// serving, whose connection state Go's TLS server filled in after verifying
+// the client's certificate chain. A guard test,
+// TestTheGrantCallerCanComeOnlyFromAVerifiedConnection, checks the forms of
+// building or editing a connection state that it names.
+//
+// A zero Caller carries no caller. ES admission reads the caller only to
+// match workload grants, and it never becomes ES request or response
+// grammar. A context without one matches no grant, so its run gets no
+// network.
 func WithAuthenticatedCaller(ctx context.Context, caller callerauth.Caller) context.Context {
-	return withCallerID(ctx, caller.ID())
-}
-
-// withCallerID returns ctx carrying id as the caller workload grants match
-// on, in place of any caller ctx carried.
-func withCallerID(ctx context.Context, id callerauth.SPIFFEID) context.Context {
-	return context.WithValue(ctx, authenticatedCallerKey{}, id)
+	return grantcaller.With(ctx, grantcaller.FromConnection(caller))
 }
 
 // withDeliveryCaller returns ctx carrying, in place of any caller ctx
 // carried, the caller a private reliable submit delivery is bound to: the
-// authenticated peer of the operational handoff, or the caller fact of a
-// synthetic replay. Such a delivery matches workload grants on the same
-// caller its claim is keyed on, and on no other. A caller that callerauth
-// would not accept, written in exactly that form, leaves ctx with no caller,
-// so the delivery matches no grant.
-func withDeliveryCaller(ctx context.Context, canonicalURI string) context.Context {
-	caller, err := callerauth.ParseSPIFFEID(canonicalURI)
-	if err != nil || caller.String() != canonicalURI {
-		return withCallerID(ctx, callerauth.SPIFFEID{})
-	}
-	return withCallerID(ctx, caller)
+// grant caller that newSyntheticCallerFact built from the same URI as the
+// delivery's claim refs. Such a delivery matches workload grants on that
+// caller, and on no other; a fact whose URI callerauth would not accept
+// carries no caller, so its delivery matches no grant.
+func withDeliveryCaller(ctx context.Context, fact syntheticCallerFact) context.Context {
+	return grantcaller.With(ctx, fact.grant)
 }
 
 // AuthenticatedCallerPrincipal returns the canonical SPIFFE ID of the caller
-// that workload grants match on in ctx, or empty when ctx carries none or
-// carries a value callerauth would not accept (such as the zero SPIFFEID).
-// It only reads: the ES API's tests use it to check which caller each
-// handler hands admission.
+// that workload grants match on in ctx, or empty when ctx carries none. It
+// only reads: the ES API's tests use it to check which caller each handler
+// hands admission.
 func AuthenticatedCallerPrincipal(ctx context.Context) string {
-	caller, ok := ctx.Value(authenticatedCallerKey{}).(callerauth.SPIFFEID)
-	if !ok {
-		return ""
-	}
-	parsed, err := callerauth.ParseSPIFFEID(caller.String())
-	if err != nil || parsed.String() != caller.String() {
-		return ""
-	}
-	return parsed.String()
+	return grantcaller.From(ctx).Principal()
 }
 
 // decideWorkloadGrants runs in the shared :prepare and :submit admission
@@ -217,7 +203,7 @@ func (s *Service) decideWorkloadGrants(ctx context.Context, req PrepareRequest, 
 	if profileErr != nil {
 		return workloadGrantDecision{}, profileErr
 	}
-	facts := newWorkloadGrantFacts(AuthenticatedCallerPrincipal(ctx), profile.name, artifact)
+	facts := newWorkloadGrantFacts(grantcaller.From(ctx), profile.name, artifact)
 	return workloadGrantsFromConfig(s.cfg.AdmissionPolicy).decide(facts)
 }
 

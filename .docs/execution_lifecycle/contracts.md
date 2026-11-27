@@ -881,9 +881,14 @@ Grants live in ES deployment configuration at
     arrived on, never from the request body, the evidence or a header.
     Admission takes it only as the caller that caller authentication built
     from the connection's TLS state, which Go's TLS server fills in after
-    verifying the client's certificate chain. No ES code builds or edits a
-    connection state, so no value from a request or from configuration can
-    stand in for it;
+    verifying the client's certificate chain; no ES code builds or edits a
+    connection state. Admission keeps the caller in a type whose fields only
+    its own small package can set, and that package builds one only from
+    such a caller or from the caller a private reliable submit delivery is
+    bound to (step 1 of the decision below). So the Go compiler, not a test,
+    keeps a value from a request or from configuration from standing in for
+    it. A guard test checks the source forms the compiler cannot see, and
+    names them;
   - two optional grant fields: `workload_identity`, a name from
     `workload_identities`, and `egress_lane`, a name from `egress_lanes`.
 - ES startup refuses: more than 32 rules; a duplicate rule ID; two rules with
@@ -978,9 +983,9 @@ Rules for these policies:
   accepts `unrestricted`, they fail once ES accepts another lane named by
   any string written in ES's source or by one of the tests' sample names,
   whatever fields the lane has and whichever configuration list also names
-  it; once any code keeps the grant decision; or once any code other than
-  the grant validation in `es/config` and the grant code in admission reads
-  a lane.
+  it; once any code keeps the grant decision; or once any non-test Go code
+  other than the grant validation in `es/config` and the grant code in
+  admission reads a lane.
 
 ### Guardrails
 

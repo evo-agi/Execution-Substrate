@@ -261,8 +261,11 @@ What the app layer delegates:
    grants an egress lane, else `403 network_access_not_granted`. The ES API
    puts the mTLS caller in the request context
    (`admission.WithAuthenticatedCaller`, which takes only a
-   `callerauth.Caller`, built from the connection's TLS state); a context
-   without one matches no grant. The runtime-profile check runs first in
+   `callerauth.Caller`, built from the connection's TLS state). Admission
+   keeps it as a `grantcaller.Caller` (`es/admission/internal/grantcaller`),
+   which has no exported field and is built only from such a caller or from
+   a private delivery's bound caller; a context without one matches no
+   grant. The runtime-profile check runs first in
    this step, and a request it refuses gets its
    `400 unsupported_runtime_profile` here. It reads ES configuration only,
    so a refused run fetches no payload.

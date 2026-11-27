@@ -146,7 +146,7 @@ func (s *Service) admitPrivateSyntheticReplay(ctx context.Context, custody *reli
 	if err != nil {
 		return privateReplayResult{}, errPrivateReplayInvalidDelivery
 	}
-	ctx = withDeliveryCaller(ctx, caller.canonicalURI)
+	ctx = withDeliveryCaller(ctx, caller)
 	incoming, err := privateIncomingIntent(delivery)
 	if err != nil {
 		return privateReplayResult{}, err
@@ -263,7 +263,7 @@ func (s *Service) composePrivateSyntheticReplay(ctx context.Context, delivery pr
 func (s *Service) admitPrivateProgressReplay(ctx context.Context, custody *reliablesubmit.PrivateReplayProgressCustody,
 	raw []byte, caller syntheticCallerFact, catalog privateSyntheticKeyCatalog, image privateSyntheticImagePlacement,
 	initial reliablesubmit.FixtureProgressPhase) (reliablesubmit.FixtureProgressDisposition, reliablesubmit.FixtureProgress, error) {
-	ctx, cancel := context.WithCancel(withDeliveryCaller(ctx, caller.canonicalURI))
+	ctx, cancel := context.WithCancel(withDeliveryCaller(ctx, caller))
 	defer cancel()
 	delivery, incoming, err := preparePrivateProgressReplay(raw, caller)
 	if err != nil {
