@@ -259,8 +259,10 @@ What the app layer delegates:
    (`decideWorkloadGrants`): signed `network_access=true` needs a workload
    grant that names the run's publisher and its authenticated ES caller and
    grants an egress lane, else `403 network_access_not_granted`. ES's
-   server keeps each TLS connection with its requests
-   (`callerauth.ConnContext`, its `http.Server` ConnContext hook, in
+   server accepts each TLS connection through `callerauth.NewListener`,
+   which does the handshake and hands the connection's TLS state to no
+   other code, and keeps the connection with its requests
+   (`callerauth.ConnContext`, its `http.Server` ConnContext hook, both in
    `es/app`), and the ES API reads the caller from that connection
    (`callerauth.Authenticator.AuthenticateConnection`) and puts it in the
    request context (`admission.WithAuthenticatedCaller`, which takes only a

@@ -133,11 +133,13 @@ route, stays with each service and is described in that service's section.
   checks a caller with the one shared package `internal/callerauth`. No
   service keeps its own copy of these rules.
 - ES reads the caller from the TLS connection its server accepted: its
-  server hands each connection to `internal/callerauth` (the `http.Server`
-  ConnContext hook), and its API reads the caller from that connection, never
-  from the request's TLS state. ARS, AGS, EGS, and CGS read it from the TLS
-  state Go's TLS server records on the request. The rules below are the same
-  on both paths.
+  server accepts each connection through `internal/callerauth`, which does
+  the TLS handshake, hands the connection's TLS state to no other code and
+  keeps the connection with its requests (the `http.Server` ConnContext
+  hook); its API reads the caller from that connection, never from the
+  request, which carries no TLS state. ARS, AGS, EGS, and CGS read it from
+  the TLS state Go's TLS server records on the request. The rules below are
+  the same on both paths.
 
 ### Public surface
 

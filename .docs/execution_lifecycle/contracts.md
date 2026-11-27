@@ -879,28 +879,32 @@ Grants live in ES deployment configuration at
     and no other publication claim reaches admission. The caller principal
     comes only from the client certificate of the connection the request
     arrived on, never from the request body, the evidence or a header.
-    ES's server hands each TLS connection it accepts to caller
-    authentication, which keeps it with that connection's requests under a
-    context key no other package can set, and reads the caller from the
-    connection's own state, which only the TLS handshake sets, after
-    verifying the client's certificate chain. Only caller authentication can
+    ES's server accepts each TLS connection through caller authentication,
+    which does the connection's TLS handshake itself, verifying the client's
+    certificate chain, and hands the connection's TLS state to no other
+    code: a request carries none, and no other package can read or change
+    the certificates the handshake verified. Caller authentication keeps the
+    connection with its requests under a context key no other package can
+    set and reads the caller from that state. Only caller authentication can
     make such a connection caller, and admission takes no other kind.
     Admission keeps the caller in a type whose fields only its own small
     package can set, and that package builds one only from a connection
     caller or from the caller a private reliable submit delivery is bound to
     (step 1 of the decision below). So the Go compiler, not a test, keeps a
     value from a request, a header, the evidence, configuration or a built
-    connection state from becoming a connection's caller. Guard tests check
-    what the compiler cannot see: by type, that only ES's server setup hands
-    connections to caller authentication and only the ES API reads a caller
-    from one; and that admission builds a delivery's caller in one place,
-    from the peer its handoff authenticated. Outside those checks are
-    reflection, unsafe and cgo, whose imports the import inventory pins file
-    by file; edits to caller authentication, to that small package and to
-    ES's server setup (which CA it trusts and which listener it serves),
-    which are reviewed as the trust root; and moving one real caller to
-    where another belongs, so any edit to how a request's or a delivery's
-    caller is chosen is an auditor-reviewed change;
+    connection state from becoming a connection's caller, and keeps code
+    elsewhere from reaching the certificates it is read from. Guard tests
+    check what the compiler cannot see: by type, that only ES's server setup
+    accepts connections through caller authentication and hands them to it,
+    and only the ES API reads a caller from one; and that admission builds a
+    delivery's caller in one place, from the peer its handoff authenticated.
+    Outside those checks are reflection, unsafe and cgo, whose imports the
+    import inventory pins file by file; edits to caller authentication, to
+    that small package and to ES's server setup (which CA it trusts and
+    which listener it serves), which are reviewed as the trust root; and
+    moving one real caller to where another belongs, so any edit to how a
+    request's or a delivery's caller is chosen is an auditor-reviewed
+    change;
   - two optional grant fields: `workload_identity`, a name from
     `workload_identities`, and `egress_lane`, a name from `egress_lanes`.
 - ES startup refuses: more than 32 rules; a duplicate rule ID; two rules with
