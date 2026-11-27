@@ -1,17 +1,34 @@
 #!/usr/bin/env -S python3 -I
-"""Remote Alpha ES upgrade: move the box's ES to a named commit and put
-Nomad's API behind HTTPS.
+"""Remote Alpha ES upgrade: move the box's ES to a named commit, with Nomad's
+API behind HTTPS and its gossip encrypted.
 
 This file is the implementation behind scripts/remote_alpha_upgrade_es.sh.
-It takes the box from where the upgrade of ES PR #54 left it, ES built from
-16cbf739 and Nomad enforcing ACLs on plain HTTP (the shape "locked-http"), to
-the named commit with Nomad serving its API and RPC only over TLS 1.3 (the
-shape "https"), part 2b of the Nomad lock. check and apply first read the
-host's shape from nomad.hcl, Nomad's TLS directory, es.json and the installed
-ES binaries. On "locked-http" check reports every change apply would make. On
-"https" for the named commit there is nothing to do: both exit 0 and change
-nothing. Any other shape is refused, naming what each part looks like. The
-host steps:
+It leaves the box at the named commit with Nomad serving its API and RPC only
+over TLS 1.3 (part 2b of the Nomad lock) and encrypting its gossip with a
+keyring the setup's nomad_gossip_issue wrote (red-team RT60-1): the shape
+"https-gossip". check and apply first read the host's shape from nomad.hcl,
+Nomad's TLS directory, es.json, the installed ES binaries and Nomad's gossip
+keyring. They start from either of two shapes:
+
+  locked-http     where the upgrade of ES PR #54 left the box: ES built from
+                  16cbf739, Nomad enforcing ACLs on plain HTTP, no keyring
+  https           where the upgrade of ES PR #60 left it, or a later run of
+                  this one: Nomad on HTTPS with ES's pin, ES a clean build of
+                  any commit but 16cbf739, and either no keyring or a sound
+                  one, but not both the payload's build and a keyring
+
+On either, check reports every change apply would make. On "https-gossip"
+for the named commit there is nothing to do: both exit 0 and change nothing.
+Any other shape is refused, naming what each part looks like. Both also
+read the move, from the commit the installed ES binaries were built from to
+the named one, in the clone's history: one that is not forward (to an older
+commit, to one on another line, or to one whose order the clone cannot
+show) runs only when root names it on the command line as
+--allow-downgrade <installed commit>..<named commit>, and apply records it
+in its backup. rollback puts back a backup only when no backup made after
+it is still in effect (each was put back since) and the installed ES
+binaries are what its apply left (the byte rule), and records each rollback
+in that backup. The host steps:
 
   build           (unprivileged) build es, es-runtime-support and the
                   config check helper from this clean checkout, with
@@ -19,11 +36,15 @@ host steps:
   check           (root, read-only) verify the payload and the host and
                   print every change apply would make; refuse anything
                   this upgrade was not written for
-  apply           (root) check, back up, stop ES, issue Nomad's TLS
-                  material, restart Nomad on HTTPS, provision its ACLs
-                  again, migrate es.json, install the binaries, start ES
-                  and verify; on any failure, put the backup back
-  rollback        (root) put a backup back and start Nomad and ES
+  apply           (root) check, back up, stop ES; on locked-http issue
+                  Nomad's TLS material; write the gossip keyring if there
+                  is none; restart Nomad when either changed (on HTTPS,
+                  with its ACLs provisioned again or checked); migrate
+                  es.json, install the binaries, start ES and verify; on
+                  any failure, put the backup back
+  rollback        (root) put back the backup of the apply that left the
+                  host as it is, remove what apply created (the TLS
+                  directory, the keyring) and start Nomad and ES
 
 and the host-independent pieces they are built on:
 
@@ -47,6 +68,7 @@ import hashlib
 import json
 import os
 import pwd
+import re
 import shutil
 import signal
 import stat
@@ -394,21 +416,132 @@ def backup_files(backup_dir, paths):
     return manifest
 
 
+def read_backup_document(backup_dir, name, cut_off):
+    """The JSON document name in backup_dir. apply writes it before it
+    changes the host, so a missing or cut-short one is refused, saying so
+    (cut_off), not a traceback (re-check 49 of ES PR #67, O67-3)."""
+    path = os.path.join(backup_dir, name)
+    try:
+        data, _ = read_regular_file(path)
+        return json.loads(data)
+    except FileNotFoundError:
+        raise Refusal(f"{path} is missing: {cut_off}; nothing was changed") from None
+    except ValueError as exc:
+        raise Refusal(f"{path} cannot be read ({exc}): {cut_off}; nothing was changed") from None
+
+
+BACKUP_COPY_NAME = re.compile(r"[0-9]{2,}-[^/\x00]+")
+BACKUP_FILE_MODE = re.compile(r"[0-7]{4}")
+BACKUP_SHA256 = re.compile(r"[0-9a-f]{64}")
+# An owner or group that chown takes: Linux's uid_t and gid_t are 32 bits,
+# and the largest value, (uid_t)-1, means "leave it as it is".
+BACKUP_ID_LIMIT = 2**32 - 1
+
+
+def file_name_problem(text):
+    """What in text no file name can hold, or None: a NUL, or a lone
+    surrogate (JSON "\\ud800"), which os.open and os.lstat refuse with
+    UnicodeEncodeError, not OSError (re-check 52 of ES PR #67, N67-10). A
+    surrogate that stands for a byte the file system encoding cannot decode
+    (U+DC80 to U+DCFF) is that byte, as os.fsencode reads it, and passes."""
+    if "\x00" in text:
+        return "a NUL"
+    try:
+        os.fsencode(text)
+    except UnicodeEncodeError:
+        return "a character no file name can hold"
+    return None
+
+
+def check_backup_manifest(manifest, path):
+    """Refuse a manifest, read from path, that is valid JSON but not the
+    document backup_files writes, naming what is wrong, rather than fail
+    with a traceback on a value of another type (re-check 50 of ES PR #67,
+    O50-1): an object with the schema and a list of files, each an object
+    with its path (clean and absolute, with no NUL) and whether it existed
+    and, if it did, its copy's name in files/ (with no NUL), its digest,
+    size, mode, and an owner and group that chown takes. Each value it
+    admits is one restore_files can use, so it is refused here, before
+    anything stops, rather than by open() or chown later, after the first
+    file was put back (re-check 51, N67-9 and S51-3; re-check 52, N67-10:
+    a path or copy name no file name can hold)."""
+    def refuse(what):
+        raise Refusal(f"{path} is not the manifest apply writes ({what}); nothing was changed")
+
+    if not isinstance(manifest, dict):
+        kind = {list: "list", str: "string", int: "number", float: "number", bool: "boolean"}.get(type(manifest), "null")
+        refuse(f"it is a JSON {kind}, not an object")
+    if manifest.get("schema") != BACKUP_SCHEMA:
+        raise Refusal("the backup manifest has an unknown schema")
+    files = manifest.get("files")
+    if not isinstance(files, list):
+        refuse("its files are not a list")
+    for index, entry in enumerate(files):
+        if not isinstance(entry, dict) or not isinstance(entry.get("path"), str) or type(entry.get("exists")) is not bool:
+            refuse(f"file {index} is not an object with a path and whether it existed")
+        problem = file_name_problem(entry["path"])
+        if problem:
+            refuse(f"file {index}'s path holds {problem}")
+        if not clean_absolute(entry["path"]):
+            refuse(f"file {index}'s path, {entry['path']!r}, is not a clean absolute path")
+        if not entry["exists"]:
+            continue
+        copy, digest, mode = entry.get("copy"), entry.get("sha256"), entry.get("mode")
+        if not (isinstance(copy, str) and BACKUP_COPY_NAME.fullmatch(copy)
+                and isinstance(digest, str) and BACKUP_SHA256.fullmatch(digest)
+                and isinstance(mode, str) and BACKUP_FILE_MODE.fullmatch(mode)
+                and all(type(entry.get(key)) is int and entry[key] >= 0 for key in ("size", "uid", "gid"))
+                and entry["uid"] < BACKUP_ID_LIMIT and entry["gid"] < BACKUP_ID_LIMIT):
+            refuse(f"file {index}, {entry['path']!r}, lacks its copy's name, digest, size, mode, owner or group")
+        problem = file_name_problem(copy)
+        if problem:
+            refuse(f"file {index}'s copy name holds {problem}")
+
+
 def load_backup(backup_dir):
     st = os.lstat(backup_dir)
     if not stat.S_ISDIR(st.st_mode) or stat.S_IMODE(st.st_mode) != 0o700 or st.st_uid != os.geteuid():
         raise Refusal("the backup directory must be a 0700 directory owned by the user running the restore")
-    data, _ = read_regular_file(os.path.join(backup_dir, BACKUP_MANIFEST))
-    manifest = json.loads(data)
-    if manifest.get("schema") != BACKUP_SCHEMA:
-        raise Refusal("the backup manifest has an unknown schema")
+    manifest = read_backup_document(backup_dir, BACKUP_MANIFEST,
+                                    "the backup's apply stopped before it changed the host, so there is nothing to put back")
+    check_backup_manifest(manifest, os.path.join(backup_dir, BACKUP_MANIFEST))
     for entry in manifest["files"]:
         if not entry["exists"]:
             continue
-        copy, _ = read_regular_file(os.path.join(backup_dir, "files", entry["copy"]))
+        copy_path = os.path.join(backup_dir, "files", entry["copy"])
+        try:
+            copy, _ = read_regular_file(copy_path)
+        except FileNotFoundError:
+            raise Refusal(f"the backup copy of {entry['path']}, {copy_path}, is missing; nothing was changed") from None
+        except OSError as exc:
+            raise Refusal(f"the backup copy of {entry['path']}, {copy_path}, cannot be read ({exc}); nothing was changed") from None
         if sha256_bytes(copy) != entry["sha256"] or len(copy) != entry["size"]:
             raise Refusal(f"the backup copy of {entry['path']} does not match its manifest")
     return manifest
+
+
+def restore_target_problem(manifest):
+    """Why a file of the manifest cannot be put back, or None: its folder is
+    gone or not a folder, or a folder stands at its path (a rename cannot
+    replace a folder; a link or another non-file there is replaced, re-check
+    52 of ES PR #67, O52-1), or its path cannot be looked at. A file that was
+    absent at backup time is not put back, so it needs neither."""
+    for entry in manifest["files"]:
+        if not entry["exists"]:
+            continue
+        path = entry["path"]
+        parent = os.path.dirname(path)
+        if not os.path.isdir(parent):
+            return f"{parent}, where the backup puts {path} back, is not a folder"
+        try:
+            st = os.lstat(path)
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            return f"{path}, which the backup puts back, cannot be looked at ({exc.strerror})"
+        if stat.S_ISDIR(st.st_mode):
+            return f"{path}, which the backup puts back as a file, is a folder now; remove it"
+    return None
 
 
 def restore_files(backup_dir):
@@ -417,6 +550,14 @@ def restore_files(backup_dir):
     The whole backup is verified before anything is written. Files that
     were absent at backup time are left as they are and reported."""
     manifest = load_backup(backup_dir)
+    # Each file goes back into the folder it was taken from, by a rename: a
+    # folder that is gone, or a folder at the file's path, is refused before
+    # the first file is put back. restore_host has refused it before it
+    # stopped a service; this is for the restore command, and for a change
+    # in between.
+    problem = restore_target_problem(manifest)
+    if problem:
+        raise Refusal(f"{problem}; no file was put back")
     restored, left = [], []
     for entry in manifest["files"]:
         if not entry["exists"]:
@@ -486,12 +627,42 @@ ES_EXEC_START = f"argv[]={ES_BINARY} -config {ES_CONFIG} ;"
 HEALTHCHECK_ENV = "/etc/execution-substrate/healthcheck.env"
 NOMAD_DIR = "/etc/nomad.d"
 NOMAD_HCL = "/etc/nomad.d/nomad.hcl"
+# The EnvironmentFile of the package's nomad.service, which Nomad reads as
+# root; optional ("-" in the unit).
+NOMAD_ENV = "/etc/nomad.d/nomad.env"
+# How root puts nomad.env back as a new file of its own, with its contents:
+# the only way that an old write handle no longer reaches it.
+
+
+def replace_remedy(path, mode):
+    """How the operator puts back a file of Nomad's that another account
+    could write: as a new file of root's, since a chown, a chmod or setfacl
+    in place leaves a handle that the account opened earlier able to write
+    it. install opens its source, so this is for a regular file only."""
+    return (f"put it back as a new file of root's, then check what it sets: rm -f {path}.new && "
+            f"install -o root -g root -m {mode:04o} {path} {path}.new && mv -T {path}.new {path} "
+            f"(a chown, a chmod or setfacl leaves a handle that another account opened earlier able to write it)")
+
+
+NOMAD_ENV_REMEDY = replace_remedy(NOMAD_ENV, 0o600)
 NOMAD_CONFIG_MODE = 0o640  # root:root, as scripts/70_linux_setup.sh writes nomad.hcl
+# apply replaces nomad.hcl only on a host it moves to HTTPS; on one already
+# on HTTPS, nomad.hcl stays the same file (re-check 51 of ES PR #67, S51-1).
+NOMAD_HCL_REMEDY = replace_remedy(NOMAD_HCL, NOMAD_CONFIG_MODE)
 # Nomad runs as root, so only root may change what it reads or keeps (audit
 # INF-16). ES PR #54's upgrade made these directories root:root with these
 # modes. Nomad's TLS directory goes in the first, root:root 0755 as the
 # setup makes it, and holds exactly the setup's three files.
 NOMAD_DIRS = ((NOMAD_DIR, 0o755), ("/opt/nomad", 0o755), ("/opt/nomad/data", 0o700))
+# Nor may another account keep an ACL on them. HashiCorp's package gives
+# /etc/nomad.d and the data directory to the nomad account, which may set an
+# ACL on a folder while it owns it, and the owner and mode do not show one.
+# A default ACL decides the mode of each file root then creates in the
+# folder, whatever the umask, and an access ACL keeps entries on the folder.
+# scripts/70_linux_setup.sh removes both when it takes the folders back
+# (re-check 48 of ES PR #66); this upgrade refuses a folder that has one,
+# and nomad.hcl, Nomad's TLS directory and its server folder with one.
+POSIX_ACLS = ("system.posix_acl_access", "system.posix_acl_default")
 NOMAD_TLS_DIR_MODE = 0o755
 NOMAD_TLS_FILES = ("ca.pem", "server-key.pem", "server.pem")
 NOMAD_ACL_DIR = "/etc/execution-substrate/nomad-acl"
@@ -613,9 +784,18 @@ tls {{
   tls_min_version        = "tls13"
 }}
 """
-# The paths apply creates. Its backup names those it created, and a restore
-# removes them; it removes nothing else.
-CREATED_BY_APPLY = (NOMAD_TLS_DIR,)
+# Nomad's gossip keyring, which Nomad reads from its data directory when it
+# starts (scripts/70_linux_setup.sh's NOMAD_GOSSIP_KEYRING on a supported
+# host), and the server folder Nomad keeps it in. Nomad makes that folder
+# 0755 inside its 0700 data directory.
+NOMAD_SERVER_DIR = "/opt/nomad/data/server"
+NOMAD_GOSSIP_KEYRING = NOMAD_SERVER_DIR + "/serf.keyring"
+# The paths apply may create. Its backup names those this run creates, and a
+# restore removes them; it removes nothing else.
+CREATED_BY_APPLY = (NOMAD_TLS_DIR, NOMAD_GOSSIP_KEYRING)
+# What apply backs up (backup_host), in that order; restore_host puts back
+# a backup only when its manifest names exactly these (re-check 51, N67-9).
+BACKED_UP_BY_APPLY = (ES_CONFIG, ES_BINARY, RUNTIME_SUPPORT, NOMAD_HCL)
 # `nomad config validate` warns, and still exits 0, when it cannot read the
 # TLS files a config names, and when a config has no TLS at all.
 NOMAD_VALIDATE_REFUSED = ("Error when parsing TLS configuration", "mTLS is not configured")
@@ -643,6 +823,57 @@ def test_mode():
     """Under a test --host-root, the user running the tests stands in for
     root and for every account the host has."""
     return HOST_ROOT != "/"
+
+
+def box_es_commit():
+    """BOX_ES_COMMIT. Under a test --host-root, ES_UPGRADE_TEST_BOX_ES_COMMIT
+    may name another: the git history a test builds, which the order of a
+    move is read from, cannot hold BOX_ES_COMMIT itself."""
+    if test_mode() and os.environ.get("ES_UPGRADE_TEST_BOX_ES_COMMIT"):
+        return os.environ["ES_UPGRADE_TEST_BOX_ES_COMMIT"]
+    return BOX_ES_COMMIT
+
+
+# The kernel's audit login uid of this process: the user who logged in to
+# the session it runs in, kept across sudo, and unset (4294967295) in a
+# process that no login started, such as a systemd-run unit.
+LOGINUID_FILE = "/proc/self/loginuid"
+LOGINUID_UNSET = 4294967295
+
+
+def loginuid_file():
+    """LOGINUID_FILE. Under a test --host-root, ES_UPGRADE_TEST_LOGINUID_FILE
+    may name another file, so that a test decides what it holds."""
+    if test_mode() and os.environ.get("ES_UPGRADE_TEST_LOGINUID_FILE"):
+        return os.environ["ES_UPGRADE_TEST_LOGINUID_FILE"]
+    return LOGINUID_FILE
+
+
+def who_ran():
+    """Who ran this, as far as the process can tell, for a record:
+    sudo_user, the user SUDO_USER names (None when it is unset or empty, as
+    when sudo did not start this process itself, under systemd-run for
+    one); uid, the real uid; and login_user, the user the audit login uid
+    names (None when it is unset, as under systemd-run, or cannot be read;
+    the uid itself when no user has it). Root can set either; this is a
+    record, not a check."""
+    login_user = None
+    try:
+        with open(loginuid_file(), encoding="ascii") as handle:
+            login_uid = int(handle.read().strip())
+    except (OSError, ValueError, UnicodeDecodeError):
+        login_uid = None
+    if login_uid is not None and 0 <= login_uid < LOGINUID_UNSET:
+        try:
+            login_user = pwd.getpwuid(login_uid).pw_name
+        except KeyError:
+            login_user = str(login_uid)
+    return {"sudo_user": os.environ.get("SUDO_USER") or None, "uid": os.getuid(), "login_user": login_user}
+
+
+def describe_who(record):
+    return (f"sudo user {record['sudo_user'] or 'not named'}, uid {record['uid']}, "
+            f"login user {record['login_user'] or 'not set'}")
 
 
 def root_ids():
@@ -820,15 +1051,17 @@ class Completed:
         self.args, self.returncode, self.stdout, self.stderr = args, returncode, stdout, stderr
 
 
-def run(args, env=None, timeout=120, check=False, cwd=None):
+def run(args, env=None, timeout=120, check=False, cwd=None, input=None):
     """Run a command in a process group of its own. When it times out, or a
     signal interrupts the wait, the whole group is ended and drained before
     the exception goes on, so no descendant keeps changing the host during
-    a rollback. Descendants left after a normal exit are ended too."""
-    proc = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    a rollback. Descendants left after a normal exit are ended too. input,
+    when given, is the command's standard input."""
+    proc = subprocess.Popen(args, stdin=subprocess.DEVNULL if input is None else subprocess.PIPE,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             text=True, env=env, cwd=cwd, start_new_session=True)
     try:
-        stdout, stderr = proc.communicate(timeout=timeout)
+        stdout, stderr = proc.communicate(input=input, timeout=timeout)
     except BaseException as exc:
         stop_process_group(proc)
         if isinstance(exc, subprocess.TimeoutExpired):
@@ -855,6 +1088,19 @@ def write_new_file(path, text):
         handle.write(text)
         handle.flush()
         os.fsync(handle.fileno())
+
+
+def write_new_file_renamed(path, text):
+    """write_new_file to a temporary name beside path, then rename it to
+    path and sync the folder: path is either absent or whole."""
+    tmp = path + ".new"
+    write_new_file(tmp, text)
+    os.rename(tmp, path)
+    dir_fd = os.open(os.path.dirname(path), os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
 
 
 def curl_status(url, extra=(), timeout=10):
@@ -971,6 +1217,44 @@ def anonymous_nomad_problems():
     if code != "404":
         problems.append(f"Nomad answers a request without a token for its anonymous ACL policy over HTTPS with {code}, not 404")
     return problems
+
+
+def nomad_secret_id(text):
+    """Whether text has the form of a Nomad secret ID (a lowercase UUID)."""
+    return (len(text) == 36 and all(text[i] == "-" for i in (8, 13, 18, 23))
+            and set(text.replace("-", "")) <= set("0123456789abcdef"))
+
+
+def nomad_gossip_state():
+    """(encrypted, what Nomad reports) from /v1/agent/self over HTTPS, read
+    with the observer token, which may read the agent. Nomad reports
+    stats.serf.encrypted as the string "true" when it encrypts its gossip.
+    The token goes to curl in its config on standard input, never on a
+    command line."""
+    addr = nomad_https_addr()
+    try:
+        data, _ = read_regular_file(host(f"{NOMAD_ACL_DIR}/observer-token"))
+        token = data.decode("ascii").strip()
+    except (Refusal, OSError, UnicodeDecodeError) as exc:
+        return False, f"cannot read the observer token: {exc}"
+    if not nomad_secret_id(token):
+        return False, "the observer token file does not hold a Nomad secret ID"
+    proc = run(["curl", "--noproxy", "*", "-sS", "-m", "10", "--config", "-", "-w", "\n%{http_code}",
+                *nomad_curl_args(addr), addr + "/v1/agent/self"],
+               timeout=15, input=f'header = "X-Nomad-Token: {token}"\n')
+    if proc.returncode != 0:
+        return False, f"error: {(proc.stderr or '').strip()[:200]}"
+    body, _, code = proc.stdout.rpartition("\n")
+    if code != "200":
+        return False, f"/v1/agent/self answered {code}"
+    try:
+        doc = json.loads(body)
+    except ValueError:
+        return False, "/v1/agent/self did not answer JSON"
+    stats = doc.get("stats") if isinstance(doc, dict) and isinstance(doc.get("stats"), dict) else {}
+    serf = stats.get("serf") if isinstance(stats.get("serf"), dict) else {}
+    value = serf.get("encrypted")
+    return value == "true", f"stats.serf.encrypted {value!r}"
 
 
 def nomad_leader_named(addr):
@@ -1103,19 +1387,23 @@ def go_sum_hashes(text):
     return hashes
 
 
-def commit_module_pins(repo, commit, owners, env):
-    """What a build of commit may hold, read from the commit's own go.mod
-    and go.sum in the git objects of the clone repo (audit 33,
-    A33-2): the module's path, the version go.mod requires of each
-    dependency, and the hashes go.sum holds. Only owners may be able to
-    change those objects: the clone's .git must be a folder that belongs to
-    them, with nothing that makes git read objects from elsewhere, and git
-    runs with env (GIT_ENV), so it reads only that repository's config.
-    git does not check an object's bytes against its name when it reads
-    it, so the folder git reads objects from decides the pins. A .git file
-    ("gitdir: <path>", as git worktree add and git clone --separate-git-dir
-    leave) or link sends git to another folder, so .git must be a folder
-    itself, as build requires (audit 34, A34-2)."""
+def module_git(repo, owners, what):
+    """The git command that reads the objects of the clone repo, once only
+    owners can change those objects: the clone's .git must be a folder that
+    belongs to them, with nothing that makes git read objects from
+    elsewhere. Run it with GIT_ENV, so that git reads only that
+    repository's config. git does not check an object's bytes against its
+    name when it reads it, so the folder git reads objects from decides
+    what a commit holds and what its parents are. A .git file ("gitdir:
+    <path>", as git worktree add and git clone --separate-git-dir leave) or
+    link sends git to another folder, so .git must be a folder itself, as
+    build requires (audit 34, A34-2). A grafts file (info/grafts) gives
+    commits other parents than their own objects name, which neither
+    "git rev-parse --is-shallow-repository" nor GIT_NO_REPLACE_OBJECTS
+    turns off, and git hints at it on standard error only while
+    advice.graftFileDeprecated is on, so it is refused here (audit 44,
+    O44-2). Otherwise refuses, saying that what (what the caller reads
+    there, with its verb) is not in such objects."""
     git_dir = os.path.join(repo, ".git")
     problems = folders_above_problems(git_dir, (0,) + tuple(owners))
     if not os.path.lexists(git_dir):
@@ -1127,12 +1415,24 @@ def commit_module_pins(repo, commit, owners, env):
         for rel in ("commondir", "objects/info/alternates", "objects/info/http-alternates"):
             if os.path.lexists(os.path.join(git_dir, rel)):
                 problems.append(f"{git_dir}/{rel} exists, which makes git read objects from elsewhere")
+        if os.path.lexists(os.path.join(git_dir, "info", "grafts")):
+            problems.append(f"{git_dir}/info/grafts exists, which gives commits other parents than their own")
     if problems:
         shown = "; ".join(problems[:20])
         more = f" (and {len(problems) - 20} more)" if len(problems) > 20 else ""
-        raise Refusal(f"the commit's go.mod and go.sum are not in git objects that only "
+        raise Refusal(f"{what} not in git objects that only "
                       f"{' and '.join(f'uid {uid}' for uid in owners)} can change: {shown}{more}")
-    git = ["git", "--git-dir=" + git_dir]
+    return ["git", "--git-dir=" + git_dir]
+
+
+def commit_module_pins(repo, commit, owners, env):
+    """What a build of commit may hold, read from the commit's own go.mod
+    and go.sum in the git objects of the clone repo (audit 33,
+    A33-2): the module's path, the version go.mod requires of each
+    dependency, and the hashes go.sum holds. Only owners may be able to
+    change those objects (module_git), and git runs with env (GIT_ENV), so
+    it reads only that repository's config."""
+    git = module_git(repo, owners, "the commit's go.mod and go.sum are")
     found = run(git + ["rev-parse", "--verify", "--quiet", commit + "^{commit}"], env=env)
     if found.returncode != 0 or found.stdout.strip() != commit:
         raise Refusal(f"the clone {repo} does not hold the commit {commit}")
@@ -1293,20 +1593,37 @@ def other_nomad_configs():
                   if name != "nomad.hcl" and name.endswith((".hcl", ".json")))
 
 
+def posix_acls(path):
+    """The POSIX ACLs that path has. os has listxattr only on Linux, where
+    the box runs; on macOS, where the tests also run, nothing has a POSIX
+    ACL."""
+    listxattr = getattr(os, "listxattr", None)
+    if listxattr is None:
+        return []
+    present = listxattr(path)
+    return [name for name in POSIX_ACLS if name in present]
+
+
 def owner_mode(st):
     return {"uid": st.st_uid, "gid": st.st_gid, "mode": format(stat.S_IMODE(st.st_mode), "04o")}
+
+
+def setup_functions(region):
+    """The functions of one region of scripts/70_linux_setup.sh, between its
+    "# BEGIN <region>" and "# END <region>" lines."""
+    data, _ = read_regular_file(SETUP_SCRIPT)
+    text = data.decode("utf-8")
+    begin = text.find(f"\n# BEGIN {region}")
+    end = text.find(f"\n# END {region}\n", begin + 1)
+    if begin < 0 or end < 0:
+        raise Refusal(f"scripts/70_linux_setup.sh has no {region} functions")
+    return text[begin + 1:end + 1]
 
 
 def setup_tls_functions():
     """The nomad_tls functions of scripts/70_linux_setup.sh, which issue and
     check Nomad's TLS material on every supported host."""
-    data, _ = read_regular_file(SETUP_SCRIPT)
-    text = data.decode("utf-8")
-    begin = text.find("\n# BEGIN nomad_tls")
-    end = text.find("\n# END nomad_tls\n", begin + 1)
-    if begin < 0 or end < 0:
-        raise Refusal("scripts/70_linux_setup.sh has no nomad_tls functions")
-    return text[begin + 1:end + 1]
+    return setup_functions("nomad_tls")
 
 
 def nomad_tls(function, *args):
@@ -1314,6 +1631,14 @@ def nomad_tls(function, *args):
     script: root on the host, so the material is root's."""
     script = "set -euo pipefail\n" + setup_tls_functions() + '"$@"\n'
     return run(["bash", "-c", script, "nomad-tls", function, *args], timeout=120)
+
+
+def nomad_gossip(function, *args):
+    """Run one of the setup's nomad_gossip functions, which write and check
+    Nomad's gossip keyring on every supported host, as the user running this
+    script: root on the host, so the keyring is root's."""
+    script = "set -euo pipefail\n" + setup_functions("nomad_gossip") + '"$@"\n'
+    return run(["bash", "-c", script, "nomad-gossip", function, *args], timeout=60)
 
 
 def server_spki_sha256():
@@ -1326,9 +1651,10 @@ def server_spki_sha256():
 
 
 # The host's shape. Each part of the host this upgrade changes is read on its
-# own and reports (shape, state): shape is "locked-http" (where ES PR #54's
-# upgrade left it), "https" (where this upgrade leaves it) or None, and state
-# says what was found. The host has a shape only when every part agrees.
+# own and reports (shape, state): shape is the part's form ("locked-http"
+# where ES PR #54's upgrade left it, "https" once Nomad is on HTTPS, and for
+# the binaries and the keyring the forms below) or None, and state says what
+# was found. host_shape puts the parts together.
 
 def nomad_hcl_shape(text):
     digest = sha256_bytes(text)
@@ -1352,6 +1678,9 @@ def tls_dir_shape():
         return None, "present, but not a directory"
     if not owned_by_root(st) or stat.S_IMODE(st.st_mode) != NOMAD_TLS_DIR_MODE:
         return None, f"present, but not root:root {NOMAD_TLS_DIR_MODE:04o} ({owner_mode(st)})"
+    acls = posix_acls(path)
+    if acls:
+        return None, f"present, but has an ACL ({', '.join(acls)}; setfacl -b -k {NOMAD_TLS_DIR} removes it)"
     names = tuple(sorted(os.listdir(path)))
     if names != NOMAD_TLS_FILES:
         return None, f"present, but holds {list(names)}, not exactly {list(NOMAD_TLS_FILES)}"
@@ -1388,38 +1717,78 @@ def es_config_shape(doc, pin):
 
 
 def binaries_shape(commit, prov):
+    """(form, state, installed): the form of the installed es and
+    es-runtime-support, and the one commit both are clean builds of, or
+    None when they are not."""
     revisions = {}
     for name, path in (("es", ES_BINARY), ("es-runtime-support", RUNTIME_SUPPORT)):
         try:
             blob, _ = read_regular_file(host(path))
             _, lines = go_build_info(blob)
         except (Refusal, OSError) as exc:
-            return None, f"unknown ({name}: {exc})"
+            return None, f"unknown ({name}: {exc})", None
         settings = dict(line.partition("=")[::2] for line in lines)
         revision = settings.get("vcs.revision")
         if settings.get("vcs.modified") != "false":
-            return None, f"unknown ({name} is a build of a modified checkout of {revision})"
+            return None, f"unknown ({name} is a build of a modified checkout of {revision})", None
         if revision == commit and (prov is None or sha256_bytes(blob) != prov["sha256"].get(name)):
-            return None, f"unknown ({name} names {commit} but is not the verified payload's build)"
+            return None, f"unknown ({name} names {commit} but is not the verified payload's build)", None
         revisions[name] = revision
     found = set(revisions.values())
-    if found == {BOX_ES_COMMIT}:
-        return "locked-http", f"locked-http (builds of {BOX_ES_COMMIT})"
+    box = box_es_commit()
+    if found == {box}:
+        return "locked-http", f"locked-http (builds of {box})", box
     if found == {commit}:
-        return "https", f"https (the payload's builds of {commit})"
-    return None, "unknown (" + ", ".join(f"{name} built from {rev}" for name, rev in revisions.items()) + ")"
+        return "https", f"https (the payload's builds of {commit})", commit
+    if len(found) == 1 and valid_commit(revisions["es"]):
+        return "other", f"other (clean builds of {revisions['es']}, which apply replaces)", revisions["es"]
+    return None, "unknown (" + ", ".join(f"{name} built from {rev}" for name, rev in revisions.items()) + ")", None
 
 
-SHAPE_PARTS = ("nomad.hcl", "Nomad's TLS directory", "es.json", "the ES binaries")
+def keyring_shape():
+    """Nomad's gossip keyring: "absent", or "sound" when it is root's and the
+    setup's nomad_gossip_keyring_ok accepts it. Nomad's server folder must
+    be root's and writable by no one else either way."""
+    folder = host(NOMAD_SERVER_DIR)
+    try:
+        st = os.lstat(folder)
+    except FileNotFoundError:
+        return None, f"{NOMAD_SERVER_DIR} is missing (Nomad makes it when it first starts)"
+    if not stat.S_ISDIR(st.st_mode) or not owned_by_root(st) or stat.S_IMODE(st.st_mode) & 0o022:
+        return None, f"{NOMAD_SERVER_DIR} is not a root:root directory only root can write ({owner_mode(st)})"
+    acls = posix_acls(folder)
+    if acls:
+        # A default ACL there would make the setup's issuer refuse the
+        # keyring it writes, after ES has stopped.
+        return None, f"{NOMAD_SERVER_DIR} has an ACL ({', '.join(acls)}; setfacl -b -k {NOMAD_SERVER_DIR} removes it)"
+    if not os.path.lexists(host(NOMAD_GOSSIP_KEYRING)):
+        return "absent", "absent"
+    if nomad_gossip("nomad_gossip_keyring_ok", host(NOMAD_GOSSIP_KEYRING)).returncode != 0:
+        return None, "present, but it fails the setup's nomad_gossip_keyring_ok"
+    return "sound", "sound (root's keyring that passes the setup's nomad_gossip_keyring_ok)"
+
+
+SHAPE_PARTS = ("nomad.hcl", "Nomad's TLS directory", "es.json", "the ES binaries", "Nomad's gossip keyring")
+TLS_PARTS = SHAPE_PARTS[:3]
 
 
 def host_shape(commit, prov):
-    """(shape or None, {part: state}, pin or None). Reads only."""
-    def guarded(read):
+    """(shape or None, {part: state}, pin or None, {part: form}, installed):
+    installed is the one commit the installed ES binaries are clean builds
+    of, or None. Reads only. The shapes:
+
+      locked-http     every TLS part and the binaries locked-http, no keyring
+      https           every TLS part https, the binaries the payload's
+                      builds or other clean builds, the keyring absent or
+                      sound, but not the payload's builds with a keyring
+      https-gossip    every TLS part https, the payload's builds, a sound
+                      keyring: where apply leaves the host
+    """
+    def guarded(read, *fallback):
         try:
             return read()
         except (Refusal, OSError, ValueError, UnicodeDecodeError) as exc:
-            return None, f"unreadable ({exc})"
+            return (None, f"unreadable ({exc})", *fallback)
 
     found = {}
     found["nomad.hcl"] = guarded(lambda: nomad_hcl_shape(read_regular_file(host(NOMAD_HCL))[0]))
@@ -1431,18 +1800,120 @@ def host_shape(commit, prov):
         except Refusal as exc:
             found["Nomad's TLS directory"] = (None, f"present, but {exc}")
     found["es.json"] = guarded(lambda: es_config_shape(json.loads(read_regular_file(host(ES_CONFIG))[0]), pin))
-    found["the ES binaries"] = guarded(lambda: binaries_shape(commit, prov))
-    shapes = {shape for shape, _ in found.values()}
-    shape = shapes.pop() if len(shapes) == 1 else None
-    return shape, {part: found[part][1] for part in SHAPE_PARTS}, pin
+    binaries_form, binaries_state, installed = guarded(lambda: binaries_shape(commit, prov), None)
+    found["the ES binaries"] = (binaries_form, binaries_state)
+    found["Nomad's gossip keyring"] = guarded(keyring_shape)
+    tls = {found[part][0] for part in TLS_PARTS}
+    binaries, keyring = found["the ES binaries"][0], found["Nomad's gossip keyring"][0]
+    shape = None
+    if tls == {"locked-http"} and binaries == "locked-http" and keyring == "absent":
+        shape = "locked-http"
+    elif tls == {"https"} and binaries in ("https", "other") and keyring in ("absent", "sound"):
+        shape = "https-gossip" if (binaries, keyring) == ("https", "sound") else "https"
+    forms = {part: found[part][0] for part in SHAPE_PARTS}
+    return shape, {part: found[part][1] for part in SHAPE_PARTS}, pin, forms, installed
 
 
 def describe_parts(parts):
     return "; ".join(f"{part}: {state}" for part, state in parts.items())
 
 
-def inspect_host(payload_dir, commit):
-    """Everything check reports. Reads only; returns (report, blockers)."""
+def commit_order(installed, commit):
+    """(order, why): how the named commit stands to the installed build in
+    the history of the clone (module_repo), read with GIT_ENV from git
+    objects only root can change (module_git): "forward" when installed is
+    an ancestor of commit, "backward" when commit is an ancestor of
+    installed, "sideways" when neither is, and "unknown" when the clone
+    does not hold both or is shallow, so that its history may stop short of
+    either."""
+    repo = module_repo()
+    git = module_git(repo, (root_ids()[0],), "the history of the installed and named commits is")
+    shallow = run(git + ["rev-parse", "--is-shallow-repository"], env=GIT_ENV)
+    if shallow.returncode != 0 or shallow.stdout.strip() not in ("true", "false"):
+        raise Refusal(f"git cannot tell whether the clone {repo} is shallow: {(shallow.stderr or shallow.stdout).strip()[:300]}")
+    if shallow.stdout.strip() == "true":
+        return "unknown", f"the clone {repo} is shallow, so its history may stop short of {installed}"
+    for name in (installed, commit):
+        found = run(git + ["rev-parse", "--verify", "--quiet", name + "^{commit}"], env=GIT_ENV)
+        if found.returncode != 0 or found.stdout.strip() != name:
+            return "unknown", f"the clone {repo} does not hold the commit {name}"
+
+    def is_ancestor(older, newer):
+        # A commit whose parent the clone lacks makes git complain on
+        # standard error, and git 2.43 still answers "not an ancestor"
+        # (exit 1) where git 2.56 exits 128: either way a damaged history is
+        # refused here, not read as a move that is not forward.
+        proc = run(git + ["merge-base", "--is-ancestor", older, newer], env=GIT_ENV)
+        if proc.returncode not in (0, 1) or proc.stderr.strip():
+            raise Refusal(f"git cannot read the history of {older} and {newer} in the clone {repo}: "
+                          f"exit {proc.returncode}, {proc.stderr.strip()[:300]!r}")
+        return proc.returncode == 0
+
+    if is_ancestor(installed, commit):
+        return "forward", f"{installed} is an ancestor of {commit}"
+    if is_ancestor(commit, installed):
+        return "backward", f"{commit} is an ancestor of {installed}, so older"
+    return "sideways", f"neither of {installed} and {commit} is an ancestor of the other"
+
+
+def inspect_move(report, block, installed, commit, allow_downgrade):
+    """Refuse a move of ES that is not forward along the clone's history:
+    to a commit older than the installed build, on another line of history,
+    or whose order the clone cannot show. Root lets one such move through
+    only by naming it on the command line, as --allow-downgrade
+    <installed commit>..<named commit> (allow_downgrade: every value given),
+    and nowhere else: no file or variable stands in for it. That stops
+    mistakes (a stale clone or payload, a wrong or reused commit) and
+    leaves a record; it cannot stop root, who can install binaries without
+    this script. Reports the move, and for one root named, who ran it
+    (who_ran)."""
+    named = None
+    if allow_downgrade:
+        if len(allow_downgrade) > 1:
+            block("move", "--allow-downgrade is given more than once; name the one move once")
+            return
+        parts = allow_downgrade[0].split("..")
+        if len(parts) != 2 or not all(valid_commit(part) for part in parts):
+            block("move", f"--allow-downgrade {allow_downgrade[0]!r} does not name a move as <installed commit>..<named commit>, "
+                  "each a full lower-case 40-character SHA-1")
+            return
+        named = (parts[0], parts[1])
+    if installed is None:
+        if named is not None:
+            block("move", "--allow-downgrade names a move, but the installed ES binaries are not clean builds of one commit")
+        return
+    if not valid_commit(commit):
+        # The payload check refuses it; git is never handed a name that is
+        # not a full commit.
+        return
+    if installed == commit:
+        order, why = "same", f"the installed ES binaries are builds of {commit} already"
+    else:
+        try:
+            order, why = commit_order(installed, commit)
+        except (Refusal, OSError) as exc:
+            block("move", str(exc))
+            return
+    move = {"from": installed, "to": commit, "order": order, "why": why}
+    report["move"] = move
+    if order in ("forward", "same"):
+        if named is not None:
+            block("move", f"--allow-downgrade is only for a move that is not forward, and this one is {order} ({why}); leave it out")
+        return
+    if named is None:
+        block("move", f"moving ES from {installed} to {commit} is not forward ({order}: {why}); it runs only when root "
+              "names this move on the command line as --allow-downgrade <installed commit>..<named commit>")
+        return
+    if named != (installed, commit):
+        block("move", f"--allow-downgrade names the move {named[0]}..{named[1]}, but this one is {installed}..{commit}")
+        return
+    move["authorized"] = f"--allow-downgrade {installed}..{commit}"
+    move.update(who_ran())
+
+
+def inspect_host(payload_dir, commit, allow_downgrade=None):
+    """Everything check reports. Reads only; returns (report, blockers, the
+    form of each part of the host's shape)."""
     blockers = []
     report = {"schema": SUMMARY_SCHEMA, "commit": commit, "host_root": HOST_ROOT}
 
@@ -1451,8 +1922,8 @@ def inspect_host(payload_dir, commit):
 
     if HOST_ROOT == "/" and not as_root():
         block("privilege", "run as root (sudo -n)")
-    if commit == BOX_ES_COMMIT:
-        block("commit", f"{BOX_ES_COMMIT} is the build ES PR #54's upgrade installed; name the commit to move to")
+    if commit == box_es_commit():
+        block("commit", f"{box_es_commit()} is the build ES PR #54's upgrade installed; name the commit to move to")
 
     try:
         prov = load_payload(payload_dir, commit)
@@ -1461,11 +1932,13 @@ def inspect_host(payload_dir, commit):
         prov = None
         block("payload", str(exc))
 
-    shape, parts, pin = host_shape(commit, prov)
+    shape, parts, pin, forms, installed = host_shape(commit, prov)
     report["shape"] = shape or "unknown"
     report["parts"] = parts
     if shape is None:
-        block("shape", "the host is in no shape this upgrade knows; it takes locked-http to https: " + describe_parts(parts))
+        block("shape", "the host is in no shape this upgrade knows; it takes locked-http or https to https-gossip: "
+              + describe_parts(parts))
+    inspect_move(report, block, installed, commit, allow_downgrade)
 
     active = services_active()
     report["services"] = active
@@ -1491,26 +1964,63 @@ def inspect_host(payload_dir, commit):
         _, st = read_regular_file(host(NOMAD_HCL))
         report["nomad_hcl"] = owner_mode(st)
         if not owned_by_root(st) or stat.S_IMODE(st.st_mode) != NOMAD_CONFIG_MODE:
-            block("nomad_hcl", "nomad.hcl is not root:root 0640")
+            block("nomad_hcl", f"nomad.hcl is not root:root 0640 ({owner_mode(st)}); {NOMAD_HCL_REMEDY}")
+        acls = posix_acls(host(NOMAD_HCL))
+        if acls:
+            block("nomad_hcl", f"nomad.hcl has an ACL ({', '.join(acls)}); {NOMAD_HCL_REMEDY}")
         others = other_nomad_configs()
         if others:
             block("nomad_hcl", f"Nomad would also load {others} from {NOMAD_DIR}")
     except (Refusal, OSError) as exc:
         block("nomad_hcl", str(exc))
+    # HashiCorp's package gives nomad.env to the nomad account, as it does
+    # everything in /etc/nomad.d; the setup takes it back (re-check 49 of ES
+    # PR #66, O49-2). This upgrade does not, so it refuses one that another
+    # account could change, as it refuses such a nomad.hcl. Its remedy puts
+    # the file back as a new one, as the setup does: a chown, a chmod or
+    # setfacl in place leaves a handle that account opened earlier able to
+    # write it (re-check 50 of #67, S67-3).
+    try:
+        st = os.lstat(host(NOMAD_ENV))
+        if not stat.S_ISREG(st.st_mode):
+            # The remedy for the other refusals copies the file (install
+            # opens its source): on a FIFO it would wait, and on a link it
+            # would copy the link's target (re-check 51 of #67, N67-8).
+            kind = ("a link" if stat.S_ISLNK(st.st_mode) else "a folder" if stat.S_ISDIR(st.st_mode)
+                    else "a FIFO" if stat.S_ISFIFO(st.st_mode) else "not a file")
+            block("nomad_env", f"{NOMAD_ENV}, which Nomad's unit reads as root, is {kind}, not a regular file; "
+                  "remove it")
+        elif not owned_by_root(st) or stat.S_IMODE(st.st_mode) & ~0o755:
+            block("nomad_env", f"{NOMAD_ENV}, which Nomad's unit reads as root, is not root:root without write for "
+                  f"group or others ({owner_mode(st)}); {NOMAD_ENV_REMEDY}")
+        else:
+            acls = posix_acls(host(NOMAD_ENV))
+            if acls:
+                block("nomad_env", f"{NOMAD_ENV} has an ACL ({', '.join(acls)}); {NOMAD_ENV_REMEDY}")
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        block("nomad_env", str(exc))
     for path, mode in NOMAD_DIRS:
         try:
             st = os.lstat(host(path))
             if not stat.S_ISDIR(st.st_mode) or not owned_by_root(st) or stat.S_IMODE(st.st_mode) != mode:
                 block("nomad_dirs", f"{path} is not a root:root {mode:04o} directory")
+                continue
+            acls = posix_acls(host(path))
+            if acls:
+                block("nomad_dirs", f"{path} has an ACL ({', '.join(acls)}; setfacl -b -k {path} removes it)")
         except OSError as exc:
             block("nomad_dirs", str(exc))
 
     if shape == "locked-http":
         inspect_start(report, block, payload_dir, prov)
     elif shape == "https":
-        inspect_migrated(report, block)
+        inspect_https(report, block, payload_dir, prov, pin, forms)
+    elif shape == "https-gossip":
+        inspect_migrated(report, block, gossip=True)
     report["blockers"] = blockers
-    return report, blockers
+    return report, blockers, forms
 
 
 def acl_files():
@@ -1522,11 +2032,69 @@ def acl_files():
             ("observer-token", user_ids(OBSERVER_USER)[0], 0o400))
 
 
+def es_config_target(doc, shape, pin):
+    """(es.json, changes): the es.json apply installs on a host whose es.json
+    doc is in shape "locked-http" or "https", with pin the server key's
+    SHA-256. check and apply both take it from here, so a step that adds
+    keys to es.json is written once. doc must have Nomad's TLS keys exactly
+    when shape is "https", so such a step may rely on the shape it is given
+    (re-check 48 of ES PR #67: nothing else made a wrong shape fail)."""
+    nomad = doc.get("nomad") if isinstance(doc, dict) else None
+    has_tls = isinstance(nomad, dict) and any(key in nomad for key in NOMAD_TLS_KEYS)
+    if has_tls != (shape == "https"):
+        raise Refusal(f"es.json {'has' if has_tls else 'has no'} Nomad TLS keys, but the host's shape is {shape}")
+    if shape == "locked-http":
+        return migrate_config(doc, pin, START_ES_PATHS)
+    return migrate_config(doc, pin)
+
+
 def inspect_start(report, block, payload_dir, prov):
     """The checks of a locked-http host, which apply will change."""
-    try:
+    def migrate():
         data, _ = read_regular_file(host(ES_CONFIG))
-        migrated, changes = migrate_config(json.loads(data), PLACEHOLDER_PIN, START_ES_PATHS)
+        return es_config_target(json.loads(data), "locked-http", PLACEHOLDER_PIN)
+
+    inspect_ahead(report, block, payload_dir, prov, migrate, nomad_http_addr())
+    report["changes"] = [
+        f"issue Nomad's TLS material into {NOMAD_TLS_DIR} with the setup's nomad_tls_issue",
+        f"write Nomad's gossip keyring to {NOMAD_GOSSIP_KEYRING} with the setup's nomad_gossip_issue",
+        "append the supported config's tls block to nomad.hcl and restart Nomad on HTTPS, with its gossip encrypted",
+        "provision Nomad's ACLs again (the observer policy gains list-jobs) and check placement",
+        "es.json: " + ", ".join(report.get("es_config", {}).get("changes", [])),
+        f"install es and es-runtime-support built from {report['commit']}",
+    ]
+
+
+def inspect_https(report, block, payload_dir, prov, pin, forms):
+    """The checks of an https host, which apply will change: Nomad must run
+    as an https host does (and encrypt its gossip if it has a keyring), and
+    the host must be ready for the change."""
+    keyring_absent = forms["Nomad's gossip keyring"] == "absent"
+    inspect_migrated(report, block, gossip=not keyring_absent)
+
+    def migrate():
+        data, _ = read_regular_file(host(ES_CONFIG))
+        return es_config_target(json.loads(data), "https", pin)
+
+    inspect_ahead(report, block, payload_dir, prov, migrate, None)
+    changes = []
+    if keyring_absent:
+        changes += [f"write Nomad's gossip keyring to {NOMAD_GOSSIP_KEYRING} with the setup's nomad_gossip_issue",
+                    "restart Nomad on HTTPS, which then encrypts its gossip, and check its ACLs and placement"]
+    if forms["the ES binaries"] != "https":
+        changes.append(f"install es and es-runtime-support built from {report['commit']}")
+    report["changes"] = changes
+
+
+def inspect_ahead(report, block, payload_dir, prov, migrate, leader_addr):
+    """The checks of a host that apply will change: the new ES must accept
+    the es.json it will run with (migrate returns it and its changes), the
+    token files and the retained-result key must be as provision and ES PR
+    #54's upgrade left them, the setup's functions must be at hand, Nomad
+    must have a named leader at leader_addr (unless None, when the caller
+    checked it) and no allocation may be running."""
+    try:
+        migrated, changes = migrate()
         report.setdefault("es_config", {})["changes"] = changes
         if prov is not None:
             ok, out = esconfigcheck(os.path.join(payload_dir, "esconfigcheck"), migrated)
@@ -1553,14 +2121,15 @@ def inspect_start(report, block, payload_dir, prov):
         block("retained_result_key", str(exc))
 
     if shutil.which("openssl") is None:
-        block("tools", "openssl is not installed; the setup's nomad_tls functions need it")
-    try:
-        setup_tls_functions()
-    except (Refusal, OSError, UnicodeDecodeError) as exc:
-        block("tools", str(exc))
+        block("tools", "openssl is not installed; the setup's nomad_tls and nomad_gossip functions need it")
+    for region in ("nomad_tls", "nomad_gossip"):
+        try:
+            setup_functions(region)
+        except (Refusal, OSError, UnicodeDecodeError) as exc:
+            block("tools", str(exc))
 
-    if not nomad_leader_named(nomad_http_addr()):
-        block("nomad", f"Nomad has no named leader at {nomad_http_addr()}")
+    if leader_addr is not None and not nomad_leader_named(leader_addr):
+        block("nomad", f"Nomad has no named leader at {leader_addr}")
     proc = run(["docker", "ps", "--quiet", "--no-trunc", "--filter", f"label={NOMAD_ALLOC_LABEL}"], timeout=30)
     if proc.returncode != 0:
         block("nomad", f"cannot list the containers of Nomad's allocations: {proc.stderr.strip()[:200]}")
@@ -1570,17 +2139,11 @@ def inspect_start(report, block, payload_dir, prov):
         if running:
             block("nomad", f"{len(running)} container(s) of Nomad allocations are running; wait until they finish")
 
-    report["changes"] = [
-        f"issue Nomad's TLS material into {NOMAD_TLS_DIR} with the setup's nomad_tls_issue",
-        "append the supported config's tls block to nomad.hcl and restart Nomad on HTTPS",
-        "provision Nomad's ACLs again (the observer policy gains list-jobs) and check placement",
-        "es.json: " + ", ".join(report.get("es_config", {}).get("changes", [])),
-        f"install es and es-runtime-support built from {report['commit']}",
-    ]
 
-
-def inspect_migrated(report, block):
-    """The read-only proof that an https host runs as this upgrade leaves it."""
+def inspect_migrated(report, block, gossip):
+    """The read-only proof that Nomad runs on HTTPS as ES's settings expect,
+    and, when gossip is true (a keyring is in place), that it encrypts its
+    gossip."""
     report["changes"] = []
     if not nomad_leader_named(nomad_https_addr()):
         block("nomad", f"Nomad has no named leader at {nomad_https_addr()}")
@@ -1590,6 +2153,11 @@ def inspect_migrated(report, block):
         block("nomad", f"ES's Nomad TLS settings do not hold against the running Nomad: {out}")
     for problem in anonymous_nomad_problems():
         block("nomad", problem)
+    if gossip:
+        encrypted, state = nomad_gossip_state()
+        report["nomad_gossip"] = state
+        if not encrypted:
+            block("nomad", f"Nomad has a gossip keyring but does not report its gossip encrypted: {state}")
 
 
 def write_summary(path, report):
@@ -1612,22 +2180,51 @@ def backup_root_ready():
 
 
 CREATED_MANIFEST = "created.json"
+# What apply writes into its backup before it changes anything: the move it
+# makes (inspect_move's report).
+MOVE_RECORD = "move.json"
+# The names of the folders in BACKUP_ROOT when apply made the backup, so a
+# rollback can tell which backups were made after the one it puts back,
+# whatever the clock said (audit 47, A47-1).
+EARLIER_BACKUPS = "earlier.json"
+# Written into a backup once a rollback (rollback's or apply's own) has put
+# its files back and removed what its apply created.
+RESTORED_RECORD = "restored-{at}-{pid}.json"
+RESTORED_RECORD_NAME = re.compile(r"restored-\d{8}T\d{6}Z-\d+\.json")
 
 
-def backup_host(backup_dir):
-    """Back up every file apply changes, and name every path it creates."""
-    manifest = backup_files(backup_dir, [host(p) for p in (ES_CONFIG, ES_BINARY, RUNTIME_SUPPORT, NOMAD_HCL)])
-    for path in CREATED_BY_APPLY:
+def backup_host(commit, created):
+    """Back up every file apply changes into a new backup directory, and name
+    every path it creates: created, a subset of CREATED_BY_APPLY, none of
+    which may exist yet. A path that exists already is refused before
+    anything is written. Returns the backup directory."""
+    if not set(created) <= set(CREATED_BY_APPLY):
+        raise Refusal(f"apply does not create {sorted(set(created) - set(CREATED_BY_APPLY))}")
+    for path in created:
         if os.path.lexists(host(path)):
-            raise Refusal(f"{path} exists already")
-    write_new_file(os.path.join(backup_dir, CREATED_MANIFEST), json.dumps(list(CREATED_BY_APPLY), indent=2) + "\n")
-    return manifest
+            raise Refusal(f"{path} exists already; nothing was changed")
+    root = backup_root_ready()
+    earlier = sorted(name for name in os.listdir(root) if stat.S_ISDIR(os.lstat(os.path.join(root, name)).st_mode))
+    backup_dir = os.path.join(root, time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()) + "-" + commit[:12])
+    backup_files(backup_dir, [host(p) for p in BACKED_UP_BY_APPLY])
+    write_new_file(os.path.join(backup_dir, CREATED_MANIFEST), json.dumps(list(created), indent=2) + "\n")
+    # EARLIER_BACKUPS comes after CREATED_MANIFEST, whole or not at all, and
+    # before cmd_apply writes MOVE_RECORD, stages the payload and changes the
+    # host (re-check 48 of ES PR #67, S1): a folder that has it has
+    # CREATED_MANIFEST too, and a partial EARLIER_BACKUPS would block the
+    # rollback of every other backup. An apply cut off before it leaves a
+    # folder the order rule skips: rollback refuses it when its
+    # BACKUP_MANIFEST or CREATED_MANIFEST is not whole, and otherwise puts
+    # back the files it found, while the host is as that apply left it.
+    write_new_file_renamed(os.path.join(backup_dir, EARLIER_BACKUPS), json.dumps(earlier, indent=2) + "\n")
+    return backup_dir
 
 
 def load_created(backup_dir):
-    data, _ = read_regular_file(os.path.join(backup_dir, CREATED_MANIFEST))
-    created = json.loads(data)
-    if not isinstance(created, list) or not set(created) <= set(CREATED_BY_APPLY):
+    created = read_backup_document(backup_dir, CREATED_MANIFEST,
+                                   "the backup's apply stopped before it changed the host, so there is nothing to put back")
+    if (not isinstance(created, list) or not all(isinstance(path, str) for path in created)
+            or not set(created) <= set(CREATED_BY_APPLY)):
         raise Refusal(f"the backup's {CREATED_MANIFEST} names paths that apply does not create")
     return created
 
@@ -1689,9 +2286,29 @@ def validate_nomad_hcl(text):
             raise Refusal(f"nomad config validate: {line.strip()[:300]}")
 
 
+def issue_gossip_keyring(log):
+    """Write Nomad's gossip keyring with the setup's nomad_gossip_issue. Nomad
+    reads it when it next starts."""
+    proc = nomad_gossip("nomad_gossip_issue", host(NOMAD_GOSSIP_KEYRING))
+    if proc.returncode != 0:
+        raise Refusal(f"nomad_gossip_issue failed: {proc.stderr.strip()[:300]}")
+    shape, state = keyring_shape()
+    if shape != "sound":
+        raise Refusal(f"Nomad's new gossip keyring is {state}")
+    log(f"Nomad's gossip keyring written to {NOMAD_GOSSIP_KEYRING}")
+
+
+def require_gossip_encrypted(log):
+    encrypted, state = nomad_gossip_state()
+    if not encrypted:
+        raise Refusal(f"Nomad does not report its gossip encrypted: {state}")
+    log('Nomad reports its gossip encrypted (stats.serf.encrypted "true")')
+
+
 def apply_nomad_tls(log):
-    """Issue Nomad's TLS material, restart Nomad on HTTPS, provision its ACLs
-    again and prove that it places ES's jobs. Returns the server key's pin."""
+    """Issue Nomad's TLS material and write its gossip keyring, restart Nomad
+    on HTTPS, check that it encrypts its gossip, provision its ACLs again
+    and prove that it places ES's jobs. Returns the server key's pin."""
     text, _ = read_regular_file(host(NOMAD_HCL))
     if sha256_bytes(text) != NOMAD_HCL_LOCKED_SHA256:
         raise Refusal("nomad.hcl changed after check")
@@ -1706,6 +2323,7 @@ def apply_nomad_tls(log):
     new_text = text + NOMAD_TLS_BLOCK.encode()
     validate_nomad_hcl(new_text.decode("utf-8"))
     log("nomad.hcl with the tls block validated")
+    issue_gossip_keyring(log)
     stop_service("nomad")
     log("nomad stopped")
     ruid, rgid = root_ids()
@@ -1718,12 +2336,35 @@ def apply_nomad_tls(log):
     log("nomad started on HTTPS with a named leader")
     acl_setup("provision")
     log("nomad ACLs provisioned again (nomad_acl_setup.sh provision, which ends with its check)")
-    # Every check above passes on a Nomad that can place nothing: prove that
-    # the restarted node has a host-mode network and that ES's job shapes plan.
+    require_gossip_encrypted(log)
+    check_placement(started_at, log)
+    return pin
+
+
+def apply_nomad_gossip(log):
+    """Write Nomad's gossip keyring and restart Nomad on HTTPS, which then
+    encrypts its gossip; check its ACLs and prove that it places ES's jobs."""
+    issue_gossip_keyring(log)
+    stop_service("nomad")
+    log("nomad stopped")
+    started_at = int(time.time())
+    run(["systemctl", "start", "nomad"], timeout=120, check=True)
+    if not wait_for(lambda: nomad_leader_named(nomad_https_addr()), LEADER_WAIT_SECONDS):
+        raise Refusal(f"Nomad named no leader at {nomad_https_addr()} within {LEADER_WAIT_SECONDS} s of its start")
+    log("nomad started on HTTPS with a named leader")
+    acl_setup("check")
+    log("nomad ACLs checked (nomad_acl_setup.sh check)")
+    require_gossip_encrypted(log)
+    check_placement(started_at, log)
+
+
+def check_placement(started_at, log):
+    # Every check before this passes on a Nomad that can place nothing: prove
+    # that the restarted node has a host-mode network and that ES's job
+    # shapes plan.
     acl_setup("placement", ES_CONFIG=host(ES_CONFIG), NOMAD_STARTED_AT=str(started_at),
               NOMAD_PLACEMENT_WAIT_SECONDS=str(PLACEMENT_WAIT_SECONDS))
     log("nomad can place ES's jobs (nomad_acl_setup.sh placement)")
-    return pin
 
 
 def install_es(stage_dir, migrated, log):
@@ -1737,8 +2378,12 @@ def install_es(stage_dir, migrated, log):
     if not ok:
         raise Refusal(f"the new ES refuses the migrated config: {out[:300]}")
     ruid, rgid = root_ids()
-    atomic_replace(host(ES_CONFIG), render_json(migrated).encode(), ruid, group_id(ES_USER), ES_CONFIG_MODE)
-    log("es.json migrated")
+    new_config = render_json(migrated).encode()
+    if new_config != read_regular_file(host(ES_CONFIG))[0]:
+        atomic_replace(host(ES_CONFIG), new_config, ruid, group_id(ES_USER), ES_CONFIG_MODE)
+        log("es.json migrated")
+    else:
+        log("es.json unchanged")
     for name, dest in (("es", ES_BINARY), ("es-runtime-support", RUNTIME_SUPPORT)):
         blob, _ = read_regular_file(os.path.join(stage_dir, name))
         atomic_replace(host(dest), blob, ruid, rgid, BINARY_MODE)
@@ -1784,6 +2429,7 @@ def verify_after(log):
         raise Refusal("; ".join(problems))
     acl_setup("check")
     log("Nomad refuses an anonymous job list and holds no anonymous policy over HTTPS; nomad_acl_setup.sh check passed")
+    require_gossip_encrypted(log)
 
 
 def live_nomad_addr():
@@ -1795,13 +2441,170 @@ def live_nomad_addr():
     return nomad_https_addr() if text.endswith(NOMAD_TLS_BLOCK.encode()) else nomad_http_addr()
 
 
-def restore_host(backup_dir, log):
+def build_commit(blob):
+    """The commit a clean Go build names in its own build info, or None."""
+    try:
+        _, lines = go_build_info(blob)
+    except (Refusal, struct.error, ValueError, IndexError):
+        return None
+    settings = dict(line.partition("=")[::2] for line in lines)
+    revision = settings.get("vcs.revision")
+    return revision if settings.get("vcs.modified") == "false" and valid_commit(revision) else None
+
+
+# The ES binaries a rollback puts back, and what each installed one may be
+# for a rollback of a backup to run.
+ROLLBACK_BINARIES = (("es", ES_BINARY), ("es-runtime-support", RUNTIME_SUPPORT))
+BACKUP_COPY = "the backup's copy"
+STAGED_COPY = "the payload its apply installed"
+# The record of each rollback, written into the backup it puts back.
+ROLLBACK_RECORD = "rollback-{at}-{pid}.json"
+
+
+def rollback_move(backup_dir, manifest):
+    """(move, problems): what a rollback of the backup in backup_dir, whose
+    manifest load_backup verified, puts in place of the installed es and
+    es-runtime-support. For each, move names what the installed file is,
+    byte for byte: BACKUP_COPY (the backup's apply stopped before it
+    replaced that file, or this backup was put back already), STAGED_COPY
+    (the copy of the payload that the backup's apply staged in the backup,
+    so that apply installed it), or None; and the commit the installed file
+    and the backup's copy are clean builds of (build_commit). problems names
+    each file that is neither copy: then the backup is not of the apply
+    that left the host as it is (an older backup after a later apply, or
+    builds put in place without this script), and putting it back would
+    move ES to another build without the move check or its record (audit
+    44, A44-1)."""
+    copies = {entry["path"]: entry for entry in manifest["files"]}
+    staged_dir = os.path.join(backup_dir, "payload")
+    try:
+        staged = stat.S_ISDIR(os.lstat(staged_dir).st_mode)
+    except FileNotFoundError:
+        staged = False
+    move = {"installed": {}, "from": {}, "to": {}}
+    problems = []
+    for name, path in ROLLBACK_BINARIES:
+        entry = copies.get(host(path), {"exists": False})
+        backup_copy = None
+        if entry["exists"]:
+            backup_copy, _ = read_regular_file(os.path.join(backup_dir, "files", entry["copy"]))
+        move["to"][name] = build_commit(backup_copy) if backup_copy is not None else None
+        move["installed"][name] = move["from"][name] = None
+        try:
+            blob, _ = read_regular_file(host(path))
+        except (Refusal, OSError) as exc:
+            problems.append(f"{path} cannot be read ({exc})")
+            continue
+        move["from"][name] = build_commit(blob)
+        if backup_copy is not None and blob == backup_copy:
+            move["installed"][name] = BACKUP_COPY
+            continue
+        try:
+            staged_copy = read_regular_file(os.path.join(staged_dir, name))[0] if staged else None
+        except (Refusal, OSError):
+            staged_copy = None
+        if staged_copy is not None and blob == staged_copy:
+            move["installed"][name] = STAGED_COPY
+            continue
+        problems.append(f"{path} (a build of {move['from'][name] or 'no one clean commit'}) is neither "
+                        f"{BACKUP_COPY} nor {STAGED_COPY}")
+    return move, problems
+
+
+def later_backups_not_put_back(backup_dir):
+    """The problems that stop a rollback of backup_dir under the order rule
+    (audit 47, A47-1): it must be a folder of BACKUP_ROOT, and each
+    backup apply made while it was there (whose EARLIER_BACKUPS names it)
+    must have been put back since (it holds a RESTORED_RECORD). Builds are
+    reproducible, so a later apply of the same commit installs bytes equal
+    to an older backup's staged payload, and rollback_move alone would take
+    that older backup. A folder without EARLIER_BACKUPS was made by an
+    earlier version of this script (ES PR #60's or #54's), before any backup
+    this one makes, or by an apply cut off before it changed anything."""
+    root = host(BACKUP_ROOT)
+    name = os.path.basename(os.path.realpath(backup_dir))
+    if os.path.dirname(os.path.realpath(backup_dir)) != os.path.realpath(root):
+        return [f"it is not a folder of {BACKUP_ROOT}, so the backups made after it cannot be told"]
+    problems = []
+    for other in sorted(os.listdir(root)):
+        path = os.path.join(root, other)
+        if other == name or not stat.S_ISDIR(os.lstat(path).st_mode):
+            continue
+        try:
+            data, _ = read_regular_file(os.path.join(path, EARLIER_BACKUPS))
+            earlier = json.loads(data)
+            if not isinstance(earlier, list) or not all(isinstance(entry, str) for entry in earlier):
+                raise ValueError("not a list of names")
+        except FileNotFoundError:
+            continue
+        except (Refusal, OSError, ValueError) as exc:
+            problems.append(f"{os.path.join(path, EARLIER_BACKUPS)} cannot be read ({exc})")
+            continue
+        if name in earlier and not any(RESTORED_RECORD_NAME.fullmatch(entry) and
+                                       stat.S_ISREG(os.lstat(os.path.join(path, entry)).st_mode)
+                                       for entry in os.listdir(path)):
+            problems.append(f"{path} was made after it, and that apply has not been put back "
+                            f"(no {RESTORED_RECORD.format(at='<UTC>', pid='<pid>')} in it)")
+    return problems
+
+
+def record_restored(backup_dir, by):
+    """Write, into a new file in backup_dir, that its files are back and
+    what its apply created is removed. Returns a line for the log."""
+    at = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    path = os.path.join(backup_dir, RESTORED_RECORD.format(at=at, pid=os.getpid()))
+    write_new_file(path, json.dumps({"at": at, "by": by}, indent=2, sort_keys=True) + "\n")
+    return f"put back, recorded in {path}"
+
+
+def record_rollback(backup_dir, move, by):
+    """Write the record of a rollback of backup_dir (rollback_move's move),
+    with what started it (by: "rollback", or "apply" rolling itself back),
+    the time and who ran it, into a new file in the backup. Returns a line
+    that says so, for the log."""
+    at = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    record = dict(move, by=by, at=at, **who_ran())
+    path = os.path.join(backup_dir, ROLLBACK_RECORD.format(at=at, pid=os.getpid()))
+    write_new_file(path, json.dumps(record, indent=2, sort_keys=True) + "\n")
+    return f"rollback recorded in {path}: ES from {move['from']} to {move['to']} ({describe_who(record)})"
+
+
+def restore_host(backup_dir, log, by):
     """Put back every file the backup holds and remove every path apply
     created, then start Nomad and ES. Nomad's ACL policies stay as provision
-    last wrote them: the observer policy keeps list-jobs, a read."""
-    # The whole backup is verified before a service is touched.
-    load_backup(backup_dir)
+    last wrote them: the observer policy keeps list-jobs, a read. by is
+    "rollback" for the rollback command, which refuses a backup whose apply
+    did not leave the host as it is (rollback_move), or "apply" for apply
+    putting back its own backup, which goes on whatever it finds. Either way
+    the rollback is recorded in the backup before a service is touched;
+    apply goes on, logging why, if that record cannot be written."""
+    # The whole backup is verified before a service is touched, and holds
+    # what apply backs up: restore_files writes each path its manifest names.
+    manifest = load_backup(backup_dir)
+    backed_up = [host(path) for path in BACKED_UP_BY_APPLY]
+    if [entry["path"] for entry in manifest["files"]] != backed_up:
+        raise Refusal(f"{backup_dir}'s manifest does not name the files apply backs up ({', '.join(backed_up)}), "
+                      "in that order; nothing was changed")
+    problem = restore_target_problem(manifest)
+    if problem:
+        raise Refusal(f"{problem}; nothing was changed")
     created = load_created(backup_dir)
+    if by == "rollback":
+        move, problems = rollback_move(backup_dir, manifest)
+        problems = later_backups_not_put_back(backup_dir) + problems
+        if problems:
+            raise Refusal(f"{backup_dir} is not the backup of the apply that left the host as it is: "
+                          + "; ".join(problems) + "; put back the newest backup first; nothing was changed")
+        try:
+            log(record_rollback(backup_dir, move, by))
+        except OSError as exc:
+            raise Refusal(f"the rollback cannot be recorded in {backup_dir} ({exc}); nothing was changed") from None
+    else:
+        try:
+            move, _ = rollback_move(backup_dir, manifest)
+            log(record_rollback(backup_dir, move, by))
+        except Exception as exc:  # noqa: BLE001 - apply's own rollback goes on
+            log(f"the rollback could not be recorded ({exc!r}); putting the backup back all the same")
     # Nothing is put back under a running service: if either will not stop,
     # the restore stops here and reports it.
     stop_service("es")
@@ -1810,6 +2613,11 @@ def restore_host(backup_dir, log):
     result = restore_files(backup_dir)
     result["removed"] = remove_created(created)
     log(f"files restored from {backup_dir}; removed {result['removed']}")
+    try:
+        log(record_restored(backup_dir, by))
+    except OSError as exc:
+        log(f"that the backup is put back could not be recorded ({exc}); a rollback of an earlier backup "
+            "is refused until this one is put back again")
     run(["systemctl", "start", "nomad"], timeout=120, check=True)
     addr = live_nomad_addr()
     leader = bool(wait_for(lambda: nomad_leader_named(addr), LEADER_WAIT_SECONDS))
@@ -1824,11 +2632,23 @@ def restore_host(backup_dir, log):
 
 
 def health_after_restore():
+    """(problems, details) after a restore: ES's and AGS's endpoints must
+    answer 200 and, when the restored nomad.hcl serves HTTPS, ES's es.json
+    must hold against the running Nomad (tls_identity_check), since ES's
+    /health does not ask Nomad (audit 47, O47-2)."""
     try:
-        ok = wait_for(lambda: healthy(service_health()), ES_WAIT_SECONDS)
-        return bool(ok), {"services": services_active(), "health": service_health()}
+        problems = []
+        if not wait_for(lambda: healthy(service_health()), ES_WAIT_SECONDS):
+            problems.append("ES and AGS do not all answer 200")
+        details = {"services": services_active(), "health": service_health()}
+        if live_nomad_addr() == nomad_https_addr():
+            ok, details["nomad_tls_identity"] = tls_identity_check()
+            if not ok:
+                problems.append("ES's Nomad TLS settings do not hold against the running Nomad: "
+                                + details["nomad_tls_identity"])
+        return problems, details
     except Exception as exc:  # noqa: BLE001 - reported, never raised
-        return False, {"error": str(exc)}
+        return [str(exc)], {"error": str(exc)}
 
 
 class Interrupted(Exception):
@@ -1873,10 +2693,10 @@ def say(text, stream=None):
 
 
 def cmd_check(args):
-    report, blockers = inspect_host(args.payload, args.commit)
+    report, blockers, _ = inspect_host(args.payload, args.commit, args.allow_downgrade)
     report["mode"] = "check"
     if not blockers:
-        report["result"] = "nothing to do" if report["shape"] == "https" else "ready"
+        report["result"] = "nothing to do" if report["shape"] == "https-gossip" else "ready"
     say(json.dumps(report, indent=2, sort_keys=True))
     if blockers:
         raise Refusal(f"{len(blockers)} blocker(s); nothing was changed")
@@ -1889,25 +2709,42 @@ def cmd_apply(args):
         events.append({"at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "event": message})
         say(message)
 
-    report, blockers = inspect_host(args.payload, args.commit)
+    report, blockers, forms = inspect_host(args.payload, args.commit, args.allow_downgrade)
     report["mode"] = "apply"
     report["events"] = events
     if blockers:
         say(json.dumps(report, indent=2, sort_keys=True))
         raise Refusal(f"{len(blockers)} blocker(s); nothing was changed")
-    if report["shape"] == "https":
+    shape = report["shape"]
+    if shape == "https-gossip":
         # Already applied for this commit, and verified in place: no backup,
         # and no service is touched.
         report["result"] = "nothing to do"
         say(json.dumps(report, indent=2, sort_keys=True))
         return
+    # What apply does to the keyring follows from the form check found
+    # (absent: write one; sound: keep it), so the keyring must still have
+    # that form now, on either start. Any change since the check, a keyring
+    # that appeared, went away or turned unsound, is refused before the
+    # backup, with nothing changed.
+    form, state = keyring_shape()
+    if form != forms["Nomad's gossip keyring"]:
+        raise Refusal(f"Nomad's gossip keyring changed after check: {state}; nothing was changed")
+    keyring_absent = form == "absent"
+    created = ([NOMAD_TLS_DIR] if shape == "locked-http" else []) + ([NOMAD_GOSSIP_KEYRING] if keyring_absent else [])
     prov = load_payload(args.payload, args.commit)
-    backup_dir = os.path.join(backup_root_ready(),
-                              time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()) + "-" + args.commit[:12])
-    backup_host(backup_dir)
+    backup_dir = backup_host(args.commit, created)
     report["backup_dir"] = backup_dir
     summary_path = os.path.join(backup_dir, "summary.json")
     log("backup written to " + backup_dir)
+    # The record of the move, in the backup before anything changes: a
+    # move that is not forward shows there with the --allow-downgrade that
+    # let it through, even if this run is killed before its summary.
+    move = report["move"]
+    write_new_file(os.path.join(backup_dir, MOVE_RECORD), json.dumps(move, indent=2, sort_keys=True) + "\n")
+    if "authorized" in move:
+        log(f"moving ES from {move['from']} to {move['to']}, which is not forward ({move['order']}), "
+            f"as root named it: {move['authorized']} ({describe_who(move)})")
     stage_dir = stage_payload(args.payload, prov, os.path.join(backup_dir, "payload"))
     data, _ = read_regular_file(host(ES_CONFIG))
     config = json.loads(data)
@@ -1923,8 +2760,13 @@ def cmd_apply(args):
         try:
             stop_service("es")
             log("es stopped")
-            pin = apply_nomad_tls(log)
-            migrated, _ = migrate_config(config, pin, START_ES_PATHS)
+            if shape == "locked-http":
+                pin = apply_nomad_tls(log)
+            else:
+                pin = server_spki_sha256()
+                if keyring_absent:
+                    apply_nomad_gossip(log)
+            migrated, _ = es_config_target(config, shape, pin)
             install_es(stage_dir, migrated, log)
             run(["systemctl", "start", "es"], timeout=120, check=True)
             log("es started")
@@ -1940,13 +2782,15 @@ def cmd_apply(args):
         log(f"apply failed: {failure!r}; rolling back")
         report["failure"] = repr(failure)
         try:
-            report["rollback"] = restore_host(backup_dir, log)
+            report["rollback"] = restore_host(backup_dir, log, "apply")
         except Exception as rexc:  # noqa: BLE001
             report["result"] = "rollback_failed"
             report["rollback_failure"] = repr(rexc)
         else:
-            ok, report["after_rollback"] = health_after_restore()
-            report["result"] = "rolled_back" if ok else "rolled_back_unhealthy"
+            problems, report["after_rollback"] = health_after_restore()
+            if problems:
+                report["after_rollback"]["problems"] = problems
+            report["result"] = "rolled_back_unhealthy" if problems else "rolled_back"
         report["output_lost"] = OUTPUT["lost"]
         write_summary(summary_path, report)
         say(json.dumps(report, indent=2, sort_keys=True))
@@ -1961,11 +2805,11 @@ def cmd_apply(args):
 def cmd_rollback(args):
     # A terminal that hangs up must not break off a restore halfway.
     signal.signal(signal.SIGHUP, signal.SIG_IGN)
-    result = restore_host(args.backup_dir, say)
-    ok, after = health_after_restore()
+    result = restore_host(args.backup_dir, say, "rollback")
+    problems, after = health_after_restore()
     say(json.dumps({"restored": result, "after": after}, indent=2, sort_keys=True))
-    if not ok:
-        raise Refusal("ES and AGS do not all answer 200 after the rollback")
+    if problems:
+        raise Refusal("after the rollback: " + "; ".join(problems))
 
 
 def changeable_refusal(owners, what, problems):
@@ -2198,9 +3042,14 @@ def main(argv):
     rs.set_defaults(func=cmd_restore)
 
     for name, func in (("check", cmd_check), ("apply", cmd_apply)):
-        sp = sub.add_parser(name)
+        # Only the full names: --allow-downgrade is recorded as root typed
+        # it, not as a prefix argparse would take for it (audit 44, O44-1).
+        sp = sub.add_parser(name, allow_abbrev=False)
         sp.add_argument("--payload", required=True)
         sp.add_argument("--commit", required=True)
+        # Every value is kept, so that one given twice is refused rather
+        # than the last taken (inspect_move).
+        sp.add_argument("--allow-downgrade", action="append", metavar="INSTALLED..COMMIT")
         sp.set_defaults(func=func)
 
     rb = sub.add_parser("rollback")

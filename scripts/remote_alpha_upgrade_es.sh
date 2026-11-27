@@ -2,8 +2,8 @@
 # Move the Remote Alpha box's ES to one named commit and put its Nomad behind
 # HTTPS (from the shape ES PR #54's upgrade left; see the contract).
 #   scripts/remote_alpha_upgrade_es.sh build --out <dir outside the checkout> --commit <sha>
-#   sudo scripts/remote_alpha_upgrade_es.sh check --payload <dir> --commit <sha>
-#   sudo scripts/remote_alpha_upgrade_es.sh apply --payload <dir> --commit <sha>
+#   sudo scripts/remote_alpha_upgrade_es.sh check --payload <dir> --commit <sha> [--allow-downgrade <installed>..<sha>]
+#   sudo scripts/remote_alpha_upgrade_es.sh apply --payload <dir> --commit <sha> [--allow-downgrade <installed>..<sha>]
 #   sudo scripts/remote_alpha_upgrade_es.sh rollback --backup-dir <dir>
 # Contract: .docs/system_overview/remote_supported_host_alpha.md, section
 # "Remote ES Upgrade And Nomad HTTPS".
@@ -73,6 +73,18 @@ def problems_of(path, folder, sticky_helps):
                      % (path, mode, " without the sticky bit" if sticky_helps else ""))
     return found
 
+
+# backup and restore are steps of apply and rollback: restore puts back any
+# backup with no rollback check and no record (audit 47, O47-1). The first
+# word that names a command of the upgrade is the command (only the test
+# option --host-root and its value can come before it).
+command = None
+for word in args:
+    if word in ("build", "check", "apply", "rollback", "backup", "restore", "migrate-config", "provision-key"):
+        command = word
+        break
+if command in ("backup", "restore"):
+    refuse(command + " is a step of apply and rollback, not a command of this script; use rollback --backup-dir <dir>")
 
 try:
     here = os.getcwd()

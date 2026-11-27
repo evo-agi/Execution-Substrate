@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -814,4 +815,37 @@ func TestRemoteAlphaUpgradeESWrapperRefusesCodeOfAnotherOwner(t *testing.T) {
 			t.Fatalf("as root the wrapper must accept root's code only:\n%s", stderr)
 		}
 	})
+}
+
+// Audit 47, O47-1: backup and restore are steps of apply and rollback, and
+// restore would put back any backup without the rollback's checks or its
+// record, so the wrapper refuses them before it runs any of the clone's code
+// (here the Python is not even there), with or without --host-root first.
+func TestRemoteAlphaUpgradeESWrapperRefusesItsInternalSteps(t *testing.T) {
+	c := newUpgradeClone(t)
+	if err := os.Remove(c.python); err != nil {
+		t.Fatal(err)
+	}
+	wrapper := filepath.Join(c.scripts, "remote_alpha_upgrade_es.sh")
+	for _, args := range [][]string{
+		{"restore", "--backup-dir", c.host},
+		{"backup", "--backup-dir", c.host, "--path", "/etc/hostname"},
+		{"--host-root", c.host, "restore", "--backup-dir", c.host},
+	} {
+		_, stderr, code := c.start(t.TempDir(), wrapper, c.env(""), args...)
+		command := "restore"
+		if slices.Contains(args, "backup") {
+			command = "backup"
+		}
+		want := "remote alpha ES upgrade refused: " + command + " is a step of apply and rollback, not a command of this script; use rollback --backup-dir <dir>; nothing was changed"
+		if code != 1 || !strings.Contains(stderr, want) {
+			t.Fatalf("wrapper %q exited %d: %s", args, code, stderr)
+		}
+	}
+	// The same words elsewhere on the command line do not trip it: rollback
+	// of a backup folder named restore reaches the clone's code (gone here).
+	_, stderr, code := c.start(t.TempDir(), wrapper, c.env(""), "rollback", "--backup-dir", "restore")
+	if code == 0 || strings.Contains(stderr, "is a step of apply and rollback") {
+		t.Fatalf("wrapper rollback --backup-dir restore exited %d: %s", code, stderr)
+	}
 }

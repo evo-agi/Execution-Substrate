@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -150,11 +151,33 @@ tls {
 // boxNomadHCLHTTPS is the box's nomad.hcl where this upgrade leaves it.
 const boxNomadHCLHTTPS = boxNomadHCLLocked + boxNomadTLSBlock
 
-// upgradeTestCommit is the commit the payload is built from: the one commit
-// of the module fixture (moduleFixture), whose go.mod and go.sum are what
-// check compares the payload's build info with. Git names a commit by its
-// content, so the fixture always has this name.
-const upgradeTestCommit = "766ab59feb35d8dc1b5443e0639a6c23bed5a4d8"
+// The commits of the module fixture (moduleFixture), the history that check
+// reads the order of a move from. Each holds the fixture go.mod and go.sum.
+// Git names a commit by its content, its parents included, so the fixture
+// always has these names:
+//
+//	boxESCommit ── previousESCommit ── upgradeTestCommit ── newerESCommit
+//	     └── sideESCommit
+const (
+	// boxESCommit stands for BOX_ES_COMMIT, the ES build ES PR #54's
+	// upgrade installed on the box, which a test's history cannot hold:
+	// the tests name it in ES_UPGRADE_TEST_BOX_ES_COMMIT.
+	boxESCommit = "a780210b09a640012820b41ff50ffbf6fa5acb3d"
+	// previousESCommit stands for ES PR #60's merge, whose builds the box
+	// runs.
+	previousESCommit = "a00beed83f6517abbaaa412ed8fae551b7e5f040"
+	// upgradeTestCommit is the commit the payload is built from, whose
+	// go.mod and go.sum are what check compares the payload's build info
+	// with.
+	upgradeTestCommit = "1d9e8fe97f4b107a3d01593befe8b0e880fd9490"
+	// sideESCommit is on a line of history beside upgradeTestCommit's.
+	sideESCommit = "e1e1a035bd7150aff93f94a84d0b7e971b11c736"
+	// newerESCommit comes after upgradeTestCommit.
+	newerESCommit = "12d1718f2b876cd0289bddc6cc2df64539c0e69e"
+)
+
+// realBoxESCommit is BOX_ES_COMMIT itself.
+const realBoxESCommit = "16cbf739eea8c6a673aef8048aefb69cebd5121b"
 
 // The fixture module's go.mod and go.sum: x/sys at v0.46.0 with its real
 // hashes; a go.sum hash for an older x/sys and for x/text, which go.mod does
@@ -206,10 +229,11 @@ func denyGroupOtherWrite(t *testing.T, root string) {
 	}
 }
 
-// moduleFixture makes a git repository whose one commit, upgradeTestCommit,
-// holds the fixture go.mod and go.sum, and that nobody but the test user
-// can change: what check reads the commit's go.mod and go.sum from in
-// place of the clone (ES_UPGRADE_TEST_MODULE_REPO).
+// moduleFixture makes a git repository that holds the fixture's commits
+// and that nobody but the test user can change: what check reads the
+// commit's go.mod and go.sum, and the order of a move, from in place of the
+// clone (ES_UPGRADE_TEST_MODULE_REPO). No ref names the commits, as no ref
+// named the one commit the fixture had before it held a history.
 func moduleFixture(t *testing.T) string {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), "modules")
@@ -223,16 +247,26 @@ func moduleFixture(t *testing.T) string {
 	}
 	fixtureGit(t, dir, "init", "-q")
 	fixtureGit(t, dir, "add", "go.mod", "go.sum")
-	commit := fixtureGit(t, dir, "commit-tree", fixtureGit(t, dir, "write-tree"), "-m", "module fixture")
-	if commit != upgradeTestCommit {
-		t.Fatalf("the module fixture's commit is %s; upgradeTestCommit must name it", commit)
+	tree := fixtureGit(t, dir, "write-tree")
+	commit := func(want, message string, parents ...string) string {
+		t.Helper()
+		args := []string{"commit-tree", tree, "-m", message}
+		for _, parent := range parents {
+			args = append(args, "-p", parent)
+		}
+		if got := fixtureGit(t, dir, args...); got != want {
+			t.Fatalf("the module fixture's commit %q is %s, not %s", message, got, want)
+		}
+		return want
 	}
+	box := commit(boxESCommit, "the box's build")
+	previous := commit(previousESCommit, "the build the box runs", box)
+	named := commit(upgradeTestCommit, "the named commit", previous)
+	commit(sideESCommit, "a build beside the named commit", box)
+	commit(newerESCommit, "a build after the named commit", named)
 	denyGroupOtherWrite(t, dir)
 	return dir
 }
-
-// boxESCommit is the ES build that ES PR #54's upgrade installed on the box.
-const boxESCommit = "16cbf739eea8c6a673aef8048aefb69cebd5121b"
 
 // The fakes stand in for the host's systemctl, curl, nomad and docker, for
 // scripts/nomad_acl_setup.sh and for scripts/internal/nomad_tls_identity.py.
@@ -240,10 +274,12 @@ const boxESCommit = "16cbf739eea8c6a673aef8048aefb69cebd5121b"
 // marker files. Starting nomad reads the host's nomad.hcl: with an acl block,
 // Nomad is "locked" and refuses anonymous job requests; with a tls block it
 // answers only over HTTPS, and only a curl that trusts nothing but the host's
-// Nomad CA. With the marker real-nomad, systemctl starts and stops a real
-// Nomad agent on the host's nomad.hcl, with the overrides the test wrote
-// (data directory, free ports, the TLS files under the test host root), and
-// curl hands every request to that Nomad to the real curl.
+// Nomad CA. A Nomad started with a gossip keyring in its data directory
+// reports its gossip encrypted, to the observer token only. With the marker
+// real-nomad, systemctl starts and stops a real Nomad agent on the host's
+// nomad.hcl, with the overrides the test wrote (the host's data directory,
+// free ports, the TLS files under the test host root), and curl hands every
+// request to that Nomad to the real curl.
 const fakeSystemctl = `#!/usr/bin/env bash
 set -u
 s="$FAKE_STATE"
@@ -262,6 +298,15 @@ case "$1" in
     printf 'ExecStart={ path=/usr/local/lib/execution-substrate/bin/es ; argv[]=%s ; ignore_errors=no }\n' \
       "$(cat "$s/es-argv" 2>/dev/null || echo '/usr/local/lib/execution-substrate/bin/es -config /etc/execution-substrate/es.json')" ;;
   stop)
+    # backups-at-stop: every stop first logs the files under the backup
+    # root as they are then, to backups-at-stop.log after a "stop <unit>"
+    # line.
+    if [[ -e "$s/backups-at-stop" ]]; then
+      echo "stop $2" >> "$s/backups-at-stop.log"
+      if [[ -d "$FAKE_HOST_ROOT/var/backups/execution-substrate-es-upgrade" ]]; then
+        (cd "$FAKE_HOST_ROOT/var/backups/execution-substrate-es-upgrade" && find . -type f | LC_ALL=C sort) >> "$s/backups-at-stop.log"
+      fi
+    fi
     # fail-stop-<unit> holds how many stops still succeed; after those, the
     # stop fails and the unit keeps running.
     if [[ -e "$s/fail-stop-$2" ]]; then
@@ -283,10 +328,24 @@ case "$1" in
       hcl="$FAKE_HOST_ROOT/etc/nomad.d/nomad.hcl"
       if grep -q '^acl {' "$hcl"; then touch "$s/locked"; else rm -f "$s/locked"; fi
       if grep -q '^tls {' "$hcl"; then touch "$s/tls"; else rm -f "$s/tls"; fi
+      # Nomad reads its gossip keyring when it starts; gossip-ignored stands
+      # for a Nomad that does not.
+      if [[ -e "$FAKE_HOST_ROOT/opt/nomad/data/server/serf.keyring" && ! -e "$s/gossip-ignored" ]]; then
+        touch "$s/gossip"
+      else
+        rm -f "$s/gossip"
+      fi
       # leader-starts holds how many Nomad starts still elect a leader.
       if [[ -e "$s/leader-starts" ]]; then
         n="$(cat "$s/leader-starts")"
         if (( n <= 0 )); then touch "$s/no-leader"; else echo $((n - 1)) > "$s/leader-starts"; rm -f "$s/no-leader"; fi
+      fi
+      # no-leader-once: this start names no leader, the next one does again.
+      if [[ -e "$s/no-leader-once" ]]; then
+        rm -f "$s/no-leader-once"
+        touch "$s/no-leader" "$s/no-leader-was-once"
+      elif [[ -e "$s/no-leader-was-once" ]]; then
+        rm -f "$s/no-leader" "$s/no-leader-was-once"
       fi
       if [[ -e "$s/real-nomad" ]] && ! real_nomad_running; then
         args=(-config "$hcl" -config "$s/override.hcl")
@@ -310,6 +369,8 @@ set -u
 s="$FAKE_STATE"
 url="${@: -1}"
 echo "curl $url" >> "$s/calls.log"
+# Every command line, so that a test can show no secret was on one.
+printf '%s\n' "$*" >> "$s/curl-argv.log"
 nomad="127.0.0.1:${FAKE_NOMAD_PORT:-4646}"
 if [[ -e "$s/real-nomad" && "$url" == http*://"$nomad"/* ]]; then
   exec "$REAL_CURL" "$@"
@@ -342,6 +403,17 @@ case "$url" in
     # https-jobs-open: over HTTPS, Nomad lists jobs to anyone, as a Nomad
     # whose ACLs do not hold there would.
     if [[ -e "$s/locked" && ! ( "$url" == https://* && -e "$s/https-jobs-open" ) ]]; then code=403; fi ;;
+  https://127.0.0.1:4646/v1/agent/self)
+    nomad_up
+    # The token comes in curl's config on standard input, never in argv.
+    [[ "$args" == *" --config - "* ]] || { echo "fake curl: agent read without its config on stdin" >&2; exit 2; }
+    token="$(cat "$FAKE_HOST_ROOT/etc/execution-substrate/nomad-acl/observer-token")"
+    if [[ "$(cat)" != "header = \"X-Nomad-Token: $token\"" ]]; then code=403; body='Permission denied'
+    elif [[ -e "$s/gossip" ]]; then body='{"config":{},"stats":{"serf":{"encrypted":"true"}}}'
+    else body='{"config":{},"stats":{"serf":{"encrypted":"false"}}}'; fi
+    # agent-self-fails: Nomad answers 500, with a body that would otherwise
+    # count as encrypted gossip.
+    if [[ -e "$s/agent-self-fails" ]]; then code=500; fi ;;
   http://127.0.0.1:4646/v1/acl/policy/anonymous|https://127.0.0.1:4646/v1/acl/policy/anonymous)
     nomad_up
     # anonymous-policy: Nomad holds an anonymous policy, which it shows to
@@ -420,6 +492,12 @@ s="$FAKE_STATE"
 echo "tls-identity $1 $3" >> "$s/calls.log"
 [[ "$1" == check && "$3" == https://127.0.0.1:4646 ]] || exit 2
 [[ -e "$s/identity-fails" ]] && { echo "nomad tls: Nomad's server key does not match nomad.server_spki_sha256" >&2; exit 1; }
+# identity-fails-after-first: the first check holds (apply's own look at the
+# host), and every later one fails.
+if [[ -e "$s/identity-fails-after-first" ]]; then
+  [[ -e "$s/identity-checked" ]] && { echo "nomad tls: Nomad's server key does not match nomad.server_spki_sha256" >&2; exit 1; }
+  touch "$s/identity-checked"
+fi
 [[ -e "$s/tls" && ! -e "$s/inactive-nomad" ]] || { echo "nomad tls: no TLS 1.3 connection to $3" >&2; exit 1; }
 read -r base ca pin < <(python3 -I -c 'import json, sys
 n = json.load(open(sys.argv[1]))["nomad"]
@@ -438,7 +516,63 @@ s="$FAKE_STATE"
 echo "docker $*" >> "$s/calls.log"
 [[ "$*" == "ps --quiet --no-trunc --filter label=com.hashicorp.nomad.alloc_id" ]] || exit 2
 [[ -e "$s/docker-fails" ]] && { echo "Cannot connect to the Docker daemon" >&2; exit 1; }
+# after-check names what something else does to the host once the check has
+# listed the allocations, before apply reads the host again: keyring-loose
+# writes a keyring that others can read, keyring-sound a sound one,
+# keyring-taken moves the keyring into this fake's state, tls-dir makes
+# Nomad's TLS directory, and es-json-key adds the key http.extra to es.json
+# in place. The host must be the test's own (a t.TempDir()
+# under the test's folder), and nothing is deleted.
+if [[ -e "$s/after-check" && "${FAKE_HOST_ROOT:-}" =~ /[0-9]{3}$ && "$(basename "$(dirname "$FAKE_HOST_ROOT")")" == Test* ]]; then
+  keyring="$FAKE_HOST_ROOT/opt/nomad/data/server/serf.keyring"
+  printf '["%s"]' "$(head -c 32 /dev/zero | base64)" > "$s/after-check-keyring"
+  case "$(cat "$s/after-check")" in
+    keyring-loose) install -m 0644 "$s/after-check-keyring" "$keyring" ;;
+    keyring-sound) install -m 0600 "$s/after-check-keyring" "$keyring" ;;
+    keyring-taken) [[ -f "$keyring" && ! -L "$keyring" ]] && mv "$keyring" "$s/keyring-taken" ;;
+    tls-dir) mkdir "$FAKE_HOST_ROOT/etc/nomad.d/tls" ;;
+    es-json-key) python3 -I -c 'import json, sys
+d = json.load(open(sys.argv[1]))
+d["http"]["extra"] = 1
+open(sys.argv[1], "w").write(json.dumps(d, indent=2) + "\n")' "$FAKE_HOST_ROOT/etc/execution-substrate/es.json" ;;
+  esac
+  mv "$s/after-check" "$s/after-check-done"
+fi
 cat "$s/allocs" 2>/dev/null || true
+`
+
+// fakeMv is mv, but onto the test host's gossip keyring it logs the call,
+// slow-keyring-rename holds the rename (and marks keyring-renaming) until a signal ends it, and
+// issued-keyring-loose leaves the keyring readable by others (an issuer
+// fault). newUpgradeHost puts the real mv's path in real_mv before it.
+const fakeMv = `s="$FAKE_STATE"
+if [[ "${@: -1}" == "${FAKE_HOST_ROOT:-}/opt/nomad/data/server/serf.keyring" && "${FAKE_HOST_ROOT:-}" =~ /[0-9]{3}$ && "$(basename "$(dirname "$FAKE_HOST_ROOT")")" == Test* ]]; then
+  echo "mv onto the gossip keyring" >> "$s/calls.log"
+  if [[ -e "$s/slow-keyring-rename" ]]; then
+    touch "$s/keyring-renaming"
+    sleep 30
+  fi
+  "$real_mv" "$@" || exit
+  if [[ -e "$s/issued-keyring-loose" ]]; then
+    chmod 0644 "${@: -1}"
+  fi
+  exit 0
+fi
+exec "$real_mv" "$@"
+`
+
+// fakeMktemp is mktemp, but for the test host's gossip keyring's temporary
+// file, slow-keyring-name holds it (and marks keyring-naming) once the real
+// mktemp has run, until a signal ends it. newUpgradeHost puts the real
+// mktemp's path in real_mktemp before it.
+const fakeMktemp = `s="$FAKE_STATE"
+if [[ "${@: -1}" == "${FAKE_HOST_ROOT:-}/opt/nomad/data/server/.serf.keyring.XXXXXX" && -e "$s/slow-keyring-name" ]]; then
+  "$real_mktemp" "$@" || exit
+  touch "$s/keyring-naming"
+  sleep 30
+  exit 0
+fi
+exec "$real_mktemp" "$@"
 `
 
 type upgradeHost struct {
@@ -453,6 +587,9 @@ type upgradeHost struct {
 	// env overrides the environment the upgrade runs with; an empty value
 	// removes the variable.
 	env map[string]string
+	// realNomadData leaves what a real Nomad keeps under the host's data_dir
+	// out of snapshots (realNomadState).
+	realNomadData bool
 }
 
 func (h *upgradeHost) path(rel string) string { return filepath.Join(h.root, filepath.FromSlash(rel)) }
@@ -660,6 +797,9 @@ func newUpgradeHost(t *testing.T, helper string) *upgradeHost {
 	if err := os.WriteFile(filepath.Join(h.state, "calls.log"), nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// The run's audit login uid (ES_UPGRADE_TEST_LOGINUID_FILE): unset, as
+	// under systemd-run, unless a test writes another.
+	h.mark("loginuid", "4294967295")
 
 	h.mkdir("etc/execution-substrate", 0o755)
 	h.write("etc/execution-substrate/es.json", string(boxStartESConfig(t, "http://127.0.0.1:4646")), 0o640)
@@ -711,6 +851,20 @@ func newUpgradeHost(t *testing.T, helper string) *upgradeHost {
 			t.Fatal(err)
 		}
 	}
+	realMv, err := exec.LookPath("mv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(h.bin, "mv"), []byte("#!/usr/bin/env bash\nreal_mv="+strconv.Quote(realMv)+"\n"+fakeMv), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	realMktemp, err := exec.LookPath("mktemp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(h.bin, "mktemp"), []byte("#!/usr/bin/env bash\nreal_mktemp="+strconv.Quote(realMktemp)+"\n"+fakeMktemp), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	return h
 }
 
@@ -723,6 +877,9 @@ func (h *upgradeHost) environ() []string {
 		"ES_UPGRADE_TEST_TLS_IDENTITY": filepath.Join(h.bin, "tls-identity"),
 		"ES_UPGRADE_TEST_WAIT_SECONDS": "1",
 		"ES_UPGRADE_TEST_MODULE_REPO":  h.modules,
+		// The fixture's history holds boxESCommit in place of the real one.
+		"ES_UPGRADE_TEST_BOX_ES_COMMIT": boxESCommit,
+		"ES_UPGRADE_TEST_LOGINUID_FILE": filepath.Join(h.state, "loginuid"),
 	}
 	for key, value := range h.env {
 		env[key] = value
@@ -824,6 +981,12 @@ func (h *upgradeHost) snapshot() map[string]string {
 			return err
 		}
 		rel, _ := filepath.Rel(h.root, path)
+		if h.realNomadData && realNomadState(filepath.ToSlash(rel)) {
+			if d.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
+		}
 		info, err := os.Lstat(path)
 		if err != nil {
 			return err
@@ -848,6 +1011,14 @@ func (h *upgradeHost) snapshot() map[string]string {
 		h.t.Fatal(err)
 	}
 	return out
+}
+
+// realNomadState reports whether rel, under the host root, is state that a
+// real Nomad keeps in the host's data_dir and changes as it runs: everything
+// there but its server folder and the gossip keyring, which the upgrade
+// reads and writes.
+func realNomadState(rel string) bool {
+	return strings.HasPrefix(rel, "opt/nomad/data/") && rel != "opt/nomad/data/server" && rel != hostGossipKeyring
 }
 
 // issueTLS runs scripts/70_linux_setup.sh's nomad_tls_issue into the host's
@@ -1112,7 +1283,7 @@ func TestRemoteAlphaUpgradeESCheckChangesNothing(t *testing.T) {
 	parts := report["parts"].(map[string]any)
 	for part, want := range map[string]string{
 		"nomad.hcl": "locked-http (", "Nomad's TLS directory": "absent", "es.json": "locked-http (Nomad at http://127.0.0.1:4646)",
-		"the ES binaries": "locked-http (builds of " + boxESCommit + ")",
+		"the ES binaries": "locked-http (builds of " + boxESCommit + ")", "Nomad's gossip keyring": "absent",
 	} {
 		if state, _ := parts[part].(string); !strings.HasPrefix(state, want) {
 			t.Errorf("part %s: %q, want %q", part, state, want)
@@ -1126,7 +1297,8 @@ func TestRemoteAlphaUpgradeESCheckChangesNothing(t *testing.T) {
 	if report["retained_result_key"] != "exists" || report["nomad_allocation_containers"] != float64(0) {
 		t.Fatalf("retained_result_key %v, allocation containers %v", report["retained_result_key"], report["nomad_allocation_containers"])
 	}
-	if changes := report["changes"].([]any); len(changes) != 5 {
+	if changes := report["changes"].([]any); len(changes) != 6 ||
+		changes[1] != "write Nomad's gossip keyring to /opt/nomad/data/server/serf.keyring with the setup's nomad_gossip_issue" {
 		t.Fatalf("changes %v", changes)
 	}
 	health := report["health"].(map[string]any)
@@ -1142,6 +1314,19 @@ func TestRemoteAlphaUpgradeESCheckChangesNothing(t *testing.T) {
 	onlyReads(t, h, "check")
 	if got := strings.Join(h.calls("curl http://127.0.0.1:4646"), " | "); got != "curl http://127.0.0.1:4646/v1/status/leader" {
 		t.Fatalf("check's Nomad requests: %q", got)
+	}
+}
+
+// Re-check 49: nomad.env is optional for Nomad's unit ("-"), so a host
+// without it is not refused.
+func TestRemoteAlphaUpgradeESTakesAHostWithoutNomadEnv(t *testing.T) {
+	h := newUpgradeHost(t, buildESConfigCheck(t))
+	if err := os.Remove(h.path("etc/nomad.d/nomad.env")); err != nil {
+		t.Fatal(err)
+	}
+	report, stderr, code := h.check()
+	if code != 0 || report["result"] != "ready" {
+		t.Fatalf("check of a host without nomad.env: exit %d, result %v, blockers %v, %s", code, report["result"], report["blockers"], stderr)
 	}
 }
 
@@ -1219,10 +1404,47 @@ func TestRemoteAlphaUpgradeESCheckRefusesWhatItWasNotWrittenFor(t *testing.T) {
 		}, "es_config", "not root:es 0640"},
 		{"nomad.hcl is world-readable", func(h *upgradeHost) {
 			_ = os.Chmod(h.path("etc/nomad.d/nomad.hcl"), 0o644)
-		}, "nomad_hcl", "nomad.hcl is not root:root 0640"},
+		}, "nomad_hcl", "'mode': '0644'}); put it back as a new file of root's, then check what it sets: rm -f /etc/nomad.d/nomad.hcl.new && " +
+			"install -o root -g root -m 0640 /etc/nomad.d/nomad.hcl /etc/nomad.d/nomad.hcl.new && mv -T /etc/nomad.d/nomad.hcl.new /etc/nomad.d/nomad.hcl"},
 		{"Nomad would load another config", func(h *upgradeHost) {
 			h.write("etc/nomad.d/tls.hcl", "tls {}\n", 0o644)
 		}, "nomad_hcl", "would also load ['tls.hcl']"},
+		// Re-check 49: nomad.env, which Nomad's unit reads as root, as the
+		// package leaves it (another account's to write) or as a link.
+		// Re-check 50 (S67-3): the remedy puts the file back as a new one.
+		{"nomad.env is writable by others", func(h *upgradeHost) {
+			_ = os.Chmod(h.path("etc/nomad.d/nomad.env"), 0o666)
+		}, "nomad_env", "'mode': '0666'}); put it back as a new file of root's, then check what it sets: " +
+			"rm -f /etc/nomad.d/nomad.env.new && install -o root -g root -m 0600 /etc/nomad.d/nomad.env /etc/nomad.d/nomad.env.new && " +
+			"mv -T /etc/nomad.d/nomad.env.new /etc/nomad.d/nomad.env (a chown, a chmod or setfacl leaves a handle that another account opened earlier able to write it)"},
+		// Re-check 50 (S67-4): each write bit and each kind of entry is
+		// pinned by itself; 0666 is refused while either bit is looked at.
+		{"nomad.env is writable by others only", func(h *upgradeHost) {
+			_ = os.Chmod(h.path("etc/nomad.d/nomad.env"), 0o646)
+		}, "nomad_env", "'mode': '0646'}); put it back as a new file of root's"},
+		{"nomad.env is writable by its group only", func(h *upgradeHost) {
+			_ = os.Chmod(h.path("etc/nomad.d/nomad.env"), 0o664)
+		}, "nomad_env", "'mode': '0664'"},
+		{"nomad.env is a folder", func(h *upgradeHost) {
+			_ = os.Remove(h.path("etc/nomad.d/nomad.env"))
+			_ = os.Mkdir(h.path("etc/nomad.d/nomad.env"), 0o755)
+		}, "nomad_env", "/etc/nomad.d/nomad.env, which Nomad's unit reads as root, is a folder, not a regular file; remove it"},
+		{"nomad.env is a FIFO", func(h *upgradeHost) {
+			_ = os.Remove(h.path("etc/nomad.d/nomad.env"))
+			if err := syscall.Mkfifo(h.path("etc/nomad.d/nomad.env"), 0o644); err != nil {
+				h.t.Fatal(err)
+			}
+		}, "nomad_env", "/etc/nomad.d/nomad.env, which Nomad's unit reads as root, is a FIFO, not a regular file; remove it"},
+		{"nomad.env belongs to another group", func(h *upgradeHost) {
+			giveAnotherGroup(h.t, h.path("etc/nomad.d/nomad.env"))
+		}, "nomad_env", "/etc/nomad.d/nomad.env, which Nomad's unit reads as root, is not root:root without write for group or others"},
+		{"nomad.env has the setuid bit", func(h *upgradeHost) {
+			_ = os.Chmod(h.path("etc/nomad.d/nomad.env"), os.ModeSetuid|0o640)
+		}, "nomad_env", "'mode': '4640'"},
+		{"nomad.env is a link", func(h *upgradeHost) {
+			_ = os.Remove(h.path("etc/nomad.d/nomad.env"))
+			_ = os.Symlink(h.path("etc/execution-substrate/ags.json"), h.path("etc/nomad.d/nomad.env"))
+		}, "nomad_env", "/etc/nomad.d/nomad.env, which Nomad's unit reads as root, is a link, not a regular file; remove it"},
 		{"Nomad's data directory is group-readable", func(h *upgradeHost) {
 			_ = os.Chmod(h.path("opt/nomad/data"), 0o750)
 		}, "nomad_dirs", "/opt/nomad/data is not a root:root 0700 directory"},
@@ -1513,6 +1735,12 @@ func TestRemoteAlphaUpgradeESApply(t *testing.T) {
 	if got := mustRead(t, h.path("etc/nomad.d/nomad.hcl")); got != boxNomadHCLHTTPS {
 		t.Fatalf("nomad.hcl after apply:\n%s", got)
 	}
+	// Nomad's gossip keyring: what the setup's nomad_gossip_issue writes,
+	// which Nomad read when it started on HTTPS.
+	requireIssuedKeyring(t, h)
+	if !h.marked("gossip") {
+		t.Fatal("Nomad did not start with its gossip keyring")
+	}
 
 	// ES's own config loader accepts the migrated es.json, which reaches
 	// Nomad over HTTPS and pins the server key; nothing else changed.
@@ -1558,6 +1786,7 @@ func TestRemoteAlphaUpgradeESApply(t *testing.T) {
 	if strings.Contains(stdout+stderr, "PRIVATE KEY") || strings.Contains(stdout+stderr, "01234567-89ab-cdef") {
 		t.Fatalf("apply printed key or token material")
 	}
+	noSecretsInOutputOrCalls(t, h, stdout+stderr)
 	// Everything else stays as it was: the ACL token files, the retained-
 	// result key, Nomad's state, and the files the upgrade does not own.
 	after := h.snapshot()
@@ -1582,9 +1811,10 @@ func TestRemoteAlphaUpgradeESApply(t *testing.T) {
 		t.Fatalf("ACL setup calls %q\nwant %q", got, want)
 	}
 	log := mustRead(t, filepath.Join(h.state, "calls.log"))
-	order := []string{"nomad config validate", "systemctl stop nomad", "systemctl start nomad", "curl https://127.0.0.1:4646/v1/status/leader",
-		"acl-setup provision", "systemctl start es", "tls-identity check https://127.0.0.1:4646", "curl https://127.0.0.1:4646/v1/jobs",
-		"curl https://127.0.0.1:4646/v1/acl/policy/anonymous", "acl-setup check"}
+	order := []string{"nomad config validate", "mv onto the gossip keyring", "systemctl stop nomad", "systemctl start nomad", "curl https://127.0.0.1:4646/v1/status/leader",
+		"acl-setup provision", "curl https://127.0.0.1:4646/v1/agent/self", "acl-setup placement", "systemctl start es",
+		"tls-identity check https://127.0.0.1:4646", "curl https://127.0.0.1:4646/v1/jobs",
+		"curl https://127.0.0.1:4646/v1/acl/policy/anonymous", "acl-setup check", "curl https://127.0.0.1:4646/v1/agent/self"}
 	at := 0
 	for _, step := range order {
 		next := strings.Index(log[at:], step)
@@ -1603,7 +1833,7 @@ func TestRemoteAlphaUpgradeESApply(t *testing.T) {
 			t.Errorf("backup lacks %s: %v", name, err)
 		}
 	}
-	if got := strings.Join(strings.Fields(mustRead(t, filepath.Join(backupDir, "created.json"))), ""); got != `["/etc/nomad.d/tls"]` {
+	if got := strings.Join(strings.Fields(mustRead(t, filepath.Join(backupDir, "created.json"))), ""); got != `["/etc/nomad.d/tls","/opt/nomad/data/server/serf.keyring"]` {
 		t.Fatalf("created.json %s", got)
 	}
 
@@ -1612,12 +1842,13 @@ func TestRemoteAlphaUpgradeESApply(t *testing.T) {
 	migrated := h.snapshot()
 	h.clearCalls()
 	report, stderr, code := h.check()
-	if code != 0 || report["shape"] != "https" || report["result"] != "nothing to do" || len(report["changes"].([]any)) != 0 {
+	if code != 0 || report["shape"] != "https-gossip" || report["result"] != "nothing to do" || len(report["changes"].([]any)) != 0 {
 		t.Fatalf("check after apply: exit %d, shape %v, result %v, changes %v, blockers %v, %s",
 			code, report["shape"], report["result"], report["changes"], report["blockers"], stderr)
 	}
-	if report["nomad_tls_identity"] != "nomad tls: tls=1.3 server_name=server.global.nomad key=pinned" {
-		t.Fatalf("nomad_tls_identity %v", report["nomad_tls_identity"])
+	if report["nomad_tls_identity"] != "nomad tls: tls=1.3 server_name=server.global.nomad key=pinned" ||
+		report["nomad_gossip"] != "stats.serf.encrypted 'true'" {
+		t.Fatalf("nomad_tls_identity %v, nomad_gossip %v", report["nomad_tls_identity"], report["nomad_gossip"])
 	}
 	stdout, stderr, code = h.apply()
 	if code != 0 || !strings.Contains(stdout, `"result": "nothing to do"`) {
@@ -1629,7 +1860,7 @@ func TestRemoteAlphaUpgradeESApply(t *testing.T) {
 		t.Fatalf("the apply of a migrated host wrote a backup: %v", dirs)
 	}
 	for _, step := range []string{"curl https://127.0.0.1:4646/v1/status/leader", "tls-identity check https://127.0.0.1:4646", "curl https://127.0.0.1:4646/v1/jobs",
-		"curl https://127.0.0.1:4646/v1/acl/policy/anonymous"} {
+		"curl https://127.0.0.1:4646/v1/acl/policy/anonymous", "curl https://127.0.0.1:4646/v1/agent/self"} {
 		if len(h.calls(step)) != 2 {
 			t.Fatalf("check and apply of the migrated host did not each make %q: %v", step, h.calls(""))
 		}
@@ -1690,15 +1921,16 @@ func TestRemoteAlphaUpgradeESApply(t *testing.T) {
 	h.write("usr/local/lib/execution-substrate/bin/es", string(newESBuild), 0o755)
 
 	// rollback puts the host back exactly: Nomad on plain HTTP, no TLS
-	// directory.
+	// directory, no gossip keyring.
 	h.clearCalls()
 	stdout, stderr, code = h.run("rollback", "--backup-dir", backupDir)
 	if code != 0 {
 		t.Fatalf("rollback exited %d\nstdout %s\nstderr %s", code, stdout, stderr)
 	}
 	assertRestored(t, before, h.snapshot())
-	if h.marked("tls") || !h.marked("locked") || h.marked("inactive-es") || h.marked("inactive-nomad") {
-		t.Fatalf("after the rollback: tls %v, locked %v, es down %v, nomad down %v", h.marked("tls"), h.marked("locked"), h.marked("inactive-es"), h.marked("inactive-nomad"))
+	if h.marked("tls") || h.marked("gossip") || !h.marked("locked") || h.marked("inactive-es") || h.marked("inactive-nomad") {
+		t.Fatalf("after the rollback: tls %v, gossip %v, locked %v, es down %v, nomad down %v",
+			h.marked("tls"), h.marked("gossip"), h.marked("locked"), h.marked("inactive-es"), h.marked("inactive-nomad"))
 	}
 	if got, want := strings.Join(h.calls("systemctl st"), " | "), "systemctl stop es | systemctl stop nomad | systemctl start nomad | systemctl start es"; got != want {
 		t.Fatalf("rollback service calls %q, want %q", got, want)
@@ -1715,20 +1947,27 @@ func TestRemoteAlphaUpgradeESApply(t *testing.T) {
 
 func TestRemoteAlphaUpgradeESApplyRollsBackOnFailure(t *testing.T) {
 	helper := buildESConfigCheck(t)
+	// The rollback removes what apply created by then: the TLS directory,
+	// and the gossip keyring once the new nomad.hcl validated.
+	const tlsOnly, both = "[/etc/nomad.d/tls]", "[/etc/nomad.d/tls /opt/nomad/data/server/serf.keyring]"
 	cases := []struct {
 		name    string
 		marker  string
 		failure string
+		removed string
 	}{
-		{"the new Nomad config does not validate", "nomad-invalid", "nomad config validate"},
-		{"Nomad cannot read the TLS files the config names", "tls-unreadable", "Error when parsing TLS configuration"},
-		{"Nomad names no leader over HTTPS", "https-no-leader", "Nomad named no leader at https://127.0.0.1:4646"},
-		{"Nomad cannot place ES's jobs after its start", "placement-fails", "nomad_acl_setup.sh placement failed"},
-		{"ES does not start", "fail-start-es-once", "systemctl start es"},
-		{"ES's TLS settings do not hold against Nomad", "identity-fails", "do not hold against the running Nomad"},
-		{"Nomad lists jobs to anyone over HTTPS", "https-jobs-open", "Nomad answers an anonymous job list over HTTPS with 200, not 403"},
-		{"Nomad holds an anonymous policy", "anonymous-policy", "Nomad answers a request without a token for its anonymous ACL policy over HTTPS with 200, not 404"},
-		{"the ACL check fails after ES starts", "acl-check-fails", "nomad_acl_setup.sh check failed"},
+		{"the new Nomad config does not validate", "nomad-invalid", "nomad config validate", tlsOnly},
+		{"Nomad cannot read the TLS files the config names", "tls-unreadable", "Error when parsing TLS configuration", tlsOnly},
+		{"the issuer leaves the keyring readable by others", "issued-keyring-loose",
+			"Nomad's new gossip keyring is present, but it fails the setup's nomad_gossip_keyring_ok", both},
+		{"Nomad names no leader over HTTPS", "https-no-leader", "Nomad named no leader at https://127.0.0.1:4646", both},
+		{"Nomad does not read its gossip keyring", "gossip-ignored", "Nomad does not report its gossip encrypted: stats.serf.encrypted 'false'", both},
+		{"Nomad cannot place ES's jobs after its start", "placement-fails", "nomad_acl_setup.sh placement failed", both},
+		{"ES does not start", "fail-start-es-once", "systemctl start es", both},
+		{"ES's TLS settings do not hold against Nomad", "identity-fails", "do not hold against the running Nomad", both},
+		{"Nomad lists jobs to anyone over HTTPS", "https-jobs-open", "Nomad answers an anonymous job list over HTTPS with 200, not 403", both},
+		{"Nomad holds an anonymous policy", "anonymous-policy", "Nomad answers a request without a token for its anonymous ACL policy over HTTPS with 200, not 404", both},
+		{"the ACL check fails after ES starts", "acl-check-fails", "nomad_acl_setup.sh check failed", both},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1747,8 +1986,11 @@ func TestRemoteAlphaUpgradeESApplyRollsBackOnFailure(t *testing.T) {
 			if summary["result"] != "rolled_back" || !strings.Contains(fmt.Sprint(summary["failure"]), tc.failure) {
 				t.Fatalf("summary result %v, failure %v", summary["result"], summary["failure"])
 			}
-			if removed := fmt.Sprint(summary["rollback"].(map[string]any)["removed"]); removed != "[/etc/nomad.d/tls]" {
-				t.Fatalf("the rollback removed %s", removed)
+			if removed := fmt.Sprint(summary["rollback"].(map[string]any)["removed"]); removed != tc.removed {
+				t.Fatalf("the rollback removed %s, want %s", removed, tc.removed)
+			}
+			if h.marked("gossip") {
+				t.Fatal("Nomad still encrypts its gossip after the rollback")
 			}
 			calls := h.calls("systemctl st")
 			if len(calls) < 2 || calls[len(calls)-2] != "systemctl start nomad" || calls[len(calls)-1] != "systemctl start es" {
@@ -1759,19 +2001,31 @@ func TestRemoteAlphaUpgradeESApplyRollsBackOnFailure(t *testing.T) {
 }
 
 // An interruption while a command runs ends that command's whole process
-// group, grandchildren included, before the rollback starts.
+// group, grandchildren included, before the rollback starts. One that lands
+// while the setup's nomad_gossip_issue holds the new key in its temporary
+// file (here mv holds the rename), or before the issuer has set the traps
+// that remove that file (here mktemp holds once it has chosen the file's
+// name, and no file exists yet), leaves no temporary file behind.
 func TestRemoteAlphaUpgradeESApplyRollsBackWhenInterrupted(t *testing.T) {
 	helper := buildESConfigCheck(t)
 	cases := []struct {
 		name, slow, reached string
+		https               bool
 	}{
-		{"during the Nomad config validation", "slow-validate", "validating"},
-		{"during the ACL setup", "slow-acl", "acl-running"},
-		{"by two signals in a row", "slow-validate", "validating"},
+		{"during the Nomad config validation", "slow-validate", "validating", false},
+		{"during the ACL setup", "slow-acl", "acl-running", false},
+		{"by two signals in a row", "slow-validate", "validating", false},
+		{"during the gossip keyring's issue", "slow-keyring-rename", "keyring-renaming", false},
+		{"during the gossip keyring's issue on an https host", "slow-keyring-rename", "keyring-renaming", true},
+		{"before the gossip keyring issuer's traps", "slow-keyring-name", "keyring-naming", false},
+		{"before the gossip keyring issuer's traps on an https host", "slow-keyring-name", "keyring-naming", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newUpgradeHost(t, helper)
+			if tc.https {
+				h.toHTTPSWithoutKeyring(previousESCommit)
+			}
 			before := h.snapshot()
 			h.mark(tc.slow, "")
 			cmd := h.command("apply", "--payload", h.payload, "--commit", upgradeTestCommit)
@@ -1787,6 +2041,17 @@ func TestRemoteAlphaUpgradeESApplyRollsBackWhenInterrupted(t *testing.T) {
 					t.Fatalf("apply never reached %s\n%s\n%s", tc.reached, stdout.String(), stderr.String())
 				}
 				time.Sleep(50 * time.Millisecond)
+			}
+			if tc.slow == "slow-keyring-name" {
+				entries, err := os.ReadDir(h.path("opt/nomad/data/server"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, e := range entries {
+					if strings.HasPrefix(e.Name(), ".serf.keyring.") {
+						t.Fatalf("%s exists before the issuer's traps are set", e.Name())
+					}
+				}
 			}
 			if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
 				t.Fatal(err)
@@ -1985,7 +2250,11 @@ print(json.dumps([m.ES_POLICY_RULES, m.OBSERVER_POLICY_RULES]))`
 // stand-in can hide a broken step. The test sets Nomad up the way ES PR
 // #54's upgrade left the box: ACLs bootstrapped over plain HTTP, the ES and
 // observer tokens in their files, and the observer policy without
-// list-jobs. Only ES and the services around it stay fakes.
+// list-jobs. Nomad keeps its state in the host's data_dir, so it reads the
+// gossip keyring that apply writes there. Then it takes the box's own path:
+// from Nomad on HTTPS without a keyring and ES of an earlier build, as ES PR
+// #60's upgrade left the box, apply adds the keyring and rollback takes it
+// away again. Only ES and the services around it stay fakes.
 func TestRemoteAlphaUpgradeESMovesARealNomadToHTTPS(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("the box's Nomad client config is Linux's")
@@ -2006,7 +2275,13 @@ func TestRemoteAlphaUpgradeESMovesARealNomadToHTTPS(t *testing.T) {
 	ports := freeLoopbackPorts(t, 3)
 	port := strconv.Itoa(ports[0])
 	plainAddr, httpsAddr := "http://127.0.0.1:"+port, "https://127.0.0.1:"+port
-	nomadData := t.TempDir()
+	// Nomad makes its server folder when it first starts, in place of the
+	// fake host's raft state.
+	nomadData := h.path("opt/nomad/data")
+	if err := os.RemoveAll(filepath.Join(nomadData, "server")); err != nil {
+		t.Fatal(err)
+	}
+	h.realNomadData = true
 	override := fmt.Sprintf(`data_dir = %q
 ports {
   http = %d
@@ -2056,17 +2331,7 @@ client {
 	// Nomad on plain HTTP with ACLs, as ES PR #54's upgrade left the box.
 	h.systemctl("start", "nomad")
 	plain := &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{Proxy: nil}}
-	deadline := time.Now().Add(60 * time.Second)
-	for {
-		status, body := nomadRequest(t, plain, "GET", plainAddr+"/v1/status/leader", "", nil)
-		if status == 200 && len(bytes.Trim(body, "\" \n")) > 0 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("Nomad named no leader on plain HTTP: %d %s\n%s", status, body, dumpNomad())
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
+	waitForLeader(t, plain, plainAddr, dumpNomad)
 	status, body := nomadRequest(t, plain, "POST", plainAddr+"/v1/acl/bootstrap", "", map[string]any{})
 	var bootstrap struct{ SecretID string }
 	if err := json.Unmarshal(body, &bootstrap); status != 200 || err != nil || bootstrap.SecretID == "" {
@@ -2130,6 +2395,8 @@ client {
 		t.Fatalf("before the upgrade the observer token lists ES's jobs: %d %s", status, body)
 	}
 
+	requireNomadGossip(t, plain, plainAddr, tokens["es-observer-v1"], "false")
+
 	before := h.snapshot()
 	report, stderr, code := h.check()
 	if code != 0 || report["shape"] != "locked-http" {
@@ -2139,6 +2406,7 @@ client {
 	if code != 0 {
 		t.Fatalf("apply exited %d\nstdout %s\nstderr %s\nnomad log:\n%s", code, stdout, stderr, dumpNomad())
 	}
+	noSecretsInOutputOrCalls(t, h, stdout+stderr)
 
 	// Nomad now answers only over HTTPS, as the issued certificate's holder
 	// for Nomad's server name, and still refuses anonymous requests.
@@ -2158,6 +2426,9 @@ client {
 	if status, _ := nomadRequest(t, plain, "GET", plainAddr+"/v1/status/leader", "", nil); status == 200 {
 		t.Fatalf("Nomad still answers plain HTTP")
 	}
+	// Nomad read the keyring that apply wrote and encrypts its gossip.
+	requireIssuedKeyring(t, h)
+	requireNomadGossip(t, secure, httpsAddr, tokens["es-observer-v1"], "true")
 	// The real nomad_acl_setup.sh provision rewrote the observer policy and
 	// kept both tokens.
 	if status, body := nomadRequest(t, secure, "GET", httpsAddr+"/v1/jobs?namespace=es-submit-v1", tokens["es-observer-v1"], nil); status != 200 {
@@ -2182,7 +2453,7 @@ client {
 	backupDir, summary := readSummary(t, h)
 	events := fmt.Sprint(summary["events"])
 	for _, want := range []string{"nomad ACLs provisioned again", "nomad can place ES's jobs", "nomad tls: tls=1.3 server_name=server.global.nomad key=pinned",
-		"nomad_acl_setup.sh check passed"} {
+		"nomad_acl_setup.sh check passed", `Nomad reports its gossip encrypted (stats.serf.encrypted "true")`} {
 		if !strings.Contains(events, want) {
 			t.Fatalf("apply's events lack %q: %s", want, events)
 		}
@@ -2193,10 +2464,11 @@ client {
 	migrated := h.snapshot()
 	h.clearCalls()
 	report, stderr, code = h.check()
-	if code != 0 || report["shape"] != "https" || report["result"] != "nothing to do" ||
-		!strings.HasPrefix(fmt.Sprint(report["nomad_tls_identity"]), "nomad tls: tls=1.3 server_name=server.global.nomad key=pinned") {
-		t.Fatalf("check of the migrated host: exit %d, shape %v, result %v, identity %v, blockers %v, %s",
-			code, report["shape"], report["result"], report["nomad_tls_identity"], report["blockers"], stderr)
+	if code != 0 || report["shape"] != "https-gossip" || report["result"] != "nothing to do" ||
+		!strings.HasPrefix(fmt.Sprint(report["nomad_tls_identity"]), "nomad tls: tls=1.3 server_name=server.global.nomad key=pinned") ||
+		report["nomad_gossip"] != "stats.serf.encrypted 'true'" {
+		t.Fatalf("check of the migrated host: exit %d, shape %v, result %v, identity %v, gossip %v, blockers %v, %s",
+			code, report["shape"], report["result"], report["nomad_tls_identity"], report["nomad_gossip"], report["blockers"], stderr)
 	}
 	if stdout, stderr, code := h.apply(); code != 0 || !strings.Contains(stdout, `"result": "nothing to do"`) {
 		t.Fatalf("apply of the migrated host: exit %d\nstdout %s\nstderr %s", code, stdout, stderr)
@@ -2216,7 +2488,7 @@ client {
 	if status, body := nomadRequest(t, secure, "POST", httpsAddr+"/v1/acl/policy/anonymous", management, anonymousPolicy); status != 200 {
 		t.Fatalf("create the anonymous policy: %d %s", status, body)
 	}
-	deadline = time.Now().Add(30 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for {
 		status, body := nomadRequest(t, secure, "GET", httpsAddr+"/v1/jobs?namespace=es-submit-v1", "", nil)
 		if status == 200 {
@@ -2249,7 +2521,70 @@ client {
 		t.Fatalf("check of the migrated host after the anonymous policy is gone: exit %d, blockers %v, %s", code, report["blockers"], stderr)
 	}
 
-	// rollback returns the box to plain HTTP with a leader.
+	// The box's path: Nomad on HTTPS without a keyring, and ES a build of an
+	// earlier commit, as ES PR #60's upgrade left the box.
+	if err := os.Remove(h.path(hostGossipKeyring)); err != nil {
+		t.Fatal(err)
+	}
+	h.installBuilds(previousESCommit)
+	h.systemctl("stop", "nomad")
+	h.systemctl("start", "nomad")
+	waitForLeader(t, secure, httpsAddr, dumpNomad)
+	requireNomadGossip(t, secure, httpsAddr, tokens["es-observer-v1"], "false")
+	atHTTPS := h.snapshot()
+	report, stderr, code = h.check()
+	if code != 0 || report["shape"] != "https" || len(report["changes"].([]any)) != 3 {
+		t.Fatalf("check of the box's https host: exit %d, shape %v, changes %v, blockers %v, %s", code, report["shape"], report["changes"], report["blockers"], stderr)
+	}
+	firstBackup := backupDirs(t, h)
+	stdout, stderr, code = h.apply()
+	if code != 0 {
+		t.Fatalf("apply to the box's https host exited %d\nstdout %s\nstderr %s\nnomad log:\n%s", code, stdout, stderr, dumpNomad())
+	}
+	noSecretsInOutputOrCalls(t, h, stdout+stderr)
+	requireIssuedKeyring(t, h)
+	requireNomadGossip(t, secure, httpsAddr, tokens["es-observer-v1"], "true")
+	if report, stderr, code := h.check(); code != 0 || report["shape"] != "https-gossip" || report["result"] != "nothing to do" {
+		t.Fatalf("check after the box's apply: exit %d, shape %v, result %v, blockers %v, %s", code, report["shape"], report["result"], report["blockers"], stderr)
+	}
+	var secondBackup string
+	for _, dir := range backupDirs(t, h) {
+		if !slices.Contains(firstBackup, dir) {
+			secondBackup = dir
+		}
+	}
+	if secondBackup == "" || len(backupDirs(t, h)) != 2 {
+		t.Fatalf("the box's apply wrote no second backup: %v", backupDirs(t, h))
+	}
+	if got := strings.Join(strings.Fields(mustRead(t, filepath.Join(secondBackup, "created.json"))), ""); got != `["/opt/nomad/data/server/serf.keyring"]` {
+		t.Fatalf("the box's apply created %s", got)
+	}
+	// Its rollback takes the keyring away, and Nomad's gossip is plain again.
+	stdout, stderr, code = h.run("rollback", "--backup-dir", secondBackup)
+	if code != 0 {
+		t.Fatalf("rollback of the box's apply exited %d\nstdout %s\nstderr %s\nnomad log:\n%s", code, stdout, stderr, dumpNomad())
+	}
+	assertRestored(t, atHTTPS, h.snapshot())
+	requireNomadGossip(t, secure, httpsAddr, tokens["es-observer-v1"], "false")
+	if report, stderr, code := h.check(); code != 0 || report["shape"] != "https" {
+		t.Fatalf("check after the box's rollback exited %d: shape %v, blockers %v, %s", code, report["shape"], report["blockers"], stderr)
+	}
+
+	// The first backup is not of the apply that left the host as it is: the
+	// builds of an earlier commit were put in place without the upgrade. Its
+	// rollback is refused before a service stops.
+	h.clearCalls()
+	stdout, stderr, code = h.run("rollback", "--backup-dir", backupDir)
+	if code != 1 || !strings.Contains(stderr, "is not the backup of the apply that left the host as it is") {
+		t.Fatalf("rollback of the first backup over the box's builds exited %d\nstdout %s\nstderr %s", code, stdout, stderr)
+	}
+	onlyReads(t, h, "a refused rollback of the first backup")
+	assertRestored(t, atHTTPS, h.snapshot())
+
+	// With the builds the first apply installed back in place, its rollback
+	// returns the box to plain HTTP with a leader.
+	h.write("usr/local/lib/execution-substrate/bin/es", string(newESBuild), 0o755)
+	h.write("usr/local/bin/es-runtime-support", string(newRuntimeSupportBuild), 0o755)
 	stdout, stderr, code = h.run("rollback", "--backup-dir", backupDir)
 	if code != 0 {
 		t.Fatalf("rollback exited %d\nstdout %s\nstderr %s\nnomad log:\n%s", code, stdout, stderr, dumpNomad())
@@ -2258,8 +2593,40 @@ client {
 	if status, body := nomadRequest(t, plain, "GET", plainAddr+"/v1/status/leader", "", nil); status != 200 {
 		t.Fatalf("Nomad's leader on plain HTTP after the rollback: %d %s", status, body)
 	}
+	requireNomadGossip(t, plain, plainAddr, tokens["es-observer-v1"], "false")
 	if report, stderr, code := h.check(); code != 0 || report["shape"] != "locked-http" {
 		t.Fatalf("check after the rollback exited %d: shape %v, blockers %v, %s", code, report["shape"], report["blockers"], stderr)
+	}
+}
+
+// waitForLeader waits up to a minute for the Nomad at addr to name a leader.
+func waitForLeader(t *testing.T, client *http.Client, addr string, dump func() string) {
+	t.Helper()
+	deadline := time.Now().Add(60 * time.Second)
+	for {
+		status, body := nomadRequest(t, client, "GET", addr+"/v1/status/leader", "", nil)
+		if status == 200 && len(bytes.Trim(body, "\" \n")) > 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("Nomad named no leader at %s: %d %s\n%s", addr, status, body, dump())
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
+// requireNomadGossip fails unless the Nomad agent at addr reports
+// stats.serf.encrypted as want, to token.
+func requireNomadGossip(t *testing.T, client *http.Client, addr, token, want string) {
+	t.Helper()
+	status, body := nomadRequest(t, client, "GET", addr+"/v1/agent/self", token, nil)
+	var agent struct {
+		Stats struct {
+			Serf map[string]any `json:"serf"`
+		} `json:"stats"`
+	}
+	if status != 200 || json.Unmarshal(body, &agent) != nil || agent.Stats.Serf["encrypted"] != want {
+		t.Fatalf("Nomad's agent at %s: %d, stats.serf.encrypted %#v, want %q", addr, status, agent.Stats.Serf["encrypted"], want)
 	}
 }
 

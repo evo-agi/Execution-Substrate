@@ -7265,15 +7265,22 @@ router or any other home device.
 ## Remote ES Upgrade And Nomad HTTPS
 
 `Bounded slice rule`: the one existing-host migration contract. It moves the
-Remote Alpha box from where the upgrade of ES PR #54 left it, ES built from
-`16cbf739` and Nomad enforcing ACLs on plain HTTP (the shape `locked-http`),
-to one named `trunk_dev` commit with Nomad serving its API and RPC only over
-TLS 1.3 (the shape `https`): part 2b of the Nomad lock. Current ES requires
-a loopback `https://` `nomad.base_url` with `nomad.server_name`,
+Remote Alpha box to one named `trunk_dev` commit with Nomad serving its API
+and RPC only over TLS 1.3 (part 2b of the Nomad lock) and encrypting its
+gossip with a keyring that the setup's `nomad_gossip_issue` writes (red-team
+RT60-1): the shape `https-gossip`. It starts from where the upgrade of ES PR
+#54 left the box, ES built from `16cbf739` and Nomad enforcing ACLs on plain
+HTTP (the shape `locked-http`), or from where the upgrade of ES PR #60 left
+it, Nomad on HTTPS with ES's pin and no gossip keyring (the shape `https`,
+which also covers a later run of this upgrade for another commit). Current
+ES requires a loopback `https://` `nomad.base_url` with `nomad.server_name`,
 `nomad.root_ca_file` and `nomad.server_spki_sha256`, and decodes its config
-with unknown fields refused, while the box's ES cannot read a config that has
-them, so the binaries, the config and Nomad's listener change together. It
-applies to those two host shapes only. It does not redeploy AGS, ARS or EGS,
+with unknown fields refused, while the box's ES of `16cbf739` cannot read a
+config that has them, so from `locked-http` the binaries, the config and
+Nomad's listener change together. Without a gossip key, Nomad's serf port
+accepts any process that reaches it as a peer: a local account could start
+its own Nomad server and join the box's as a member and a raft non-voter. It
+applies to those host shapes only. It does not redeploy AGS, ARS or EGS,
 change a unit file, move ES storage, or replace Nomad's ACL token files. The
 first upgrade, from `74748063` to `16cbf739` with the Nomad lock, has run on
 the box; the version of this script at `16cbf739` is the one that does it.
@@ -7287,8 +7294,9 @@ Scripts:
   calls ES's own `config.Load` on a file and reports its answer, so the
   upgrade accepts exactly the configs the new ES accepts. Tests keep it to
   that one call.
-- reused: the `nomad_tls` functions of `scripts/70_linux_setup.sh`, which
-  issue and check Nomad's TLS material on every supported host,
+- reused: the `nomad_tls` and `nomad_gossip` functions of
+  `scripts/70_linux_setup.sh`, which issue and check Nomad's TLS material
+  and write and check its gossip keyring on every supported host,
   `scripts/nomad_acl_setup.sh` and `scripts/internal/nomad_tls_identity.py`,
   all from the same checkout.
 
@@ -7372,21 +7380,30 @@ Operator interface:
   beside it: for example `sudo mkdir -m 0700 /var/lib/es-upgrade/<UTC time>`
   (under a `root:root` `0755` `/var/lib/es-upgrade`) handed to you with
   `sudo chown`, as the box procedure does.
-- `sudo scripts/remote_alpha_upgrade_es.sh check --payload <dir> --commit <sha>`
+- `sudo scripts/remote_alpha_upgrade_es.sh check --payload <dir> --commit <sha> [--allow-downgrade <installed>..<sha>]`
   reads only. It prints a JSON report (schema
   `execution-substrate.remote-alpha.es-upgrade-summary.v2`) with the host's
-  shape, each part's state and every change apply would make, and exits 1
-  with nothing changed when there is a blocker.
-- `sudo scripts/remote_alpha_upgrade_es.sh apply --payload <dir> --commit <sha>`
-  runs the same checks, then the steps below.
+  shape, each part's state, the move and every change apply would make, and
+  exits 1 with nothing changed when there is a blocker.
+- `sudo scripts/remote_alpha_upgrade_es.sh apply --payload <dir> --commit <sha> [--allow-downgrade <installed>..<sha>]`
+  runs the same checks, then the steps below. `--allow-downgrade` is only
+  for a move that is not forward (below).
 - `sudo scripts/remote_alpha_upgrade_es.sh rollback --backup-dir <dir>`
-  puts a backup back.
+  puts back the backup of the apply that left the host as it is (below).
+
+`backup` and `restore` are steps of `apply` and `rollback`, not commands:
+the wrapper refuses them, since `restore` would put back any backup without
+the rollback's checks or its record.
+
+`check` and `apply` take their options only by their full names, so that
+no prefix stands in for `--allow-downgrade`.
 
 Hand the clone and the payload to root before `check` (`chown -R root:root`
 and `chmod -R go-w`) so that no other account can change them between the
 check and the run. `check`, `apply` and `rollback` run code from the clone
-as root (the upgrade itself, the setup's `nomad_tls` functions,
-`nomad_acl_setup.sh` with `nomad_acl.py`, and `nomad_tls_identity.py`), so
+as root (the upgrade itself, the setup's `nomad_tls` and `nomad_gossip`
+functions, `nomad_acl_setup.sh` with `nomad_acl.py`, and
+`nomad_tls_identity.py`), so
 each first refuses, changing nothing, unless no account but root can change
 that code: every folder from `/` down to the clone's `scripts` belongs to
 root and is writable by neither its group nor others, unless it has the
@@ -7400,7 +7417,8 @@ system's nor root's git config, no `refs/replace` and `PATH`
 unless the clone's `.git` is a folder (not a `.git` file, which sends git
 to the folder it names) whose content is root's alone by the same rule,
 holds the commit, and has no `commondir` or object `alternates` (which would
-make git read objects from elsewhere): git does not check an object's bytes
+make git read objects from elsewhere) and no `info/grafts` (which gives
+commits other parents than their own): git does not check an object's bytes
 against its name when it reads it, so the folder it reads decides what
 `go.mod` and `go.sum` say.
 
@@ -7429,31 +7447,160 @@ import path), so the upgrade's own checks above see the clone's real path.
 `apply` under `systemd-run` so that a dropped SSH session does not stop it;
 its output then goes to the journal, and its summary to the backup folder.
 
-`check` and `apply` first read the host's shape from four parts, each on its
+`check` and `apply` first read the host's shape from five parts, each on its
 own:
 
-| Part | `locked-http` | `https` |
-| --- | --- | --- |
-| `/etc/nomad.d/nomad.hcl` | the box's file after the lock and the host-network repair of 2026-11-24 (SHA-256 `ea333055…5163`, 1126 bytes) | that file with the `tls` block of `scripts/70_linux_setup.sh` appended |
-| `/etc/nomad.d/tls` | absent | `root:root 0755`, holding exactly `ca.pem`, `server.pem` and `server-key.pem`, which pass the setup's `nomad_tls_material_ok` |
-| `/etc/execution-substrate/es.json` | the box build's 49 key paths and the four that ES PR #54's upgrade added (`nomad.token_file` `/etc/execution-substrate/nomad-acl/es-token`, `execution.retained_result_auth` `{store_id: remote-alpha, key_id: k1, key_file: /etc/execution-substrate/retained-result-auth/es.key}`), with `nomad.base_url` `http://127.0.0.1:4646` | the same, with `nomad.base_url` `https://127.0.0.1:4646` and `nomad.server_name` `server.global.nomad`, `nomad.root_ca_file` `/etc/nomad.d/tls/ca.pem` and `nomad.server_spki_sha256` the SHA-256 of the public key of the certificate on disk |
-| `es` and `es-runtime-support` | clean builds of `16cbf739` by their own Go build info | the verified payload's builds of `<commit>` |
+| Part | `locked-http` | `https` | `https-gossip` |
+| --- | --- | --- | --- |
+| `/etc/nomad.d/nomad.hcl` | the box's file after the lock and the host-network repair of 2026-11-24 (SHA-256 `ea333055…5163`, 1126 bytes) | that file with the `tls` block of `scripts/70_linux_setup.sh` appended | as `https` |
+| `/etc/nomad.d/tls` | absent | `root:root 0755` with no ACL, holding exactly `ca.pem`, `server.pem` and `server-key.pem`, which pass the setup's `nomad_tls_material_ok` | as `https` |
+| `/etc/execution-substrate/es.json` | the box build's 49 key paths and the four that ES PR #54's upgrade added (`nomad.token_file` `/etc/execution-substrate/nomad-acl/es-token`, `execution.retained_result_auth` `{store_id: remote-alpha, key_id: k1, key_file: /etc/execution-substrate/retained-result-auth/es.key}`), with `nomad.base_url` `http://127.0.0.1:4646` | the same, with `nomad.base_url` `https://127.0.0.1:4646` and `nomad.server_name` `server.global.nomad`, `nomad.root_ca_file` `/etc/nomad.d/tls/ca.pem` and `nomad.server_spki_sha256` the SHA-256 of the public key of the certificate on disk | as `https` |
+| `es` and `es-runtime-support` | clean builds of `16cbf739` by their own Go build info | clean builds of one commit other than `16cbf739` (which `apply` replaces), or the verified payload's builds of `<commit>` | the verified payload's builds of `<commit>` |
+| `/opt/nomad/data/server/serf.keyring` | absent | absent, or sound when the builds are not the payload's | sound |
 
-On `locked-http`, `check` reports what `apply` will change. On `https` for
-the named commit there is nothing to do: `check` and `apply` verify the host
-in place (Nomad names a leader over HTTPS, `nomad_tls_identity.py check`
-passes with the installed `es.json`, Nomad answers an anonymous job list
-with 403, and it answers a request without a token for its `anonymous` ACL
-policy with 404, as ES's own check before each submit requires), write no
-backup, touch no service, and exit 0 with the result `nothing to do`. The job
-list asks only about the namespace `default`, so only the policy request
-shows an anonymous policy that opens ES's namespace. These requests only
-read: `nomad_acl_setup.sh check` is not run here, because it creates and
-deletes short-lived probe tokens. Anything else is refused, and the refusal names the state
-of every part: the pre-lock `nomad.hcl` (SHA-256 `5d5e106c…96b8`, ES PR
-#54's upgrade has not run), a file of unknown content, or parts that
-disagree, such as TLS material left by an `apply` that was cut off before
-its rollback.
+The keyring is sound when it is root's and passes the setup's
+`nomad_gossip_keyring_ok`: a regular file (not a link), mode `0600`, holding
+a JSON list of one or more base64 32-byte keys. Its folder
+`/opt/nomad/data/server`, which Nomad makes when it first starts, must be a
+`root:root` folder that neither its group nor others can write, whatever the
+shape.
+
+On `locked-http` and `https`, `check` reports what `apply` will change. On
+`https-gossip` for the named commit there is nothing to do: `check` and
+`apply` verify the host in place (Nomad names a leader over HTTPS,
+`nomad_tls_identity.py check` passes with the installed `es.json`, Nomad
+answers an anonymous job list with 403, and it answers a request without a
+token for its `anonymous` ACL policy with 404, as ES's own check before each
+submit requires, and its `/v1/agent/self`, read with the observer token,
+reports `stats.serf.encrypted` as the string `"true"`), write no backup,
+touch no service, and exit 0 with the result `nothing to do`. The job list
+asks only about the namespace `default`, so only the policy request shows
+an anonymous policy that opens ES's namespace. These requests only read:
+`nomad_acl_setup.sh check` is not run here, because it creates and deletes
+short-lived probe tokens. The observer token goes to `curl` in its config on
+standard input (`--config -`), never on a command line. Anything else is
+refused, and the refusal names the state of every part: the pre-lock
+`nomad.hcl` (SHA-256 `5d5e106c…96b8`, ES PR #54's upgrade has not run), a
+file of unknown content, a keyring that fails `nomad_gossip_keyring_ok`, a
+missing server folder, or parts that disagree, such as TLS material left by
+an `apply` that was cut off before its rollback, a keyring on a
+`locked-http` host, or builds of `16cbf739` on an `https` one.
+
+`check` and `apply` then read the move: from the commit that the installed
+`es` and `es-runtime-support` are clean builds of (`16cbf739` on
+`locked-http`) to the named commit, in the clone's history, read from the
+same git objects with the same git environment as `go.mod` and `go.sum`
+(`git merge-base --is-ancestor`). The move is `forward` when the installed
+commit is an ancestor of the named one, `same` when they are one commit (the
+payload's builds on an `https` host without a keyring, or on an
+`https-gossip` one, which `apply` leaves as it is), `backward` when the
+named commit is an ancestor of the installed one, `sideways` when neither
+is, and `unknown` when the clone does not hold both commits or is shallow,
+so that its history may stop short of either. Only a `forward` or `same`
+move runs on its own. Any other is refused unless root names that one move
+on the command line as `--allow-downgrade <installed commit>..<named commit>`,
+each a full lower-case commit, given once. No file, variable or payload
+stands in for it, and a value that names another move, is malformed, is
+given twice, or names a `forward` or `same` move is refused. A history that
+git cannot read or warns about (a commit whose parent the clone lacks,
+about which some git versions complain and still answer "not an ancestor",
+or a ref named after a commit), that another
+account could change, or that a grafts file rewrites (above) is
+refused whatever the command line says. The report's `move` names both
+commits, the order and why; for a move that `--allow-downgrade` let through,
+also that argument and who ran it: `sudo_user`, the user `SUDO_USER` names
+(none when it is unset or empty, as when `sudo` did not start the run
+itself, under `systemd-run` for one); `uid`, the real uid; and
+`login_user`, the user the kernel's audit login uid
+(`/proc/self/loginuid`) names, which `sudo` keeps (none when no login
+started the run, as under `systemd-run`). Root can set any of them, so they
+are a record, not a check. `apply` writes the same record to `move.json` in
+its backup before it changes anything (before it first stops ES) and logs
+the move, and its summary repeats it. This
+stops mistakes, such as a stale clone or payload or a wrong or reused
+commit, and leaves a record; it cannot stop root, who can install binaries
+without this script, so who may pass `--allow-downgrade` is the operator
+procedure's rule (on the box: only once the owner has agreed to that move,
+naming both commits). Older versions of this script cannot make a move this
+one refuses: the version at `16cbf739` takes only the pre-lock host, and
+those of ES PR #60 (`7e27168`) and before take an `https` host only with the
+payload's builds installed already, so they never put another commit's
+builds in place of the installed ones; only a checkout of an earlier,
+unmerged revision of the change that brought this check could.
+
+`rollback` puts back a backup only when two rules hold, both checked before
+a service stops; a backup that fails either is refused with nothing changed
+and nothing recorded:
+
+- Every backup `apply` made after it has been put back since. `apply` lists,
+  in each new backup's `earlier.json`, the folders the backup folder held
+  then, and each rollback writes `restored-<UTC time>-<pid>.json` into its
+  backup once the files are back and what that apply created is removed
+  (only a regular file of that name counts). So
+  the backup must be a folder of `/var/backups/execution-substrate-es-upgrade`,
+  and the order does not rest on the clock. Builds are reproducible, so
+  without this rule a later apply of the same commit would leave bytes equal
+  to an older backup's staged payload, and putting that older backup back
+  would leave `es.json` pinning a key Nomad no longer has. A folder without
+  `earlier.json` was made by an earlier version of this script (ES PR #60's
+  backup on the box) or by an apply cut off before it changed anything:
+  `apply` writes the copies, `manifest.json` and `created.json`, then
+  `earlier.json` through a temporary name that it renames into place, and
+  only then `move.json` and the payload (step 1), all before it changes the
+  host. So a backup holds a whole `earlier.json` or none, and holds
+  `created.json` whenever it holds `earlier.json`. `rollback` refuses a
+  backup whose `manifest.json` or `created.json` is missing or cut short,
+  saying that its apply stopped before it changed the host, and one whose
+  `manifest.json` or `created.json` is valid JSON but not the document
+  `apply` writes, naming what is wrong: a `manifest.json` that is not an
+  object with the schema and a list of files, each an object with a clean
+  absolute path and whether it existed and, for a file that existed, a copy
+  name of the form `NN-<name>` in `files/`, a lower-case SHA-256, a size, a
+  four-digit octal mode and an owner and group that are non-negative
+  integers below 2^32 - 1 (Linux's largest owner and group; `chown` reads
+  2^32 - 1 as "leave it as it is"), with no NUL in a path or a
+  copy name and no character a file name cannot hold (a lone surrogate,
+  JSON's `"\ud800"`; a byte that is not UTF-8, which Python reads as a
+  surrogate that stands for that byte, is a file name's and passes); one
+  that does not name exactly the four files `apply` backs up
+  (`es.json`, `es`, `es-runtime-support` and `nomad.hcl`, in that order);
+  one whose copy is missing from `files/`, is not a regular file there or
+  does not match its digest and size; and a `created.json` that is not a
+  list of the paths `apply` creates. It also refuses a backup with a file
+  that existed at backup time whose folder is gone from the host or is not
+  a folder, or whose path is a folder now (a rename cannot replace a
+  folder; a link or another non-file there is replaced) or cannot be looked
+  at, since the file cannot go back there; a file that was absent at backup
+  time is not put back and needs neither. Each is refused before a service is
+  stopped, so no value the check admits ends a restore part way; one cut off
+  after `earlier.json` counts as a later backup, so it is put back first
+  (it puts back the files it found). If
+  the `restored-` record cannot be written the rollback goes on and says
+  so; an earlier backup then stays refused until this one is put back again.
+- Each of `es` and `es-runtime-support` is, byte for byte, either the
+  backup's own copy (that apply stopped before it replaced the file, or the
+  backup was put back already) or the copy of the payload that apply staged
+  in the backup (it installed that copy).
+
+So these are refused: an older backup while a later apply is in effect, a
+backup after builds were put in place without this script, and one whose
+staged payload is gone, since putting it back would move ES to another
+build without the move check. Put back the newest backup first, then the
+one before it. A backup may be put back again, for example after a rollback
+that was cut off. The first rule looks only at backups made after it, so
+after an earlier backup has been put back as well, putting this one back
+again passes only when the byte rule holds: when that earlier apply left the
+ES builds as they were, or a move root named brought them back. It then puts
+back this backup's files and builds, and records it, like any rollback.
+Each rollback, by `rollback` or by
+`apply` putting back its own backup, is recorded in that backup before a
+service stops, in a new `rollback-<UTC time>-<pid>.json`: what each
+installed binary is (`the backup's copy`, `the payload its apply
+installed`, or nothing for `apply`'s own rollback when it is neither), the
+commits the installed binaries and the backup's copies are clean builds of
+(`from` and `to`), whether `rollback` or `apply` ran it, the time, and who
+ran it, as above. `rollback` refuses, with nothing changed, when it cannot
+write that record; `apply`'s own rollback logs why and goes on.
 
 `check` refuses when:
 
@@ -7481,6 +7628,9 @@ its rollback.
   module (a `=>` line) are all refused. A commit whose `go.mod` replaces a
   module is refused by `build` and `check` alike
 - the named commit is `16cbf739`, or the host has no shape it knows
+- the move is not `forward` or `same` and `--allow-downgrade` does not name
+  it exactly, `--allow-downgrade` is given for a `forward` or `same` move,
+  more than once or malformed, or the clone's history cannot be read
 - one of `ars`, `ags`, `egs`, `es`, `vault`, `spire-server`, `spire-agent`,
   `nomad` and `docker` is not active, or `es.service` does not run
   `/usr/local/lib/execution-substrate/bin/es -config /etc/execution-substrate/es.json`
@@ -7491,26 +7641,64 @@ its rollback.
   (healthcheck runbook step 4)
 - `es.json` is not `root:es 0640`, `nomad.hcl` is not `root:root 0640`,
   `/etc/nomad.d` holds another `.hcl` or `.json` file that Nomad would load,
-  or `/etc/nomad.d`, `/opt/nomad` (0755) and `/opt/nomad/data` (0700) are not
-  `root:root` folders with those modes (audit INF-16)
+  `/etc/nomad.d/nomad.env` (the `EnvironmentFile` of Nomad's unit, which
+  Nomad reads as root; the package gives it to the `nomad` account and the
+  setup takes it back) is there but is not a regular file (the refusal
+  says whether it is a link, a folder or a FIFO, and to remove it), is
+  not `root:root` without write for group or others, or has an ACL (for
+  these two the refusal gives the commands that put it back as a new file
+  of root's with its contents, `0600`: a `chown`, `chmod` or `setfacl` in
+  place leaves a handle that another account opened earlier able to write
+  it; the package's `0644` also passes), or `/etc/nomad.d`, `/opt/nomad`
+  (0755) and `/opt/nomad/data` (0700) are not `root:root` folders with
+  those modes and no ACL, or `nomad.hcl` has an ACL (audit INF-16; an
+  account that owned one of these folders could leave a default ACL there,
+  which decides the mode of each file root then creates in it, whatever the
+  umask, and the mode bits do not show it). Nomad's TLS directory and
+  `/opt/nomad/data/server` with an ACL make the host's shape unknown, with
+  the keyring in place or not. Each of these refusals names the path and
+  the ACL, and `setfacl -b -k <path>` removes it, but for the two files
+  Nomad reads as root that `apply` may leave in place: `nomad.env`, above,
+  and `nomad.hcl`, which `apply` replaces only on a host it moves to HTTPS.
+  For `nomad.hcl` not `root:root 0640` or with an ACL, the refusal gives the
+  commands that put it back as a new file of root's, `0640`, for the same
+  reason (access to a folder is checked at each use, so a folder needs no
+  such remedy)
 - on `locked-http`: the new ES's `config.Load` refuses the migrated
   `es.json` (with a stand-in pin, since the key does not exist yet); a token
   file under `/etc/execution-substrate/nomad-acl` is not as provision left it
   (`management-token` root 0600, `es-token` `es` 0400, `observer-token` root
   0400); the retained-result key is missing or breaks ES's rules for it;
-  `openssl` or the setup's `nomad_tls` functions are missing; Nomad names no
+  `openssl` or the setup's `nomad_tls` or `nomad_gossip` functions are
+  missing; Nomad names no
   leader at `http://127.0.0.1:4646`; or a container of a Nomad allocation is
   running (`docker ps --filter label=com.hashicorp.nomad.alloc_id`, which
   needs no Nomad token)
-- on `https`: one of the in-place checks above fails
+- on `https`: one of the in-place checks above fails (the gossip check only
+  when a keyring is in place: a sound keyring that Nomad does not report
+  reading is refused); the new ES's `config.Load` refuses the installed
+  `es.json`; or one of the `locked-http` checks of the token files, the
+  retained-result key, `openssl`, the setup's functions and running
+  allocations fails
+- on `https-gossip`: one of the in-place checks above fails
+
+`apply` runs the same check first. What it does to the keyring follows from
+what that check found, so before the backup it reads the keyring once more
+and refuses, with nothing changed, one that no longer has the form the check
+found: one that appeared, went away or no longer passes
+`nomad_gossip_keyring_ok`, on either start. It refuses a path it would
+create that exists already (`/etc/nomad.d/tls` on `locked-http`) at the same
+point, before it writes the backup folder or the folder above it.
 
 `apply`, after a clean check of a `locked-http` host:
 
 1. backs up `es.json`, both ES binaries and `nomad.hcl` (bytes, owner, mode
    and SHA-256) into a new folder
    `/var/backups/execution-substrate-es-upgrade/<UTC time>-<commit>` (root,
-   0700), records there that it creates `/etc/nomad.d/tls`
-   (`created.json`), and copies the verified payload into it
+   0700), records there that it creates `/etc/nomad.d/tls` and
+   `/opt/nomad/data/server/serf.keyring` (`created.json`), the folders the
+   backup folder held (`earlier.json`) and the move (`move.json`), in that
+   order, and copies the verified payload into it
 2. stops ES
 3. issues Nomad's TLS material into `/etc/nomad.d/tls` with the setup's
    `nomad_tls_issue`: a P-256 CA whose key is deleted once it has signed, and
@@ -7519,16 +7707,23 @@ its rollback.
    `nomad_tls_material_ok` and reads the server key's SHA-256, the pin.
 4. checks `nomad.hcl` with the `tls` block appended with
    `nomad config validate`, refusing its warnings about TLS files it cannot
-   read or a config without TLS (it exits 0 with both), stops Nomad, writes
-   the new `nomad.hcl` (`root:root 0640`), starts Nomad and waits up to 90
-   seconds for a named leader over HTTPS (`curl --proto =https --tlsv1.3
-   --cacert /etc/nomad.d/tls/ca.pem --capath /dev/null`). A test keeps the
-   `tls` block equal to the setup script's.
+   read or a config without TLS (it exits 0 with both); writes Nomad's
+   gossip keyring to `/opt/nomad/data/server/serf.keyring` with the setup's
+   `nomad_gossip_issue` (one new 32-byte key from `openssl rand`, as a JSON
+   list, root's, `0600`, through a temporary file and a rename; the key
+   never appears on a command line or in the output) and requires it sound;
+   stops Nomad, writes the new `nomad.hcl` (`root:root 0640`), starts Nomad,
+   which reads the keyring as it starts (`nomad.hcl` names no key), and
+   waits up to 90 seconds for a named leader over HTTPS (`curl
+   --proto =https --tlsv1.3 --cacert /etc/nomad.d/tls/ca.pem --capath
+   /dev/null`). A test keeps the `tls` block equal to the setup script's.
 5. runs `scripts/nomad_acl_setup.sh` against `https://127.0.0.1:4646` with
    `NOMAD_CACERT=/etc/nomad.d/tls/ca.pem`, `ES_USER=es`, `NOMAD_USER=root`
    and `OBSERVER_USER=root`: `provision` keeps the working token files and
    writes the policies again, so the observer policy gains `list-jobs`, and
-   ends with its `check`; then `placement` with `ES_CONFIG` the box's
+   ends with its `check`; requires `/v1/agent/self`, read with the observer
+   token, to report `stats.serf.encrypted` as `"true"`; then `placement`
+   with `ES_CONFIG` the box's
    `es.json`, `NOMAD_STARTED_AT` the time just before the Nomad start and
    `NOMAD_PLACEMENT_WAIT_SECONDS=120`: within 120 seconds the restarted node
    must have a host-mode network, and plans of both ES job shapes (Docker,
@@ -7547,47 +7742,175 @@ its rollback.
    1.3, the CA, the server name, the pin, and at least 14 days of validity)
    passes with the installed `es.json`, Nomad answers an anonymous job list
    over HTTPS with 403 and a request without a token for its `anonymous`
-   ACL policy with 404, and `nomad_acl_setup.sh check` passes. The summary
-   goes to `summary.json` in the backup folder.
+   ACL policy with 404, `nomad_acl_setup.sh check` passes, and Nomad reports
+   its gossip encrypted. The summary goes to `summary.json` in the backup
+   folder.
+
+`apply`, after a clean check of an `https` host:
+
+1. backs up as on `locked-http`; `created.json` names the keyring when the
+   host has none, and nothing otherwise
+2. stops ES and reads the pin from the server certificate on disk
+3. when the host has no keyring: writes it with `nomad_gossip_issue` as in
+   step 4 above, restarts Nomad and waits up to 90 seconds for a named
+   leader over HTTPS, runs `nomad_acl_setup.sh check` (the token files and
+   policies stay as they are), requires Nomad to report its gossip
+   encrypted, and runs `placement` as in step 5 above
+4. requires the retained-result key and ES's token file to be ES's own and
+   the new ES's `config.Load` to accept `es.json`, which it rewrites only if
+   its bytes would change (an `https` host's `es.json` already has its final
+   form), and installs `es` and `es-runtime-support`
+5. starts ES and verifies as in step 7 above
 
 Every command runs in a process group of its own. When a command times out
 or a signal interrupts it, its whole group is ended and drained before
 anything else happens, so no child of it keeps changing the host. If any step
 after the backup fails, or `apply` gets `SIGTERM`, `SIGHUP` or `SIGINT`, it
 ignores further signals and rolls back: it verifies the whole backup (every
-copy's SHA-256, and that `created.json` names only `/etc/nomad.d/tls`)
+copy's SHA-256, and that `created.json` names only `/etc/nomad.d/tls` and
+the keyring)
 before it touches a service, stops ES and Nomad and confirms that both are
 stopped (if either will not stop, nothing is put back and the result is
 `rollback_failed`), puts every backed-up file back with its owner and mode,
-removes `/etc/nomad.d/tls`, starts Nomad and ES, and requires Nomad to name
-a leader within 90 seconds at the address the restored `nomad.hcl` serves
-(plain HTTP after a full restore), because ES's `/health` does not ask
-Nomad. It records `rolled_back`, `rolled_back_unhealthy` when the endpoints
-do not answer 200 within 60 seconds, or `rollback_failed`, with the failure.
-`rollback` does the same from a backup folder, ignoring `SIGHUP`, and exits
-1 on any of those failures. It refuses a backup of ES PR #54's upgrade
+removes what `created.json` names, starts Nomad and ES, and requires Nomad
+to name a leader within 90 seconds at the address the restored `nomad.hcl`
+serves (plain HTTP after the restore of a `locked-http` host, HTTPS after
+that of an `https` one), because ES's `/health` does not ask Nomad. Nomad
+starts without the keyring it removed, so its gossip is plain again, as it
+was before `apply`; a single server has no peer that still needs the
+key. It records `rolled_back`, `rolled_back_unhealthy` when the endpoints
+do not answer 200 within 60 seconds or, when the restored `nomad.hcl` serves
+HTTPS, when `scripts/internal/nomad_tls_identity.py check` finds that the
+restored `es.json` does not hold against the running Nomad, or
+`rollback_failed`, with the failure.
+`rollback` does the same from a backup folder, after the check and the
+record above, ignoring `SIGHUP`, and exits 1 on any of those failures. It refuses a backup of ES PR #54's upgrade
 (schema v1), which the script at `16cbf739` restores. Output that can no
 longer be written never stops either one: a terminal that hangs up sends
 `SIGHUP`, so `apply` rolls back, while a closed output pipe alone does not,
 so `apply` goes on with its output sent to `/dev/null`; the summary records
 `output_lost` either way. Under `systemd-run`, give the unit
 `KillMode=mixed` and a long `TimeoutStopSec`, so that stopping the unit
-signals `apply` alone and leaves it time to roll back. Neither changes the
+signals `apply` alone and leaves it time to roll back, and pass it the
+operator's name as `SUDO_USER` from the operator's own shell
+(`--setenv=SUDO_USER="$(id -un)"`; `$SUDO_USER` there would be expanded by
+that shell, which has none), so that the records name who started it. Neither changes the
 key, the token files or Nomad's ACL policies back: the policies stay as
 `provision` last wrote them, and the observer's `list-jobs` is a read.
 So after a rollback, `nomad_acl_setup.sh check` from the checkout of
 `16cbf739` refuses the observer policy until `provision` from that checkout
 writes it back; this script's `check` and `apply` accept the rolled-back host
-as `locked-http`. Nothing prints a key or a token.
+as `locked-http` or `https`, the shape it had. Nothing prints a key or a
+token.
 
 The tests (`scripts/remote_alpha_upgrade_es_test.go`,
-`scripts/remote_alpha_upgrade_es_host_test.go` and
-`scripts/remote_alpha_upgrade_es_config_check_test.go`) run `check`,
+`scripts/remote_alpha_upgrade_es_host_test.go`,
+`scripts/remote_alpha_upgrade_es_gossip_test.go`,
+`scripts/remote_alpha_upgrade_es_move_test.go` and
+`scripts/remote_alpha_upgrade_es_config_check_test.go`) read the move from
+a git history built for them, in which a stand-in for `16cbf739` comes
+first, and run `check`,
 `apply`, the in-place check of a migrated host, the automatic rollback, an
 interrupted apply and `rollback` on a host-shaped folder with fake
 `systemctl`, `curl`, `nomad`, `docker`, ACL setup and identity check, and the
-real `nomad_tls_issue`: hosts of every refused shape, each named part by
-part; payload binaries whose Go build info names another commit, another Go
+real `nomad_tls_issue` and `nomad_gossip_issue`: hosts of every refused
+shape, each named part by part; `https` hosts without a keyring (with the
+box's builds of an earlier commit, and with the payload's), with a sound
+keyring and earlier builds, and with a keyring that is readable by others,
+holds a 16-byte key, is a symbolic link or is a dangling one (on
+`locked-http` too), a server folder that is missing, group-writable, of
+another group or a file, a sound keyring that Nomad does not report reading
+or whose agent read answers 500, an observer token that is not a secret
+ID, builds of two commits, of `16cbf739` or of a modified checkout, and a
+keyring on a `locked-http` host; a keyring that appears, goes away or turns
+unsound between the check and `apply`'s own reading, and a
+`/etc/nomad.d/tls` that appears on `locked-http`, each refused before the
+backup; an `apply` whose restarted Nomad does not read the keyring, names
+no leader, cannot place ES's jobs or fails the ACL check, after which ES
+does not start, or whose issuer leaves the keyring readable by others (on
+`locked-http` too), each rolled back with the keyring removed; an `apply`
+interrupted while the issuer's temporary file holds the new key, or before
+the issuer has set the traps that remove that file, on either start, rolled
+back with no temporary file left; the keyring written before
+Nomad's stop on `https`; forward moves from the box's first build and from
+an earlier one, and the payload's own builds; moves to an older commit, to
+one beside the installed build (also with a `refs/replace` entry that would
+put it after the installed one), from a build the clone does not hold or
+from the real `16cbf739`, and through a shallow clone, each refused, and
+each made when `--allow-downgrade` names it, recorded in the report, the
+summary and `move.json`, with a sudo user and with only a login user;
+`move.json` in the backup when `apply` first stops ES, whether `apply` then
+goes on or that stop fails; `--allow-downgrade` naming another move, given
+twice, malformed, given for a forward move, for no move or for builds of
+two commits, or as a prefix of its name, and variables standing in for it,
+each refused; a history another account could change, that lacks a
+commit's parent, about which git warns (a ref named after the installed
+commit) or that a grafts file rewrites (with git's hint about it turned
+off), refused even when `--allow-downgrade` names the move; who ran
+a run, with `SUDO_USER` set, empty or unset and a login uid that is unset,
+unreadable, root's or no user's; `rollback` of an older backup after a
+later apply (also one shaped like ES PR #60's), after builds put in place
+without the upgrade, after only `es-runtime-support` changed, over a build
+of a modified checkout and with the staged payload gone, each refused with
+nothing changed and nothing recorded, and of the newest backup and then the
+older one, after an `apply` cut off between the two binaries or before it
+installed either, and of a backup put back already, each recorded before ES
+stops, as `apply`'s own rollback is; `rollback` of an older backup whose
+staged payload a later apply of the same commit installed again (also named
+with a trailing slash, with a link or a folder as the later backup's
+`restored-` record, and with that backup's folder renamed), of a backup
+outside the backup folder, and while a later backup's `earlier.json` cannot
+be read, each refused; a rollback whose `restored-` record cannot be
+written, which goes on, says so, and keeps the older backup refused until it
+is put back again; a restore cut off before it removed what `apply`
+created; an older backup put back after an apply cut off while it wrote
+`earlier.json`, and the cut-off backup refused after it; `earlier.json`
+synced before it is renamed into place and its folder synced right after;
+an older backup put back after an apply cut off while it wrote
+`created.json`, or before it, and the cut-off backup refused, saying its
+apply stopped before it changed the host; a `manifest.json` that is a list,
+null or a number, whose files are not a list or hold a value that is not an
+object, or with a path that is not a string or a file that does not say
+whether it existed, or whose backed-up file has a mode that is not octal, a
+copy outside `files/` (a slash after its number), an owner that is not a
+number, a digest in upper case, a size that is a string or a negative
+group, or with a NUL in a copy's name or a path, or naming a file `apply`
+does not back up or apply's files in another order, and each other rule
+of the check by itself (a copy name with a slash after a valid prefix, a
+group that is not a number, an owner that is a boolean, a negative size,
+a mode with an 8, a digest that is not hex, whether it existed not a
+boolean, an unknown schema, a manifest that is a string, a boolean or a
+fraction), and values of the right type that a restore could not use (an
+owner of 2^32 - 1, which `chown` reads as "leave it as it is", a group far too large, an empty or relative
+path, a copy missing from `files/`), and a `created.json` naming a list or
+a number, each refused with nothing changed, a `rollback` with a folder a
+file goes back into gone since the apply, and a `manifest.json` with a
+lone surrogate in a copy's name or a path, and a folder made where a file
+goes back, each refused before a service is touched, and a `restore` into
+a folder that is gone refused before the first file is put back; a
+`restore` refusing, before the first file is put back, a lone surrogate in
+a copy's name or a path, a copy too long a name to open, a file where a
+file's folder was, a mode that is not four octal digits (`640`, `00640`,
+`17777` and thirteen digits), a folder where a file goes back (leaving no
+temporary file beside it) and a path too long to look at, and putting back
+the others when the folder of a file absent at backup time is gone, and a
+file whose name holds a byte that is not UTF-8 (Linux); an https restore
+whose `es.json` does not hold against Nomad, by `rollback` and by `apply`'s
+own rollback; a rollback after which ES does not answer; an installed
+binary missing, and a rollback record's name taken, each refused; the
+wrapper refusing `backup` and `restore`; `es.json` gaining a key after
+`check`; `es_config_target` refusing a shape its `es.json` does not match;
+a `nomad.env` others can write, writable by its group or by others only,
+of another group or with the setuid bit, each refused (the remedy putting
+it back as a new file), a link, a folder or a FIFO there, each refused
+(naming which it is, and "remove it"), and a host without one, which is
+not refused; a Nomad folder, the TLS directory or
+`/opt/nomad/data/server` with an ACL (the server folder also with the
+keyring in place), each refused before anything changes and naming
+`setfacl -b -k`, and `nomad.env` and `nomad.hcl` with an access ACL, and a
+`nomad.hcl` others can read, refused with the remedy putting it back as a
+new file; no gossip key or Nomad token in the output, the
+fakes' logged calls or any `curl` command line; payload binaries whose Go build info names another commit, another Go
 or a modified build, or shows a replaced module, a workspace module or a
 vendored dependency; payload files of another owner or group; a clone that
 another account could change (a file or folder writable by its group or
@@ -7658,15 +7981,21 @@ and a comma; and `esconfigcheck` built from no module but the repository's
 own.
 `TestRemoteAlphaUpgradeESMovesARealNomadToHTTPS` runs `check`, `apply`, the
 in-place check and `rollback` against a real Nomad agent started on the
-box's own `nomad.hcl` (with a data folder, free ports and the TLS paths under
-the test folder added by `-config` overrides), set up the way ES PR #54's
-upgrade left the box: ACLs bootstrapped over plain HTTP, the token files in
-a root-owned folder, and the observer policy without `list-jobs`. `apply`
-runs the real `scripts/nomad_acl_setup.sh` through `sudo` as root, and the
-real `nomad_tls_identity.py`, so no stand-in can hide a broken step; the
-test then proves that Nomad answers only over HTTPS and that the observer
-token, kept, now lists ES's jobs. CI runs it with Nomad 2.1.1 and
-passwordless `sudo`.
+box's own `nomad.hcl` (with the test host's data folder, free ports and the
+TLS paths under the test folder added by `-config` overrides), set up the
+way ES PR #54's upgrade left the box: ACLs bootstrapped over plain HTTP, the
+token files in a root-owned folder, and the observer policy without
+`list-jobs`. `apply` runs the real `scripts/nomad_acl_setup.sh` through
+`sudo` as root, and the real `nomad_tls_identity.py`, so no stand-in can
+hide a broken step; the test then proves that Nomad answers only over
+HTTPS, that the observer token, kept, now lists ES's jobs, and that Nomad
+read the keyring `apply` wrote and reports its gossip encrypted. It then
+takes the box's own path: with the keyring taken away, builds of an earlier
+commit installed and Nomad restarted (gossip plain, the shape `https`),
+`apply` writes a keyring and Nomad encrypts its gossip, and that apply's
+`rollback` brings back the `https` host with plain gossip; the first
+`rollback` then returns the host to `locked-http`. CI runs it with Nomad
+2.1.1 and passwordless `sudo`.
 
 ## Python In The Scripts
 
