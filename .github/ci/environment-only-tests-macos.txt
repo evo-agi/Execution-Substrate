@@ -158,6 +158,23 @@ skips-itself execution-substrate/scripts TestRemoteAlphaVaultWorkloadAuthBootstr
 # passwordless sudo. The upgrade runs only on the box. go.yml runs the test.
 skips-itself execution-substrate/scripts TestRemoteAlphaUpgradeESMovesARealNomadToHTTPS
 
+# The signing key rotation makes its keys with the box's /usr/bin/openssl,
+# which is OpenSSL. The /usr/bin/openssl of macOS is LibreSSL, whose genpkey
+# has no Ed25519, so the test that runs the rotation with the machine's own
+# /usr/bin/openssl skips itself on any system other than Linux. The rotation
+# runs only on the box. go.yml runs the test.
+skips-itself execution-substrate/scripts TestSigningKeyRotationKeysFromOpenSSL
+
+# The signing key rotation's owner and group test gives files to other
+# owners and groups, which needs root. The macOS runner runs the tests
+# without root, so it skips itself. go.yml runs it as root.
+skips-itself execution-substrate/scripts TestSigningKeyRotationKeepsOwnersAndGroupsAsRoot
+
+# The signing key rotation wrapper's test of code that another account owns
+# gives files to other accounts, which needs root. The macOS runner runs the
+# tests without root, so it skips itself. go.yml runs it as root.
+skips-itself execution-substrate/scripts TestSigningKeyRotationWrapperRefusesCodeOfAnotherOwnerAsRoot
+
 # The supported-local renderer's signing key tests source
 # scripts/72_supported_local_setup.sh, which runs on Linux; a Mac runs it in
 # its Lima guest. Both tests skip themselves on any other system. go.yml runs

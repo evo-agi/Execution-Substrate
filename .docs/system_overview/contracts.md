@@ -275,6 +275,9 @@ whose private half is public, or that needs none, proves nothing.
 - `scripts/internal/signingkeygen` generates each host's own AGS and EGS
   keys, and `scripts/72_supported_local_setup.sh` uses it for every
   supported-local install (`configuration.md`, "Signing keys").
+  `scripts/remote_alpha_rotate_signing_keys.sh` gives the Remote Alpha box
+  new keys of the same form (`remote_supported_host_alpha.md`, "Remote
+  Signing Key Rotation").
 
 ### Public surface
 
