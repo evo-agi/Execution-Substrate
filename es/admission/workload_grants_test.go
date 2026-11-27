@@ -788,9 +788,16 @@ func TestARunNoGrantNamesReachesNoContentPolicyWhateverItsRuntimeProfile(t *test
 //     after verifying the client's certificate chain;
 //   - no non-test file outside es/admission reads the grant caller back.
 //
-// It checks the source forms it names, not every way Go can write memory:
-// reflection, unsafe and edits to callerauth itself are outside what it
-// sees, and callerauth is reviewed as the trust root it is.
+// It checks the source forms it names, not every way Go can write memory.
+// Reflection, unsafe and cgo are outside what it sees; a new import of any
+// of them in a production file fails
+// TestOperationalGuardImportInventoryIsExact, so it is a reviewed change.
+// Edits to callerauth itself are outside it too: callerauth is reviewed as
+// the trust root it is, and its own typed guard
+// (TestCallerIdentityIsReadOnlyByCallerauthByType) refuses a read of a
+// request's TLS state or of a certificate's identity fields in any other
+// production package.
+//
 // TestOnlyAConnectionOrADeliveryMakesAGrantCaller covers the grant caller
 // inside es/admission.
 func TestTheGrantCallerCanComeOnlyFromAVerifiedConnection(t *testing.T) {
@@ -1053,9 +1060,11 @@ func TestTheGrantCallerCanComeOnlyFromAVerifiedConnection(t *testing.T) {
 //     the address of. Synthetic replays get their caller fact from their own
 //     caller, which today is only tests.
 //
-// It checks the source forms it names. Reflection, unsafe and edits to
-// grantcaller itself are outside what it sees; grantcaller is reviewed as
-// part of the trust root.
+// It checks the source forms it names. Reflection, unsafe and cgo are
+// outside what it sees; a new import of any of them in a production file
+// fails TestOperationalGuardImportInventoryIsExact. Edits to grantcaller
+// itself are outside it too: grantcaller is reviewed as part of the trust
+// root.
 func TestOnlyAConnectionOrADeliveryMakesAGrantCaller(t *testing.T) {
 	signature := func(fields *ast.FieldList) string {
 		if fields == nil {

@@ -156,7 +156,7 @@ func TestWorkloadGrantsContractIsDocumented(t *testing.T) {
 	assertContainsAll(t, "workload grants temporary edge and its removal condition", grants,
 		"While any rule grants the lane `unrestricted`, readiness reports `workload_egress_unrestricted=true`. This is a `Temporary compatibility edge`",
 		"a granted run reaches the internet without an egress filter of its own, through the host firewall on the Remote Supported Host Alpha box and through the full `bridge` network on supported-local hosts.",
-		"WI-4 removes the value, and from then on ES startup refuses a configuration that uses it. Four tests in `es/config` are the trigger. While ES still accepts `unrestricted`, they fail once ES accepts another lane named by any string written in ES's source or by one of the tests' sample names, whatever fields the lane has and whichever configuration list also names it; once any code keeps the grant decision; or once any non-test Go code other than the grant validation in `es/config` and the grant code in admission reads a lane.",
+		"WI-4 removes the value, and from then on ES startup refuses a configuration that uses it. Four tests in `es/config` are the trigger. While ES still accepts `unrestricted`, they fail once an egress lane gains a field; once ES accepts another lane named by one of the tests' sample names, alone or listed in any other configuration list as well, or by any string written in ES's source; once any code keeps the grant decision; or once any non-test Go code other than the grant validation in `es/config` and the grant code in admission reads a lane.",
 	)
 
 	assertContainsAll(t, "workload grants guardrails", grants,
