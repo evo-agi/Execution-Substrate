@@ -336,7 +336,9 @@ F1 replaces this with:
   lacks the label selector, or while the registered names differ from the
   names ES configuration lists, in either direction: an entry that names an
   identity ES configuration does not list, and a listed identity with no
-  registered entry, Vault role or Vault policy.
+  registered entry, Vault role or Vault policy. A Vault role or Vault policy
+  left for an identity ES configuration does not list counts as a
+  difference, the same as such an entry.
 - The SPIRE agent enables the Docker workload attestor. That attestor reads
   container labels through the Docker API, which is root-equivalent access.
   How the agent gets that access, and how it is limited, is decided and
@@ -352,6 +354,130 @@ F1 replaces this with:
   single `auth_role`, because the role follows from the name. This is a
   Workstream E surface (`.docs/system_overview/runtime_config_ownership.md`)
   and changes only the field set, not its owner.
+
+#### Cutting off one named workload
+
+The owner can cut off one named workload without touching any other, and
+WI-3 proves it with tests. The owner does it with the setup scripts, because
+ES holds no SPIRE or Vault administrative access (section 11.3).
+
+A cut-off runs four steps, in this order:
+
+1. ES configuration: in one change, the name joins the record of cut-off
+   names, leaves the configured list, and every grant rule that names it is
+   removed, lane included. ES reads its configuration at startup, so this
+   step restarts ES.
+2. Vault: the policy `workload-<name>` is deleted, then the role
+   `workload-<name>`.
+3. Runs in flight: each is cancelled through ES and followed to a terminal
+   status.
+4. SPIRE: the name's entry is deleted.
+
+Cutting off a name has these outcomes:
+
+- ES hands the identity to no run. A run can hold an identity only with a
+  lane, so only with network access, and the network policy runs first
+  (`.docs/execution_lifecycle/contracts.md`, section 5B). So once the grant
+  rule is gone, lane included, ES refuses a run that held the identity with
+  `403 network_access_not_granted`. Every delivery that can cause an effect
+  evaluates the grants again with the configuration ES runs with (section
+  5B), so after the restart a replay, or a prepared run not yet submitted, is
+  refused too.
+- A Vault token issued before the cut-off loses access to the name's secrets
+  at once. Deleting the policy `workload-<name>` is expected to do this,
+  because Vault looks up a token's policies on every request; WI-3's tests
+  are the proof. If they show that such a token keeps access, WI-3 stops and
+  brings the owner the choice between revoking each such token and accepting
+  access until the role's `token_max_ttl` ends.
+- With the role deleted, no Vault login succeeds for the name, including one
+  with a JWT-SVID issued before the cut-off that has not expired yet. The
+  policy goes before the role, so a cut-off that stops between the two still
+  leaves every token without the name's secrets.
+- A run in flight is one admitted with the identity and not yet terminal.
+  Step 3 starts only after ES has restarted without the identity, so no new
+  one can start. It finds every such run from the Nomad jobs whose task
+  carries the container label of section 11.4, including jobs not yet
+  placed; a job's ID is `exec-<run_id>`. It cancels each run through ES and
+  reads its status until it is terminal, then searches again until it finds
+  none. A run that is not terminal within
+  the limit the WI-3 pull request sets is reported by its run ID, and the
+  step fails.
+- SPIRE issues no new JWT-SVID for the name once its agent has seen the
+  deletion, so the runtime helper of a new run cannot obtain one (section
+  11.6). A JWT-SVID issued earlier stays valid until it expires, but it can
+  no longer log in to Vault.
+- The name's secrets under `<name>/shared/` stay in Vault: a cut-off removes
+  access, not data. Anything the workload could read is treated as seen, and
+  the runbook says to rotate it where it was issued.
+- The name is never registered again. The record of cut-off names lives in
+  ES deployment configuration, next to the configured list, not in Vault or
+  SPIRE, so a Vault reset or a new SPIRE datastore does not lose it. A full
+  re-setup needs that configuration anyway, to know which names to register,
+  so it carries the record over. ES startup refuses a configuration that
+  lists a recorded name, the setup scripts refuse to register one, and
+  readiness refuses `submit-ready` while SPIRE or Vault holds an entry, role
+  or policy for one, including one made by hand. So an old grant, an old
+  record or the old secrets under `<name>/shared/` never apply to a
+  different workload.
+- Restoring Vault or SPIRE from a backup taken before a cut-off brings back
+  what the cut-off deleted, and a Vault restore also brings back the tokens
+  issued before it. So the first thing the setup scripts do after such a
+  restore is delete again the role, policy and entry of every recorded name,
+  and readiness refuses `submit-ready` until they have.
+- The record is written in step 1, before anything is deleted, so from then
+  on nothing registers the name again, not even a run of the setup scripts
+  meant to repair a cut-off that stopped halfway. A cut-off that stops after
+  step 1 leaves ES handing the identity to no run, and a token issued before
+  the cut-off keeps the name's secrets until the Vault step runs. Once the
+  Vault step is done, no token has them. Running the cut-off again finishes
+  it.
+- Readiness refuses `submit-ready` until every step is done. ES does not
+  start with a configuration that lists a recorded name, which covers step
+  1. Readiness refuses while a recorded name has a SPIRE entry, a Vault role
+  or a Vault policy, which covers steps 2 and 4, and while a Nomad job whose
+  task carries a recorded name's container label is not terminal, which
+  covers step 3.
+- Every other name keeps working: its Vault role, policy and secrets, its
+  SPIRE entry, its grants and its runs in flight are not touched.
+
+WI-3's CI integration tests use real SPIRE, Vault, Nomad and Docker. They
+register two names, one a prefix of the other (such as `codex` and
+`codex-agent`), cut off the shorter one with the setup scripts, and prove
+each outcome:
+
+- ES admits a run with the cut-off identity before the cut-off and refuses
+  the same submission after it with `403 network_access_not_granted`, and ES
+  configuration holds no grant rule that names the identity.
+- A Vault token issued before the cut-off can no longer read
+  `<name>/shared/`, and the secrets are still in Vault.
+- A Vault login with a JWT-SVID issued before the cut-off fails.
+- A run in flight with the identity, started before the cut-off, is
+  cancelled and reaches a terminal status.
+- Once the SPIRE agent has seen the deletion, a runtime helper cannot obtain
+  a JWT-SVID for the name's ID.
+- A cut-off stopped after each of its four steps leaves readiness refusing
+  `submit-ready`; from step 2 on, a token issued before the cut-off cannot
+  read `<name>/shared/`; and running the cut-off again finishes it.
+- Registering the name again is refused; an entry, role or policy made for it
+  by hand makes readiness refuse `submit-ready`; and after a fresh setup from
+  scratch with the same ES configuration, registering it is still refused.
+- After Vault is restored from a snapshot taken before the cut-off,
+  readiness refuses `submit-ready` until the setup scripts have deleted the
+  name's role and policy again, and then a token issued before the cut-off
+  cannot read `<name>/shared/`.
+- Readiness reports `submit-ready` only once every step is done, and refuses
+  it while a run of the cut-off name is not yet terminal.
+- The other name still logs in and reads its own secrets; ES still admits a
+  run for it, whose runtime helper obtains that name's JWT-SVID and which
+  reads its own secrets; and a run of it in flight keeps running through the
+  cut-off.
+
+No named identity goes live on any host, the Remote Alpha box or a
+supported-local host, before these tests pass. WI-3's box run (section
+11.10) also cuts off one throwaway name while one of its runs is in flight,
+and shows that run found by its label, cancelled and terminal, and readiness
+back at `submit-ready` once every step is done. WI-3 adds the cut-off to the
+runbooks.
 
 ### 11.8 Adding per-run identities later
 
@@ -409,6 +535,6 @@ open.
 | WI-1 | This decision in `PLANS.md` and `.docs/`, with doc-contract tests. No behavior change. | Audit and the merge gate |
 | WI-2 | Network grants: `admission_policy.workload_grants` with exact-match rules, the lane value `unrestricted` only, `403 network_access_not_granted` on `:prepare` and `:submit`, startup validation, setup scripts that write grants for today's flows, and the readiness report `workload_egress_unrestricted=true` | Audit, red-team and the merge gate |
 | WI-3a | The caller authentication contract refuses `workload` caller paths | Audit and the merge gate |
-| WI-3 | Named identities: sections 11.2 to 11.7, the rewrite of the tests that pin the shared identity, and CI integration tests with real SPIRE, Vault and Docker | Audit, red-team, a box run with scripted rollback, and the merge gate |
+| WI-3 | Named identities: sections 11.2 to 11.7, the rewrite of the tests that pin the shared identity, CI integration tests with real SPIRE, Vault and Docker, and the cut-off of one named workload with its tests and runbook (section 11.7) | Audit, red-team, a box run with scripted rollback, and the merge gate |
 | WI-4 | Egress lanes: Docker `internal` networks whose only exit is a pinned filtering proxy, `network_mode` chosen by lane, the removal of `unrestricted`, and readiness checks. It starts with a box measurement of the hosts the Codex CLI contacts. | Audit, red-team, a box run, and the merge gate |
 | WI-5 | Durable replay and operational formats carry the identity name, the realized SPIFFE ID string and the lane name, with the runtime catalogue's vendor-neutral credential slot | Audit, red-team and the merge gate, before D3 makes those formats live state |
