@@ -180,6 +180,20 @@ route, stays with each service and is described in that service's section.
   `execution.internal`), user information, a port, upper-case letters in the
   trust domain, a query, a fragment, percent encoding, an empty segment, a
   trailing slash, `.` and `..` segments, and an ID without a path.
+- A caller whose path starts with the segment `workload`, in any letter
+  case, has no caller identity, at every service. That covers the shared
+  workload ID `spiffe://execution.internal/workload`, the named workload
+  identities `spiffe://execution.internal/workload/<name>`, and the per-run
+  identities reserved below them (`runtime_identity_handoff.md`, section
+  11.2). Workload identities exist so that workloads can log in to the
+  workload-zone Vault; they are never callers, and a later design that lets a
+  workload call a service must change this rule explicitly. A path that only
+  contains the word later, such as `service/workload`, or whose first segment
+  is longer, such as `workloads`, is not affected. The comparison ignores
+  letter case on purpose, so no configuration can name a workload identity
+  in another letter case. It closes letter-case variants only: a different
+  word, such as `workloads/x` or `work-load/x`, is a different SPIFFE ID and
+  stays a valid path.
 - The rule applies to the URI as Go's certificate parser hands it over. That
   parser lower-cases the URI scheme and drops an empty fragment (a trailing
   `#`), so such a SAN names the same ID as without them. go-spiffe's
@@ -207,9 +221,10 @@ route, stays with each service and is described in that service's section.
   for `user/claude`. The rule runs after the bootstrap-issuer rule. Without
   bindings it changes nothing. An X.509 URI name constraint cannot do this:
   it can hold a CA to the trust domain but not to a path inside it.
-- Startup refuses a malformed binding, two bindings of one CA, and two
-  bindings whose namespaces are equal or one lies within the other, and
-  names the entry. Startup does not check that a bound CA is in the client
+- Startup refuses a malformed binding, a binding of a `workload` namespace
+  (workload identities are never callers, so no CA vouches for one), two
+  bindings of one CA, and two bindings whose namespaces are equal or one
+  lies within the other, and names the entry. Startup does not check that a bound CA is in the client
   CA bundle: a binding whose CA is absent leaves its namespace with no CA
   that can vouch for it. ARS, EGS, and CGS have no such field and their
   client CA bundles must not hold a bound CA. On the Remote Alpha box,
@@ -231,14 +246,10 @@ route, stays with each service and is described in that service's section.
   prefix matches the caller path that equals it and every caller path that
   continues it after a `/`, so `operator/local` matches `operator/local/a` but
   not `operator/local-evil`. A prefix that fails the rule matches nothing.
-- Workstream F slice F1 adds one rule to this section when WI-3a lands
-  (`runtime_identity_handoff.md`, section 11.2): a caller whose path is
-  `workload` or starts with `workload/` has no caller identity, at every
-  service. Workload identities, including the reserved per-run paths, are
-  never callers. Until WI-3a lands, no allowlist or `id.conf` that the
-  repository ships or its scripts write names such a path, and workloads
-  receive only JWT-SVIDs for the workload-vault audience, not X.509
-  certificates.
+- A configured prefix whose first segment is `workload`, in any letter case,
+  is refused at startup like any other prefix no caller could match, with
+  its own message, and `id.conf` loading refuses a workload identity as a
+  principal the same way.
 
 ### Ownership boundary
 
@@ -838,9 +849,11 @@ Current successful response shapes:
 - ES startup config validation rejects broad or malformed prefixes under the
   allowlist-prefix rule in section 3A, which ARS and AGS share. Accepted
   prefixes are relative SPIFFE path prefixes with at least two non-empty path
-  segments, no leading or trailing slash, and no `.` or `..` segment, and
-  every segment uses only `A-Z`, `a-z`, `0-9`, `.`, `-`, and `_`. A
-  single-segment prefix such as `service` or `operator` is invalid.
+  segments, no leading or trailing slash, no `.` or `..` segment, and no
+  first segment `workload` in any letter case, and every segment uses only
+  `A-Z`, `a-z`, `0-9`, `.`, `-`, and `_`. A single-segment prefix such as
+  `service` or `operator` is invalid, and so is a workload prefix such as
+  `workload/codex-agent`.
 - `GET /v1/executions:contract` uses that same caller authorization and returns only non-secret, non-run-specific producer compatibility metadata.
 - The current repo-owned runbooks, proofs, and generated helper configs keep that ES caller allowlist operator-only:
   - `spiffe://execution.internal/operator/local`

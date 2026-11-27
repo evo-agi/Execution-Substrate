@@ -1,12 +1,12 @@
 // Package callerauth authenticates the caller of a request to an ES service
 // (ARS, AGS, EGS, CGS and ES). It reads the caller's SPIFFE ID from the
 // verified TLS client certificate and refuses the request when that identity
-// is missing, ambiguous, malformed or outside the ES trust domain, when the
-// verified chain is no longer (or not yet) within its validity period, when
-// the certificate is not an end-entity certificate, when the certificate
-// was issued by the configured bootstrap issuer, or when a namespace issuer
-// binding ties the caller's path namespace and its issuing CA together and
-// the certificate does not keep to it.
+// is missing, ambiguous, malformed, outside the ES trust domain or a workload
+// identity, when the verified chain is no longer (or not yet) within its
+// validity period, when the certificate is not an end-entity certificate,
+// when the certificate was issued by the configured bootstrap issuer, or
+// when a namespace issuer binding ties the caller's path namespace and its
+// issuing CA together and the certificate does not keep to it.
 //
 // The package owns authentication only: who is calling. Which authenticated
 // callers may use which route (authorization) stays with each service.
@@ -52,8 +52,19 @@ var (
 	ErrMultipleURISANs       = errors.New("callerauth: client certificate carries more than one URI SAN")
 	ErrMalformedSPIFFEID     = errors.New("callerauth: URI SAN is not a conforming SPIFFE ID with a path")
 	ErrForeignTrustDomain    = errors.New("callerauth: SPIFFE ID is outside trust domain " + TrustDomain)
+	ErrWorkloadIdentity      = errors.New("callerauth: SPIFFE ID is a workload identity, and workload identities are never callers")
 	ErrIssuerNamespace       = errors.New("callerauth: the certificate's issuing CA and its path namespace do not keep to a namespace issuer binding")
 )
+
+// workloadPathSegment is the first path segment of every workload identity:
+// the named identities spiffe://execution.internal/workload/<name>, the
+// per-run identities reserved below them, and the shared ID
+// spiffe://execution.internal/workload. Workload identities exist so that
+// workloads can log in to the workload-zone Vault; no service accepts one as
+// a caller. The rule is in .docs/system_overview/contracts.md, section 3A,
+// and the identity layout in .docs/system_overview/runtime_identity_handoff.md,
+// section 11.2.
+const workloadPathSegment = "workload"
 
 // SPIFFEID is a SPIFFE ID in TrustDomain that passed ParseSPIFFEID. Its
 // zero value is not a valid ID.
@@ -67,12 +78,16 @@ type SPIFFEID struct {
 // not "." or "..". Anything else is refused: another scheme or letter case
 // of the scheme, user information, a port, a query, a fragment, percent
 // encoding, an empty segment, a trailing slash, or no path at all. A
-// well-formed ID in another trust domain returns ErrForeignTrustDomain;
-// every other refusal returns ErrMalformedSPIFFEID.
+// well-formed ID in another trust domain returns ErrForeignTrustDomain. A
+// well-formed ID in the trust domain whose first path segment is "workload",
+// in any letter case, returns ErrWorkloadIdentity: workload identities are
+// never callers. Every other refusal returns ErrMalformedSPIFFEID.
 //
 // These are the SPIFFE ID rules of the SPIFFE standard, plus the
 // requirement of a path, because the trust domain's own ID names no
-// workload.
+// workload, plus the refusal of workload identities. Callers use
+// ParseSPIFFEID for caller identities only: an authenticated caller, an
+// allowlist prefix, or a CGS principal.
 func ParseSPIFFEID(raw string) (SPIFFEID, error) {
 	if !strings.HasPrefix(raw, spiffeScheme) {
 		return SPIFFEID{}, ErrMalformedSPIFFEID
@@ -88,6 +103,14 @@ func ParseSPIFFEID(raw string) (SPIFFEID, error) {
 	}
 	if domain != TrustDomain {
 		return SPIFFEID{}, ErrForeignTrustDomain
+	}
+	// Letter case is compared loosely on purpose: "Workload" is a different
+	// SPIFFE ID, but no caller needs a path that differs from a workload
+	// identity only in case, and refusing it leaves no letter-case variant
+	// for a configuration to confuse with a workload identity. A different
+	// word, such as "workloads", is a different identity and is not refused.
+	if first, _, _ := strings.Cut(path, "/"); strings.EqualFold(first, workloadPathSegment) {
+		return SPIFFEID{}, ErrWorkloadIdentity
 	}
 	return SPIFFEID{path: path}, nil
 }
@@ -217,11 +240,13 @@ func (n NamespaceIssuer) within(path string) bool {
 
 // ParseNamespaceIssuer accepts pathPrefix only when it is a SPIFFE ID path
 // that ParseSPIFFEID would accept, written without a leading or trailing
-// slash, for example "user" or "user/team", and caSHA256 only when it is
-// exactly 64 lower-case hexadecimal characters: the SHA-256 of the CA
-// certificate's DER encoding.
+// slash, for example "user" or "user/team" (so never a workload identity),
+// and caSHA256 only when it is exactly 64 lower-case hexadecimal
+// characters: the SHA-256 of the CA certificate's DER encoding.
 func ParseNamespaceIssuer(pathPrefix, caSHA256 string) (NamespaceIssuer, error) {
-	if _, err := ParseSPIFFEID(spiffeScheme + TrustDomain + "/" + pathPrefix); err != nil {
+	if _, err := ParseSPIFFEID(spiffeScheme + TrustDomain + "/" + pathPrefix); errors.Is(err, ErrWorkloadIdentity) {
+		return NamespaceIssuer{}, fmt.Errorf("path_prefix %q names workload identities, which are never callers", pathPrefix)
+	} else if err != nil {
 		return NamespaceIssuer{}, fmt.Errorf("path_prefix %q is not a SPIFFE ID path such as \"user\"", pathPrefix)
 	}
 	if len(caSHA256) != 2*sha256.Size || strings.ToLower(caSHA256) != caSHA256 {

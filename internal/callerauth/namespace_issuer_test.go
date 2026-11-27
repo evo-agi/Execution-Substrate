@@ -113,6 +113,12 @@ func TestParseNamespaceIssuerRefusesEverythingElse(t *testing.T) {
 			t.Errorf("path prefix %q accepted", prefix)
 		}
 	}
+	for _, prefix := range []string{"workload", "Workload", "workload/build"} {
+		_, err := callerauth.ParseNamespaceIssuer(prefix, digest)
+		if err == nil || !strings.Contains(err.Error(), "names workload identities, which are never callers") {
+			t.Errorf("path prefix %q: %v", prefix, err)
+		}
+	}
 	for _, bad := range []string{"", strings.Repeat("0A", 32), strings.Repeat("0a", 31), strings.Repeat("0a", 33), strings.Repeat("zz", 32), " " + strings.Repeat("0a", 32)} {
 		if _, err := callerauth.ParseNamespaceIssuer("user", bad); err == nil {
 			t.Errorf("digest %q accepted", bad)
