@@ -496,28 +496,46 @@ def folder_chain_problems(path):
 
 
 def leftover_temp_files(dir_fd, folder):
-    """The temporary files a stopped rotation left in a folder."""
+    """([temporary files a stopped rotation left in a folder], [folders
+    there named like one]). A rotation writes only files, so a folder with
+    such a name is someone else's: ARS's account owns the folder that holds
+    the index and can make one there."""
     try:
         names = os.listdir(dir_fd)
     except OSError:
-        return []
-    return [os.path.join(folder, name) for name in sorted(names) if name.startswith(".") and TEMP_MARK in name]
+        return [], []
+    files, folders = [], []
+    for name in sorted(names):
+        if not (name.startswith(".") and TEMP_MARK in name):
+            continue
+        try:
+            is_folder = stat.S_ISDIR(os.stat(name, dir_fd=dir_fd, follow_symlinks=False).st_mode)
+        except FileNotFoundError:
+            continue
+        (folders if is_folder else files).append(os.path.join(folder, name))
+    return files, folders
 
 
 def remove_temp_files(dir_fd, names):
-    removed = []
+    """Remove the temporary files named; (removed, folders left in place).
+    A name that is a folder by now is left: no rotation made it."""
+    removed, kept = [], []
     for path in names:
         name = os.path.basename(path)
         if not (name.startswith(".") and TEMP_MARK in name):
             continue
-        st = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+        try:
+            st = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            continue
         if stat.S_ISDIR(st.st_mode):
-            raise Failed(f"{path} is a folder, not a file a rotation left")
+            kept.append(path)
+            continue
         os.unlink(name, dir_fd=dir_fd)
         removed.append(path)
     if removed:
         os.fsync(dir_fd)
-    return removed
+    return removed, kept
 
 
 # Commands.
@@ -923,23 +941,26 @@ def count_records(data):
 
 
 def index_state(ars_doc):
-    """ARS's index as inspect sees it: (record, problems, leftovers)."""
+    """ARS's index as inspect sees it: (record, problems, (temporary files
+    a stopped rotation left beside it, folders there named like one))."""
     record = {"path": None, "entries": None}
     try:
         path = index_path(ars_doc)
         record["path"] = path
         dir_fd, problems = open_index_folder(path)
     except Refusal as exc:
-        return record, [str(exc)], []
+        return record, [str(exc)], ([], [])
     try:
         try:
             data, st, more = read_index(dir_fd, path)
         except Refusal as exc:
-            return record, problems + [str(exc)], []
+            return record, problems + [str(exc)], ([], [])
         record.update(entries=count_records(data), sha256=sha256_hex(data), size=len(data), uid=st.st_uid,
                       gid=st.st_gid, mode=mode_text(st))
-        leftovers = [p for p in leftover_temp_files(dir_fd, os.path.dirname(path))
-                     if os.path.basename(p).startswith("." + os.path.basename(path) + TEMP_MARK)]
+        prefix = "." + os.path.basename(path) + TEMP_MARK
+        files, folders = leftover_temp_files(dir_fd, os.path.dirname(path))
+        leftovers = ([p for p in files if os.path.basename(p).startswith(prefix)],
+                     [p for p in folders if os.path.basename(p).startswith(prefix)])
         return record, problems + more, leftovers
     finally:
         os.close(dir_fd)
@@ -1067,10 +1088,13 @@ def inspect(mode):
     except (Refusal, OSError) as exc:
         problems.append(f"cannot look for files a stopped rotation left: {exc}")
         leftovers = []
-    for _, _, paths in leftovers:
+    for _, _, paths, folders in leftovers:
         for path in paths:
             problems.append(f"{path} was left by a rotation that was stopped while it wrote files; "
                             "`rollback` of that rotation's backup removes it")
+        for path in folders:
+            problems.append(f"{path} is a folder named like a rotation's temporary file; no rotation makes "
+                            "folders, so `rollback` leaves it: find out who made it, then remove it by hand")
     if "ars" in docs:
         index, more, _ = index_state(docs["ars"])
         problems += more
@@ -1544,34 +1568,46 @@ def restore_index(record, copy, keep):
 
 
 def remove_leftovers(report, leftovers):
-    removed = []
-    for folder, index_file, paths in leftovers:
+    """Remove the temporary files a stopped rotation left. Folders named
+    like one are left in place and named in the report (check names them
+    too): no rotation made them, and the files restored do not depend on
+    them, so they do not fail the rollback."""
+    removed, kept = [], []
+    for folder, index_file, paths, folders in leftovers:
+        kept += folders
+        if not paths:
+            continue
         if index_file is None:
             dir_fd = open_dir(host(folder))
         else:
             dir_fd, _ = open_index_folder(index_file)
         try:
-            removed += remove_temp_files(dir_fd, paths)
+            done, left = remove_temp_files(dir_fd, paths)
         finally:
             os.close(dir_fd)
+        removed += done
+        kept += left
     report["removed"] = removed
+    if kept:
+        report["folders_left_in_place"] = kept
 
 
 def find_leftovers(ars_doc):
     """[(folder, the index it holds or None, [temporary files a stopped
-    rotation left there])] for the config folder and the index folder."""
+    rotation left there], [folders there named like one])] for the config
+    folder and the index folder."""
     found = []
     dir_fd = open_dir(host(CONFIG_DIR))
     try:
-        paths = leftover_temp_files(dir_fd, CONFIG_DIR)
+        paths, folders = leftover_temp_files(dir_fd, CONFIG_DIR)
     finally:
         os.close(dir_fd)
-    if paths:
-        found.append((CONFIG_DIR, None, paths))
+    if paths or folders:
+        found.append((CONFIG_DIR, None, paths, folders))
     if ars_doc is not None:
-        record, _, paths = index_state(ars_doc)
-        if paths:
-            found.append((os.path.dirname(record["path"]), record["path"], paths))
+        record, _, (paths, folders) = index_state(ars_doc)
+        if paths or folders:
+            found.append((os.path.dirname(record["path"]), record["path"], paths, folders))
     return found
 
 

@@ -7695,7 +7695,12 @@ back. `check` and `apply` then name the unfinished rotation, its backup
 folder and any temporary file it left, and refuse to run until it is
 settled. `rollback --backup-dir` of that folder puts the backup back and
 removes the temporary files; of a `.incomplete-` folder, which `apply` never
-got past, it removes the folder and changes nothing else.
+got past, it removes the folder and changes nothing else. A rotation writes
+only files, so a folder named like one of its temporary files is someone
+else's (ARS's account owns the folder that holds the index and can make
+one there): `check` names it as a folder to look into and remove by hand,
+and a rollback leaves it in place, names it under `folders_left_in_place`,
+and still ends `rolled_back` when everything else worked.
 
 `apply` and `rollback` hold a lock on
 `/var/backups/execution-substrate-signing-keys` for their whole run, so no
@@ -7771,7 +7776,9 @@ answers; a rollback that finds ARS still running reported as
 stopped by a kill, or ended `rollback_failed`, named by `check` until a
 second rollback settles it; no second rollback of a backup whose files a
 rollback already put back, healthy or not; the index a rollback replaces
-kept in the backup folder; signals held by the `rollback` command; a config
+kept in the backup folder; a folder named like a temporary file named by
+`check` and left by a rollback that still ends `rolled_back`; signals held
+by the `rollback` command; a config
 changed while the backup is written, before it is named, and a file changed
 after a write or a restore put it back, each caught by the read that
 follows; an ARS that something else starts while `apply` or a rollback

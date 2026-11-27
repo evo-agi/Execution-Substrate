@@ -565,3 +565,54 @@ func TestSigningKeyRotationRollbackKeepsTheIndexItReplaces(t *testing.T) {
 		t.Fatalf("apply's rollback kept %q (%v) as %v, want the empty index at %s", kept, err, report["replaced_index_kept"], want)
 	}
 }
+
+// A folder named like a rotation's temporary file is no rotation's: ARS's
+// account owns the folder that holds the index and can make one there.
+// check names it with advice that works, and a rollback leaves it in place,
+// removes the files a stopped rotation left beside it, and still says
+// rolled_back (red-team 10 note on local denial of service).
+func TestSigningKeyRotationLeavesAFolderNamedLikeATemporaryFile(t *testing.T) {
+	h := newRotationHost(t)
+	before := h.snapshot()
+	backup := h.apply()["backup_dir"].(string)
+	name := ".index.json.signing-key-rotation.planted"
+	planted := filepath.Join(filepath.Dir(h.path(rotationIndex)), name)
+	if err := os.Mkdir(planted, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(planted+"-file", nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	shown := "/" + filepath.Dir(rotationIndex) + "/" + name
+	stdout, stderr, code := h.run("check")
+	problems := rotationProblems(h.report(stdout, stderr, code))
+	if code != 1 || !strings.Contains(problems, shown+" is a folder named like a rotation's temporary file; no rotation makes folders, so `rollback` leaves it") ||
+		strings.Contains(problems, shown+" was left by a rotation") || !strings.Contains(problems, shown+"-file was left by a rotation") {
+		t.Fatalf("check with a planted folder: exit %d problems %v", code, problems)
+	}
+	stdout, stderr, code = h.run("rollback", "--backup-dir", backup)
+	report := h.report(stdout, stderr, code)
+	if code != 0 || report["result"] != "rolled_back" {
+		t.Fatalf("rollback with a planted folder: exit %d result %v steps %v\n%s", code, report["result"], report["rollback_steps"], stderr)
+	}
+	if fmt.Sprint(report["folders_left_in_place"]) != "["+shown+"]" || fmt.Sprint(report["removed"]) != "["+shown+"-file]" {
+		t.Fatalf("the rollback left %v and removed %v, want [%s] and [%s-file]", report["folders_left_in_place"], report["removed"], shown, shown)
+	}
+	if st, err := os.Lstat(planted); err != nil || !st.IsDir() {
+		t.Fatalf("the planted folder is gone: %v %v", st, err)
+	}
+	if _, err := os.Lstat(planted + "-file"); !os.IsNotExist(err) {
+		t.Fatalf("the temporary file beside it is still there: %v", err)
+	}
+	if !reflect.DeepEqual(h.snapshot(), before) {
+		t.Fatal("the rollback did not put the configs and the index back")
+	}
+	stdout, stderr, code = h.run("check")
+	if problems := rotationProblems(h.report(stdout, stderr, code)); code != 1 || !strings.Contains(problems, shown+" is a folder named like") {
+		t.Fatalf("check after the rollback: exit %d problems %v", code, problems)
+	}
+	if err := os.Remove(planted); err != nil {
+		t.Fatal(err)
+	}
+	h.requireReady()
+}
