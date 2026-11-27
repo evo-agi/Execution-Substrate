@@ -87,6 +87,8 @@ or the Workstream F runtime-identity redesign.
 | EGS runtime-trust payload and signed response wrapper | `service-owned contract` | `EGS` | EGS owns signer/artifact trust policy publication. ES consumes that trust output but the EGS payload does not become part of the shared artifact kernel. |
 | ES public execution request, lifecycle, result, and `authority_handoff` surfaces | `service-owned contract` | `ES` | ES owns admission composition, runtime-profile handling, scheduler handoff, lifecycle projection, retained-result exposure, and runtime handoff evidence. ES must not let AGS/ARS or CP consumer assumptions define those public ES semantics. |
 
+In the code, the types of a service-owned contract that another service's Go code reads live in the owning service's `contract` package (`ars/contract`, `egs/contract`). The shared kernel lives in `internal/contracts/`.
+
 ### 4C. Temporary compatibility edges
 
 | Surface | Reason | Scope | Removal condition |

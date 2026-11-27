@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	egsmodel "execution-substrate/egs/model"
+	egscontract "execution-substrate/egs/contract"
 	esconfig "execution-substrate/es/config"
 )
 
@@ -293,7 +293,7 @@ func snapshotAdmissionRequest(request PrepareRequest) PrepareRequest {
 	return snapshot
 }
 
-func snapshotRuntimeTrustModel(model egsmodel.RuntimeTrustPolicy) egsmodel.RuntimeTrustPolicy {
+func snapshotRuntimeTrustModel(model egscontract.RuntimeTrustPolicy) egscontract.RuntimeTrustPolicy {
 	snapshot := model
 	snapshot.SignerPolicy.AllowedSigners = copyStringSlice(model.SignerPolicy.AllowedSigners)
 	snapshot.SignerPolicy.RevokedSigners = copyStringSlice(model.SignerPolicy.RevokedSigners)

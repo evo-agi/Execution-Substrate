@@ -10,7 +10,7 @@ import (
 	"time"
 	"unsafe"
 
-	egsmodel "execution-substrate/egs/model"
+	egscontract "execution-substrate/egs/contract"
 	"execution-substrate/es/admission/internal/reliablesubmit"
 )
 
@@ -27,10 +27,10 @@ const (
 	goldenArtifact   = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 )
 
-func goldenTrust() egsmodel.RuntimeTrustPolicy {
-	return egsmodel.RuntimeTrustPolicy{
-		SignerPolicy:   egsmodel.SignerPolicy{AllowedSigners: []string{"signer-a", "signer-b"}, RevokedSigners: []string{"signer-c"}},
-		ArtifactPolicy: egsmodel.ArtifactPolicy{RevokedArtifacts: []string{goldenArtifact}},
+func goldenTrust() egscontract.RuntimeTrustPolicy {
+	return egscontract.RuntimeTrustPolicy{
+		SignerPolicy:   egscontract.SignerPolicy{AllowedSigners: []string{"signer-a", "signer-b"}, RevokedSigners: []string{"signer-c"}},
+		ArtifactPolicy: egscontract.ArtifactPolicy{RevokedArtifacts: []string{goldenArtifact}},
 	}
 }
 
@@ -339,15 +339,15 @@ func TestContentFieldSetIsCovered(t *testing.T) {
 		typ  reflect.Type
 		want map[string]reflect.Type
 	}{
-		{reflect.TypeOf(Content{}), map[string]reflect.Type{"Trust": reflect.TypeOf(egsmodel.RuntimeTrustPolicy{}),
+		{reflect.TypeOf(Content{}), map[string]reflect.Type{"Trust": reflect.TypeOf(egscontract.RuntimeTrustPolicy{}),
 			"Verifier": reflect.TypeOf(Verifier{}), "Policies": reflect.TypeOf([]Policy(nil))}},
 		{reflect.TypeOf(Verifier{}), map[string]reflect.Type{"Algorithm": text, "KeyID": text, "PublicKey": reflect.TypeOf([]byte(nil))}},
 		{reflect.TypeOf(Policy{}), map[string]reflect.Type{"ID": text, "Entries": reflect.TypeOf([]PolicyEntry(nil))}},
 		{reflect.TypeOf(PolicyEntry{}), map[string]reflect.Type{"ID": text, "Literal": text}},
-		{reflect.TypeOf(egsmodel.RuntimeTrustPolicy{}), map[string]reflect.Type{"SignerPolicy": reflect.TypeOf(egsmodel.SignerPolicy{}),
-			"ArtifactPolicy": reflect.TypeOf(egsmodel.ArtifactPolicy{})}},
-		{reflect.TypeOf(egsmodel.SignerPolicy{}), map[string]reflect.Type{"AllowedSigners": texts, "RevokedSigners": texts}},
-		{reflect.TypeOf(egsmodel.ArtifactPolicy{}), map[string]reflect.Type{"RevokedArtifacts": texts}},
+		{reflect.TypeOf(egscontract.RuntimeTrustPolicy{}), map[string]reflect.Type{"SignerPolicy": reflect.TypeOf(egscontract.SignerPolicy{}),
+			"ArtifactPolicy": reflect.TypeOf(egscontract.ArtifactPolicy{})}},
+		{reflect.TypeOf(egscontract.SignerPolicy{}), map[string]reflect.Type{"AllowedSigners": texts, "RevokedSigners": texts}},
+		{reflect.TypeOf(egscontract.ArtifactPolicy{}), map[string]reflect.Type{"RevokedArtifacts": texts}},
 	} {
 		got := make(map[string]reflect.Type)
 		for i := 0; i < tc.typ.NumField(); i++ {
@@ -412,11 +412,11 @@ func TestContentIsCopied(t *testing.T) {
 	})
 	t.Run("absent lists stay absent and empty lists stay empty", func(t *testing.T) {
 		if clonePolicies(nil) != nil || cloneVerifier(Verifier{}).PublicKey != nil ||
-			!reflect.DeepEqual(cloneTrust(egsmodel.RuntimeTrustPolicy{}), egsmodel.RuntimeTrustPolicy{}) {
+			!reflect.DeepEqual(cloneTrust(egscontract.RuntimeTrustPolicy{}), egscontract.RuntimeTrustPolicy{}) {
 			t.Fatal("a copy of absent lists is not absent")
 		}
-		empty := Content{Trust: egsmodel.RuntimeTrustPolicy{SignerPolicy: egsmodel.SignerPolicy{AllowedSigners: []string{}, RevokedSigners: []string{}},
-			ArtifactPolicy: egsmodel.ArtifactPolicy{RevokedArtifacts: []string{}}}, Verifier: Verifier{PublicKey: []byte{}},
+		empty := Content{Trust: egscontract.RuntimeTrustPolicy{SignerPolicy: egscontract.SignerPolicy{AllowedSigners: []string{}, RevokedSigners: []string{}},
+			ArtifactPolicy: egscontract.ArtifactPolicy{RevokedArtifacts: []string{}}}, Verifier: Verifier{PublicKey: []byte{}},
 			Policies: []Policy{{ID: selectedPolicy, Entries: []PolicyEntry{}}}}
 		copied := Content{Trust: cloneTrust(empty.Trust), Verifier: cloneVerifier(empty.Verifier), Policies: clonePolicies(empty.Policies)}
 		if !reflect.DeepEqual(copied, empty) {
@@ -451,7 +451,7 @@ func TestContentIsCopied(t *testing.T) {
 func TestNoViewAnswersNothing(t *testing.T) {
 	var none View
 	if none.Installed() || none.Token() != (reliablesubmit.OperationalAdmissionToken{}) || none.Token().Valid() ||
-		!reflect.DeepEqual(none.Trust(), egsmodel.RuntimeTrustPolicy{}) || !reflect.DeepEqual(none.Verifier(), Verifier{}) ||
+		!reflect.DeepEqual(none.Trust(), egscontract.RuntimeTrustPolicy{}) || !reflect.DeepEqual(none.Verifier(), Verifier{}) ||
 		none.Policies() != nil || none.Proof() != nil {
 		t.Fatal("the zero view handle answers as a view")
 	}
@@ -512,7 +512,7 @@ func allClosed(t *testing.T, what string, h State, owner any, installation [32]b
 	if h.s != nil {
 		// A confirmation by someone who is not the owner changes nothing,
 		// with the installed view in hand and trust that differs.
-		h.Confirm(owner, View{v: h.s.view}, egsmodel.RuntimeTrustPolicy{}, time.Now().Add(time.Hour))
+		h.Confirm(owner, View{v: h.s.view}, egscontract.RuntimeTrustPolicy{}, time.Now().Add(time.Hour))
 		h.s.mu.RLock()
 		defer h.s.mu.RUnlock()
 		if h.s.view != before.view || h.s.withdrawn != before.withdrawn || h.s.superseded != before.superseded ||

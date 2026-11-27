@@ -25,7 +25,7 @@ import (
 
 	"execution-substrate/egs/app"
 	"execution-substrate/egs/config"
-	"execution-substrate/egs/model"
+	"execution-substrate/egs/contract"
 )
 
 func TestLoadConfigRejectsMissingFile(t *testing.T) {
@@ -505,8 +505,8 @@ func buildConfig(fixture *tlsFixture) config.Config {
 			PrivateKeyHex: fixture.privateKeyHex,
 			PublicKeyHex:  fixture.publicKeyHex,
 		},
-		RuntimeTrust: model.RuntimeTrustPolicy{
-			SignerPolicy: model.SignerPolicy{
+		RuntimeTrust: contract.RuntimeTrustPolicy{
+			SignerPolicy: contract.SignerPolicy{
 				AllowedSigners: []string{
 					"ags-artifact-fact-signer-a",
 					"ags-artifact-fact-signer-b",
@@ -516,14 +516,14 @@ func buildConfig(fixture *tlsFixture) config.Config {
 					"ags-signing-key-compromised",
 				},
 			},
-			ArtifactPolicy: model.ArtifactPolicy{
+			ArtifactPolicy: contract.ArtifactPolicy{
 				RevokedArtifacts: []string{
 					"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 					"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
 				},
 			},
 		},
-		Publication: model.PublicationMetadata{
+		Publication: contract.PublicationMetadata{
 			UpdateRevision: 7,
 			Version:        "1.0.0",
 		},
@@ -733,12 +733,12 @@ func canonicalRuntimeTrustBytes(payload struct {
 		RevokedArtifacts []string `json:"revoked_artifacts"`
 	} `json:"artifact_policy"`
 }) []byte {
-	encoded, err := model.RuntimeTrustPolicy{
-		SignerPolicy: model.SignerPolicy{
+	encoded, err := contract.RuntimeTrustPolicy{
+		SignerPolicy: contract.SignerPolicy{
 			AllowedSigners: append([]string(nil), payload.SignerPolicy.AllowedSigners...),
 			RevokedSigners: append([]string(nil), payload.SignerPolicy.RevokedSigners...),
 		},
-		ArtifactPolicy: model.ArtifactPolicy{
+		ArtifactPolicy: contract.ArtifactPolicy{
 			RevokedArtifacts: append([]string(nil), payload.ArtifactPolicy.RevokedArtifacts...),
 		},
 	}.CanonicalBytes()

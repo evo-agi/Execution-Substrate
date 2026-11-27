@@ -37,14 +37,14 @@ import (
 
 	agsapp "execution-substrate/ags/app"
 	agsconfig "execution-substrate/ags/config"
-	arsapi "execution-substrate/ars/api"
 	arsapp "execution-substrate/ars/app"
 	arsconfig "execution-substrate/ars/config"
+	arscontract "execution-substrate/ars/contract"
 	arsindex "execution-substrate/ars/index"
 	arsstore "execution-substrate/ars/store"
 	egsapp "execution-substrate/egs/app"
 	egsconfig "execution-substrate/egs/config"
-	egsmodel "execution-substrate/egs/model"
+	egscontract "execution-substrate/egs/contract"
 	"execution-substrate/es/admission"
 	esapp "execution-substrate/es/app"
 	esconfig "execution-substrate/es/config"
@@ -1784,16 +1784,16 @@ func startSubmitStackWithOptions(t *testing.T, opts submitStackOptions) *submitS
 			PrivateKeyHex: fixture.egsPrivateKeyHex,
 			PublicKeyHex:  fixture.egsPublicKeyHex,
 		},
-		RuntimeTrust: egsmodel.RuntimeTrustPolicy{
-			SignerPolicy: egsmodel.SignerPolicy{
+		RuntimeTrust: egscontract.RuntimeTrustPolicy{
+			SignerPolicy: egscontract.SignerPolicy{
 				AllowedSigners: []string{fixture.agsKeyID},
 				RevokedSigners: []string{},
 			},
-			ArtifactPolicy: egsmodel.ArtifactPolicy{
+			ArtifactPolicy: egscontract.ArtifactPolicy{
 				RevokedArtifacts: []string{},
 			},
 		},
-		Publication: egsmodel.PublicationMetadata{
+		Publication: egscontract.PublicationMetadata{
 			UpdateRevision: 7,
 			Version:        "1.0.0",
 		},
@@ -2654,7 +2654,7 @@ func (s *submitStack) loadIndexEntry(t *testing.T, artifactDigest string) arsind
 	return entry
 }
 
-func (s *submitStack) loadDiscovery(t *testing.T, artifactDigest string) arsapi.ArtifactDiscovery {
+func (s *submitStack) loadDiscovery(t *testing.T, artifactDigest string) arscontract.ArtifactDiscovery {
 	t.Helper()
 
 	entry := s.loadIndexEntry(t, artifactDigest)
@@ -2666,7 +2666,7 @@ func (s *submitStack) loadDiscovery(t *testing.T, artifactDigest string) arsapi.
 	if err != nil {
 		t.Fatalf("read discovery blob: %v", err)
 	}
-	var discovery arsapi.ArtifactDiscovery
+	var discovery arscontract.ArtifactDiscovery
 	if err := json.Unmarshal(data, &discovery); err != nil {
 		t.Fatalf("decode discovery blob: %v", err)
 	}

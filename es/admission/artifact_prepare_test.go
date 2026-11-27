@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	arsapi "execution-substrate/ars/api"
-	egsmodel "execution-substrate/egs/model"
+	arscontract "execution-substrate/ars/contract"
+	egscontract "execution-substrate/egs/contract"
 	evidencev1 "execution-substrate/internal/contracts/evidence/v1"
 )
 
@@ -187,9 +187,9 @@ type preparedArtifactFixture struct {
 	privateKey ed25519.PrivateKey
 	keyID      string
 
-	discovery  arsapi.ArtifactDiscovery
+	discovery  arscontract.ArtifactDiscovery
 	evidence   evidencev1.ArtifactEvidence
-	trustModel egsmodel.RuntimeTrustPolicy
+	trustModel egscontract.RuntimeTrustPolicy
 }
 
 func newPreparedArtifactFixture(t *testing.T) preparedArtifactFixture {
@@ -255,8 +255,8 @@ func newPreparedArtifactFixture(t *testing.T) preparedArtifactFixture {
 		keyID:      keyID,
 		discovery:  validArtifactDiscoveryFixture(),
 		evidence:   evidence,
-		trustModel: egsmodel.RuntimeTrustPolicy{
-			SignerPolicy: egsmodel.SignerPolicy{
+		trustModel: egscontract.RuntimeTrustPolicy{
+			SignerPolicy: egscontract.SignerPolicy{
 				AllowedSigners: []string{keyID},
 			},
 		},
@@ -326,18 +326,18 @@ func (f preparedArtifactFixture) prepareRequest() PrepareRequest {
 	}
 }
 
-func validArtifactDiscoveryFixture() arsapi.ArtifactDiscovery {
-	return arsapi.ArtifactDiscovery{
-		SchemaVersion: arsapi.ArtifactDiscoverySchemaVersion,
-		Artifact: arsapi.ArtifactIdentity{
+func validArtifactDiscoveryFixture() arscontract.ArtifactDiscovery {
+	return arscontract.ArtifactDiscovery{
+		SchemaVersion: arscontract.ArtifactDiscoverySchemaVersion,
+		Artifact: arscontract.ArtifactIdentity{
 			ArtifactDigest: labeledDigest("aa"),
 			ArtifactType:   "static-script",
 			IntentDigest:   labeledDigest("bb"),
 		},
-		Evidence: arsapi.ArtifactBlobRef{
+		Evidence: arscontract.ArtifactBlobRef{
 			Digest: labeledDigest("cc"),
 		},
-		Payload: arsapi.ArtifactBlobRef{
+		Payload: arscontract.ArtifactBlobRef{
 			Digest: labeledDigest("dd"),
 		},
 	}

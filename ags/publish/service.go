@@ -21,7 +21,7 @@ import (
 
 	"execution-substrate/ags/config"
 	"execution-substrate/ags/sign"
-	arsapi "execution-substrate/ars/api"
+	arscontract "execution-substrate/ars/contract"
 	evidencev1 "execution-substrate/internal/contracts/evidence/v1"
 	"execution-substrate/internal/observability"
 )
@@ -131,19 +131,19 @@ func (s *Service) Publish(ctx context.Context, caller CallerIdentity, req Publis
 	}
 	evidenceDigest := digestBytes(evidenceBytes)
 	manifestDigest := digestBytes(manifestBytes)
-	artifactRef := arsapi.ArtifactIdentity{
+	artifactRef := arscontract.ArtifactIdentity{
 		ArtifactDigest: artifactDigest,
 		ArtifactType:   manifest.ArtifactType,
 		IntentDigest:   manifest.IntentDigest,
 	}
-	discovery := arsapi.ArtifactDiscovery{
-		SchemaVersion: arsapi.ArtifactDiscoverySchemaVersion,
+	discovery := arscontract.ArtifactDiscovery{
+		SchemaVersion: arscontract.ArtifactDiscoverySchemaVersion,
 		Artifact:      artifactRef,
-		Evidence: arsapi.ArtifactBlobRef{
+		Evidence: arscontract.ArtifactBlobRef{
 			Digest:    evidenceDigest,
 			MediaType: "application/json",
 		},
-		Payload: arsapi.ArtifactBlobRef{
+		Payload: arscontract.ArtifactBlobRef{
 			Digest:    payloadDigest,
 			MediaType: "application/octet-stream",
 		},
@@ -154,13 +154,13 @@ func (s *Service) Publish(ctx context.Context, caller CallerIdentity, req Publis
 	}
 	discoveryDigest := digestBytes(discoveryBytes)
 
-	descriptor := arsapi.ArtifactDescriptor{
-		SchemaVersion: arsapi.ArtifactDescriptorSchemaVersion,
+	descriptor := arscontract.ArtifactDescriptor{
+		SchemaVersion: arscontract.ArtifactDescriptorSchemaVersion,
 		Artifact:      artifactRef,
-		Package: arsapi.ArtifactPackage{
+		Package: arscontract.ArtifactPackage{
 			Evidence: discovery.Evidence,
 			Payload:  discovery.Payload,
-			Supporting: []arsapi.ArtifactSupportRef{
+			Supporting: []arscontract.ArtifactSupportRef{
 				{
 					Name:      "manifest",
 					Digest:    manifestDigest,
@@ -189,7 +189,7 @@ func (s *Service) Publish(ctx context.Context, caller CallerIdentity, req Publis
 		}
 	}
 
-	if err := s.arsClient.registerArtifact(ctx, arsapi.RegisterArtifactRequest{
+	if err := s.arsClient.registerArtifact(ctx, arscontract.RegisterArtifactRequest{
 		DiscoveryDigest:  discoveryDigest,
 		DescriptorDigest: descriptorDigest,
 	}); err != nil {
@@ -399,7 +399,7 @@ func (c *dependencyClient) putBlob(ctx context.Context, digest string, data []by
 	return nil
 }
 
-func (c *dependencyClient) registerArtifact(ctx context.Context, requestBody arsapi.RegisterArtifactRequest) error {
+func (c *dependencyClient) registerArtifact(ctx context.Context, requestBody arscontract.RegisterArtifactRequest) error {
 	payload, err := json.Marshal(requestBody)
 	if err != nil {
 		return fmt.Errorf("marshal register request: %w", err)

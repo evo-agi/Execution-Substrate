@@ -998,11 +998,10 @@ func TestFetchVerifiedARSBlobIsTheOnlyARSBlobReadInES(t *testing.T) {
 			}
 		}
 	}
-	// The only other "blobs" literal ES links is the ARS server's own route
-	// prefix (ES imports ars/api for its wire types). It is a server route,
-	// not a read.
+	// ES takes ARS's wire types from ars/contract, which holds no server code,
+	// so ES does not link the ARS server and its route prefix is not among the
+	// sites.
 	wantSites := []site{
-		{file: "../ars/api/server.go", fn: "<package scope>", text: "/v1/blobs/"},
 		{file: "admission/ars_blob_fetch.go", fn: "fetchVerifiedARSBlob", text: "/v1/blobs/"},
 	}
 	slices.SortFunc(sites, func(a, b site) int { return strings.Compare(a.file+" "+a.fn+" "+a.text, b.file+" "+b.fn+" "+b.text) })
