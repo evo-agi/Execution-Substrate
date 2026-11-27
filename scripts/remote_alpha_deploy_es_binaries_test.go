@@ -19,6 +19,17 @@ type esBinaryDeploymentFixture struct {
 	HealthEnvPath    string
 	ServiceUnitPath  string
 	MutationLogPath  string
+	// ConfigCheckLog holds one line per run of a payload config check:
+	// its name and the config it judged.
+	ConfigCheckLog string
+}
+
+// esBinaryDeploymentConfigChecks are the payload's config checks and the
+// configs they judge, next to es.json.
+var esBinaryDeploymentConfigChecks = []struct{ checker, config string }{
+	{"esconfigcheck", "es.json"},
+	{"agsconfigcheck", "ags.json"},
+	{"egsconfigcheck", "egs.json"},
 }
 
 func runSourcedESBinaryDeploymentHelper(t *testing.T, env []string, shellBody string) ([]byte, error) {
@@ -71,6 +82,24 @@ func setupESBinaryDeploymentFixture(t *testing.T, tmpDir string) esBinaryDeploym
 	if err := os.WriteFile(filepath.Join(payloadDir, "es-runtime-support"), []byte("new runtime payload\n"), 0o755); err != nil {
 		t.Fatalf("write payload runtime support: %v", err)
 	}
+	// The fake config checks log each run, and refuse a config next to which
+	// a test put <config>.refuse, as the real ones refuse a config their
+	// service would not start with.
+	configCheckLog := filepath.Join(tmpDir, "config-checks.log")
+	for _, c := range esBinaryDeploymentConfigChecks {
+		service := strings.TrimSuffix(c.config, ".json")
+		script := fmt.Sprintf(`#!/bin/sh
+printf '%%s %%s\n' %q "$1" >> %q
+if [ -e "$1.refuse" ]; then
+  echo "%s config refused: decode config: the test refuses it" >&2
+  exit 1
+fi
+echo "%s config accepted"
+`, c.checker, configCheckLog, service, service)
+		if err := os.WriteFile(filepath.Join(payloadDir, c.checker), []byte(script), 0o755); err != nil {
+			t.Fatalf("write payload %s: %v", c.checker, err)
+		}
+	}
 	buildProvenance := map[string]any{
 		"source_kind":      "staged_payload",
 		"git_commit":       "002b4d8c2f2484bb5d2b2dcc12134c8a145bc7bd",
@@ -122,6 +151,20 @@ func setupESBinaryDeploymentFixture(t *testing.T, tmpDir string) esBinaryDeploym
 		HealthEnvPath:    healthEnvPath,
 		ServiceUnitPath:  serviceUnitPath,
 		MutationLogPath:  mutationLogPath,
+		ConfigCheckLog:   configCheckLog,
+	}
+}
+
+// requireConfigChecksRan fails unless each payload config check ran exactly
+// once, on the config next to es.json that it judges.
+func requireConfigChecksRan(t *testing.T, f esBinaryDeploymentFixture) {
+	t.Helper()
+	var want []string
+	for _, c := range esBinaryDeploymentConfigChecks {
+		want = append(want, c.checker+" "+filepath.Join(filepath.Dir(f.ConfigPath), c.config))
+	}
+	if got := strings.TrimSpace(readIfExists(f.ConfigCheckLog)); got != strings.Join(want, "\n") {
+		t.Fatalf("config checks ran as\n%s\nwant\n%s", got, strings.Join(want, "\n"))
 	}
 }
 
@@ -147,8 +190,12 @@ case "$1" in
   show)
     user="${REMOTE_ALPHA_TEST_SYSTEMCTL_USER:-es}"
     group="${REMOTE_ALPHA_TEST_SYSTEMCTL_GROUP:-es}"
+    if [ -n "${REMOTE_ALPHA_TEST_SYSTEMCTL_EXEC_START:-}" ]; then
+      printf '%%s\n' "${REMOTE_ALPHA_TEST_SYSTEMCTL_EXEC_START}"
+    else
+      echo "ExecStart={ path=%s ; argv[]=%s -config %s ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }"
+    fi
     cat <<EOF
-ExecStart={ path=%s ; argv[]=%s -config %s ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }
 User=$user
 Group=$group
 ActiveState=%s
@@ -233,6 +280,9 @@ remote_alpha_deploy_es_binaries_stage_make_local_payload_tree() {
   mkdir -p "$payload_dir"
   printf 'es\n' > "$payload_dir/es"
   printf 'runtime\n' > "$payload_dir/es-runtime-support"
+  printf 'check\n' > "$payload_dir/esconfigcheck"
+  printf 'check\n' > "$payload_dir/agsconfigcheck"
+  printf 'check\n' > "$payload_dir/egsconfigcheck"
   printf '{}\n' > "$payload_dir/build-provenance.json"
 }
 remote_alpha_deploy_es_binaries_stage_main --ssh-target fake-target --run-id sudo-unavailable --output-dir %q
@@ -309,6 +359,13 @@ remote_alpha_deploy_es_binaries_main
 	}
 	if _, err := os.Stat(fixture.MutationLogPath); !os.IsNotExist(err) {
 		t.Fatalf("mutation log should not exist in check-only mode")
+	}
+	requireConfigChecksRan(t, fixture)
+	checks := nestedMap(t, nestedMap(t, payload, "validation"), "config_checks")
+	for _, service := range []string{"es", "ags", "egs"} {
+		if got := nestedMap(t, checks, service)["classification"]; got != "pass" {
+			t.Fatalf("config check of %s: %v", service, nestedMap(t, checks, service))
+		}
 	}
 }
 
@@ -429,6 +486,7 @@ remote_alpha_deploy_es_binaries_main --apply --summary-path %q
 	if got := strings.Count(string(mutationLogBytes), "systemctl restart"); got != 1 {
 		t.Fatalf("expected exactly one restart, got %d in %q", got, string(mutationLogBytes))
 	}
+	requireConfigChecksRan(t, fixture)
 }
 
 func TestRemoteAlphaESBinaryDeploymentApplyPreservesAcceptedCurrentESServiceUserPosture(t *testing.T) {
@@ -511,5 +569,244 @@ remote_alpha_deploy_es_binaries_main
 	)
 	if err == nil {
 		t.Fatalf("expected helper to fail when service posture is not the current supported es:es posture, output=%s", string(output))
+	}
+}
+
+// TestRemoteAlphaESBinaryDeploymentStopsOnAConfigTheNewBinariesRefuse: the
+// ES, AGS and EGS of the payload's tree refuse a config the running ones
+// accepted, such as one still on the repository's published signing keys
+// (.docs/system_overview/contracts.md, section 3B). When any of the three
+// config checks refuses its config, check-only names it as a blocker, and
+// apply installs nothing and restarts nothing. A payload without its config
+// checks is refused the same way.
+func TestRemoteAlphaESBinaryDeploymentStopsOnAConfigTheNewBinariesRefuse(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name  string
+		setup func(t *testing.T, f esBinaryDeploymentFixture)
+		scope string
+		want  string
+	}{}
+	for _, c := range esBinaryDeploymentConfigChecks {
+		c := c
+		service := strings.TrimSuffix(c.config, ".json")
+		cases = append(cases, struct {
+			name  string
+			setup func(t *testing.T, f esBinaryDeploymentFixture)
+			scope string
+			want  string
+		}{"the new " + service + " refuses " + c.config, func(t *testing.T, f esBinaryDeploymentFixture) {
+			if err := os.WriteFile(filepath.Join(filepath.Dir(f.ConfigPath), c.config+".refuse"), nil, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}, service + "_config_check", "the new " + service + " would refuse " + string(filepath.Separator) + filepath.Join("config", c.config) +
+			", so nothing is installed: " + service + " config refused: decode config: the test refuses it"})
+	}
+	cases = append(cases, struct {
+		name  string
+		setup func(t *testing.T, f esBinaryDeploymentFixture)
+		scope string
+		want  string
+	}{"the payload has no AGS config check", func(t *testing.T, f esBinaryDeploymentFixture) {
+		if err := os.Remove(filepath.Join(f.PayloadDir, "agsconfigcheck")); err != nil {
+			t.Fatal(err)
+		}
+	}, "local_payload", "staged payload config checks are missing from the sealed helper payload directory: agsconfigcheck"})
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			for _, mode := range []string{"check-only", "apply"} {
+				tmpDir := t.TempDir()
+				fakeBin := filepath.Join(tmpDir, "bin")
+				if err := os.MkdirAll(fakeBin, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				fixture := setupESBinaryDeploymentFixture(t, tmpDir)
+				setupFakeESBinaryDeploymentCommands(t, fakeBin, fixture)
+				tc.setup(t, fixture)
+				// Both modes get a summary path in the test's folder: the
+				// default one is under /var/tmp, which macOS reaches through
+				// a symbolic link that the output folder check refuses.
+				summaryPath := filepath.Join(tmpDir, "apply-summary.json")
+				args := fmt.Sprintf("--summary-path %q", summaryPath)
+				if mode == "apply" {
+					args = "--apply " + args
+				}
+				output, err := runSourcedESBinaryDeploymentHelper(t, envWithPath(fakeBin,
+					"REMOTE_ALPHA_TEST_MUTATION_LOG_PATH="+fixture.MutationLogPath,
+					"REMOTE_ALPHA_TEST_BACKUP_ROOT="+filepath.Join(tmpDir, "backup-root"),
+				), esBinaryDeploymentExpectedSliceShell(fixture)+"remote_alpha_deploy_es_binaries_main "+args+"\n")
+				if err == nil {
+					t.Fatalf("%s passed with a config the new binaries refuse:\n%s", mode, output)
+				}
+				report := output
+				if mode == "apply" {
+					if report, err = os.ReadFile(summaryPath); err != nil {
+						t.Fatalf("apply wrote no summary: %v\n%s", err, output)
+					}
+				}
+				payload := parseESBinaryDeploymentOutput(t, report)
+				found := false
+				for _, raw := range payload["blockers"].([]any) {
+					blocker := raw.(map[string]any)
+					summary := strings.Replace(fmt.Sprint(blocker["summary"]), tmpDir, "", 1)
+					if blocker["scope"] == tc.scope && strings.Contains(summary, tc.want) {
+						found = true
+					}
+				}
+				if !found {
+					t.Fatalf("%s: no %s blocker saying %q in %v", mode, tc.scope, tc.want, payload["blockers"])
+				}
+				if live, _ := os.ReadFile(fixture.LiveESBinaryPath); string(live) != "old es live binary\n" {
+					t.Fatalf("%s installed the es binary: %q", mode, live)
+				}
+				if live, _ := os.ReadFile(fixture.LiveRuntimePath); string(live) != "old runtime live binary\n" {
+					t.Fatalf("%s installed the runtime support binary: %q", mode, live)
+				}
+				if _, err := os.Stat(fixture.MutationLogPath); !os.IsNotExist(err) {
+					t.Fatalf("%s restarted the service: %s", mode, readIfExists(fixture.MutationLogPath))
+				}
+				if backups, _ := filepath.Glob(filepath.Join(tmpDir, "backup-root", "es-binary-deployment-*")); len(backups) != 0 {
+					t.Fatalf("%s made a backup: %v", mode, backups)
+				}
+			}
+		})
+	}
+}
+
+// runESBinaryDeploymentCheckOnly runs the deployment in check-only mode
+// after mutate has changed the fixture, and returns its report.
+func runESBinaryDeploymentCheckOnly(t *testing.T, mutate func(t *testing.T, f esBinaryDeploymentFixture), extraEnv ...string) map[string]any {
+	t.Helper()
+	return runESBinaryDeploymentCheckOnlyWith(t, func(f esBinaryDeploymentFixture) []string {
+		mutate(t, f)
+		return extraEnv
+	})
+}
+
+// runESBinaryDeploymentCheckOnlyWith is runESBinaryDeploymentCheckOnly with
+// an environment that may name the fixture's paths.
+func runESBinaryDeploymentCheckOnlyWith(t *testing.T, prepare func(f esBinaryDeploymentFixture) []string) map[string]any {
+	t.Helper()
+	tmpDir := t.TempDir()
+	fakeBin := filepath.Join(tmpDir, "bin")
+	if err := os.MkdirAll(fakeBin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fixture := setupESBinaryDeploymentFixture(t, tmpDir)
+	setupFakeESBinaryDeploymentCommands(t, fakeBin, fixture)
+	extraEnv := prepare(fixture)
+	summaryPath := filepath.Join(tmpDir, "check-summary.json")
+	output, _ := runSourcedESBinaryDeploymentHelper(t, envWithPath(fakeBin, extraEnv...),
+		esBinaryDeploymentExpectedSliceShell(fixture)+fmt.Sprintf("remote_alpha_deploy_es_binaries_main --summary-path %q\n", summaryPath))
+	return parseESBinaryDeploymentOutput(t, output)
+}
+
+// A staged config check that is there but cannot run is a blocker, not a
+// pass (Sonnet shadow audit D08; a check missing from the payload is
+// another branch, tested above).
+func TestRemoteAlphaESBinaryDeploymentConfigCheckThatCannotRunIsABlocker(t *testing.T) {
+	t.Parallel()
+	payload := runESBinaryDeploymentCheckOnly(t, func(t *testing.T, f esBinaryDeploymentFixture) {
+		if err := os.Chmod(filepath.Join(f.PayloadDir, "agsconfigcheck"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	})
+	ags := nestedMap(t, nestedMap(t, nestedMap(t, payload, "validation"), "config_checks"), "ags")
+	if ags["classification"] != "blocker" || !strings.Contains(fmt.Sprint(ags["summary"]), "the config check agsconfigcheck could not run") {
+		t.Fatalf("a config check that cannot run is not a blocker: %v", ags)
+	}
+}
+
+// The staged config checks run with an environment of their own, not the
+// caller's (Sonnet shadow audit D05): a check that fails when a variable of
+// the caller is set must still pass.
+func TestRemoteAlphaESBinaryDeploymentConfigChecksDoNotSeeTheCallersEnvironment(t *testing.T) {
+	t.Parallel()
+	payload := runESBinaryDeploymentCheckOnly(t, func(t *testing.T, f esBinaryDeploymentFixture) {
+		script := "#!/bin/sh\nif [ -n \"${DEPLOYMENT_TEST_CALLER_VARIABLE:-}\" ]; then echo \"saw the caller's environment\" >&2; exit 1; fi\nexit 0\n"
+		if err := os.WriteFile(filepath.Join(f.PayloadDir, "esconfigcheck"), []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}, "DEPLOYMENT_TEST_CALLER_VARIABLE=1")
+	es := nestedMap(t, nestedMap(t, nestedMap(t, payload, "validation"), "config_checks"), "es")
+	if es["classification"] != "pass" {
+		t.Fatalf("the config check saw the caller's environment: %v", es)
+	}
+}
+
+// A staged config check that a signal ends gave no verdict: a blocker that
+// says so, not a pass and not a refusal of the config (red-team RT10-9 D09
+// and its note on the wording).
+func TestRemoteAlphaESBinaryDeploymentConfigCheckEndedByASignalIsABlocker(t *testing.T) {
+	t.Parallel()
+	payload := runESBinaryDeploymentCheckOnly(t, func(t *testing.T, f esBinaryDeploymentFixture) {
+		if err := os.WriteFile(filepath.Join(f.PayloadDir, "egsconfigcheck"), []byte("#!/bin/sh\nkill -9 $$\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	})
+	egs := nestedMap(t, nestedMap(t, nestedMap(t, payload, "validation"), "config_checks"), "egs")
+	if egs["classification"] != "blocker" || !strings.Contains(fmt.Sprint(egs["summary"]), "the config check egsconfigcheck was ended by signal 9, so nothing is installed") {
+		t.Fatalf("a config check ended by a signal: %v", egs)
+	}
+}
+
+// The unit must start exactly the pinned binary with the pinned config, or
+// the config checks judge a file ES does not read (red-team RT10-8): a
+// second -config, a config path that only contains the pinned one, systemd's
+// @ prefix running another program, two ExecStart lines, and a line not in
+// systemctl show's form are each a service_posture blocker. The forms ES
+// reads the same way pass.
+func TestRemoteAlphaESBinaryDeploymentRequiresTheExactExecStart(t *testing.T) {
+	t.Parallel()
+	show := func(path, argv string) string {
+		return "ExecStart={ path=" + path + " ; argv[]=" + argv + " ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }"
+	}
+	posture := func(t *testing.T, line func(f esBinaryDeploymentFixture) string) map[string]any {
+		t.Helper()
+		payload := runESBinaryDeploymentCheckOnlyWith(t, func(f esBinaryDeploymentFixture) []string {
+			return []string{"REMOTE_ALPHA_TEST_SYSTEMCTL_EXEC_START=" + line(f)}
+		})
+		return nestedMap(t, nestedMap(t, payload, "validation"), "es_service_posture")
+	}
+	for _, tc := range []struct {
+		name    string
+		line    func(f esBinaryDeploymentFixture) string
+		refused bool
+	}{
+		{"the pinned binary and config", func(f esBinaryDeploymentFixture) string {
+			return show(f.LiveESBinaryPath, f.LiveESBinaryPath+" -config "+f.ConfigPath)
+		}, false},
+		{"--config=", func(f esBinaryDeploymentFixture) string {
+			return show(f.LiveESBinaryPath, f.LiveESBinaryPath+" --config="+f.ConfigPath)
+		}, false},
+		{"a second -config", func(f esBinaryDeploymentFixture) string {
+			return show(f.LiveESBinaryPath, f.LiveESBinaryPath+" -config "+f.ConfigPath+" -config /nonexistent/second.json")
+		}, true},
+		{"a config path that contains the pinned one", func(f esBinaryDeploymentFixture) string {
+			return show(f.LiveESBinaryPath, f.LiveESBinaryPath+" -config "+f.ConfigPath+".d/es.json")
+		}, true},
+		{"another program under the binary's name", func(f esBinaryDeploymentFixture) string {
+			return show("/opt/other/es", f.LiveESBinaryPath+" -config "+f.ConfigPath)
+		}, true},
+		{"two ExecStart lines", func(f esBinaryDeploymentFixture) string {
+			l := show(f.LiveESBinaryPath, f.LiveESBinaryPath+" -config "+f.ConfigPath)
+			return l + "\n" + l
+		}, true},
+		{"a line not in systemctl show's form", func(f esBinaryDeploymentFixture) string {
+			return "ExecStart=" + f.LiveESBinaryPath + " -config " + f.ConfigPath
+		}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := posture(t, tc.line)
+			blocked := got["classification"] == "blocker" && strings.Contains(fmt.Sprint(got["summary"]), "ExecStart")
+			if blocked != tc.refused {
+				t.Fatalf("service posture %v, want refused=%v", got, tc.refused)
+			}
+		})
 	}
 }
