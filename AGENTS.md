@@ -38,7 +38,7 @@ Additional rules:
 - If docs and code disagree on factual behavior, code and tests win for current behavior, and the docs must be realigned.
 - If docs disagree on design intent and code does not settle it, surface a design-governance conflict instead of guessing.
 - `.docs/history/plans-record.md`, the closed dated record that moved out of `PLANS.md`, is historical evidence and holds no current authority: where it differs from `PLANS.md` or from an owning `.docs/` contract, they win. It is not part of the read-first path; consult it when a change touches a surface one of its entries names.
-- The files in `.docs/standing_rules/` hold standing rules that moved unreworded out of `PLANS.md`: `execution_admission_and_custody.md` holds the Workstream C admission and custody rules, and `remote_alpha_operator_routes.md` holds the Remote Alpha operator route rules P0i to P0v and the Remote Alpha access contract v1. They keep `PLANS.md`'s authority, second in the list above: only their location changed, and the rules above apply to them as they apply to `PLANS.md`.
+- The files in `.docs/standing_rules/` hold standing rules that moved unreworded out of `PLANS.md`: `execution_admission_and_custody.md` holds the Workstream C admission and custody rules, `remote_alpha_operator_routes.md` holds the Remote Alpha operator route rules P0i to P0v and the Remote Alpha access contract v1, `workstream_decisions.md` holds the decision records of Workstreams A to F, and `host_and_runtime_boundary.md` holds the host and runtime boundary slice rules. They keep `PLANS.md`'s authority, second in the list above: only their location changed, and the rules above apply to them as they apply to `PLANS.md`.
 
 ## 4. Required terminology
 

@@ -2533,11 +2533,11 @@ esac
 }
 
 // TestRemoteAlphaHostFirewallDocsContract pins the documented contract of
-// the host firewall (PLANS.md slice and the system-overview section) to the
+// the host firewall (standing rule slice and the system-overview section) to the
 // behaviour the tests above check.
 func TestRemoteAlphaHostFirewallDocsContract(t *testing.T) {
-	plans := compactDocSection(t, mustRead(t, "PLANS.md"), "## Current Remote Alpha Host Network Boundary Slice", "## Future ES Privilege-Boundary Design Track")
-	assertContainsAll(t, "PLANS.md host network boundary slice", plans,
+	slice := compactDocSection(t, mustRead(t, standingHostRuntimePath), "## Current Remote Alpha Host Network Boundary Slice", "")
+	assertContainsAll(t, "host network boundary slice standing rules", slice,
 		"INF-01 (containers reach the home LAN), INF-13 (ES and AGS listeners open to the whole LAN) and INF-23",
 		"`scripts/remote_alpha_host_firewall.sh`",
 		"It owns only the nftables tables `inet es_host_firewall` and `bridge es_host_firewall`",

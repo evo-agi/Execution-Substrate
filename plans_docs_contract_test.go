@@ -25,6 +25,8 @@ const (
 	standingRulesDir           = ".docs/standing_rules/"
 	standingAdmissionRulesPath = standingRulesDir + "execution_admission_and_custody.md"
 	standingRouteRulesPath     = standingRulesDir + "remote_alpha_operator_routes.md"
+	standingWorkstreamsPath    = standingRulesDir + "workstream_decisions.md"
+	standingHostRuntimePath    = standingRulesDir + "host_and_runtime_boundary.md"
 )
 
 // plansAndStandingRules returns PLANS.md and the standing rule files that
@@ -34,7 +36,9 @@ func plansAndStandingRules(t *testing.T) string {
 	t.Helper()
 	return compactText(mustRead(t, "PLANS.md")) + " " +
 		compactText(mustRead(t, standingAdmissionRulesPath)) + " " +
-		compactText(mustRead(t, standingRouteRulesPath))
+		compactText(mustRead(t, standingRouteRulesPath)) + " " +
+		compactText(mustRead(t, standingWorkstreamsPath)) + " " +
+		compactText(mustRead(t, standingHostRuntimePath))
 }
 
 // The last section of each standing rule file moved out of PLANS.md after the
@@ -46,6 +50,37 @@ const (
 	pairedRootCustodyHeading = "### Current paired-root custody and acceptance scope"
 	remoteAlphaAccessHeading = "### Remote Alpha access contract v1 — Tranche A"
 )
+
+// The decision records of Workstreams A to F, and the host and runtime
+// boundary slice rules, moved out of PLANS.md unreworded into their own
+// standing rule files: each workstream record is one section of
+// standingWorkstreamsPath, and each host and runtime boundary slice one
+// section of standingHostRuntimePath. Checks of that text read the section.
+// standingStep4BaseCommit is the trunk_dev commit from which the workstream
+// decision records and the host and runtime boundary slice rules moved.
+const standingStep4BaseCommit = "0b9278ca74404b46b5e9f0e1701874b52687f5e8"
+
+const (
+	supportedLocalRootsHeading = "## Supported-local execution roots and launcher users"
+	raHardeningHeading         = "## Remote Alpha Hardening History and Current Retirement"
+	milestone1Heading          = "## Milestone 1: Least-Privilege Runtime/Security Boundary Closeout"
+	raESConfigTLSPrepHeading   = "## Current Remote Alpha ES Config/TLS Ownership Prep Slice"
+	raHostNetworkHeading       = "## Current Remote Alpha Host Network Boundary Slice"
+)
+
+// workstreamRecord returns the decision record of a workstream, "A" to "F",
+// compacted.
+func workstreamRecord(t *testing.T, workstream string) string {
+	t.Helper()
+	return standingRuleSection(t, standingWorkstreamsPath, "## Workstream "+workstream+" decision record")
+}
+
+// hostRuntimeSection returns one section of the host and runtime boundary
+// standing rules, compacted.
+func hostRuntimeSection(t *testing.T, heading string) string {
+	t.Helper()
+	return standingRuleSection(t, standingHostRuntimePath, heading)
+}
 
 // standingRuleSection returns the section of the standing rule file at path
 // that opens with heading, compacted: from the heading to the next heading, or
@@ -69,12 +104,13 @@ func standingRuleSection(t *testing.T, path, heading string) string {
 const plansRecordSHA256 = "0b13566795d1233f91c293f4b5ea79134af73013d75fea2e7f74f7df57ed0561"
 
 // plansMaxBytes caps PLANS.md a little above its size once the record, the
-// standing rules and then the last two standing-rule sections moved out
-// (127,250 bytes). PLANS.md holds intent and order, is edited in place to
+// standing rules, the last two standing-rule sections and then the workstream
+// decision records and the host and runtime boundary slice rules moved out
+// (72,387 bytes). PLANS.md holds intent and order, is edited in place to
 // stay current, and must not regrow into a log or a rule book. Raising the
 // cap is a deliberate, reviewed change; prefer putting a standing rule in the
 // file that owns it.
-const plansMaxBytes = 132000
+const plansMaxBytes = 76000
 
 // plansOpeningSections are the first top-level sections of PLANS.md, in
 // order: the plan an agent needs before any change comes first.
@@ -85,10 +121,10 @@ var plansOpeningSections = []string{
 	"## Reopened-Seam Exit Criteria",
 }
 
-// plansGuardedFiles are the files the status-entry guard reads: PLANS.md and
-// the standing rule files that moved out of it, which are edited in place in
-// the same way.
-var plansGuardedFiles = []string{"PLANS.md", standingAdmissionRulesPath, standingRouteRulesPath}
+// plansGuardedFiles are the files the status-entry guard, and the guard that
+// keeps the closed record's headings out, read: PLANS.md and the standing rule
+// files that moved out of it, which are edited in place in the same way.
+var plansGuardedFiles = []string{"PLANS.md", standingAdmissionRulesPath, standingRouteRulesPath, standingWorkstreamsPath, standingHostRuntimePath}
 
 // plansDatedLineExceptions are the dated lines that PLANS.md held, inside
 // sections that stayed current, keyed by the file that holds them now. They
@@ -172,7 +208,9 @@ func TestPlansOpensWithTheCurrentPlan(t *testing.T) {
 		"This file holds the current plan, its intent and order:",
 		"Put a standing rule in the file that owns it, not here.",
 		"[`execution_admission_and_custody.md`]("+standingAdmissionRulesPath+") holds the Workstream C admission and custody rules",
-		"[`remote_alpha_operator_routes.md`]("+standingRouteRulesPath+") holds the Remote Alpha operator route rules P0i to P0v and the Remote Alpha access contract v1.",
+		"[`remote_alpha_operator_routes.md`]("+standingRouteRulesPath+") holds the Remote Alpha operator route rules P0i to P0v and the Remote Alpha access contract v1,",
+		"[`workstream_decisions.md`]("+standingWorkstreamsPath+") holds the decision records of Workstreams A to F",
+		"[`host_and_runtime_boundary.md`]("+standingHostRuntimePath+") holds the host and runtime boundary slice rules. Edit a rule there, in place.",
 		"Do not add dated status entries",
 		"Cite this file by section heading, never by line number",
 		"("+plansRecordPath+")",
@@ -255,10 +293,15 @@ func TestPlansRecordIsClosed(t *testing.T) {
 		"in the order they stood at the top of `PLANS.md`",
 	)
 
-	// Nothing that moved is still in PLANS.md under the same heading.
-	plansHeadings := map[string]bool{}
-	for _, heading := range markdownHeadingTitles(mustRead(t, "PLANS.md")) {
-		plansHeadings[heading] = true
+	// Nothing that moved is still in PLANS.md under the same heading, or in a
+	// standing rule file that holds text moved out of PLANS.md.
+	planHeadings := map[string]string{}
+	for _, path := range plansGuardedFiles {
+		for _, heading := range markdownHeadingTitles(mustRead(t, path)) {
+			if _, seen := planHeadings[heading]; !seen {
+				planHeadings[heading] = path
+			}
+		}
 	}
 	moved := 0
 	for _, heading := range markdownHeadingTitles(record) {
@@ -266,8 +309,8 @@ func TestPlansRecordIsClosed(t *testing.T) {
 			continue
 		}
 		moved++
-		if plansHeadings[heading] {
-			t.Errorf("heading %q is in both PLANS.md and %s", heading, plansRecordPath)
+		if path, ok := planHeadings[heading]; ok {
+			t.Errorf("heading %q is in both %s and %s", heading, path, plansRecordPath)
 		}
 	}
 	if moved < 30 {
@@ -293,7 +336,7 @@ func TestPlansRecordIsNamedWhereAgentsStart(t *testing.T) {
 // each file, and no section is held in two places.
 func TestStandingRulesKeepPlansAuthority(t *testing.T) {
 	assertContainsAll(t, "AGENTS.md standing rules", compactText(mustRead(t, "AGENTS.md")),
-		"The files in `"+standingRulesDir+"` hold standing rules that moved unreworded out of `PLANS.md`: `execution_admission_and_custody.md` holds the Workstream C admission and custody rules, and `remote_alpha_operator_routes.md` holds the Remote Alpha operator route rules P0i to P0v and the Remote Alpha access contract v1. They keep `PLANS.md`'s authority, second in the list above: only their location changed, and the rules above apply to them as they apply to `PLANS.md`.",
+		"The files in `"+standingRulesDir+"` hold standing rules that moved unreworded out of `PLANS.md`: `execution_admission_and_custody.md` holds the Workstream C admission and custody rules, `remote_alpha_operator_routes.md` holds the Remote Alpha operator route rules P0i to P0v and the Remote Alpha access contract v1, `workstream_decisions.md` holds the decision records of Workstreams A to F, and `host_and_runtime_boundary.md` holds the host and runtime boundary slice rules. They keep `PLANS.md`'s authority, second in the list above: only their location changed, and the rules above apply to them as they apply to `PLANS.md`.",
 		"consult the `"+standingRulesDir+"` file that holds the rules of the surface you change",
 		"update the `"+standingRulesDir+"` file in place when a standing rule it holds changed, also without a dated status entry",
 	)
@@ -310,7 +353,7 @@ func TestStandingRulesKeepPlansAuthority(t *testing.T) {
 		}
 	}
 	sort.Strings(inFolder)
-	if want := []string{standingAdmissionRulesPath, standingRouteRulesPath}; strings.Join(inFolder, " ") != strings.Join(want, " ") {
+	if want := []string{standingAdmissionRulesPath, standingHostRuntimePath, standingRouteRulesPath, standingWorkstreamsPath}; strings.Join(inFolder, " ") != strings.Join(want, " ") {
 		t.Fatalf("%s holds %q, want %q: a new standing rule file is named in AGENTS.md section 3 first", standingRulesDir, inFolder, want)
 	}
 
@@ -389,6 +432,100 @@ func TestStandingRulesKeepPlansAuthority(t *testing.T) {
 		if !strings.Contains(readme, "]("+rule.path+")") {
 			t.Errorf("README.md does not link %s", rule.path)
 		}
+	}
+
+	// The workstream decision records and the host and runtime boundary
+	// slice rules moved out of PLANS.md together, each into a file of its
+	// own. Each section there must be one that moved, PLANS.md must point
+	// to it, and no heading title may be in both files.
+	for _, rule := range []struct {
+		path     string
+		sections []string
+		// pointers name a PLANS.md section and the link to this file that
+		// it must hold.
+		pointers [][2]string
+	}{
+		{
+			standingWorkstreamsPath,
+			[]string{
+				"## Workstream A decision record", "## Workstream B decision record", "## Workstream C decision record",
+				"## Workstream D decision record", "## Workstream E decision record", "## Workstream F decision record",
+			},
+			[][2]string{
+				{"### Workstream A - Shared Contract And Kernel Reset", "#workstream-a-decision-record)"},
+				{"### Workstream B - Artifact Storage And Publication Contract Reset", "#workstream-b-decision-record)"},
+				{"### Workstream C - Execution And Admission Reset", "#workstream-c-decision-record)"},
+				{"### Workstream D - Policy And Authorization Reset", "#workstream-d-decision-record)"},
+				{"### Workstream E - Lookup And Config Indirection Reset", "#workstream-e-decision-record)"},
+				{"### Workstream F - Runtime Identity Handoff Reset", "#workstream-f-decision-record)"},
+			},
+		},
+		{
+			standingHostRuntimePath,
+			[]string{supportedLocalRootsHeading, raHardeningHeading, milestone1Heading, raESConfigTLSPrepHeading, raHostNetworkHeading},
+			[][2]string{
+				{"## Document Scope And Current Implementation", "#supported-local-execution-roots-and-launcher-users)"},
+				{"## Host And Runtime Boundary Rules", ")"},
+			},
+		},
+	} {
+		text := mustRead(t, rule.path)
+		assertContainsAll(t, rule.path+" header", compactText(text),
+			"moved here unreworded from",
+			"at `trunk_dev` commit `"+standingStep4BaseCommit+"`, so that `PLANS.md` holds intent and order",
+			"Edit a rule here in place when it changes. Do not add dated status entries",
+			"Cite this file by section heading, never by line number.",
+		)
+		plansTitles := map[string]bool{}
+		for heading := range plansHeadings {
+			plansTitles[strings.TrimSpace(strings.TrimLeft(heading, "#"))] = true
+		}
+		var sections []string
+		for _, heading := range markdownHeadingTitles(text) {
+			if strings.HasPrefix(heading, "# ") {
+				continue
+			}
+			sections = append(sections, heading)
+			if title := strings.TrimSpace(strings.TrimLeft(heading, "#")); plansTitles[title] {
+				t.Errorf("heading %q is in both PLANS.md and %s", title, rule.path)
+			}
+		}
+		if strings.Join(sections, "\n") != strings.Join(rule.sections, "\n") {
+			t.Errorf("%s has the sections %q, want %q, the ones that moved", rule.path, sections, rule.sections)
+		}
+		for _, pointer := range rule.pointers {
+			if !plansHeadings[pointer[0]] {
+				t.Fatalf("PLANS.md lacks the section %q that points to %s", pointer[0], rule.path)
+			}
+			section := plans[strings.Index(plans, pointer[0])+len(pointer[0]):]
+			if next := strings.Index(section, "\n#"); next >= 0 {
+				section = section[:next]
+			}
+			if !strings.Contains(section, "]("+rule.path+pointer[1]) {
+				t.Errorf("the PLANS.md section %q does not link %s%s", pointer[0], rule.path, strings.TrimSuffix(pointer[1], ")"))
+			}
+		}
+		if !strings.Contains(readme, "]("+rule.path+")") {
+			t.Errorf("README.md does not link %s", rule.path)
+		}
+	}
+	// The host pointer section links every section of the host file by its
+	// exact title, except the named slice rules, which the pointer bullet in
+	// "Document Scope And Current Implementation" links.
+	hostPointer := markedDocSection(t, "PLANS.md", plans, "## Host And Runtime Boundary Rules", "## Future ES Privilege-Boundary Design Track")
+	hostSections := 0
+	for _, heading := range markdownHeadingTitles(mustRead(t, standingHostRuntimePath)) {
+		if !strings.HasPrefix(heading, "## ") || heading == supportedLocalRootsHeading {
+			continue
+		}
+		hostSections++
+		title := strings.TrimPrefix(heading, "## ")
+		if link := "[" + title + "](" + standingHostRuntimePath + "#" + githubHeadingSlug(title) + ")"; !strings.Contains(hostPointer, link) {
+			t.Errorf("the PLANS.md section \"## Host And Runtime Boundary Rules\" does not link the %s section %q as %s", standingHostRuntimePath, title, link)
+		}
+	}
+	if hostSections != 4 {
+		t.Errorf("%s has %d sections after the named slice rules, want 4", standingHostRuntimePath, hostSections)
 	}
 }
 
@@ -469,12 +606,169 @@ func TestStandingRulesPinEachOtherwiseUncheckedRule(t *testing.T) {
 			"`Reopened redesign seam`: Tranche B must first freeze the supported OpenSSH directive grammar, Include closure and precedence, system-configuration interaction, accepted local filesystem roots and modes, component symlink policy, agent/Keychain/certificate interpretation, and safe optional directives in governing documentation and fake/static contract tests before implementing a validator.",
 			"Tranche A does not claim that any current local profile or operator alias conforms to that still-open static subset.",
 		}},
+		// Read by no test before or after the workstream decision records and the
+		// host and runtime boundary rules moved out of PLANS.md: the deletion
+		// sweep of that move found them. One or more phrases per paragraph.
+		{standingHostRuntimePath, "Remote Alpha hardening retirement", []string{
+			"`Temporary compatibility edge`: archived v1 evidence records an earlier Remote Supported-Host Alpha hardening exercise.",
+			"No v2 replacement is defined for that retired ES writable-state/service-user migration family.",
+		}},
+		{standingHostRuntimePath, "Hardening tranche: AGS and ARS postures", []string{
+			"AGS is already de-rooted and sealed in this tranche; preserve the landed `ags:ags` service posture and its existing host-local summary/evidence shape.",
+			"ARS is already de-rooted in this tranche; preserve the landed `ars:ars` service posture, its dedicated TLS/state ownership model, and its existing host-local summary/evidence shape.",
+		}},
+		{standingHostRuntimePath, "Hardening tranche: ES de-root limits", []string{
+			"ES config/TLS prep is applied and productized for the live host.",
+			"Archived v1 files may record that an earlier host had prepared ES writable roots, ran `es.service` as `User=es`, `Group=es`, `UMask=0027`, and passed bounded checks.",
+			"This tranche does not claim full ES/runtime de-root.",
+			"The root-start runtime helper, Nomad task `User: \"0:0\"`, helper-private SPIRE traversal, broad root selector posture, and Vault/workload-zone handoff remain bounded compatibility edges.",
+			"The long-lived ES startup path keeps `execution.spire_workload_api_socket_path` as a config-shape and submit input only;",
+		}},
+		{standingHostRuntimePath, "Hardening tranche: retired planner and preserved boundaries", []string{
+			"The former old-root cleanup/archive planner is retired. Archived summaries cannot authorize archive, deletion, ownership change, drain, fence, or any other host mutation.",
+			"This tranche must not change ES public contracts or Control Plane/Infrastructure Manager ownership boundaries.",
+			"This tranche preserves the direct Mac -> AGS/ES HTTPS+mTLS posture, the current EGS loopback-only dependency path, the landed AGS/ARS service postures, and the no-bridge/no-shared-filesystem remote posture.",
+			"This tranche is bounded host/service hardening only. Do not widen it into a runtime-boundary redesign or broader proof expansion.",
+		}},
+		{standingHostRuntimePath, "Hardening tranche: Vault helpers", []string{
+			"This tranche may now use one separate operator-owned Vault service-user migration helper.",
+			"This tranche may carry one disposable Remote Alpha Vault reset/rebootstrap operator script for the sealed-and-unrecoverable Shamir-key case.",
+			"The same helper may provide a non-destructive `--unseal-only` path for the case where the operator still has the Shamir unseal key;",
+		}},
+		{standingHostRuntimePath, "Milestone 1 name, archived service-user record and preserved boundaries", []string{
+			"`Bounded slice rule`: Milestone 1 is named `least-privilege runtime/security boundary closeout`.",
+			"Archived v1 evidence records a prior long-lived `es.service` service-user change to `User=es`, `Group=es`, `UMask=0027`. That historical record is not a current invariant, current readiness proof, or migration authority.",
+			"Milestone 1 preserves these current boundaries:",
+		}},
+		{standingHostRuntimePath, "Milestone 1 posture matrix", []string{
+			"| Surface | Posture | Rationale | Current evidence | Removal condition | Explicit non-claim | | --- | --- | --- | --- | --- | --- |",
+			"| Nomad task user | `accepted MVP compatibility edge` | The current runtime companion still needs task-start `0:0` so it can create the helper-private SPIRE boundary and exec the workload as fixed non-root `10000:10000`.",
+			"Revisit only as part of a broader runtime-boundary redesign that re-derives helper launch, workload launch, and SPIRE/Vault handoff together.",
+		}},
+		{standingHostRuntimePath, "Milestone 1 posture checker", []string{
+			"Milestone 1 now also carries one repo-owned Remote Alpha runtime/security boundary posture checker as a bounded host-local evidence surface:",
+			"`scripts/remote_alpha_runtime_security_boundary_check.sh`",
+			"`scripts/internal/remote_alpha_runtime_security_boundary_check.sh`",
+		}},
+		{standingHostRuntimePath, "ES config/TLS prep current invariant", []string{
+			"`Current invariant`: this earlier bounded slice is already applied on the live host and remains the source of truth for the dedicated `root:es` readable config/TLS model consumed by the current `User=es` long-lived ES service.",
+		}},
+		{standingHostRuntimePath, "Host firewall validation", []string{
+			"Validation: rendering against a golden ruleset, real-kernel tests in network namespaces, a real-sshd test of the drop-in, fakes for the apply/confirm/rollback order, and a container probe on the box.",
+		}},
+		{standingHostRuntimePath, "P0q-R1 role limits and proof value", []string{
+			"role `service_execution` gets `token_ttl` (default `15m`), `token_max_ttl` (default `30m`) and `token_bound_cidrs` (default `172.17.0.0/16`), validated before any prompt;",
+			"every earlier version and the metadata of both proof paths are deleted before the new value is written;",
+			"`REMOTE_ALPHA_BOOTSTRAP_PROOF_VALUE=generate` writes a random value nobody sees, which discards the Codex key.",
+		}},
+		{standingHostRuntimePath, "R14 fresh-child custody", []string{
+			"`R14-ROOT-CUSTODY-01` refines only that helper's fresh-child custody:",
+			"No protected creation namespace or proof-parent ownership change is selected here.",
+		}},
+		{standingHostRuntimePath, "Generic ES launcher user", []string{
+			"`GENERIC-ES-LAUNCHER-USER-01` is a **Bounded slice rule** refinement of the generic (no-profile) ES launcher.",
+			"because `docker run --user` with an empty UID runs as root.",
+			"rootless Docker is untested and unsupported for bring-up.",
+		}},
+		{standingWorkstreamsPath, "Workstream A decision status", []string{
+			"Current bounded decision status for Milestone 2A.1:",
+			"AGS publication claims, ARS discoverability/index shapes, ES public execution/lifecycle grammar, and the long-term workload-zone Vault runtime-config owner remain service-owned or reopened elsewhere;",
+		}},
+		{standingWorkstreamsPath, "Workstream B ownership and identity", []string{
+			"Current bounded decision status for Milestone 2B.1:",
+			"AGS owns publish-time fact assembly, caller-bound publication semantics, aggregate evidence assembly, signing, payload/support upload, and registration into ARS.",
+			"ARS owns blob storage, content-addressed integrity, artifact registration, runtime-facing discovery records, index behavior, descriptor/manifest support reads, and the ARS-owned read surfaces ES may later consume.",
+			"`claims.package.identity` is the shared-kernel identity surface ES consumes; AGS-owned publication claims and ARS descriptor/manifest/index/support tuples do not become that identity surface.",
+			"Payload identity and artifact identity remain separate: `payload_digest` identifies payload bytes or payload content identity, while `artifact_digest` identifies artifact/package identity",
+			"ES must consume artifacts through a designed discoverability surface, not by inheriting ARS support tuple grammar as ES public grammar.",
+			"CP examples and proof harness artifacts do not define AGS/ARS/ES core semantics;",
+		}},
+		{standingWorkstreamsPath, "Workstream C decision status", []string{
+			"Current bounded decision status for Milestone 2C.1:",
+		}},
+		{standingWorkstreamsPath, "Workstream D planning direction", []string{
+			"## Workstream D decision record Current bounded planning direction:",
+			"Treat `id.conf` as current-CGS-v1 compatibility/config residue rather than as final repo-wide policy language.",
+		}},
+		{standingWorkstreamsPath, "Workstream E trust material, exclusions and guardrails", []string{
+			"Current docs/tests-only decision status for E0:",
+			"Optional workload-zone Vault CA trust material remains standard non-secret TLS/env-based trust configuration only.",
+			"E0 keeps CGS authorize output, `id.conf`, `policy.id_conf_path`, `audit.policy_version`, EGS `publication.version`, EGS unsigned publication metadata, AGS `policy_decisions`, ES retained bundles,",
+			"and CP review/approval/checkpoint/finalization state outside runtime-config authority.",
+			"Workstream E guardrail status:",
+			"E0 and E1 are sufficient guardrails before Workstream F planning.",
+			"Full Workstream E remains open for long-term runtime-config owner, reference/versioning, and `workload_vault_auth.default_mode` follow-ups.",
+			"Later Workstream E work must not drift into runtime identity handoff, helper behavior, SPIRE/Vault handoff implementation, or Workstream F reserved-path decisions.",
+		}},
+		{standingWorkstreamsPath, "Workstream F planning direction", []string{
+			"## Workstream F decision record Current bounded planning direction:",
+			"Preserve `EXEC_WORKLOAD_IDENTITY_ENDPOINT` as the workload-visible discovery contract unless a later stop-condition justifies reopening it explicitly.",
+			"Prefer a platform-owned runtime identity companion/bridge injected with the workload allocation over direct workload access to SPIRE internals or ES-owned runtime token minting.",
+			"Treat the checked-in workload-authored runtime identity reference as example scaffolding only, not as an acceptable final ownership model.",
+			"Treat the current slice-0 Linux schedulability caveat as an environment qualification issue that should remain explicit, not as a blocker to planning Workstream F.",
+		}},
+		{standingWorkstreamsPath, "Workstream F slices 1A and 1B", []string{
+			"The bounded slice `1A` and slice `1B` implementation is now the same-container runtime helper launched by a platform-owned supervisor inside the workload task.",
+			"Slice `1A` landed the runtime boundary before useful credential flow:",
+			"helper readiness is required before workload start and helper death is task-fatal in the first slice",
+			"Slice `1B` keeps the public endpoint bounded:",
+			"reject arbitrary audience passthrough, raw SPIRE parameter passthrough, and X.509 delivery in this slice",
+			"First-slice workload compatibility is intentionally narrowed:",
+			"no supplemental groups that collapse the helper/workload boundary",
+			"That runtime narrowing is part of the claim-preserving slice boundary, not an accidental compatibility gap.",
+		}},
+		{standingWorkstreamsPath, "Workstream F credential flow, normal-shell profile and supported host", []string{
+			"Useful credential flow is now proved on top of slice `1A` and slice `1B`:",
+			"the slice still avoids platform-owned Vault token brokerage",
+			"The bounded `control-plane-normal-shell/v1` runtime profile builds on that same identity boundary:",
+			"the proof intentionally does not prove real upstream Codex service behavior because this repo cannot own a non-sensitive production Codex credential or external Codex service availability",
+			"The supported-host follow-through after that credential-flow proof is now landed in bounded form:",
+			"distinguish supported, bounded-fallback, and unsupported substrate states in operator output and runbooks",
+		}},
+		{standingWorkstreamsPath, "Workstream F F0 exclusions", []string{
+			"F0 keeps CGS authorize output, `id.conf`, `policy.id_conf_path`, `audit.policy_version`, CGS v1/v2 design docs,",
+			"and CP review/approval/checkpoint/finalization state outside runtime-identity and credential authority.",
+		}},
 	} {
 		text := compactText(mustRead(t, rule.path))
 		for _, phrase := range rule.phrases {
 			if n := strings.Count(text, phrase); n != 1 {
 				t.Errorf("%s rule %q: phrase occurs %d times, want exactly once: %q", rule.path, rule.name, n, phrase)
 			}
+		}
+	}
+}
+
+// TestDocsNameTheStandingRuleFileTheyRelyOn keeps the citations whose text
+// moved out of PLANS.md on the file that now holds it. A reader who followed
+// the old PLANS.md citation would find only a pointer there.
+func TestDocsNameTheStandingRuleFileTheyRelyOn(t *testing.T) {
+	boundaries := compactText(mustRead(t, ".docs/system_overview/boundaries.md"))
+	assertContainsAll(t, "boundaries.md citations of moved rules", boundaries,
+		"Authority-dependent implementation requires the explicit decision and gate in the [outside-observer Stage A rule](../standing_rules/execution_admission_and_custody.md#r6j-r928stage-a--inert-outside-observer-structural-contract);",
+		"the whole path sits on the reliable-submit seam kept open in the [Workstream C admission and custody rules](../standing_rules/execution_admission_and_custody.md) (`PLANS.md` lists it as Correlation And Recovery).",
+	)
+	assertContainsNone(t, "boundaries.md citations of moved rules", boundaries,
+		"explicit decision and gate in `PLANS.md`",
+		"reliable-submit seam kept open in `PLANS.md`",
+	)
+
+	sources := map[string]string{}
+	for _, line := range strings.Split(mustRead(t, ".docs/mvp.md"), "\n") {
+		cells := strings.Split(strings.Trim(strings.TrimSpace(line), "|"), "|")
+		if strings.HasPrefix(line, "|") && len(cells) == 4 {
+			sources[strings.TrimSpace(cells[0])] = strings.TrimSpace(cells[3])
+		}
+	}
+	for surface, want := range map[string]string{
+		"C0 ES public execution/admission/runtime ownership gate": "`.docs/standing_rules/workstream_decisions.md`; `.docs/execution_lifecycle/es_execution_admission_model.md`",
+		"ES Admission Policy Layer v0":                            "`.docs/standing_rules/workstream_decisions.md`; `.docs/execution_lifecycle/es_execution_admission_model.md`; `.docs/execution_lifecycle/contracts.md`",
+	} {
+		got, ok := sources[surface]
+		if !ok {
+			t.Errorf(".docs/mvp.md has no surface row %q", surface)
+		} else if !strings.HasPrefix(got, want) {
+			t.Errorf(".docs/mvp.md row %q cites %q, want it to start with %q: the decision record that holds the row's rule", surface, got, want)
 		}
 	}
 }

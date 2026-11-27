@@ -43,6 +43,11 @@ func repoPath(path string) string {
 // in the AGENTS.md authority hierarchy. Checks of those rules read it.
 const standingRouteRulesPath = ".docs/standing_rules/remote_alpha_operator_routes.md"
 
+// standingHostRuntimePath holds the host and runtime boundary slice rules,
+// among them the Remote Alpha host network boundary slice, which moved out
+// of PLANS.md the same way. Its last section is that slice.
+const standingHostRuntimePath = ".docs/standing_rules/host_and_runtime_boundary.md"
+
 // mustRead, compactText, docSection, compactDocSection, assertContainsAll
 // and assertContainsNone are the helpers of package testutil, under the
 // names these tests use. The tests at the repository root use them too.
