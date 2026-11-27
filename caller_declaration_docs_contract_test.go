@@ -39,6 +39,9 @@ func TestCallerDeclarationRulesAreInTheLifecycleContract(t *testing.T) {
 		// are not.
 		"skips a `LANGUAGE` entry that holds a path only in set-user-ID programs",
 		"`LANG` and `LC_ALL` stay open",
+		// Re-check 25 on PR #74: pkg-config's search keys are reserved with
+		// its program, as a family.
+		"`PKG_CONFIG` (the pkg-config program a cgo build runs, and the keys that choose the `.pc` files that give it flags and libraries)",
 		// Audit 21 and re-check 23 on PR #74: what sudo 1.9.16p2 does not
 		// hold is credited to its development branch, by name.
 		"the entries sudo's development branch adds to that table after 1.9.16p2 (read on 2026-11-26): `_JAVA_OPTIONS`, `CLASSPATH`, `PYTHONSTARTUP`, `NODE_OPTIONS`, `NODE_PATH`, `GIT_SSH_COMMAND`, `GIT_CONFIG_*` and `GCONV_PATH`, which the glibc list above already holds.",
