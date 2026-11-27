@@ -1,6 +1,7 @@
 package contract_test
 
 import (
+	"os"
 	"strings"
 	"testing"
 
@@ -11,7 +12,9 @@ const validDigest = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123
 
 // The revocation runbook (.runbooks/system/Governed Execution ES Revoke An
 // Artifact Or Signer.md) tells the operator that EGS refuses to start on these
-// entries. These tests pin that refusal.
+// entries. These tests pin the contract check; egs/app's
+// TestEGSRefusesToStartOnEntriesTheRevocationRunbookWarnsAbout pins that EGS's
+// start path runs it.
 func TestRuntimeTrustPolicyRefusesEntriesTheRevocationRunbookWarnsAbout(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -24,8 +27,26 @@ func TestRuntimeTrustPolicyRefusesEntriesTheRevocationRunbookWarnsAbout(t *testi
 			want:   "runtime_trust.artifact_policy.revoked_artifacts must contain labeled sha256 digests",
 		},
 		{
-			name:   "artifact digest that is too short",
+			name:   "artifact digest of 63 hex characters",
 			policy: contract.RuntimeTrustPolicy{ArtifactPolicy: contract.ArtifactPolicy{RevokedArtifacts: []string{validDigest[:len(validDigest)-1]}}},
+			want:   "runtime_trust.artifact_policy.revoked_artifacts must contain labeled sha256 digests",
+		},
+		// An even number of hex characters other than 64 passes a hex decode,
+		// so these two pin the length rule on its own.
+		{
+			name:   "artifact digest of 62 hex characters",
+			policy: contract.RuntimeTrustPolicy{ArtifactPolicy: contract.ArtifactPolicy{RevokedArtifacts: []string{validDigest[:len(validDigest)-2]}}},
+			want:   "runtime_trust.artifact_policy.revoked_artifacts must contain labeled sha256 digests",
+		},
+		{
+			name:   "artifact digest of 66 hex characters",
+			policy: contract.RuntimeTrustPolicy{ArtifactPolicy: contract.ArtifactPolicy{RevokedArtifacts: []string{validDigest + "ab"}}},
+			want:   "runtime_trust.artifact_policy.revoked_artifacts must contain labeled sha256 digests",
+		},
+		// 64 characters that are not hex pin the hex rule on its own.
+		{
+			name:   "artifact digest of 64 characters that are not hex",
+			policy: contract.RuntimeTrustPolicy{ArtifactPolicy: contract.ArtifactPolicy{RevokedArtifacts: []string{"sha256:" + strings.Repeat("g", 64)}}},
 			want:   "runtime_trust.artifact_policy.revoked_artifacts must contain labeled sha256 digests",
 		},
 		{
@@ -61,5 +82,31 @@ func TestRuntimeTrustPolicyAcceptsARevokedArtifactAndARevokedSigner(t *testing.T
 	}
 	if err := policy.Validate(); err != nil {
 		t.Fatalf("Validate() = %v, want nil", err)
+	}
+}
+
+const revocationRunbookPath = "../../.runbooks/system/Governed Execution ES Revoke An Artifact Or Signer.md"
+
+// ES accepts a request's digest only in lower-case hex and compares revoked
+// digests as exact text. The runbook's note says what EGS does with an
+// upper-case digest; this test keeps that note equal to what the contract
+// check does, so a change to the check changes the note in the same change.
+func TestRevocationRunbookNoteOnUpperCaseDigestsMatchesEGS(t *testing.T) {
+	data, err := os.ReadFile(revocationRunbookPath)
+	if err != nil {
+		t.Fatalf("read runbook: %v", err)
+	}
+	runbook := string(data)
+	const accepts = "EGS accepts upper-case hex in a digest"
+	const refuses = "EGS refuses upper-case hex in a digest"
+	upper := contract.RuntimeTrustPolicy{ArtifactPolicy: contract.ArtifactPolicy{RevokedArtifacts: []string{"sha256:" + strings.Repeat("AB", 32)}}}
+	if upper.Validate() == nil {
+		if !strings.Contains(runbook, accepts) || strings.Contains(runbook, refuses) {
+			t.Fatalf("EGS accepts an upper-case digest, so the runbook must say %q and not %q", accepts, refuses)
+		}
+		return
+	}
+	if !strings.Contains(runbook, refuses) || strings.Contains(runbook, accepts) {
+		t.Fatalf("EGS refuses an upper-case digest, so the runbook must say %q and not %q", refuses, accepts)
 	}
 }
