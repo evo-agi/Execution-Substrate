@@ -299,8 +299,8 @@ The following are useful current implementation facts and should remain visible 
   - ES does not fetch, mint, broker, store, rotate, parse, or validate Codex tokens
 - The current slice-0 operator path now targets one Linux host/VM, runs ARS/EGS/AGS/ES as containers, keeps Nomad server/client and Docker on that same host, and treats Docker host networking as temporary compatibility scaffolding rather than final control-plane network architecture.
 - The current slice-0 operator path now requires strict client-cert authentication at the hot-path TLS boundary, including `/health`, and ARS now rejects the configured bootstrap issuer on both read and write paths like the rest of the hot path.
-- ARS, AGS, EGS, CGS, and ES authenticate callers through the one shared package `internal/callerauth` (contract: `.docs/system_overview/contracts.md` section 3A). Only a verified client certificate whose chain is still within its validity period at each request, and whose leaf is an end-entity certificate with exactly one URI SAN that is a conforming SPIFFE ID in the trust domain `execution.internal`, identifies a caller; authorization stays in each service.
-- ARS, AGS, and ES check their configured path-prefix allowlists at startup and match callers against them through the one shared package `internal/callerallowlist` (same section 3A): a prefix must be a canonical SPIFFE ID path of at least two segments, and a prefix that fails the rule matches nothing.
+- ARS, AGS, EGS, CGS, and ES authenticate callers through the one shared package `internal/callerauth` (contract: `.docs/system_overview/contracts.md` section 3A). Only a verified client certificate whose chain is still within its validity period at each request, and whose leaf is an end-entity certificate with exactly one URI SAN that is a conforming SPIFFE ID in the trust domain `execution.internal` and not a workload identity, identifies a caller; authorization stays in each service.
+- ARS, AGS, and ES check their configured path-prefix allowlists at startup and match callers against them through the one shared package `internal/callerallowlist` (same section 3A): a prefix must be a canonical SPIFFE ID path of at least two segments whose first segment is not `workload` in any letter case, and a prefix that fails the rule matches nothing.
 - The current slice-0 operator path records the ES same-path staging proof at bring-up time, while slice `1A` and slice `1B` now separately prove the first bounded strong workload-identity handoff for runtime workloads.
 - The current slice-0 operator path has been functionally proved on a real Linux VM through the real ES -> Nomad -> Docker execution path, and the current supported local reference profile on this Mac is Lima `qemu` + Ubuntu 24.04 arm64 with pre-managed non-`-dev` Nomad and positive natural `cpu.totalcompute`; the previously investigated VMware/aarch64 and Lima `vz` local profiles remain unsupported on this Mac because natural `cpu.totalcompute` stays `0`.
 - The current AGS publish path now distinguishes artifact identity from payload identity: payload bytes remain content-addressed by `payload_digest`, while AGS derives `artifact_digest` from package-facing identity inputs only before registering the runtime-facing discovery record through ARS.
@@ -931,7 +931,8 @@ F0 - Runtime Identity Handoff Ownership Decision:
 F1 - Named Workload Identities And Workload Grants:
 
 - F1 is the next behavior-changing Workstream F slice, approved by the project
-  owner and not yet implemented. The decision is section 11 of
+  owner. Its caller refusal (WI-3a) is implemented; the rest is not yet
+  implemented. The decision is section 11 of
   `.docs/system_overview/runtime_identity_handoff.md`; the workload grants it
   adds to C6 are section 5B of `.docs/execution_lifecycle/contracts.md`.
 - It closes two gaps that existed before F1: every workload run shared one

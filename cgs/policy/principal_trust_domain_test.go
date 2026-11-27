@@ -46,6 +46,31 @@ subject "execution" {
 	}
 }
 
+// Workload identities are never callers (.docs/system_overview/contracts.md,
+// section 3A), so id.conf refuses them as principals, with a message that
+// says why.
+func TestLoadRefusesWorkloadIdentityPrincipals(t *testing.T) {
+	t.Parallel()
+
+	for _, principal := range []string{
+		"spiffe://execution.internal/workload",
+		"spiffe://execution.internal/workload/codex-agent",
+		"spiffe://execution.internal/workload/codex-agent/run/r1",
+		"spiffe://execution.internal/Workload/codex-agent",
+	} {
+		_, err := policy.Load(writePolicyFile(t, `
+subject "agent" {
+  type: "script"
+  principal: "`+principal+`"
+  role: "worker"
+}
+`))
+		if err == nil || !strings.Contains(err.Error(), "subject agent principal is a workload identity, and workload identities are never callers") {
+			t.Errorf("principal %q: error %v", principal, err)
+		}
+	}
+}
+
 func TestLoadAcceptsPrincipalsInTheTrustDomain(t *testing.T) {
 	t.Parallel()
 
