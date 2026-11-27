@@ -266,7 +266,7 @@ It prints one line for each problem in the lists or unknown field name under `ru
 
 ## Notes
 
-- EGS accepts upper-case hex in a digest, but ES compares the exact text, so an upper-case entry would pass EGS and never match an artifact. Step 2 accepts lower-case only.
+- EGS refuses upper-case hex in a digest, as step 2 does: ES compares the exact text, so an upper-case entry could never match an artifact.
 - Any later tool that rewrites `egs.json` (a key rotation, a hardening run) must keep both lists. After such a run, check them with step 1.
 - A supported-local install keeps the same file at its proof root (`EGS_CONFIG`). Make the same change there with `EGS_CONFIG` as the path, stop the proof with step 7 of the bring-up runbook (`scripts/01_bringup.sh down`), and start it again with step 4, which starts EGS before ES.
 - Steps 2 and 6 leave `publication.update_revision` as it is: ES does not read it.
@@ -276,8 +276,8 @@ It prints one line for each problem in the lists or unknown field name under `ru
 
 - **Automated, in CI on every pull request:**
   - In `es/admission/service_direct_test.go`, the `enforceTrustModel` cases check the three refusals this runbook relies on: `signer_not_allowed`, `signer_revoked` and `artifact_revoked`. `TestPrepareReturns403WhenSignerIsRevoked` and `TestPrepareReturns403WhenArtifactIsRevoked` in `es/app/app_integration_test.go` check them through a running ES and EGS.
-  - `TestRuntimeTrustPolicyRefusesEntriesTheRevocationRunbookWarnsAbout` in `egs/contract/trustmodel_test.go` checks the entries the failure table says EGS refuses: a digest without its label, of 62, 63 or 66 hex characters, or of 64 characters that are not hex, a duplicate, an empty signer.
-  - `TestEGSRefusesToStartOnEntriesTheRevocationRunbookWarnsAbout` in `egs/app/revocation_config_test.go` checks that EGS's start path (`config.Load`, then `app.New`) refuses a bad digest, a duplicate and an unknown field, with the journal text the failure table names.
+  - `TestRuntimeTrustPolicyRefusesEntriesTheRevocationRunbookWarnsAbout` in `egs/contract/trustmodel_test.go` checks the entries the failure table says EGS refuses: a digest without its label, in upper-case hex, of 62, 63 or 66 hex characters, or of 64 characters that are not hex, a duplicate, an empty signer.
+  - `TestEGSRefusesToStartOnEntriesTheRevocationRunbookWarnsAbout` in `egs/app/revocation_config_test.go` checks that EGS's start path (`config.Load`, then `app.New`) refuses a bad digest, an upper-case digest, a duplicate and an unknown field, with the journal text the failure table names. EGS's refusal of a digest names the entry.
   - `TestRevocationRunbookNoteOnUpperCaseDigestsMatchesEGS` in `egs/contract/trustmodel_test.go` checks every line before this section that mentions upper case: the note in Notes must be the one for what EGS does now, and the check's sentence and failure-table row 1 must hold either way.
   - `TestResolvedSubmitLegacyEquivalenceOneNomadRegistrationAndAuthorityRecovery` in `es/admission/resolved_execution_plan_test.go` checks that each Nomad job records the artifact digest in its task meta, which step 5 reads.
 - **Run outside the box, on 2026-11-27:**
@@ -287,4 +287,4 @@ It prints one line for each problem in the lists or unknown field name under `ru
 
 ## History
 
-- **2026-11-27:** written, because no runbook said how to revoke an artifact or a signer, and a revocation takes effect only after EGS and then ES restart. Audit fixes the same day: lifting and checking no longer open the file (it holds EGS's private key), step 5's cancel is a working command, step 3 waits before it checks, and the reliable-submit sentence matches the code. Second audit fixes the same day: step 5 finds runs through Nomad with the observer token (ES does record the digest in each job), says what a sent cancel and the wait after it print, `remove` keeps one copy of a value listed more than once, `drop-invalid` drops entries that name nothing, and the reliable-submit sentence names what resumes that path.
+- **2026-11-27:** written, because no runbook said how to revoke an artifact or a signer, and a revocation takes effect only after EGS and then ES restart. Audit fixes the same day: lifting and checking no longer open the file (it holds EGS's private key), step 5's cancel is a working command, step 3 waits before it checks, and the reliable-submit sentence matches the code. Second audit fixes the same day: step 5 finds runs through Nomad with the observer token (ES does record the digest in each job), says what a sent cancel and the wait after it print, `remove` keeps one copy of a value listed more than once, `drop-invalid` drops entries that name nothing, and the reliable-submit sentence names what resumes that path. With #79, EGS and ES refuse a revoked digest in any spelling other than `sha256:` and 64 lower-case hex characters, and the note in Notes says so.

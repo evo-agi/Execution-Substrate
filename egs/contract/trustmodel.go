@@ -46,7 +46,7 @@ func (m RuntimeTrustPolicy) Validate() error {
 	}
 	for _, digest := range m.ArtifactPolicy.RevokedArtifacts {
 		if !isLabeledSHA256Digest(digest) {
-			return fmt.Errorf("runtime_trust.artifact_policy.revoked_artifacts must contain labeled sha256 digests")
+			return fmt.Errorf("runtime_trust.artifact_policy.revoked_artifacts must contain labeled sha256 digests in lower-case hex (sha256: and 64 lower-case hex characters); got %q", digest)
 		}
 	}
 	return nil

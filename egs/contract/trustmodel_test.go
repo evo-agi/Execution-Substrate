@@ -1,6 +1,7 @@
 package contract_test
 
 import (
+	"fmt"
 	"os"
 	"slices"
 	"strings"
@@ -10,6 +11,12 @@ import (
 )
 
 const validDigest = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+// refusedDigest is EGS's refusal of a revoked-artifact entry, which names the
+// entry so that the journal shows which one to fix.
+func refusedDigest(entry string) string {
+	return fmt.Sprintf("runtime_trust.artifact_policy.revoked_artifacts must contain labeled sha256 digests in lower-case hex (sha256: and 64 lower-case hex characters); got %q", entry)
+}
 
 // The revocation runbook (.runbooks/system/Governed Execution ES Revoke An
 // Artifact Or Signer.md) tells the operator that EGS refuses to start on these
@@ -25,30 +32,37 @@ func TestRuntimeTrustPolicyRefusesEntriesTheRevocationRunbookWarnsAbout(t *testi
 		{
 			name:   "artifact digest without its label",
 			policy: contract.RuntimeTrustPolicy{ArtifactPolicy: contract.ArtifactPolicy{RevokedArtifacts: []string{strings.TrimPrefix(validDigest, "sha256:")}}},
-			want:   "runtime_trust.artifact_policy.revoked_artifacts must contain labeled sha256 digests",
+			want:   refusedDigest(strings.TrimPrefix(validDigest, "sha256:")),
 		},
 		{
 			name:   "artifact digest of 63 hex characters",
 			policy: contract.RuntimeTrustPolicy{ArtifactPolicy: contract.ArtifactPolicy{RevokedArtifacts: []string{validDigest[:len(validDigest)-1]}}},
-			want:   "runtime_trust.artifact_policy.revoked_artifacts must contain labeled sha256 digests",
+			want:   refusedDigest(validDigest[:len(validDigest)-1]),
 		},
 		// An even number of hex characters other than 64 passes a hex decode,
 		// so these two pin the length rule on its own.
 		{
 			name:   "artifact digest of 62 hex characters",
 			policy: contract.RuntimeTrustPolicy{ArtifactPolicy: contract.ArtifactPolicy{RevokedArtifacts: []string{validDigest[:len(validDigest)-2]}}},
-			want:   "runtime_trust.artifact_policy.revoked_artifacts must contain labeled sha256 digests",
+			want:   refusedDigest(validDigest[:len(validDigest)-2]),
 		},
 		{
 			name:   "artifact digest of 66 hex characters",
 			policy: contract.RuntimeTrustPolicy{ArtifactPolicy: contract.ArtifactPolicy{RevokedArtifacts: []string{validDigest + "ab"}}},
-			want:   "runtime_trust.artifact_policy.revoked_artifacts must contain labeled sha256 digests",
+			want:   refusedDigest(validDigest + "ab"),
+		},
+		// ES admits a digest only in lower-case hex, so an upper-case entry
+		// would never match a request.
+		{
+			name:   "artifact digest in upper-case hex",
+			policy: contract.RuntimeTrustPolicy{ArtifactPolicy: contract.ArtifactPolicy{RevokedArtifacts: []string{"sha256:" + strings.ToUpper(strings.TrimPrefix(validDigest, "sha256:"))}}},
+			want:   refusedDigest("sha256:" + strings.ToUpper(strings.TrimPrefix(validDigest, "sha256:"))),
 		},
 		// 64 characters that are not hex pin the hex rule on its own.
 		{
 			name:   "artifact digest of 64 characters that are not hex",
 			policy: contract.RuntimeTrustPolicy{ArtifactPolicy: contract.ArtifactPolicy{RevokedArtifacts: []string{"sha256:" + strings.Repeat("g", 64)}}},
-			want:   "runtime_trust.artifact_policy.revoked_artifacts must contain labeled sha256 digests",
+			want:   refusedDigest("sha256:" + strings.Repeat("g", 64)),
 		},
 		{
 			name:   "duplicate revoked artifact",
