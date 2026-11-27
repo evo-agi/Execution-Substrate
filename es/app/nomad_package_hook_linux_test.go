@@ -1050,6 +1050,116 @@ runpy.run_path(sys.argv[0], run_name="__main__")
 	}
 }
 
+// What can change while the program takes a file back, besides the entry
+// itself: the file goes away after the listing (passed over, nothing set
+// aside), another account puts a file at the new file's random temporary
+// name just before the program creates it (the program does not write into
+// it: O_EXCL), and the rename of the new file fails (the new file is removed,
+// not left beside the old one). The program runs with os.lstat, os.open or
+// os.rename wrapped to make the change once, at the right moment.
+func TestNomadTakeBackProgramHandlesWhatChangesAroundAFile(t *testing.T) {
+	program := nomadTakeBackProgram(t)
+	wrapper := `
+import errno, os, runpy, sys
+target, change = os.environ["CHANGED"], os.environ["CHANGE"]
+temporary = ".execution-substrate-take-back-"
+done = []
+real_lstat, real_open, real_rename = os.lstat, os.open, os.rename
+def lstat(path, *args, **kwargs):
+    if change == "gone" and path == target and not done:
+        done.append(path)
+        os.remove(path)
+    return real_lstat(path, *args, **kwargs)
+def open_(path, flags, *args, **kwargs):
+    if (change == "planted" and flags & os.O_CREAT and not done
+            and os.path.dirname(path) == os.path.dirname(target) and os.path.basename(path).startswith(temporary)):
+        done.append(path)
+        with open(path, "x") as planted:
+            planted.write("planted\n")
+    return real_open(path, flags, *args, **kwargs)
+def rename(src, dst, *args, **kwargs):
+    if change == "rename" and dst == target and os.path.basename(src).startswith(temporary) and not done:
+        done.append(src)
+        raise OSError(errno.EIO, os.strerror(errno.EIO))
+    return real_rename(src, dst, *args, **kwargs)
+os.lstat, os.open, os.rename = lstat, open_, rename
+sys.argv = sys.argv[1:]
+runpy.run_path(sys.argv[0], run_name="__main__")
+`
+	for _, tc := range []struct{ change, why string }{
+		{"gone", ""},
+		{"planted", "it could not be taken back: File exists"},
+		{"rename", "it could not be taken back: Input/output error"},
+	} {
+		t.Run(tc.change, func(t *testing.T) {
+			root := t.TempDir()
+			config, data := filepath.Join(root, "etc"), filepath.Join(root, "data")
+			for _, folder := range []string{config, data} {
+				if err := os.MkdirAll(folder, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			path, other := filepath.Join(config, "extra.hcl"), filepath.Join(config, "z.hcl")
+			for _, file := range []string{path, other} {
+				if err := os.WriteFile(file, []byte("x\n"), 0o666); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chmod(file, 0o666); err != nil {
+					t.Fatal(err)
+				}
+			}
+			command := exec.Command("python3", "-I", "-c", wrapper, program, config, data)
+			command.Env = []string{"PATH=" + os.Getenv("PATH"), "CHANGED=" + path, "CHANGE=" + tc.change}
+			var stdout, stderr strings.Builder
+			command.Stdout, command.Stderr = &stdout, &stderr
+			if err := command.Run(); err != nil {
+				t.Fatalf("the program: %v\n%s\n%s", err, stdout.String(), stderr.String())
+			}
+			// The other file is taken back either way.
+			requireRegularFile(t, other, "x\n", 0o644)
+			entries, err := os.ReadDir(config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var temporaries []string
+			for _, entry := range entries {
+				if strings.HasPrefix(entry.Name(), ".execution-substrate-take-back-") {
+					temporaries = append(temporaries, entry.Name())
+				}
+			}
+			switch tc.change {
+			case "gone":
+				requireLines(t, stderr.String(), nil)
+				requireNothingSetAside(t, config)
+				if len(temporaries) != 0 {
+					t.Fatalf("temporary files left: %v", temporaries)
+				}
+			case "planted":
+				requireLines(t, stderr.String(), []string{setAsideLine(path, tc.why, config, ""), lookLine(config)})
+				// The planted file is as its owner left it: the program
+				// neither wrote into it nor put it where Nomad reads.
+				if len(temporaries) != 1 {
+					t.Fatalf("temporary names %v, want the planted file alone", temporaries)
+				}
+				if got, err := os.ReadFile(filepath.Join(config, temporaries[0])); err != nil || string(got) != "planted\n" {
+					t.Fatalf("the planted file holds %q (%v)", got, err)
+				}
+				if moved, st := setAsideEntry(t, config, "", "extra.hcl", os.Getuid(), os.Getgid()); st.kind() != syscall.S_IFREG || st.Mode&0o7777 != 0o666 {
+					t.Fatalf("%s is %+v, want the file as it was", moved, st)
+				}
+			case "rename":
+				requireLines(t, stderr.String(), []string{setAsideLine(path, tc.why, config, ""), lookLine(config)})
+				if len(temporaries) != 0 {
+					t.Fatalf("the new file was left beside the old one: %v", temporaries)
+				}
+				if moved, st := setAsideEntry(t, config, "", "extra.hcl", os.Getuid(), os.Getgid()); st.kind() != syscall.S_IFREG || st.Mode&0o7777 != 0o666 {
+					t.Fatalf("%s is %+v, want the file as it was", moved, st)
+				}
+			}
+		})
+	}
+}
+
 // Each file is synced before it is renamed over the old one, and each folder
 // after its last rename, so a crash cannot leave an empty or missing file
 // where Nomad reads its config. A folder is made the caller's before its
