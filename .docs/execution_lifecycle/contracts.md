@@ -880,17 +880,19 @@ Grants live in ES deployment configuration at
     comes only from the client certificate of the connection the request
     arrived on, never from the request body, the evidence or a header.
     Admission takes it only as the caller that caller authentication built
-    from a verified certificate chain, so no value from a request or from
-    configuration can stand in for it;
+    from the connection's TLS state, which Go's TLS server fills in after
+    verifying the client's certificate chain. No ES code builds or edits a
+    connection state, so no value from a request or from configuration can
+    stand in for it;
   - two optional grant fields: `workload_identity`, a name from
     `workload_identities`, and `egress_lane`, a name from `egress_lanes`.
 - ES startup refuses: more than 32 rules; a duplicate rule ID; two rules with
   the same five match fields, so at most one rule matches a run; a missing or
   empty match field; a match value with surrounding white space; a principal
   with fewer than two path segments; a principal that is a workload
-  identity, since workload identities are never callers; a `caller_principal` that
-  `authorization.allowed_spiffe_path_prefixes` does not admit, since ES would
-  refuse that caller before admission; a name not
+  identity, since workload identities are never callers; a
+  `caller_principal` that `authorization.allowed_spiffe_path_prefixes` does
+  not admit, since ES would refuse that caller before admission; a name not
   in its list; a lane other than `unrestricted`, or `unrestricted` with
   `reaches_workload_vault=false`, before WI-4; and a rule that grants an
   identity without a lane that reaches the workload-zone Vault.
@@ -972,10 +974,13 @@ Rules for these policies:
   own, through the host firewall on the Remote Supported Host Alpha box and
   through the full `bridge` network on supported-local hosts.
   WI-4 removes the value, and from then on ES startup refuses a configuration
-  that uses it. Four tests in `es/config` are the trigger: while ES still
-  accepts `unrestricted`, they fail once ES accepts any other lane, of any
-  shape, by any name written in ES's source or listed anywhere in its
-  configuration, or once any code reads the lane a run was granted.
+  that uses it. Four tests in `es/config` are the trigger. While ES still
+  accepts `unrestricted`, they fail once ES accepts another lane named by
+  any string written in ES's source or by one of the tests' sample names,
+  whatever fields the lane has and whichever configuration list also names
+  it; once any code keeps the grant decision; or once any code other than
+  the grant validation in `es/config` and the grant code in admission reads
+  a lane.
 
 ### Guardrails
 

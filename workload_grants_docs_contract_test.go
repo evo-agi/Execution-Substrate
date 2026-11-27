@@ -125,7 +125,7 @@ func TestWorkloadGrantsContractIsDocumented(t *testing.T) {
 		"Supported-local hosts have no host firewall, so there `unrestricted` is the full `bridge` network, which reaches the local network and host services.",
 		"five required match fields, compared byte for byte: `publisher_principal`, the AGS caller that published the artifact, as the verified evidence names it; `caller_principal`, the ES caller that asks ES to run it, as ES authenticated it over mTLS for the request;",
 		"Both principals are SPIFFE IDs that the caller authentication contract in `.docs/system_overview/contracts.md`, section 3A, accepts, written in that form, with at least two path segments.",
-		"The caller principal comes only from the client certificate of the connection the request arrived on, never from the request body, the evidence or a header. Admission takes it only as the caller that caller authentication built from a verified certificate chain, so no value from a request or from configuration can stand in for it;",
+		"The caller principal comes only from the client certificate of the connection the request arrived on, never from the request body, the evidence or a header. Admission takes it only as the caller that caller authentication built from the connection's TLS state, which Go's TLS server fills in after verifying the client's certificate chain. No ES code builds or edits a connection state, so no value from a request or from configuration can stand in for it;",
 		"`runtime_profile` (the effective profile name, `static-script/default` when the request names none)",
 		"The publisher principal is the one `claims.package.publication` claim ES admission reads, and only as this match fact: it does not become ES request or response grammar, and no other publication claim reaches admission.",
 		"ES startup refuses: more than 32 rules; a duplicate rule ID; two rules with the same five match fields, so at most one rule matches a run;",
@@ -156,7 +156,7 @@ func TestWorkloadGrantsContractIsDocumented(t *testing.T) {
 	assertContainsAll(t, "workload grants temporary edge and its removal condition", grants,
 		"While any rule grants the lane `unrestricted`, readiness reports `workload_egress_unrestricted=true`. This is a `Temporary compatibility edge`",
 		"a granted run reaches the internet without an egress filter of its own, through the host firewall on the Remote Supported Host Alpha box and through the full `bridge` network on supported-local hosts.",
-		"WI-4 removes the value, and from then on ES startup refuses a configuration that uses it. Four tests in `es/config` are the trigger: while ES still accepts `unrestricted`, they fail once ES accepts any other lane, of any shape, by any name written in ES's source or listed anywhere in its configuration, or once any code reads the lane a run was granted.",
+		"WI-4 removes the value, and from then on ES startup refuses a configuration that uses it. Four tests in `es/config` are the trigger. While ES still accepts `unrestricted`, they fail once ES accepts another lane named by any string written in ES's source or by one of the tests' sample names, whatever fields the lane has and whichever configuration list also names it; once any code keeps the grant decision; or once any code other than the grant validation in `es/config` and the grant code in admission reads a lane.",
 	)
 
 	assertContainsAll(t, "workload grants guardrails", grants,

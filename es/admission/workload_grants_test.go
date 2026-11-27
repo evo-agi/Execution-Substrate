@@ -762,14 +762,24 @@ func TestARunNoGrantNamesReachesNoContentPolicyWhateverItsRuntimeProfile(t *test
 	}
 }
 
-// The caller that workload grants match on comes only from a verified TLS
-// connection, by type (re-audit 18 of ES PR #73, L-2). WithAuthenticatedCaller
-// takes a callerauth.Caller, which has no exported fields, and only two
-// exported functions of callerauth produce one, both from a verified client
-// certificate chain: CallerFromConnectionState and Authenticator.Authenticate.
-// callerauthtest, the test support package, produces none. So no string from
-// a request, and no allowlist entry, can become the grant caller. A change
-// to any of that fails here.
+// The caller that workload grants match on comes from the connection ES is
+// serving (re-audit 18 of ES PR #73, L-2, and re-check 21, N-2). This test
+// pins how a callerauth.Caller can come to exist:
+//   - WithAuthenticatedCaller takes a callerauth.Caller, not a SPIFFE ID or a
+//     string, and callerauth.Caller has no exported field;
+//   - in callerauth and callerauthtest, the only exported functions, methods,
+//     variables and constants that produce a Caller are
+//     CallerFromConnectionState and Authenticator.Authenticate, both of which
+//     read a TLS connection state;
+//   - no non-test file of ES (es/ and cmd/es) builds a tls.ConnectionState,
+//     assigns a TLS, VerifiedChains or PeerCertificates field, or calls
+//     CallerFromConnectionState, and every call of Authenticate passes the
+//     *http.Request its handler is serving, whose connection state Go's TLS
+//     server filled in after verifying the client's certificate chain;
+//   - no non-test file outside es/admission reads the grant caller back.
+//
+// TestTheGrantCallerHasOneWayIntoAContextAndOneWayOut pins the path inside
+// es/admission.
 func TestTheGrantCallerCanComeOnlyFromAVerifiedConnection(t *testing.T) {
 	want := reflect.TypeOf(func(context.Context, callerauth.Caller) context.Context { return nil })
 	if got := reflect.TypeOf(WithAuthenticatedCaller); got != want {
@@ -782,52 +792,252 @@ func TestTheGrantCallerCanComeOnlyFromAVerifiedConnection(t *testing.T) {
 		}
 	}
 
+	// mentionsCaller reports whether expr names callerauth.Caller, as Caller
+	// inside package callerauth or as callerauth.Caller elsewhere.
+	mentionsCaller := func(pkg string, expr ast.Node) bool {
+		found := false
+		ast.Inspect(expr, func(node ast.Node) bool {
+			switch node := node.(type) {
+			case *ast.Ident:
+				found = found || (pkg == "callerauth" && node.Name == "Caller")
+			case *ast.SelectorExpr:
+				if x, ok := node.X.(*ast.Ident); ok && x.Name == "callerauth" && node.Sel.Name == "Caller" {
+					found = true
+				}
+				return false
+			}
+			return true
+		})
+		return found
+	}
 	producers := map[string]bool{}
 	for _, dir := range []string{"../../internal/callerauth", "../../internal/callerauth/callerauthtest"} {
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, entry := range entries {
-			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
-				continue
-			}
-			parsed, err := parser.ParseFile(token.NewFileSet(), filepath.Join(dir, entry.Name()), nil, parser.SkipObjectResolution)
-			if err != nil {
-				t.Fatal(err)
-			}
+		for _, parsed := range parseNonTestGoFiles(t, dir) {
+			pkg := parsed.Name.Name
 			for _, decl := range parsed.Decls {
-				function, ok := decl.(*ast.FuncDecl)
-				if !ok || !function.Name.IsExported() || function.Type.Results == nil {
-					continue
-				}
-				name := parsed.Name.Name + "." + function.Name.Name
-				if function.Recv != nil {
-					name = parsed.Name.Name + "." + types.ExprString(function.Recv.List[0].Type) + "." + function.Name.Name
-				}
-				for _, result := range function.Type.Results.List {
-					ast.Inspect(result.Type, func(node ast.Node) bool {
-						switch node := node.(type) {
-						case *ast.Ident:
-							producers[name] = producers[name] || (parsed.Name.Name == "callerauth" && node.Name == "Caller")
-						case *ast.SelectorExpr:
-							producers[name] = producers[name] || node.Sel.Name == "Caller"
-							return false
+				switch decl := decl.(type) {
+				case *ast.FuncDecl:
+					if !decl.Name.IsExported() || decl.Type.Results == nil {
+						continue
+					}
+					name := pkg + "." + decl.Name.Name
+					if decl.Recv != nil {
+						name = pkg + "." + types.ExprString(decl.Recv.List[0].Type) + "." + decl.Name.Name
+					}
+					if mentionsCaller(pkg, decl.Type.Results) {
+						producers[name] = true
+					}
+				case *ast.GenDecl:
+					for _, spec := range decl.Specs {
+						value, ok := spec.(*ast.ValueSpec)
+						if !ok {
+							continue
 						}
-						return true
-					})
+						for i, name := range value.Names {
+							if !name.IsExported() {
+								continue
+							}
+							named := value.Type != nil && mentionsCaller(pkg, value.Type)
+							if i < len(value.Values) {
+								named = named || mentionsCaller(pkg, value.Values[i])
+							}
+							if named {
+								producers[pkg+"."+name.Name] = true
+							}
+						}
+					}
 				}
 			}
 		}
 	}
 	var got []string
-	for name, produces := range producers {
-		if produces {
-			got = append(got, name)
-		}
+	for name := range producers {
+		got = append(got, name)
 	}
 	sort.Strings(got)
 	if want := []string{"callerauth.Authenticator.Authenticate", "callerauth.CallerFromConnectionState"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("exported functions that produce a callerauth.Caller: %q, want %q", got, want)
+		t.Fatalf("exported functions, methods, variables and constants that produce a callerauth.Caller: %q, want %q", got, want)
 	}
+
+	authenticateCalls := 0
+	for _, root := range []string{"..", "../../cmd/es"} {
+		walkErr := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if entry.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+				return nil
+			}
+			fset := token.NewFileSet()
+			parsed, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
+			if err != nil {
+				return err
+			}
+			inAdmission := filepath.ToSlash(filepath.Dir(path)) == "../admission"
+			for _, decl := range parsed.Decls {
+				requestParams := map[string]bool{}
+				if function, ok := decl.(*ast.FuncDecl); ok {
+					for _, field := range function.Type.Params.List {
+						if types.ExprString(field.Type) == "*http.Request" {
+							for _, name := range field.Names {
+								requestParams[name.Name] = true
+							}
+						}
+					}
+				}
+				ast.Inspect(decl, func(node ast.Node) bool {
+					if node == nil {
+						return false
+					}
+					at := fset.PositionFor(node.Pos(), false)
+					switch node := node.(type) {
+					case *ast.CompositeLit:
+						if node.Type != nil && types.ExprString(node.Type) == "tls.ConnectionState" {
+							t.Errorf("%s builds a tls.ConnectionState", at)
+						}
+					case *ast.AssignStmt:
+						for _, lhs := range node.Lhs {
+							if selector, ok := lhs.(*ast.SelectorExpr); ok {
+								switch selector.Sel.Name {
+								case "TLS", "VerifiedChains", "PeerCertificates":
+									t.Errorf("%s assigns a connection state field %s", at, selector.Sel.Name)
+								}
+							}
+						}
+					case *ast.CallExpr:
+						name := ""
+						switch fun := node.Fun.(type) {
+						case *ast.Ident:
+							name = fun.Name
+						case *ast.SelectorExpr:
+							name = fun.Sel.Name
+						}
+						switch name {
+						case "new":
+							if len(node.Args) == 1 && types.ExprString(node.Args[0]) == "tls.ConnectionState" {
+								t.Errorf("%s builds a tls.ConnectionState", at)
+							}
+						case "CallerFromConnectionState":
+							t.Errorf("%s calls CallerFromConnectionState; ES authenticates callers only through Authenticator.Authenticate", at)
+						case "Authenticate":
+							authenticateCalls++
+							request, ok := node.Args[len(node.Args)-1].(*ast.Ident)
+							if len(node.Args) != 2 || !ok || !requestParams[request.Name] {
+								t.Errorf("%s calls Authenticate with something other than the request its handler serves", at)
+							}
+						case "AuthenticatedCallerPrincipal":
+							if !inAdmission {
+								t.Errorf("%s reads the grant caller outside es/admission", at)
+							}
+						}
+					}
+					return true
+				})
+			}
+			return nil
+		})
+		if walkErr != nil {
+			t.Fatal(walkErr)
+		}
+	}
+	if authenticateCalls == 0 {
+		t.Fatal("control: the scan found no call of Authenticate in ES")
+	}
+}
+
+// The grant caller has one way into a context and one way out, in every
+// non-test file of es/admission (re-check 21 of ES PR #73, R21-1): only
+// withCallerID uses the context key to put it there, and only
+// WithAuthenticatedCaller and withDeliveryCaller call withCallerID; only
+// AuthenticatedCallerPrincipal reads the key; the grant facts are built once,
+// in decideWorkloadGrants, with AuthenticatedCallerPrincipal(...) as their
+// caller; and only newWorkloadGrantFacts sets a facts value's caller. So code
+// in admission cannot match grants on a caller taken from the request, the
+// evidence or configuration without failing here.
+func TestTheGrantCallerHasOneWayIntoAContextAndOneWayOut(t *testing.T) {
+	allowedKeyUse := map[string]bool{"": true, "withCallerID": true, "AuthenticatedCallerPrincipal": true}
+	allowedSetter := map[string]bool{"WithAuthenticatedCaller": true, "withDeliveryCaller": true}
+	var factsCalls, setterCalls, keyUses int
+	for _, parsed := range parseNonTestGoFiles(t, ".") {
+		for _, decl := range parsed.Decls {
+			enclosing := ""
+			if function, ok := decl.(*ast.FuncDecl); ok {
+				enclosing = function.Name.Name
+			}
+			ast.Inspect(decl, func(node ast.Node) bool {
+				switch node := node.(type) {
+				case *ast.Ident:
+					if node.Name == "authenticatedCallerKey" {
+						keyUses++
+						if !allowedKeyUse[enclosing] {
+							t.Errorf("%s uses the grant caller's context key", enclosing)
+						}
+					}
+				case *ast.KeyValueExpr:
+					if key, ok := node.Key.(*ast.Ident); ok && key.Name == "callerPrincipal" && enclosing != "newWorkloadGrantFacts" {
+						t.Errorf("%s sets a grant facts caller", enclosing)
+					}
+				case *ast.AssignStmt:
+					for _, lhs := range node.Lhs {
+						if selector, ok := lhs.(*ast.SelectorExpr); ok && selector.Sel.Name == "callerPrincipal" {
+							t.Errorf("%s assigns a grant facts caller", enclosing)
+						}
+					}
+				case *ast.CallExpr:
+					name := ""
+					switch fun := node.Fun.(type) {
+					case *ast.Ident:
+						name = fun.Name
+					case *ast.SelectorExpr:
+						name = fun.Sel.Name
+					}
+					switch name {
+					case "withCallerID":
+						setterCalls++
+						if !allowedSetter[enclosing] {
+							t.Errorf("%s puts a grant caller on a context", enclosing)
+						}
+					case "newWorkloadGrantFacts":
+						factsCalls++
+						reader := false
+						if len(node.Args) > 0 {
+							if call, ok := node.Args[0].(*ast.CallExpr); ok {
+								if id, ok := call.Fun.(*ast.Ident); ok && id.Name == "AuthenticatedCallerPrincipal" && len(call.Args) == 1 {
+									reader = true
+								}
+							}
+						}
+						if enclosing != "decideWorkloadGrants" || !reader {
+							t.Errorf("%s builds grant facts with a caller that AuthenticatedCallerPrincipal did not return", enclosing)
+						}
+					}
+				}
+				return true
+			})
+		}
+	}
+	if factsCalls != 1 || setterCalls < 3 || keyUses < 3 {
+		t.Fatalf("control: %d calls of newWorkloadGrantFacts, %d of withCallerID, %d uses of the context key; the scan no longer reads the package", factsCalls, setterCalls, keyUses)
+	}
+}
+
+// parseNonTestGoFiles parses every non-test Go file directly in dir.
+func parseNonTestGoFiles(t *testing.T, dir string) []*ast.File {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var files []*ast.File
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
+			continue
+		}
+		parsed, err := parser.ParseFile(token.NewFileSet(), filepath.Join(dir, entry.Name()), nil, parser.SkipObjectResolution)
+		if err != nil {
+			t.Fatal(err)
+		}
+		files = append(files, parsed)
+	}
+	return files
 }

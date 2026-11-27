@@ -145,12 +145,16 @@ type authenticatedCallerKey struct{}
 // authenticated over mTLS for this :prepare or :submit. The ES API is its
 // only caller: the caller identity comes from the connection, never from the
 // request body, the evidence or a header. It takes a callerauth.Caller, not
-// a SPIFFE ID or a string, so that rule holds by type: outside callerauth,
-// the only way to get a non-zero Caller is CallerFromConnectionState, which
-// reads a verified TLS chain, and a zero Caller carries no caller. ES
-// admission reads it only to match workload grants, and it never becomes ES
-// request or response grammar. A context without one matches no grant, so
-// its run gets no network.
+// a SPIFFE ID or a string. A Caller comes only from callerauth's two
+// producers, CallerFromConnectionState and Authenticator.Authenticate, which
+// read a TLS connection state; the ES API passes Authenticate the request it
+// is serving, whose connection state Go's TLS server filled in after
+// verifying the client's certificate chain, and no ES code builds or edits a
+// connection state. TestTheGrantCallerCanComeOnlyFromAVerifiedConnection
+// pins that, and TestTheGrantCallerHasOneWayIntoAContextAndOneWayOut pins
+// the path from here to the grant facts. A zero Caller carries no caller. ES admission reads it only to match workload grants,
+// and it never becomes ES request or response grammar. A context without one
+// matches no grant, so its run gets no network.
 func WithAuthenticatedCaller(ctx context.Context, caller callerauth.Caller) context.Context {
 	return withCallerID(ctx, caller.ID())
 }

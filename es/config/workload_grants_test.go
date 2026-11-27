@@ -575,8 +575,10 @@ func setStringFields(value reflect.Value, name string) {
 //   - the decision's or a rule's egressLane is read outside
 //     workloadGrantsFromConfig and decide in es/admission/workload_grants.go;
 //   - a lane field of the configuration (EgressLane, EgressLanes,
-//     ReachesWorkloadVault) is read outside es/config and
-//     workloadGrantsFromConfig;
+//     ReachesWorkloadVault) is read anywhere but the two validation methods
+//     in es/config (WorkloadGrantsConfig.Validate and
+//     WorkloadGrantRuleConfig.validate) and workloadGrantsFromConfig, so a
+//     new reader in es/config itself fails too (re-check 21, N-1);
 //   - the grant types gain a field, or decide or decideWorkloadGrants return
 //     something else.
 //
@@ -613,7 +615,13 @@ func TestNoCodeUsesAnEgressLaneWhileUnrestrictedStillIs(t *testing.T) {
 		`RuntimeProfile json:"runtime_profile"`, `EgressLane json:"egress_lane,omitempty"`)
 
 	const grantFile = "es/admission/workload_grants.go"
-	laneReaders := map[string]bool{"workloadGrantsFromConfig": true, "decide": true}
+	laneReaders := map[string]bool{"workloadGrantsFromConfig": true, "workloadGrants.decide": true}
+	configuredLaneReaders := map[string]bool{
+		"es/config/workload_grants.go WorkloadGrantsConfig.Validate":    true,
+		"es/config/workload_grants.go WorkloadGrantRuleConfig.validate": true,
+		grantFile + " workloadGrantsFromConfig":                         true,
+	}
+	configuredLaneReads := 0
 	var decisionCalls, droppedDecisions, laneReads int
 	files := 0
 	pinned := map[string]bool{}
@@ -637,12 +645,14 @@ func TestNoCodeUsesAnEgressLaneWhileUnrestrictedStillIs(t *testing.T) {
 			return err
 		}
 		files++
-		inConfig := strings.HasPrefix(rel, "es/config/") && !strings.Contains(strings.TrimPrefix(rel, "es/config/"), "/")
 		for _, decl := range parsed.Decls {
 			function, _ := decl.(*ast.FuncDecl)
 			name := ""
 			if function != nil {
 				name = function.Name.Name
+				if function.Recv != nil && len(function.Recv.List) == 1 {
+					name = types.ExprString(function.Recv.List[0].Type) + "." + name
+				}
 			}
 			if rel == grantFile {
 				pinGrantDeclaration(t, decl, pinned, fail)
@@ -668,8 +678,10 @@ func TestNoCodeUsesAnEgressLaneWhileUnrestrictedStillIs(t *testing.T) {
 							laneReads++
 						}
 					case "EgressLane", "EgressLanes", "ReachesWorkloadVault":
-						if !inConfig && !(rel == grantFile && name == "workloadGrantsFromConfig") {
-							fail("%s reads the configured lane field %s", fset.PositionFor(node.Pos(), false), node.Sel.Name)
+						if !configuredLaneReaders[rel+" "+name] {
+							fail("%s reads the configured lane field %s in %s", fset.PositionFor(node.Pos(), false), node.Sel.Name, name)
+						} else {
+							configuredLaneReads++
 						}
 					}
 				}
@@ -683,8 +695,8 @@ func TestNoCodeUsesAnEgressLaneWhileUnrestrictedStillIs(t *testing.T) {
 	}
 	// Controls: the walk read the module, found today's one call and the
 	// grant code's own lane reads.
-	if files < 100 || decisionCalls == 0 || laneReads < 3 {
-		t.Fatalf("control: read %d files, %d calls of decideWorkloadGrants, %d lane reads in the grant code; the walk no longer reads the module", files, decisionCalls, laneReads)
+	if files < 100 || decisionCalls == 0 || laneReads < 3 || configuredLaneReads < 5 {
+		t.Fatalf("control: read %d files, %d calls of decideWorkloadGrants, %d lane reads in the grant code, %d configured lane reads in validation and the grant code; the walk no longer reads the module", files, decisionCalls, laneReads, configuredLaneReads)
 	}
 	for _, name := range []string{"workloadGrantDecision", "workloadGrantRule", "workloadGrants", "decide", "decideWorkloadGrants"} {
 		if !pinned[name] {
