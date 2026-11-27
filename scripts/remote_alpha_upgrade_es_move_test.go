@@ -1032,6 +1032,81 @@ m.backup_files = _cut`, "/manifest.json is missing: "},
 		})
 	}
 
+	// Re-check 50 of #67 (Sonnet's O50-1): a manifest.json or created.json
+	// that is valid JSON but not the document apply writes was a traceback
+	// on a value of another type. It is refused, naming what is wrong, and
+	// nothing changes.
+	entryWith := func(change func(entry map[string]any)) func(t *testing.T, manifest []byte) []byte {
+		return func(t *testing.T, manifest []byte) []byte {
+			var doc map[string]any
+			if err := json.Unmarshal(manifest, &doc); err != nil {
+				t.Fatal(err)
+			}
+			for _, entry := range doc["files"].([]any) {
+				if entry := entry.(map[string]any); entry["exists"] == true {
+					change(entry)
+					data, err := json.Marshal(doc)
+					if err != nil {
+						t.Fatal(err)
+					}
+					return data
+				}
+			}
+			t.Fatalf("no backed-up file in %s", manifest)
+			return nil
+		}
+	}
+	fixed := func(text string) func(*testing.T, []byte) []byte {
+		return func(*testing.T, []byte) []byte { return []byte(text) }
+	}
+	for _, bad := range []struct {
+		name, document string
+		write          func(t *testing.T, was []byte) []byte
+		says           string
+	}{
+		{"manifest.json a list", "manifest.json", fixed("[]"), "/manifest.json is not the manifest apply writes (it is a JSON list, not an object); nothing was changed"},
+		{"manifest.json null", "manifest.json", fixed("null"), "/manifest.json is not the manifest apply writes (it is a JSON null, not an object); nothing was changed"},
+		{"manifest.json a number", "manifest.json", fixed("7"), "/manifest.json is not the manifest apply writes (it is a JSON number, not an object); nothing was changed"},
+		{"manifest.json with files not a list", "manifest.json",
+			fixed(`{"schema": "execution-substrate.remote-alpha.es-upgrade-backup.v2", "files": {}}`),
+			"/manifest.json is not the manifest apply writes (its files are not a list); nothing was changed"},
+		{"manifest.json with a file that is not an object", "manifest.json",
+			fixed(`{"schema": "execution-substrate.remote-alpha.es-upgrade-backup.v2", "files": [7]}`),
+			"/manifest.json is not the manifest apply writes (file 0 is not an object with a path and whether it existed); nothing was changed"},
+		{"manifest.json with a mode that is not octal", "manifest.json",
+			entryWith(func(entry map[string]any) { entry["mode"] = "rw-r--r--" }), "lacks its copy's name, digest, size, mode, owner or group); nothing was changed"},
+		{"manifest.json with a copy outside files/", "manifest.json",
+			entryWith(func(entry map[string]any) { entry["copy"] = "../manifest.json" }), "lacks its copy's name, digest, size, mode, owner or group); nothing was changed"},
+		{"manifest.json with an owner that is not a number", "manifest.json",
+			entryWith(func(entry map[string]any) { entry["uid"] = "0" }), "lacks its copy's name, digest, size, mode, owner or group); nothing was changed"},
+		{"created.json naming a list", "created.json", fixed(`[["/etc/nomad.d/tls"]]`), "the backup's created.json names paths that apply does not create"},
+		{"created.json naming a number", "created.json", fixed(`[7]`), "the backup's created.json names paths that apply does not create"},
+	} {
+		t.Run("refused: "+bad.name, func(t *testing.T) {
+			h, _, first := applied(t)
+			path := filepath.Join(first, bad.document)
+			was, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, bad.write(t, was), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			before, files := h.snapshot(), backupFiles(t, h)
+			h.clearCalls()
+			_, stderr, code := h.run("rollback", "--backup-dir", first)
+			if code != 1 || strings.Contains(stderr, "Traceback") || !strings.Contains(stderr, "remote alpha ES upgrade refused: ") ||
+				!strings.Contains(stderr, bad.says) {
+				t.Fatalf("rollback exited %d, want a refusal saying %q: %s", code, bad.says, stderr)
+			}
+			onlyReads(t, h, "a refused rollback")
+			assertRestored(t, before, h.snapshot())
+			if after := backupFiles(t, h); fmt.Sprint(after) != fmt.Sprint(files) {
+				t.Fatalf("a refused rollback changed the backups: %q -> %q", files, after)
+			}
+		})
+	}
+
 	// The same finding: earlier.json's data is synced before it is renamed
 	// into place (re-check 49 of #67, N67-6 and S67-2), and its folder is
 	// synced right after, before apply changes the host. Without the first,

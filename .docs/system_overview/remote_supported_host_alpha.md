@@ -7550,7 +7550,9 @@ and nothing recorded:
   host. So a backup holds a whole `earlier.json` or none, and holds
   `created.json` whenever it holds `earlier.json`. `rollback` refuses a
   backup whose `manifest.json` or `created.json` is missing or cut short,
-  saying that its apply stopped before it changed the host; one cut off
+  saying that its apply stopped before it changed the host, and one whose
+  `manifest.json` or `created.json` is valid JSON but not the document
+  `apply` writes, naming what is wrong; one cut off
   after `earlier.json` counts as a later backup, so it is put back first
   (it puts back the files it found). If
   the `restored-` record cannot be written the rollback goes on and says
@@ -7839,7 +7841,11 @@ created; an older backup put back after an apply cut off while it wrote
 synced before it is renamed into place and its folder synced right after;
 an older backup put back after an apply cut off while it wrote
 `created.json`, or before it, and the cut-off backup refused, saying its
-apply stopped before it changed the host; an https restore
+apply stopped before it changed the host; a `manifest.json` that is a list,
+null or a number, whose files are not a list or hold a value that is not an
+object, or whose backed-up file has a mode that is not octal, a copy outside
+`files/` or an owner that is not a number, and a `created.json` naming a
+list or a number, each refused with nothing changed; an https restore
 whose `es.json` does not hold against Nomad, by `rollback` and by `apply`'s
 own rollback; a rollback after which ES does not answer; an installed
 binary missing, and a rollback record's name taken, each refused; the
