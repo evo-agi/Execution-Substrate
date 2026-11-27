@@ -22,7 +22,7 @@ import (
 	agsconfig "execution-substrate/ags/config"
 	arsconfig "execution-substrate/ars/config"
 	egsconfig "execution-substrate/egs/config"
-	egsmodel "execution-substrate/egs/model"
+	egscontract "execution-substrate/egs/contract"
 	esconfig "execution-substrate/es/config"
 	runtimeconfigv1 "execution-substrate/internal/contracts/runtimeconfig/v1"
 )
@@ -133,16 +133,16 @@ func TestBringupScriptUpCheckDownFullProfile(t *testing.T) {
 			PrivateKeyHex: fixture.egsPrivateKeyHex,
 			PublicKeyHex:  fixture.egsPublicKeyHex,
 		},
-		RuntimeTrust: egsmodel.RuntimeTrustPolicy{
-			SignerPolicy: egsmodel.SignerPolicy{
+		RuntimeTrust: egscontract.RuntimeTrustPolicy{
+			SignerPolicy: egscontract.SignerPolicy{
 				AllowedSigners: []string{fixture.agsKeyID},
 				RevokedSigners: []string{},
 			},
-			ArtifactPolicy: egsmodel.ArtifactPolicy{
+			ArtifactPolicy: egscontract.ArtifactPolicy{
 				RevokedArtifacts: []string{},
 			},
 		},
-		Publication: egsmodel.PublicationMetadata{
+		Publication: egscontract.PublicationMetadata{
 			UpdateRevision: 7,
 			Version:        "1.0.0",
 		},

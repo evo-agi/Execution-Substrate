@@ -14,14 +14,14 @@ import (
 
 	"execution-substrate/egs/api"
 	"execution-substrate/egs/config"
-	"execution-substrate/egs/model"
+	"execution-substrate/egs/contract"
 	"execution-substrate/egs/sign"
 )
 
 type App struct {
 	cfg          config.Config
-	runtimeTrust model.RuntimeTrustPolicy
-	publication  model.PublicationMetadata
+	runtimeTrust contract.RuntimeTrustPolicy
+	publication  contract.PublicationMetadata
 	signer       sign.Signer
 	httpServer   *http.Server
 

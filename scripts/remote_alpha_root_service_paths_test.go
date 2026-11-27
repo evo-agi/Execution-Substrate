@@ -874,14 +874,19 @@ func byPathOwnershipChangeLines(source string) []string {
 // mktemp -d folder (0700), which no one else can enter. Audit 46 (P46-1)
 // took out its two lines that re-owned and re-moded nomad.hcl by name, which
 // followed a link there: the file is now created root:root 0640 under a
-// temporary name and renamed into place.
+// temporary name and renamed into place. Re-check 48 (R48-1) made the
+// three install -d lines for Nomad's config, data and TLS folders one, in
+// nomad_folder_take_back, which also removes the folders' ACLs; and
+// nomad_config_write's new chmod 0640 sets the mode of the temporary file
+// that the same root shell has just created exclusively in the root-owned
+// /etc/nomad.d.
 //
 // remote_alpha_upgrade_es.sh's two lines came with RT60-2's wrapper check
 // (ES PR #63, audit 31). Both are the text of its refusals, which tell the
 // operator how to hand the clone over; the wrapper changes no owner or mode.
 var byPathOwnershipChangeAllowance = map[string]int{
 	"scripts/01_bringup.sh":                                           1,
-	"scripts/70_linux_setup.sh":                                       9,
+	"scripts/70_linux_setup.sh":                                       8,
 	"scripts/72_supported_local_setup.sh":                             7,
 	"scripts/73_supported_local_proof.sh":                             1,
 	"scripts/internal/control_plane.sh":                               3,

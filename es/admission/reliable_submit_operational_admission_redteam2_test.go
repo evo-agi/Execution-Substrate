@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	egsmodel "execution-substrate/egs/model"
+	egscontract "execution-substrate/egs/contract"
 	"execution-substrate/es/admission/internal/reliablesubmit"
 )
 
@@ -341,18 +341,18 @@ func TestRedTeamPR12CombinedConfirmationComparesContent(t *testing.T) {
 		}
 		assertOperationalCompleted(t, f, f.submit(), "after a respelled confirmation")
 	})
-	for name, change := range map[string]func(*testing.T, *operationalFixture, *egsmodel.RuntimeTrustPolicy){
-		"an added allowed signer": func(_ *testing.T, _ *operationalFixture, trust *egsmodel.RuntimeTrustPolicy) {
+	for name, change := range map[string]func(*testing.T, *operationalFixture, *egscontract.RuntimeTrustPolicy){
+		"an added allowed signer": func(_ *testing.T, _ *operationalFixture, trust *egscontract.RuntimeTrustPolicy) {
 			trust.SignerPolicy.AllowedSigners = append(trust.SignerPolicy.AllowedSigners, "red-team-extra-signer")
 		},
-		"an unrelated revocation": func(_ *testing.T, _ *operationalFixture, trust *egsmodel.RuntimeTrustPolicy) {
+		"an unrelated revocation": func(_ *testing.T, _ *operationalFixture, trust *egscontract.RuntimeTrustPolicy) {
 			trust.ArtifactPolicy.RevokedArtifacts = append(trust.ArtifactPolicy.RevokedArtifacts, "sha256:"+strings.Repeat("8", 64))
 		},
-		"the claim's artifact revoked": func(t *testing.T, f *operationalFixture, trust *egsmodel.RuntimeTrustPolicy) {
+		"the claim's artifact revoked": func(t *testing.T, f *operationalFixture, trust *egscontract.RuntimeTrustPolicy) {
 			_, artifact := evidenceOf(t, f)
 			trust.ArtifactPolicy.RevokedArtifacts = append(trust.ArtifactPolicy.RevokedArtifacts, artifact)
 		},
-		"the claim's signer revoked": func(t *testing.T, f *operationalFixture, trust *egsmodel.RuntimeTrustPolicy) {
+		"the claim's signer revoked": func(t *testing.T, f *operationalFixture, trust *egscontract.RuntimeTrustPolicy) {
 			signer, _ := evidenceOf(t, f)
 			trust.SignerPolicy.RevokedSigners = append(trust.SignerPolicy.RevokedSigners, signer)
 		},

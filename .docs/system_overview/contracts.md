@@ -70,7 +70,7 @@ Workstream A decision explicitly classifies it that way.
   `payload_digest` identifies payload bytes or payload content identity, while
   `artifact_digest` identifies artifact/package identity as currently derived
   and documented.
-- `claims.package.publication` remains AGS-owned publish-time meaning carried inside the signed record; ES must not treat those publication claims as ES public admission grammar.
+- `claims.package.publication` remains AGS-owned publish-time meaning carried inside the signed record; ES must not treat those publication claims as ES public admission grammar. From WI-2, workload grants (`.docs/execution_lifecycle/contracts.md`, section 5B) read one of them, `claims.package.publication.invoker.principal`, as an exact-match fact against ES configuration; that read adds nothing to ES request or response grammar, and no other publication claim reaches ES admission.
 - `claims.admission.authorization` is intentionally limited to `derivation_spec_digest` and `output_id`.
 - `claims.admission.execution` is intentionally limited to runtime env allowlist, required capabilities, `target_platform`, and `network_access`.
 
@@ -180,6 +180,20 @@ route, stays with each service and is described in that service's section.
   `execution.internal`), user information, a port, upper-case letters in the
   trust domain, a query, a fragment, percent encoding, an empty segment, a
   trailing slash, `.` and `..` segments, and an ID without a path.
+- A caller whose path starts with the segment `workload`, in any letter
+  case, has no caller identity, at every service. That covers the shared
+  workload ID `spiffe://execution.internal/workload`, the named workload
+  identities `spiffe://execution.internal/workload/<name>`, and the per-run
+  identities reserved below them (`runtime_identity_handoff.md`, section
+  11.2). Workload identities exist so that workloads can log in to the
+  workload-zone Vault; they are never callers, and a later design that lets a
+  workload call a service must change this rule explicitly. A path that only
+  contains the word later, such as `service/workload`, or whose first segment
+  is longer, such as `workloads`, is not affected. The comparison ignores
+  letter case on purpose, so no configuration can name a workload identity
+  in another letter case. It closes letter-case variants only: a different
+  word, such as `workloads/x` or `work-load/x`, is a different SPIFFE ID and
+  stays a valid path.
 - The rule applies to the URI as Go's certificate parser hands it over. That
   parser lower-cases the URI scheme and drops an empty fragment (a trailing
   `#`), so such a SAN names the same ID as without them. go-spiffe's
@@ -205,6 +219,10 @@ route, stays with each service and is described in that service's section.
   prefix matches the caller path that equals it and every caller path that
   continues it after a `/`, so `operator/local` matches `operator/local/a` but
   not `operator/local-evil`. A prefix that fails the rule matches nothing.
+- A configured prefix whose first segment is `workload`, in any letter case,
+  is refused at startup like any other prefix no caller could match, with
+  its own message, and `id.conf` loading refuses a workload identity as a
+  principal the same way.
 
 ### Ownership boundary
 
@@ -803,9 +821,11 @@ Current successful response shapes:
 - ES startup config validation rejects broad or malformed prefixes under the
   allowlist-prefix rule in section 3A, which ARS and AGS share. Accepted
   prefixes are relative SPIFFE path prefixes with at least two non-empty path
-  segments, no leading or trailing slash, and no `.` or `..` segment, and
-  every segment uses only `A-Z`, `a-z`, `0-9`, `.`, `-`, and `_`. A
-  single-segment prefix such as `service` or `operator` is invalid.
+  segments, no leading or trailing slash, no `.` or `..` segment, and no
+  first segment `workload` in any letter case, and every segment uses only
+  `A-Z`, `a-z`, `0-9`, `.`, `-`, and `_`. A single-segment prefix such as
+  `service` or `operator` is invalid, and so is a workload prefix such as
+  `workload/codex-agent`.
 - `GET /v1/executions:contract` uses that same caller authorization and returns only non-secret, non-run-specific producer compatibility metadata.
 - The current repo-owned runbooks, proofs, and generated helper configs keep that ES caller allowlist operator-only:
   - `spiffe://execution.internal/operator/local`
@@ -921,6 +941,11 @@ Current successful response shapes:
 - Runtime network mode is derived directly from signed execution access claims:
   - `network_access=false -> network_mode=none`
   - `network_access=true -> network_mode=bridge`
+  Workstream F slice F1 changes this mapping
+  (`.docs/execution_lifecycle/contracts.md`, section 5B). From WI-2, a run
+  that requests the network also needs an owner grant in ES configuration and
+  is otherwise refused with `network_access_not_granted`. From WI-4, a granted
+  run joins its egress lane's network instead of `bridge`.
 - Caller runtime mounts are currently limited to governed artifact-backed mounts that are:
   - read-only
   - absolute
@@ -1278,6 +1303,15 @@ Describe the current ES-to-runtime identity boundary used during submission and 
 
 The authoritative F0 runtime-identity handoff ownership decision lives in
 `runtime_identity_handoff.md`.
+
+The next slice, F1, is decided and recorded in section 11 of
+`runtime_identity_handoff.md`: one identity per named workload, at
+`spiffe://execution.internal/workload/<name>`, picked by owner grant rules in
+ES configuration and checked by the helper against the expected ID string ES
+passes it; no identity handoff for a run without an identity grant; one SPIRE
+entry per name with a Docker label selector instead of the entry that matches
+every root process; and one Vault role and policy per name. It lands with
+WI-3. Until then this section describes current behavior.
 
 ### Current producers / consumers
 

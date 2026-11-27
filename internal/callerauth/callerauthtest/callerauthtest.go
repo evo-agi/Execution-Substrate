@@ -255,6 +255,13 @@ func RefusedCallers(allowedPath string) []RefusedCaller {
 		{Name: "trust_domain_upper_case", State: withURIs("spiffe://EXECUTION.INTERNAL/" + path)},
 		{Name: "other_scheme", State: withURIs("https://execution.internal/" + path)},
 
+		// Workload identities are never callers, even one that carries the
+		// allowed path below the workload segment.
+		{Name: "workload_identity_shared", State: withURIs("spiffe://execution.internal/workload")},
+		{Name: "workload_identity_named", State: withURIs("spiffe://execution.internal/workload/" + path)},
+		{Name: "workload_identity_per_run", State: withURIs("spiffe://execution.internal/workload/" + last + "/run/r1")},
+		{Name: "workload_identity_upper_case", State: withURIs("spiffe://execution.internal/Workload/" + path)},
+
 		// Not a conforming SPIFFE ID, or no workload path.
 		{Name: "trust_domain_ID_only", State: withURIs("spiffe://execution.internal")},
 		{Name: "root_path_only", State: withURIs("spiffe://execution.internal/")},

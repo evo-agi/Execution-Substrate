@@ -27,6 +27,9 @@ var (
 	ErrNotCanonical = errors.New("callerallowlist: a path prefix must be the path of a SPIFFE ID in trust domain " + callerauth.TrustDomain + ", without its leading slash: segments of A-Z, a-z, 0-9, \".\", \"-\" and \"_\", none of them \".\" or \"..\", joined by single slashes, with no scheme, white space, or leading or trailing slash")
 	// ErrTooBroad means the prefix has fewer than MinimumSegments segments.
 	ErrTooBroad = fmt.Errorf("callerallowlist: a path prefix must have at least %d path segments", MinimumSegments)
+	// ErrWorkloadPrefix means the prefix names workload identities, which are
+	// never callers, so no authenticated caller could ever match it.
+	ErrWorkloadPrefix = errors.New("callerallowlist: a path prefix must not start with the segment \"workload\" in any letter case: workload identities are never callers")
 )
 
 // ValidatePrefix accepts prefix only when it is exactly the path that
@@ -36,9 +39,13 @@ var (
 // MinimumSegments segments. Both "operator/local" and "service/control-plane"
 // are valid; "service", "/operator/local", "operator/local/",
 // "operator//local", "operator/./local", " operator/local", "operator/lo cal"
-// and "spiffe://execution.internal/operator/local" are not.
+// and "spiffe://execution.internal/operator/local" are not. A prefix under
+// "workload", such as "workload/codex-agent", returns ErrWorkloadPrefix.
 func ValidatePrefix(prefix string) error {
 	if _, err := callerauth.ParseSPIFFEID("spiffe://" + callerauth.TrustDomain + "/" + prefix); err != nil {
+		if errors.Is(err, callerauth.ErrWorkloadIdentity) {
+			return ErrWorkloadPrefix
+		}
 		return ErrNotCanonical
 	}
 	if strings.Count(prefix, "/")+1 < MinimumSegments {

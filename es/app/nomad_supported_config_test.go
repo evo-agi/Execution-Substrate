@@ -243,11 +243,15 @@ func TestLinuxSetupKeepsNomadConfigAndDataRootOwned(t *testing.T) {
 	}
 	text := string(body)
 	for _, want := range []string{
-		`sudo install -d -o root -g root -m 0755 "${NOMAD_CONFIG_DIR}"`,
-		`sudo install -d -o root -g root -m 0700 "${NOMAD_DATA_DIR}"`,
-		// nomad.hcl is created root:root 0640 (root's umask 027) under a
-		// temporary name and renamed into place (audit 46, P46-1).
-		`sudo sh -c 'umask 027 && rm -f -- "$1" && set -C && cat >"$1" && mv -fT -- "$1" "$2"' sh "${tmp}" "$1"`,
+		// Each folder is taken back with install -d and loses any ACL
+		// (re-check 48, R48-1); nomad_setup_acl_linux_test.go runs it.
+		`sudo install -d -o root -g root -m "$1" "$2"`,
+		`nomad_folder_take_back 0755 "${NOMAD_CONFIG_DIR}"`,
+		`nomad_folder_take_back 0700 "${NOMAD_DATA_DIR}"`,
+		// nomad.hcl is created root:root 0640 (root's umask 027, then
+		// chmod) under a temporary name and renamed into place (audit 46,
+		// P46-1).
+		`sudo sh -c 'umask 027 && rm -f -- "$1" && set -C && cat >"$1" && chmod 0640 -- "$1" && mv -fT -- "$1" "$2"' sh "${tmp}" "$1"`,
 		`printf '%s\n' "${config}" | nomad_config_write "${NOMAD_CONFIG_PATH}"`,
 	} {
 		if !strings.Contains(text, want) {
