@@ -579,6 +579,11 @@ NOMAD_TAKE_BACK_PROGRAM = "/usr/local/sbin/execution-substrate-nomad-take-back"
 NOMAD_DPKG_HOOK = "/etc/dpkg/dpkg.cfg.d/execution-substrate-nomad"
 NOMAD_PACKAGE_HOOK_FILES = ((NOMAD_TAKE_BACK_PROGRAM, 0o755), (NOMAD_DPKG_HOOK, 0o644))
 NOMAD_HOOK_COMMAND = "sudo scripts/remote_alpha_upgrade_es.sh nomad-hook"
+# Where the program sets aside what it cannot take back from each of Nomad's
+# folders (an entry Nomad would read that is not a regular file, say): beside
+# the folder. This upgrade refuses a host where either is there, as the
+# setup does, until the operator has looked and removed it.
+NOMAD_SET_ASIDE = tuple(folder + ".execution-substrate-set-aside" for folder in (NOMAD_DIR, NOMAD_DATA_DIR))
 # nomad-hook's program puts nomad.env back as a new file of root's, with its
 # contents: the only way that an old write handle no longer reaches it.
 NOMAD_ENV_REMEDY = (f"{NOMAD_HOOK_COMMAND} puts it back as a new file of root's, then check what it sets "
@@ -978,12 +983,15 @@ class Completed:
         self.args, self.returncode, self.stdout, self.stderr = args, returncode, stdout, stderr
 
 
-def run(args, env=None, timeout=120, check=False, cwd=None, input=None):
+def run(args, env=None, timeout=120, check=False, cwd=None, input=None, name=None):
     """Run a command in a process group of its own. When it times out, or a
     signal interrupts the wait, the whole group is ended and drained before
     the exception goes on, so no descendant keeps changing the host during
     a rollback. Descendants left after a normal exit are ended too. input,
-    when given, is the command's standard input."""
+    when given, is the command's standard input; name, when given, is what
+    a refusal calls the command (for a bash -c script, rather than its
+    text)."""
+    name = name or ' '.join(args[:3])
     proc = subprocess.Popen(args, stdin=subprocess.DEVNULL if input is None else subprocess.PIPE,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             text=True, env=env, cwd=cwd, start_new_session=True)
@@ -992,12 +1000,12 @@ def run(args, env=None, timeout=120, check=False, cwd=None, input=None):
     except BaseException as exc:
         stop_process_group(proc)
         if isinstance(exc, subprocess.TimeoutExpired):
-            raise Refusal(f"{' '.join(args[:3])} did not finish within {timeout} s") from None
+            raise Refusal(f"{name} did not finish within {timeout} s") from None
         raise
     if group_alive(proc.pid):
         stop_process_group(proc)
     if check and proc.returncode != 0:
-        raise Refusal(f"{' '.join(args[:3])} failed: {(stderr or stdout).strip()[:400]}")
+        raise Refusal(f"{name} failed: {(stderr or stdout).strip()[:400]}")
     return Completed(args, proc.returncode, stdout, stderr)
 
 
@@ -1535,6 +1543,12 @@ def owner_mode(st):
     return {"uid": st.st_uid, "gid": st.st_gid, "mode": format(stat.S_IMODE(st.st_mode), "04o")}
 
 
+# How long the setup's nomad_package_hook functions may take, the take-back
+# program's first run included: its files are KiB and it reads at most 1 MiB
+# of each.
+NOMAD_HOOK_TIMEOUT = 120
+
+
 def setup_functions(region):
     """The functions of one region of scripts/70_linux_setup.sh, between its
     "# BEGIN <region>" and "# END <region>" lines."""
@@ -1570,9 +1584,12 @@ def nomad_gossip(function, *args):
 
 def nomad_package_hook(function, *args):
     """Run one of the setup's nomad_package_hook functions as the user
-    running this script: root on the host."""
+    running this script: root on the host. One that does not finish within
+    NOMAD_HOOK_TIMEOUT seconds is ended, with every process it started, and
+    refused."""
     script = "set -euo pipefail\n" + setup_functions("nomad_package_hook") + '"$@"\n'
-    return run(["bash", "-c", script, "nomad-package-hook", function, *args], timeout=120)
+    return run(["bash", "-c", script, "nomad-package-hook", function, *args], timeout=NOMAD_HOOK_TIMEOUT,
+               name=f"scripts/70_linux_setup.sh's {function}")
 
 
 def nomad_package_hook_text():
@@ -1979,6 +1996,10 @@ def inspect_host(payload_dir, commit, allow_downgrade=None):
         block("nomad_package_hook", f"{problem}: without the program and the dpkg configuration that runs it, the "
               f"next install or upgrade of the nomad package gives Nomad's folders and files to the nomad account; "
               f"{NOMAD_HOOK_COMMAND} installs them")
+    for path in NOMAD_SET_ASIDE:
+        if os.path.lexists(host(path)):
+            block("nomad_set_aside", f"{path} holds what the take-back program set aside from Nomad's folders, where "
+                  f"Nomad would have read it as root; look at it, then remove it (rm -rf -- {path})")
     for path, mode in NOMAD_DIRS:
         try:
             st = os.lstat(host(path))
@@ -2795,7 +2816,8 @@ def cmd_nomad_hook(args):
     for line in proc.stdout.splitlines():
         say(line)
     if proc.returncode != 0:
-        raise Refusal(f"the program and its dpkg configuration were not installed, or the program refused: "
+        raise Refusal(f"the program and its dpkg configuration were not installed, or the program failed or set "
+                      f"something aside: "
                       f"{(proc.stderr or proc.stdout).strip()[-800:]}")
 
 

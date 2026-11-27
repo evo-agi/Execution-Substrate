@@ -2,12 +2,14 @@ package scripts_test
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 )
 
 // Red-team 45's O45-1 on the box, which does not run the setup: HashiCorp's
@@ -81,14 +83,86 @@ func TestRemoteAlphaUpgradeESNomadHookInstallsTheSetupsHookAndTakesNomadsFilesBa
 		t.Fatalf("nomad-hook, again: exit %d\n%s\n%s", code, stdout, stderr)
 	}
 
-	// What the program refuses fails nomad-hook, with the program's words.
+	// What the program sets aside fails nomad-hook, with the program's
+	// words, and check, until the operator removes it (audit 51 of #83,
+	// A51-4).
 	link := h.path("etc/nomad.d/extra.hcl")
 	if err := os.Symlink(h.path("etc/execution-substrate/ags.json"), link); err != nil {
 		t.Fatal(err)
 	}
+	aside := h.path("etc/nomad.d.execution-substrate-set-aside")
 	_, stderr, code = h.run("nomad-hook")
-	if code == 0 || !strings.Contains(stderr, link+" is a link, not a regular file, and Nomad's unit reads it as root") {
+	if code == 0 || !strings.Contains(stderr, "execution-substrate: set aside "+link+" (a link, not a regular file): it is "+aside+"/") ||
+		!strings.Contains(stderr, "nomad: "+aside+" holds what was set aside from Nomad's folders") {
 		t.Fatalf("nomad-hook went on past a link: exit %d\n%s", code, stderr)
+	}
+	if _, err := os.Lstat(link); !os.IsNotExist(err) {
+		t.Fatalf("the link is still where Nomad reads it: %v", err)
+	}
+	report, _, code = h.check()
+	if code == 0 || !strings.Contains(fmt.Sprint(report["blockers"]), "nomad_set_aside") {
+		t.Fatalf("check went on past what was set aside: exit %d, blockers %v", code, report["blockers"])
+	}
+	if err := os.RemoveAll(aside); err != nil {
+		t.Fatal(err)
+	}
+	if _, stderr, code = h.run("nomad-hook"); code != 0 {
+		t.Fatalf("nomad-hook with nothing set aside: exit %d\n%s", code, stderr)
+	}
+	if report, stderr, code = h.check(); code != 0 || report["result"] != "ready" {
+		t.Fatalf("check with nothing set aside: exit %d, blockers %v, %s", code, report["blockers"], stderr)
+	}
+}
+
+// A setup function that does not finish within NOMAD_HOOK_TIMEOUT seconds
+// is ended, with what it started, and refused by name, not by the script's
+// text: nomad-hook's install, and check's reading of the program's text
+// (audit 53 of #83, A83-4). Here the timeout is 2 s and each function
+// sleeps a minute in a child, whose number it writes down.
+func TestRemoteAlphaUpgradeESNomadHookEndsASetupFunctionThatDoesNotFinish(t *testing.T) {
+	h := newUpgradeHost(t, buildESConfigCheck(t))
+	for _, tc := range []struct{ function, want string }{
+		{"install_nomad_package_hook", "scripts/70_linux_setup.sh's install_nomad_package_hook did not finish within 2 s"},
+		{"nomad_take_back_program", "the setup's nomad_package_hook functions cannot be read: scripts/70_linux_setup.sh's nomad_take_back_program did not finish within 2 s"},
+	} {
+		t.Run(tc.function, func(t *testing.T) {
+			pidFile := filepath.Join(t.TempDir(), "sleep.pid")
+			slow := fmt.Sprintf("%s() { sleep 60 & echo $! > '%s'; wait; }\n", tc.function, pidFile)
+			patch := fmt.Sprintf("m.NOMAD_HOOK_TIMEOUT = 2\nsetup_functions = m.setup_functions\n"+
+				"m.setup_functions = lambda region: setup_functions(region) + (%q if region == \"nomad_package_hook\" else \"\")", slow)
+			before := h.snapshot()
+			started := time.Now()
+			var stdout, stderr string
+			var code int
+			if tc.function == "install_nomad_package_hook" {
+				stdout, stderr, code = runWithPatchedUpgrade(h, patch, "nomad-hook")
+			} else {
+				stdout, stderr, code = runWithPatchedUpgrade(h, patch, "check", "--payload", h.payload, "--commit", h.commit)
+			}
+			took := time.Since(started)
+			if code == 0 || !strings.Contains(stdout+stderr, tc.want) || strings.Contains(stdout+stderr, "set -euo pipefail") {
+				t.Fatalf("exit %d, want a refusal with %q and without the script's text\n%s\n%s", code, tc.want, stdout, stderr)
+			}
+			if took > 30*time.Second {
+				t.Fatalf("took %v: the function was not ended at its timeout", took)
+			}
+			pid, err := os.ReadFile(pidFile)
+			if err != nil {
+				t.Fatalf("the slow function did not run: %v", err)
+			}
+			if cmdline, err := os.ReadFile("/proc/" + strings.TrimSpace(string(pid)) + "/cmdline"); err == nil && bytes.HasPrefix(cmdline, []byte("sleep\x00")) {
+				t.Fatalf("the function's child, process %s, is still running", strings.TrimSpace(string(pid)))
+			}
+			after := h.snapshot()
+			for path, value := range before {
+				if after[path] != value {
+					t.Fatalf("changed %s", path)
+				}
+			}
+			if len(after) != len(before) {
+				t.Fatal("created or removed a path")
+			}
+		})
 	}
 }
 

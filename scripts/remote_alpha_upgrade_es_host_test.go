@@ -1524,6 +1524,30 @@ func TestRemoteAlphaUpgradeESCheckRefusesWhatItWasNotWrittenFor(t *testing.T) {
 		{"the dpkg configuration's folder is writable by others", func(h *upgradeHost) {
 			_ = os.Chmod(h.path("etc/dpkg/dpkg.cfg.d"), 0o777)
 		}, "nomad_package_hook", "/etc/dpkg/dpkg.cfg.d is not a root:root folder closed to group and others"},
+		// Audit 51 of #83 (A51-5) and its Sonnet shadow (A83-4): each other
+		// part of the folder rule by itself.
+		{"the take-back program's folder is writable by its group", func(h *upgradeHost) {
+			_ = os.Chmod(h.path("usr/local/sbin"), 0o775)
+		}, "nomad_package_hook", "/usr/local/sbin is not a root:root folder closed to group and others"},
+		{"the take-back program's folder is writable by others only", func(h *upgradeHost) {
+			_ = os.Chmod(h.path("usr/local/sbin"), 0o757)
+		}, "nomad_package_hook", "/usr/local/sbin is not a root:root folder closed to group and others"},
+		{"the dpkg configuration's folder belongs to another group", func(h *upgradeHost) {
+			giveAnotherGroup(h.t, h.path("etc/dpkg/dpkg.cfg.d"))
+		}, "nomad_package_hook", "/etc/dpkg/dpkg.cfg.d is not a root:root folder closed to group and others"},
+		// Audit 51 of #83 (A51-4): what the take-back program set aside
+		// from either of Nomad's folders, as a folder or as anything else.
+		{"the take-back program set something aside from Nomad's config folder", func(h *upgradeHost) {
+			if err := os.MkdirAll(h.path("etc/nomad.d.execution-substrate-set-aside/20261127T000000Z-0123abcd"), 0o700); err != nil {
+				h.t.Fatal(err)
+			}
+		}, "nomad_set_aside", "/etc/nomad.d.execution-substrate-set-aside holds what the take-back program set aside from Nomad's folders, " +
+			"where Nomad would have read it as root; look at it, then remove it (rm -rf -- /etc/nomad.d.execution-substrate-set-aside)"},
+		{"a link where the take-back program sets aside entries of Nomad's data folder", func(h *upgradeHost) {
+			if err := os.Symlink(h.path("var/backups"), h.path("opt/nomad/data.execution-substrate-set-aside")); err != nil {
+				h.t.Fatal(err)
+			}
+		}, "nomad_set_aside", "/opt/nomad/data.execution-substrate-set-aside holds what the take-back program set aside"},
 		{"Nomad's data directory is group-readable", func(h *upgradeHost) {
 			_ = os.Chmod(h.path("opt/nomad/data"), 0o750)
 		}, "nomad_dirs", "/opt/nomad/data is not a root:root 0700 directory"},

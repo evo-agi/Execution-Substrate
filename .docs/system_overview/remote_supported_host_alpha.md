@@ -7403,8 +7403,16 @@ Operator interface:
   0700, no ACL) and each file Nomad reads there (`nomad.env`, the `.hcl`
   and `.json` files Nomad loads, the TLS files) as a new root-owned file
   with its contents kept, no write for group or others and no ACL,
-  reporting each one. A link or other entry it cannot take back is named,
-  and the command fails after taking back the rest. It changes nothing
+  reporting each one. Each entry is handled on its own: what it does not
+  take back (an entry Nomad would read that is not a regular file, a file
+  larger than 1 MiB, an entry it fails on, an entry directly in
+  `/opt/nomad/data` that is not root's) it moves, unread, into
+  `/etc/nomad.d.execution-substrate-set-aside` or
+  `/opt/nomad/data.execution-substrate-set-aside` (root:root 0700), where
+  Nomad does not read it, and names it. The command fails while either of
+  those folders is there, as `check` does, until the operator has looked
+  and removed it; under dpkg the program exits 0 after setting entries
+  aside, so package runs go on. It changes nothing
   else, and running it again writes the same files. Run it before `check`:
   `check` and `apply` refuse a host without the two files as this clone's
   setup writes them, and on the box it also takes back the package's
@@ -7654,6 +7662,10 @@ write that record; `apply`'s own rollback logs why and goes on.
   `root:root` 0755 or 0644, has an ACL, sits in a folder that is not
   `root:root` and closed to group and others, or is not what this clone's
   `scripts/70_linux_setup.sh` writes (`nomad-hook` installs them),
+  `/etc/nomad.d.execution-substrate-set-aside` or
+  `/opt/nomad/data.execution-substrate-set-aside` is there (what the
+  take-back program set aside, which Nomad would have read as root: the
+  refusal says to look at it, then remove it with `rm -rf --`),
   or `/etc/nomad.d`, `/opt/nomad` (0755) and `/opt/nomad/data` (0700) are not
   `root:root` folders with those modes and no ACL, or `nomad.hcl` has an ACL
   (audit INF-16; an account that owned one of these folders could leave a
@@ -7884,8 +7896,10 @@ which is not refused; the take-back program or its dpkg configuration
 missing, changed, a link, of another mode or group, or in a folder others
 can write, each refused, and `nomad-hook` installing both as the setup
 writes them, taking back a `nomad.env` others can write, changing nothing
-else, writing the same files again on a rerun, failing on a link it cannot
-take back, and refusing to run without root on a host; a Nomad folder, `nomad.hcl`, `nomad.env`, the TLS directory
+else, writing the same files again on a rerun, setting aside a link it
+cannot take back and failing while what it set aside is there, and
+refusing to run without root on a host; a set-aside folder beside
+`/etc/nomad.d` or `/opt/nomad/data` (a folder, or a link), each refused; a Nomad folder, `nomad.hcl`, `nomad.env`, the TLS directory
 or `/opt/nomad/data/server` with an ACL (the server folder also with the
 keyring in place), each refused
 before anything changes and naming `setfacl -b -k`; no gossip key or Nomad token in the output, the
