@@ -946,24 +946,75 @@ func TestTheGrantCallerCanComeOnlyFromAVerifiedConnection(t *testing.T) {
 }
 
 // The grant caller has one way into a context and one way out, in every
-// non-test file of es/admission (re-check 21 of ES PR #73, R21-1): only
-// withCallerID uses the context key to put it there, and only
-// WithAuthenticatedCaller and withDeliveryCaller call withCallerID; only
-// AuthenticatedCallerPrincipal reads the key; the grant facts are built once,
-// in decideWorkloadGrants, with AuthenticatedCallerPrincipal(...) as their
-// caller; and only newWorkloadGrantFacts sets a facts value's caller. So code
-// in admission cannot match grants on a caller taken from the request, the
-// evidence or configuration without failing here.
+// non-test file of es/admission (re-check 21 of ES PR #73, R21-1):
+//   - only withCallerID uses the context key to put a caller there, and only
+//     WithAuthenticatedCaller and withDeliveryCaller call withCallerID;
+//   - withDeliveryCaller is called only by the three private delivery entry
+//     points, each with the canonical URI of the caller fact it was handed
+//     and never reassigns, or, for the operational handoff, of the fact it
+//     built from its authenticated peer;
+//   - only AuthenticatedCallerPrincipal reads the key;
+//   - the grant facts are built once, in decideWorkloadGrants, with
+//     AuthenticatedCallerPrincipal(...) as their caller, and only
+//     newWorkloadGrantFacts sets a facts value's caller, from its own
+//     parameter;
+//   - none of these functions is used as a value, so none runs under
+//     another name.
 func TestTheGrantCallerHasOneWayIntoAContextAndOneWayOut(t *testing.T) {
 	allowedKeyUse := map[string]bool{"": true, "withCallerID": true, "AuthenticatedCallerPrincipal": true}
 	allowedSetter := map[string]bool{"WithAuthenticatedCaller": true, "withDeliveryCaller": true}
-	var factsCalls, setterCalls, keyUses int
+	deliveryEntryPoints := map[string]bool{"admitPrivateSyntheticReplay": true, "admitPrivateProgressReplay": true, "operatePrivateHandoff": true}
+	callOnly := map[string]bool{"withCallerID": true, "withDeliveryCaller": true, "newWorkloadGrantFacts": true, "AuthenticatedCallerPrincipal": true}
+	var factsCalls, setterCalls, deliveryCalls, keyUses int
 	for _, parsed := range parseNonTestGoFiles(t, ".") {
 		for _, decl := range parsed.Decls {
 			enclosing := ""
+			firstParam := ""
+			params := map[string]string{}
+			var declName *ast.Ident
+			assignments := map[string]int{}
+			fromPeer := map[string]int{}
 			if function, ok := decl.(*ast.FuncDecl); ok {
 				enclosing = function.Name.Name
+				declName = function.Name
+				for _, field := range function.Type.Params.List {
+					for _, name := range field.Names {
+						params[name.Name] = types.ExprString(field.Type)
+						if firstParam == "" {
+							firstParam = name.Name
+						}
+					}
+				}
+				if function.Body != nil {
+					ast.Inspect(function.Body, func(node ast.Node) bool {
+						assign, ok := node.(*ast.AssignStmt)
+						if !ok {
+							return true
+						}
+						for i, lhs := range assign.Lhs {
+							name, ok := lhs.(*ast.Ident)
+							if !ok {
+								continue
+							}
+							assignments[name.Name]++
+							if i == 0 && len(assign.Rhs) == 1 && isSyntheticCallerFactFromPeer(assign.Rhs[0], params) {
+								fromPeer[name.Name]++
+							}
+						}
+						return true
+					})
+				}
 			}
+			// boundCaller reports whether name is a caller fact this function
+			// was handed and never reassigns, or one it built only from its
+			// authenticated peer with newSyntheticCallerFact(peer.String()).
+			boundCaller := func(name string) bool {
+				if params[name] == "syntheticCallerFact" {
+					return assignments[name] == 0
+				}
+				return fromPeer[name] > 0 && fromPeer[name] == assignments[name]
+			}
+			callFuns := map[*ast.Ident]bool{}
 			ast.Inspect(decl, func(node ast.Node) bool {
 				switch node := node.(type) {
 				case *ast.Ident:
@@ -973,9 +1024,15 @@ func TestTheGrantCallerHasOneWayIntoAContextAndOneWayOut(t *testing.T) {
 							t.Errorf("%s uses the grant caller's context key", enclosing)
 						}
 					}
+					if callOnly[node.Name] && !callFuns[node] && node != declName {
+						t.Errorf("%s uses %s as a value", enclosing, node.Name)
+					}
 				case *ast.KeyValueExpr:
-					if key, ok := node.Key.(*ast.Ident); ok && key.Name == "callerPrincipal" && enclosing != "newWorkloadGrantFacts" {
-						t.Errorf("%s sets a grant facts caller", enclosing)
+					if key, ok := node.Key.(*ast.Ident); ok && key.Name == "callerPrincipal" {
+						value, ok := node.Value.(*ast.Ident)
+						if enclosing != "newWorkloadGrantFacts" || !ok || value.Name != firstParam {
+							t.Errorf("%s sets a grant facts caller other than newWorkloadGrantFacts' own parameter", enclosing)
+						}
 					}
 				case *ast.AssignStmt:
 					for _, lhs := range node.Lhs {
@@ -988,6 +1045,7 @@ func TestTheGrantCallerHasOneWayIntoAContextAndOneWayOut(t *testing.T) {
 					switch fun := node.Fun.(type) {
 					case *ast.Ident:
 						name = fun.Name
+						callFuns[fun] = true
 					case *ast.SelectorExpr:
 						name = fun.Sel.Name
 					}
@@ -996,6 +1054,19 @@ func TestTheGrantCallerHasOneWayIntoAContextAndOneWayOut(t *testing.T) {
 						setterCalls++
 						if !allowedSetter[enclosing] {
 							t.Errorf("%s puts a grant caller on a context", enclosing)
+						}
+					case "withDeliveryCaller":
+						deliveryCalls++
+						bound := false
+						if deliveryEntryPoints[enclosing] && len(node.Args) == 2 {
+							if selector, ok := node.Args[1].(*ast.SelectorExpr); ok && selector.Sel.Name == "canonicalURI" {
+								if fact, ok := selector.X.(*ast.Ident); ok {
+									bound = boundCaller(fact.Name)
+								}
+							}
+						}
+						if !bound {
+							t.Errorf("%s binds a delivery to a caller other than the caller fact it was handed or built from its authenticated peer", enclosing)
 						}
 					case "newWorkloadGrantFacts":
 						factsCalls++
@@ -1016,9 +1087,33 @@ func TestTheGrantCallerHasOneWayIntoAContextAndOneWayOut(t *testing.T) {
 			})
 		}
 	}
-	if factsCalls != 1 || setterCalls < 3 || keyUses < 3 {
-		t.Fatalf("control: %d calls of newWorkloadGrantFacts, %d of withCallerID, %d uses of the context key; the scan no longer reads the package", factsCalls, setterCalls, keyUses)
+	if factsCalls != 1 || setterCalls < 3 || deliveryCalls < 3 || keyUses < 3 {
+		t.Fatalf("control: %d calls of newWorkloadGrantFacts, %d of withCallerID, %d of withDeliveryCaller, %d uses of the context key; the scan no longer reads the package", factsCalls, setterCalls, deliveryCalls, keyUses)
 	}
+}
+
+// isSyntheticCallerFactFromPeer reports whether expr is
+// newSyntheticCallerFact(peer.String()) for a parameter peer of type
+// spiffeid.ID: the operational handoff's caller, which its transport
+// authenticated.
+func isSyntheticCallerFactFromPeer(expr ast.Expr, params map[string]string) bool {
+	call, ok := expr.(*ast.CallExpr)
+	if !ok || len(call.Args) != 1 {
+		return false
+	}
+	if fun, ok := call.Fun.(*ast.Ident); !ok || fun.Name != "newSyntheticCallerFact" {
+		return false
+	}
+	inner, ok := call.Args[0].(*ast.CallExpr)
+	if !ok || len(inner.Args) != 0 {
+		return false
+	}
+	selector, ok := inner.Fun.(*ast.SelectorExpr)
+	if !ok || selector.Sel.Name != "String" {
+		return false
+	}
+	peer, ok := selector.X.(*ast.Ident)
+	return ok && params[peer.Name] == "spiffeid.ID"
 }
 
 // parseNonTestGoFiles parses every non-test Go file directly in dir.
