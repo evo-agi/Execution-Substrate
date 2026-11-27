@@ -3,6 +3,7 @@ package app_test
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -60,6 +61,34 @@ func loadRevocationRunbookPrograms(t *testing.T) revocationRunbookPrograms {
 		if block[1] != revocationRunbookCommands[i] {
 			t.Fatalf("runbook Python block %d starts with\n%s\nwant\n%s\nUpdate this test with the runbook.", i+1, block[1], revocationRunbookCommands[i])
 		}
+	}
+	// A program in another style (another fence language, another heredoc
+	// word, python3 -c) is not cut out above. Every command line of a code
+	// block that names Python has to be one of the three above, so such a
+	// program fails here instead of going untested. The lines of a heredoc
+	// are the program, not command lines.
+	var pythonLines []string
+	inBlock, heredocEnd := false, ""
+	heredoc := regexp.MustCompile(`<<-?\s*['"]?(\w+)['"]?\s*$`)
+	for _, line := range strings.Split(string(raw), "\n") {
+		switch {
+		case heredocEnd != "":
+			if strings.TrimSpace(line) == heredocEnd {
+				heredocEnd = ""
+			}
+		case strings.HasPrefix(strings.TrimSpace(line), "```"):
+			inBlock = !inBlock
+		case inBlock:
+			if strings.Contains(strings.ToLower(line), "python") {
+				pythonLines = append(pythonLines, line)
+			}
+			if m := heredoc.FindStringSubmatch(line); m != nil {
+				heredocEnd = m[1]
+			}
+		}
+	}
+	if !reflect.DeepEqual(pythonLines, revocationRunbookCommands[:]) {
+		t.Fatalf("the runbook's code blocks name Python on these lines:\n%s\nwant exactly the three command lines\n%s\nUpdate this test with the runbook.", strings.Join(pythonLines, "\n"), strings.Join(revocationRunbookCommands[:], "\n"))
 	}
 	return revocationRunbookPrograms{step1: blocks[0][2] + "\n", step2: blocks[1][2] + "\n", check: blocks[2][2] + "\n"}
 }
@@ -582,17 +611,21 @@ func TestRevocationRunbookStep2KeepsItsPromises(t *testing.T) {
 		}
 	})
 
-	t.Run("every other field is kept", func(t *testing.T) {
+	t.Run("add puts the entry at the end, in two-space indentation, and keeps every other field", func(t *testing.T) {
 		t.Parallel()
-		path := rig.write(t, rig.doc(runbookLists([]any{}, []any{runbookDigestB})))
+		// rig.write indents with four spaces, so the rewrite shows.
+		path := rig.write(t, rig.doc(runbookLists([]any{"k2"}, []any{runbookDigestB})))
 		before, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatalf("read config: %v", err)
 		}
-		rig.step2(t, path, step2Run{action: "add", kind: "artifact", value: runbookDigestA, wantOutput: "added"})
+		rig.step2(t, path, step2Run{action: "add", kind: "artifact", value: runbookDigestA, wantOutput: "added", wantLists: runbookRevoked([]any{"k2"}, []any{runbookDigestB, runbookDigestA})})
 		after, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatalf("read config: %v", err)
+		}
+		if text := string(after); !strings.HasPrefix(text, "{\n  \"") || !strings.HasSuffix(text, "\n}\n") {
+			t.Fatalf("step 2 did not rewrite the file with two-space indentation and one final line break:\n%s", text)
 		}
 		var docBefore, docAfter map[string]any
 		if err := json.Unmarshal(before, &docBefore); err != nil {
@@ -605,6 +638,7 @@ func TestRevocationRunbookStep2KeepsItsPromises(t *testing.T) {
 		if !reflect.DeepEqual(docBefore, docAfter) {
 			t.Fatalf("step 2 changed a field other than the list:\nbefore %v\nafter  %v", docBefore, docAfter)
 		}
+		rig.step2(t, path, step2Run{action: "add", kind: "signer", value: "k1", wantOutput: "added", wantLists: runbookRevoked([]any{"k2", "k1"}, []any{runbookDigestB, runbookDigestA})})
 	})
 
 	t.Run("a symbolic link is refused", func(t *testing.T) {
@@ -623,6 +657,101 @@ func TestRevocationRunbookStep2KeepsItsPromises(t *testing.T) {
 			t.Fatalf("step 2 changed the file behind a symbolic link")
 		}
 	})
+}
+
+// TestRevocationRunbookStep2KeepsAnotherOwner starts from a file whose owner
+// and group differ from those of a file step 2 creates, so keeping them takes
+// step 2's chown. In the other runs of step 2 they are the same, and only the
+// mode is shown.
+func TestRevocationRunbookStep2KeepsAnotherOwner(t *testing.T) {
+	t.Parallel()
+	uid, gid := -1, -1
+	if os.Geteuid() == 0 {
+		// root can give the file any owner.
+		uid, gid = 1234, 5678
+	} else {
+		groups, err := os.Getgroups()
+		if err != nil {
+			t.Fatalf("groups: %v", err)
+		}
+		for _, group := range groups {
+			if group != os.Getegid() {
+				gid = group
+				break
+			}
+		}
+		if gid < 0 {
+			// The CI test gate fails on a test that skips itself unless the
+			// list of environment-only tests names it.
+			t.Skip("not root and no second group: a file step 2 creates would have the config's owner and group, so keeping them shows nothing")
+		}
+	}
+	rig := newRevocationRunbookRig(t)
+	path := rig.write(t, rig.doc(runbookLists([]any{}, []any{})))
+	if err := os.Chown(path, uid, gid); err != nil {
+		t.Fatalf("chown config: %v", err)
+	}
+	before := stateOf(t, path)
+	if (uid >= 0 && before.uid != uint32(uid)) || before.gid != uint32(gid) {
+		t.Fatalf("setup: config is %d:%d, want %d:%d", before.uid, before.gid, uid, gid)
+	}
+	// rig.step2 fails when the owner, group or mode changed.
+	rig.step2(t, path, step2Run{action: "add", kind: "artifact", value: runbookDigestA, wantOutput: "added; the file keeps its owner and mode", wantLists: runbookRevoked([]any{}, []any{runbookDigestA})})
+	rig.step2(t, path, step2Run{action: "remove", kind: "artifact", value: runbookDigestA, wantOutput: "the file keeps its owner and mode", wantLists: runbookRevoked([]any{}, []any{})})
+}
+
+// TestRevocationRunbookSpaceIsWhatGoTrims requires the white space that step 2
+// and the check trim (their SPACE) to be exactly what strings.TrimSpace trims,
+// the function EGS trims revoked entries with. A character missing would make
+// remove miss an entry EGS matches; an extra one would make drop-invalid trim
+// an entry EGS keeps as a value of its own.
+func TestRevocationRunbookSpaceIsWhatGoTrims(t *testing.T) {
+	t.Parallel()
+	rig := newRevocationRunbookRig(t)
+	want := map[rune]bool{}
+	for r := rune(0); r <= 0x10FFFF; r++ {
+		if r >= 0xD800 && r <= 0xDFFF {
+			continue
+		}
+		if strings.TrimSpace(string(r)) == "" {
+			want[r] = true
+		}
+	}
+	assignment := regexp.MustCompile(`(?m)^SPACE = (".*")$`)
+	for _, program := range []struct{ name, text string }{{"step 2", rig.programs.step2}, {"the check", rig.programs.check}} {
+		found := assignment.FindAllStringSubmatch(program.text, -1)
+		if len(found) != 1 || strings.Count(program.text, "SPACE =") != 1 {
+			t.Fatalf("%s: %d SPACE assignments on a line of their own, want exactly one assignment", program.name, len(found))
+		}
+		cmd := exec.Command(rig.python, "-I", "-c", "import ast, json, sys; print(json.dumps([ord(c) for c in ast.literal_eval(sys.argv[1])]))", found[0][1])
+		cmd.Dir = t.TempDir()
+		output, err := cmd.Output()
+		if err != nil {
+			t.Fatalf("%s: decode SPACE: %v", program.name, err)
+		}
+		var points []rune
+		if err := json.Unmarshal(output, &points); err != nil {
+			t.Fatalf("%s: decode SPACE: %v", program.name, err)
+		}
+		got := map[rune]bool{}
+		for _, point := range points {
+			got[point] = true
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("%s: SPACE is not what strings.TrimSpace trims: missing %s, extra %s", program.name, runeSetDifference(want, got), runeSetDifference(got, want))
+		}
+	}
+}
+
+// runeSetDifference lists, in order, the code points in a and not in b.
+func runeSetDifference(a, b map[rune]bool) string {
+	var out []string
+	for r := rune(0); r <= 0x10FFFF; r++ {
+		if a[r] && !b[r] {
+			out = append(out, fmt.Sprintf("%U", r))
+		}
+	}
+	return "[" + strings.Join(out, " ") + "]"
 }
 
 func TestRevocationRunbookStep1PrintsOnlyTheLists(t *testing.T) {
@@ -668,10 +797,6 @@ type checkCaseEGS int
 const (
 	egsStarts checkCaseEGS = iota
 	egsRefuses
-	// egsEither is for an upper-case digest: EGS accepts one until it learns
-	// to refuse it, and TestRevocationRunbookNoteOnUpperCaseDigestsMatchesEGS
-	// ties the runbook to whichever it does.
-	egsEither
 )
 
 func TestRevocationRunbookCheckReportsTheListProblems(t *testing.T) {
@@ -693,7 +818,7 @@ func TestRevocationRunbookCheckReportsTheListProblems(t *testing.T) {
 		{"duplicate with spaces", runbookLists([]any{"k1", " k1"}, []any{}), []string{"revoked_signers: duplicate: ' k1'", "check finished"}, 0, egsRefuses},
 		{"duplicate with an ideographic space", runbookLists([]any{"\u3000k1", "k1"}, []any{}), []string{"revoked_signers: duplicate: 'k1'", "check finished"}, 0, egsRefuses},
 		{"empty and non-string entries", runbookLists([]any{"", 5, nil}, []any{}), []string{"revoked_signers: empty entry: ''", "revoked_signers: not a string: 5", "revoked_signers: not a string: None", "check finished"}, 0, egsRefuses},
-		{"upper-case digest", runbookLists([]any{}, []any{upper}), []string{"revoked_artifacts: not sha256: and 64 lowercase hex characters: '" + upper + "'", "check finished"}, 0, egsEither},
+		{"upper-case digest", runbookLists([]any{}, []any{upper}), []string{"revoked_artifacts: not sha256: and 64 lowercase hex characters: '" + upper + "'", "check finished"}, 0, egsRefuses},
 		{"digest with a trailing line break", runbookLists([]any{}, []any{runbookDigestA + "\n"}), []string{"revoked_artifacts: not sha256: and 64 lowercase hex characters: '" + runbookDigestA + `\n'`, "check finished"}, 0, egsRefuses},
 		{"key ID ending in U+001C", runbookLists([]any{"k1", "k1\u001c"}, []any{}), []string{"check finished"}, 0, egsStarts},
 		{"key ID of U+001F alone", runbookLists([]any{"\u001f"}, []any{}), []string{"check finished"}, 0, egsStarts},
@@ -706,6 +831,8 @@ func TestRevocationRunbookCheckReportsTheListProblems(t *testing.T) {
 		{"file that is an array", rawFile("[1, 2]"), []string{"the file is not a JSON object"}, 1, egsRefuses},
 		{"duplicate allowed signer", runbookAllowed(runbookAGSKeyID, runbookAGSKeyID), []string{"allowed_signers: duplicate: '" + runbookAGSKeyID + "'", "check finished"}, 0, egsRefuses},
 		{"unknown field", map[string]any{"signer_policy": map[string]any{"allowed_signers": []any{runbookAGSKeyID}, "revoked_signers": []any{}}, "artifact_policy": map[string]any{"revoked_artifacts": []any{}}, "extra": 1}, []string{"unknown field in runtime_trust: extra", "check finished"}, 0, egsRefuses},
+		{"unknown field in signer_policy", map[string]any{"signer_policy": map[string]any{"allowed_signers": []any{runbookAGSKeyID}, "revoked_signers": []any{}, "extra": 1}, "artifact_policy": map[string]any{"revoked_artifacts": []any{}}}, []string{"unknown field in runtime_trust.signer_policy: extra", "check finished"}, 0, egsRefuses},
+		{"unknown field in artifact_policy", map[string]any{"signer_policy": map[string]any{"allowed_signers": []any{runbookAGSKeyID}, "revoked_signers": []any{}}, "artifact_policy": map[string]any{"revoked_artifacts": []any{}, "extra": 1}}, []string{"unknown field in runtime_trust.artifact_policy: extra", "check finished"}, 0, egsRefuses},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
