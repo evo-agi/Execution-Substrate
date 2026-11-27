@@ -21,6 +21,7 @@ import (
 	"encoding/asn1"
 	"errors"
 	"fmt"
+	"io"
 	"math/big"
 	"net"
 	"net/http"
@@ -423,11 +424,11 @@ func Serve(t testing.TB, handler http.Handler, method, target, body string, stat
 
 // ServeConnection sends one request to handler over a TLS connection on which
 // the client presented credential, or no certificate when credential is nil,
-// and returns the response. The request reaches handler as a service's server
-// hands it over when it sets callerauth.ConnContext as its ConnContext hook:
-// its context carries the connection, and r.TLS holds the connection's
-// state, as Go's TLS server records it. A handler panic fails the test, and
-// so does a handshake the server refuses.
+// and returns the response. The request reaches handler as ES's server hands
+// it over: the server accepts connections through callerauth.NewListener and
+// sets callerauth.ConnContext as its ConnContext hook, so the request's
+// context carries the connection and r.TLS is nil. A handler panic fails the
+// test, and so does a handshake the server refuses.
 func ServeConnection(t testing.TB, handler http.Handler, method, target, body string, credential *Credential) *httptest.ResponseRecorder {
 	t.Helper()
 	conn, err := connect(credential, tls.VerifyClientCertIfGiven)
@@ -440,10 +441,11 @@ func ServeConnection(t testing.TB, handler http.Handler, method, target, body st
 // ConnectionContext returns ctx as a service's server hands it to every
 // request of a TLS connection on which the client presented credential: it
 // completes a real TLS handshake in memory, in which the server trusts the
-// credential's CA and verifies the client's chain, and passes the server
-// side to callerauth.ConnContext, as http.Server does with its ConnContext
-// hook. With a nil credential the client presents no certificate, so the
-// connection has no verified chain.
+// credential's CA and verifies the client's chain, on a connection accepted
+// through callerauth.NewListener, and passes that connection to
+// callerauth.ConnContext, as http.Server does with its ConnContext hook. With
+// a nil credential the client presents no certificate, so the connection has
+// no verified chain.
 func ConnectionContext(ctx context.Context, credential *Credential) (context.Context, error) {
 	conn, err := connect(credential, tls.VerifyClientCertIfGiven)
 	if err != nil {
@@ -487,12 +489,12 @@ func newRequest(method, target, body string) *http.Request {
 	return request
 }
 
-// requestOn returns a request that arrived on conn, as Go's TLS server hands
-// it to a handler whose server sets callerauth.ConnContext.
-func requestOn(conn *tls.Conn, method, target, body string) *http.Request {
+// requestOn returns a request that arrived on conn, as Go's HTTP server
+// hands it to a handler whose server accepts connections through
+// callerauth.NewListener and sets callerauth.ConnContext: r.TLS is nil.
+func requestOn(conn net.Conn, method, target, body string) *http.Request {
 	request := newRequest(method, target, body)
-	state := conn.ConnectionState()
-	request.TLS = &state
+	request.TLS = nil
 	return request.WithContext(callerauth.ConnContext(request.Context(), conn))
 }
 
@@ -514,13 +516,13 @@ func serve(t testing.TB, handler http.Handler, request *http.Request) *httptest.
 // presents.
 const serverName = "server.callerauthtest"
 
-// connect completes a TLS handshake over an in-memory pipe, as a service's
-// TLS listener does for a client that presents credential, and returns the
-// server side of the connection. The server asks for a client certificate
-// with clientAuth, trusts only the credential's CA, and verifies the chain at
-// a time when the leaf and its CA are both valid. With a nil credential the
-// client presents no certificate.
-func connect(credential *Credential, clientAuth tls.ClientAuthType) (*tls.Conn, error) {
+// connect completes a TLS handshake over an in-memory pipe, on a connection
+// that callerauth.NewListener accepted as ES's listener does, for a client
+// that presents credential, and returns that server-side connection. The
+// server asks for a client certificate with clientAuth, trusts only the
+// credential's CA, and verifies the chain at a time when the leaf and its CA
+// are both valid. With a nil credential the client presents no certificate.
+func connect(credential *Credential, clientAuth tls.ClientAuthType) (net.Conn, error) {
 	serverPublic, serverPrivate, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		return nil, err
@@ -570,11 +572,26 @@ func connect(credential *Credential, clientAuth tls.ClientAuthType) (*tls.Conn, 
 	if err := clientSide.SetDeadline(deadline); err != nil {
 		return nil, err
 	}
-	server := tls.Server(serverSide, serverConfig)
+	listener, err := callerauth.NewListener(&pipeListener{conn: serverSide}, serverConfig)
+	if err != nil {
+		return nil, err
+	}
+	server, err := listener.Accept()
+	if err != nil {
+		return nil, err
+	}
 	client := tls.Client(clientSide, clientConfig)
 	clientDone := make(chan error, 1)
-	go func() { clientDone <- client.Handshake() }()
-	serverErr := server.Handshake()
+	go func() {
+		err := client.Handshake()
+		if err == nil {
+			_, err = client.Write([]byte{0})
+		}
+		clientDone <- err
+	}()
+	// The server's handshake runs inside the connection's first read, as it
+	// does when Go's HTTP server reads the first request.
+	_, serverErr := io.ReadFull(server, make([]byte, 1))
 	if serverErr != nil {
 		clientSide.Close()
 	}
@@ -590,6 +607,28 @@ func connect(credential *Credential, clientAuth tls.ClientAuthType) (*tls.Conn, 
 	}
 	return server, nil
 }
+
+// pipeListener accepts its one connection once.
+type pipeListener struct {
+	conn net.Conn
+}
+
+func (l *pipeListener) Accept() (net.Conn, error) {
+	if l.conn == nil {
+		return nil, net.ErrClosed
+	}
+	conn := l.conn
+	l.conn = nil
+	return conn, nil
+}
+
+func (l *pipeListener) Close() error   { return nil }
+func (l *pipeListener) Addr() net.Addr { return pipeAddr{} }
+
+type pipeAddr struct{}
+
+func (pipeAddr) Network() string { return "pipe" }
+func (pipeAddr) String() string  { return "pipe" }
 
 // CheckRoute pins the caller authentication rule at one route. reached
 // returns how many requests have gone past authentication into the

@@ -44,9 +44,10 @@ func New(cfg config.Config) (*App, error) {
 	}
 
 	server := api.NewServer(service, cfg.Security.BootstrapIssuerCommonName, cfg.Authorization.AllowedSPIFFEPathPrefixes, app.Started)
-	// ConnContext keeps each TLS connection the server accepts with that
-	// connection's requests, where the API's AuthenticateConnection reads the
-	// caller from it: ES never reads its caller from the request.
+	// ConnContext keeps each connection the server accepts through
+	// callerauth.NewListener (Start) with that connection's requests, where
+	// the API's AuthenticateConnection reads the caller from it: ES never
+	// reads its caller from the request.
 	app.httpServer = &http.Server{
 		Addr:         net.JoinHostPort(cfg.HTTP.BindAddress, strconv.Itoa(cfg.HTTP.Port)),
 		Handler:      server.Handler(),
@@ -89,7 +90,15 @@ func (a *App) Start(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("listen: %w", err)
 	}
 
-	tlsListener := tls.NewListener(listener, tlsConfig)
+	// Caller authentication's listener does each connection's TLS handshake
+	// and hands the connection's TLS state to no other code, so a request
+	// carries none (r.TLS is nil) and the certificates its caller is read
+	// from cannot be changed outside internal/callerauth.
+	tlsListener, err := callerauth.NewListener(listener, tlsConfig)
+	if err != nil {
+		listener.Close()
+		return "", fmt.Errorf("listen: %w", err)
+	}
 
 	a.mu.Lock()
 	a.listener = listener
