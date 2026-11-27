@@ -731,6 +731,27 @@ func requireRollbackRefused(t *testing.T, h *upgradeHost, backupDir string, says
 	}
 }
 
+// requireCutOffRollbackRefused fails unless rollback refuses backupDir,
+// the backup of an apply cut off before it changed the host, with a
+// refusal that says so (and says), not a traceback, and changes nothing.
+func requireCutOffRollbackRefused(t *testing.T, h *upgradeHost, backupDir, says string) {
+	t.Helper()
+	before, files := h.snapshot(), backupFiles(t, h)
+	h.clearCalls()
+	_, stderr, code := h.run("rollback", "--backup-dir", backupDir)
+	if code != 1 || strings.Contains(stderr, "Traceback") ||
+		!strings.Contains(stderr, "remote alpha ES upgrade refused: "+backupDir+says) ||
+		!strings.Contains(stderr, "the backup's apply stopped before it changed the host, so there is nothing to put back") ||
+		!strings.Contains(stderr, "; nothing was changed") {
+		t.Fatalf("rollback exited %d: %s", code, stderr)
+	}
+	onlyReads(t, h, "a refused rollback")
+	assertRestored(t, before, h.snapshot())
+	if after := backupFiles(t, h); fmt.Sprint(after) != fmt.Sprint(files) {
+		t.Fatalf("a refused rollback changed the backups: %q -> %q", files, after)
+	}
+}
+
 // requireRollback fails unless rollback puts backupDir back, having
 // recorded it there before ES stopped: what each installed binary was
 // (installed), the commits it moved ES from and to, and who ran it.
@@ -952,24 +973,89 @@ m.write_new_file = _cut`
 		requireRollbackRefused(t, h, cutOff)
 	})
 
-	// The same finding: earlier.json is renamed into place and its folder is
-	// synced right after, before apply changes the host. Without that sync a
-	// power cut could leave the backup of an apply that went through
-	// without earlier.json, and the order rule skips such a folder.
-	t.Run("earlier.json is renamed into place and its folder synced", func(t *testing.T) {
+	// Re-check 49 of #67 (Sonnet's O67-3, Opus's O67-4): an apply cut off
+	// while it wrote created.json, or before it wrote the backup's
+	// manifest.json, leaves a folder the order rule skips, so the older
+	// backup is put back. The cut-off folder's own rollback was a Python
+	// traceback; it is now refused, saying that its apply stopped before it
+	// changed the host.
+	for _, cut := range []struct {
+		name, patch, says string
+	}{
+		{"while it wrote created.json", `_write = m.write_new_file
+def _cut(path, text):
+    if path.endswith("/created.json"):
+        _write(path, text[:len(text) // 2])
+        raise OSError(28, "No space left on device")
+    return _write(path, text)
+m.write_new_file = _cut`, "/created.json cannot be read ("},
+		{"before it wrote created.json", `_write = m.write_new_file
+def _cut(path, text):
+    if path.endswith("/created.json"):
+        raise OSError(28, "No space left on device")
+    return _write(path, text)
+m.write_new_file = _cut`, "/created.json is missing: "},
+		{"before it wrote manifest.json", `_files = m.backup_files
+def _cut(backup_dir, paths):
+    _files(backup_dir, paths)
+    os.remove(os.path.join(backup_dir, "manifest.json"))
+    raise OSError(28, "No space left on device")
+m.backup_files = _cut`, "/manifest.json is missing: "},
+	} {
+		t.Run("an older backup after an apply cut off "+cut.name, func(t *testing.T) {
+			h, before, first := applied(t)
+			afterFirst := h.snapshot()
+			h.payload, h.commit = secondPayload(t, h, newerESCommit), newerESCommit
+			if _, stderr, code := runWithPatchedUpgrade(h, "import os\n"+cut.patch, "apply", "--payload", h.payload, "--commit", h.commit); code != 1 ||
+				!strings.Contains(stderr, "No space left on device") {
+				t.Fatalf("the cut-off apply exited %d: %s", code, stderr)
+			}
+			assertRestored(t, afterFirst, h.snapshot())
+			var cutOff string
+			for _, dir := range backupDirs(t, h) {
+				if dir != first {
+					cutOff = dir
+				}
+			}
+			if cutOff == "" || len(backupDirs(t, h)) != 2 {
+				t.Fatalf("backups %v", backupDirs(t, h))
+			}
+			if _, err := os.Lstat(filepath.Join(cutOff, "earlier.json")); !os.IsNotExist(err) {
+				t.Fatalf("the cut-off backup has an earlier.json: %v", err)
+			}
+			// Refused while the host is as the cut-off apply left it, and
+			// after the older backup is back.
+			requireCutOffRollbackRefused(t, h, cutOff, cut.says)
+			requireRollback(t, h, first, [2]string{staged, staged}, named, box)
+			assertRestored(t, before, h.snapshot())
+			requireCutOffRollbackRefused(t, h, cutOff, cut.says)
+		})
+	}
+
+	// The same finding: earlier.json's data is synced before it is renamed
+	// into place (re-check 49 of #67, N67-6 and S67-2), and its folder is
+	// synced right after, before apply changes the host. Without the first,
+	// a power cut could leave an empty or short earlier.json, which blocks
+	// every older rollback; without the second, the backup of an apply that
+	// went through without earlier.json, and the order rule skips such a
+	// folder.
+	t.Run("earlier.json is synced, renamed into place and its folder synced", func(t *testing.T) {
 		h := newUpgradeHost(t, helper)
 		events := filepath.Join(h.state, "renames-and-syncs.json")
 		record := fmt.Sprintf(`import atexit, json, os, stat
 _events = []
 _rename, _fsync = os.rename, os.fsync
 def _renamed(src, dst, *args, **kwargs):
+    file = os.lstat(src).st_ino
     _rename(src, dst, *args, **kwargs)
-    _events.append({"renamed": dst, "folder": os.stat(os.path.dirname(dst)).st_ino})
+    _events.append({"renamed": dst, "file": file, "folder": os.stat(os.path.dirname(dst)).st_ino})
 def _synced(fd):
     _fsync(fd)
     st = os.fstat(fd)
     if stat.S_ISDIR(st.st_mode):
         _events.append({"synced folder": st.st_ino})
+    elif stat.S_ISREG(st.st_mode):
+        _events.append({"synced file": st.st_ino})
 os.rename, os.fsync = _renamed, _synced
 atexit.register(lambda: open(%q, "w").write(json.dumps(_events)))`, events)
 		if stdout, stderr, code := runWithPatchedUpgrade(h, record, "apply", "--payload", h.payload, "--commit", h.commit); code != 0 {
@@ -987,6 +1073,9 @@ atexit.register(lambda: open(%q, "w").write(json.dumps(_events)))`, events)
 		for i, event := range seen {
 			if event["renamed"] != filepath.Join(backupDir, "earlier.json") {
 				continue
+			}
+			if !slices.ContainsFunc(seen[:i], func(e map[string]any) bool { return e["synced file"] == event["file"] }) {
+				t.Fatalf("the temporary earlier.json (inode %v) was renamed without a sync of its data first: %v", event["file"], seen[:i+1])
 			}
 			if i+1 == len(seen) || seen[i+1]["synced folder"] == nil || seen[i+1]["synced folder"] != event["folder"] {
 				t.Fatalf("the rename to earlier.json is not followed by a sync of its folder: %v", seen[i:])

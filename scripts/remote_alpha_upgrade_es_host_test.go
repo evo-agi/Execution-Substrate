@@ -1312,6 +1312,19 @@ func TestRemoteAlphaUpgradeESCheckChangesNothing(t *testing.T) {
 	}
 }
 
+// Re-check 49: nomad.env is optional for Nomad's unit ("-"), so a host
+// without it is not refused.
+func TestRemoteAlphaUpgradeESTakesAHostWithoutNomadEnv(t *testing.T) {
+	h := newUpgradeHost(t, buildESConfigCheck(t))
+	if err := os.Remove(h.path("etc/nomad.d/nomad.env")); err != nil {
+		t.Fatal(err)
+	}
+	report, stderr, code := h.check()
+	if code != 0 || report["result"] != "ready" {
+		t.Fatalf("check of a host without nomad.env: exit %d, result %v, blockers %v, %s", code, report["result"], report["blockers"], stderr)
+	}
+}
+
 func TestRemoteAlphaUpgradeESCheckRefusesWhatItWasNotWrittenFor(t *testing.T) {
 	helper := buildESConfigCheck(t)
 	writeESConfig := func(h *upgradeHost, edit func(doc map[string]any)) {
@@ -1390,6 +1403,21 @@ func TestRemoteAlphaUpgradeESCheckRefusesWhatItWasNotWrittenFor(t *testing.T) {
 		{"Nomad would load another config", func(h *upgradeHost) {
 			h.write("etc/nomad.d/tls.hcl", "tls {}\n", 0o644)
 		}, "nomad_hcl", "would also load ['tls.hcl']"},
+		// Re-check 49: nomad.env, which Nomad's unit reads as root, as the
+		// package leaves it (another account's to write) or as a link.
+		{"nomad.env is writable by others", func(h *upgradeHost) {
+			_ = os.Chmod(h.path("etc/nomad.d/nomad.env"), 0o666)
+		}, "nomad_env", "/etc/nomad.d/nomad.env, which Nomad's unit reads as root, is not a regular root:root file without write for group or others"},
+		{"nomad.env belongs to another group", func(h *upgradeHost) {
+			giveAnotherGroup(h.t, h.path("etc/nomad.d/nomad.env"))
+		}, "nomad_env", "/etc/nomad.d/nomad.env, which Nomad's unit reads as root, is not a regular root:root file"},
+		{"nomad.env has the setuid bit", func(h *upgradeHost) {
+			_ = os.Chmod(h.path("etc/nomad.d/nomad.env"), os.ModeSetuid|0o640)
+		}, "nomad_env", "'mode': '4640'"},
+		{"nomad.env is a link", func(h *upgradeHost) {
+			_ = os.Remove(h.path("etc/nomad.d/nomad.env"))
+			_ = os.Symlink(h.path("etc/execution-substrate/ags.json"), h.path("etc/nomad.d/nomad.env"))
+		}, "nomad_env", "chown root:root and chmod go-w it"},
 		{"Nomad's data directory is group-readable", func(h *upgradeHost) {
 			_ = os.Chmod(h.path("opt/nomad/data"), 0o750)
 		}, "nomad_dirs", "/opt/nomad/data is not a root:root 0700 directory"},

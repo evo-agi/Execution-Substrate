@@ -416,12 +416,26 @@ def backup_files(backup_dir, paths):
     return manifest
 
 
+def read_backup_document(backup_dir, name, cut_off):
+    """The JSON document name in backup_dir. apply writes it before it
+    changes the host, so a missing or cut-short one is refused, saying so
+    (cut_off), not a traceback (re-check 49 of ES PR #67, O67-3)."""
+    path = os.path.join(backup_dir, name)
+    try:
+        data, _ = read_regular_file(path)
+        return json.loads(data)
+    except FileNotFoundError:
+        raise Refusal(f"{path} is missing: {cut_off}; nothing was changed") from None
+    except ValueError as exc:
+        raise Refusal(f"{path} cannot be read ({exc}): {cut_off}; nothing was changed") from None
+
+
 def load_backup(backup_dir):
     st = os.lstat(backup_dir)
     if not stat.S_ISDIR(st.st_mode) or stat.S_IMODE(st.st_mode) != 0o700 or st.st_uid != os.geteuid():
         raise Refusal("the backup directory must be a 0700 directory owned by the user running the restore")
-    data, _ = read_regular_file(os.path.join(backup_dir, BACKUP_MANIFEST))
-    manifest = json.loads(data)
+    manifest = read_backup_document(backup_dir, BACKUP_MANIFEST,
+                                    "the backup's apply stopped before it changed the host, so there is nothing to put back")
     if manifest.get("schema") != BACKUP_SCHEMA:
         raise Refusal("the backup manifest has an unknown schema")
     for entry in manifest["files"]:
@@ -508,6 +522,9 @@ ES_EXEC_START = f"argv[]={ES_BINARY} -config {ES_CONFIG} ;"
 HEALTHCHECK_ENV = "/etc/execution-substrate/healthcheck.env"
 NOMAD_DIR = "/etc/nomad.d"
 NOMAD_HCL = "/etc/nomad.d/nomad.hcl"
+# The EnvironmentFile of the package's nomad.service, which Nomad reads as
+# root; optional ("-" in the unit).
+NOMAD_ENV = "/etc/nomad.d/nomad.env"
 NOMAD_CONFIG_MODE = 0o640  # root:root, as scripts/70_linux_setup.sh writes nomad.hcl
 # Nomad runs as root, so only root may change what it reads or keeps (audit
 # INF-16). ES PR #54's upgrade made these directories root:root with these
@@ -1537,7 +1554,7 @@ def tls_dir_shape():
         return None, f"present, but not root:root {NOMAD_TLS_DIR_MODE:04o} ({owner_mode(st)})"
     acls = posix_acls(path)
     if acls:
-        return None, f"present, but has an ACL ({', '.join(acls)})"
+        return None, f"present, but has an ACL ({', '.join(acls)}; setfacl -b -k {NOMAD_TLS_DIR} removes it)"
     names = tuple(sorted(os.listdir(path)))
     if names != NOMAD_TLS_FILES:
         return None, f"present, but holds {list(names)}, not exactly {list(NOMAD_TLS_FILES)}"
@@ -1617,7 +1634,7 @@ def keyring_shape():
     if acls:
         # A default ACL there would make the setup's issuer refuse the
         # keyring it writes, after ES has stopped.
-        return None, f"{NOMAD_SERVER_DIR} has an ACL ({', '.join(acls)})"
+        return None, f"{NOMAD_SERVER_DIR} has an ACL ({', '.join(acls)}; setfacl -b -k {NOMAD_SERVER_DIR} removes it)"
     if not os.path.lexists(host(NOMAD_GOSSIP_KEYRING)):
         return "absent", "absent"
     if nomad_gossip("nomad_gossip_keyring_ok", host(NOMAD_GOSSIP_KEYRING)).returncode != 0:
@@ -1824,12 +1841,29 @@ def inspect_host(payload_dir, commit, allow_downgrade=None):
             block("nomad_hcl", "nomad.hcl is not root:root 0640")
         acls = posix_acls(host(NOMAD_HCL))
         if acls:
-            block("nomad_hcl", f"nomad.hcl has an ACL ({', '.join(acls)})")
+            block("nomad_hcl", f"nomad.hcl has an ACL ({', '.join(acls)}; setfacl -b -k {NOMAD_HCL} removes it)")
         others = other_nomad_configs()
         if others:
             block("nomad_hcl", f"Nomad would also load {others} from {NOMAD_DIR}")
     except (Refusal, OSError) as exc:
         block("nomad_hcl", str(exc))
+    # HashiCorp's package gives nomad.env to the nomad account, as it does
+    # everything in /etc/nomad.d; the setup takes it back (re-check 49 of ES
+    # PR #66, O49-2). This upgrade does not, so it refuses one that another
+    # account could change, as it refuses such a nomad.hcl.
+    try:
+        st = os.lstat(host(NOMAD_ENV))
+        if not stat.S_ISREG(st.st_mode) or not owned_by_root(st) or stat.S_IMODE(st.st_mode) & ~0o755:
+            block("nomad_env", f"{NOMAD_ENV}, which Nomad's unit reads as root, is not a regular root:root file "
+                  f"without write for group or others ({owner_mode(st)}); chown root:root and chmod go-w it")
+        else:
+            acls = posix_acls(host(NOMAD_ENV))
+            if acls:
+                block("nomad_env", f"{NOMAD_ENV} has an ACL ({', '.join(acls)}; setfacl -b -k {NOMAD_ENV} removes it)")
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        block("nomad_env", str(exc))
     for path, mode in NOMAD_DIRS:
         try:
             st = os.lstat(host(path))
@@ -1838,7 +1872,7 @@ def inspect_host(payload_dir, commit, allow_downgrade=None):
                 continue
             acls = posix_acls(host(path))
             if acls:
-                block("nomad_dirs", f"{path} has an ACL ({', '.join(acls)})")
+                block("nomad_dirs", f"{path} has an ACL ({', '.join(acls)}; setfacl -b -k {path} removes it)")
         except OSError as exc:
             block("nomad_dirs", str(exc))
 
@@ -2037,18 +2071,22 @@ def backup_host(commit, created):
     backup_dir = os.path.join(root, time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()) + "-" + commit[:12])
     backup_files(backup_dir, [host(p) for p in (ES_CONFIG, ES_BINARY, RUNTIME_SUPPORT, NOMAD_HCL)])
     write_new_file(os.path.join(backup_dir, CREATED_MANIFEST), json.dumps(list(created), indent=2) + "\n")
-    # EARLIER_BACKUPS goes last, whole or not at all (re-check 48 of ES PR
-    # #67, S1): an apply cut off before it leaves a folder the order rule
-    # skips and rollback can put back, and one that has it has
-    # CREATED_MANIFEST too. A partial EARLIER_BACKUPS would block the
-    # rollback of every other backup.
+    # EARLIER_BACKUPS comes after CREATED_MANIFEST, whole or not at all, and
+    # before cmd_apply writes MOVE_RECORD, stages the payload and changes the
+    # host (re-check 48 of ES PR #67, S1): a folder that has it has
+    # CREATED_MANIFEST too, and a partial EARLIER_BACKUPS would block the
+    # rollback of every other backup. An apply cut off before it leaves a
+    # folder the order rule skips: rollback refuses it when its
+    # BACKUP_MANIFEST or CREATED_MANIFEST is not whole, and otherwise puts
+    # back the files it found, while the host is as that apply left it.
     write_new_file_renamed(os.path.join(backup_dir, EARLIER_BACKUPS), json.dumps(earlier, indent=2) + "\n")
     return backup_dir
 
 
 def load_created(backup_dir):
-    data, _ = read_regular_file(os.path.join(backup_dir, CREATED_MANIFEST))
-    created = json.loads(data)
+    created = read_backup_document(backup_dir, CREATED_MANIFEST,
+                                   "the backup's apply stopped before it changed the host, so there is nothing to put back "
+                                   "(or an earlier version of this script, ES PR #54's, made it)")
     if not isinstance(created, list) or not set(created) <= set(CREATED_BY_APPLY):
         raise Refusal(f"the backup's {CREATED_MANIFEST} names paths that apply does not create")
     return created
@@ -2337,8 +2375,8 @@ def rollback_move(backup_dir, manifest):
 
 
 def later_backups_not_put_back(backup_dir):
-    """The problems that make backup_dir other than the newest backup still
-    in effect (audit 47, A47-1): it must be a folder of BACKUP_ROOT, and each
+    """The problems that stop a rollback of backup_dir under the order rule
+    (audit 47, A47-1): it must be a folder of BACKUP_ROOT, and each
     backup apply made while it was there (whose EARLIER_BACKUPS names it)
     must have been put back since (it holds a RESTORED_RECORD). Builds are
     reproducible, so a later apply of the same commit installs bytes equal

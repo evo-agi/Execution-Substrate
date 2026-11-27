@@ -108,8 +108,12 @@ func (h *upgradeHost) installBuilds(revision string) {
 // not match. One TLS key is enough to make a document https's.
 func TestRemoteAlphaUpgradeESConfigTargetRefusesAShapeItsDocumentDoesNotMatch(t *testing.T) {
 	h := newUpgradeHost(t, buildESConfigCheck(t))
+	// One Nomad TLS key is enough, whichever it is (re-check 49 of #67:
+	// the guard's mutant that looks only at server_name survived).
 	const probe = `def _probe(argv):
     for doc, shape in (({"nomad": {"server_name": "server.global.nomad"}}, "locked-http"),
+                       ({"nomad": {"root_ca_file": "/etc/nomad.d/tls/ca.pem"}}, "locked-http"),
+                       ({"nomad": {"server_spki_sha256": "a" * 64}}, "locked-http"),
                        ({"nomad": {"base_url": "https://127.0.0.1:4646"}}, "https")):
         try:
             m.es_config_target(doc, shape, "a" * 64)
@@ -119,7 +123,7 @@ func TestRemoteAlphaUpgradeESConfigTargetRefusesAShapeItsDocumentDoesNotMatch(t 
     return 0
 m.main = _probe`
 	stdout, stderr, code := runWithPatchedUpgrade(h, probe)
-	want := "es.json has Nomad TLS keys, but the host's shape is locked-http\n" +
+	want := strings.Repeat("es.json has Nomad TLS keys, but the host's shape is locked-http\n", 3) +
 		"es.json has no Nomad TLS keys, but the host's shape is https\n"
 	if code != 0 || stdout != want {
 		t.Fatalf("es_config_target: exit %d\nstdout %q, want %q\nstderr %s", code, stdout, want, stderr)

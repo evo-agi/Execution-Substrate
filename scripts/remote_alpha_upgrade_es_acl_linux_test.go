@@ -2,6 +2,7 @@ package scripts_test
 
 import (
 	"encoding/binary"
+	"fmt"
 	"os"
 	"strings"
 	"syscall"
@@ -52,41 +53,67 @@ func TestRemoteAlphaUpgradeESRefusesANomadFolderWithAnACL(t *testing.T) {
 			h.t.Fatal(err)
 		}
 	}
+	// Each refusal names the ACL and how to remove it (re-check 49 of #67:
+	// Sonnet's O67-5, Opus's O67-3); the upgrade, unlike the setup, does
+	// not remove it itself.
 	cases := []struct {
 		name  string
 		plant func(h *upgradeHost)
 		scope string
 		says  string
+		// keyring: run on a host that apply has moved already, so the
+		// keyring is in place (re-check 49 of #67, S67-1: the server
+		// folder's ACL was pinned only while the keyring was absent).
+		keyring bool
 	}{
 		{"Nomad's config folder has a default ACL", func(h *upgradeHost) {
 			setACL(h, "etc/nomad.d", "system.posix_acl_default")
-		}, "nomad_dirs", "/etc/nomad.d has an ACL (system.posix_acl_default)"},
+		}, "nomad_dirs", "/etc/nomad.d has an ACL (system.posix_acl_default; setfacl -b -k /etc/nomad.d removes it)", false},
 		{"Nomad's config folder has an access ACL", func(h *upgradeHost) {
 			setACL(h, "etc/nomad.d", "system.posix_acl_access")
-		}, "nomad_dirs", "/etc/nomad.d has an ACL (system.posix_acl_access)"},
+		}, "nomad_dirs", "/etc/nomad.d has an ACL (system.posix_acl_access; setfacl -b -k /etc/nomad.d removes it)", false},
 		{"Nomad's data directory has both ACLs", func(h *upgradeHost) {
 			setACL(h, "opt/nomad/data", "system.posix_acl_access")
 			setACL(h, "opt/nomad/data", "system.posix_acl_default")
-		}, "nomad_dirs", "/opt/nomad/data has an ACL (system.posix_acl_access, system.posix_acl_default)"},
+		}, "nomad_dirs", "/opt/nomad/data has an ACL (system.posix_acl_access, system.posix_acl_default; setfacl -b -k /opt/nomad/data removes it)", false},
 		{"the folder above the data directory has a default ACL", func(h *upgradeHost) {
 			setACL(h, "opt/nomad", "system.posix_acl_default")
-		}, "nomad_dirs", "/opt/nomad has an ACL (system.posix_acl_default)"},
+		}, "nomad_dirs", "/opt/nomad has an ACL (system.posix_acl_default; setfacl -b -k /opt/nomad removes it)", false},
 		{"nomad.hcl has an access ACL", func(h *upgradeHost) {
 			setACL(h, "etc/nomad.d/nomad.hcl", "system.posix_acl_access")
-		}, "nomad_hcl", "nomad.hcl has an ACL (system.posix_acl_access)"},
+		}, "nomad_hcl", "nomad.hcl has an ACL (system.posix_acl_access; setfacl -b -k /etc/nomad.d/nomad.hcl removes it)", false},
+		{"nomad.env has an access ACL", func(h *upgradeHost) {
+			setACL(h, "etc/nomad.d/nomad.env", "system.posix_acl_access")
+		}, "nomad_env", "/etc/nomad.d/nomad.env has an ACL (system.posix_acl_access; setfacl -b -k /etc/nomad.d/nomad.env removes it)", false},
 		{"Nomad's server folder has a default ACL", func(h *upgradeHost) {
 			setACL(h, "opt/nomad/data/server", "system.posix_acl_default")
-		}, "shape", "Nomad's gossip keyring: /opt/nomad/data/server has an ACL (system.posix_acl_default)"},
+		}, "shape", "Nomad's gossip keyring: /opt/nomad/data/server has an ACL (system.posix_acl_default; setfacl -b -k /opt/nomad/data/server removes it)", false},
+		{"Nomad's server folder has a default ACL, with the keyring in place", func(h *upgradeHost) {
+			setACL(h, "opt/nomad/data/server", "system.posix_acl_default")
+		}, "shape", "Nomad's gossip keyring: /opt/nomad/data/server has an ACL (system.posix_acl_default; setfacl -b -k /opt/nomad/data/server removes it)", true},
+		{"Nomad's server folder has an access ACL, with the keyring in place", func(h *upgradeHost) {
+			setACL(h, "opt/nomad/data/server", "system.posix_acl_access")
+		}, "shape", "Nomad's gossip keyring: /opt/nomad/data/server has an ACL (system.posix_acl_access; setfacl -b -k /opt/nomad/data/server removes it)", true},
 		{"Nomad's TLS directory has a default ACL", func(h *upgradeHost) {
 			h.issueTLS()
 			setACL(h, "etc/nomad.d/tls", "system.posix_acl_default")
-		}, "shape", "Nomad's TLS directory: present, but has an ACL (system.posix_acl_default)"},
+		}, "shape", "Nomad's TLS directory: present, but has an ACL (system.posix_acl_default; setfacl -b -k /etc/nomad.d/tls removes it)", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newUpgradeHost(t, helper)
+			if tc.keyring {
+				if stdout, stderr, code := h.apply(); code != 0 {
+					t.Fatalf("apply exited %d\nstdout %s\nstderr %s", code, stdout, stderr)
+				}
+				if _, err := os.Lstat(h.path(hostGossipKeyring)); err != nil {
+					t.Fatalf("no keyring after apply: %v", err)
+				}
+			}
+			backups := backupDirs(t, h)
 			tc.plant(h)
 			before := h.snapshot()
+			h.clearCalls()
 			report, stderr, code := h.check()
 			if code != 1 || !strings.Contains(stderr, "blocker(s); nothing was changed") {
 				t.Fatalf("check exited %d: %s", code, stderr)
@@ -110,8 +137,11 @@ func TestRemoteAlphaUpgradeESRefusesANomadFolderWithAnACL(t *testing.T) {
 				t.Fatalf("apply exited %d: %s", code, stderr)
 			}
 			assertRestored(t, before, h.snapshot())
-			if _, err := os.Lstat(h.path("var/backups/execution-substrate-es-upgrade")); err == nil {
-				t.Fatalf("a refused apply wrote a backup")
+			if after := backupDirs(t, h); fmt.Sprint(after) != fmt.Sprint(backups) {
+				t.Fatalf("a refused apply wrote a backup: %v -> %v", backups, after)
+			}
+			if _, err := os.Lstat(h.path("var/backups/execution-substrate-es-upgrade")); err == nil && !tc.keyring {
+				t.Fatalf("a refused apply made the backup folder")
 			}
 			onlyReads(t, h, "a refused apply")
 		})
