@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -706,8 +707,14 @@ func TestSigningKeyRotationRefuses(t *testing.T) {
 
 // TestSigningKeyRotationKeysFromOpenSSL runs apply with the openssl of the
 // machine running the test, as the box's /usr/bin/openssl runs it, and
-// checks the keys it gives with crypto/ed25519.
+// checks the keys it gives with crypto/ed25519. The rotation runs only on
+// the Linux box, whose /usr/bin/openssl is OpenSSL. The /usr/bin/openssl of
+// macOS is LibreSSL, whose genpkey has no Ed25519, so the test skips itself
+// on any other system. On Linux a missing or unfit openssl fails it.
 func TestSigningKeyRotationKeysFromOpenSSL(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the rotation runs only on the Linux box, whose /usr/bin/openssl is OpenSSL")
+	}
 	h := newRotationHost(t)
 	if err := os.Remove(h.path("usr/bin/openssl")); err != nil {
 		t.Fatal(err)
