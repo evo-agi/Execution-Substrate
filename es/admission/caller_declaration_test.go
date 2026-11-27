@@ -1,7 +1,6 @@
 package admission
 
 import (
-	"context"
 	"io"
 	"net/http"
 	"sort"
@@ -37,7 +36,9 @@ func (f preparedArtifactFixture) withEnvironmentVariables(t *testing.T, keys []s
 }
 
 // callerDeclarationHarness runs one request through Prepare and through
-// Submit against a fixture and reports what reached Nomad and staging.
+// Submit against a fixture and reports what reached Nomad and staging. The
+// caller is testGrantCaller, whom the test service's workload grants give
+// the network, so a run is refused only by the rule a test checks.
 type callerDeclarationHarness struct {
 	t       *testing.T
 	fixture preparedArtifactFixture
@@ -78,7 +79,7 @@ func (h callerDeclarationHarness) run(request PrepareRequest) callerDeclarationO
 	prepareService.nomadClient = newResolvedPlanNomadClient(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		t.Error(":prepare reached Nomad")
 	}))
-	_, outcome.prepareErr = prepareService.Prepare(context.Background(), cloneCallerDeclarationRequest(request))
+	_, outcome.prepareErr = prepareService.Prepare(testCallerContext(), cloneCallerDeclarationRequest(request))
 
 	submitService, handler, stagingRoot, resultsRoot := newService()
 	var mu sync.Mutex
@@ -92,7 +93,7 @@ func (h callerDeclarationHarness) run(request PrepareRequest) callerDeclarationO
 	}))
 	submitRequest := cloneCallerDeclarationRequest(request)
 	submitRequest.Mode = ExecutionModeAsync
-	result, submitErr := submitService.Submit(context.Background(), submitRequest)
+	result, submitErr := submitService.Submit(testCallerContext(), submitRequest)
 	outcome.submitErr = submitErr
 	outcome.submitted = result.Submitted
 	if h.mount != nil {
