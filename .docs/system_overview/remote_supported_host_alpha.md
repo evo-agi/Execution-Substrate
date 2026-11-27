@@ -7546,7 +7546,9 @@ root and that user) can change the code: every folder from `/` down to
 `scripts/` must belong to one of them and be writable by neither its group
 nor others unless it has the sticky bit, and `scripts/`,
 `scripts/internal/`, the wrapper and the helper must belong to one of them,
-be no symbolic link and be writable by neither group nor others. Only then
+be no symbolic link and be writable by neither group nor others, and the
+two folders must be folders and the two files regular files (Python runs a
+folder that holds `__main__.py`). Only then
 does it run the helper by that physical path. The helper checks the whole
 `scripts` folder again, as a second line for a start without the wrapper.
 These checks are the ES upgrade wrapper's word for word (ES PR #63), and a
