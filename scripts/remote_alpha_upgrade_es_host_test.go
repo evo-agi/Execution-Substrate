@@ -2663,6 +2663,40 @@ func TestRemoteAlphaUpgradeESRollbackKeepsANamespaceBinding(t *testing.T) {
 		restoreRefused(t, h, []string{"restore", "--backup-dir", backupDir}, "while "+h.path(agsJSON)+" would not bind user to it")
 	})
 
+	// The ags.json half of two more rules: a revoked name must not come back
+	// through a restored ags.json, and a client CA file that only the restored
+	// ags.json names must not be put back. Each is written so that only its
+	// rule can refuse: without it, restore goes ahead.
+	t.Run("a backup ags.json that puts a revoked name back", func(t *testing.T) {
+		h, _ := applied(t)
+		writeUserCA(h, string(userCAPEM))
+		// AGS's client CA file holds no user CA and ags.json binds user now and
+		// in the backup, so only the allowlist rule can refuse.
+		h.write(agsCA, string(runtimeCAPEM), 0o644)
+		h.write(agsJSON, agsConfig(true, "user/claude", "user/dana"), 0o640)
+		backupDir := backupPaths(t, h, agsJSON)
+		h.write(agsJSON, agsConfig(true, "user/dana"), 0o640) // revoke --name claude
+		restoreRefused(t, h, []string{"restore", "--backup-dir", backupDir}, "would put user/claude back into the allowlist of "+h.path(agsJSON))
+	})
+
+	t.Run("a backup that holds the client CA file only its own ags.json names", func(t *testing.T) {
+		h, _ := applied(t)
+		writeUserCA(h, string(userCAPEM))
+		h.write(agsCA, string(runtimeCAPEM), 0o644)
+		// A hand-made backup: an ags.json naming another file, and that file with
+		// the user CA in it. The file is gone now, so only the restored ags.json
+		// names it.
+		const older = "abs/path/tls/older-ags-ca.pem"
+		h.write(agsJSON, strings.Replace(agsConfig(false), "/"+agsCA, "/"+older, 1), 0o640)
+		h.write(older, string(runtimeCAPEM)+string(userCAPEM), 0o644)
+		backupDir := backupPaths(t, h, agsJSON, older)
+		h.write(agsJSON, agsConfig(false), 0o640)
+		if err := os.Remove(h.path(older)); err != nil {
+			t.Fatal(err)
+		}
+		restoreRefused(t, h, []string{"restore", "--backup-dir", backupDir}, "this backup holds "+h.path(older)+", the client CA file "+h.path(agsJSON)+" names")
+	})
+
 	t.Run("a backup that holds the client CA file through another directory name", func(t *testing.T) {
 		h, _ := applied(t)
 		writeUserCA(h, string(userCAPEM))
