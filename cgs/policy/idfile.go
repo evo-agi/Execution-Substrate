@@ -2,6 +2,7 @@ package policy
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -321,6 +322,9 @@ func validateSubject(subject Subject) error {
 	// accepts, in their only form. Any other principal could never match,
 	// so it is refused here instead of loading as dead policy.
 	if _, err := callerauth.ParseSPIFFEID(subject.Principal); err != nil {
+		if errors.Is(err, callerauth.ErrWorkloadIdentity) {
+			return fmt.Errorf("subject %s principal is a workload identity, and workload identities are never callers", subject.ID)
+		}
 		return fmt.Errorf("subject %s principal must be a conforming SPIFFE ID with a path in trust domain %s", subject.ID, callerauth.TrustDomain)
 	}
 	principalType, principalID, ok := SubjectFromSPIFFEID(subject.Principal)

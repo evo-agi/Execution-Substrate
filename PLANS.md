@@ -15,10 +15,8 @@ How this file is kept:
   [`execution_admission_and_custody.md`](.docs/standing_rules/execution_admission_and_custody.md)
   holds the Workstream C admission and custody rules, and
   [`remote_alpha_operator_routes.md`](.docs/standing_rules/remote_alpha_operator_routes.md)
-  holds the Remote Alpha operator route rules P0i to P0v. Edit a rule there, in
-  place. Two standing-rule sections are still here and are to move the same
-  way: "Current paired-root custody and acceptance scope" and "Remote Alpha
-  access contract v1 — Tranche A".
+  holds the Remote Alpha operator route rules P0i to P0v and the Remote Alpha
+  access contract v1. Edit a rule there, in place.
 - Cite this file by section heading, never by line number, because its lines
   move.
 - The dated record that used to open this file moved to
@@ -301,8 +299,8 @@ The following are useful current implementation facts and should remain visible 
   - ES does not fetch, mint, broker, store, rotate, parse, or validate Codex tokens
 - The current slice-0 operator path now targets one Linux host/VM, runs ARS/EGS/AGS/ES as containers, keeps Nomad server/client and Docker on that same host, and treats Docker host networking as temporary compatibility scaffolding rather than final control-plane network architecture.
 - The current slice-0 operator path now requires strict client-cert authentication at the hot-path TLS boundary, including `/health`, and ARS now rejects the configured bootstrap issuer on both read and write paths like the rest of the hot path.
-- ARS, AGS, EGS, CGS, and ES authenticate callers through the one shared package `internal/callerauth` (contract: `.docs/system_overview/contracts.md` section 3A). Only a verified client certificate whose chain is still within its validity period at each request, and whose leaf is an end-entity certificate with exactly one URI SAN that is a conforming SPIFFE ID in the trust domain `execution.internal`, identifies a caller; authorization stays in each service.
-- ARS, AGS, and ES check their configured path-prefix allowlists at startup and match callers against them through the one shared package `internal/callerallowlist` (same section 3A): a prefix must be a canonical SPIFFE ID path of at least two segments, and a prefix that fails the rule matches nothing.
+- ARS, AGS, EGS, CGS, and ES authenticate callers through the one shared package `internal/callerauth` (contract: `.docs/system_overview/contracts.md` section 3A). Only a verified client certificate whose chain is still within its validity period at each request, and whose leaf is an end-entity certificate with exactly one URI SAN that is a conforming SPIFFE ID in the trust domain `execution.internal` and not a workload identity, identifies a caller; authorization stays in each service.
+- ARS, AGS, and ES check their configured path-prefix allowlists at startup and match callers against them through the one shared package `internal/callerallowlist` (same section 3A): a prefix must be a canonical SPIFFE ID path of at least two segments whose first segment is not `workload` in any letter case, and a prefix that fails the rule matches nothing.
 - The current slice-0 operator path records the ES same-path staging proof at bring-up time, while slice `1A` and slice `1B` now separately prove the first bounded strong workload-identity handoff for runtime workloads.
 - The current slice-0 operator path has been functionally proved on a real Linux VM through the real ES -> Nomad -> Docker execution path, and the current supported local reference profile on this Mac is Lima `qemu` + Ubuntu 24.04 arm64 with pre-managed non-`-dev` Nomad and positive natural `cpu.totalcompute`; the previously investigated VMware/aarch64 and Lima `vz` local profiles remain unsupported on this Mac because natural `cpu.totalcompute` stays `0`.
 - The current AGS publish path now distinguishes artifact identity from payload identity: payload bytes remain content-addressed by `payload_digest`, while AGS derives `artifact_digest` from package-facing identity inputs only before registering the runtime-facing discovery record through ARS.
@@ -384,7 +382,7 @@ Target files and packages:
 - `internal/contracts/evidence/v1/`
 - `ags/publish/`
 - `es/admission/`
-- `egs/model/`
+- `egs/contract/`
 - `ars/index/`
 
 Success condition:
@@ -423,6 +421,7 @@ Target files and packages:
 - `ags/api/`
 - `ags/publish/`
 - `ars/api/`
+- `ars/contract/`
 - `ars/index/`
 - `ars/store/`
 
@@ -639,6 +638,11 @@ Current bounded decision status for Milestone 2C.1:
   user-defined API messages, CP prompt/workspace parsing, workspace archive
   decoding, binary payload inspection, or raw configured-literal/matched-
   content disclosure. Denials remain redacted.
+- The C6 workload-grant follow-up is part of Workstream F slice F1 and is
+  not yet implemented: two built-in policies read exact-match owner grants
+  from ES deployment/admin configuration, keep every absence listed for the
+  configurable-input follow-up, and cannot be turned off. Their contract is
+  section 5B of `.docs/execution_lifecycle/contracts.md`.
 - C7 is a docs/static-test-only consolidation checkpoint recorded in
   `.docs/execution_lifecycle/workstream_c7_checkpoint.md`. It records that
   Workstream A/B gates are satisfied, C0-C6 are present, Remote Alpha
@@ -677,7 +681,7 @@ Purpose:
 Target files and packages:
 
 - `egs/api/`
-- `egs/model/`
+- `egs/contract/`
 - `egs/sign/`
 - `cgs/api/`
 - `cgs/policy/`
@@ -925,6 +929,40 @@ F0 - Runtime Identity Handoff Ownership Decision:
   production readiness, production Vault readiness, or generalized remote
   deployment architecture.
 
+F1 - Named Workload Identities And Workload Grants:
+
+- F1 is the next behavior-changing Workstream F slice, approved by the project
+  owner. Its caller refusal (WI-3a) is implemented; the rest is not yet
+  implemented. The decision is section 11 of
+  `.docs/system_overview/runtime_identity_handoff.md`; the workload grants it
+  adds to C6 are section 5B of `.docs/execution_lifecycle/contracts.md`.
+- It closes two gaps that existed before F1: every workload run shared one
+  SPIFFE ID and one Vault role, so any workload could read any other
+  workload's secrets; and the publisher's signed `network_access` alone
+  decided network access.
+- Identity: one identity per named workload,
+  `spiffe://execution.internal/workload/<name>`, with its own SPIRE entry
+  (Docker label selector plus `unix:uid:0`) and its own Vault role and policy.
+  The entry that gives `spiffe://execution.internal/workload` to every root
+  process on the host is removed. ES picks the name from owner grant rules and
+  holds no SPIRE or Vault administrative access; publishers request no name.
+- Network: `network_access=true` also needs an owner grant naming an egress
+  lane. Until lanes land, the only lane is `unrestricted`, a `Temporary
+  compatibility edge` that readiness reports as
+  `workload_egress_unrestricted=true`; its removal condition is WI-4.
+- Workload identities are never callers, a run without an identity grant
+  gets no identity handoff, admission decides in names only, and runtime
+  realization alone maps names to Nomad and Docker values.
+  `workload/<name>/run/<run_id>` is reserved so per-run identities can be
+  added later without removing code.
+- Delivery, one pull request each: WI-1 docs and contracts; WI-2 network
+  grants; WI-3a caller refusal; WI-3 named identities; WI-4 egress lanes;
+  WI-5 the durable format revision, before D3 makes those formats live state.
+- F1 keeps `EXEC_WORKLOAD_IDENTITY_ENDPOINT`, the root-start helper, the Nomad
+  task user `0:0`, the fixed `10000:10000` workload user, helper-private SPIRE
+  traversal and ES's no-brokering rule. It does not mark full Workstream F
+  complete.
+
 Dependencies:
 
 - Workstream C
@@ -957,7 +995,9 @@ unrelated current EGS hardening v2 schema remains current.
 - This tranche does not claim full ES/runtime de-root.
 - The root-start runtime helper, Nomad task `User: "0:0"`, helper-private
   SPIRE traversal, broad root selector posture, and Vault/workload-zone
-  handoff remain bounded compatibility edges.
+  handoff remain bounded compatibility edges. Workstream F slice F1 removes
+  the broad root selector posture and the one shared Vault role with WI-3; it
+  keeps the other three.
 - The long-lived ES startup path keeps
   `execution.spire_workload_api_socket_path` as a config-shape and submit
   input only; runtime-helper failure to use that helper-private raw SPIRE path
@@ -1026,7 +1066,7 @@ Milestone 1 boundary posture matrix:
 | Surface | Posture | Rationale | Current evidence | Removal condition | Explicit non-claim |
 | --- | --- | --- | --- | --- | --- |
 | Nomad host client/server substrate | `blocker` | The current supported substrate still depends on a pre-managed non-dev Linux Nomad client/server. Upstream least-privilege guidance is to keep Nomad servers as narrow as feasible, but the Linux Nomad client remains a root-managed isolation boundary today and a rootless client is not the current supported/well-tested repo posture. | Supported-host qualification still requires a pre-managed non-dev Nomad baseline, `scripts/01_bringup.sh check` still treats Nomad readiness as an environment gate, and the landed ES happy paths still hand lifecycle authority to Nomad rather than replacing it. | Revisit only if a later separately documented substrate decision proves a supported client posture that does not depend on an unsupported rootless-client assumption while preserving Nomad as lifecycle authority. | Milestone 1 does not claim a rootless Nomad client or full Nomad least-privilege closeout. |
-| SPIRE raw-socket traversal and selector posture | `accepted MVP compatibility edge` | The workload-visible contract is already narrowed to `EXEC_WORKLOAD_IDENTITY_ENDPOINT`, but the helper-private raw SPIRE path and the broad root selector scope remain explicit compatibility edges rather than a finished least-privilege identity model. | Slice `1A`/`1B` proof, runtime-helper source and tests that keep the raw SPIRE path out of workload env, and the remote runtime-identity helper summary preserve the helper-private boundary. Retired existing-host migration artifacts are historical evidence only and are not current boundary proof. | Revisit only through the later runtime-boundary redesign seam after a narrower helper principal or equivalent traversal model is documented and re-proved. | Workloads do not receive the raw SPIRE Workload API socket, and this milestone does not claim final SPIRE selector least privilege. |
+| SPIRE raw-socket traversal and selector posture | `accepted MVP compatibility edge` | The workload-visible contract is already narrowed to `EXEC_WORKLOAD_IDENTITY_ENDPOINT`, but the helper-private raw SPIRE path and the broad root selector scope remain explicit compatibility edges rather than a finished least-privilege identity model. | Slice `1A`/`1B` proof, runtime-helper source and tests that keep the raw SPIRE path out of workload env, and the remote runtime-identity helper summary preserve the helper-private boundary. Retired existing-host migration artifacts are historical evidence only and are not current boundary proof. | Revisit only through the later runtime-boundary redesign seam after a narrower helper principal or equivalent traversal model is documented and re-proved. Workstream F slice F1 removes the broad root selector scope with WI-3 and keeps the helper-private raw SPIRE path. | Workloads do not receive the raw SPIRE Workload API socket, and this milestone does not claim final SPIRE selector least privilege. |
 | Vault workload-side auth / workload-zone handoff | `accepted MVP compatibility edge` | The least-privilege direction is workload-side credential acquisition without ES token brokerage. The repo preserves that handoff boundary; where Vault host posture is operator-owned, the intended direction is a dedicated unprivileged Vault service account rather than root, but Milestone 1 does not widen ES contracts into full remote Vault lifecycle authority. | Useful credential flow completion is already landed, `scripts/remote_alpha_vault_workload_auth_check.sh` records bounded host-local evidence, and the current `authority_handoff` plus `readiness_not_claimed.*` vocabulary already preserve non-brokering, workload-side auth. | Revisit only if a later documented boundary change keeps workload-side auth intact and preserves the no-token-brokerage rule. | ES does not broker Vault tokens, and Vault/readiness summaries do not by themselves prove runtime-profile readiness or governed execution proof. |
 | ES runtime helper | `accepted MVP compatibility edge` | The current helper isolates privileged runtime bootstrap from the long-lived ES service path, but it still starts from root and therefore remains a bounded compatibility edge rather than a full runtime de-root result. | Runtime-helper tests, supported-local proof, helper-death/task-fatal behavior, and the remote runtime-identity helper summary all prove the current fail-closed helper boundary. | Revisit only if a later redesign re-proves equivalent runtime identity delivery, workload launch, and result-path guarantees with a narrower startup privilege model. | Milestone 1 does not claim rootless helper startup or full ES/runtime de-root. |
 | Nomad task user | `accepted MVP compatibility edge` | The current runtime companion still needs task-start `0:0` so it can create the helper-private SPIRE boundary and exec the workload as fixed non-root `10000:10000`. | The landed happy path still uses the current job-spec model, job-spec tests preserve `User: "0:0"`, and the runtime-helper/workload-boundary tests still depend on that task-start contract. | Revisit only as part of a broader runtime-boundary redesign that re-derives helper launch, workload launch, and SPIRE/Vault handoff together. | The current posture is not non-root task launch and not rootless workload orchestration. |
@@ -1101,8 +1141,8 @@ host firewall for the box on the home network, defined in the section
 INF-01 (containers reach the home LAN), INF-13 (ES and AGS listeners open to
 the whole LAN) and INF-23 (SSH password login from everywhere, SSH on public
 IPv6) of the 2026-11-23 infrastructure audit, as a short-term bridge until
-the named workload identities, network grants and egress lanes of the
-workload-identity design land.
+the named workload identities, network grants and egress lanes of
+Workstream F slice F1 land.
 
 - Scripts: `scripts/remote_alpha_host_firewall.sh`,
   `scripts/internal/remote_alpha_host_firewall.sh` and
@@ -1129,6 +1169,11 @@ workload-identity design land.
 - Validation: rendering against a golden ruleset, real-kernel tests in
   network namespaces, a real-sshd test of the drop-in, fakes for the
   apply/confirm/rollback order, and a container probe on the box.
+- Workstream F slice F1 builds on this firewall rather than replacing it.
+  Until WI-4, the only egress lane is `unrestricted`, which is the current
+  `bridge` network under this firewall. WI-4 keeps the firewall as the second
+  wall under egress lanes: lane networks get its rules, and each workload
+  Vault role's bound CIDRs cover the lane subnets.
 
 `Bounded slice rule`: the same tranche refines the P0q workload-auth
 bootstrap helper (INF-04, INF-05, and the root-token half of INF-06):
@@ -1226,6 +1271,10 @@ separate architecture track, not a cleanup follow-on.
   helper-private SPIRE traversal, broad root selector posture, or
   Vault/workload-zone handoff must proceed only as that separately documented
   redesign track.
+- Workstream F slice F1 is the separately documented redesign for the broad
+  root selector posture and the per-workload Vault handoff. It leaves the
+  root-start runtime helper, Nomad task `User: "0:0"` and helper-private SPIRE
+  traversal unchanged.
 
 `Current invariant`: the completed branch-level milestone does not imply a
 `master` merge.
@@ -1276,193 +1325,6 @@ Those names remain a current capability-gap inventory only. Their exact
 contents, ownership, repository placement, and sequencing are reopened target
 seams, not a fixed package decomposition, global blocker, or mandatory next
 implementation sequence.
-
-### Workstream C admission and custody rules
-
-The standing Workstream C admission, material, custody, proof and
-startup-probe rules, with the outside-observer Stage A slice and the
-reliable-submit tranche status, are in
-[`.docs/standing_rules/execution_admission_and_custody.md`](.docs/standing_rules/execution_admission_and_custody.md).
-
-### Current paired-root custody and acceptance scope
-
-**Superseded CUST-1/CUST-2 gate history.** The earlier final-audit sequence
-allowed repository implementation and local validation before a running-
-deployment topology observation, then treated that observation, repaired-helper
-mounted fixtures, sequential native Linux lanes, and a fresh audit as blanket
-pre-commit gates. That pre-integration linkage is not a current local commit
-rule. The accepted predecessor tree supplied source evidence for the
-then-current-base candidate, which at that gate remained uncommitted and
-pending independent audit. That historical source gate closed with PR #8;
-its source publication did not close operating gates. Focused changed-interaction
-assessment, validation, and separately authorized commit were required there.
-C's selected native observations remain historical evidence
-for exact C source and command identities, not executions of this tree. Any
-new bounded witness must be selected for a concrete changed interaction rather
-than inferred from merge ancestry. Operational topology, key exposure,
-capacity, residence, reclamation, and publication gates remain open for their
-operational scope; none is waived by local source work. The one-time WIP
-checkpoint exception is consumed and supplies no authority here.
-
-**Current invariant — staging non-mutation and retained-output independence.**
-Result retention, publication, and read do not mutate a claimed staging root;
-result-side proof supplies no independent deletion or existing-object repair
-authority.
-
-**Bounded slice rule pending integrated review — paired-root qualification.**
-`execution.staging_root_dir` and `execution.results_root_dir` form one
-operation-local qualified root set. Lexical absolute/non-overlap validation is
-an early shape check, not physical proof. Before submit-enabled startup
-provisioning, Submit run-root claim, or current retained-result directory
-creation, new-object initialization, no-replace publication, and authenticated
-read/check, ES qualifies both configured paths component-by-component without
-symlink traversal and proves that they are neither the same backing object nor
-ancestor and descendant in either direction. Every named result operation uses
-the descriptor-held root that participated in a fresh visible-object and
-topology proof; ES does not validate one pathname and reopen an unrelated
-pathname for the operation. Pair proof is a prerequisite, not deletion or
-repair authority. Existing result directories, finals, and normalization
-evidence are validated without metadata repair or adoption.
-
-Linux binds each held descriptor to `fstat`, a complete
-`statx(AT_EMPTY_PATH)` identity including `STATX_MNT_ID`, a no-follow rewalk of
-its `/proc/self/fd` canonical presentation, and the uniquely selected record
-from a stable, at-most-8-MiB/65,536-record `/proc/self/mountinfo` acquisition.
-Mountinfo record integrity is separate from root-coordinate eligibility. Every
-bounded record retains its filesystem type, absolute component-clean
-mountpoint, parent/stack relationships, and classified root value. Ordinary
-canonical pathname roots are coordinate-eligible. An `nsfs` root with the
-source-grounded namespace-object envelope `<kind>:[<canonical decimal inode>]`
-is retained as opaque, where `<kind>` is exactly `mnt`, `net`, `uts`, `ipc`,
-`pid`, `user`, `cgroup`, or `time`; the decimal label is structurally checked
-but not numerically interpreted or given a separate ES width limit.
-`pid_for_children` and `time_for_children` are not root kinds because the
-kernel's namespace-object rendering uses their canonical `pid` and `time`
-operations. Malformed `nsfs` labels and every other non-path root class reject.
-Opaque records still count toward byte/record limits, ID and parent/cycle
-integrity, stacking, and canonical descendant-mount checks. If descriptor
-selection names an opaque record, proof refuses before device shortcuts,
-coordinate arithmetic, or any governed effect; ES never prefixes `/`, joins,
-cleans, substitutes the mountpoint for, or otherwise converts that label into
-a directory coordinate. This recognition does not make `nsfs` a supported
-configured execution-root filesystem.
-Source coordinates derive from the selected record and canonical descriptor
-presentation, never configured spelling. Equal or component-prefix
-coordinates reject; component-disjoint coordinates, including provable sibling
-bind sources, are accepted. The parser permits one unambiguous `/` top-of-tree
-self-parent terminal and parents hidden outside the process view, while
-rejecting duplicate IDs, nontrivial cycles, non-top self-parent records,
-malformed escapes, incomplete identity masks, device disagreement, unstable
-snapshots, ambiguity, and canonical descendant mounts. Darwin binds
-`F_GETPATH`, no-follow descriptor identity, `fstatfs`, and bounded `getfsstat`;
-same-FSID distinct presentations remain unprovable and reject. Neither platform
-uses OS-label branching or a fallback proof.
-
-Missing suffixes are validated intent, not canonical objects. A first absent
-component must be observed as `ENOENT`. Two missing roots under the same
-deepest existing object, or otherwise dependent on comparing unobserved names
-in one lookup context, reject; canonically disjoint existing parents may
-proceed. Startup plans without mutation, provisions one descriptor-relative
-component at a time, and reacquires the pair after every component before any
-later effect. Submit acquires after freeze and reobserves immediately before
-the exclusive staging claim. Retained reads may serve an existing bundle when
-staging or its run is absent, but never provision a missing results root and
-never turn a topology failure into Nomad fallback. Result-side operations use
-a fresh pair at each current named directory creation, new-object metadata
-initialization, temporary creation, final/record publication, and authenticated
-read/check boundary; bytes streamed through an already-held descriptor do not
-rescan topology. New unpublished result temporaries/records and newly created
-normalization evidence may receive their selected owner and mode through
-`Fchown`/`Fchmod`. Existing objects are checked without metadata mutation or
-adoption. Incomplete leaves, uncertain unpublished temporaries, and startup
-probe fixtures remain retained where exact-object cleanup ownership is
-unproved. No result pathname cleanup or whole-root reclamation is selected.
-
-The mount-archive namespace validator uses one invocation-local iterative
-compressed byte-radix ledger. Labels are substring views into retained
-normalized entry names, branching is byte-keyed, ancestry is recognized only
-at `/` boundaries, and commit follows all fallible per-entry work. It retains
-existing namespace/error precedence and the 16/64-MiB complete decompressed-
-stream budgets without adding an ES name or entry cap. Reachable PAX/GNU and
-32,768-header EOF cases exercise production probe/commit counters. The pinned
-`archive/tar` implementation's 1-MiB hidden special-file processing ceiling is
-dependency behavior, not an ES resolved-name or entry-count policy.
-
-**App-fixture migration and local revalidation scope.** The positive app
-integration stack closes its test-fixture `Temporary compatibility edge` by
-exclusively creating exactly two independent, empty execution-root directories
-before `esapp.New`. Regression coverage must prove their configured paths,
-directory type, distinct filesystem identity, current test-owner identity,
-expected mode, and emptiness. This is a fixture refinement that aligns positive
-integration paths with the dual-root `Current invariant` and active `Bounded
-slice rule`; it does not relax dual-missing rejection, pre-create a run object,
-or change production admission, provisioning, custody, or capability behavior.
-The correction is confined to the shared constructor in
-`es/app/submit_integration_test.go`; pre-edit inventory found no identical
-direct-construction defect in another app test.
-
-The corresponding external validation runner must use short, unique,
-mode-`0700` lane scratch roots under `/private/tmp` and preserve the inherited
-umask. This removes runner-created Unix-socket pathname inflation without
-changing `TestProofCodexShimAcquiresCredentialAndMutatesWorkspace` or widening
-its capability skip. Passing local app, admission, default, physical-temp, and race lanes does not
-qualify an operational deployment or turn C's historical native observations
-into integrated-source execution. Running-deployment topology, key exposure,
-capacity, residence, reclamation, publication, and claimed-architecture native
-witnesses remain operational gates. A new integrated-source bounded witness is
-selected only for a concrete changed interaction; these gates do not
-collectively become a blanket local pre-commit requirement.
-
-**CUST-2 nsfs assurance continuation.** The current continuation is a bounded
-test-assurance refinement only: it may align the explicit Linux post-freeze
-semantic-call ledger with the already documented nsfs implementation and may
-replace the proof-Codex test's caller-temp-derived Unix-socket path with a
-unique, owner-only, test-owned short physical fixture beneath `/tmp`.
-Production nsfs behavior, capability policy, lifecycle contracts, credential
-flow assertions, and all external gates remain unchanged. Allocation and
-listener failures in that required local test fail rather than masquerade as a
-capability skip. After a single freeze, validation remains ordered local
-default, local physical-temp, local race, native linux/amd64, then native
-linux/arm64. One distinct successor generation is allowed only after closing
-and preserving a causally demonstrated defect confined to the authorized test
-expectation, socket fixture, or minimal validation plumbing; at most two final
-generations may run, unchanged failures are never retried, and no earlier pass
-is credited to changed bytes. This continuation does not pass or waive the
-running-deployment observation, mounted-topology fixtures, supported-local
-consumer/operator proof, fresh independent audit, or exact-byte publication
-authority.
-
-This foundation does not select or implement canonical effective-plan
-encoding, `PlanBinding`, a complete effective-plan witness, durable material or
-replay-envelope custody, host-context replay treatment, mutable image-content
-identity, state-path configuration, TTL, public reliable-submit vocabulary,
-HTTP or recovery routes, Nomad ambiguity reconciliation, reliable dispatch,
-Coordinator integration, or cross-repository behavior. It must not synthesize
-`PrepareRequest` or `Manifest` proof from the plan, create a parallel admission
-engine, silently tighten the current empty-environment-allowlist contract, or
-infer authority-handoff inapplicability contrary to current `Submit` behavior.
-
-The `reliable-submit-durable-same-operation-replay-repair` source tranche is
-implemented inside the private durable source and remains required before
-reliable-submit config/store lifecycle wiring, producer enablement, or public
-runtime enablement. The committed private durable service now derives a
-latest-operation descriptor, recognizes the current latest committed mutation
-before stale-revision and inactive-state refusal, returns exact replay for same
-mutation plus same operation kind/input binding, returns mutation conflict for
-same-mutation/different-kind-or-binding reuse, reloads CAS losers through the
-same classification, and keeps COMMIT-unknown recovery on stricter full-record
-equality including the descriptor. SQLite schema v2 persists the descriptor for
-codec-2 rows and preserves migrated v1 rows as legacy/unbound without inventing
-operation semantics. Historical mutation retention remains out of scope, and
-the private store remains runtime-unwired, so this repair does not affect
-current public execution behavior.
-
-Reliable dispatch remains blocked until later implementation and audit. Both
-caller-to-ES response loss and ES-to-Nomad registration-response uncertainty
-are in scope for the target contract. The target must prevent duplicate
-semantic execution from transport redelivery while preserving the current
-no-key submit compatibility path, `control-plane-normal-shell/v1`, Nomad
-lifecycle authority, and the prohibition on a broad ES lifecycle store.
 
 The Coordinator current status is bounded durable SQLite mutation authority for
 coding-work state: internal durable writer issuance, private atomic transition
@@ -1516,6 +1378,14 @@ admission, runtime, lifecycle, status, route, TLS, or noninteractive-route
 authority. This planning pointer does not change ES priorities or ES route
 eligibility. Contract design may proceed only within reopened seam boundaries
 above and must not authorize autonomous execution.
+
+### Workstream C admission and custody rules
+
+The standing Workstream C admission, material, custody, proof and
+startup-probe rules, with the outside-observer Stage A slice, the
+reliable-submit tranche status and the current paired-root custody and
+acceptance scope, are in
+[`.docs/standing_rules/execution_admission_and_custody.md`](.docs/standing_rules/execution_admission_and_custody.md).
 
 ## Highest-Priority Backlog Entry
 
@@ -1624,108 +1494,7 @@ The current route rules for the Remote Alpha operator facade, P0i to P0m
 (Vault unseal and disposable reset), P0o to P0q (Vault workload-auth bootstrap)
 and P0s to P0v (TLS status, renewal and diagnostics), are in
 [`.docs/standing_rules/remote_alpha_operator_routes.md`](.docs/standing_rules/remote_alpha_operator_routes.md).
-
-### Remote Alpha access contract v1 — Tranche A
-
-`Reopened redesign seam`: ES has no implemented Remote Alpha access-profile
-validator, access-status schema, or fixed identity-only access route at this
-baseline. This tranche freezes only the ES-owned schema envelope, role and
-authority split, fail-closed safety intent, fixed identity-check boundary,
-access-status state matrix, redaction, and scheduling prohibition in
-`.docs/system_overview/remote_alpha_access_contract.md` and its repository
-contract test. It does not deliver an executable validator, route, profile
-store, key, known-hosts pin, or scheduled check. The v1 schema names are
-`es.remote-alpha.access-profile/v1` and
-`es.remote-alpha.access-status/v1`.
-
-`Reopened redesign seam`: Tranche B must first freeze the supported OpenSSH
-directive grammar, Include closure and precedence, system-configuration
-interaction, accepted local filesystem roots and modes, component symlink
-policy, agent/Keychain/certificate interpretation, and safe optional
-directives in governing documentation and fake/static contract tests before
-implementing a validator. Tranche A does not claim that any current local
-profile or operator alias conforms to that still-open static subset.
-
-`Temporary compatibility edge`: the operator-owned
-`host_to_remote_linux_m75q` alias and the existing operator routes' explicit
-`--ssh-target` arguments remain unchanged. The P0s
-`es-service-tls-status` and P0t `es-governance-tls-status` names are
-interactive status-only compatibility edges using the one dedicated
-collector; both renewal counterparts are held before contact. P0v remains a
-separate TLS-specific noninteractive status route. None is the new access
-check or an authority for its SSH profile semantics.
-
-Tranche A fixes the target separation between operator and monitor profiles,
-contact-free static validation intent, fail-closed public-key-only transport,
-a future fixed nonroot UID/account observation, safe versioned evidence, and
-`scheduled_execution_allowed=false` as a producer-owned v1 constant. The
-maintenance-monitor `monitor-eligible` classification below does not
-authorize scheduled SSH.
-Neither a local profile, `ready` evidence, MA configuration, IM readiness,
-foreground SSH success, nor the operator alias can enable it. Changing
-scheduled eligibility requires a later explicit ES/MA route decision,
-scheduled-context acceptance, a versioned contract change, separate
-implementation, host provisioning, validation, and audit.
-
-Subsequent authority decisions remain separate: B first freezes its open
-implementation-contract decisions, then implements and fake-tests the ES
-validator/check-only route; C provisions local/host access material
-under separate sensitive-effect authorization if needed; D lets Maintenance
-Agent consume evidence and only later schedule an expressly eligible route;
-E migrates Infrastructure Manager's access interpretation while preserving
-its current readiness/provenance/diagnostic ownership. No MA or IM contract is
-changed in Tranche A. Public-key SSH does not supply sudo authentication.
-Access evidence cannot repair the contained ES-to-EGS TLS certificate-validity
-failure, establish service health, or prove governed execution.
-
-The operator-authorized operator-healthcheck TLS replacement design tranche is
-also docs/static-test only. It records an ES-owned future replacement path in
-`.docs/remote_alpha_operator_healthcheck_tls_operator_authorized_replacement.md`
-with signing/custody hardening in
-`.docs/remote_alpha_operator_healthcheck_tls_signing_custody.md`
-and an IM-owned profile-lineage refresh counterpart in the Infrastructure
-Manager repo. It is not a P0v route implementation, not renewal execution, not
-Bridge or Maintenance Agent authority, not CP diagnose execution, and not
-profile mutation. It preserves `operator-healthcheck-tls-renew` as
-blocked/status-only with `unsupported_signing_topology` because signing
-authority, signer custody, key custody, CSR/cert flow, backup/rollback
-evidence, redaction, and post-check semantics remain ES unresolved stop
-conditions for the `spiffe://execution.internal/operator/local` operator
-identity.
-
-The Remote Alpha external TLS single-use incident is a `Bounded slice rule`
-recorded in
-`.docs/system_overview/remote_alpha_external_tls_one_time_incident_contract.md`.
-Report-derived evidence indicates certificate-validity failures; a future
-read-only inventory must establish the installed prior state. This is docs-only
-authority for one proof/support host, incident, and execution. It adds no
-executable route or ongoing support, and reusable P0u renewal remains blocked
-with `unsupported_signing_topology`. Its default is
-`RETIRE_BEFORE_LEAF_EXPIRY`. Inventory, private packet and rollback derivation,
-independent audit, foreground execution, any later IM handoff, and terminal
-closure remain separate; closure must remove or convert the active entry,
-authorization document, incident tests, and P0u cross-references.
-
-The Remote Alpha maintenance-monitor contract alignment slice is docs/static
-contract work only. It may codify a future Mac-side maintenance project as a
-scheduler, notifier, local-evidence summarizer, and allowlisted ES-command
-invoker, but it must not implement that project or create a new repository in
-this slice. ES keeps ownership of every Remote Alpha status, renewal, repair,
-and route-contract semantic. External schedulers may invoke only documented
-allowlisted ES commands and may not define their meaning, infer renewal
-eligibility, broaden helper scope, or become ES runtime authority, IM
-readiness/provenance authority, CP run-control authority, a hidden remote
-reconciler, or broad provisioning automation. Remote Alpha remains bounded
-proof/support posture only.
-
-Remote Alpha maintenance route eligibility is fixed for this planning slice:
-`es-service-tls-status`, `es-governance-tls-status`,
-`operator-healthcheck-tls-status`, binary deployment check, workload-auth
-check, and runtime identity summary are read-only monitor-eligible;
-`es-service-tls-renew` and `es-governance-tls-renew` are held and have no
-monitor or scheduled eligibility until a separate route-specific design, tests,
-audit, authorization, and repair contract exist;
-`operator-healthcheck-tls-renew` remains blocked/status-only until a signing
-topology and operator/local identity renewal authority are documented; binary
-deployment apply and workload-auth bootstrap are not monitor auto-renewal
-routes.
+The Remote Alpha access contract v1 (Tranche A) and its reopened access-profile
+and access-status seams, the operator-healthcheck TLS replacement design, the
+external TLS single-use incident and the maintenance-monitor route eligibility
+are there too, in the section "Remote Alpha access contract v1 — Tranche A".

@@ -19,7 +19,7 @@ import (
 	"testing"
 	"unicode"
 
-	arsapi "execution-substrate/ars/api"
+	arscontract "execution-substrate/ars/contract"
 	evidencev1 "execution-substrate/internal/contracts/evidence/v1"
 )
 
@@ -841,7 +841,7 @@ func signedWorkstreamAEvidence(t *testing.T, fixture preparedArtifactFixture, mu
 	return record
 }
 
-func discoveredArtifactWithEvidence(t *testing.T, discovery arsapi.ArtifactDiscovery, evidence evidencev1.ArtifactEvidence) discoveredArtifact {
+func discoveredArtifactWithEvidence(t *testing.T, discovery arscontract.ArtifactDiscovery, evidence evidencev1.ArtifactEvidence) discoveredArtifact {
 	t.Helper()
 
 	evidenceBytes, err := json.Marshal(evidence)
