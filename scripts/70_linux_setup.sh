@@ -549,8 +549,10 @@ install_nomad_gossip_keyring() {
 # from its creation, and a handle opened before a later chmod keeps writing.
 # An access ACL keeps entries for the account on the folder itself. Both are
 # the folder's system.posix_acl_* attributes, so removing them needs no acl
-# package, and removing the access ACL keeps the mode install -d set. Once
-# root owns the folder, no other account can set an ACL on it again. Each
+# package, and removing the access ACL keeps the mode install -d set. They
+# are removed only after install -d has made root the owner: until then the
+# former owner may set them again, and it can watch the folder for the
+# removal. Once root owns the folder, no other account can set one. Each
 # removal is reported, since only an account that owned the folder sets one;
 # the setup stops when it cannot read or remove them.
 nomad_folder_take_back() {
@@ -568,6 +570,82 @@ try:
             print(f"nomad: removed the {acl} that was left on {folder}")
 except OSError as error:
     sys.exit(f"nomad: cannot remove the ACLs of {folder}: {error}")
+PY
+}
+
+# nomad_config_files_take_back <folder>: make each file in <folder> that
+# Nomad's unit reads as root the caller's (root's, under sudo), with no write
+# for group or others and no ACL. HashiCorp's nomad.service reads nomad.env
+# as its EnvironmentFile and runs `nomad agent -config /etc/nomad.d`, which
+# loads each *.hcl and *.json there (not folders, nor an editor's ".#" lock
+# files); the package's postinst gives them all to the nomad account (chown
+# -R) on each install or upgrade. Once the folder is root's
+# (nomad_folder_take_back), no other account can add, rename or replace an
+# entry in it, but one can still write a file it owns, or through a handle it
+# opened before. So each such file is copied into a new file that is renamed
+# over the old one, which an old handle no longer reaches. Its contents are
+# kept, so Nomad's config does not change and needs no restart; each
+# take-back is reported, so that the operator can check what the file sets.
+# An entry with such a name that is neither a regular file nor a folder (a
+# link, say) stops the setup. nomad.hcl is left to nomad_config_write, which
+# writes it new. As there, Nomad does not load the temporary name, and
+# nothing is synced: a run killed part way leaves the old file or the new
+# one at the name, and a rerun takes back what is left.
+nomad_config_files_take_back() {
+  sudo python3 -I - "$1" <<'PY'
+import os
+import stat
+import sys
+
+folder = sys.argv[1]
+uid, gid = os.getuid(), os.getgid()
+try:
+    for name in sorted(os.listdir(folder)):
+        if name == "nomad.hcl" or name.startswith(".#"):
+            continue
+        if name != "nomad.env" and not name.endswith((".hcl", ".json")):
+            continue
+        path = os.path.join(folder, name)
+        st = os.lstat(path)
+        if stat.S_ISDIR(st.st_mode):
+            continue
+        if not stat.S_ISREG(st.st_mode):
+            sys.exit(f"nomad: {path} is not a regular file, and Nomad's unit reads it as root; "
+                     "remove it, or put a regular file there, and rerun")
+        mode = stat.S_IMODE(st.st_mode) & 0o755
+        attributes = os.listxattr(path)
+        acl = "system.posix_acl_access" in attributes or "system.posix_acl_default" in attributes
+        if (st.st_uid, st.st_gid) == (uid, gid) and stat.S_IMODE(st.st_mode) == mode and not acl:
+            continue
+        source = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            opened = os.fstat(source)
+            if (opened.st_dev, opened.st_ino) != (st.st_dev, st.st_ino):
+                sys.exit(f"nomad: {path} changed while it was taken back; rerun")
+            chunks = []
+            while chunk := os.read(source, 65536):
+                chunks.append(chunk)
+        finally:
+            os.close(source)
+        tmp = path + ".execution-substrate-new"
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+        target = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        try:
+            data = memoryview(b"".join(chunks))
+            while data:
+                data = data[os.write(target, data):]
+            os.fchown(target, uid, gid)
+            os.fchmod(target, mode)
+        finally:
+            os.close(target)
+        os.rename(tmp, path)
+        was = f"uid {st.st_uid}, gid {st.st_gid}, {stat.S_IMODE(st.st_mode):04o}" + (", with an ACL" if acl else "")
+        print(f"nomad: took {path} back ({was}); Nomad's unit reads it as root, so check what it sets")
+except OSError as error:
+    sys.exit(f"nomad: cannot take back the files Nomad reads in {folder}: {error}")
 PY
 }
 
@@ -596,6 +674,7 @@ install_nomad_service_config() {
   # (audit INF-16): its config directory and data directory (Raft state and
   # the keyring) are root-owned.
   nomad_folder_take_back 0755 "${NOMAD_CONFIG_DIR}"
+  nomad_config_files_take_back "${NOMAD_CONFIG_DIR}"
   nomad_folder_take_back 0700 "${NOMAD_DATA_DIR}"
   # The package leaves /etc/nomad.d to the nomad account, which can put a link
   # at the TLS folder; install -d would re-own and re-mode the link's target
@@ -612,7 +691,8 @@ install_nomad_service_config() {
   # nomad.hcl is read, and backed up, only when it is a regular file and not a
   # link; a link there is replaced by the new file without being followed.
   # The backup is copied onto its own name (-T): a link there is replaced,
-  # even one to a folder, and a folder there stops the setup.
+  # even one to a folder, and a folder there stops the setup before it
+  # records a restart or writes nomad.hcl (the folders are root's by then).
   local previous_config=""
   local config=""
   if sudo test -L "${NOMAD_CONFIG_PATH}"; then
@@ -621,7 +701,10 @@ install_nomad_service_config() {
     if ! sudo grep -Fq "${NOMAD_MANAGED_MARKER}" "${NOMAD_CONFIG_PATH}"; then
       backup_suffix="$(date +%Y%m%d%H%M%S)"
       echo "Backing up existing Nomad config to ${NOMAD_CONFIG_BACKUP_PATH}.${backup_suffix}"
-      sudo cp -T --remove-destination -- "${NOMAD_CONFIG_PATH}" "${NOMAD_CONFIG_BACKUP_PATH}.${backup_suffix}"
+      if ! sudo cp -T --remove-destination -- "${NOMAD_CONFIG_PATH}" "${NOMAD_CONFIG_BACKUP_PATH}.${backup_suffix}"; then
+        echo "nomad: could not back up ${NOMAD_CONFIG_PATH} to ${NOMAD_CONFIG_BACKUP_PATH}.${backup_suffix}; remove what is at that name and rerun" >&2
+        return 1
+      fi
     fi
     previous_config="$(sudo cat -- "${NOMAD_CONFIG_PATH}")"
   fi
