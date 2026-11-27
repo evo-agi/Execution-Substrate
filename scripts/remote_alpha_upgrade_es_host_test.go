@@ -1549,6 +1549,11 @@ func TestRemoteAlphaUpgradeESCheckRefusesWhatItWasNotWrittenFor(t *testing.T) {
 				h.t.Fatal(err)
 			}
 		}, "nomad_set_aside", "/opt/nomad/data.execution-substrate-set-aside holds what the take-back program set aside"},
+		{"a link that leads nowhere where the take-back program sets aside entries of Nomad's config folder", func(h *upgradeHost) {
+			if err := os.Symlink(h.path("var/backups/gone"), h.path("etc/nomad.d.execution-substrate-set-aside")); err != nil {
+				h.t.Fatal(err)
+			}
+		}, "nomad_set_aside", "/etc/nomad.d.execution-substrate-set-aside holds what the take-back program set aside"},
 		{"Nomad's data directory is group-readable", func(h *upgradeHost) {
 			_ = os.Chmod(h.path("opt/nomad/data"), 0o750)
 		}, "nomad_dirs", "/opt/nomad/data is not a root:root 0700 directory"},
