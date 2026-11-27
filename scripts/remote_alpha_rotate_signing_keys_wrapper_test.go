@@ -585,6 +585,13 @@ func TestSigningKeyRotationWrapperGuardMatchesTheUpgrade(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(upgrade), "exec /usr/bin/python3 -I -B -c '") {
+		// A clone check written another way must not end the comparison
+		// unnoticed (Sonnet re-audit O20-4, red-team re-check 19).
+		for _, mark := range []string{"problems_of", "S_ISVTX", "sticky_helps"} {
+			if strings.Contains(string(upgrade), mark) {
+				t.Fatalf("the ES upgrade's wrapper carries a clone check (%q) that this test cannot find: start it as the rotation's wrapper does, or teach this test its form", mark)
+			}
+		}
 		t.Logf("the ES upgrade's wrapper has no embedded clone check yet (ES PR #63); nothing to compare")
 		return
 	}
