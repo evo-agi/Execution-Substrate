@@ -175,6 +175,14 @@ skips-itself execution-substrate/scripts TestSigningKeyRotationKeepsOwnersAndGro
 # tests without root, so it skips itself. go.yml runs it as root.
 skips-itself execution-substrate/scripts TestSigningKeyRotationWrapperRefusesCodeOfAnotherOwnerAsRoot
 
+# The signing key rotation's tests of a file bound over a config or the
+# index in a service's mount namespace, and of a --host-root that is a bind
+# mount of /, make mounts, which needs root and Linux mount namespaces. The
+# macOS runner runs the tests without root, so they skip themselves. go.yml
+# runs them as root.
+skips-itself execution-substrate/scripts TestSigningKeyRotationSeesTheFilesEachServiceSeesAsRoot
+skips-itself execution-substrate/scripts TestSigningKeyRotationHostRootBoundToSlashIsTheHostAsRoot
+
 # The supported-local renderer's signing key tests source
 # scripts/72_supported_local_setup.sh, which runs on Linux; a Mac runs it in
 # its Lima guest. Both tests skip themselves on any other system. go.yml runs

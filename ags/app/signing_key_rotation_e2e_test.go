@@ -96,7 +96,10 @@ func rotationFakeOpenSSL(args []string) int {
 // The fake systemctl logs each call, says a unit is inactive between its
 // stop and its next start, and shows each unit starting its binary with
 // its config, as the box's units do. It does not touch the services: the
-// test restarts them itself after the rotation, as systemd would.
+// test restarts them itself after the rotation, as systemd would. The
+// services run in the test's process, so each unit's main process ID
+// (410<n> while it runs) has a root folder under proc/ in the state folder
+// that is a link to /: they see the host's files, as the rotation checks.
 const rotationE2ESystemctl = `#!/usr/bin/env bash
 set -u
 s=%q
@@ -107,6 +110,12 @@ case "$1" in
     for u in "$@"; do if [[ -e "$s/inactive-$u" ]]; then echo inactive; else echo active; fi; done ;;
   show)
     u=${2%%.service}
+    if [[ "${4:-}" == MainPID ]]; then
+      if [[ -e "$s/inactive-$u" ]]; then echo MainPID=0; else
+        case "$u" in ars) echo MainPID=4101 ;; egs) echo MainPID=4102 ;; ags) echo MainPID=4103 ;; es) echo MainPID=4104 ;; esac
+      fi
+      exit 0
+    fi
     echo "ExecStart={ path=/usr/local/lib/execution-substrate/bin/$u ; argv[]=/usr/local/lib/execution-substrate/bin/$u -config /etc/execution-substrate/$u.json ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }" ;;
   stop) touch "$s/inactive-$2" ;;
   start|restart) rm -f "$s/inactive-$2" ;;
@@ -308,6 +317,14 @@ func newRotationE2EHost(t *testing.T) *rotationE2EHost {
 			t.Fatal(err)
 		}
 	}
+	for _, pid := range []string{"4101", "4102", "4103", "4104"} {
+		if err := os.MkdirAll(filepath.Join(h.state, "proc", pid), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink("/", filepath.Join(h.state, "proc", pid, "root")); err != nil {
+			t.Fatal(err)
+		}
+	}
 	t.Cleanup(func() { h.stopAll() })
 	if err := h.startAll(); err != nil {
 		t.Fatalf("es start: %v", err)
@@ -323,7 +340,8 @@ func (h *rotationE2EHost) run(args ...string) (map[string]any, string, int) {
 		"SIGNING_KEY_ROTATION_TEST_SYSTEMCTL="+filepath.Join(h.bin, "systemctl"),
 		"SIGNING_KEY_ROTATION_TEST_CURL="+filepath.Join(h.bin, "curl"),
 		"SIGNING_KEY_ROTATION_TEST_OPENSSL="+filepath.Join(h.bin, "openssl"),
-		"SIGNING_KEY_ROTATION_TEST_WAIT_SECONDS=5")
+		"SIGNING_KEY_ROTATION_TEST_WAIT_SECONDS=5",
+		"SIGNING_KEY_ROTATION_TEST_PROC="+filepath.Join(h.state, "proc"))
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	code := 0

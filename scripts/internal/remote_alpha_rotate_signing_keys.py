@@ -108,6 +108,8 @@ HEALTH_WAIT_SECONDS = 60
 LISTEN_WAIT_SECONDS = 60
 OPENSSL = "/usr/bin/openssl"
 SYSTEMCTL = "/usr/bin/systemctl"
+# Where the kernel shows each process's own root folder and mounts.
+PROC = "/proc"
 CURL = "/usr/bin/curl"
 CHILD_ENV = {"PATH": "/usr/bin:/bin", "LC_ALL": "C"}
 
@@ -619,6 +621,98 @@ def exec_start_problems(unit):
     return []
 
 
+def main_pid(unit):
+    """The unit's main process ID, or None (systemd shows MainPID=0 for a
+    unit without one)."""
+    out = systemctl("show", f"{unit}.service", "-p", "MainPID")
+    for line in out.splitlines():
+        if line.startswith("MainPID="):
+            value = line[len("MainPID="):].strip()
+            if value.isascii() and value.isdigit() and int(value) > 0:
+                return int(value)
+    return None
+
+
+def stat_as_seen(pid, path):
+    """os.lstat of path as the process pid sees it: from its own root folder
+    and through its own mounts (/proc/<pid>/root), one name at a time and
+    without following a symbolic link, since a link there would be read
+    against this process's root folder, not the service's."""
+    fd = os.open(f"{program('PROC', PROC)}/{pid}/root", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        # A test host root is named by its real path: links above it are
+        # the test machine's (/var on macOS), not the service's.
+        names = [name for name in (os.path.realpath(HOST_ROOT).rstrip("/") + path).split("/") if name]
+        for i, name in enumerate(names):
+            st = os.stat(name, dir_fd=fd, follow_symlinks=False)
+            if stat.S_ISLNK(st.st_mode):
+                raise Failed(f"/{'/'.join(names[:i + 1])} is a symbolic link there")
+            if i == len(names) - 1:
+                return st
+            next_fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=fd)
+            os.close(fd)
+            fd = next_fd
+    finally:
+        os.close(fd)
+    raise Failed(f"{path} is not a file path")
+
+
+def view_problems(unit, paths, written=None):
+    """Why the unit's running process may read other files at paths than
+    the host has there (red-team RT10-4). The ExecStart rule pins the
+    command line only: a unit's own root folder or mounts (RootDirectory=,
+    RootImage=, BindPaths=, TemporaryFileSystem= and the like) can put
+    another file under the same name for that service alone, and then the
+    service keeps the key the rotation retired. So each path, as the main
+    process sees it, must be the very file the host has there: the same
+    device and inode. written maps a path to the bytes the rotation wrote:
+    the host's file must still hold them once the unit has restarted, since
+    a command that runs at the unit's start could have changed it. Each
+    path is tried three times, a restart by systemd in between taken into
+    account."""
+    problems = []
+    for path in paths:
+        problem = None
+        for attempt in range(3):
+            if attempt:
+                time.sleep(0.2)
+            try:
+                pid = main_pid(unit)
+                if pid is None:
+                    problem = f"{unit}.service has no main process, so the files it reads cannot be compared"
+                    continue
+                seen = stat_as_seen(pid, path)
+                mine = os.stat(host(path), follow_symlinks=False)
+            except (OSError, Failed, Refusal) as exc:
+                problem = f"cannot see {path} as {unit} sees it: {exc}"
+                continue
+            if (seen.st_dev, seen.st_ino) == (mine.st_dev, mine.st_ino):
+                problem = None
+                break
+            problem = (f"{unit} sees another file at {path} than the host has there: its unit gives it a root folder "
+                       f"or mounts of its own, so the rotation cannot change what it reads")
+        if problem is None and written is not None and path in written:
+            try:
+                now, _ = read_regular_file(host(path), shown=path)
+            except (Refusal, OSError) as exc:
+                now, problem = None, str(exc)
+            if now is not None and now != written[path]:
+                problem = (f"{path} no longer holds what the rotation wrote after {unit} restarted: something that "
+                           f"runs when the unit starts changed it")
+        if problem is not None:
+            problems.append(problem)
+    return problems
+
+
+def services_view_problems(index_path, written=None):
+    """view_problems for every unit's config, and for ARS also its index."""
+    problems = []
+    for unit in UNITS:
+        paths = [f"{CONFIG_DIR}/{unit}.json"] + ([index_path] if unit == "ars" and index_path else [])
+        problems += view_problems(unit, paths, written)
+    return problems
+
+
 def healthcheck_env():
     data, _ = read_regular_file(host(HEALTHCHECK_ENV), shown=HEALTHCHECK_ENV)
     env = {}
@@ -931,13 +1025,62 @@ def read_index(dir_fd, path):
 
 
 def count_records(data):
-    """How many records the index holds, or None. The count only informs:
-    the index is not parsed for anything else."""
+    """How many records the index holds, or None when it is not a JSON
+    object (ARS writes one object keyed by artifact digest)."""
     try:
         doc = json.loads(data)
     except (ValueError, RecursionError, MemoryError):
         return None
     return len(doc) if isinstance(doc, dict) else None
+
+
+def index_records(data, shown):
+    """The index as {artifact digest: record}. ARS writes it as one JSON
+    object keyed by artifact digest and never changes a record it holds."""
+    try:
+        doc = json.loads(data)
+    except (ValueError, RecursionError, MemoryError):
+        doc = None
+    if not isinstance(doc, dict):
+        raise Failed(f"{shown} is not a JSON object of records")
+    return doc
+
+
+def live_index_records(path):
+    """ARS's index as it is on disk now, read as inspect reads it."""
+    dir_fd, problems = open_index_folder(path)
+    try:
+        data, _, more = read_index(dir_fd, path)
+    finally:
+        os.close(dir_fd)
+    if problems or more:
+        raise Failed("; ".join(problems + more))
+    return index_records(data, path)
+
+
+def index_after_restart_problem(path, copy, want):
+    """Read ARS's index once more after the restarts (red-team RT19-1). An
+    ARS that something else started between the stop and the restart holds
+    the index it read then, and writes its whole index from memory on every
+    registration, so a publish that reached it before the restart stopped it
+    puts that index back on disk. want "gone": after apply, no record of the
+    retired index (copy) may be in it; a record of the same artifact
+    published again since differs from the retired one. want "kept": after
+    a rollback, every record of the copy put back must be in it, unchanged.
+    Returns a problem, or None."""
+    copy_records = index_records(copy, "the index copy in the backup")
+    live = live_index_records(path)
+    if want == "gone":
+        back = [key for key, record in copy_records.items() if live.get(key) == record]
+        if back:
+            return (f"{path} holds {len(back)} record(s) of the retired index again after the restart: something "
+                    f"started ARS during the rotation, and it wrote the index it had read back to disk")
+        return None
+    missing = [key for key, record in copy_records.items() if live.get(key) != record]
+    if missing:
+        return (f"{path} lacks {len(missing)} record(s) of the copy put back after the restart: something started "
+                f"ARS during the rollback, and it wrote the index it had read over the copy")
+    return None
 
 
 def index_state(ars_doc):
@@ -957,6 +1100,9 @@ def index_state(ars_doc):
             return record, problems + [str(exc)], ([], [])
         record.update(entries=count_records(data), sha256=sha256_hex(data), size=len(data), uid=st.st_uid,
                       gid=st.st_gid, mode=mode_text(st))
+        if record["entries"] is None:
+            # The rotation reads the records again after the restarts.
+            more = more + [f"{path} is not a JSON object of records, as ARS writes it"]
         prefix = "." + os.path.basename(path) + TEMP_MARK
         files, folders = leftover_temp_files(dir_fd, os.path.dirname(path))
         leftovers = ([p for p in files if os.path.basename(p).startswith(prefix)],
@@ -1077,14 +1223,19 @@ def inspect(mode):
             problems += exec_start_problems(unit)
         except Refusal as exc:
             problems.append(str(exc))
+    # While another apply or rollback holds the lock, its own backup and
+    # temporary files are work in progress: they are judged, and their
+    # rollback offered, only once it has ended (a rollback now would be
+    # refused on the lock anyway).
     try:
-        problems += unfinished_problems()
-        problems += lock_problems()
+        held = lock_problems()
+        problems += held or unfinished_problems()
     except Refusal as exc:
+        held = []
         problems.append(str(exc))
     index = {"path": None, "entries": None}
     try:
-        leftovers = find_leftovers(docs.get("ars"))
+        leftovers = [] if held else find_leftovers(docs.get("ars"))
     except (Refusal, OSError) as exc:
         problems.append(f"cannot look for files a stopped rotation left: {exc}")
         leftovers = []
@@ -1118,6 +1269,8 @@ def inspect(mode):
         if not ok:
             problems.append("ARS, EGS, AGS and ES must all run, ARS and EGS accept connections, and ES and AGS "
                             "answer 200, before the rotation")
+        else:
+            problems += services_view_problems(index.get("path"))
     report["problems"] = problems
     if not problems:
         report["changes"] = planned_changes(docs, index)
@@ -1169,8 +1322,8 @@ def lock_problems():
     try:
         fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
     except BlockingIOError:
-        return [f"an apply or rollback is running now (it holds the lock on {BACKUP_ROOT}); "
-                "run check again once it has ended"]
+        return [f"an apply or rollback is running now (it holds the lock on {BACKUP_ROOT}); its backup and "
+                "temporary files are not judged while it runs: run check again once it has ended"]
     except OSError as exc:
         return [f"cannot lock {BACKUP_ROOT}: {exc.strerror}"]
     finally:
@@ -1523,6 +1676,17 @@ def restore(report, docs, configs, index, leftovers, keep):
     except Exception as exc:  # noqa: BLE001 - recorded in the result
         ok = False
         report["after_rollback_error"] = str(exc)
+    if index is not None:
+        try:
+            problem = index_after_restart_problem(index[0]["path"], index[1], "kept")
+        except Exception as exc:  # noqa: BLE001 - recorded in the result
+            problem = f"{index[0]['path']} cannot be read after the restart: {exc}"
+        if problem is not None:
+            kept = report.get("replaced_index_kept")
+            report["result"] = "rollback_failed"
+            report["rollback_failure"] = (problem + f"; the copy put back is {os.path.join(keep[0], INDEX_COPY)}"
+                                          + (f", and the index it replaced is kept as {kept}" if kept else ""))
+            return
     report["result"] = "rolled_back" if ok and services_ok else "rolled_back_unhealthy"
 
 
@@ -1714,10 +1878,17 @@ def cmd_apply(_args):
         log(f"ARS index moved into the backup; {index_file} is empty")
         check_stop()
         start_services(steps, rotated, False)
-        log("es, ags and ars stopped; ars started, egs restarted, ags and es started")
+        log("ars, egs, ags and es restarted")
         ok, report["after"] = wait_until_up(rotated)
         if not ok:
             raise Refusal("ARS, EGS, AGS and ES do not all run and answer after the restart")
+        views = services_view_problems(index_file, {path: data[name] for name, path, _ in CONFIGS})
+        if views:
+            raise Refusal("; ".join(views))
+        retired, _ = read_regular_file(os.path.join(backup_dir, INDEX_COPY), INDEX_MAX_BYTES)
+        problem = index_after_restart_problem(index_file, retired, "gone")
+        if problem is not None:
+            raise Refusal(problem)
         report["result"] = "rotated"
     except (Exception, Interrupted) as exc:  # noqa: BLE001 - every failure after the backup rolls back
         failure = exc

@@ -120,6 +120,8 @@ func fakeOpenSSL(args []string) int {
 //   - inactive-<unit>: is-active says inactive (stop makes one, start and
 //     restart remove it; start does nothing to a unit without one, as
 //     systemd's start of a running unit);
+//   - stopped-state-<unit>: is-active says this file's word in place of
+//     inactive, as activating for a unit something else is starting;
 //   - ars-loaded-index: each start or restart of ars copies the index file
 //     here, as ARS reads its index when it starts;
 //   - execstart-<unit>: show prints this file instead of the unit's usual
@@ -136,7 +138,23 @@ func fakeOpenSSL(args []string) int {
 //   - symlink-at-<verb>-<unit>: after the job, make the symbolic link named
 //     on the file's first line, pointing at its second;
 //   - rm-healthcheck-at-es-start-<n>: the nth start of es removes
-//     healthcheck.env.
+//     healthcheck.env;
+//   - write-index-once-at-<verb>-<unit>: before the job, the index file gets
+//     this file's bytes, as an ARS that something else started writes the
+//     index it holds in memory on a registration before a restart stops it
+//     (red-team RT19-1);
+//   - write-config-once-at-<verb>-<unit>: after the job, the unit's config
+//     gets this file's bytes in place, as a command the unit runs when it
+//     starts could write them;
+//   - mainpid-<unit>: show -p MainPID prints this file's number in place of
+//     the unit's usual one (410<n> while it runs, 0 when it is stopped);
+//   - proc-root-once-at-<verb>-<unit>: after the job, the unit's process
+//     sees the folder named in this file as its root, as a unit restarted
+//     with a root folder of its own would.
+//
+// The rotation sees each process's root folder under proc/<pid>/root in the
+// state folder (SIGNING_KEY_ROTATION_TEST_PROC); for the usual main process
+// IDs it is a link to /, so each stand-in sees the host's files.
 //
 // Each start or restart of es is counted in es-starts, and one that finds
 // EGS not accepting connections is counted in es-started-before-egs.
@@ -184,16 +202,31 @@ time.sleep(3600)
 ' "$port" "$delay" </dev/null >/dev/null 2>&1 &
   echo $! > "$s/listener-$1.pid"
 }
+main_pid() {
+  case "$1" in ars) echo 4101 ;; egs) echo 4102 ;; ags) echo 4103 ;; es) echo 4104 ;; *) echo 0 ;; esac
+}
 case "$1" in
   is-active)
     shift
-    for u in "$@"; do if [[ -e "$s/inactive-$u" ]]; then echo inactive; else echo active; fi; done ;;
+    for u in "$@"; do
+      if [[ ! -e "$s/inactive-$u" ]]; then echo active
+      elif [[ -e "$s/stopped-state-$u" ]]; then cat "$s/stopped-state-$u"; echo
+      else echo inactive; fi
+    done ;;
   show)
     u=${2%%.service}
-    if [[ -e "$s/execstart-$u" ]]; then cat "$s/execstart-$u"; else
+    if [[ "${4:-}" == MainPID ]]; then
+      if [[ -e "$s/mainpid-$u" ]]; then echo "MainPID=$(cat "$s/mainpid-$u")"
+      elif [[ -e "$s/inactive-$u" ]]; then echo MainPID=0
+      else echo "MainPID=$(main_pid "$u")"; fi
+    elif [[ -e "$s/execstart-$u" ]]; then cat "$s/execstart-$u"; else
       echo "ExecStart={ path=/usr/local/lib/execution-substrate/bin/$u ; argv[]=/usr/local/lib/execution-substrate/bin/$u -config /etc/execution-substrate/$u.json ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }"
     fi ;;
   stop|restart|start)
+    if [[ -e "$s/write-index-once-at-$1-$2" ]]; then
+      cat "$s/write-index-once-at-$1-$2" > "$root/var/lib/ars/index.json"
+      rm -f "$s/write-index-once-at-$1-$2"
+    fi
     failed=
     if [[ -e "$s/fail-$1-$2-once" ]]; then rm -f "$s/fail-$1-$2-once"; failed=1; fi
     [[ -e "$s/fail-$1-$2-always" ]] && failed=1
@@ -228,6 +261,14 @@ case "$1" in
     fi ;;
   *) echo "fake systemctl: unexpected $*" >&2; exit 2 ;;
 esac
+if [[ -e "$s/write-config-once-at-$1-${2:-}" ]]; then
+  cat "$s/write-config-once-at-$1-$2" > "$root/etc/execution-substrate/$2.json"
+  rm -f "$s/write-config-once-at-$1-$2"
+fi
+if [[ -e "$s/proc-root-once-at-$1-${2:-}" ]]; then
+  ln -sfn "$(cat "$s/proc-root-once-at-$1-$2")" "$s/proc/$(main_pid "$2")/root"
+  rm -f "$s/proc-root-once-at-$1-$2"
+fi
 if [[ -e "$s/symlink-at-$1-${2:-}" ]]; then
   { read -r link; read -r target; } < "$s/symlink-at-$1-${2:-}"
   rm -f "$s/symlink-at-$1-${2:-}"
@@ -331,6 +372,14 @@ func newRotationHost(t *testing.T) *rotationHost {
 		}
 	}
 	h.fakeOpenSSL("")
+	for _, pid := range []string{"4101", "4102", "4103", "4104"} {
+		if err := os.MkdirAll(filepath.Join(h.state, "proc", pid), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink("/", filepath.Join(h.state, "proc", pid, "root")); err != nil {
+			t.Fatal(err)
+		}
+	}
 	t.Cleanup(h.stopListeners)
 	for unit, port := range ports {
 		if err := os.WriteFile(filepath.Join(h.state, "port-"+unit), []byte(strconv.Itoa(port)), 0o644); err != nil {
@@ -526,6 +575,7 @@ func (h *rotationHost) command(args ...string) *exec.Cmd {
 		"SIGNING_KEY_ROTATION_TEST_CURL="+filepath.Join(h.bin, "curl"),
 		"SIGNING_KEY_ROTATION_TEST_OPENSSL="+h.path("usr/bin/openssl"),
 		"SIGNING_KEY_ROTATION_TEST_WAIT_SECONDS=1",
+		"SIGNING_KEY_ROTATION_TEST_PROC="+filepath.Join(h.state, "proc"),
 	), h.env...)
 	return cmd
 }
@@ -1368,6 +1418,11 @@ func TestSigningKeyRotationRefuses(t *testing.T) {
 		{"ARS's ExecStart is not in the form systemctl show prints", func(h *rotationHost) {
 			h.markWith("execstart-ars", "ExecStart=/usr/local/lib/execution-substrate/bin/ars -config /etc/execution-substrate/ars.json\n")
 		}, "ars.service does not start /usr/local/lib/execution-substrate/bin/ars", false, false},
+		// A path= with no argv[] after it is refused, not taken as the pinned
+		// command line (Sonnet re-audit 20, mutant S26).
+		{"AGS's ExecStart has no argv", func(h *rotationHost) {
+			h.markWith("execstart-ags", "ExecStart={ path=/usr/local/lib/execution-substrate/bin/ags ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }\n")
+		}, "ags.service does not start /usr/local/lib/execution-substrate/bin/ags with -config /etc/execution-substrate/ags.json (its ExecStart runs /usr/local/lib/execution-substrate/bin/ags as ?)", false, false},
 		{"AGS starts two commands", func(h *rotationHost) {
 			line := "ExecStart={ path=/usr/local/lib/execution-substrate/bin/ags ; argv[]=/usr/local/lib/execution-substrate/bin/ags -config /etc/execution-substrate/ags.json ; ignore_errors=no }\n"
 			h.markWith("execstart-ags", line+line)
@@ -1409,10 +1464,13 @@ func TestSigningKeyRotationRefuses(t *testing.T) {
 			h.env = append(h.env, fmt.Sprintf("SIGNING_KEY_ROTATION_TEST_UID_ARS=%d", os.Getuid()+1),
 				fmt.Sprintf("SIGNING_KEY_ROTATION_TEST_ROOT_UID=%d", os.Getuid()+2))
 		}, "not ARS's account or root", false, false},
-		{"ARS's index is nested too deeply to count", func(h *rotationHost) {
+		{"ARS's index is nested too deeply to read", func(h *rotationHost) {
 			h.write(rotationIndex, []byte(strings.Repeat("[", 200000)+strings.Repeat("]", 200000)), 0o600)
 			h.edit("es", func(d map[string]any) { delete(d, "verification") })
 		}, "es.json has no verification object", false, false},
+		{"ARS's index is not a JSON object", func(h *rotationHost) {
+			h.write(rotationIndex, []byte("[1, 2, 3]\n"), 0o600)
+		}, "index.json is not a JSON object of records, as ARS writes it", false, false},
 		{"a rotation did not finish", func(h *rotationHost) {
 			if err := os.MkdirAll(h.path(rotationBackupRoot+"/20261127T000000Z-ags-x"), 0o700); err != nil {
 				t.Fatal(err)
@@ -1521,16 +1579,18 @@ func TestSigningKeyRotationRefuses(t *testing.T) {
 	}
 }
 
-// TestSigningKeyRotationIndexCountIsAdvisory: an index that cannot be
-// counted (nested too deeply for Python's parser) leaves the count empty and
-// stops nothing.
-func TestSigningKeyRotationIndexCountIsAdvisory(t *testing.T) {
+// TestSigningKeyRotationRefusesAnIndexItCannotRead: the rotation reads
+// ARS's records again after the restarts (red-team RT19-1), so an index
+// that is not a JSON object, or is nested too deeply for Python's parser,
+// is named by check with no traceback, and its count stays empty.
+func TestSigningKeyRotationRefusesAnIndexItCannotRead(t *testing.T) {
 	h := newRotationHost(t)
 	h.write(rotationIndex, []byte(strings.Repeat("[", 200000)+strings.Repeat("]", 200000)), 0o600)
 	stdout, stderr, code := h.run("check")
 	report := h.report(stdout, stderr, code)
-	if code != 0 || report["ars_index_entries"] != nil {
-		t.Fatalf("check exit %d entries %v problems %v", code, report["ars_index_entries"], report["problems"])
+	if code != 1 || report["ars_index_entries"] != nil || strings.Contains(stderr, "Traceback") ||
+		!strings.Contains(rotationProblems(report), "index.json is not a JSON object of records") {
+		t.Fatalf("check exit %d entries %v problems %v\n%s", code, report["ars_index_entries"], report["problems"], stderr)
 	}
 }
 
@@ -1868,6 +1928,12 @@ func TestSigningKeyRotationRefusesACheckoutOthersCanChange(t *testing.T) {
 				t.Fatal(err)
 			}
 		}, " is writable by its group or others (0777) without the sticky bit"},
+		// Opus re-audit 21, mutant A03: its group alone is enough.
+		{"a folder above scripts is writable by its group", func(t *testing.T, root string) {
+			if err := os.Chmod(root, 0o775); err != nil {
+				t.Fatal(err)
+			}
+		}, " is writable by its group or others (0775) without the sticky bit"},
 	} {
 		for _, command := range [][]string{{"check"}, {"apply"}, {"rollback", "--backup-dir", "/nonexistent"}} {
 			t.Run(tc.name+"/"+command[0], func(t *testing.T) {
@@ -1904,6 +1970,24 @@ func TestSigningKeyRotationRefusesACheckoutOthersCanChange(t *testing.T) {
 			}
 		})
 	}
+	// The helper started on its own through a symbolic link to the clone
+	// refuses before it judges the real folders; the wrapper's link test
+	// stops such a start first (Opus re-audit 21, mutant A31).
+	t.Run("the helper reached through a link to the clone", func(t *testing.T) {
+		h := newRotationHost(t)
+		root, _ := clone(t)
+		alias := filepath.Join(filepath.Dir(root), "alias")
+		if err := os.Symlink(root, alias); err != nil {
+			t.Fatal(err)
+		}
+		h.helper = filepath.Join(alias, rotateSigningKeysPython)
+		h.env = []string{owner}
+		stdout, stderr, code := h.run("check")
+		want := filepath.Join(alias, "scripts") + " is reached through a symbolic link (" + filepath.Join(root, "scripts") + ")"
+		if code != 1 || stdout != "" || !strings.Contains(stderr, want) {
+			t.Fatalf("the helper through a link to the clone: exit %d, want %q\nstdout %s\nstderr %s", code, want, stdout, stderr)
+		}
+	})
 	h := newRotationHost(t)
 	_, helper := clone(t)
 	h.helper = helper
