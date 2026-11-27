@@ -829,7 +829,7 @@ Publish a signed trust model that downstream execution logic can verify and enfo
 
 - `GET /v1/trust-model`
 - Signed signer/artifact runtime-trust publication plus separate EGS-owned publication metadata
-- Current runtime-trust and publication-metadata shape in `egs/model/trustmodel.go`
+- Current runtime-trust and publication-metadata shape in `egs/contract/trustmodel.go`
 - Signing the runtime-trust payload returned to consumers, with publication metadata remaining separate and outside the signed payload
 - Publication of allowed signers, revoked signers, and revoked artifacts as the signed runtime-trust payload
 - Publication of version and update revision as separate EGS-owned metadata
@@ -970,6 +970,7 @@ Provide a separate authorize-only decision surface for workload credential acces
 | `internal/observability` | Cross-cutting utility for request tracing, dependency logging, and trace propagation decisions | Support layer only; it does not own business behavior or define service authority |
 | `internal/callerauth` | Cross-cutting caller authentication for ARS, AGS, EGS, CGS, and ES: reads the caller's SPIFFE ID from the verified client certificate and applies the one rule in `contracts.md` section 3A, including the bootstrap-issuer refusal | Authentication only; every allowlist, route, and policy decision (authorization) stays service-local. `internal/callerauth/callerauthtest` is test support that only test files import |
 | `internal/callerallowlist` | Cross-cutting path-prefix allowlist rule for ARS, AGS, and ES: checks each configured prefix against the canonical SPIFFE ID path of `contracts.md` section 3A, with at least two segments, and matches an authenticated caller's path against the prefixes | Shape of a valid prefix and the match only; which prefixes each service configures and which routes they open stay service-local |
+| service contract packages (`ars/contract`, `egs/contract`) | The types of a service-owned contract that another service's code reads: ARS's registration and discovery records, and EGS's signed runtime-trust payload with its canonical bytes | Owned by the service whose folder holds it, not shared kernel; it imports no service code, so a consumer does not link the owner's server or storage. `service_layout_test.go` allows production cross-service imports only through these packages, apart from the exceptions it lists by file; tests may also start another service through its `app` and `config` packages |
 | service bootstrap / config entrypoints | Service-local startup wiring, config loading, auth setup, and dependency client construction | Support layer; may reveal coupling, but does not by itself define a service boundary |
 
 These layers can create coupling pressure without owning domain responsibilities. Future edits must not let a shared package silently become a de facto new service boundary.

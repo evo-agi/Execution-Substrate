@@ -9,17 +9,17 @@ import (
 	"strings"
 	"time"
 
-	"execution-substrate/egs/model"
+	"execution-substrate/egs/contract"
 	"execution-substrate/internal/knownkeys"
 )
 
 type Config struct {
-	HTTP         HTTPConfig                `json:"http"`
-	TLS          TLSConfig                 `json:"tls"`
-	Security     SecurityConfig            `json:"security"`
-	Signer       SignerConfig              `json:"signer"`
-	RuntimeTrust model.RuntimeTrustPolicy  `json:"runtime_trust"`
-	Publication  model.PublicationMetadata `json:"publication"`
+	HTTP         HTTPConfig                   `json:"http"`
+	TLS          TLSConfig                    `json:"tls"`
+	Security     SecurityConfig               `json:"security"`
+	Signer       SignerConfig                 `json:"signer"`
+	RuntimeTrust contract.RuntimeTrustPolicy  `json:"runtime_trust"`
+	Publication  contract.PublicationMetadata `json:"publication"`
 }
 
 type HTTPConfig struct {

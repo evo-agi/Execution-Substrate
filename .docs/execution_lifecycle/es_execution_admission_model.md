@@ -1016,7 +1016,7 @@ protects proof configuration.
 
 | Category | Exact field and type | Protected fact | Writers | Readers | Lifetime |
 | --- | --- | --- | --- | --- | --- |
-| Lock | `es/admission:Service.mu:sync.RWMutex` | `trustModel *egsmodel.RuntimeTrustPolicy`, verified startup state, and the order of a trust load against the install of the one-shot operational view | `Service.Initialize`, `Service.installOperationalAdmission` | `Service.Health`, `Service.currentTrustModel`, `Service.installOperationalAdmission` | Admission service instance |
+| Lock | `es/admission:Service.mu:sync.RWMutex` | `trustModel *egscontract.RuntimeTrustPolicy`, verified startup state, and the order of a trust load against the install of the one-shot operational view | `Service.Initialize`, `Service.installOperationalAdmission` | `Service.Health`, `Service.currentTrustModel`, `Service.installOperationalAdmission` | Admission service instance |
 | Lock | `es/admission/internal/admissionstate:state.mu:sync.RWMutex` | The one-shot operational view of one Service, its monotonic withdrawal and supersession latches, and the last confirmation time | `State.Install`, `State.Withdraw`, `State.Confirm` | `State.Commissioned`, `State.Installable`, `State.Confirmable`, `State.Current`, `State.Inspect` | Admission service instance |
 | Lock | `es/app:App.mu:sync.RWMutex` | `started bool`, `listener net.Listener` | `App.Start` writes both. `App.Shutdown` writes `started`. | `App.Started` reads `started`. `App.Addr` reads `listener`. | App instance |
 | Lock | `es/runtimehelper:helperServer.mu:sync.RWMutex` | `token cachedToken` | `helperServer.fetchAndStoreToken` | `helperServer.currentToken` | Runtime-helper process |

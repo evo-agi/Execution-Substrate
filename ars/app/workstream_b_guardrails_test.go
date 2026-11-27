@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	arsapi "execution-substrate/ars/api"
+	arscontract "execution-substrate/ars/contract"
 )
 
 func TestWorkstreamBDiscoveryRecordIsRuntimeFacingSurface(t *testing.T) {
@@ -24,7 +24,7 @@ func TestWorkstreamBDiscoveryRecordIsRuntimeFacingSurface(t *testing.T) {
 	}
 	body := mustReadBody(t, response.Body)
 
-	var discovery arsapi.ArtifactDiscovery
+	var discovery arscontract.ArtifactDiscovery
 	if err := json.Unmarshal(body, &discovery); err != nil {
 		t.Fatalf("decode discovery: %v", err)
 	}
@@ -76,7 +76,7 @@ func TestWorkstreamBDiscoveryOnlyRegistrationDoesNotRequireDescriptorManifestSup
 	if register.StatusCode != http.StatusCreated {
 		t.Fatalf("expected discovery-only registration to return 201, got %d body=%s", register.StatusCode, strings.TrimSpace(string(mustReadBody(t, register.Body))))
 	}
-	var registerPayload arsapi.RegisterArtifactResponse
+	var registerPayload arscontract.RegisterArtifactResponse
 	if err := json.NewDecoder(register.Body).Decode(&registerPayload); err != nil {
 		t.Fatalf("decode registration response: %v", err)
 	}

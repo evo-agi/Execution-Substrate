@@ -24,8 +24,8 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	arsapi "execution-substrate/ars/api"
-	egsmodel "execution-substrate/egs/model"
+	arscontract "execution-substrate/ars/contract"
+	egscontract "execution-substrate/egs/contract"
 	"execution-substrate/es/admission/internal/admissionstate"
 	esconfig "execution-substrate/es/config"
 	evidencev1 "execution-substrate/internal/contracts/evidence/v1"
@@ -118,7 +118,7 @@ type Service struct {
 	admissionPolicyEvaluator AdmissionPolicyEvaluator
 
 	mu         sync.RWMutex
-	trustModel *egsmodel.RuntimeTrustPolicy
+	trustModel *egscontract.RuntimeTrustPolicy
 	// Private operational authority is commissioned only by the unwired handoff.
 	// trustModelVerified and trustModelOwner say that this Service loaded and
 	// verified its trust model itself; Service.mu protects them.
@@ -157,12 +157,12 @@ type healthResponse struct {
 }
 
 type signedRuntimeTrustResponse struct {
-	RuntimeTrust  egsmodel.RuntimeTrustPolicy `json:"runtime_trust"`
-	Algorithm     string                      `json:"algorithm"`
-	KeyID         string                      `json:"key_id"`
-	PayloadDigest string                      `json:"payload_digest"`
-	Signature     string                      `json:"signature"`
-	Publication   json.RawMessage             `json:"publication,omitempty"`
+	RuntimeTrust  egscontract.RuntimeTrustPolicy `json:"runtime_trust"`
+	Algorithm     string                         `json:"algorithm"`
+	KeyID         string                         `json:"key_id"`
+	PayloadDigest string                         `json:"payload_digest"`
+	Signature     string                         `json:"signature"`
+	Publication   json.RawMessage                `json:"publication,omitempty"`
 }
 
 type artifactRegistryErrorResponse struct {
@@ -170,7 +170,7 @@ type artifactRegistryErrorResponse struct {
 }
 
 type discoveredArtifact struct {
-	discovery arsapi.ArtifactDiscovery
+	discovery arscontract.ArtifactDiscovery
 	evidence  evidencev1.ArtifactEvidence
 }
 
@@ -191,7 +191,7 @@ type preparedAdmission struct {
 	artifact                    preparedArtifact
 	workloadVaultPlan           esconfig.ResolvedWorkloadVaultAuthPlan
 	workloadZoneVaultConfigRef  runtimeconfigv1.WorkloadZoneVaultConfigRef
-	trustModel                  egsmodel.RuntimeTrustPolicy
+	trustModel                  egscontract.RuntimeTrustPolicy
 	policyPayloadBytes          []byte
 	policyPayloadBytesAvailable bool
 }
@@ -336,34 +336,34 @@ func (s *Service) Initialize(ctx context.Context) error {
 // verifies its envelope and returns the normalized policy. It reads and
 // changes no Service state; Initialize and the private operational
 // confirmation are its only callers.
-func (s *Service) fetchVerifiedTrustModel(ctx context.Context) (egsmodel.RuntimeTrustPolicy, error) {
+func (s *Service) fetchVerifiedTrustModel(ctx context.Context) (egscontract.RuntimeTrustPolicy, error) {
 	requestCtx, cancel := context.WithTimeout(ctx, s.egsClient.client.Timeout)
 	defer cancel()
 
 	response, err := s.egsClient.get(requestCtx, "/v1/trust-model")
 	if err != nil {
-		return egsmodel.RuntimeTrustPolicy{}, fmt.Errorf("fetch trust model: %w", err)
+		return egscontract.RuntimeTrustPolicy{}, fmt.Errorf("fetch trust model: %w", err)
 	}
 	defer response.Body.Close()
 
 	if response.StatusCode != http.StatusOK {
-		return egsmodel.RuntimeTrustPolicy{}, fmt.Errorf("fetch trust model: unexpected status %d", response.StatusCode)
+		return egscontract.RuntimeTrustPolicy{}, fmt.Errorf("fetch trust model: unexpected status %d", response.StatusCode)
 	}
 
 	var payload signedRuntimeTrustResponse
 	if err := decodeBoundedJSONResponse(response, &payload); err != nil {
-		return egsmodel.RuntimeTrustPolicy{}, fmt.Errorf("decode trust model response: %w", err)
+		return egscontract.RuntimeTrustPolicy{}, fmt.Errorf("decode trust model response: %w", err)
 	}
 	if err := payload.RuntimeTrust.Validate(); err != nil {
-		return egsmodel.RuntimeTrustPolicy{}, fmt.Errorf("validate trust model: %w", err)
+		return egscontract.RuntimeTrustPolicy{}, fmt.Errorf("validate trust model: %w", err)
 	}
 
 	canonical, err := payload.RuntimeTrust.CanonicalBytes()
 	if err != nil {
-		return egsmodel.RuntimeTrustPolicy{}, fmt.Errorf("canonicalize trust model: %w", err)
+		return egscontract.RuntimeTrustPolicy{}, fmt.Errorf("canonicalize trust model: %w", err)
 	}
 	if err := s.verifyTrustModelEnvelope(payload, canonical); err != nil {
-		return egsmodel.RuntimeTrustPolicy{}, fmt.Errorf("verify trust model: %w", err)
+		return egscontract.RuntimeTrustPolicy{}, fmt.Errorf("verify trust model: %w", err)
 	}
 
 	return payload.RuntimeTrust.Normalized(), nil
@@ -477,7 +477,7 @@ func (s *Service) prepareAdmission(ctx context.Context, req PrepareRequest, inte
 	}, nil
 }
 
-func (s *Service) prepareArtifact(ctx context.Context, req PrepareRequest, trustModel egsmodel.RuntimeTrustPolicy) (preparedArtifact, *Error) {
+func (s *Service) prepareArtifact(ctx context.Context, req PrepareRequest, trustModel egscontract.RuntimeTrustPolicy) (preparedArtifact, *Error) {
 	discovery, err := s.fetchArtifactDiscovery(ctx, req.Invocation.ArtifactDigest)
 	if err != nil {
 		return preparedArtifact{}, err
@@ -496,7 +496,7 @@ func (s *Service) prepareArtifact(ctx context.Context, req PrepareRequest, trust
 	return artifact, nil
 }
 
-func (s *Service) currentTrustModel() *egsmodel.RuntimeTrustPolicy {
+func (s *Service) currentTrustModel() *egscontract.RuntimeTrustPolicy {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if s.trustModel == nil {
@@ -521,10 +521,10 @@ func (s *Service) fetchArtifactDiscovery(ctx context.Context, artifactDigest str
 	}, nil
 }
 
-func (s *Service) fetchArtifactDiscoveryRecord(ctx context.Context, artifactDigest string) (arsapi.ArtifactDiscovery, *Error) {
+func (s *Service) fetchArtifactDiscoveryRecord(ctx context.Context, artifactDigest string) (arscontract.ArtifactDiscovery, *Error) {
 	response, err := s.arsClient.get(ctx, "/v1/artifacts/"+artifactDigest+"/discovery")
 	if err != nil {
-		return arsapi.ArtifactDiscovery{}, &Error{
+		return arscontract.ArtifactDiscovery{}, &Error{
 			Status:  http.StatusServiceUnavailable,
 			Code:    codeArtifactEvidenceUnavailable,
 			Message: "artifact discovery read failed",
@@ -534,9 +534,9 @@ func (s *Service) fetchArtifactDiscoveryRecord(ctx context.Context, artifactDige
 
 	switch response.StatusCode {
 	case http.StatusOK:
-		var payload arsapi.ArtifactDiscovery
+		var payload arscontract.ArtifactDiscovery
 		if err := decodeBoundedJSONResponse(response, &payload); err != nil {
-			return arsapi.ArtifactDiscovery{}, &Error{
+			return arscontract.ArtifactDiscovery{}, &Error{
 				Status:  http.StatusServiceUnavailable,
 				Code:    codeArtifactEvidenceUnavailable,
 				Message: "artifact discovery payload was invalid",
@@ -548,20 +548,20 @@ func (s *Service) fetchArtifactDiscoveryRecord(ctx context.Context, artifactDige
 		if err := decodeBoundedCompatibleJSONResponse(response, &payload); err == nil {
 			switch strings.TrimSpace(payload.Error) {
 			case "artifact not found", "artifact data not registered":
-				return arsapi.ArtifactDiscovery{}, &Error{
+				return arscontract.ArtifactDiscovery{}, &Error{
 					Status:  http.StatusNotFound,
 					Code:    codeArtifactEvidenceNotFound,
 					Message: "artifact evidence not found",
 				}
 			}
 		}
-		return arsapi.ArtifactDiscovery{}, &Error{
+		return arscontract.ArtifactDiscovery{}, &Error{
 			Status:  http.StatusServiceUnavailable,
 			Code:    codeArtifactEvidenceUnavailable,
 			Message: "artifact evidence is unavailable",
 		}
 	default:
-		return arsapi.ArtifactDiscovery{}, &Error{
+		return arscontract.ArtifactDiscovery{}, &Error{
 			Status:  http.StatusServiceUnavailable,
 			Code:    codeArtifactEvidenceUnavailable,
 			Message: "artifact evidence is unavailable",
@@ -597,7 +597,7 @@ func (s *Service) fetchArtifactEvidenceBlob(ctx context.Context, artifactDigest 
 	return payload, nil
 }
 
-func (s *Service) prepareArtifactFromDiscovery(req PrepareRequest, trustModel egsmodel.RuntimeTrustPolicy, discovery discoveredArtifact) (preparedArtifact, *Error) {
+func (s *Service) prepareArtifactFromDiscovery(req PrepareRequest, trustModel egscontract.RuntimeTrustPolicy, discovery discoveredArtifact) (preparedArtifact, *Error) {
 	discoveryRecord := discovery.discovery
 	evidence := discovery.evidence
 	authorization := evidence.Claims.Admission.Authorization
@@ -639,7 +639,7 @@ func (s *Service) prepareArtifactFromDiscovery(req PrepareRequest, trustModel eg
 	return artifact, nil
 }
 
-func (s *Service) prepareArtifactFromEvidenceRecord(trustModel egsmodel.RuntimeTrustPolicy, discovery arsapi.ArtifactDiscovery, evidence evidencev1.ArtifactEvidence) (preparedArtifact, *Error) {
+func (s *Service) prepareArtifactFromEvidenceRecord(trustModel egscontract.RuntimeTrustPolicy, discovery arscontract.ArtifactDiscovery, evidence evidencev1.ArtifactEvidence) (preparedArtifact, *Error) {
 	artifactDigest := strings.TrimSpace(discovery.Artifact.ArtifactDigest)
 	execution := evidence.Claims.Admission.Execution
 	if evidence.Claims.Package.Identity.ArtifactDigest != artifactDigest {
@@ -763,7 +763,7 @@ func (s *Service) verifyTrustModelEnvelope(payload signedRuntimeTrustResponse, c
 	return nil
 }
 
-func enforceTrustModel(trustModel egsmodel.RuntimeTrustPolicy, signerKeyID string, artifactDigest string) *Error {
+func enforceTrustModel(trustModel egscontract.RuntimeTrustPolicy, signerKeyID string, artifactDigest string) *Error {
 	for _, allowed := range trustModel.SignerPolicy.AllowedSigners {
 		if allowed == signerKeyID {
 			goto allowed
