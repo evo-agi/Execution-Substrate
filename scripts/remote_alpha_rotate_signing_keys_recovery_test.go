@@ -443,6 +443,10 @@ func TestSigningKeyRotationRestartsWhatSomethingElseStarted(t *testing.T) {
 	if r := h.report(stdout, stderr, code); code != 0 || r["result"] != "rotated" {
 		t.Fatalf("apply: exit %d result %v\n%s", code, r["result"], stderr)
 	}
+	// The operator's log says what was done (Opus re-audit 21, N3).
+	if !strings.Contains(stderr, "ars, egs, ags and es restarted") || strings.Contains(stderr, "started,") {
+		t.Fatalf("apply's log does not say that the four units were restarted:\n%s", stderr)
+	}
 	if loaded, err := os.ReadFile(filepath.Join(h.state, "ars-loaded-index")); err != nil || string(loaded) != string(h.read(rotationIndex)) || strings.Contains(string(loaded), `"a"`) {
 		t.Fatalf("the ARS running after apply did not read the empty index: %q (%v); on disk %q", loaded, err, h.read(rotationIndex))
 	}
@@ -474,8 +478,13 @@ func TestSigningKeyRotationRunsOneAtATime(t *testing.T) {
 		if r := h.report(stdout, stderr, code); code != 1 || !strings.Contains(rotationProblems(r), "an apply or rollback is running now") {
 			t.Errorf("a second apply while one runs: exit %d problems %v\n%s", code, r["problems"], stderr)
 		}
+		// The running apply's backup and temporary file are its work in
+		// progress: check names the lock, not them, and offers no rollback
+		// that the lock would refuse (red-team re-check 19 note, Opus re-audit
+		// 21 O7).
 		stdout, stderr, code = h.run("check")
-		if r := h.report(stdout, stderr, code); code != 1 || !strings.Contains(rotationProblems(r), "an apply or rollback is running now") {
+		if r := h.report(stdout, stderr, code); code != 1 || !strings.Contains(rotationProblems(r), "an apply or rollback is running now") ||
+			strings.Contains(rotationProblems(r), "rollback --backup-dir") || strings.Contains(rotationProblems(r), "was left by a rotation") {
 			t.Errorf("check while an apply runs: exit %d problems %v", code, r["problems"])
 		}
 		_, stderr, code = h.run("rollback", "--backup-dir", earlier)
@@ -659,5 +668,266 @@ func TestSigningKeyRotationNamesABackupWhoseRecordsCannotBeRead(t *testing.T) {
 		if r := h.report(stdout, stderr, code); code != 1 || !strings.Contains(rotationProblems(r), "cannot read the records of "+shown) {
 			t.Fatalf("%s with an unreadable summary: exit %d problems %v", mode, code, r["problems"])
 		}
+	}
+}
+
+// An ARS that something else starts between the stop and the restart holds
+// the index it read then, and writes its whole index from memory on every
+// registration; one that a publish reaches before the restart stops it puts
+// the retired records back on disk (red-team re-check 19, RT19-1). apply
+// reads the index once more after the restarts and rolls back when a record
+// of the retired index is in it, keeping that index. A record of the same
+// artifact published again under the new key differs from the retired one
+// and passes.
+func TestSigningKeyRotationRollsBackWhenAnEarlyARSWritesTheRetiredIndexBack(t *testing.T) {
+	h := newRotationHost(t)
+	before := h.snapshot()
+	writtenBack := `{"a": 1, "b": 2, "c": 3, "z": 26}` + "\n"
+	h.markWith("write-index-once-at-restart-ars", writtenBack)
+	stdout, stderr, code := h.run("apply")
+	report := h.report(stdout, stderr, code)
+	if code != 1 || report["result"] != "rolled_back" ||
+		!strings.Contains(fmt.Sprint(report["failure"]), "holds 3 record(s) of the retired index again after the restart") {
+		t.Fatalf("apply with the retired index written back: exit %d result %v failure %v\n%s", code, report["result"], report["failure"], stderr)
+	}
+	if !reflect.DeepEqual(h.snapshot(), before) {
+		t.Fatal("the rollback did not put the configs and the index back")
+	}
+	kept := filepath.Join(fmt.Sprint(report["backup_dir"]), "ars-index.replaced-apply.json")
+	if data, err := os.ReadFile(kept); err != nil || string(data) != writtenBack || report["replaced_index_kept"] != kept {
+		t.Fatalf("the rollback kept %q (%v) as %v, want the written-back index at %s", data, err, report["replaced_index_kept"], kept)
+	}
+	h.requireReady()
+
+	t.Run("a record published again since", func(t *testing.T) {
+		h := newRotationHost(t)
+		h.markWith("write-index-once-at-restart-ars", `{"a": {"published": "again, under the new key"}}`+"\n")
+		if r := h.apply(); r["result"] != "rotated" {
+			t.Fatalf("apply with a record published again: result %v", r["result"])
+		}
+	})
+	t.Run("an index that is not an object of records", func(t *testing.T) {
+		h := newRotationHost(t)
+		before := h.snapshot()
+		h.markWith("write-index-once-at-restart-ars", "[1, 2, 3]\n")
+		stdout, stderr, code := h.run("apply")
+		report := h.report(stdout, stderr, code)
+		if code != 1 || report["result"] != "rolled_back" || !strings.Contains(fmt.Sprint(report["failure"]), "index.json is not a JSON object of records") {
+			t.Fatalf("apply with an index ARS does not write: exit %d result %v failure %v\n%s", code, report["result"], report["failure"], stderr)
+		}
+		if !reflect.DeepEqual(h.snapshot(), before) {
+			t.Fatal("the rollback did not put the configs and the index back")
+		}
+	})
+}
+
+// The same in a rollback: an early ARS that writes the index it read over
+// the copy put back drops records ES trusts again. The rollback reads the
+// index once more after the restarts and ends rollback_failed, naming the
+// copy and the kept index; check names the backup, and a second rollback
+// settles it, keeping the index it replaces (red-team re-check 19, RT19-1).
+func TestSigningKeyRotationRollbackFailsWhenAnEarlyARSWritesOverTheIndexPutBack(t *testing.T) {
+	h := newRotationHost(t)
+	before := h.snapshot()
+	backup := h.apply()["backup_dir"].(string)
+	// What an ARS started in the window would hold: the rotated index with
+	// a record of a published again under the new key, and one new record.
+	writtenOver := `{"a": {"published": "again, under the new key"}, "b": 2, "c": 3, "w": 23}` + "\n"
+	h.markWith("write-index-once-at-restart-ars", writtenOver)
+	stdout, stderr, code := h.run("rollback", "--backup-dir", backup)
+	report := h.report(stdout, stderr, code)
+	failure := fmt.Sprint(report["rollback_failure"])
+	if code != 1 || report["result"] != "rollback_failed" ||
+		!strings.Contains(failure, "lacks 1 record(s) of the copy put back after the restart") ||
+		!strings.Contains(failure, filepath.Join(backup, "ars-index.json")) ||
+		!strings.Contains(failure, fmt.Sprint(report["replaced_index_kept"])) {
+		t.Fatalf("rollback with another index written over the copy: exit %d result %v failure %s\n%s", code, report["result"], failure, stderr)
+	}
+	stdout, stderr, code = h.run("check")
+	if r := h.report(stdout, stderr, code); code != 1 || !strings.Contains(rotationProblems(r), "could not put everything back (rollback_failed)") {
+		t.Fatalf("check after the failed rollback: exit %d problems %v", code, r["problems"])
+	}
+	stdout, stderr, code = h.run("rollback", "--backup-dir", backup)
+	report = h.report(stdout, stderr, code)
+	if code != 0 || report["result"] != "rolled_back" {
+		t.Fatalf("the second rollback: exit %d result %v\n%s", code, report["result"], stderr)
+	}
+	if !reflect.DeepEqual(h.snapshot(), before) {
+		t.Fatal("the second rollback did not put the configs and the index back")
+	}
+	if data, err := os.ReadFile(fmt.Sprint(report["replaced_index_kept"])); err != nil || string(data) != writtenOver {
+		t.Fatalf("the second rollback kept %q (%v), want the index written over the copy", data, err)
+	}
+	h.requireReady()
+
+	t.Run("an index that cannot be read after the restart", func(t *testing.T) {
+		h := newRotationHost(t)
+		before := h.snapshot()
+		backup := h.apply()["backup_dir"].(string)
+		h.markWith("write-index-once-at-restart-ars", "[1, 2, 3]\n")
+		stdout, stderr, code := h.run("rollback", "--backup-dir", backup)
+		report := h.report(stdout, stderr, code)
+		failure := fmt.Sprint(report["rollback_failure"])
+		if code != 1 || report["result"] != "rollback_failed" || !strings.Contains(failure, "cannot be read after the restart") ||
+			!strings.Contains(failure, "is not a JSON object of records") {
+			t.Fatalf("rollback with an index ARS does not write: exit %d result %v failure %s\n%s", code, report["result"], failure, stderr)
+		}
+		stdout, stderr, code = h.run("rollback", "--backup-dir", backup)
+		if r := h.report(stdout, stderr, code); code != 0 || r["result"] != "rolled_back" || !reflect.DeepEqual(h.snapshot(), before) {
+			t.Fatalf("the second rollback: exit %d result %v\n%s", code, r["result"], stderr)
+		}
+	})
+}
+
+// apply's own rollback that cannot put the index back ends rollback_failed
+// and records it in summary.json, and check names the backup until a
+// rollback settles it (red-team RT10-2's second case; Opus re-audit 21,
+// mutant A01).
+func TestSigningKeyRotationApplyOwnRollbackFailedIsRecordedAndNamed(t *testing.T) {
+	h := newRotationHost(t)
+	before := h.snapshot()
+	h.mark("unhealthy-after-es-start-1")
+	h.env = []string{"SIGNING_KEY_ROTATION_TEST_FAIL_AT=index-replaced-kept"}
+	stdout, stderr, code := h.run("apply")
+	report := h.report(stdout, stderr, code)
+	if code != 1 || report["result"] != "rollback_failed" {
+		t.Fatalf("apply whose rollback cannot put the index back: exit %d result %v steps %v\n%s", code, report["result"], report["rollback_steps"], stderr)
+	}
+	backup := report["backup_dir"].(string)
+	summary, err := os.ReadFile(filepath.Join(backup, "summary.json"))
+	if err != nil || !strings.Contains(string(summary), `"result": "rollback_failed"`) {
+		t.Fatalf("summary.json does not record rollback_failed: %v\n%s", err, summary)
+	}
+	h.env = nil
+	stdout, stderr, code = h.run("check")
+	if r := h.report(stdout, stderr, code); code != 1 || !strings.Contains(rotationProblems(r), "could not put everything back (rollback_failed)") {
+		t.Fatalf("check after apply's failed rollback: exit %d problems %v", code, r["problems"])
+	}
+	stdout, stderr, code = h.run("rollback", "--backup-dir", backup)
+	if r := h.report(stdout, stderr, code); code != 0 || r["result"] != "rolled_back" {
+		t.Fatalf("rollback after apply's failed rollback: exit %d result %v steps %v\n%s", code, r["result"], r["rollback_steps"], stderr)
+	}
+	if !reflect.DeepEqual(h.snapshot(), before) {
+		t.Fatal("the rollback did not put the configs and the index back")
+	}
+	h.requireReady()
+
+	t.Run("a config it cannot put back", func(t *testing.T) {
+		h := newRotationHost(t)
+		before := h.snapshot()
+		h.mark("unhealthy-after-es-start-1")
+		h.env = []string{"SIGNING_KEY_ROTATION_TEST_FAIL_AT=restored-ags.json"}
+		stdout, stderr, code := h.run("apply")
+		report := h.report(stdout, stderr, code)
+		if code != 1 || report["result"] != "rollback_failed" {
+			t.Fatalf("apply whose rollback cannot put ags.json back: exit %d result %v steps %v\n%s", code, report["result"], report["rollback_steps"], stderr)
+		}
+		h.env = nil
+		stdout, stderr, code = h.run("rollback", "--backup-dir", report["backup_dir"].(string))
+		if r := h.report(stdout, stderr, code); code != 0 || r["result"] != "rolled_back" || !reflect.DeepEqual(h.snapshot(), before) {
+			t.Fatalf("rollback after apply's failed rollback: exit %d result %v\n%s", code, r["result"], stderr)
+		}
+	})
+}
+
+// A rollback whose restart step fails is not rolled_back, even when every
+// service answers by the end: here EGS accepts connections only after the
+// rollback's wait for it gave up, so AGS and ES were restarted before EGS
+// listened (Opus re-audit 21, mutant A28).
+func TestSigningKeyRotationRollbackNamesAFailedRestartStepEvenWhenTheServicesAnswer(t *testing.T) {
+	h := newRotationHost(t)
+	backup := h.apply()["backup_dir"].(string)
+	h.markWith("listen-delay-egs", "2.6")
+	h.env = []string{"SIGNING_KEY_ROTATION_TEST_WAIT_SECONDS=2"}
+	stdout, stderr, code := h.run("rollback", "--backup-dir", backup)
+	report := h.report(stdout, stderr, code)
+	if code != 1 || report["result"] != "rolled_back_unhealthy" {
+		t.Fatalf("rollback whose wait for EGS gave up: exit %d result %v steps %v\n%s", code, report["result"], report["rollback_steps"], stderr)
+	}
+	if steps := fmt.Sprint(report["rollback_steps"]); !strings.Contains(steps, "EGS does not accept connections") {
+		t.Fatalf("the rollback did not record the failed wait: %s", steps)
+	}
+	if after, ok := report["after_rollback"].(map[string]any); !ok || len(after) == 0 {
+		t.Fatalf("the rollback did not record that the services answer: %v", report["after_rollback"])
+	}
+}
+
+// Removing an incomplete backup is a rollback too: while another run holds
+// the lock (an apply still writing that backup), the removal is refused and
+// the folder kept; once the lock is free it goes (Opus re-audit 21 mutant
+// A06, Sonnet re-audit 20 mutant S18).
+func TestSigningKeyRotationRollbackOfAnIncompleteBackupWaitsForTheLock(t *testing.T) {
+	h := newRotationHost(t)
+	before := h.snapshot()
+	h.env = []string{"SIGNING_KEY_ROTATION_TEST_KILL_AT=backup-written"}
+	if _, _, code := h.run("apply"); code != -1 && code != 137 {
+		t.Fatalf("apply was not killed: exit %d", code)
+	}
+	h.env = nil
+	dirs := h.backupDirs()
+	if len(dirs) != 1 || !strings.HasPrefix(filepath.Base(dirs[0]), ".incomplete-") || !reflect.DeepEqual(h.snapshot(), before) {
+		t.Fatalf("after a kill while the backup was made: backups %v", dirs)
+	}
+	lock, err := os.Open(h.path(rotationBackupRoot))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Close()
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+	if _, stderr, code := h.run("rollback", "--backup-dir", dirs[0]); code != 1 || !strings.Contains(stderr, "another apply or rollback is running") {
+		t.Fatalf("removal of an incomplete backup while the lock is held: exit %d\n%s", code, stderr)
+	}
+	if got := h.backupDirs(); !reflect.DeepEqual(got, dirs) {
+		t.Fatalf("a refused removal changed the backups: %v", got)
+	}
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_UN); err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr, code := h.run("rollback", "--backup-dir", dirs[0])
+	if code != 0 || !strings.Contains(stdout, "removed_incomplete_backup") || len(h.backupDirs()) != 0 {
+		t.Fatalf("removal once the lock is released: exit %d\n%s\n%s", code, stdout, stderr)
+	}
+}
+
+// apply waits a few seconds for the lock, so a check that holds it for a
+// moment does not refuse the run (Opus re-audit 21, O1 and mutant A36).
+func TestSigningKeyRotationWaitsBrieflyForACheckHoldingTheLock(t *testing.T) {
+	h := newRotationHost(t)
+	if err := os.MkdirAll(h.path(rotationBackupRoot), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	lock, err := os.Open(h.path(rotationBackupRoot))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Close()
+	stdout, stderr, code := h.runPausedAt("inspected", func() {
+		if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_SH); err != nil {
+			t.Fatal(err)
+		}
+		go func() {
+			time.Sleep(1500 * time.Millisecond)
+			_ = syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+		}()
+	}, "apply")
+	if r := h.report(stdout, stderr, code); code != 0 || r["result"] != "rotated" {
+		t.Fatalf("apply while a check held the lock for a moment: exit %d result %v\n%s", code, r["result"], stderr)
+	}
+}
+
+// A folder named like a temporary file beside the configs is named by check
+// too, not only one beside the index (Sonnet re-audit 20, mutant P12).
+func TestSigningKeyRotationNamesAFolderNamedLikeATemporaryFileBesideTheConfigs(t *testing.T) {
+	h := newRotationHost(t)
+	planted := filepath.Join(h.path("etc/execution-substrate"), ".ags.json.signing-key-rotation.planted")
+	if err := os.Mkdir(planted, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	shown := "/etc/execution-substrate/.ags.json.signing-key-rotation.planted"
+	stdout, stderr, code := h.run("check")
+	if problems := rotationProblems(h.report(stdout, stderr, code)); code != 1 || !strings.Contains(problems, shown+" is a folder named like a rotation's temporary file") {
+		t.Fatalf("check with a planted folder beside the configs: exit %d problems %v", code, problems)
 	}
 }

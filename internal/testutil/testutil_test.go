@@ -327,6 +327,7 @@ func more(t *testing.T, unknown string) {
 	filepath.Join(testutil.Root, ".git/HEAD")
 	filepath.Join(testutil.Root, ".gitx")
 	filepath.Join(testutil.Root, ".git/"+unknown)
+	filepath.Join(testutil.Root, ".GIT")
 }
 `
 	const renamed = `package p
@@ -464,6 +465,7 @@ var own = func() bool {
 		`bad.go:108: filepath.Join resolves ".git/HEAD" against the repository root, which holds no such name`,
 		`bad.go:109: filepath.Join resolves ".gitx" against the repository root, which holds no such name`,
 		`bad.go:110: filepath.Join resolves ".git/" against the repository root, which holds no such name`,
+		`bad.go:111: filepath.Join resolves ".GIT" against the repository root, which holds no such name`,
 		`renamed.go:4: imports path/filepath as fp, which the check does not follow`,
 		`renamed.go:5: imports os as ., which the check does not follow`,
 	}
