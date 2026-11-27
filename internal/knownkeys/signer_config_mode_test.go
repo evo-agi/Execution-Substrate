@@ -56,20 +56,36 @@ func TestAGSAndEGSRefuseASignerConfigOtherUsersCanReadOrWrite(t *testing.T) {
 				t.Errorf("%s holds a private signing key and loads with mode %04o: %v", c.name, mode, err)
 			}
 		}
-		// A link to a file other users can read is judged by the file.
-		if err := os.Chmod(path, 0o644); err != nil {
-			t.Fatal(err)
-		}
+		// A link is judged by the file it names, as the check is on the
+		// opened file: a link to a private config loads, and a link to one
+		// other users can read does not.
 		link := filepath.Join(t.TempDir(), "link-"+c.name)
 		if err := os.Symlink(path, link); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(path, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.load(link); err != nil {
+			t.Errorf("%s: a link to a config with mode 0600 is refused: %v", c.name, err)
+		}
+		if err := os.Chmod(path, 0o644); err != nil {
 			t.Fatal(err)
 		}
 		if err := c.load(link); err == nil {
 			t.Errorf("%s loads through a link to a file with mode 0644", c.name)
 		}
-		// A folder is not a config file.
-		if err := c.load(t.TempDir()); err == nil || !strings.Contains(err.Error(), "must be a regular file") {
-			t.Errorf("%s loads a folder: %v", c.name, err)
+		// A folder is not a config file, even one only its owner can enter,
+		// which the other-users clause would let through.
+		folder := filepath.Join(t.TempDir(), "private-folder")
+		if err := os.Mkdir(folder, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(folder, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.load(folder); err == nil || !strings.Contains(err.Error(), "must be a regular file") {
+			t.Errorf("%s: a folder with mode 0700: got %v, want the refusal of a file that is not a regular file", c.name, err)
 		}
 	}
 }

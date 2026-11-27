@@ -177,8 +177,11 @@ func TestESConfigCheckAgreesWithConfigLoad(t *testing.T) {
 			section(d, "nomad")["token_file"] = section(d, "execution")["results_root_dir"].(string) + "/es-token"
 		})},
 		{"trailing data", append(append([]byte{}, example...), []byte("{}")...)},
-		// A box still on the repository's published keys is refused here,
-		// so the upgrade stops before apply until its keys are rotated.
+		// A host of the shape the upgrade checks that is still on the
+		// repository's published keys is refused here, so its upgrade stops
+		// before apply until its keys are rotated. (The Remote Alpha box has
+		// another shape and never reaches this check; AGS, EGS and ES
+		// refusing to start on the new binaries is what stops it.)
 		{"published signing keys", published},
 	}
 	refused := 0

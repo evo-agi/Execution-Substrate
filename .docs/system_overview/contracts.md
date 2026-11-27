@@ -299,7 +299,8 @@ whose private half is public, or that needs none, proves nothing.
 - A public key that needs no private key is refused the same way: one of the
   14 values that `crypto/ed25519` decodes to a point of small order (the
   eight such points, the two whose x is 0 also written with the sign bit set,
-  and the two written with y = p and y = p + 1). Anyone can make a signature
+  and the four written with y = p or y = p + 1, each with either sign bit).
+  Anyone can make a signature
   that verifies under such a key. 32 zero bytes is one of them, so a
   placeholder of zeros is refused like a known key. A test derives the eight
   points from the curve and checks the list against every encoding of them

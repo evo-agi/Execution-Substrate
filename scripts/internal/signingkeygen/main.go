@@ -73,7 +73,7 @@ func KeyID(role string, public ed25519.PublicKey) string {
 
 // generate writes a new key for role to path and returns its public part.
 func generate(role, path string, random io.Reader) (signer, error) {
-	if err := checkFolder(filepath.Dir(path)); err != nil {
+	if err := checkFolder(filepath.Dir(path), os.Geteuid()); err != nil {
 		return signer{}, err
 	}
 	public, private, err := ed25519.GenerateKey(random)
@@ -122,10 +122,13 @@ func generate(role, path string, random io.Reader) (signer, error) {
 
 // checkFolder refuses a folder in which another user could replace the key
 // file between its creation and its copy into a config, which would hand
-// the host a key that user holds: one owned by another user other than
-// root, or one that group or others can write without the sticky bit, which
-// keeps them from replacing a file they do not own.
-func checkFolder(dir string) error {
+// the host a key that user holds: one owned by a user other than euid (the
+// effective user ID of the process) and root, or one that group or others
+// can write without the sticky bit, which keeps them from replacing a file
+// they do not own. It judges the folder itself: a user who can write a
+// folder above it could put another folder in its place, so the key belongs
+// under folders of the user's own or root's, as setup's are.
+func checkFolder(dir string, euid int) error {
 	info, err := os.Stat(dir)
 	if err != nil {
 		return fmt.Errorf("inspect the folder %s: %w", dir, err)
@@ -134,7 +137,7 @@ func checkFolder(dir string) error {
 	if !info.IsDir() || !ok {
 		return fmt.Errorf("%s is not a folder", dir)
 	}
-	if int(st.Uid) != os.Geteuid() && st.Uid != 0 {
+	if int(st.Uid) != euid && st.Uid != 0 {
 		return fmt.Errorf("the folder %s belongs to another user, who could replace the key file; write the key into a folder of your own", dir)
 	}
 	if info.Mode().Perm()&0o022 != 0 && info.Mode()&os.ModeSticky == 0 {
