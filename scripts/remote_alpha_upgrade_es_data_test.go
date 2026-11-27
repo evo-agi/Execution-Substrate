@@ -206,22 +206,73 @@ func TestRemoteAlphaUpgradeESRollsBackAnApplyCutOffAfterItsSwap(t *testing.T) {
 	}
 }
 
+// A rollback moves Nomad's state back before it puts nomad.hcl back. A move
+// back that fails then leaves nomad.hcl naming the folder Nomad's state is
+// still in, so a Nomad that starts finds its own state; the rollback fails,
+// and run again it puts the whole backup back.
+func TestRemoteAlphaUpgradeESRollsBackNomadsStateBeforeNomadHCL(t *testing.T) {
+	helper := buildESConfigCheck(t)
+	h := newUpgradeHost(t, helper)
+	before := h.snapshot()
+	if stdout, stderr, code := h.apply(); code != 0 {
+		t.Fatalf("apply exited %d\nstdout %s\nstderr %s", code, stdout, stderr)
+	}
+	backupDir, _ := readSummary(t, h)
+	const failMoveBack = `_move = m.move_nomad_data
+def _fail(src, dst, log):
+    if src == m.NOMAD_DATA_DIR:
+        raise m.Refusal("nomad_data_move swap failed: a test stand-in")
+    return _move(src, dst, log)
+m.move_nomad_data = _fail`
+	_, stderr, code := runWithPatchedUpgrade(h, failMoveBack, "rollback", "--backup-dir", backupDir)
+	if code != 1 || !strings.Contains(stderr, "nomad_data_move swap failed: a test stand-in") {
+		t.Fatalf("rollback with a failing move back exited %d: %s", code, stderr)
+	}
+	if got := mustRead(t, h.path("etc/nomad.d/nomad.hcl")); got != boxNomadHCLMoved {
+		t.Fatalf("nomad.hcl went back before Nomad's state did:\n%s", got)
+	}
+	if mustRead(t, h.path(hostMovedData+"/server/raft/raft.db")) != "raft state\n" {
+		t.Fatal("Nomad's state is not where nomad.hcl names it")
+	}
+	stdout, stderr, code := h.run("rollback", "--backup-dir", backupDir)
+	if code != 0 || !strings.Contains(stdout, `"moved_back": true`) {
+		t.Fatalf("the rollback run again exited %d\nstdout %s\nstderr %s", code, stdout, stderr)
+	}
+	assertRestored(t, before, h.snapshot())
+}
+
 // A rollback moves Nomad's state back only from where apply put it, and
 // only to where the backup's nomad.hcl names it. A host where it cannot be
-// told apart is refused before a service is touched.
+// told apart is refused before a service is touched. So is the backup of a
+// later apply, made on a host whose state had moved, whose nomad.hcl names
+// /opt/nomad/es-data, when Nomad's state is not there: put back, that
+// nomad.hcl would have Nomad start a new cluster.
 func TestRemoteAlphaUpgradeESRefusesARollbackThatCannotPutNomadsStateBack(t *testing.T) {
 	helper := buildESConfigCheck(t)
+	laterNamesMoved := "the backup's /etc/nomad.d/nomad.hcl names /opt/nomad/es-data as Nomad's data folder, " +
+		"but Nomad's state is not there to put back (nomad_data_move plan: "
 	for _, tc := range []struct {
 		name, says string
+		later      bool // the backup of a second apply, on the host the first moved
 		break_     func(h *upgradeHost)
 	}{
-		{"the package's data folder holds entries again", "nomad data: Nomad's state cannot be told apart: ", func(h *upgradeHost) {
+		{"the package's data folder holds entries again", "nomad data: Nomad's state cannot be told apart: ", false, func(h *upgradeHost) {
 			h.write(hostPackageData+"/server/raft/raft.db", "a new cluster\n", 0o600)
 			_ = os.Chmod(h.path(hostPackageData), 0o700)
 		}},
 		{"the folder Nomad's state moved to is gone", "the backup's /etc/nomad.d/nomad.hcl names /opt/nomad/data as Nomad's data folder, " +
-			"but Nomad's state is not there to put back (nomad_data_move plan: new); nothing was changed", func(h *upgradeHost) {
+			"but Nomad's state is not there to put back (nomad_data_move plan: new); nothing was changed", false, func(h *upgradeHost) {
 			if err := os.Rename(h.path(hostMovedData), h.path("var/backups/es-data")); err != nil {
+				h.t.Fatal(err)
+			}
+		}},
+		{"a later apply's backup, the folder Nomad's state moved to gone", laterNamesMoved + "new); nothing was changed", true, func(h *upgradeHost) {
+			if err := os.Rename(h.path(hostMovedData), h.path("var/backups/es-data")); err != nil {
+				h.t.Fatal(err)
+			}
+		}},
+		{"a later apply's backup, Nomad's state back in the package's folder", laterNamesMoved + "move); nothing was changed", true, func(h *upgradeHost) {
+			if err := os.Rename(h.path(hostMovedData), h.path(hostPackageData)); err != nil {
 				h.t.Fatal(err)
 			}
 		}},
@@ -232,6 +283,21 @@ func TestRemoteAlphaUpgradeESRefusesARollbackThatCannotPutNomadsStateBack(t *tes
 				t.Fatalf("apply exited %d\nstdout %s\nstderr %s", code, stdout, stderr)
 			}
 			backupDir, _ := readSummary(t, h)
+			if tc.later {
+				first := backupDir
+				h.payload, h.commit = secondPayload(t, h, newerESCommit), newerESCommit
+				if stdout, stderr, code := h.apply(); code != 0 {
+					t.Fatalf("the later apply exited %d\nstdout %s\nstderr %s", code, stdout, stderr)
+				}
+				for _, dir := range backupDirs(t, h) {
+					if dir != first {
+						backupDir = dir
+					}
+				}
+				if backupDir == first || !strings.Contains(mustRead(t, h.path("etc/nomad.d/nomad.hcl")), `data_dir = "/opt/nomad/es-data"`) {
+					t.Fatalf("no later backup, or nomad.hcl does not name es-data: %v", backupDirs(t, h))
+				}
+			}
 			tc.break_(h)
 			before, files := h.snapshot(), backupFiles(t, h)
 			h.clearCalls()

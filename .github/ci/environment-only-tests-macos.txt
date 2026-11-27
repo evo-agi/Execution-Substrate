@@ -123,6 +123,7 @@ execution-substrate/scripts TestRemoteAlphaUpgradeESMovesTheStateOfAHostThatHasA
 execution-substrate/scripts TestRemoteAlphaUpgradeESRefusesANomadDataFolderItCannotTellApart
 execution-substrate/scripts TestRemoteAlphaUpgradeESRollsBackAnApplyCutOffAfterItsSwap
 execution-substrate/scripts TestRemoteAlphaUpgradeESRefusesARollbackThatCannotPutNomadsStateBack
+execution-substrate/scripts TestRemoteAlphaUpgradeESRollsBackNomadsStateBeforeNomadHCL
 # The move and rollback tests apply on a locked-http host, or move their host to HTTPS
 # with that apply first, in at least one case each. They are listed whole:
 # their cases on a locked-http host that only check pass there.

@@ -591,6 +591,78 @@ func TestNomadTakeBackProgramTakesBackTheStandInThePostinstGaveAway(t *testing.T
 	}
 }
 
+// The program changes only the file it looked at, at the data folder's path:
+// it opens it without following a link and goes on only when the file it
+// opened is the one it looked at. The program runs with os.open wrapped to
+// change what is at that path just before it is opened (each guard pinned,
+// as the other entries' guards are: A83-4 on #83). Nothing there is changed,
+// and the program fails, naming the path.
+func TestNomadTakeBackProgramTakesBackOnlyTheDataFileItLookedAt(t *testing.T) {
+	program := nomadTakeBackProgram(t)
+	wrapper := `
+import os, runpy, sys
+target, change = os.environ["CHANGED"], os.environ["CHANGE"]
+real_open = os.open
+changed = []
+def changing_open(path, flags, *args, **kwargs):
+    if path == target and not changed:
+        changed.append(path)
+        os.rename(path, path + ".old")
+        if change == "link":
+            os.symlink(path + ".old", path)
+        elif change == "folder":
+            os.mkdir(path)
+            os.chmod(path, 0o777)
+        else:
+            with open(path, "x") as new:
+                new.write("changed\n")
+            os.chmod(path, 0o666)
+    return real_open(path, flags, *args, **kwargs)
+os.open = changing_open
+sys.argv = sys.argv[1:]
+runpy.run_path(sys.argv[0], run_name="__main__")
+`
+	for _, tc := range []struct {
+		change, why string
+		kind        os.FileMode
+		perm        os.FileMode // as the change left it; a link's is not looked at
+	}{
+		{"file", "it changed while it was taken back", 0, 0o666},
+		{"folder", "it changed while it was taken back", os.ModeDir, 0o777},
+		// O_NOFOLLOW: the link's target, the file looked at, is not reached.
+		{"link", "Too many levels of symbolic links", os.ModeSymlink, 0},
+	} {
+		t.Run(tc.change, func(t *testing.T) {
+			root := t.TempDir()
+			config, data := filepath.Join(root, "etc"), filepath.Join(root, "data")
+			if err := os.MkdirAll(filepath.Join(config, "tls"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			writeStandIn(t, data)
+			if err := os.Chmod(data, 0o666); err != nil {
+				t.Fatal(err)
+			}
+			command := exec.Command("python3", "-I", "-c", wrapper, program, config, data)
+			command.Env = []string{"PATH=" + os.Getenv("PATH"), "CHANGED=" + data, "CHANGE=" + tc.change}
+			var stdout, stderr strings.Builder
+			command.Stdout, command.Stderr = &stdout, &stderr
+			err := command.Run()
+			want := data + ", a file where Nomad cannot keep its state, could not be taken back (" + tc.why + ")"
+			if err == nil || !strings.Contains(stderr.String(), want) || strings.Contains(stdout.String(), "took "+data) {
+				t.Fatalf("the program: %v, want it to fail saying %q\n%s\n%s", err, want, stdout.String(), stderr.String())
+			}
+			requireRegularFile(t, data+".old", nomadDataStandIn, 0o666)
+			info, err := os.Lstat(data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if info.Mode().Type() != tc.kind || tc.kind != os.ModeSymlink && info.Mode().Perm() != tc.perm {
+				t.Fatalf("%s is %v now, want it left as the change made it", data, info.Mode())
+			}
+		})
+	}
+}
+
 // install_nomad_service_config removes the stand-in once nomad.hcl is
 // written, after a run cut off between the move and nomad.hcl: the
 // program's first run passes over it.

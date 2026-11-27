@@ -7932,7 +7932,10 @@ between the check and `apply`'s own reading, refused before the backup; an
 fails on the stand-in, rolled back by itself, or killed there, its host
 refused by `check` and put back by `rollback`; a rollback refused, before a
 service is touched, when the package's folder holds entries again or the
-moved folder is gone; `https` hosts without a keyring (with the
+moved folder is gone, and a later apply's backup, whose `nomad.hcl` names
+the moved folder, refused when that folder is gone or Nomad's state is back
+in the package's folder; a rollback whose move back fails, leaving
+`nomad.hcl` naming the moved folder, and run again, put back; `https` hosts without a keyring (with the
 box's builds of an earlier commit, and with the payload's), with a sound
 keyring and earlier builds, and with a keyring that is readable by others,
 holds a 16-byte key, is a symbolic link or is a dangling one (on
