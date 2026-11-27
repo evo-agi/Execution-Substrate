@@ -1,6 +1,9 @@
 package config
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -11,6 +14,7 @@ import (
 
 	"execution-substrate/internal/callerauth"
 	runtimeconfigv1 "execution-substrate/internal/contracts/runtimeconfig/v1"
+	"execution-substrate/internal/testutil"
 )
 
 func TestExecutionConfigValidateAllowsDefaultRuntimeIdentityTmpfsSize(t *testing.T) {
@@ -132,8 +136,24 @@ func TestRetainedResultAuditF1SubmitExamplesPassFullConfigValidation(t *testing.
 		"es.operator_and_control_plane.json",
 	} {
 		t.Run(name, func(t *testing.T) {
-			data, err := os.ReadFile(filepath.Join("..", "..", ".examples", "config", name))
+			data, err := os.ReadFile(testutil.Path(filepath.Join(".examples", "config", name)))
 			if err != nil {
+				t.Fatal(err)
+			}
+			// The examples carry known verification keys, which ES refuses
+			// (contracts.md section 3B); everything else validates.
+			var asIs Config
+			if err := json.Unmarshal(data, &asIs); err != nil {
+				t.Fatalf("decode example: %v", err)
+			}
+			if err := asIs.Validate(); err == nil || !strings.Contains(err.Error(), "is a known key") {
+				t.Fatalf("example with its known keys: got %v, want the known-key refusal", err)
+			}
+			var doc map[string]any
+			if err := json.Unmarshal(data, &doc); err != nil {
+				t.Fatalf("decode example: %v", err)
+			}
+			if data, err = json.Marshal(testutil.WithFreshSigningKeys(t, doc)); err != nil {
 				t.Fatal(err)
 			}
 			var cfg Config
@@ -431,7 +451,7 @@ func TestAdmissionPolicyConfigValidateAcceptsHarmlessStaticScriptLiteralMarker(t
 }
 
 func TestConfiguredLiteralPolicyDemoExampleActivatesAdmissionPolicy(t *testing.T) {
-	examplePath := filepath.Join("..", "..", ".examples", "config", "es.configured_literal_policy_demo.json")
+	examplePath := testutil.Path(filepath.Join(".examples", "config", "es.configured_literal_policy_demo.json"))
 	raw, err := os.ReadFile(examplePath)
 	if err != nil {
 		t.Fatalf("read configured literal policy demo example: %v", err)
@@ -1083,22 +1103,22 @@ func validTestConfigJSON() string {
     "trust_model": {
       "algorithm": "ed25519",
       "key_id": "test-key",
-      "public_key_hex": "0000000000000000000000000000000000000000000000000000000000000000"
+      "public_key_hex": "` + testVerificationPublicKeyHex + `"
     },
     "provenance": {
       "algorithm": "ed25519",
       "key_id": "test-key",
-      "public_key_hex": "0000000000000000000000000000000000000000000000000000000000000000"
+      "public_key_hex": "` + testVerificationPublicKeyHex + `"
     },
     "derivation_attestation": {
       "algorithm": "ed25519",
       "key_id": "test-key",
-      "public_key_hex": "0000000000000000000000000000000000000000000000000000000000000000"
+      "public_key_hex": "` + testVerificationPublicKeyHex + `"
     },
     "workload_identity_binding": {
       "algorithm": "ed25519",
       "key_id": "test-key",
-      "public_key_hex": "0000000000000000000000000000000000000000000000000000000000000000"
+      "public_key_hex": "` + testVerificationPublicKeyHex + `"
     }
   },
   "workload_vault_auth": {
@@ -1122,7 +1142,7 @@ func validTestSignerVerifierConfig() SignerVerifierConfig {
 	return SignerVerifierConfig{
 		Algorithm:    "ed25519",
 		KeyID:        "test-key",
-		PublicKeyHex: strings.Repeat("00", 32),
+		PublicKeyHex: testVerificationPublicKeyHex,
 	}
 }
 
@@ -1378,3 +1398,15 @@ func TestSecurityNamespaceIssuersAreCheckedAtStartup(t *testing.T) {
 		t.Fatalf("Load accepts an unknown field in a namespace_issuers entry: %v", err)
 	}
 }
+
+// testVerificationPublicKeyHex is a key generated for this test run. A
+// placeholder such as 32 zero bytes is not a key: it is a point of small
+// order, for which anyone can sign, and ES refuses it (contracts.md, section
+// 3B).
+var testVerificationPublicKeyHex = func() string {
+	public, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		panic(err)
+	}
+	return hex.EncodeToString(public)
+}()

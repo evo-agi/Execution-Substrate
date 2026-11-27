@@ -59,6 +59,7 @@ import (
 	esapi "execution-substrate/es/api"
 	esconfig "execution-substrate/es/config"
 	"execution-substrate/internal/callerauth"
+	"execution-substrate/internal/testutil"
 )
 
 var userIdentityModule = filepath.Join(executionSubstrateRepoRoot, "scripts", "internal", "remote_alpha_user_identity.py")
@@ -370,6 +371,8 @@ func (b *userIdentityBox) writeConfig(example, path, clientCA string, prefixes [
 	if err := json.Unmarshal(mustReadUserIdentityFile(b.t, filepath.Join(executionSubstrateRepoRoot, ".examples", "config", example+".json")), &doc); err != nil {
 		b.t.Fatal(err)
 	}
+	// The examples carry known keys, which AGS and ES refuse at startup.
+	testutil.WithFreshSigningKeys(b.t, doc)
 	doc["tls"].(map[string]any)["client_ca_file"] = clientCA
 	doc["authorization"].(map[string]any)["allowed_spiffe_path_prefixes"] = prefixes
 	data, err := json.MarshalIndent(doc, "", "  ")
@@ -377,6 +380,39 @@ func (b *userIdentityBox) writeConfig(example, path, clientCA string, prefixes [
 		b.t.Fatal(err)
 	}
 	writeUserIdentityFile(b.t, path, append(data, '\n'), 0o640)
+}
+
+// withFreshKeysInText swaps every signing key in text, an example AGS or ES
+// config, for one generated for this test, keeping every other byte, so a test
+// of a byte-exact edit can still load the result in the service's loader.
+func withFreshKeysInText(t *testing.T, text string) string {
+	t.Helper()
+	var old, fresh map[string]any
+	if err := json.Unmarshal([]byte(text), &old); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(text), &fresh); err != nil {
+		t.Fatal(err)
+	}
+	testutil.WithFreshSigningKeys(t, fresh)
+	swap := func(was, now map[string]any, field string) {
+		before, _ := was[field].(string)
+		after, _ := now[field].(string)
+		if before == "" || after == "" {
+			t.Fatalf("withFreshKeysInText: no %s", field)
+		}
+		text = strings.ReplaceAll(text, `"`+before+`"`, `"`+after+`"`)
+	}
+	if signer, ok := old["signer"].(map[string]any); ok {
+		swap(signer, fresh["signer"].(map[string]any), "private_key_hex")
+		swap(signer, fresh["signer"].(map[string]any), "public_key_hex")
+	}
+	if verification, ok := old["verification"].(map[string]any); ok {
+		for name, entry := range verification {
+			swap(entry.(map[string]any), fresh["verification"].(map[string]any)[name].(map[string]any), "public_key_hex")
+		}
+	}
+	return text
 }
 
 type userIdentityRun struct {
@@ -1881,7 +1917,7 @@ func TestUserIdentityAllowlistEditKeepsEveryOtherByte(t *testing.T) {
 	// services' own config loaders with exactly the expected allowlist.
 	for _, example := range []string{"ags", "es"} {
 		t.Run("example "+example, func(t *testing.T) {
-			text := string(mustReadUserIdentityFile(t, filepath.Join(executionSubstrateRepoRoot, ".examples", "config", example+".json")))
+			text := withFreshKeysInText(t, string(mustReadUserIdentityFile(t, filepath.Join(executionSubstrateRepoRoot, ".examples", "config", example+".json"))))
 			var doc struct {
 				Authorization struct {
 					Prefixes []string `json:"allowed_spiffe_path_prefixes"`
