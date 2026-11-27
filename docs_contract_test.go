@@ -2989,10 +2989,10 @@ func TestReliableSubmitContractAdapterFoundationDocsAndSourceContract(t *testing
 		"the unwired private v1 `PlanBinding` producer consumes its actual frozen tuple rather than re-resolving the same categories",
 		"Separate owned material contains all primary payload, runtime-support, compressed/parsed mount, Vault CA, and combined trust-bundle bytes",
 		"The separate private v1 producer now selects only an unwired encoding, commitment and completeness assessment",
-		"does not synthesize `PrepareRequest` or `Manifest` proof from the plan, create a parallel admission engine, tighten the current empty-environment-allowlist contract, or infer authority-handoff inapplicability contrary to current Submit",
-		"Current environment validation remains unchanged",
-		"when a manifest declares allowed environment keys, invocation keys must stay within that set",
-		"when that list is empty, current source does not enforce explicit allowlist membership",
+		"does not synthesize `PrepareRequest` or `Manifest` proof from the plan, create a parallel admission engine, change environment or mount admission, or infer authority-handoff inapplicability contrary to current Submit",
+		"Environment and mount validation belong to the shared admission path, which the plan consumes and does not repeat",
+		"a caller environment key must be a portable name, must not be reserved and must be in the artifact's signed environment allowlist",
+		"an empty list admits nothing",
 		"Current supported `Submit` constructs `authority_handoff`",
 	)
 	assertContainsAll(t, "reliable-submit neutral outcome docs", outcomes,
@@ -4853,7 +4853,7 @@ func TestWorkstreamASharedKernelDecisionIsDocumented(t *testing.T) {
 		"`shared_kernel.md`",
 		"`claims.package.publication` remains AGS-owned publish-time meaning carried inside the signed record",
 		"`claims.admission.authorization` is intentionally limited to `derivation_spec_digest` and `output_id`",
-		"`claims.admission.execution` is intentionally limited to runtime env allowlist, required capabilities, `target_platform`, and `network_access`",
+		"`claims.admission.execution` is intentionally limited to runtime env allowlist, declared mount targets, required capabilities, `target_platform`, and `network_access`",
 		"`artifact_digest` and `payload_digest` remain separate facts.",
 		"The repo now has one active shared artifact evidence kernel:",
 		"The shared kernel is not a standalone service boundary and not a cross-service semantic dumping ground.",
@@ -4881,7 +4881,7 @@ func TestWorkstreamASharedKernelDecisionIsDocumented(t *testing.T) {
 
 	for _, required := range []string{
 		"`invocation.derivation_spec_digest` and `invocation.output_id` are the only currently shared derivation authorization inputs ES compares against aggregate artifact evidence during `:prepare`.",
-		"`:prepare` uses only the narrow shared execution/runtime claims ES currently enforces from aggregate artifact evidence: runtime env allowlist, required capabilities, `target_platform`, and `network_access`.",
+		"`:prepare` uses only the narrow shared execution/runtime claims ES currently enforces from aggregate artifact evidence: runtime env allowlist, declared mount targets, required capabilities, `target_platform`, and `network_access`.",
 		"`:prepare` does not treat Control Plane orchestration, review, checkpoint, finalization, task-attempt, or proof-harness metadata as shared admission facts.",
 	} {
 		if !strings.Contains(lifecycle, required) {

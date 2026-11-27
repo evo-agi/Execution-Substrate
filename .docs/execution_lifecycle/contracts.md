@@ -508,14 +508,26 @@ object or scheduler handoff.
 - If `mode` is present, it must be `sync` or `async`.
 - `invocation.output_id`, every `argv` element, every environment key and value, and every mount target path must not contain `${`, `%{` or a NUL byte. Nomad's client evaluates `${...}` and `%{...}` in each string of a task's driver configuration as an HCL template (with node attributes, node metadata, the task environment and a set of functions), rewrites the escapes `$${` and `%%{`, and replaces `${name}` in environment and meta values; no process can receive a NUL byte. ES refuses such a request with `400 invalid_request` before anything is staged or sent, so the workload receives exactly the strings ES admitted. Other control bytes are passed on as written.
 - Every `argv` element and every mount target path must also be in Unicode Normalization Form C, must hold only code points that are assigned in the Unicode version of ES's normalization tables (today 15.0.0), and must not begin with a byte order mark (U+FEFF). Nomad's client parses each string of a task's driver configuration with HCL, which drops a byte order mark at the start of a string and holds every string in Normalization Form C, so it would pass such a string on in another form than ES admitted, and two mount targets that differ only in normal form would be one path for the container. A string that holds only assigned code points and is in Normalization Form C stays unchanged under every later version of the normalization tables. ES refuses such a request with `400 invalid_request` before anything is staged or sent. Environment keys and values and `invocation.output_id` are not parsed that way and are not held to this rule.
-- Environment keys must not use reserved runtime/control-plane keys.
-- If the manifest runtime interface declares allowed environment keys, provided keys must stay within that set.
+- The artifact's signed runtime interface, `claims.admission.execution.runtime` in the aggregate evidence, is the only source of what a caller may set in `invocation.env` or mount through `invocation.mounts`. Neither the request nor ES configuration widens it. ES applies the rules below in the shared admission path, so `:prepare`, `:submit` and every other path that admits a request apply them alike.
+- Every environment key must be a portable name: an ASCII letter or underscore, followed by ASCII letters, digits and underscores. A key outside that form could carry an equals sign, which ends the name in the environment string the container receives, so a key such as `VAULT_ADDR=x` would set a reserved variable.
+- Environment keys must not use reserved keys, whether or not the artifact declares them. ES matches reserved keys with ASCII letters folded to upper case, so `http_proxy` is reserved with `HTTPS_PROXY`. The reserved keys are:
+  - ES's own runtime and control-plane keys: `PROJECT_NAME`, `ENVIRONMENT`, `PLATFORM`, `GUID`, `SERVICE_ID`, `SESSION_ID`, `PARENT_SESSION_ID`, `TRACEPARENT`, `EXEC_SVID_PATH`, `VAULT_AGENT_TOKEN_PATH`, `VAULT_ADDR`, `VAULT_CACERT`, `VAULT_NAMESPACE`, `SSL_CERT_FILE`, and every key starting with `EXEC_`;
+  - the keys the GNU C library removes before it starts a set-user-ID program (glibc 2.42, `sysdeps/generic/unsecvars.h`), and every key starting with `LD_`, the dynamic loader's keys;
+  - the keys sudo removes from the environment of every command it runs (sudo 1.9.16p2, `plugins/sudoers/env.c`, `initial_badenv_table`, the entries that apply on Linux), and `_JAVA_OPTIONS` and `CLASSPATH`, which later sudo adds. Its wildcard entries become the prefixes `LD_`, `_RLD`, `KRB5_CONFIG` and `GIT_` (wider than sudo's `GIT_CONFIG_*`, because Git reads many `GIT_` keys that run commands or change TLS verification), and its bash-function entry becomes the prefix `BASH_FUNC_`, the form in which current bash imports a function; such a key also fails the portable-name rule. These keys cover shell startup files and options (`ENV`, `BASH_ENV`, `SHELLOPTS`, `PS4` and others) and the module paths and option keys of Python, Perl, Ruby, Node.js, Java and Git;
+  - `PATH`, which decides which program a command name or a `#!/usr/bin/env` line runs; `HOME`, which decides where programs read per-user startup and configuration files, such as Python's user site directory and its `usercustomize` module; and `JDK_JAVA_OPTIONS`;
+  - every key starting with `PYTHON`, because CPython reads many such keys to load code or change how it runs;
+  - the keys that send the run's traffic through a host the caller chooses or exempt hosts from a proxy (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `FTP_PROXY`, `NO_PROXY`), change which certificates the run trusts (`SSL_CERT_DIR`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`, `NODE_TLS_REJECT_UNAUTHORIZED`), or write its TLS session keys to a file (`SSLKEYLOGFILE`).
+  The exact list is `reservedRuntimeEnvKeys` and `reservedRuntimeEnvPrefixes` in `es/admission/service.go`, and `TestReservedEnvironmentKeySetIsPinned` pins it. It is a backstop for a publisher's mistake, not the boundary: no list can name every variable every program reads. The boundary is the allowlist in the next rule.
+- Every environment key must be one the artifact declares in its signed `environment_variables` list, compared byte for byte with the declared entries after surrounding white space is trimmed from them, the form the evidence canonicalization signs. An empty or absent list admits no caller environment key. A publisher that declares a key accepts any value a caller ES admits gives it.
 - If mounts are provided, they must satisfy the current mount contract:
   - artifact-backed
   - read-only
   - absolute cleaned target paths
   - target paths under `/execution/mounts`
   - no overlap between mount targets
+  - each target path one the artifact declares in its signed `mount_targets` list, compared byte for byte with the declared entries after surrounding white space is trimmed from them. An artifact that declares no mount target admits no caller mount, and a declared target that breaks the rules above can never be used. A declared target admits a mount of any artifact that passes evidence and runtime-trust checks, whoever published it: the declaration says where the artifact reads caller-supplied files, not whose files it trusts.
+- A request that breaks a rule on environment keys or mount targets is refused with `400 invalid_request`, except overlapping mount targets, which keep `409 mount_conflict`. ES refuses it after it verifies the artifact evidence and before it reads the payload or any mount artifact, stages anything or contacts Nomad. ES checks environment keys in byte order of the key and reports the first that fails.
+- `invocation.argv` is not bounded by a declaration. The arguments go to the artifact's own entrypoint, and the artifact's code decides what they mean: an artifact that runs its arguments as a command lets every caller ES admits run that command with the artifact's network access and identity.
 - If `execution_substrate.runtime_profile` is present, it must name a runtime profile ES supports and has enabled in config. Unsupported or disabled profile selections fail during `:prepare` before any run ID exists.
 
 ### Response contract
@@ -537,7 +549,7 @@ Successful response is `200` JSON with these contract fields:
 - `:prepare` does not require ARS descriptor or manifest support data on the
   current hot path.
 - `:prepare` verifies publish-time evidence and EGS runtime-trust constraints before success.
-- `:prepare` uses only the narrow shared execution/runtime claims ES currently enforces from aggregate artifact evidence: runtime env allowlist, required capabilities, `target_platform`, and `network_access`.
+- `:prepare` uses only the narrow shared execution/runtime claims ES currently enforces from aggregate artifact evidence: runtime env allowlist, declared mount targets, required capabilities, `target_platform`, and `network_access`.
 - `:prepare` resolves workload-zone vault information through the configured workload-zone Vault config reference and ARS before success.
 - `:prepare` evaluates ES Admission Policy Layer v0 before success. When an
   enabled policy requires payload inspection, `:prepare` may fetch bounded
@@ -1279,8 +1291,9 @@ error messages. Private admission formatting redacts ordinary output. No
 universal provider-response or logs limit is selected. Successful public
 receipt, job and handoff shapes stay compatible. Blank schema/version defaults
 to v1; explicit nonblank legacy versions remain accepted; mode defaults async,
-timeout zero and omitted CPU/memory to 10/128. Empty environment allowlist
-meaning and caller/profile/platform precedence stay unchanged. Structural
+timeout zero and omitted CPU/memory to 10/128. Environment and mount
+admission (section 5) and caller/profile/platform precedence are those of the
+shared admission path; the foundation adds no rule of its own. Structural
 `reliable_submit` bodies remain strictly rejected. The selected private schema
 is `execution-substrate.reliable-submit-request/v1` with nested
 `reliable_submit.contract = execution-substrate.reliable-submit/v1`; reliable

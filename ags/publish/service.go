@@ -240,6 +240,7 @@ func (s *Service) buildArtifactEvidence(
 					Runtime: evidencev1.ExecutionRuntime{
 						EnvironmentVariables: cloneStringsPreserveShape(manifest.RuntimeInterface.EnvironmentVariables),
 						RequiredCapabilities: cloneStringsPreserveShape(manifest.RuntimeInterface.RequiredCapabilities),
+						MountTargets:         cloneStringsPreserveShape(manifest.RuntimeInterface.MountTargets),
 					},
 					Workload: evidencev1.ExecutionWorkload{
 						TargetPlatform: strings.TrimSpace(req.Admission.Workload.TargetPlatform),

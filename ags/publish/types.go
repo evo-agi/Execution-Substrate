@@ -46,6 +46,9 @@ type AccessInput struct {
 type RuntimeInterface struct {
 	EnvironmentVariables []string `json:"environment_variables"`
 	RequiredCapabilities []string `json:"required_capabilities"`
+	// MountTargets is the publisher's list of paths at which the artifact
+	// accepts a caller mount. AGS signs it as given; ES decides what it admits.
+	MountTargets []string `json:"mount_targets,omitempty"`
 }
 
 type PolicyDecision struct {

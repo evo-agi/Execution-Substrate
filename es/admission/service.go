@@ -18,6 +18,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -71,7 +72,16 @@ const (
 
 var (
 	labeledSHA256DigestPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
-	reservedRuntimeEnvKeys     = map[string]struct{}{
+	// reservedRuntimeEnvKeys and reservedRuntimeEnvPrefixes name the
+	// environment keys a caller may never set, whatever the artifact
+	// declares. They are written in upper case and matched against the
+	// caller's key with ASCII letters folded to upper case, so http_proxy is
+	// reserved with HTTPS_PROXY. They are a backstop, not the boundary: the
+	// boundary is the artifact's signed environment allowlist, which admits
+	// no caller key when it is empty (validateInvocationAgainstManifest). No
+	// list can name every variable every program reads.
+	reservedRuntimeEnvKeys = map[string]struct{}{
+		// Keys ES sets or owns for the run's identity, platform and trust.
 		"PROJECT_NAME":                {},
 		"ENVIRONMENT":                 {},
 		"PLATFORM":                    {},
@@ -79,7 +89,7 @@ var (
 		"SERVICE_ID":                  {},
 		"SESSION_ID":                  {},
 		"PARENT_SESSION_ID":           {},
-		"traceparent":                 {},
+		"TRACEPARENT":                 {},
 		"EXEC_SVID_PATH":              {},
 		"VAULT_AGENT_TOKEN_PATH":      {},
 		"VAULT_ADDR":                  {},
@@ -87,10 +97,106 @@ var (
 		"VAULT_NAMESPACE":             {},
 		"SSL_CERT_FILE":               {},
 		runtimeIdentityEndpointEnvKey: {},
+
+		// The keys the GNU C library removes before it starts a set-user-ID
+		// program (glibc 2.42, sysdeps/generic/unsecvars.h). Its LD_ keys are
+		// covered by the LD_ prefix below.
+		"GCONV_PATH":             {},
+		"GETCONF_DIR":            {},
+		"GLIBC_TUNABLES":         {},
+		"HOSTALIASES":            {},
+		"LOCALDOMAIN":            {},
+		"LOCPATH":                {},
+		"MALLOC_ARENA_MAX":       {},
+		"MALLOC_ARENA_TEST":      {},
+		"MALLOC_MMAP_MAX_":       {},
+		"MALLOC_MMAP_THRESHOLD_": {},
+		"MALLOC_PERTURB_":        {},
+		"MALLOC_TOP_PAD_":        {},
+		"MALLOC_TRACE":           {},
+		"MALLOC_TRIM_THRESHOLD_": {},
+		"NIS_PATH":               {},
+		"NLSPATH":                {},
+		"RESOLV_HOST_CONF":       {},
+		"RES_OPTIONS":            {},
+		"TMPDIR":                 {},
+		"TZDIR":                  {},
+
+		// The keys sudo removes from the environment of every command it
+		// runs (sudo 1.9.16p2, plugins/sudoers/env.c, initial_badenv_table,
+		// the entries that apply on Linux; its wildcard entries are prefixes
+		// below), with _JAVA_OPTIONS and CLASSPATH, which later sudo adds.
+		"IFS":               {},
+		"CDPATH":            {},
+		"PATH_LOCALE":       {},
+		"KRB5_KTNAME":       {},
+		"TERMINFO":          {},
+		"TERMINFO_DIRS":     {},
+		"TERMPATH":          {},
+		"TERMCAP":           {},
+		"ENV":               {},
+		"BASH_ENV":          {},
+		"PS4":               {},
+		"GLOBIGNORE":        {},
+		"BASHOPTS":          {},
+		"SHELLOPTS":         {},
+		"JAVA_TOOL_OPTIONS": {},
+		"_JAVA_OPTIONS":     {},
+		"CLASSPATH":         {},
+		"PERLIO_DEBUG":      {},
+		"PERLLIB":           {},
+		"PERL5LIB":          {},
+		"PERL5OPT":          {},
+		"PERL5DB":           {},
+		"FPATH":             {},
+		"NULLCMD":           {},
+		"READNULLCMD":       {},
+		"ZDOTDIR":           {},
+		"TMPPREFIX":         {},
+		"RUBYLIB":           {},
+		"RUBYOPT":           {},
+		"NODE_OPTIONS":      {},
+		"NODE_PATH":         {},
+
+		// Keys that decide which program a name runs and where programs read
+		// per-user startup and configuration files (Python's user site
+		// directory and its usercustomize module, Git, shells), and the Java
+		// launcher's own options key.
+		"PATH":             {},
+		"HOME":             {},
+		"JDK_JAVA_OPTIONS": {},
+
+		// Keys that send the run's traffic through a host of the caller's
+		// choosing, exempt hosts from a proxy, change which certificates the
+		// run trusts, or write its TLS session keys to a file.
+		"HTTP_PROXY":                   {},
+		"HTTPS_PROXY":                  {},
+		"ALL_PROXY":                    {},
+		"FTP_PROXY":                    {},
+		"NO_PROXY":                     {},
+		"SSL_CERT_DIR":                 {},
+		"REQUESTS_CA_BUNDLE":           {},
+		"CURL_CA_BUNDLE":               {},
+		"NODE_EXTRA_CA_CERTS":          {},
+		"NODE_TLS_REJECT_UNAUTHORIZED": {},
+		"SSLKEYLOGFILE":                {},
 	}
 	reservedRuntimeEnvPrefixes = []string{
 		"EXEC_",
 		"EXEC_WORKLOAD_VAULT_",
+		// The dynamic loader's keys (glibc and musl), and sudo's wildcard
+		// entries LD_*, _RLD*, KRB5_CONFIG* and GIT_CONFIG_*.
+		"LD_",
+		"_RLD",
+		"KRB5_CONFIG",
+		// CPython and Git read many keys under these prefixes to load code,
+		// run commands or change TLS verification; this covers sudo's
+		// PYTHON* entries and GIT_SSH_COMMAND and GIT_CONFIG_*.
+		"PYTHON",
+		"GIT_",
+		// Bash imports a function from a key of this form. Such a key is not
+		// a valid caller key name in any case (it ends in %%).
+		"BASH_FUNC_",
 	}
 )
 
@@ -704,6 +810,7 @@ func manifestFromEvidence(evidence evidencev1.ArtifactEvidence) Manifest {
 		RuntimeInterface: RuntimeInterface{
 			EnvironmentVariables: append([]string(nil), runtime.EnvironmentVariables...),
 			RequiredCapabilities: append([]string(nil), runtime.RequiredCapabilities...),
+			MountTargets:         append([]string(nil), runtime.MountTargets...),
 		},
 	}
 }
@@ -910,27 +1017,74 @@ func validateInvocationAgainstManifest(invocation ArtifactInvocation, manifest M
 			return &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "invocation.argv " + nomadRewrittenText}
 		}
 	}
-	allowedEnv := make(map[string]struct{}, len(manifest.RuntimeInterface.EnvironmentVariables))
-	for _, key := range manifest.RuntimeInterface.EnvironmentVariables {
-		allowedEnv[strings.TrimSpace(key)] = struct{}{}
-	}
-	for key, value := range invocation.Env {
+	// The artifact's signed runtime interface is the only source of what a
+	// caller may set or mount. An empty or absent list admits nothing.
+	allowedEnv := declaredStringSet(manifest.RuntimeInterface.EnvironmentVariables)
+	for _, key := range sortedMapKeys(invocation.Env) {
+		value := invocation.Env[key]
 		if !nomadPassesAsWritten(key) || !nomadPassesAsWritten(value) {
 			return &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "invocation.env " + nomadEvaluatedText}
+		}
+		if !isPortableEnvironmentKey(key) {
+			return &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: fmt.Sprintf("environment key must be ASCII letters, digits and underscores, not starting with a digit: %q", key)}
 		}
 		if isReservedRuntimeEnvKey(key) {
 			return &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: fmt.Sprintf("environment key is reserved for runtime identity or control-plane use: %s", key)}
 		}
-		if len(allowedEnv) > 0 {
-			if _, ok := allowedEnv[key]; !ok {
-				return &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: fmt.Sprintf("environment key is not allowed by the runtime interface: %s", key)}
-			}
+		if _, ok := allowedEnv[key]; !ok {
+			return &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: fmt.Sprintf("environment key is not allowed by the runtime interface: %s", key)}
 		}
 	}
 	if err := validateRuntimeMounts(invocation.Mounts); err != nil {
 		return err
 	}
+	allowedMountTargets := declaredStringSet(manifest.RuntimeInterface.MountTargets)
+	for _, mount := range invocation.Mounts {
+		if _, ok := allowedMountTargets[mount.TargetPath]; !ok {
+			return &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: fmt.Sprintf("mount target_path is not declared by the runtime interface: %s", mount.TargetPath)}
+		}
+	}
 	return nil
+}
+
+// declaredStringSet returns the trimmed entries of a signed runtime-interface
+// list, the form the evidence canonicalization signs.
+func declaredStringSet(values []string) map[string]struct{} {
+	set := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		set[strings.TrimSpace(value)] = struct{}{}
+	}
+	return set
+}
+
+func sortedMapKeys(values map[string]string) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// isPortableEnvironmentKey reports whether key is a portable environment
+// variable name: an ASCII letter or underscore, then ASCII letters, digits
+// and underscores. A key outside that form could carry an equals sign, which
+// ends the name in the environment string the container receives, so
+// "VAULT_ADDR=x" would set VAULT_ADDR past the reserved-key check.
+func isPortableEnvironmentKey(key string) bool {
+	if key == "" {
+		return false
+	}
+	for index := 0; index < len(key); index++ {
+		c := key[index]
+		switch {
+		case c == '_', 'A' <= c && c <= 'Z', 'a' <= c && c <= 'z':
+		case '0' <= c && c <= '9' && index > 0:
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func newDependencyClient(cfg esconfig.DependencyConfig, dependencyName string) (*dependencyClient, error) {
@@ -1100,7 +1254,7 @@ func isLabeledSHA256Digest(value string) bool {
 }
 
 func isReservedRuntimeEnvKey(key string) bool {
-	normalized := strings.TrimSpace(key)
+	normalized := asciiUpper(strings.TrimSpace(key))
 	if normalized == "" {
 		return false
 	}
@@ -1113,4 +1267,17 @@ func isReservedRuntimeEnvKey(key string) bool {
 		}
 	}
 	return false
+}
+
+// asciiUpper folds only the ASCII letters a to z. Unicode case mapping would
+// fold look-alike letters such as U+017F into ASCII ones, and no program reads
+// a variable through such a fold.
+func asciiUpper(value string) string {
+	folded := []byte(value)
+	for index, c := range folded {
+		if 'a' <= c && c <= 'z' {
+			folded[index] = c - ('a' - 'A')
+		}
+	}
+	return string(folded)
 }

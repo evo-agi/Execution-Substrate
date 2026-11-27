@@ -124,8 +124,9 @@ resolved plan. A future reliable
 canonical encoding, replay custody, keyed dispatch, producer enablement or
 recovery path is selected here. Reliable submit remains unavailable and runtime
 unwired. The plan must not synthesize `PrepareRequest` or `Manifest` proof, create
-a parallel admission engine, tighten the empty-environment-allowlist contract,
-or infer authority-handoff inapplicability contrary to current `Submit`.
+a parallel admission engine, change environment or mount admission (which the
+shared admission path owns, `.docs/execution_lifecycle/contracts.md`, section
+5), or infer authority-handoff inapplicability contrary to current `Submit`.
 
 **Current invariant:** real artifact, capability, target, runtime-profile,
 policy and trust admission remain authoritative; successful legacy receipt,

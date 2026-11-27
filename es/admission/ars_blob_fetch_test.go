@@ -641,6 +641,7 @@ func TestAdmissionPolicyInspectsOnlyPayloadBytesThatHashToTheSignedDigest(t *tes
 
 func TestSubmitRefusesMountBytesAndEvidenceThatDoNotHashToTheirDigests(t *testing.T) {
 	fixture, signed := signedStaticScriptFixture(t)
+	fixture = fixture.withMountTargets(t, "/execution/mounts/config")
 	mountArchive := mustRuntimeMountArchiveBytes(t, runtimeMountArchiveEntry{name: "config.txt", body: []byte("signed mount"), typeflag: '0', mode: 0o644})
 	mountFixture := fixture.withPayload(t, mountArchive)
 	substitutedMount := mustRuntimeMountArchiveBytes(t, runtimeMountArchiveEntry{name: "config.txt", body: []byte("swapped mount"), typeflag: '0', mode: 0o644})
@@ -697,6 +698,7 @@ func TestSubmitRefusesMountBytesAndEvidenceThatDoNotHashToTheirDigests(t *testin
 // not resolve mounts.)
 func TestSubmitRefusesAMountDiscoveryRecordForAnotherArtifact(t *testing.T) {
 	fixture, signed := signedStaticScriptFixture(t)
+	fixture = fixture.withMountTargets(t, "/execution/mounts/config")
 	requestedArchive := mustRuntimeMountArchiveBytes(t, runtimeMountArchiveEntry{name: "config.txt", body: []byte("requested mount"), typeflag: '0', mode: 0o644})
 	requested := fixture.withPayload(t, requestedArchive)
 	otherArchive := mustRuntimeMountArchiveBytes(t, runtimeMountArchiveEntry{name: "config.txt", body: []byte("other sealed artifact"), typeflag: '0', mode: 0o644})

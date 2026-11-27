@@ -703,7 +703,7 @@ the `control-plane-normal-shell/v1` temporary compatibility edge continue.
 - ES-retained result bundles remain opaque output artifacts owned by ES; CP
   may materialize, review, and finalize their contents semantically, but CP
   does not own the retained bundle as run-control state.
-- ES now relies only on the narrower shared execution/runtime inputs it actually enforces: runtime env allowlist, required capabilities, `target_platform`, and `network_access`.
+- ES now relies only on the narrower shared execution/runtime inputs it actually enforces: runtime env allowlist, declared mount targets, required capabilities, `target_platform`, and `network_access`.
 - The current `verification.derivation_attestation.*` and
   `verification.workload_identity_binding.*` config/startup verifier shapes are
   residue from earlier admission forms. They do not add active shared-kernel
