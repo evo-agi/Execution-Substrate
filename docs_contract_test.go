@@ -15164,9 +15164,13 @@ func TestARSStorageCheckDocsContract(t *testing.T) {
 		path     string
 		required []string
 	}{
-		// PLANS.md keeps only the stale-wording check: the rule moved to the
-		// host and runtime boundary standing rules.
+		// PLANS.md and the other three standing rule files get only the
+		// stale-wording check: the rule itself is in the host and runtime
+		// boundary standing rules.
 		{"PLANS.md", nil},
+		{standingAdmissionRulesPath, nil},
+		{standingRouteRulesPath, nil},
+		{standingWorkstreamsPath, nil},
 		{standingHostRuntimePath, []string{
 			"`storage.root_dir` and `storage.index_file` must be absolute and written in normal form, as Python's `os.path.normpath` writes it",
 			"because ARS opens both exactly as written while the mounts it gets use the normal form",

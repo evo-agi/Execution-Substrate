@@ -121,9 +121,9 @@ var plansOpeningSections = []string{
 	"## Reopened-Seam Exit Criteria",
 }
 
-// plansGuardedFiles are the files the status-entry guard reads: PLANS.md and
-// the standing rule files that moved out of it, which are edited in place in
-// the same way.
+// plansGuardedFiles are the files the status-entry guard, and the guard that
+// keeps the closed record's headings out, read: PLANS.md and the standing rule
+// files that moved out of it, which are edited in place in the same way.
 var plansGuardedFiles = []string{"PLANS.md", standingAdmissionRulesPath, standingRouteRulesPath, standingWorkstreamsPath, standingHostRuntimePath}
 
 // plansDatedLineExceptions are the dated lines that PLANS.md held, inside
@@ -293,10 +293,15 @@ func TestPlansRecordIsClosed(t *testing.T) {
 		"in the order they stood at the top of `PLANS.md`",
 	)
 
-	// Nothing that moved is still in PLANS.md under the same heading.
-	plansHeadings := map[string]bool{}
-	for _, heading := range markdownHeadingTitles(mustRead(t, "PLANS.md")) {
-		plansHeadings[heading] = true
+	// Nothing that moved is still in PLANS.md under the same heading, or in a
+	// standing rule file that holds text moved out of PLANS.md.
+	planHeadings := map[string]string{}
+	for _, path := range plansGuardedFiles {
+		for _, heading := range markdownHeadingTitles(mustRead(t, path)) {
+			if _, seen := planHeadings[heading]; !seen {
+				planHeadings[heading] = path
+			}
+		}
 	}
 	moved := 0
 	for _, heading := range markdownHeadingTitles(record) {
@@ -304,8 +309,8 @@ func TestPlansRecordIsClosed(t *testing.T) {
 			continue
 		}
 		moved++
-		if plansHeadings[heading] {
-			t.Errorf("heading %q is in both PLANS.md and %s", heading, plansRecordPath)
+		if path, ok := planHeadings[heading]; ok {
+			t.Errorf("heading %q is in both %s and %s", heading, path, plansRecordPath)
 		}
 	}
 	if moved < 30 {
