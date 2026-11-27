@@ -195,11 +195,20 @@ var (
 		// virtual machines' option keys; Python environments and settings
 		// modules; programs that other programs start by name; module paths
 		// of R and Tcl; build and archive tool options and helper programs;
-		// the best-known Go toolchain keys, including the two that change how
-		// ES's own Go supervisor runs in the container; and the directory and
-		// domain bash reads the translations of $"..." strings from, which it
-		// expands as double-quoted text, so a catalog the caller chooses could
-		// run commands in a script that translates its messages.
+		// the Go toolchain keys that choose which toolchain, compiler or helper
+		// command runs, where modules, sources and build results come from or
+		// go, or how the toolchain builds and fetches, and the two that change
+		// how ES's own Go supervisor runs in the container; the GNU C
+		// compiler's keys that choose the programs it runs, the headers and
+		// libraries it builds with, or extra options; and the directory,
+		// domain and language list bash reads the translations of $"..."
+		// strings from, which it expands as double-quoted text, so a catalog
+		// the caller chooses could run commands in a script that translates
+		// its messages. Upstream glibc's gettext skips a LANGUAGE entry that
+		// holds a path only in set-user-ID programs (intl/dcigettext.c, 2.39
+		// and 2.42), so LANGUAGE=../x can name a catalog outside the
+		// directory; the one Ubuntu build tested ignored such entries, and a
+		// backstop does not rest on one build.
 		"WORKLOAD_VAULT_INSECURE_SKIP_VERIFY": {},
 		"WGETRC":                              {},
 		"NETRC":                               {},
@@ -269,8 +278,29 @@ var (
 		"GOSUMDB":                             {},
 		"GONOSUMDB":                           {},
 		"GONOSUMCHECK":                        {},
+		"GOROOT":                              {},
+		"GOPATH":                              {},
+		"GOBIN":                               {},
+		"GOCACHE":                             {},
+		"GOCACHEPROG":                         {},
+		"GOMODCACHE":                          {},
+		"GOWORK":                              {},
+		"GOAUTH":                              {},
+		"GOVCS":                               {},
+		"GOEXPERIMENT":                        {},
+		"GOTMPDIR":                            {},
+		"GCCGO":                               {},
+		"GCC_EXEC_PREFIX":                     {},
+		"COMPILER_PATH":                       {},
+		"LIBRARY_PATH":                        {},
+		"CPATH":                               {},
+		"C_INCLUDE_PATH":                      {},
+		"CPLUS_INCLUDE_PATH":                  {},
+		"OBJC_INCLUDE_PATH":                   {},
+		"GCC_COMPARE_DEBUG":                   {},
 		"TEXTDOMAINDIR":                       {},
 		"TEXTDOMAIN":                          {},
+		"LANGUAGE":                            {},
 	}
 	reservedRuntimeEnvPrefixes = []string{
 		"EXEC_",
@@ -334,6 +364,8 @@ var (
 		"CARGO_",
 		"RUSTUP_",
 		"RUSTC",
+		// cgo's compiler and linker flags and their allow and deny lists;
+		"CGO_",
 		// client configuration that names helper programs, sockets or
 		// trust: Docker, ssh, gRPC and curl.
 		"DOCKER_",

@@ -224,23 +224,27 @@ var mustBeReservedEnvironmentKeys = []string{
 	"MAKEFILES", "TAR_OPTIONS", "LESSOPEN", "LESSCLOSE", "CC", "CXX", "CPP", "LD", "AR", "AS", "CFLAGS",
 	"CXXFLAGS", "CPPFLAGS", "LDFLAGS", "RUSTFLAGS", "RUSTDOC", "RUSTDOCFLAGS", "GODEBUG", "GOTRACEBACK",
 	"GOFLAGS", "GOENV", "GOTOOLCHAIN", "GOPROXY", "GONOPROXY", "GOPRIVATE", "GOINSECURE", "GOSUMDB",
-	"GONOSUMDB", "GONOSUMCHECK", "TEXTDOMAINDIR", "TEXTDOMAIN",
+	"GONOSUMDB", "GONOSUMCHECK", "GOROOT", "GOPATH", "GOBIN", "GOCACHE", "GOCACHEPROG", "GOMODCACHE",
+	"GOWORK", "GOAUTH", "GOVCS", "GOEXPERIMENT", "GOTMPDIR", "GCCGO", "GCC_EXEC_PREFIX", "COMPILER_PATH",
+	"LIBRARY_PATH", "CPATH", "C_INCLUDE_PATH", "CPLUS_INCLUDE_PATH", "OBJC_INCLUDE_PATH",
+	"GCC_COMPARE_DEBUG", "TEXTDOMAINDIR", "TEXTDOMAIN", "LANGUAGE",
 }
 
 var mustBeReservedEnvironmentPrefixes = []string{
 	"EXEC_", "EXEC_WORKLOAD_VAULT_", "LD_", "_RLD", "KRB5_CONFIG", "PYTHON", "GIT_", "BASH_FUNC_",
 	"VAULT_", "XDG_", "OPENSSL_", "NPM_CONFIG_", "NOMAD_", "CODEX_", "OPENAI_", "PIP_", "PYTEST_",
 	"PERL", "RUBY", "GEM_", "BUNDLE_", "JAVA_", "MAVEN_", "GRADLE_", "DOTNET_", "CORECLR_", "COMPLUS_",
-	"PHP", "LUA_", "CARGO_", "RUSTUP_", "RUSTC", "DOCKER_", "SSH_", "GRPC_", "CURL_",
+	"PHP", "LUA_", "CARGO_", "RUSTUP_", "RUSTC", "CGO_", "DOCKER_", "SSH_", "GRPC_", "CURL_",
 }
 
 var mustBeReservedEnvironmentSuffixes = []string{"INSECURE_SKIP_VERIFY"}
 
 // redTeam74FamilyKeys are the keys red-team report 19 on PR #74 found
 // admitted when a package declared them. Each is now reserved by name or by
-// family. Of the others it listed, TEXTDOMAINDIR is reserved by name since
-// re-check 23 (see TestReservedEnvironmentKeySetIsPinned), and the six that
-// stay unreserved are in TestOrdinaryEnvironmentKeysAreNotReserved.
+// family. Of the others it listed, TEXTDOMAINDIR and LANGUAGE are reserved by
+// name since re-check 23 and report 24 (see
+// TestReservedEnvironmentKeySetIsPinned), and the five that stay unreserved
+// are in TestOrdinaryEnvironmentKeysAreNotReserved.
 var redTeam74FamilyKeys = []string{
 	"XDG_CONFIG_HOME", "XDG_CONFIG_DIRS", "XDG_DATA_HOME", "XDG_DATA_DIRS", "XDG_CACHE_HOME",
 	"VAULT_AGENT_ADDR", "VAULT_PROXY_ADDR", "VAULT_HTTP_PROXY", "VAULT_SKIP_VERIFY", "VAULT_TLS_SERVER_NAME",
@@ -358,8 +362,11 @@ func TestReservedEnvironmentKeysAreRefusedEvenWhenTheArtifactDeclaresThem(t *tes
 		// Re-check 23 on PR #74: bash's translation directory and domain, and
 		// any TLS-skip switch named like Go's InsecureSkipVerify, including
 		// the one the legacy reference workload reads.
-		"TEXTDOMAINDIR", "textdomain", "REFERENCE_VAULT_INSECURE_SKIP_VERIFY",
+		"TEXTDOMAINDIR", "textdomain", "Language", "REFERENCE_VAULT_INSECURE_SKIP_VERIFY",
 		"reference_vault_insecure_skip_verify", "INSECURE_SKIP_VERIFY", "App_Tls_Insecure_Skip_Verify",
+		// Go and gcc keys that change what runs or gets built (re-check 23).
+		"GOCACHEPROG", "GOAUTH", "GOROOT", "GOWORK", "cgo_cflags", "CGO_LDFLAGS", "GCC_EXEC_PREFIX",
+		"COMPILER_PATH", "CPATH",
 	} {
 		t.Run(key, func(t *testing.T) {
 			fixture := base.withEnvironmentVariables(t, []string{key})
@@ -376,19 +383,20 @@ func TestOrdinaryEnvironmentKeysAreNotReserved(t *testing.T) {
 		"APP_MODE", "WORKLOAD_VAULT_SECRET_PATH", "REFERENCE_SECRET_PATH", "REFERENCE_IDENTITY_URL",
 		"NODE_ENV", "LANG", "TZ", "PATHNAME", "HOMEPAGE", "ENVIRONMENT_NAME", "LDAP_URL", "GITHUB_REF",
 		"PYTHO", "_X",
-		// Near misses: the TLS-skip rule is a suffix and TEXTDOMAIN an exact
-		// key.
-		"SKIP_VERIFY", "INSECURE_SKIP_VERIFY_NOTE", "TEXTDOMAIN_LABEL",
+		// Near misses: the TLS-skip rule is a suffix, and TEXTDOMAIN, GOROOT
+		// and CPATH are exact keys.
+		"SKIP_VERIFY", "INSECURE_SKIP_VERIFY_NOTE", "TEXTDOMAIN_LABEL", "GOROOT_LABEL", "CPATHS", "CGO",
+		// Go keys that choose only among code the artifact already holds or
+		// tune the Go runtime.
+		"GOOS", "GOARCH",
 		// Report 19 on PR #74 listed these. LANG and LC_ALL select only
-		// installed locales: glibc refuses a locale name that holds a path
-		// unless LOCPATH, which is reserved, is set. LANGUAGE selects among
-		// the installed message catalogs; glibc 2.39 ignored an entry that
-		// holds a path (re-check 23 and report 24 on PR #74), and the
-		// directory and domain the catalogs come from are reserved.
+		// installed locales: glibc refuses a locale name that climbs out of
+		// the locale directory and looks a name up only under that directory
+		// unless LOCPATH, which is reserved, is set (locale/findlocale.c).
 		// GOMEMLIMIT, GOGC and GOMAXPROCS tune the Go runtime. None of them
 		// loads code, so they stay available to a publisher that declares
 		// them.
-		"LC_ALL", "LANGUAGE", "GOMEMLIMIT", "GOGC", "GOMAXPROCS",
+		"LC_ALL", "GOMEMLIMIT", "GOGC", "GOMAXPROCS",
 	} {
 		if isReservedRuntimeEnvKey(key) {
 			t.Fatalf("%q should not be reserved", key)

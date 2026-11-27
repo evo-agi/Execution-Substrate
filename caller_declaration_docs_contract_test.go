@@ -31,6 +31,10 @@ func TestCallerDeclarationRulesAreInTheLifecycleContract(t *testing.T) {
 		"They do not include every such key; the families below add more",
 		"A family is reserved as a whole, so that the list does not have to keep up with each program's next key",
 		"every key that ends in `INSECURE_SKIP_VERIFY`",
+		// Report 24 on PR #74: why LANGUAGE is reserved and LANG and LC_ALL
+		// are not.
+		"skips a `LANGUAGE` entry that holds a path only in set-user-ID programs",
+		"`LANG` and `LC_ALL` stay open",
 		// Audit 21 and re-check 23 on PR #74: what sudo 1.9.16p2 does not
 		// hold is credited to its development branch, by name.
 		"the entries sudo's development branch adds to that table after 1.9.16p2 (read on 2026-11-26): `_JAVA_OPTIONS`, `CLASSPATH`, `PYTHONSTARTUP`, `NODE_OPTIONS`, `NODE_PATH`, `GIT_SSH_COMMAND`, `GIT_CONFIG_*` and `GCONV_PATH`, which the glibc list above already holds.",
