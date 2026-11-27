@@ -25,6 +25,8 @@ const (
 	standingRulesDir           = ".docs/standing_rules/"
 	standingAdmissionRulesPath = standingRulesDir + "execution_admission_and_custody.md"
 	standingRouteRulesPath     = standingRulesDir + "remote_alpha_operator_routes.md"
+	standingWorkstreamsPath    = standingRulesDir + "workstream_decisions.md"
+	standingHostRuntimePath    = standingRulesDir + "host_and_runtime_boundary.md"
 )
 
 // plansAndStandingRules returns PLANS.md and the standing rule files that
@@ -34,7 +36,9 @@ func plansAndStandingRules(t *testing.T) string {
 	t.Helper()
 	return compactText(mustRead(t, "PLANS.md")) + " " +
 		compactText(mustRead(t, standingAdmissionRulesPath)) + " " +
-		compactText(mustRead(t, standingRouteRulesPath))
+		compactText(mustRead(t, standingRouteRulesPath)) + " " +
+		compactText(mustRead(t, standingWorkstreamsPath)) + " " +
+		compactText(mustRead(t, standingHostRuntimePath))
 }
 
 // The last section of each standing rule file moved out of PLANS.md after the
@@ -46,6 +50,37 @@ const (
 	pairedRootCustodyHeading = "### Current paired-root custody and acceptance scope"
 	remoteAlphaAccessHeading = "### Remote Alpha access contract v1 — Tranche A"
 )
+
+// The decision records of Workstreams A to F, and the host and runtime
+// boundary slice rules, moved out of PLANS.md unreworded into their own
+// standing rule files: each workstream record is one section of
+// standingWorkstreamsPath, and each host and runtime boundary slice one
+// section of standingHostRuntimePath. Checks of that text read the section.
+// standingStep4BaseCommit is the trunk_dev commit from which the workstream
+// decision records and the host and runtime boundary slice rules moved.
+const standingStep4BaseCommit = "0b9278c"
+
+const (
+	supportedLocalRootsHeading = "## Supported-local execution roots and launcher users"
+	raHardeningHeading         = "## Remote Alpha Hardening History and Current Retirement"
+	milestone1Heading          = "## Milestone 1: Least-Privilege Runtime/Security Boundary Closeout"
+	raESConfigTLSPrepHeading   = "## Current Remote Alpha ES Config/TLS Ownership Prep Slice"
+	raHostNetworkHeading       = "## Current Remote Alpha Host Network Boundary Slice"
+)
+
+// workstreamRecord returns the decision record of a workstream, "A" to "F",
+// compacted.
+func workstreamRecord(t *testing.T, workstream string) string {
+	t.Helper()
+	return standingRuleSection(t, standingWorkstreamsPath, "## Workstream "+workstream+" decision record")
+}
+
+// hostRuntimeSection returns one section of the host and runtime boundary
+// standing rules, compacted.
+func hostRuntimeSection(t *testing.T, heading string) string {
+	t.Helper()
+	return standingRuleSection(t, standingHostRuntimePath, heading)
+}
 
 // standingRuleSection returns the section of the standing rule file at path
 // that opens with heading, compacted: from the heading to the next heading, or
@@ -69,12 +104,13 @@ func standingRuleSection(t *testing.T, path, heading string) string {
 const plansRecordSHA256 = "0b13566795d1233f91c293f4b5ea79134af73013d75fea2e7f74f7df57ed0561"
 
 // plansMaxBytes caps PLANS.md a little above its size once the record, the
-// standing rules and then the last two standing-rule sections moved out
-// (127,250 bytes). PLANS.md holds intent and order, is edited in place to
+// standing rules, the last two standing-rule sections and then the workstream
+// decision records and the host and runtime boundary slice rules moved out
+// (71,974 bytes). PLANS.md holds intent and order, is edited in place to
 // stay current, and must not regrow into a log or a rule book. Raising the
 // cap is a deliberate, reviewed change; prefer putting a standing rule in the
 // file that owns it.
-const plansMaxBytes = 132000
+const plansMaxBytes = 76000
 
 // plansOpeningSections are the first top-level sections of PLANS.md, in
 // order: the plan an agent needs before any change comes first.
@@ -88,7 +124,7 @@ var plansOpeningSections = []string{
 // plansGuardedFiles are the files the status-entry guard reads: PLANS.md and
 // the standing rule files that moved out of it, which are edited in place in
 // the same way.
-var plansGuardedFiles = []string{"PLANS.md", standingAdmissionRulesPath, standingRouteRulesPath}
+var plansGuardedFiles = []string{"PLANS.md", standingAdmissionRulesPath, standingRouteRulesPath, standingWorkstreamsPath, standingHostRuntimePath}
 
 // plansDatedLineExceptions are the dated lines that PLANS.md held, inside
 // sections that stayed current, keyed by the file that holds them now. They
@@ -172,7 +208,9 @@ func TestPlansOpensWithTheCurrentPlan(t *testing.T) {
 		"This file holds the current plan, its intent and order:",
 		"Put a standing rule in the file that owns it, not here.",
 		"[`execution_admission_and_custody.md`]("+standingAdmissionRulesPath+") holds the Workstream C admission and custody rules",
-		"[`remote_alpha_operator_routes.md`]("+standingRouteRulesPath+") holds the Remote Alpha operator route rules P0i to P0v and the Remote Alpha access contract v1.",
+		"[`remote_alpha_operator_routes.md`]("+standingRouteRulesPath+") holds the Remote Alpha operator route rules P0i to P0v and the Remote Alpha access contract v1,",
+		"[`workstream_decisions.md`]("+standingWorkstreamsPath+") holds the decision records of Workstreams A to F",
+		"[`host_and_runtime_boundary.md`]("+standingHostRuntimePath+") holds the host and runtime boundary slice rules. Edit a rule there, in place.",
 		"Do not add dated status entries",
 		"Cite this file by section heading, never by line number",
 		"("+plansRecordPath+")",
@@ -293,7 +331,7 @@ func TestPlansRecordIsNamedWhereAgentsStart(t *testing.T) {
 // each file, and no section is held in two places.
 func TestStandingRulesKeepPlansAuthority(t *testing.T) {
 	assertContainsAll(t, "AGENTS.md standing rules", compactText(mustRead(t, "AGENTS.md")),
-		"The files in `"+standingRulesDir+"` hold standing rules that moved unreworded out of `PLANS.md`: `execution_admission_and_custody.md` holds the Workstream C admission and custody rules, and `remote_alpha_operator_routes.md` holds the Remote Alpha operator route rules P0i to P0v and the Remote Alpha access contract v1. They keep `PLANS.md`'s authority, second in the list above: only their location changed, and the rules above apply to them as they apply to `PLANS.md`.",
+		"The files in `"+standingRulesDir+"` hold standing rules that moved unreworded out of `PLANS.md`: `execution_admission_and_custody.md` holds the Workstream C admission and custody rules, `remote_alpha_operator_routes.md` holds the Remote Alpha operator route rules P0i to P0v and the Remote Alpha access contract v1, `workstream_decisions.md` holds the decision records of Workstreams A to F, and `host_and_runtime_boundary.md` holds the host and runtime boundary slice rules. They keep `PLANS.md`'s authority, second in the list above: only their location changed, and the rules above apply to them as they apply to `PLANS.md`.",
 		"consult the `"+standingRulesDir+"` file that holds the rules of the surface you change",
 		"update the `"+standingRulesDir+"` file in place when a standing rule it holds changed, also without a dated status entry",
 	)
@@ -310,7 +348,7 @@ func TestStandingRulesKeepPlansAuthority(t *testing.T) {
 		}
 	}
 	sort.Strings(inFolder)
-	if want := []string{standingAdmissionRulesPath, standingRouteRulesPath}; strings.Join(inFolder, " ") != strings.Join(want, " ") {
+	if want := []string{standingAdmissionRulesPath, standingHostRuntimePath, standingRouteRulesPath, standingWorkstreamsPath}; strings.Join(inFolder, " ") != strings.Join(want, " ") {
 		t.Fatalf("%s holds %q, want %q: a new standing rule file is named in AGENTS.md section 3 first", standingRulesDir, inFolder, want)
 	}
 
@@ -390,6 +428,85 @@ func TestStandingRulesKeepPlansAuthority(t *testing.T) {
 			t.Errorf("README.md does not link %s", rule.path)
 		}
 	}
+
+	// The workstream decision records and the host and runtime boundary
+	// slice rules moved out of PLANS.md together, each into a file of its
+	// own. Each section there must be one that moved, PLANS.md must point
+	// to it, and no heading title may be in both files.
+	for _, rule := range []struct {
+		path     string
+		sections []string
+		// pointers name a PLANS.md section and the link to this file that
+		// it must hold.
+		pointers [][2]string
+	}{
+		{
+			standingWorkstreamsPath,
+			[]string{
+				"## Workstream A decision record", "## Workstream B decision record", "## Workstream C decision record",
+				"## Workstream D decision record", "## Workstream E decision record", "## Workstream F decision record",
+			},
+			[][2]string{
+				{"### Workstream A - Shared Contract And Kernel Reset", "#workstream-a-decision-record)"},
+				{"### Workstream B - Artifact Storage And Publication Contract Reset", "#workstream-b-decision-record)"},
+				{"### Workstream C - Execution And Admission Reset", "#workstream-c-decision-record)"},
+				{"### Workstream D - Policy And Authorization Reset", "#workstream-d-decision-record)"},
+				{"### Workstream E - Lookup And Config Indirection Reset", "#workstream-e-decision-record)"},
+				{"### Workstream F - Runtime Identity Handoff Reset", "#workstream-f-decision-record)"},
+			},
+		},
+		{
+			standingHostRuntimePath,
+			[]string{supportedLocalRootsHeading, raHardeningHeading, milestone1Heading, raESConfigTLSPrepHeading, raHostNetworkHeading},
+			[][2]string{
+				{"## Document Scope And Current Implementation", "#supported-local-execution-roots-and-launcher-users)"},
+				{"## Host And Runtime Boundary Rules", ")"},
+			},
+		},
+	} {
+		text := mustRead(t, rule.path)
+		assertContainsAll(t, rule.path+" header", compactText(text),
+			"moved here unreworded from",
+			"at `trunk_dev` commit `"+standingStep4BaseCommit+"`, so that `PLANS.md` holds intent and order",
+			"Edit a rule here in place when it changes. Do not add dated status entries",
+			"Cite this file by section heading, never by line number.",
+		)
+		plansTitles := map[string]bool{}
+		for heading := range plansHeadings {
+			plansTitles[strings.TrimSpace(strings.TrimLeft(heading, "#"))] = true
+		}
+		var sections []string
+		for _, heading := range markdownHeadingTitles(text) {
+			if strings.HasPrefix(heading, "# ") {
+				continue
+			}
+			sections = append(sections, heading)
+			if title := strings.TrimSpace(strings.TrimLeft(heading, "#")); plansTitles[title] {
+				t.Errorf("heading %q is in both PLANS.md and %s", title, rule.path)
+			}
+		}
+		if strings.Join(sections, "\n") != strings.Join(rule.sections, "\n") {
+			t.Errorf("%s has the sections %q, want %q, the ones that moved", rule.path, sections, rule.sections)
+		}
+		for _, pointer := range rule.pointers {
+			if !plansHeadings[pointer[0]] {
+				t.Fatalf("PLANS.md lacks the section %q that points to %s", pointer[0], rule.path)
+			}
+			section := plans[strings.Index(plans, pointer[0])+len(pointer[0]):]
+			if next := strings.Index(section, "\n#"); next >= 0 {
+				section = section[:next]
+			}
+			if !strings.Contains(section, "]("+rule.path+pointer[1]) {
+				t.Errorf("the PLANS.md section %q does not link %s%s", pointer[0], rule.path, strings.TrimSuffix(pointer[1], ")"))
+			}
+		}
+		if !strings.Contains(readme, "]("+rule.path+")") {
+			t.Errorf("README.md does not link %s", rule.path)
+		}
+	}
+	assertContainsAll(t, "PLANS.md pointer to "+standingHostRuntimePath, compactText(markedDocSection(t, "PLANS.md", plans, "## Host And Runtime Boundary Rules", "## Future ES Privilege-Boundary Design Track")),
+		"Each has a section of the same name there.",
+	)
 }
 
 // TestStandingRulesPinEachOtherwiseUncheckedRule pins the standing rule

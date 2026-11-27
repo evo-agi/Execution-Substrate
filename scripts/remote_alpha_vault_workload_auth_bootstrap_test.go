@@ -2745,11 +2745,11 @@ func TestRemoteAlphaVaultWorkloadAuthBootstrapStandingRootTokens(t *testing.T) {
 }
 
 // TestRemoteAlphaVaultWorkloadAuthBootstrapP0qR1Docs pins the documented
-// P0q-R1 refinement (PLANS.md slice and the system-overview subsection) to
+// P0q-R1 refinement (standing rule slice and the system-overview subsection) to
 // the behaviour the tests above check.
 func TestRemoteAlphaVaultWorkloadAuthBootstrapP0qR1Docs(t *testing.T) {
-	plans := compactDocSection(t, mustRead(t, "PLANS.md"), "## Current Remote Alpha Host Network Boundary Slice", "## Future ES Privilege-Boundary Design Track")
-	assertContainsAll(t, "PLANS.md P0q-R1 slice", plans,
+	slice := compactDocSection(t, mustRead(t, standingHostRuntimePath), "## Current Remote Alpha Host Network Boundary Slice", "")
+	assertContainsAll(t, "P0q-R1 slice standing rules", slice,
 		"the same tranche refines the P0q workload-auth bootstrap helper (INF-04, INF-05, and the root-token half of INF-06)",
 		"`enable_unauthenticated_access = [\"generate-root\"]`",
 		"one key share; CI installs Vault 2.2.2",

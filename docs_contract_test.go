@@ -4799,7 +4799,7 @@ func TestPrimaryMilestoneRealignmentPreservesESOwnership(t *testing.T) {
 }
 
 func TestWorkstreamASharedKernelDecisionIsDocumented(t *testing.T) {
-	plans := compactText(mustRead(t, "PLANS.md"))
+	record := workstreamRecord(t, "A")
 	sharedKernel := compactText(mustRead(t, ".docs/system_overview/shared_kernel.md"))
 	contracts := compactText(mustRead(t, ".docs/system_overview/contracts.md"))
 	boundaries := compactText(mustRead(t, ".docs/system_overview/boundaries.md"))
@@ -4843,8 +4843,8 @@ func TestWorkstreamASharedKernelDecisionIsDocumented(t *testing.T) {
 		"generated evidence, `.out` workspaces, support bundles, retained bundles, reports, traces, logs, summaries, and proof artifacts do not become shared-kernel authority",
 		"Workstream A0 preserves the current `execution_substrate.runtime_profile` annotation and bounded `control-plane-normal-shell/v1` compatibility edge.",
 	} {
-		if !strings.Contains(plans, required) {
-			t.Fatalf("PLANS missing Workstream A shared-kernel decision phrase %q", required)
+		if !strings.Contains(record, required) {
+			t.Fatalf("Workstream A record missing Workstream A shared-kernel decision phrase %q", required)
 		}
 	}
 
@@ -4927,7 +4927,7 @@ func TestWorkstreamASharedKernelDecisionIsDocumented(t *testing.T) {
 }
 
 func TestWorkstreamBArtifactPublicationStorageDecisionIsDocumented(t *testing.T) {
-	plans := compactText(mustRead(t, "PLANS.md"))
+	record := workstreamRecord(t, "B")
 	decisionRaw := mustRead(t, ".docs/system_overview/artifact_publication_storage.md")
 	decision := compactText(decisionRaw)
 	contractsRaw := mustRead(t, ".docs/system_overview/contracts.md")
@@ -4984,8 +4984,8 @@ func TestWorkstreamBArtifactPublicationStorageDecisionIsDocumented(t *testing.T)
 		"The current ARS discovery record remains the canonical runtime-discoverable surface for the current slice.",
 		"the secondary descriptor support path remains a temporary compatibility edge",
 	} {
-		if !strings.Contains(plans, required) {
-			t.Fatalf("PLANS missing Workstream B decision phrase %q", required)
+		if !strings.Contains(record, required) {
+			t.Fatalf("Workstream B record missing Workstream B decision phrase %q", required)
 		}
 	}
 
@@ -5049,10 +5049,10 @@ func TestWorkstreamBArtifactPublicationStorageDecisionIsDocumented(t *testing.T)
 }
 
 func TestWorkstreamB1ArtifactBoundaryGuardrailPostureIsDocumented(t *testing.T) {
-	plans := compactText(mustRead(t, "PLANS.md"))
+	record := workstreamRecord(t, "B")
 	decision := compactText(mustRead(t, ".docs/system_overview/artifact_publication_storage.md"))
 
-	assertContainsAll(t, "PLANS Workstream B1 guardrail posture", plans,
+	assertContainsAll(t, "Workstream B record Workstream B1 guardrail posture", record,
 		"B1 is the focused code-facing guardrail slice over the same B0 boundary.",
 		"AGS publication output",
 		"ARS runtime-facing discovery",
@@ -5150,7 +5150,7 @@ func TestWorkstreamBArtifactCompatibilityEdgesStayConsistent(t *testing.T) {
 }
 
 func TestWorkstreamB0ArtifactBoundaryGateIsDocumented(t *testing.T) {
-	plans := compactText(mustRead(t, "PLANS.md"))
+	record := workstreamRecord(t, "B")
 	decision := compactText(mustRead(t, ".docs/system_overview/artifact_publication_storage.md"))
 	sharedKernel := compactText(mustRead(t, ".docs/system_overview/shared_kernel.md"))
 	contracts := compactText(mustRead(t, ".docs/system_overview/contracts.md"))
@@ -5161,7 +5161,7 @@ func TestWorkstreamB0ArtifactBoundaryGateIsDocumented(t *testing.T) {
 		label string
 		text  string
 	}{
-		{label: "PLANS Workstream B0 gate", text: plans},
+		{label: "Workstream B record Workstream B0 gate", text: record},
 		{label: "artifact publication/storage decision", text: decision},
 	} {
 		assertContainsAll(t, doc.label, doc.text,
@@ -5235,7 +5235,7 @@ func TestWorkstreamB0ArtifactBoundaryGateIsDocumented(t *testing.T) {
 }
 
 func TestWorkstreamCESExecutionAdmissionModelDecisionIsDocumented(t *testing.T) {
-	plans := compactText(mustRead(t, "PLANS.md"))
+	record := workstreamRecord(t, "C")
 	decisionRaw := mustRead(t, ".docs/execution_lifecycle/es_execution_admission_model.md")
 	decision := compactText(decisionRaw)
 	contracts := compactText(mustRead(t, ".docs/system_overview/contracts.md"))
@@ -5293,8 +5293,8 @@ func TestWorkstreamCESExecutionAdmissionModelDecisionIsDocumented(t *testing.T) 
 		"caller auth/allowlist plus ARS discovery/evidence/payload refs",
 		"`application/gzip` result bundles keyed by `run_id` remain explicit compatibility edges",
 	} {
-		if !strings.Contains(plans, required) {
-			t.Fatalf("PLANS missing Workstream C decision phrase %q", required)
+		if !strings.Contains(record, required) {
+			t.Fatalf("Workstream C record missing Workstream C decision phrase %q", required)
 		}
 	}
 
@@ -5362,7 +5362,7 @@ func TestWorkstreamCESExecutionAdmissionModelDecisionIsDocumented(t *testing.T) 
 }
 
 func TestWorkstreamC7CheckpointDocsContract(t *testing.T) {
-	plans := compactText(mustRead(t, "PLANS.md"))
+	record := workstreamRecord(t, "C")
 	checkpointRaw := mustRead(t, ".docs/execution_lifecycle/workstream_c7_checkpoint.md")
 	checkpoint := compactText(checkpointRaw)
 	decision := compactText(mustRead(t, ".docs/execution_lifecycle/es_execution_admission_model.md"))
@@ -5441,7 +5441,7 @@ func TestWorkstreamC7CheckpointDocsContract(t *testing.T) {
 		"Stop conditions:",
 		"Validation hints:",
 	)
-	assertContainsAll(t, "PLANS Workstream C7 pointer", plans,
+	assertContainsAll(t, "Workstream C record Workstream C7 pointer", record,
 		"C7 is a docs/static-test-only consolidation checkpoint recorded in `.docs/execution_lifecycle/workstream_c7_checkpoint.md`.",
 		"Workstream A/B gates are satisfied",
 		"C0-C6 are present",
@@ -5550,6 +5550,7 @@ func TestWorkstreamCProducerContractPrepareBoundaryTestsAreDocumented(t *testing
 
 func TestWorkstreamC0ExecutionOwnershipGateIsDocumented(t *testing.T) {
 	plans := compactText(mustRead(t, "PLANS.md"))
+	record := workstreamRecord(t, "C")
 	decision := compactText(mustRead(t, ".docs/execution_lifecycle/es_execution_admission_model.md"))
 	contracts := compactText(mustRead(t, ".docs/system_overview/contracts.md"))
 	boundaries := compactText(mustRead(t, ".docs/system_overview/boundaries.md"))
@@ -5562,7 +5563,7 @@ func TestWorkstreamC0ExecutionOwnershipGateIsDocumented(t *testing.T) {
 		label string
 		text  string
 	}{
-		{label: "PLANS C0 gate", text: plans},
+		{label: "Workstream C record C0 gate", text: record},
 		{label: "Workstream C decision C0 gate", text: decision},
 		{label: "system contracts C0 gate", text: contracts},
 		{label: "lifecycle contracts C0 gate", text: lifecycleContracts},
@@ -5592,7 +5593,7 @@ func TestWorkstreamC0ExecutionOwnershipGateIsDocumented(t *testing.T) {
 		)
 	}
 
-	assertContainsAll(t, "PLANS C0 no implementation", plans,
+	assertContainsAll(t, "Workstream C record C0 no implementation", record,
 		"C0 makes no runtime implementation changes.",
 	)
 	assertContainsAll(t, "Workstream C decision C0 no implementation", decision,
@@ -5666,7 +5667,7 @@ func TestWorkstreamC0BoundarySurfaceAssertionsAreDocumented(t *testing.T) {
 }
 
 func TestWorkstreamC1PrepareAdmissionGuardrailPostureIsDocumented(t *testing.T) {
-	plans := compactText(mustRead(t, "PLANS.md"))
+	record := workstreamRecord(t, "C")
 	decision := compactText(mustRead(t, ".docs/execution_lifecycle/es_execution_admission_model.md"))
 	postureSection := compactDocSection(t, mustRead(t, ".docs/execution_lifecycle/es_execution_admission_model.md"), "## 6. Code-facing guardrail posture", "")
 
@@ -5674,7 +5675,7 @@ func TestWorkstreamC1PrepareAdmissionGuardrailPostureIsDocumented(t *testing.T) 
 		label string
 		text  string
 	}{
-		{label: "PLANS C1 guardrail posture", text: plans},
+		{label: "Workstream C record C1 guardrail posture", text: record},
 		{label: "Workstream C decision C1 guardrail posture", text: decision},
 	} {
 		assertContainsAll(t, doc.label, doc.text,
@@ -5719,7 +5720,7 @@ func TestWorkstreamC1PrepareAdmissionGuardrailPostureIsDocumented(t *testing.T) 
 }
 
 func TestWorkstreamC2SubmitLifecycleProjectionGuardrailPostureIsDocumented(t *testing.T) {
-	plans := compactText(mustRead(t, "PLANS.md"))
+	record := workstreamRecord(t, "C")
 	decisionRaw := mustRead(t, ".docs/execution_lifecycle/es_execution_admission_model.md")
 	decision := compactText(decisionRaw)
 	lifecycleContracts := compactText(mustRead(t, ".docs/execution_lifecycle/contracts.md"))
@@ -5733,7 +5734,7 @@ func TestWorkstreamC2SubmitLifecycleProjectionGuardrailPostureIsDocumented(t *te
 		label string
 		text  string
 	}{
-		{label: "PLANS C2 posture", text: plans},
+		{label: "Workstream C record C2 posture", text: record},
 		{label: "Workstream C decision C2 posture", text: decision},
 		{label: "lifecycle contracts C2 posture", text: lifecycleContracts},
 		{label: "lifecycle design C2 posture", text: lifecycleDesign},
@@ -5758,7 +5759,7 @@ func TestWorkstreamC2SubmitLifecycleProjectionGuardrailPostureIsDocumented(t *te
 		)
 	}
 
-	assertContainsAll(t, "PLANS C2 CP grammar exclusions", plans,
+	assertContainsAll(t, "Workstream C record C2 CP grammar exclusions", record,
 		"Control Plane attempt/review/checkpoint/finalization",
 		"intervention",
 		"approval",
@@ -5791,7 +5792,7 @@ func TestWorkstreamC2SubmitLifecycleProjectionGuardrailPostureIsDocumented(t *te
 }
 
 func TestWorkstreamC3RetainedResultAuthorityHandoffGuardrailPostureIsDocumented(t *testing.T) {
-	plans := compactText(mustRead(t, "PLANS.md"))
+	record := workstreamRecord(t, "C")
 	decisionRaw := mustRead(t, ".docs/execution_lifecycle/es_execution_admission_model.md")
 	decision := compactText(decisionRaw)
 	lifecycleContracts := compactText(mustRead(t, ".docs/execution_lifecycle/contracts.md"))
@@ -5806,7 +5807,7 @@ func TestWorkstreamC3RetainedResultAuthorityHandoffGuardrailPostureIsDocumented(
 		label string
 		text  string
 	}{
-		{label: "PLANS C3 posture", text: plans},
+		{label: "Workstream C record C3 posture", text: record},
 		{label: "Workstream C decision C3 posture", text: decision},
 		{label: "lifecycle contracts C3 posture", text: lifecycleContracts},
 		{label: "lifecycle design C3 posture", text: lifecycleDesign},
@@ -5850,7 +5851,7 @@ func TestWorkstreamC3RetainedResultAuthorityHandoffGuardrailPostureIsDocumented(
 }
 
 func TestWorkstreamC4RuntimeIdentityVaultHandoffGuardrailPostureIsDocumented(t *testing.T) {
-	plans := compactText(mustRead(t, "PLANS.md"))
+	record := workstreamRecord(t, "C")
 	decisionRaw := mustRead(t, ".docs/execution_lifecycle/es_execution_admission_model.md")
 	decision := compactText(decisionRaw)
 	lifecycleContracts := compactText(mustRead(t, ".docs/execution_lifecycle/contracts.md"))
@@ -5866,7 +5867,7 @@ func TestWorkstreamC4RuntimeIdentityVaultHandoffGuardrailPostureIsDocumented(t *
 		label string
 		text  string
 	}{
-		{label: "PLANS C4 posture", text: plans},
+		{label: "Workstream C record C4 posture", text: record},
 		{label: "Workstream C decision C4 posture", text: decision},
 		{label: "lifecycle contracts C4 posture", text: lifecycleContracts},
 		{label: "lifecycle design C4 posture", text: lifecycleDesign},
@@ -5915,7 +5916,7 @@ func TestWorkstreamC4RuntimeIdentityVaultHandoffGuardrailPostureIsDocumented(t *
 }
 
 func TestWorkstreamC5StatusLogsResultCancelCompatibilityGuardrailPostureIsDocumented(t *testing.T) {
-	plans := compactText(mustRead(t, "PLANS.md"))
+	record := workstreamRecord(t, "C")
 	decisionRaw := mustRead(t, ".docs/execution_lifecycle/es_execution_admission_model.md")
 	decision := compactText(decisionRaw)
 	lifecycleContractsRaw := mustRead(t, ".docs/execution_lifecycle/contracts.md")
@@ -5931,7 +5932,7 @@ func TestWorkstreamC5StatusLogsResultCancelCompatibilityGuardrailPostureIsDocume
 		label string
 		text  string
 	}{
-		{label: "PLANS C5 posture", text: plans},
+		{label: "Workstream C record C5 posture", text: record},
 		{label: "Workstream C decision C5 posture", text: decision},
 		{label: "lifecycle contracts C5 posture", text: lifecycleContracts},
 		{label: "lifecycle design C5 posture", text: lifecycleDesign},
@@ -6125,7 +6126,7 @@ func TestWorkstreamCLifecycleProjectionAuthorityLabelsAreDocumented(t *testing.T
 }
 
 func TestWorkstreamC6AdmissionPolicyLayerV0ContractIsDocumented(t *testing.T) {
-	plans := compactText(mustRead(t, "PLANS.md"))
+	record := workstreamRecord(t, "C")
 	decisionRaw := mustRead(t, ".docs/execution_lifecycle/es_execution_admission_model.md")
 	decision := compactText(decisionRaw)
 	lifecycleContracts := compactText(mustRead(t, ".docs/execution_lifecycle/contracts.md"))
@@ -6133,7 +6134,7 @@ func TestWorkstreamC6AdmissionPolicyLayerV0ContractIsDocumented(t *testing.T) {
 	artifactStorage := compactText(mustRead(t, ".docs/system_overview/artifact_publication_storage.md"))
 	mvp := compactText(mustRead(t, ".docs/mvp.md"))
 
-	assertContainsAll(t, "PLANS C6 admission policy posture", plans,
+	assertContainsAll(t, "Workstream C record C6 admission policy posture", record,
 		"C6 is the focused ES Admission Policy Layer v0 slice.",
 		"It is a Workstream C admission extension, not the Workstream D CGS/EGS policy-language redesign.",
 		"small ES-owned, replaceable policy-evaluation seam in the shared `:prepare`/`:submit` admission path",
@@ -6199,7 +6200,7 @@ func TestWorkstreamC6AdmissionPolicyLayerV0ContractIsDocumented(t *testing.T) {
 }
 
 func TestWorkstreamC6ConfigurableAdmissionPolicyInputsAreDocumented(t *testing.T) {
-	plans := compactText(mustRead(t, "PLANS.md"))
+	record := workstreamRecord(t, "C")
 	decision := compactText(mustRead(t, ".docs/execution_lifecycle/es_execution_admission_model.md"))
 	lifecycleContracts := compactText(mustRead(t, ".docs/execution_lifecycle/contracts.md"))
 	configuration := compactText(mustRead(t, ".docs/system_overview/configuration.md"))
@@ -6209,7 +6210,7 @@ func TestWorkstreamC6ConfigurableAdmissionPolicyInputsAreDocumented(t *testing.T
 		label string
 		text  string
 	}{
-		{label: "PLANS C6 configurable inputs", text: plans},
+		{label: "Workstream C record C6 configurable inputs", text: record},
 		{label: "Workstream C6 decision configurable inputs", text: decision},
 		{label: "lifecycle contracts C6 configurable inputs", text: lifecycleContracts},
 	} {
@@ -6410,7 +6411,7 @@ func TestWorkstreamDPolicyAuthorizationBoundaryClarificationIsDocumented(t *test
 	lifecycleContracts := compactText(lifecycleContractsRaw)
 	workstreamD := compactDocSection(t, plansRaw, "### Workstream D - Policy And Authorization Reset", "### Workstream E - Lookup And Config Indirection Reset")
 	workstreamE := compactDocSection(t, plansRaw, "### Workstream E - Lookup And Config Indirection Reset", "### Workstream F - Runtime Identity Handoff Reset")
-	workstreamF := compactDocSection(t, plansRaw, "### Workstream F - Runtime Identity Handoff Reset", "## Remote Alpha Hardening History and Current Retirement")
+	workstreamF := compactDocSection(t, plansRaw, "### Workstream F - Runtime Identity Handoff Reset", "## Host And Runtime Boundary Rules")
 
 	egsContractSection := compactDocSection(t, contractsRaw, "## 8. EGS Policy Contract", "## 9. CGS Authorization Contract")
 	cgsContractSection := compactDocSection(t, contractsRaw, "## 9. CGS Authorization Contract", "## 10. Runtime Identity Handoff Contract")
@@ -6521,14 +6522,13 @@ func TestWorkstreamDPolicyAuthorizationBoundaryClarificationIsDocumented(t *test
 }
 
 func TestWorkstreamDVersioningGuardrailBeforeSemanticExpansionIsDocumented(t *testing.T) {
-	plansRaw := mustRead(t, "PLANS.md")
 	contractsRaw := mustRead(t, ".docs/system_overview/contracts.md")
 	boundariesRaw := mustRead(t, ".docs/system_overview/boundaries.md")
 	architectureRaw := mustRead(t, ".docs/system_overview/architecture.md")
 	configurationRaw := mustRead(t, ".docs/system_overview/configuration.md")
 	admissionModelRaw := mustRead(t, ".docs/execution_lifecycle/es_execution_admission_model.md")
 
-	workstreamD := compactDocSection(t, plansRaw, "### Workstream D - Policy And Authorization Reset", "### Workstream E - Lookup And Config Indirection Reset")
+	recordD := workstreamRecord(t, "D")
 	egsContractSection := compactDocSection(t, contractsRaw, "## 8. EGS Policy Contract", "## 9. CGS Authorization Contract")
 	cgsContractSection := compactDocSection(t, contractsRaw, "## 9. CGS Authorization Contract", "## 10. Runtime Identity Handoff Contract")
 	esBoundarySection := compactDocSection(t, boundariesRaw, "## 8. ES boundary", "## 9. EGS boundary")
@@ -6538,7 +6538,7 @@ func TestWorkstreamDVersioningGuardrailBeforeSemanticExpansionIsDocumented(t *te
 	configuration := compactText(configurationRaw)
 	admissionModel := compactText(admissionModelRaw)
 
-	assertContainsAll(t, "Workstream D versioning direction", workstreamD,
+	assertContainsAll(t, "Workstream D record versioning direction", recordD,
 		"CGS v1 compatibility surface",
 		"EGS v1 compatibility surface",
 		"Semantic expansion requires explicit versioning before implementation.",
@@ -6606,14 +6606,13 @@ func TestWorkstreamDVersioningGuardrailBeforeSemanticExpansionIsDocumented(t *te
 }
 
 func TestWorkstreamD1bCGSV2AuthorizeContractDesignIsDocumented(t *testing.T) {
-	plansRaw := mustRead(t, "PLANS.md")
 	contractsRaw := mustRead(t, ".docs/system_overview/contracts.md")
 	boundariesRaw := mustRead(t, ".docs/system_overview/boundaries.md")
 	architectureRaw := mustRead(t, ".docs/system_overview/architecture.md")
 	configurationRaw := mustRead(t, ".docs/system_overview/configuration.md")
 	admissionModelRaw := mustRead(t, ".docs/execution_lifecycle/es_execution_admission_model.md")
 
-	workstreamD := compactDocSection(t, plansRaw, "### Workstream D - Policy And Authorization Reset", "### Workstream E - Lookup And Config Indirection Reset")
+	recordD := workstreamRecord(t, "D")
 	egsContractSection := compactDocSection(t, contractsRaw, "## 8. EGS Policy Contract", "## 9. CGS Authorization Contract")
 	cgsContractSection := compactDocSection(t, contractsRaw, "## 9. CGS Authorization Contract", "## 10. Runtime Identity Handoff Contract")
 	esBoundarySection := compactDocSection(t, boundariesRaw, "## 8. ES boundary", "## 9. EGS boundary")
@@ -6623,7 +6622,7 @@ func TestWorkstreamD1bCGSV2AuthorizeContractDesignIsDocumented(t *testing.T) {
 	configuration := compactText(configurationRaw)
 	admissionModel := compactText(admissionModelRaw)
 
-	assertContainsAll(t, "Workstream D1b design-only plan", workstreamD,
+	assertContainsAll(t, "Workstream D1b design-only plan", recordD,
 		"D1b is an accepted docs/tests-only slice on that seam",
 		"keep the current `POST /v1/credential/authorize` route and wire shape as CGS v1 compatibility",
 		"define any future CGS v2 authorize contract only at design level",
@@ -6746,14 +6745,13 @@ func TestWorkstreamD1bCGSV2AuthorizeContractDesignIsDocumented(t *testing.T) {
 }
 
 func TestWorkstreamD1cEGSVersionedRuntimeTrustWrapperDesignIsDocumented(t *testing.T) {
-	plansRaw := mustRead(t, "PLANS.md")
 	contractsRaw := mustRead(t, ".docs/system_overview/contracts.md")
 	boundariesRaw := mustRead(t, ".docs/system_overview/boundaries.md")
 	architectureRaw := mustRead(t, ".docs/system_overview/architecture.md")
 	configurationRaw := mustRead(t, ".docs/system_overview/configuration.md")
 	admissionModelRaw := mustRead(t, ".docs/execution_lifecycle/es_execution_admission_model.md")
 
-	workstreamD := compactDocSection(t, plansRaw, "### Workstream D - Policy And Authorization Reset", "### Workstream E - Lookup And Config Indirection Reset")
+	recordD := workstreamRecord(t, "D")
 	egsContractSection := compactDocSection(t, contractsRaw, "## 8. EGS Policy Contract", "## 9. CGS Authorization Contract")
 	esBoundarySection := compactDocSection(t, boundariesRaw, "## 8. ES boundary", "## 9. EGS boundary")
 	egsBoundarySection := compactDocSection(t, boundariesRaw, "## 9. EGS boundary", "## 10. CGS boundary")
@@ -6761,7 +6759,7 @@ func TestWorkstreamD1cEGSVersionedRuntimeTrustWrapperDesignIsDocumented(t *testi
 	configuration := compactText(configurationRaw)
 	admissionModel := compactText(admissionModelRaw)
 
-	assertContainsAll(t, "Workstream D1c design-only plan", workstreamD,
+	assertContainsAll(t, "Workstream D1c design-only plan", recordD,
 		"D1c is an accepted docs/tests-only slice on that seam",
 		"keep the current `GET /v1/trust-model` route plus wrapper/payload shape as EGS v1 compatibility",
 		"define any future EGS versioned runtime-trust wrapper only at design level",
@@ -6859,14 +6857,13 @@ func TestWorkstreamD1cEGSVersionedRuntimeTrustWrapperDesignIsDocumented(t *testi
 }
 
 func TestWorkstreamD1dIDConfCompatibilityDowngradeIsDocumented(t *testing.T) {
-	plansRaw := mustRead(t, "PLANS.md")
 	contractsRaw := mustRead(t, ".docs/system_overview/contracts.md")
 	boundariesRaw := mustRead(t, ".docs/system_overview/boundaries.md")
 	architectureRaw := mustRead(t, ".docs/system_overview/architecture.md")
 	configurationRaw := mustRead(t, ".docs/system_overview/configuration.md")
 	admissionModelRaw := mustRead(t, ".docs/execution_lifecycle/es_execution_admission_model.md")
 
-	workstreamD := compactDocSection(t, plansRaw, "### Workstream D - Policy And Authorization Reset", "### Workstream E - Lookup And Config Indirection Reset")
+	recordD := workstreamRecord(t, "D")
 	cgsContractSection := compactDocSection(t, contractsRaw, "## 9. CGS Authorization Contract", "## 10. Runtime Identity Handoff Contract")
 	esBoundarySection := compactDocSection(t, boundariesRaw, "## 8. ES boundary", "## 9. EGS boundary")
 	cgsBoundarySection := compactDocSection(t, boundariesRaw, "## 10. CGS boundary", "## 11. Cross-cutting packages that are not service boundaries")
@@ -6874,7 +6871,7 @@ func TestWorkstreamD1dIDConfCompatibilityDowngradeIsDocumented(t *testing.T) {
 	configuration := compactText(configurationRaw)
 	admissionModel := compactText(admissionModelRaw)
 
-	assertContainsAll(t, "Workstream D1d design-only plan", workstreamD,
+	assertContainsAll(t, "Workstream D1d design-only plan", recordD,
 		"D1d is an accepted docs/tests-only slice on that seam",
 		"keep checked-in `cgs/policy/id.conf`, the current CGS v1 subject grammar, and `policy.id_conf_path` as current-CGS-v1 compatibility/config residue only",
 		"`id.conf` is not a shared policy language",
@@ -6890,7 +6887,7 @@ func TestWorkstreamD1dIDConfCompatibilityDowngradeIsDocumented(t *testing.T) {
 		"D1d does not change CGS v1 authorize behavior, does not implement CGS v2, and does not change EGS, ES admission, Workstream E runtime-config ownership, or Workstream F runtime-identity handoff.",
 	)
 
-	assertContainsAll(t, "Workstream D checkpoint status", workstreamD,
+	assertContainsAll(t, "Workstream D record checkpoint status", recordD,
 		"D0-D1d completed the guardrail/design phase.",
 		"Workstream D remains open;",
 		"the long-term CGS authorize DTO, future CGS/EGS versioned contracts, and long-term `id.conf`/policy-input model remain reopened seams.",
@@ -6959,15 +6956,14 @@ func TestWorkstreamERuntimeConfigOwnershipDecisionIsDocumented(t *testing.T) {
 	lifecycleContractsRaw := mustRead(t, ".docs/execution_lifecycle/contracts.md")
 	implementationRaw := mustRead(t, ".docs/execution_lifecycle/implementation.md")
 
-	plans := compactText(plansRaw)
 	decision := compactText(decisionRaw)
 	architecture := compactText(architectureRaw)
 	configuration := compactText(configurationRaw)
 	admissionModel := compactText(admissionModelRaw)
 
-	workstreamD := compactDocSection(t, plansRaw, "### Workstream D - Policy And Authorization Reset", "### Workstream E - Lookup And Config Indirection Reset")
-	workstreamE := compactDocSection(t, plansRaw, "### Workstream E - Lookup And Config Indirection Reset", "### Workstream F - Runtime Identity Handoff Reset")
-	workstreamF := compactDocSection(t, plansRaw, "### Workstream F - Runtime Identity Handoff Reset", "## Remote Alpha Hardening History and Current Retirement")
+	recordD := workstreamRecord(t, "D")
+	recordE := workstreamRecord(t, "E")
+	workstreamF := compactDocSection(t, plansRaw, "### Workstream F - Runtime Identity Handoff Reset", "## Host And Runtime Boundary Rules")
 	runtimeConfigContract := compactDocSection(t, contractsRaw, "## 4. Workload-Zone Vault Runtime-Config Contract", "## 5. AGS Publication Contract")
 	runtimeConfigBoundary := compactDocSection(t, boundariesRaw, "## 5. Workload-zone Vault runtime-config surface", "## 6. ARS boundary")
 	esBoundary := compactDocSection(t, boundariesRaw, "## 8. ES boundary", "## 9. EGS boundary")
@@ -6976,13 +6972,13 @@ func TestWorkstreamERuntimeConfigOwnershipDecisionIsDocumented(t *testing.T) {
 	implementationApp := compactDocSection(t, implementationRaw, "## 5. Application wiring", "## 6. Prepare path implementation")
 	implementationPrepare := compactDocSection(t, implementationRaw, "## 6. Prepare path implementation", "## 7. Submit path implementation")
 
-	assertContainsAll(t, "PLANS Workstream D checkpoint remains open", workstreamD,
+	assertContainsAll(t, "Workstream D record checkpoint remains open", recordD,
 		"D0-D1d completed the guardrail/design phase.",
 		"Workstream D remains open;",
 		"No D2 behavior-changing slice is required before Workstream E planning.",
 		"D1 does not settle Workstream E runtime-config ownership or Workstream F runtime-identity handoff.",
 	)
-	assertContainsAll(t, "PLANS Workstream E E0 status", workstreamE,
+	assertContainsAll(t, "Workstream E record E0 status", recordE,
 		"The Workstream E runtime-config ownership decision is recorded in `.docs/system_overview/runtime_config_ownership.md`.",
 		"E0 is docs/tests-only.",
 		"Runtime-config semantics are owned by the runtime-config contract surface.",
@@ -7138,7 +7134,7 @@ func TestWorkstreamERuntimeConfigOwnershipDecisionIsDocumented(t *testing.T) {
 		"`workload_vault_auth.default_mode` is current ES config residue and bounded current behavior, not a generalized runtime-auth-plan contract.",
 	)
 
-	assertContainsAll(t, "PLANS E0 global docs", plans,
+	assertContainsAll(t, "Workstream E record E0 global docs", recordE,
 		"E0 preserves `GET /v1/executions:contract`, `POST /v1/executions:prepare`, `control-plane-normal-shell/v1`, CP compatibility, and M6 support-bundle inputs.",
 	)
 }
@@ -7178,7 +7174,6 @@ func TestWorkstreamERuntimeConfigOwnershipKeepsESCGSOutOfESInternal(t *testing.T
 }
 
 func TestWorkstreamFRuntimeIdentityHandoffOwnershipDecisionIsDocumented(t *testing.T) {
-	plansRaw := mustRead(t, "PLANS.md")
 	decisionRaw := mustRead(t, ".docs/system_overview/runtime_identity_handoff.md")
 	contractsRaw := mustRead(t, ".docs/system_overview/contracts.md")
 	boundariesRaw := mustRead(t, ".docs/system_overview/boundaries.md")
@@ -7192,14 +7187,14 @@ func TestWorkstreamFRuntimeIdentityHandoffOwnershipDecisionIsDocumented(t *testi
 	architecture := compactText(architectureRaw)
 	configuration := compactText(configurationRaw)
 	admissionModel := compactText(admissionModelRaw)
-	workstreamF := compactDocSection(t, plansRaw, "### Workstream F - Runtime Identity Handoff Reset", "## Remote Alpha Hardening History and Current Retirement")
+	recordF := workstreamRecord(t, "F")
 	runtimeIdentityContract := compactDocSection(t, contractsRaw, "## 10. Runtime Identity Handoff Contract", "## 11. Temporary Compatibility Edges")
 	esBoundary := compactDocSection(t, boundariesRaw, "## 8. ES boundary", "## 9. EGS boundary")
 	lifecycleRuntimeIdentity := compactDocSection(t, lifecycleContractsRaw, "## 14. Runtime identity and lifecycle edge", "## 15. Bounded slice rules")
 	authorityHandoffContract := compactDocSection(t, lifecycleContractsRaw, "### Authority handoff read surface", "### Error contract")
 	implementationRuntimeIdentity := compactDocSection(t, implementationRaw, "## 9. Runtime identity and mount implementation", "## 10. Filesystem and local side effects")
 
-	assertContainsAll(t, "PLANS Workstream F F0 status", workstreamF,
+	assertContainsAll(t, "Workstream F record F0 status", recordF,
 		"F0 - Runtime Identity Handoff Ownership Decision",
 		"F0 is docs/tests-only.",
 		"The F0 decision is recorded in `.docs/system_overview/runtime_identity_handoff.md`.",
@@ -7818,7 +7813,7 @@ func TestProducerFailurePathDistinctionsAreDocumented(t *testing.T) {
 }
 
 func TestMilestone1LeastPrivilegeBoundaryCloseoutIsDocumented(t *testing.T) {
-	plans := compactText(mustRead(t, "PLANS.md"))
+	milestone1 := hostRuntimeSection(t, milestone1Heading)
 	remote := compactText(mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md"))
 
 	for _, required := range []string{
@@ -7832,14 +7827,14 @@ func TestMilestone1LeastPrivilegeBoundaryCloseoutIsDocumented(t *testing.T) {
 		"ES does not fetch, mint, broker, store, rotate, parse, or validate Vault tokens.",
 		"Infrastructure Manager support bundles and readiness/support artifacts remain evidence/projection/diagnostics only. They are not authority and are not governed execution proof by themselves.",
 	} {
-		if !strings.Contains(plans, required) || !strings.Contains(remote, required) {
+		if !strings.Contains(milestone1, required) || !strings.Contains(remote, required) {
 			t.Fatalf("Milestone 1 least-privilege boundary docs missing %q", required)
 		}
 	}
 }
 
 func TestMilestone1BoundaryPostureMatrixIsDocumented(t *testing.T) {
-	plans := compactText(mustRead(t, "PLANS.md"))
+	milestone1 := hostRuntimeSection(t, milestone1Heading)
 	remote := compactText(mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md"))
 
 	for _, required := range []string{
@@ -7857,7 +7852,7 @@ func TestMilestone1BoundaryPostureMatrixIsDocumented(t *testing.T) {
 		"Evidence/support artifacts",
 		"Support bundles, readiness reports, and apply summaries are not ES/CP/IM authority and are not governed execution proof by themselves.",
 	} {
-		if !strings.Contains(plans, required) || !strings.Contains(remote, required) {
+		if !strings.Contains(milestone1, required) || !strings.Contains(remote, required) {
 			t.Fatalf("Milestone 1 posture matrix docs missing %q", required)
 		}
 	}
@@ -7865,6 +7860,7 @@ func TestMilestone1BoundaryPostureMatrixIsDocumented(t *testing.T) {
 
 func TestRemoteSupportedHostAlphaRuntimeSecurityBoundaryCheckerIsDocumented(t *testing.T) {
 	plans := compactText(mustRead(t, "PLANS.md"))
+	milestone1 := hostRuntimeSection(t, milestone1Heading)
 	remote := compactText(mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md"))
 	configuration := compactText(mustRead(t, ".docs/system_overview/configuration.md"))
 
@@ -7945,7 +7941,7 @@ func TestRemoteSupportedHostAlphaRuntimeSecurityBoundaryCheckerIsDocumented(t *t
 		"`support-bundle authority`",
 		"honest `blockers` or `not_evaluated` entries",
 	} {
-		if !strings.Contains(plans, required) && !strings.Contains(remote, required) && !strings.Contains(configuration, required) {
+		if !strings.Contains(plans, required) && !strings.Contains(milestone1, required) && !strings.Contains(remote, required) && !strings.Contains(configuration, required) {
 			t.Fatalf("remote runtime/security boundary checker docs missing %q", required)
 		}
 	}
@@ -12020,6 +12016,7 @@ func TestRemoteSupportedHostAlphaNormalShellRuntimeImageSummarySchemaIsDocumente
 
 func TestRemoteSupportedHostAlphaAGSServiceHardeningSliceIsDocumented(t *testing.T) {
 	plans := compactText(mustRead(t, "PLANS.md"))
+	hardening := hostRuntimeSection(t, raHardeningHeading)
 	remote := compactText(mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md"))
 	configuration := compactText(mustRead(t, ".docs/system_overview/configuration.md"))
 
@@ -12034,7 +12031,7 @@ func TestRemoteSupportedHostAlphaAGSServiceHardeningSliceIsDocumented(t *testing
 		"must not change ES public contracts",
 		"Old root-era staging/results roots remain preserved as rollback/debug/evidence state",
 	} {
-		if !strings.Contains(plans, required) && !strings.Contains(remote, required) && !strings.Contains(configuration, required) {
+		if !strings.Contains(plans, required) && !strings.Contains(hardening, required) && !strings.Contains(remote, required) && !strings.Contains(configuration, required) {
 			t.Fatalf("remote alpha tranche docs missing %q", required)
 		}
 	}
@@ -12307,6 +12304,7 @@ func TestRemoteSupportedHostAlphaESConfigTLSPrepSliceIsDocumented(t *testing.T) 
 	remote := compactText(mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md"))
 	configuration := compactText(mustRead(t, ".docs/system_overview/configuration.md"))
 	plans := compactText(mustRead(t, "PLANS.md"))
+	prep := hostRuntimeSection(t, raESConfigTLSPrepHeading)
 
 	for _, required := range []string{
 		"Current Remote Alpha ES Config/TLS Ownership Prep Slice",
@@ -12320,7 +12318,7 @@ func TestRemoteSupportedHostAlphaESConfigTLSPrepSliceIsDocumented(t *testing.T) 
 		"bounded host-local config/TLS ownership preparation only",
 		"the ES config/TLS ownership prep bridge where live `es.service` stays `root(default)` while dedicated `root:es` readable config/TLS material is staged for a later ES de-root slice",
 	} {
-		if !strings.Contains(plans, required) && !strings.Contains(remote, required) && !strings.Contains(configuration, required) {
+		if !strings.Contains(plans, required) && !strings.Contains(prep, required) && !strings.Contains(remote, required) && !strings.Contains(configuration, required) {
 			t.Fatalf("remote ES prep docs missing %q", required)
 		}
 	}
@@ -13870,7 +13868,7 @@ func TestReview14SupportedLocalRootOwnerIntegrationContract(t *testing.T) {
 		path    string
 		phrases []string
 	}{
-		{"PLANS.md", []string{"SUPPORTED-LOCAL-ROOT-OWNER-01", "fresh proof root", "0:0", "0755", "static owner/mode contract", "fixed safe setup projection", "key loading and root capability qualification before listening"}},
+		{standingHostRuntimePath, []string{"SUPPORTED-LOCAL-ROOT-OWNER-01", "fresh proof root", "0:0", "0755", "static owner/mode contract", "fixed safe setup projection", "key loading and root capability qualification before listening"}},
 		{".docs/system_overview/configuration.md", []string{"service-root-v1", "exclusively provisions the two fresh configured roots", "0:0", "0755", "Config.SubmitConfigured()", "before ES listens"}},
 		{".docs/system_overview/capability_probing.md", []string{"service-root-v1", "static preflight", "0:0", "0755", "behavioral capability", "before HTTP listening"}},
 		{".docs/execution_lifecycle/contracts.md", []string{"service-root-v1", "sole creator", "0:0", "0755", "ordinary operator's own write access", "Generic callers without that profile"}},
@@ -13896,7 +13894,7 @@ func TestReview16SupportedLocalFullReadinessRootOwnerContract(t *testing.T) {
 		path    string
 		phrases []string
 	}{
-		{"PLANS.md", []string{"SUPPORTED-LOCAL-ROOT-OWNER-01", "full-profile submit-readiness", "ordinary operator needs static inspection access", "Generic callers without this explicit profile", "first failed subcheck"}},
+		{standingHostRuntimePath, []string{"SUPPORTED-LOCAL-ROOT-OWNER-01", "full-profile submit-readiness", "ordinary operator needs static inspection access", "Generic callers without this explicit profile", "first failed subcheck"}},
 		{".docs/system_overview/capability_probing.md", []string{"read-only validator", "full-profile submit-readiness", "operator's root-write", "Generic readiness"}},
 		{".docs/system_overview/configuration.md", []string{"full-profile submit-readiness share a read-only", "caller writability", "does not create missing roots"}},
 		{".docs/execution_lifecycle/contracts.md", []string{"one static, no-repair read-only validator", "direct health", "diagnostics consumer", "unknown profiles refuse", "Readiness does not create roots"}},
@@ -15166,7 +15164,10 @@ func TestARSStorageCheckDocsContract(t *testing.T) {
 		path     string
 		required []string
 	}{
-		{"PLANS.md", []string{
+		// PLANS.md keeps only the stale-wording check: the rule moved to the
+		// host and runtime boundary standing rules.
+		{"PLANS.md", nil},
+		{standingHostRuntimePath, []string{
 			"`storage.root_dir` and `storage.index_file` must be absolute and written in normal form, as Python's `os.path.normpath` writes it",
 			"because ARS opens both exactly as written while the mounts it gets use the normal form",
 			"creates a file in every directory under the storage root and finds it again by listing that directory",
