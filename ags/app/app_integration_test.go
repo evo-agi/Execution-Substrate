@@ -36,6 +36,7 @@ import (
 	"execution-substrate/es/admission"
 	esapp "execution-substrate/es/app"
 	esconfig "execution-substrate/es/config"
+	"execution-substrate/internal/callerauth"
 	evidencev1 "execution-substrate/internal/contracts/evidence/v1"
 	runtimeconfigv1 "execution-substrate/internal/contracts/runtimeconfig/v1"
 )
@@ -152,6 +153,48 @@ func TestPublishAllowsConfiguredControlPlaneCaller(t *testing.T) {
 	}
 	if got := invoker["principal"]; got != "spiffe://execution.internal/service/control-plane" {
 		t.Fatalf("expected invoker principal derived from configured caller identity, got %v", got)
+	}
+}
+
+// AGS applies security.namespace_issuers from its configuration: a CA bound
+// to a namespace vouches for no path outside it, and a path in a bound
+// namespace needs that namespace's CA. Both callers below are allowed and
+// their certificates come from the same client CA, so only the binding
+// tells them apart.
+func TestPublishAppliesConfiguredNamespaceIssuers(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		boundToCA bool
+		operator  int
+		user      int
+	}{
+		{name: "user_bound_to_the_client_CA", boundToCA: true, operator: http.StatusUnauthorized, user: http.StatusOK},
+		{name: "user_bound_to_another_CA", boundToCA: false, operator: http.StatusOK, user: http.StatusUnauthorized},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stack := startDependencyStackWithAGSConfig(t, []string{operatorCallerPath, "user/claude"}, func(fixture *tlsFixture) []callerauth.NamespaceIssuerConfig {
+				digest := sha256.Sum256(fixture.runtimeCA.Raw)
+				if !tc.boundToCA {
+					digest = sha256.Sum256(fixture.bootstrapCA.Raw)
+				}
+				return []callerauth.NamespaceIssuerConfig{{PathPrefix: "user", IssuerCertificateSHA256: hex.EncodeToString(digest[:])}}
+			})
+			defer stack.shutdownAll(t)
+			for _, caller := range []struct {
+				path string
+				want int
+			}{{operatorCallerPath, tc.operator}, {"user/claude", tc.user}} {
+				response := publishArtifactRequest(t, stack, caller.path, false, nil)
+				body := strings.TrimSpace(string(mustReadBody(t, response.Body)))
+				response.Body.Close()
+				if response.StatusCode != caller.want {
+					t.Fatalf("publish as %s: want %d, got %d body=%s", caller.path, caller.want, response.StatusCode, body)
+				}
+				if caller.want == http.StatusUnauthorized && body != "Authenticated caller identity required" {
+					t.Fatalf("publish as %s: unexpected body %q", caller.path, body)
+				}
+			}
+		})
 	}
 }
 
@@ -517,6 +560,14 @@ func startDependencyStack(t *testing.T) *publishedStack {
 
 func startDependencyStackWithAGSAllowedCallers(t *testing.T, allowedPrefixes []string) *publishedStack {
 	t.Helper()
+	return startDependencyStackWithAGSConfig(t, allowedPrefixes, nil)
+}
+
+// startDependencyStackWithAGSConfig starts the stack with AGS allowing
+// allowedPrefixes and, when namespaceIssuers is set, with the
+// security.namespace_issuers it returns for the stack's TLS fixture.
+func startDependencyStackWithAGSConfig(t *testing.T, allowedPrefixes []string, namespaceIssuers func(*tlsFixture) []callerauth.NamespaceIssuerConfig) *publishedStack {
+	t.Helper()
 
 	fixture := newTLSFixture(t)
 	rootDir := filepath.Join(t.TempDir(), "ars-storage")
@@ -635,6 +686,9 @@ func startDependencyStackWithAGSAllowedCallers(t *testing.T, allowedPrefixes []s
 			PrivateKeyHex: fixture.agsPrivateKeyHex,
 			PublicKeyHex:  fixture.agsPublicKeyHex,
 		},
+	}
+	if namespaceIssuers != nil {
+		agsCfg.Security.NamespaceIssuers = namespaceIssuers(fixture)
 	}
 	agsService, err := agsapp.New(agsCfg)
 	if err != nil {

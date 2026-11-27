@@ -7,15 +7,20 @@ scripts/remote_alpha_user_identity.sh.
 Box modes (root on the box; nothing changes without --apply):
 
   status                       read-only report
-  init-ca [--apply]            create the user CA (key stays root-only here)
+  init-ca [--apply] [--replace]
+                               create the user CA (key stays root-only here);
+                               --replace makes a new one when the old one is
+                               installed nowhere and no name is active
   issue --name N --csr F --out F [--apply]
                                sign a 90-day leaf for user/N from a CSR
   allow --name N [--apply]     install the user CA as a client trust anchor
-                               if needed, add user/N to the AGS and ES
-                               allowlists, restart AGS then ES
+                               bound to the user/ namespace if needed, add
+                               user/N to the AGS and ES allowlists, restart
+                               AGS then ES
   revoke --name N [--apply] [--remove-ca]
-                               remove user/N from both allowlists, restart,
-                               mark the name revoked for good
+                               mark the name revoked for good, remove user/N
+                               and its workload grant rules, restart; with
+                               --remove-ca also remove and retire the user CA
 
 Caller modes (the caller, never root, on the machine that calls AGS and ES):
 
@@ -43,7 +48,9 @@ import contextlib
 import copy
 import dataclasses
 import datetime
+import errno
 import fcntl
+import functools
 import hashlib
 import http.client
 import json
@@ -95,6 +102,12 @@ class Layout:
     ags_client_ca: str = "/etc/execution-substrate/tls/external-client-auth-ca.pem"
     es_client_ca: str = "/etc/execution-substrate/es-tls/server-client-ca.pem"
     user_ca_dir: str = "/etc/execution-substrate/user-ca"
+
+    # The configs of the box's other services that read client or root CA
+    # files (CGS does not run on the box). allow refuses while any of these,
+    # or any other field of the AGS and ES configs, names either client CA
+    # file, so the user CA is trusted by AGS and ES clients and nowhere else.
+    other_service_configs: tuple = ("/etc/execution-substrate/ars.json", "/etc/execution-substrate/egs.json")
 
     ags_unit: str = "ags.service"
     es_unit: str = "es.service"
@@ -162,15 +175,33 @@ def _stop_on_signal(signum, frame):
     raise Interrupted(f"stopped by {signal.Signals(signum).name}")
 
 
+_held_stops = []
+
+
 @contextlib.contextmanager
 def signals_deferred():
-    """Hold stop signals while a rollback runs, so a signal cannot cut it
-    short; a held signal is delivered (and raises Interrupted) at the end."""
+    """Hold stop signals while a step that must not be cut short runs (a
+    rollback, the commit of a CA replacement). A signal that arrives meanwhile
+    does not interrupt the step and does not replace its outcome: when the
+    step ends, the signal is dropped, further stop signals are ignored, and
+    held_stops_note() names it for the report."""
     old = signal.pthread_sigmask(signal.SIG_BLOCK, _STOP_SIGNALS)
     try:
         yield
     finally:
+        pending = signal.sigpending() & set(_STOP_SIGNALS)
+        if pending:
+            # Setting SIG_IGN discards a pending signal.
+            for sig in _STOP_SIGNALS:
+                signal.signal(sig, signal.SIG_IGN)
+            _held_stops.extend(sorted(signal.Signals(sig).name for sig in pending))
         signal.pthread_sigmask(signal.SIG_SETMASK, old)
+
+
+def held_stops_note() -> str:
+    if not _held_stops:
+        return ""
+    return f"; {' and '.join(_held_stops)} arrived meanwhile and was held until that step finished"
 
 
 class Report:
@@ -389,6 +420,21 @@ class DERError(ValueError):
     pass
 
 
+def _der_guarded(fn):
+    """Turn any other error that a malformed encoding raises inside fn (an
+    index past the end, a month 13, a non-ASCII time) into a DERError, so
+    every bad input ends as a refusal and never as a traceback."""
+    @functools.wraps(fn)
+    def wrapped(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except DERError:
+            raise
+        except (IndexError, ValueError, OverflowError) as exc:
+            raise DERError(f"malformed encoding ({type(exc).__name__}: {exc})") from None
+    return wrapped
+
+
 OID_CN = "2.5.4.3"
 OID_O = "2.5.4.10"
 OID_RSA = "1.2.840.113549.1.1.1"
@@ -451,6 +497,7 @@ class TLV:
         return self
 
 
+@_der_guarded
 def der_read(data: bytes, pos: int, limit: int) -> TLV:
     if pos + 2 > limit:
         raise DERError("truncated element")
@@ -477,6 +524,7 @@ def der_read(data: bytes, pos: int, limit: int) -> TLV:
     return TLV(data, tag, pos, pos2, end)
 
 
+@_der_guarded
 def der_sequence(data: bytes, start: int, end: int) -> list:
     items = []
     pos = start
@@ -487,6 +535,7 @@ def der_sequence(data: bytes, start: int, end: int) -> list:
     return items
 
 
+@_der_guarded
 def der_top(data: bytes) -> TLV:
     top = der_read(data, 0, len(data))
     if top.end != len(data):
@@ -494,6 +543,7 @@ def der_top(data: bytes) -> TLV:
     return top
 
 
+@_der_guarded
 def decode_oid(body: bytes) -> str:
     if not body:
         raise DERError("empty OID")
@@ -518,12 +568,14 @@ def decode_oid(body: bytes) -> str:
     return ".".join(str(p) for p in head + parts[1:])
 
 
+@_der_guarded
 def decode_integer(body: bytes) -> int:
     if not body:
         raise DERError("empty INTEGER")
     return int.from_bytes(body, "big", signed=True)
 
 
+@_der_guarded
 def decode_time(item: TLV) -> float:
     text = item.body.decode("ascii")
     if item.tag == TAG_UTCTIME:
@@ -544,6 +596,7 @@ def decode_time(item: TLV) -> float:
     return moment.timestamp()
 
 
+@_der_guarded
 def decode_name(item: TLV) -> list:
     """A Name as a list of RDNs, each a list of (oid, tag, text)."""
     item.expect(TAG_SEQUENCE, "Name")
@@ -580,6 +633,7 @@ def name_text(rdns: list) -> str:
     return ", ".join(out)
 
 
+@_der_guarded
 def decode_spki(item: TLV) -> dict:
     item.expect(TAG_SEQUENCE, "SubjectPublicKeyInfo")
     parts = item.children()
@@ -620,6 +674,7 @@ def key_text(key: dict) -> str:
     return f"key algorithm {key['kind']}"
 
 
+@_der_guarded
 def decode_general_names(body: bytes) -> list:
     """GeneralNames as a list of (kind, value)."""
     seq = der_top(body).expect(TAG_SEQUENCE, "GeneralNames")
@@ -637,6 +692,7 @@ def decode_general_names(body: bytes) -> list:
     return names
 
 
+@_der_guarded
 def decode_extensions(item: TLV) -> dict:
     """[3] Extensions as {oid: (critical, value bytes)}; duplicates refused."""
     seq = der_top(item.body).expect(TAG_SEQUENCE, "Extensions")
@@ -660,6 +716,7 @@ def decode_extensions(item: TLV) -> dict:
     return out
 
 
+@_der_guarded
 def ext_basic_constraints(value: bytes) -> tuple:
     seq = der_top(value).expect(TAG_SEQUENCE, "BasicConstraints").children()
     ca = False
@@ -678,6 +735,7 @@ def ext_basic_constraints(value: bytes) -> tuple:
     return ca, pathlen
 
 
+@_der_guarded
 def ext_key_usage(value: bytes) -> set:
     bits = der_top(value).expect(TAG_BIT_STRING, "KeyUsage").body
     if not bits:
@@ -694,11 +752,13 @@ def ext_key_usage(value: bytes) -> set:
     return out
 
 
+@_der_guarded
 def ext_eku(value: bytes) -> list:
     seq = der_top(value).expect(TAG_SEQUENCE, "ExtKeyUsage").children()
     return [decode_oid(item.expect(TAG_OID, "key purpose").body) for item in seq]
 
 
+@_der_guarded
 def ext_name_constraints(value: bytes) -> dict:
     seq = der_top(value).expect(TAG_SEQUENCE, "NameConstraints").children()
     out = {"permitted": [], "excluded": []}
@@ -719,6 +779,7 @@ def ext_name_constraints(value: bytes) -> dict:
     return out
 
 
+@_der_guarded
 def parse_certificate(der: bytes) -> dict:
     cert = der_top(der).expect(TAG_SEQUENCE, "Certificate").children()
     if len(cert) != 3:
@@ -769,6 +830,7 @@ def parse_certificate(der: bytes) -> dict:
     }
 
 
+@_der_guarded
 def parse_csr(der: bytes) -> dict:
     csr = der_top(der).expect(TAG_SEQUENCE, "CertificationRequest").children()
     if len(csr) != 3:
@@ -907,11 +969,15 @@ def ca_profile_problems(L: Layout, cert: dict) -> list:
             problems.append("name constraints missing or not critical")
         elif ext_name_constraints(ext[OID_NAME_CONSTRAINTS][1]) != {"permitted": [("URI", L.trust_domain)], "excluded": []}:
             problems.append(f"name constraints do not permit exactly URI:{L.trust_domain}")
+        if OID_EXT_KEY_USAGE not in ext:
+            problems.append("extended key usage missing")
+        elif ext_eku(ext[OID_EXT_KEY_USAGE][1]) != [OID_EKU_CLIENT_AUTH]:
+            problems.append("extended key usage is not exactly clientAuth")
         if OID_SKI not in ext:
             problems.append("subject key identifier missing")
     except DERError as exc:
         problems.append(f"unreadable extension: {exc}")
-    extra = sorted(set(ext) - {OID_BASIC_CONSTRAINTS, OID_KEY_USAGE, OID_NAME_CONSTRAINTS, OID_SKI, OID_AKI})
+    extra = sorted(set(ext) - {OID_BASIC_CONSTRAINTS, OID_KEY_USAGE, OID_EXT_KEY_USAGE, OID_NAME_CONSTRAINTS, OID_SKI, OID_AKI})
     if extra:
         problems.append("unexpected extensions " + ", ".join(extra))
     return problems
@@ -1046,7 +1112,26 @@ def read_box_file(L: Layout, path: str, limit: int, *, missing_ok: bool = False)
     data, st = found
     if st.st_uid != L.box_owner_uid or st.st_mode & 0o022:
         raise Refusal(f"{path} must be owned by UID {L.box_owner_uid} and not writable by group or others")
+    refuse_extended_attributes(path)
     return data, st
+
+
+def refuse_extended_attributes(path: str) -> None:
+    """Refuse a file that carries an extended attribute this helper would
+    drop when it replaces the file (a POSIX ACL, a user. or trusted.
+    attribute). security. attributes belong to the kernel's security modules,
+    which label a new file themselves."""
+    if not hasattr(os, "listxattr"):
+        return
+    try:
+        names = os.listxattr(path, follow_symlinks=False)
+    except OSError as exc:
+        if exc.errno in (errno.ENOTSUP, errno.EOPNOTSUPP):
+            return
+        raise Refusal(f"cannot list the extended attributes of {path}: {exc.strerror}") from None
+    kept = sorted(n for n in names if not n.startswith("security."))
+    if kept:
+        raise Refusal(f"{path} carries the extended attribute {kept[0]}; replacing the file would drop it, so this helper refuses such files")
 
 
 class FileState:
@@ -1177,9 +1262,11 @@ def array_with_added(text: str, start: int, end: int, value: str) -> str:
     return text[:last_end] + separator + encoded + text[last_end:]
 
 
-def array_with_removed(text: str, start: int, end: int, index: int) -> str:
+def array_with_removed(text: str, start: int, end: int, index: int, allow_empty: bool = False) -> str:
     spans = array_element_spans(text, start, end)
     if len(spans) < 2:
+        if allow_empty and len(spans) == 1 and index == 0:
+            return text[:start] + "[]" + text[end:]
         raise Refusal("the allowlist would become empty, which AGS and ES refuse")
     if index > 0:
         cut = (spans[index - 1][1], spans[index][1])
@@ -1188,11 +1275,83 @@ def array_with_removed(text: str, start: int, end: int, index: int) -> str:
     return text[:cut[0]] + text[cut[1]:]
 
 
+def object_member_spans(text: str, start: int, end: int) -> list:
+    """(key start, key end, value start, value end, key) of each member of
+    the JSON object at text[start:end]."""
+    decoder = json.JSONDecoder()
+    if text[start] != "{" or text[end - 1] != "}":
+        raise ValueError("not an object")
+    spans = []
+    i = _WS.match(text, start + 1).end()
+    if text[i] == "}":
+        if i != end - 1:
+            raise ValueError("malformed object")
+        return spans
+    while True:
+        key, key_end = decoder.raw_decode(text, i)
+        if not isinstance(key, str):
+            raise ValueError("object key is not a string")
+        colon = _WS.match(text, key_end).end()
+        if text[colon] != ":":
+            raise ValueError("expected ':'")
+        value_start = _WS.match(text, colon + 1).end()
+        _, value_end = decoder.raw_decode(text, value_start)
+        spans.append((i, key_end, value_start, value_end, key))
+        i = _WS.match(text, value_end).end()
+        if text[i] == ",":
+            i = _WS.match(text, i + 1).end()
+            continue
+        if text[i] == "}" and i == end - 1:
+            return spans
+        raise ValueError("malformed object")
+
+
+def object_with_member_added(text: str, start: int, end: int, key: str, value) -> str:
+    """The object at text[start:end] with the member key: value added last,
+    laid out like the members already there."""
+    spans = object_member_spans(text, start, end)
+    if not spans:
+        return text[:start] + "{" + json.dumps(key) + ": " + json.dumps(value) + "}" + text[end:]
+    if len(spans) >= 2:
+        separator = text[spans[-2][3]:spans[-1][0]]
+    elif "\n" in text[start:spans[0][0]]:
+        separator = "," + text[start + 1:spans[0][0]]
+    else:
+        separator = ", "
+    colon = text[spans[-1][1]:spans[-1][2]]
+    last_end = spans[-1][3]
+    return text[:last_end] + separator + json.dumps(key) + colon + json.dumps(value) + text[last_end:]
+
+
+def object_with_member_removed(text: str, start: int, end: int, key: str) -> str:
+    spans = object_member_spans(text, start, end)
+    found = [i for i, span in enumerate(spans) if span[4] == key]
+    if len(found) != 1:
+        raise ValueError(f"the object has {len(found)} members {key!r}")
+    index = found[0]
+    if len(spans) == 1:
+        return text[:start] + "{}" + text[end:]
+    if index > 0:
+        cut = (spans[index - 1][3], spans[index][3])
+    else:
+        cut = (spans[0][0], spans[1][0])
+    return text[:cut[0]] + text[cut[1]:]
+
+
 _GO_FIELD_KEY = re.compile(r"\A[a-z0-9_]+\Z")
+
+ISSUER_KEYS = ("path_prefix", "issuer_certificate_sha256")
+_SHA256_HEX = re.compile(r"\A[0-9a-f]{64}\Z")
 
 
 class ServiceConfig:
+    """One service's JSON config. Edits are byte-preserving: each changes one
+    value in place, keeps every byte outside it, and the edited document must
+    parse to the expected one."""
+
     PATH = ("authorization", "allowed_spiffe_path_prefixes")
+    ISSUERS = ("security", "namespace_issuers")
+    RULES = ("admission_policy", "workload_grants", "rules")
 
     def __init__(self, label: str, file: FileState):
         self.label = label
@@ -1205,11 +1364,22 @@ class ServiceConfig:
         if not isinstance(self.doc, dict):
             raise Refusal(f"{file.path} is not a JSON object")
         # Go's encoding/json matches object keys to struct fields without
-        # regard to case, so "Authorization" would also feed the field this
-        # helper edits. Every real field name is lower-case ASCII; refuse any
-        # other key on the objects read here, so no case variant can hide.
-        for where, obj in (("the top level", self.doc), ("authorization", self.doc.get("authorization")),
-                           ("tls", self.doc.get("tls")), ("security", self.doc.get("security"))):
+        # regard to case, so "Authorization" would also feed a field this
+        # helper reads or edits. Every real field name is lower-case ASCII;
+        # refuse any other key on the objects read here, so no case variant
+        # can hide.
+        security = self.doc.get("security")
+        policy = self.doc.get("admission_policy")
+        grants = policy.get("workload_grants") if isinstance(policy, dict) else None
+        objects = [("the top level", self.doc), ("authorization", self.doc.get("authorization")),
+                   ("tls", self.doc.get("tls")), ("security", security), ("admission_policy", policy),
+                   ("admission_policy.workload_grants", grants)]
+        issuers = security.get("namespace_issuers") if isinstance(security, dict) else None
+        rules = grants.get("rules") if isinstance(grants, dict) else None
+        for listed, where in ((issuers, "security.namespace_issuers"), (rules, "admission_policy.workload_grants.rules")):
+            if isinstance(listed, list):
+                objects.extend((f"{where}[{i}]", item) for i, item in enumerate(listed))
+        for where, obj in objects:
             if isinstance(obj, dict):
                 odd = sorted(k for k in obj if not _GO_FIELD_KEY.match(k))
                 if odd:
@@ -1221,69 +1391,216 @@ class ServiceConfig:
         self.prefixes = list(prefixes)
         tls = self.doc.get("tls")
         self.client_ca_file = tls.get("client_ca_file") if isinstance(tls, dict) else None
-        security = self.doc.get("security")
         self.bootstrap_cn = security.get("bootstrap_issuer_common_name") if isinstance(security, dict) else None
+        self.namespace_issuers = self._read_issuers(security)
+        self.grant_rules = self._read_rules(policy, grants)
         try:
             self.span = find_member_span(self.text, self.PATH)
         except ValueError as exc:
             raise Refusal(f"{file.path}: cannot locate the allowlist: {exc}") from None
+        self.text_now = self.text
+        self.expected = copy.deepcopy(self.doc)
+
+    def _read_issuers(self, security):
+        """security.namespace_issuers as (path_prefix, sha256) pairs, or None
+        when the member is absent."""
+        if not isinstance(security, dict) or "namespace_issuers" not in security:
+            return None
+        items = security["namespace_issuers"]
+        if not isinstance(items, list):
+            raise Refusal(f"{self.file.path} security.namespace_issuers is not a list")
+        out = []
+        for i, item in enumerate(items):
+            if not isinstance(item, dict) or sorted(item) != sorted(ISSUER_KEYS) or not all(isinstance(v, str) for v in item.values()):
+                raise Refusal(f"{self.file.path} security.namespace_issuers[{i}] is not an object of exactly the strings "
+                              "path_prefix and issuer_certificate_sha256")
+            out.append((item["path_prefix"], item["issuer_certificate_sha256"]))
+        return out
+
+    def _read_rules(self, policy, grants):
+        """admission_policy.workload_grants.rules, or [] when absent."""
+        if policy is None or grants is None:
+            if policy is not None and not isinstance(policy, dict):
+                raise Refusal(f"{self.file.path} admission_policy is not an object")
+            return []
+        if not isinstance(grants, dict):
+            raise Refusal(f"{self.file.path} admission_policy.workload_grants is not an object")
+        rules = grants.get("rules", [])
+        if not isinstance(rules, list):
+            raise Refusal(f"{self.file.path} admission_policy.workload_grants.rules is not a list")
+        for i, rule in enumerate(rules):
+            if not isinstance(rule, dict) or any(not isinstance(rule.get(k, ""), str) for k in ("publisher_principal", "caller_principal")):
+                raise Refusal(f"{self.file.path} admission_policy.workload_grants.rules[{i}] is not an object with string principals")
+        return list(rules)
 
     def covering(self, prefix: str) -> list:
         """Entries other than prefix itself that authorize the path prefix."""
         return [p for p in self.prefixes if p != prefix and matches_prefix(prefix, p)]
 
+    def _apply(self, start: int, end: int, new_text: str, change, what: str) -> None:
+        """Take new_text, which must keep every byte of the current text
+        before start and from end on, and must parse to the document expected
+        so far with change applied."""
+        old = self.text_now
+        expected = copy.deepcopy(self.expected)
+        change(expected)
+        try:
+            if parse_json_strict(new_text) != expected:
+                raise ValueError(f"the edited document differs beyond {what}")
+        except ValueError as exc:
+            raise Failure(f"{self.file.path}: {what} check failed: {exc}") from None
+        tail = old[end:]
+        if new_text[:start] != old[:start]:
+            raise Failure(f"{self.file.path}: {what} changed bytes before the edited value")
+        if not new_text.endswith(tail) or len(new_text) - len(tail) < start:
+            raise Failure(f"{self.file.path}: {what} changed bytes after the edited value")
+        self.text_now = new_text
+        self.expected = expected
+        self.file.new = new_text.encode("utf-8")
+
     def set_prefixes(self, new_prefixes: list) -> None:
-        if self.file.changed:
-            raise Failure("internal error: the allowlist may be edited once per run")
-        start, end = self.span
-        if len(new_prefixes) == len(self.prefixes) + 1 and new_prefixes[:-1] == self.prefixes:
-            text = array_with_added(self.text, start, end, new_prefixes[-1])
-        elif len(new_prefixes) == len(self.prefixes) - 1:
-            removed = [i for i in range(len(self.prefixes)) if self.prefixes[:i] + self.prefixes[i + 1:] == new_prefixes]
-            if not removed:
-                raise Failure("internal error: not a single removal")
-            text = array_with_removed(self.text, start, end, removed[0])
+        """Append one entry, or remove entries, keeping the order of the rest."""
+        start, end = find_member_span(self.text_now, self.PATH)
+        old = self.prefixes
+        if len(new_prefixes) == len(old) + 1 and new_prefixes[:-1] == old:
+            text = array_with_added(self.text_now, start, end, new_prefixes[-1])
+        elif len(new_prefixes) < len(old):
+            removed = []
+            j = 0
+            for i, p in enumerate(old):
+                if j < len(new_prefixes) and new_prefixes[j] == p:
+                    j += 1
+                else:
+                    removed.append(i)
+            if j != len(new_prefixes) or not removed:
+                raise Failure("internal error: not a removal")
+            text = self.text_now
+            for i in reversed(removed):
+                s, e = find_member_span(text, self.PATH)
+                text = array_with_removed(text, s, e, i)
         else:
             raise Failure("internal error: unsupported allowlist change")
-        # The edit must change exactly the allowlist: the whole document must
-        # parse to the old one with only that list replaced.
-        expected = copy.deepcopy(self.doc)
-        expected["authorization"]["allowed_spiffe_path_prefixes"] = list(new_prefixes)
-        try:
-            if parse_json_strict(text) != expected:
-                raise ValueError("the edited document differs beyond the allowlist")
-        except ValueError as exc:
-            raise Failure(f"{self.file.path}: allowlist edit check failed: {exc}") from None
-        if text[:start] != self.text[:start]:
-            raise Failure(f"{self.file.path}: allowlist edit changed bytes before the array")
-        tail = self.text[end:]
-        if not text.endswith(tail) or len(text) - len(tail) <= start:
-            raise Failure(f"{self.file.path}: allowlist edit changed bytes after the array")
-        self.file.new = text.encode("utf-8")
+
+        def change(doc):
+            doc["authorization"]["allowed_spiffe_path_prefixes"] = list(new_prefixes)
+        self._apply(start, end, text, change, "the allowlist edit")
+        self.prefixes = list(new_prefixes)
+
+    def binding_problem(self, namespace: str, sha: str):
+        """Why security.namespace_issuers cannot also bind namespace to the CA
+        with SHA-256 sha (AGS and ES refuse one CA bound twice and equal or
+        nested namespaces), or None."""
+        for p, s in self.namespace_issuers or []:
+            if p == namespace and s == sha:
+                continue
+            if s == sha:
+                return f"binds the user CA to {p!r}"
+            if matches_prefix(p, namespace) or matches_prefix(namespace, p):
+                return f"binds {p!r} to another CA ({s[:16]}...)"
+        return None
+
+    def binds(self, namespace: str, sha: str) -> bool:
+        return (namespace, sha) in (self.namespace_issuers or [])
+
+    def add_namespace_issuer(self, namespace: str, sha: str) -> None:
+        entry = {"path_prefix": namespace, "issuer_certificate_sha256": sha}
+        if self.namespace_issuers is None:
+            start, end = find_member_span(self.text_now, ("security",))
+            text = object_with_member_added(self.text_now, start, end, "namespace_issuers", [entry])
+
+            def change(doc):
+                doc["security"]["namespace_issuers"] = [entry]
+        else:
+            start, end = find_member_span(self.text_now, self.ISSUERS)
+            text = array_with_added(self.text_now, start, end, entry)
+
+            def change(doc):
+                doc["security"]["namespace_issuers"].append(entry)
+        self._apply(start, end, text, change, "the namespace issuer edit")
+        self.namespace_issuers = (self.namespace_issuers or []) + [(namespace, sha)]
+
+    def remove_namespace_issuer(self, namespace: str, sha: str) -> bool:
+        current = self.namespace_issuers or []
+        found = [i for i, pair in enumerate(current) if pair == (namespace, sha)]
+        if not found:
+            return False
+        if len(found) == len(current):
+            start, end = find_member_span(self.text_now, ("security",))
+            text = object_with_member_removed(self.text_now, start, end, "namespace_issuers")
+
+            def change(doc):
+                del doc["security"]["namespace_issuers"]
+            remaining = None
+        else:
+            start, end = find_member_span(self.text_now, self.ISSUERS)
+            text = self.text_now
+            for i in reversed(found):
+                s, e = find_member_span(text, self.ISSUERS)
+                text = array_with_removed(text, s, e, i)
+            remaining = [pair for pair in current if pair != (namespace, sha)]
+
+            def change(doc):
+                doc["security"]["namespace_issuers"] = [dict(zip(ISSUER_KEYS, pair)) for pair in remaining]
+        self._apply(start, end, text, change, "the namespace issuer edit")
+        self.namespace_issuers = remaining
+        return True
+
+    def rules_naming(self, principal: str) -> list:
+        return [i for i, rule in enumerate(self.grant_rules)
+                if rule.get("publisher_principal") == principal or rule.get("caller_principal") == principal]
+
+    def remove_grant_rules(self, principal: str) -> int:
+        """Remove every workload grant rule whose publisher or caller is
+        principal. Returns how many were removed."""
+        found = self.rules_naming(principal)
+        if not found:
+            return 0
+        start, end = find_member_span(self.text_now, self.RULES)
+        text = self.text_now
+        for i in reversed(found):
+            s, e = find_member_span(text, self.RULES)
+            text = array_with_removed(text, s, e, i, True)
+        remaining = [rule for i, rule in enumerate(self.grant_rules) if i not in found]
+
+        def change(doc):
+            doc["admission_policy"]["workload_grants"]["rules"] = copy.deepcopy(remaining)
+        self._apply(start, end, text, change, "the workload grant edit")
+        self.grant_rules = remaining
+        return len(found)
 
 
 # --------------------------------------------------------------------------
 # Client CA files
 
 
-def analyze_client_ca(path: str, data: bytes, user_ca_pem) -> dict:
+def names_user_ca(L: Layout, cert: dict) -> bool:
+    """Whether a certificate's subject carries the user CA's Common Name."""
+    return any(oid == OID_CN and text == L.ca_common_name for rdn in cert["subject"] for oid, _, text in rdn)
+
+
+def analyze_client_ca(path: str, data: bytes, user_ca_pem, L: Layout = None, retired: tuple = ()) -> dict:
     """Read a client CA file. Every block must be a certificate. The user CA,
     when given, is absent or present exactly once as the byte-exact final
-    block, and is never the only or first certificate."""
+    block, and is never the only or first certificate. With L, also list as
+    strays the other blocks that name the user CA or are a retired user CA
+    (by SHA-256 in retired): an older user CA left in the file stays trusted."""
     blocks = pem_blocks(data, path)
     if not blocks:
         raise Refusal(f"{path} holds no certificate")
+    user_der = single_pem(user_ca_pem, "CERTIFICATE", "user CA certificate") if user_ca_pem is not None else None
+    strays = []
     for label, der, _ in blocks:
         if label != "CERTIFICATE":
             raise Refusal(f"{path} holds a {label} block")
         try:
-            parse_certificate(der)
+            cert = parse_certificate(der)
         except DERError as exc:
             raise Refusal(f"{path} holds an unreadable certificate: {exc}") from None
-    info = {"certificates": len(blocks), "user_ca_present": False, "first_sha256": sha256_hex(blocks[0][1])}
+        if L is not None and der != user_der and (names_user_ca(L, cert) or cert["sha256"] in retired):
+            strays.append(cert["sha256"])
+    info = {"certificates": len(blocks), "user_ca_present": False, "first_sha256": sha256_hex(blocks[0][1]), "strays": strays}
     if user_ca_pem is None:
         return info
-    user_der = single_pem(user_ca_pem, "CERTIFICATE", "user CA certificate")
     positions = [i for i, block in enumerate(blocks) if block[1] == user_der]
     if not positions:
         return info
@@ -1324,6 +1641,10 @@ class UserCA:
         self.registry_path = os.path.join(self.dir, "registry.json")
         self.issued_dir = os.path.join(self.dir, "issued")
         self.backups_dir = os.path.join(self.dir, "backups")
+        self.retired_dir = os.path.join(self.dir, "retired")
+        # init-ca --replace builds the new CA here; the registry naming it is
+        # the moment of the change.
+        self.next_dir = os.path.join(self.dir, "next")
 
     def exists(self) -> bool:
         return lstat_or_none(self.dir) is not None
@@ -1335,27 +1656,37 @@ class UserCA:
         if st.st_uid != self.L.box_owner_uid or stat.S_IMODE(st.st_mode) != 0o700:
             raise Refusal(f"{path} must be a directory owned by UID {self.L.box_owner_uid} with mode 0700")
 
-    def load(self) -> None:
-        """Check the CA directory and read the CA certificate and registry."""
-        require_box_dir(self.L, os.path.dirname(self.dir))
-        for path in (self.dir, self.issued_dir, self.backups_dir):
-            self.require_private_dir(path)
-        key = read_regular_file(self.key_path, 64 * 1024)
-        if key is None:
-            raise Refusal(f"{self.key_path} does not exist")
-        if key[1].st_uid != self.L.box_owner_uid or stat.S_IMODE(key[1].st_mode) != 0o600:
-            raise Refusal(f"{self.key_path} must be owned by UID {self.L.box_owner_uid} with mode 0600")
-        cert = read_box_file(self.L, self.cert_path, 64 * 1024)
-        self.cert_pem = cert[0]
+    def _read_cert(self, path: str) -> tuple:
+        raw = read_box_file(self.L, path, 64 * 1024)[0]
         try:
-            self.cert = parse_certificate(single_pem(self.cert_pem, "CERTIFICATE", self.cert_path))
+            cert = parse_certificate(single_pem(raw, "CERTIFICATE", path))
         except DERError as exc:
-            raise Refusal(f"{self.cert_path} is unreadable: {exc}") from None
-        if pem_encode("CERTIFICATE", self.cert["der"]) != self.cert_pem:
-            raise Refusal(f"{self.cert_path} is not in canonical PEM form")
-        problems = ca_profile_problems(self.L, self.cert)
+            raise Refusal(f"{path} is unreadable: {exc}") from None
+        if pem_encode("CERTIFICATE", cert["der"]) != raw:
+            raise Refusal(f"{path} is not in canonical PEM form")
+        problems = ca_profile_problems(self.L, cert)
         if problems:
-            raise Refusal(f"{self.cert_path}: " + "; ".join(problems))
+            raise Refusal(f"{path}: " + "; ".join(problems))
+        return raw, cert
+
+    def _check_key(self, path: str) -> None:
+        key = read_regular_file(path, 64 * 1024)
+        if key is None:
+            raise Refusal(f"{path} does not exist")
+        if key[1].st_uid != self.L.box_owner_uid or stat.S_IMODE(key[1].st_mode) != 0o600:
+            raise Refusal(f"{path} must be owned by UID {self.L.box_owner_uid} with mode 0600")
+
+    def load(self, allow_pending: bool = False):
+        """Check the CA directory and read the CA certificate and registry.
+
+        A next/ directory means an init-ca --replace did not finish. Only
+        init-ca --replace (allow_pending) goes on: it gets "committed" when
+        the registry already names the CA in next/ (the CA was replaced, the
+        files still have to move into place) and "staged" when it does not
+        (the replacement never took effect). Otherwise it returns None."""
+        require_box_dir(self.L, os.path.dirname(self.dir))
+        for path in (self.dir, self.issued_dir, self.backups_dir, self.retired_dir):
+            self.require_private_dir(path)
         reg = read_box_file(self.L, self.registry_path, 4 * 1024 * 1024)
         if stat.S_IMODE(reg[1].st_mode) != 0o600:
             raise Refusal(f"{self.registry_path} must have mode 0600")
@@ -1363,20 +1694,57 @@ class UserCA:
             self.registry = parse_json_strict(reg[0].decode("utf-8"))
         except (UnicodeDecodeError, ValueError) as exc:
             raise Refusal(f"{self.registry_path} is not strict JSON: {exc}") from None
+        pending = None
+        if lstat_or_none(self.next_dir) is not None:
+            if not allow_pending:
+                raise Refusal(f"an init-ca --replace did not finish ({self.next_dir} exists); run init-ca --replace --apply to finish it")
+            self.require_private_dir(self.next_dir)
+            found = read_regular_file(os.path.join(self.next_dir, "ca-cert.pem"), 64 * 1024)
+            named = False
+            if found is not None and isinstance(self.registry, dict) and isinstance(self.registry.get("ca"), dict):
+                try:
+                    der = single_pem(found[0], "CERTIFICATE", "the new CA certificate")
+                except Refusal:
+                    der = b""
+                named = self.registry["ca"].get("sha256") == sha256_hex(der)
+            pending = "committed" if named else "staged"
+        if pending == "committed":
+            # finish_replacement moves the key first, so it may already be in
+            # place while the certificate is still in next/.
+            next_key = os.path.join(self.next_dir, "ca-key.pem")
+            self._check_key(next_key if lstat_or_none(next_key) is not None else self.key_path)
+            self.cert_pem, self.cert = self._read_cert(os.path.join(self.next_dir, "ca-cert.pem"))
+        else:
+            self._check_key(self.key_path)
+            self.cert_pem, self.cert = self._read_cert(self.cert_path)
         self.check_registry()
+        return pending
 
     def check_registry(self) -> None:
         reg = self.registry
         ok = (isinstance(reg, dict) and reg.get("schema_version") == REGISTRY_SCHEMA_VERSION
               and reg.get("trust_domain") == self.L.trust_domain and reg.get("path_namespace") == self.L.path_namespace
               and isinstance(reg.get("ca"), dict) and reg["ca"].get("sha256") == self.cert["sha256"]
+              and reg["ca"].get("public_key_sha256") == self.cert["key"]["sha256"]
+              and isinstance(reg.get("retired_cas"), list)
+              and all(isinstance(c, dict) and isinstance(c.get("sha256"), str) and isinstance(c.get("public_key_sha256"), str)
+                      for c in reg["retired_cas"])
               and isinstance(reg.get("names"), dict) and isinstance(reg.get("events"), list))
         if not ok:
             raise Refusal(f"{self.registry_path} does not match this helper's schema or the CA certificate")
+        units = (self.L.ags_unit, self.L.es_unit)
         for name, entry in reg["names"].items():
             if not NAME_RE.match(name) or not isinstance(entry, dict) or entry.get("state") not in ("active", "revoked") \
-                    or not isinstance(entry.get("certificates"), list):
+                    or not isinstance(entry.get("certificates"), list) \
+                    or not all(u in units for u in entry.get("pending_restarts", [])):
                 raise Refusal(f"{self.registry_path} has a malformed entry for {name!r}")
+
+    @property
+    def retired(self) -> bool:
+        return "retired_at" in self.registry["ca"]
+
+    def retired_shas(self) -> tuple:
+        return tuple(c["sha256"] for c in self.registry["retired_cas"])
 
     def save_registry(self) -> None:
         data = (json.dumps(self.registry, indent=2, sort_keys=True) + "\n").encode("utf-8")
@@ -1402,12 +1770,26 @@ class UserCA:
         now = utc_now()
         return [c for c in entry.get("certificates", []) if c.get("not_after_epoch", 0) > now]
 
+    def pending_revocations(self) -> list:
+        return sorted(n for n, e in self.registry["names"].items() if e.get("pending_restarts"))
+
     def known_key_digests(self) -> set:
         out = {self.cert["key"]["sha256"]}
+        out.update(c["public_key_sha256"] for c in self.registry["retired_cas"])
         for entry in self.registry["names"].values():
             for cert in entry["certificates"]:
                 out.add(cert.get("public_key_sha256"))
         return out
+
+    def finish_replacement(self) -> None:
+        """Move the new CA from next/ into place; the registry already names it."""
+        for name in ("ca-key.pem", "ca-cert.pem"):
+            source = os.path.join(self.next_dir, name)
+            if lstat_or_none(source) is not None:
+                os.rename(source, os.path.join(self.dir, name))
+        fsync_dir(self.dir)
+        os.rmdir(self.next_dir)
+        fsync_dir(self.dir)
 
 
 # --------------------------------------------------------------------------
@@ -1427,7 +1809,11 @@ def require_commands(L: Layout, names: tuple) -> None:
 
 
 def take_lock(L: Layout):
-    fd = os.open(L.lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    try:
+        fd = os.open(L.lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK, 0o600)
+    except OSError as exc:
+        # A symbolic link (O_NOFOLLOW) or a directory in its place.
+        raise Refusal(f"cannot open the lock file {L.lock_path}: {exc.strerror}") from None
     st = os.fstat(fd)
     if st.st_uid != os.geteuid() or not stat.S_ISREG(st.st_mode):
         os.close(fd)
@@ -1440,8 +1826,45 @@ def take_lock(L: Layout):
     return fd
 
 
+def json_strings(value, where: str = ""):
+    """Every string value in a JSON document, with its key path."""
+    if isinstance(value, dict):
+        for key, item in value.items():
+            yield from json_strings(item, f"{where}.{key}" if where else key)
+    elif isinstance(value, list):
+        for i, item in enumerate(value):
+            yield from json_strings(item, f"{where}[{i}]")
+    elif isinstance(value, str):
+        yield where, value
+
+
+def client_ca_references(L: Layout, configs: list, ca_stats: list) -> list:
+    """Each place, other than AGS's and ES's own tls.client_ca_file, where one
+    of configs ((label, path, document) triples) names a client CA file, by
+    path or as the same file through another name."""
+    ca_paths = {os.path.normpath(L.ags_client_ca), os.path.normpath(L.es_client_ca)}
+    ca_ids = {(st.st_dev, st.st_ino) for st in ca_stats}
+    allowed = {("AGS", "tls.client_ca_file"), ("ES", "tls.client_ca_file")}
+    found = []
+    for label, path, doc in configs:
+        for where, value in json_strings(doc):
+            if not value.startswith("/") or (label, where) in allowed:
+                continue
+            same = os.path.normpath(value) in ca_paths
+            if not same:
+                try:
+                    st = os.stat(value)
+                    same = (st.st_dev, st.st_ino) in ca_ids
+                except (OSError, ValueError):
+                    same = False
+            if same:
+                found.append(f"{path} {where} names {value}")
+    return found
+
+
 class Box:
-    """The four service files allow and revoke may change."""
+    """The four service files allow and revoke may change, and the other
+    service configs they check."""
 
     def __init__(self, L: Layout, ca: UserCA):
         self.L = L
@@ -1454,21 +1877,48 @@ class Box:
         self.ags = ServiceConfig("AGS", self.files["ags_config"])
         self.es = ServiceConfig("ES", self.files["es_config"])
 
-    def require_topology(self) -> None:
+    def ca_file_references(self) -> list:
+        configs = [("AGS", self.L.ags_config, self.ags.doc), ("ES", self.L.es_config, self.es.doc)]
+        for path in self.L.other_service_configs:
+            data, _ = read_box_file(self.L, path, 1 << 20)
+            try:
+                doc = parse_json_strict(data.decode("utf-8"))
+            except (UnicodeDecodeError, ValueError) as exc:
+                raise Refusal(f"{path} is not strict JSON: {exc}") from None
+            configs.append((os.path.basename(path), path, doc))
+        return client_ca_references(self.L, configs, [self.files["ags_ca"].st, self.files["es_ca"].st])
+
+    def require_topology(self, revoke: bool = False) -> None:
+        """The box layout this helper was written for. revoke needs only the
+        client CA paths, so a revocation is never blocked by anything else."""
         for config, expected in ((self.ags, self.L.ags_client_ca), (self.es, self.L.es_client_ca)):
             if config.client_ca_file != expected:
                 raise Refusal(f"{config.label} tls.client_ca_file is {config.client_ca_file!r}, want {expected!r}")
+            if revoke:
+                continue
             if not isinstance(config.bootstrap_cn, str) or not config.bootstrap_cn.strip():
                 raise Refusal(f"{config.label} security.bootstrap_issuer_common_name is empty")
             if config.bootstrap_cn.strip() == self.L.ca_common_name:
                 raise Refusal(f"{config.label} bootstrap issuer Common Name equals the user CA's")
+        if revoke:
+            return
         if self.files["ags_ca"].old != self.files["es_ca"].old:
             raise Refusal(f"{self.L.ags_client_ca} and {self.L.es_client_ca} differ; they must be identical (see the recovery runbook)")
+        references = self.ca_file_references()
+        if references:
+            raise Refusal("a client CA file of AGS and ES is also read elsewhere, so the user CA would be trusted there too: "
+                          + "; ".join(references))
+
+    def client_ca_info(self, key: str) -> dict:
+        f = self.files[key]
+        return analyze_client_ca(f.path, f.old, self.ca.cert_pem, self.L, self.ca.retired_shas())
 
     def ca_state(self) -> bool:
-        states = [analyze_client_ca(self.files[k].path, self.files[k].old, self.ca.cert_pem)["user_ca_present"]
-                  for k in ("ags_ca", "es_ca")]
+        states = [self.client_ca_info(k)["user_ca_present"] for k in ("ags_ca", "es_ca")]
         return states[0] and states[1]
+
+    def strays(self) -> list:
+        return sorted({sha for k in ("ags_ca", "es_ca") for sha in self.client_ca_info(k)["strays"]})
 
     def units_for_changes(self) -> list:
         units = []
@@ -1508,7 +1958,7 @@ class Box:
                     written.append(f)
                     f.write_new()
                     # No digest of the configs: ags.json holds the AGS signer key.
-                    detail = f"sha256 {sha256_hex(f.new)[:16]}..., " if key.endswith("_ca") else "allowlist edited, "
+                    detail = f"sha256 {sha256_hex(f.new)[:16]}..., " if key.endswith("_ca") else "edited, "
                     rep.action(f"wrote {f.path} ({detail}owner and mode kept)")
             for unit in units:
                 attempted.append(unit)
@@ -1518,12 +1968,15 @@ class Box:
                 commit(backup)
         except (Failure, CommandError, OSError) as exc:
             cause = str(exc) if not isinstance(exc, OSError) else f"{exc.strerror}: {exc.filename}"
+            incomplete = None
             with signals_deferred():
                 try:
                     self.rollback(r, rep, written, attempted)
                 except Failure as rollback_exc:
-                    raise Failure(f"{cause}; {rollback_exc}; the backed-up bytes are in {backup}") from None
-            raise Failure(f"{cause}; rolled back to the backed-up bytes in {backup}") from None
+                    incomplete = rollback_exc
+            if incomplete is not None:
+                raise Failure(f"{cause}; {incomplete}; the backed-up bytes are in {backup}{held_stops_note()}") from None
+            raise Failure(f"{cause}; rolled back to the backed-up bytes in {backup}{held_stops_note()}") from None
         return backup
 
     def rollback(self, r: Runner, rep: Report, written: list, attempted: list) -> None:
@@ -1543,10 +1996,44 @@ class Box:
             except (Failure, CommandError) as exc:
                 problems.append(str(exc))
         for f in written:
-            if not f.current_is(f.old):
+            try:
+                same = f.current_is(f.old)
+            except (Refusal, OSError) as exc:
+                problems.append(f"cannot read back {f.path}: {exc}")
+                continue
+            if not same:
                 problems.append(f"{f.path} does not hold its backed-up bytes")
         if problems:
             raise Failure("rollback incomplete: " + "; ".join(problems))
+
+    def apply_forward(self, r: Runner, rep: Report, units: list) -> tuple:
+        """Write every changed file and restart units in order, going on past
+        a failure and never rolling back: used by revoke, whose removal must
+        stay on disk even when a service cannot restart, so that the service
+        starts without the name whenever it starts. Returns the problems and
+        the units that did not come back."""
+        problems = []
+        failed = []
+        for key in ("ags_ca", "es_ca", "ags_config", "es_config"):
+            f = self.files[key]
+            if f.changed:
+                try:
+                    f.write_new()
+                except OSError as exc:
+                    problems.append(f"could not write {f.path}: {exc.strerror}")
+                    continue
+                detail = f"sha256 {sha256_hex(f.new)[:16]}..., " if key.endswith("_ca") else "edited, "
+                rep.action(f"wrote {f.path} ({detail}owner and mode kept)")
+        for unit in units:
+            try:
+                pid = restart_and_confirm(r, unit)
+                rep.action(f"restarted {unit}; running as PID {pid}")
+            except Interrupted:
+                raise
+            except (Failure, CommandError) as exc:
+                problems.append(str(exc))
+                failed.append(unit)
+        return problems, failed
 
 
 # --------------------------------------------------------------------------
@@ -1566,6 +2053,7 @@ def ca_config_text(L: Layout) -> str:
         "[ v3_user_ca ]\n"
         "basicConstraints = critical, CA:TRUE, pathlen:0\n"
         "keyUsage = critical, keyCertSign, cRLSign\n"
+        "extendedKeyUsage = clientAuth\n"
         "subjectKeyIdentifier = hash\n"
         f"nameConstraints = critical, permitted;URI:{L.trust_domain}\n"
     )
@@ -1584,26 +2072,73 @@ def leaf_extension_text(L: Layout, name: str) -> str:
 
 
 def new_serial() -> int:
-    # 127 random bits with the top one set: a positive 16-byte DER INTEGER.
+    # A positive 127-bit number: the top bit is set and the 126 bits below it
+    # are random, so the DER INTEGER always takes 16 bytes.
     return (1 << 126) | secrets.randbits(126)
 
 
-def mode_init_ca(r: Runner, rep: Report, apply: bool) -> None:
-    L = r.L
-    ca = UserCA(L)
-    parent = os.path.dirname(ca.dir)
-    require_box_dir(L, parent)
-    if ca.exists():
-        raise Refusal(f"{ca.dir} already exists; the user CA is created once")
+def make_ca_material(r: Runner, L: Layout, directory: str) -> dict:
+    """Generate the CA key and self-signed certificate in directory (0700,
+    this run's own) and check them. Returns the parsed certificate."""
+    key_path = os.path.join(directory, "ca-key.pem")
+    cert_path = os.path.join(directory, "ca-cert.pem")
+    cnf_path = os.path.join(directory, "ca.cnf")
+    create_exclusive(cnf_path, ca_config_text(L).encode("utf-8"), 0o600)
+    r.openssl(["genrsa", "-out", key_path, str(L.ca_key_bits)], cwd=directory)
+    os.chmod(key_path, 0o600)
+    r.openssl(["req", "-new", "-x509", "-key", key_path, "-sha256", "-days", str(L.ca_days),
+               "-set_serial", hex(new_serial()), "-config", cnf_path, "-extensions", "v3_user_ca",
+               "-out", cert_path], cwd=directory)
+    os.unlink(cnf_path)
+    raw = read_regular_file(cert_path, 64 * 1024)[0]
+    cert = parse_certificate(single_pem(raw, "CERTIFICATE", "new CA certificate"))
+    problems = ca_profile_problems(L, cert)
+    if r.public_key_der(key_path) != cert["key"]["der"]:
+        problems.append("key does not match certificate")
+    if not r.chain_ok(cert_path, cert_path, "any"):
+        problems.append("openssl does not verify the self-signed certificate")
+    if problems:
+        raise Failure("new CA certificate check failed: " + "; ".join(problems))
+    canonical = pem_encode("CERTIFICATE", cert["der"])
+    if canonical != raw:
+        atomic_write(cert_path, canonical, 0o644)
+    os.chmod(cert_path, 0o644)
+    return cert
+
+
+def ca_record(cert: dict) -> dict:
+    return {"sha256": cert["sha256"], "public_key_sha256": cert["key"]["sha256"], "subject": name_text(cert["subject"]),
+            "serial": format(cert["serial"], "x"), "not_before": iso_utc(cert["not_before"]),
+            "not_after": iso_utc(cert["not_after"]), "created_at": iso_utc(utc_now())}
+
+
+def refuse_bootstrap_clash(L: Layout) -> None:
     for path in (L.ags_config, L.es_config):
         data, st = read_box_file(L, path, 1 << 20)
         config = ServiceConfig("AGS" if path == L.ags_config else "ES", FileState(path, data, st))
         if isinstance(config.bootstrap_cn, str) and config.bootstrap_cn.strip() == L.ca_common_name:
             raise Refusal(f"{path} bootstrap issuer Common Name equals the user CA's")
-    rep.check("parent", "ok", f"{parent} owned by UID {L.box_owner_uid}, not group/other writable")
-    rep.planned(f"create {ca.dir} (0700) holding an RSA-{L.ca_key_bits} CA key (0600, no passphrase, never leaves the box)")
+
+
+def ca_plan(rep: Report, L: Layout, where: str) -> None:
+    rep.planned(f"create an RSA-{L.ca_key_bits} CA key in {where} (0600, no passphrase, never leaves the box)")
     rep.planned(f"self-sign the user CA: O={L.ca_organization}, CN={L.ca_common_name}, CA:TRUE pathlen:0, "
-                f"keyCertSign+cRLSign, name constraint URI:{L.trust_domain}, {L.ca_days} days")
+                f"keyCertSign+cRLSign, extended key usage clientAuth, name constraint URI:{L.trust_domain}, {L.ca_days} days")
+
+
+def mode_init_ca(r: Runner, rep: Report, apply: bool, replace: bool = False) -> None:
+    if replace:
+        mode_init_ca_replace(r, rep, apply)
+        return
+    L = r.L
+    ca = UserCA(L)
+    parent = os.path.dirname(ca.dir)
+    require_box_dir(L, parent)
+    if ca.exists():
+        raise Refusal(f"{ca.dir} already exists; the user CA is created once (init-ca --replace replaces it)")
+    refuse_bootstrap_clash(L)
+    rep.check("parent", "ok", f"{parent} owned by UID {L.box_owner_uid}, not group/other writable")
+    ca_plan(rep, L, f"a new {ca.dir} (0700)")
     rep.planned("write an empty registry; no service file is touched")
     if not apply:
         rep.result = "planned"
@@ -1612,38 +2147,15 @@ def mode_init_ca(r: Runner, rep: Report, apply: bool) -> None:
     staging = tempfile.mkdtemp(prefix=os.path.basename(ca.dir) + ".new-", dir=parent)
     try:
         os.chmod(staging, 0o700)
-        key_path = os.path.join(staging, "ca-key.pem")
-        cert_path = os.path.join(staging, "ca-cert.pem")
-        cnf_path = os.path.join(staging, "ca.cnf")
-        create_exclusive(cnf_path, ca_config_text(L).encode("utf-8"), 0o600)
-        r.openssl(["genrsa", "-out", key_path, str(L.ca_key_bits)], cwd=staging)
-        os.chmod(key_path, 0o600)
-        r.openssl(["req", "-new", "-x509", "-key", key_path, "-sha256", "-days", str(L.ca_days),
-                   "-set_serial", hex(new_serial()), "-config", cnf_path, "-extensions", "v3_user_ca",
-                   "-out", cert_path], cwd=staging)
-        os.unlink(cnf_path)
-        raw = read_regular_file(cert_path, 64 * 1024)[0]
-        cert = parse_certificate(single_pem(raw, "CERTIFICATE", "new CA certificate"))
-        problems = ca_profile_problems(L, cert)
-        if r.public_key_der(key_path) != cert["key"]["der"]:
-            problems.append("key does not match certificate")
-        if not r.chain_ok(cert_path, cert_path, "any"):
-            problems.append("openssl does not verify the self-signed certificate")
-        if problems:
-            raise Failure("new CA certificate check failed: " + "; ".join(problems))
-        canonical = pem_encode("CERTIFICATE", cert["der"])
-        if canonical != raw:
-            atomic_write(cert_path, canonical, 0o644)
-        os.chmod(cert_path, 0o644)
-        os.mkdir(os.path.join(staging, "issued"), 0o700)
-        os.mkdir(os.path.join(staging, "backups"), 0o700)
+        cert = make_ca_material(r, L, staging)
+        for sub in ("issued", "backups", "retired"):
+            os.mkdir(os.path.join(staging, sub), 0o700)
         registry = {
             "schema_version": REGISTRY_SCHEMA_VERSION,
             "trust_domain": L.trust_domain,
             "path_namespace": L.path_namespace,
-            "ca": {"sha256": cert["sha256"], "subject": name_text(cert["subject"]), "serial": format(cert["serial"], "x"),
-                   "not_before": iso_utc(cert["not_before"]), "not_after": iso_utc(cert["not_after"]),
-                   "created_at": iso_utc(utc_now())},
+            "ca": ca_record(cert),
+            "retired_cas": [],
             "names": {},
             "events": [{"at": iso_utc(utc_now()), "mode": "init-ca", "name": "", "detail": "created the user CA"}],
         }
@@ -1660,12 +2172,112 @@ def mode_init_ca(r: Runner, rep: Report, apply: bool) -> None:
     rep.message = "user CA created; no service file was touched"
 
 
+def mode_init_ca_replace(r: Runner, rep: Report, apply: bool) -> None:
+    """Replace the user CA, for example after its key may have leaked. The
+    old CA must be in neither client CA file, bound by neither service, and no
+    name may be active; every revoked name stays revoked."""
+    L = r.L
+    ca = UserCA(L)
+    if not ca.exists():
+        raise Refusal("the user CA does not exist; run init-ca without --replace")
+    pending = ca.load(allow_pending=True)
+    if pending == "committed":
+        rep.check("replacement", "attention", f"the registry already names the new CA {ca.cert['sha256'][:16]}..., "
+                  f"which is still in {ca.next_dir}")
+        rep.planned(f"move the new CA key and certificate from {ca.next_dir} into {ca.dir}")
+        if not apply:
+            rep.result = "planned"
+            rep.message = "nothing changed; rerun with --apply to finish the replacement"
+            return
+        with signals_deferred():
+            try:
+                ca.finish_replacement()
+            except OSError as exc:
+                raise Failure(f"moving the new CA into place failed again ({exc.strerror}: {exc.filename}); "
+                              "run init-ca --replace --apply again to finish") from None
+        rep.action("moved the new CA into place")
+        rep.facts.update(ca_sha256=ca.cert["sha256"], ca_not_after=iso_utc(ca.cert["not_after"]))
+        rep.result = "ok"
+        rep.message = "the user CA replacement is finished; no service file was touched" + held_stops_note()
+        return
+    refuse_bootstrap_clash(L)
+    active = sorted(n for n, e in ca.registry["names"].items() if e["state"] == "active")
+    if active:
+        raise Refusal("--replace is refused while names are active (revoke them first): " + ", ".join(active))
+    unfinished = ca.pending_revocations()
+    if unfinished:
+        raise Refusal(f"the revocation of {', '.join(unfinished)} is not finished; run revoke --name {unfinished[0]} --apply first")
+    box = Box(L, ca)
+    for key in ("ags_ca", "es_ca"):
+        info = box.client_ca_info(key)
+        if info["user_ca_present"]:
+            raise Refusal(f"{box.files[key].path} still holds the user CA; run revoke --remove-ca first")
+        if info["strays"]:
+            raise Refusal(f"{box.files[key].path} holds an older user CA ({info['strays'][0][:16]}...); remove it by hand first")
+    for config in (box.ags, box.es):
+        bound = [p for p, s in config.namespace_issuers or [] if s == ca.cert["sha256"] or matches_prefix(p, L.path_namespace)]
+        if bound:
+            raise Refusal(f"{config.label} security.namespace_issuers still binds {bound[0]!r}; run revoke --remove-ca first")
+        listed = [p for p in config.prefixes if matches_prefix(p, L.path_namespace)]
+        if listed:
+            raise Refusal(f"{config.label} allowlist still holds {listed[0]!r}")
+    old = ca.registry["ca"]
+    rep.check("user CA", "ok", f"{old['sha256'][:16]}... is installed nowhere and no name is active")
+    if pending == "staged":
+        rep.planned(f"discard the unfinished replacement in {ca.next_dir}, which the registry never named")
+    ca_plan(rep, L, ca.next_dir)
+    rep.planned(f"keep the old CA certificate as {ca.retired_dir}/{old['sha256']}.pem and delete the old CA key")
+    rep.planned("name the new CA in the registry, keeping every name (all revoked) and every record; no service file is touched")
+    if not apply:
+        rep.result = "planned"
+        rep.message = "nothing changed; rerun with --apply"
+        return
+    if pending == "staged":
+        shutil.rmtree(ca.next_dir)
+        fsync_dir(ca.dir)
+    os.mkdir(ca.next_dir, 0o700)
+    try:
+        cert = make_ca_material(r, L, ca.next_dir)
+    except BaseException:
+        shutil.rmtree(ca.next_dir, ignore_errors=True)
+        raise
+    kept = os.path.join(ca.retired_dir, f"{old['sha256']}.pem")
+    found = read_regular_file(kept, 64 * 1024)
+    if found is None:
+        create_exclusive(kept, ca.cert_pem, 0o644)
+    elif found[0] != ca.cert_pem:
+        raise Failure(f"{kept} exists and differs from the old CA certificate")
+    now = iso_utc(utc_now())
+    retired = dict(old)
+    retired.setdefault("retired_at", now)
+    retired["replaced_at"] = now
+    ca.registry["retired_cas"].append(retired)
+    ca.registry["ca"] = ca_record(cert)
+    ca.event("init-ca", "", f"replaced the user CA {old['sha256'][:16]}... with {cert['sha256'][:16]}...")
+    with signals_deferred():
+        try:
+            ca.save_registry_or_fail()
+        except Failure as exc:
+            raise Failure(f"{exc}; the user CA was not replaced, and the next init-ca --replace discards {ca.next_dir}") from None
+        rep.action(f"named the new CA {cert['sha256'][:16]}... in the registry; the old one is retired")
+        try:
+            ca.finish_replacement()
+        except OSError as exc:
+            raise Failure(f"the registry names the new CA, but moving it into place failed ({exc.strerror}); "
+                          "run init-ca --replace --apply again to finish") from None
+    rep.action(f"moved the new CA key and certificate into {ca.dir}; the old key is gone")
+    rep.facts.update(ca_sha256=cert["sha256"], ca_not_after=iso_utc(cert["not_after"]), retired_ca_sha256=old["sha256"])
+    rep.result = "ok"
+    rep.message = "user CA replaced; issue and allow use the new one, and every revoked name stays revoked" + held_stops_note()
+
+
 def mode_issue(r: Runner, rep: Report, apply: bool, name: str, csr_path: str, out_path: str) -> None:
     L = r.L
     ca = UserCA(L)
     if not ca.exists():
         raise Refusal("the user CA does not exist; run init-ca first")
     ca.load()
+    refuse_retired(ca)
     entry = ca.entry(name)
     if entry and entry["state"] == "revoked":
         raise Refusal(f"{prefix_for(L, name)} was revoked; names are never reused, choose another name")
@@ -1747,9 +2359,19 @@ def mode_issue(r: Runner, rep: Report, apply: bool, name: str, csr_path: str, ou
             ca.registry["names"][name] = entry
         entry["certificates"].append(record)
         ca.event("issue", name, f"serial {serial_hex}")
-        ca.save_registry()
+        kept = os.path.join(ca.issued_dir, f"{serial_hex}.pem")
+        try:
+            ca.save_registry_or_fail()
+        except Failure as exc:
+            raise Failure(f"{exc}; serial {serial_hex} was signed and kept in {kept} but is not recorded, so issue again "
+                          "with the same CSR once the registry can be saved") from None
         rep.action(f"signed serial {serial_hex} for {spiffe_id(L, name)}, valid until {record['not_after']}")
-        create_exclusive(out_path, pem, 0o644)
+        try:
+            create_exclusive(out_path, pem, 0o644)
+        except OSError as exc:
+            raise Failure(f"serial {serial_hex} for {spiffe_id(L, name)} was signed and recorded, but {out_path} could not "
+                          f"be written ({exc.strerror}); copy {kept} to the caller instead (its key is now recorded, so "
+                          "issuing again needs a new key)") from None
         rep.action(f"wrote {out_path}")
     finally:
         shutil.rmtree(work, ignore_errors=True)
@@ -1758,12 +2380,19 @@ def mode_issue(r: Runner, rep: Report, apply: bool, name: str, csr_path: str, ou
     rep.message = f"copy {out_path} to the caller and run install there"
 
 
+def refuse_retired(ca: UserCA) -> None:
+    if ca.retired:
+        raise Refusal(f"the user CA was retired by revoke --remove-ca at {ca.registry['ca']['retired_at']}; "
+                      "make a new one with init-ca --replace")
+
+
 def mode_allow(r: Runner, rep: Report, apply: bool, name: str) -> None:
     L = r.L
     ca = UserCA(L)
     if not ca.exists():
         raise Refusal("the user CA does not exist; run init-ca first")
     ca.load()
+    refuse_retired(ca)
     entry = ca.entry(name)
     if entry is None:
         raise Refusal(f"{prefix_for(L, name)} has no certificate; run issue first")
@@ -1773,21 +2402,40 @@ def mode_allow(r: Runner, rep: Report, apply: bool, name: str) -> None:
         raise Refusal(f"{prefix_for(L, name)} has no unexpired certificate; issue one first")
     if ca.cert["not_after"] <= utc_now():
         raise Refusal("the user CA has expired")
+    pending = ca.pending_revocations()
+    if pending:
+        raise Refusal(f"the revocation of {', '.join(pending)} is not finished; run revoke --name {pending[0]} --apply first")
     box = Box(L, ca)
     box.require_topology()
+    strays = box.strays()
+    if strays:
+        raise Refusal(f"the client CA files hold another user CA ({strays[0][:16]}...), which would stay trusted; remove it first")
     present = box.ca_state()
     prefix = prefix_for(L, name)
+    sha = ca.cert["sha256"]
     for config in (box.ags, box.es):
         covering = config.covering(prefix)
         if covering:
             raise Refusal(f"{config.label} allowlist entry {covering[0]!r} already authorizes {prefix}; revoking the name could not take effect")
+        problem = config.binding_problem(L.path_namespace, sha)
+        if problem:
+            raise Refusal(f"{config.label} security.namespace_issuers {problem}, which AGS and ES refuse beside the user CA's binding")
     for key in ("ags_ca", "es_ca"):
         f = box.files[key]
         if not present:
-            if analyze_client_ca(f.path, f.old, ca.cert_pem)["user_ca_present"]:
+            if box.client_ca_info(key)["user_ca_present"]:
                 raise Refusal(f"{f.path} holds the user CA but the other client CA file does not")
             f.new = with_user_ca(f.path, f.old, ca.cert_pem)
             rep.planned(f"append the user CA to the end of {f.path}")
+    added_binding = False
+    for config in (box.ags, box.es):
+        if config.binds(L.path_namespace, sha):
+            rep.check(f"{config.label} namespace issuer", "ok", f"binds {L.path_namespace} to the user CA")
+        else:
+            config.add_namespace_issuer(L.path_namespace, sha)
+            added_binding = True
+            rep.planned(f"bind {L.path_namespace} to the user CA in {config.label} security.namespace_issuers ({config.file.path}), "
+                        f"so the user CA vouches only for {L.path_namespace}/ identities and no other CA for them")
     for config in (box.ags, box.es):
         if prefix in config.prefixes:
             rep.check(f"{config.label} allowlist", "ok", f"already holds {prefix}")
@@ -1797,22 +2445,34 @@ def mode_allow(r: Runner, rep: Report, apply: bool, name: str) -> None:
     units = box.units_for_changes()
     if not units:
         rep.result = "ok"
-        rep.message = f"{prefix} is already allowed and the user CA is installed; nothing to do"
+        rep.message = f"{prefix} is already allowed, the user CA is installed and bound; nothing to do"
         return
     rep.planned("restart " + " then ".join(units) + "; any failure restores the exact previous bytes and restarts again")
+    rep.planned("add no network grant: a run this caller publishes or submits gets network access only through a rule the box owner writes")
     if not apply:
         rep.result = "planned"
         rep.message = "nothing changed; rerun with --apply"
         return
+
     def commit(backup: str) -> None:
         # Inside the transaction: if the registry cannot record the change,
         # the service files go back too.
         ca.event("allow", name, "user CA installed" if not present else "allowlists updated", backup)
         ca.save_registry_or_fail()
 
-    box.apply(r, rep, "allow", name, commit)
+    try:
+        box.apply(r, rep, "allow", name, commit)
+    except Failure as exc:
+        if not added_binding:
+            raise
+        raise Failure(f"{exc}. If the unit's log says unknown field \"namespace_issuers\", that AGS or ES build is older "
+                      "than the namespace issuer binding: redeploy AGS and ES from trunk_dev before allow") from None
     rep.result = "ok"
     rep.message = f"{prefix} is allowed by AGS and ES; check from the caller with: {PUBLIC_SCRIPT} check --name {name} --url https://<box>:<port>"
+
+
+def ordered_units(L: Layout, units) -> list:
+    return [u for u in (L.ags_unit, L.es_unit) if u in set(units)]
 
 
 def mode_revoke(r: Runner, rep: Report, apply: bool, name: str, remove_ca: bool) -> None:
@@ -1825,38 +2485,51 @@ def mode_revoke(r: Runner, rep: Report, apply: bool, name: str, remove_ca: bool)
     if entry is None:
         raise Refusal(f"{prefix_for(L, name)} is not in the registry")
     box = Box(L, ca)
-    box.require_topology()
+    box.require_topology(revoke=True)
     prefix = prefix_for(L, name)
+    principal = spiffe_id(L, name)
     for config in (box.ags, box.es):
-        if prefix in config.prefixes:
-            remaining = [p for p in config.prefixes if p != prefix]
-            config.set_prefixes(remaining)
-            rep.planned(f"remove {prefix} from the {config.label} allowlist in {config.file.path}")
-        if config.covering(prefix):
-            raise Refusal(f"{config.label} allowlist entry {config.covering(prefix)[0]!r} would still authorize {prefix}")
+        # Every exact copy and every slash variant of the entry: an older
+        # AGS trims slashes, so "/user/<name>/" authorizes the name there.
+        mine = [i for i, p in enumerate(config.prefixes) if p.strip("/") == prefix]
+        if mine:
+            config.set_prefixes([p for i, p in enumerate(config.prefixes) if i not in mine])
+            rep.planned(f"remove {len(mine)} entr{'y' if len(mine) == 1 else 'ies'} for {prefix} from the {config.label} allowlist in {config.file.path}")
+        covering = config.covering(prefix)
+        if covering:
+            raise Refusal(f"{config.label} allowlist entry {covering[0]!r} would still authorize {prefix}")
+        removed = config.remove_grant_rules(principal)
+        if removed:
+            rep.planned(f"remove {removed} workload grant rule(s) naming {principal} as publisher or caller from {config.file.path}")
+    retire = False
     if remove_ca:
         others = sorted(n for n, e in ca.registry["names"].items() if n != name and e["state"] == "active")
         if others:
             raise Refusal("--remove-ca is refused while other names are active: " + ", ".join(others))
-        lingering = sorted({p for config in (box.ags, box.es) for p in config.prefixes
-                            if p == L.path_namespace or p.startswith(L.path_namespace + "/")} - {prefix})
+        lingering = sorted({p for config in (box.ags, box.es) for p in config.prefixes if matches_prefix(p, L.path_namespace)})
         if lingering:
             raise Refusal("--remove-ca is refused while user entries remain in the allowlists: " + ", ".join(lingering))
-        if box.ca_state():
+        infos = [box.client_ca_info(k)["user_ca_present"] for k in ("ags_ca", "es_ca")]
+        if all(infos):
             for key in ("ags_ca", "es_ca"):
                 f = box.files[key]
                 f.new = without_user_ca(f.path, f.old, ca.cert_pem)
                 rep.planned(f"remove the user CA from the end of {f.path}")
-        else:
-            for key in ("ags_ca", "es_ca"):
-                if analyze_client_ca(box.files[key].path, box.files[key].old, ca.cert_pem)["user_ca_present"]:
-                    raise Refusal("only one client CA file holds the user CA; fix that first")
-    units = box.units_for_changes()
+        elif any(infos):
+            raise Refusal("only one client CA file holds the user CA; fix that first")
+        for config in (box.ags, box.es):
+            if config.remove_namespace_issuer(L.path_namespace, ca.cert["sha256"]):
+                rep.planned(f"remove the binding of {L.path_namespace} to the user CA from {config.label} security.namespace_issuers")
+        retire = not ca.retired
+        if retire:
+            rep.planned("retire the user CA in the registry: issue and allow refuse it from now on, and init-ca --replace makes a new one")
+    pending = entry.get("pending_restarts", [])
+    units = ordered_units(L, box.units_for_changes() + pending)
     if units:
-        rep.planned("restart " + " then ".join(units) + "; any failure restores the exact previous bytes and restarts again")
+        rep.planned("restart " + " then ".join(units) + "; a failure keeps the removal on disk and is reported, nothing is put back")
     if entry["state"] != "revoked":
         rep.planned(f"mark {name} revoked in the registry for good")
-    if not units and entry["state"] == "revoked":
+    if not units and entry["state"] == "revoked" and not retire:
         rep.result = "ok"
         rep.message = f"{prefix} is already revoked and in no allowlist; nothing to do"
         return
@@ -1864,36 +2537,66 @@ def mode_revoke(r: Runner, rep: Report, apply: bool, name: str, remove_ca: bool)
         rep.result = "planned"
         rep.message = "nothing changed; rerun with --apply"
         return
-    done = (f"{prefix} can no longer call AGS or ES; its certificates stay cryptographically valid until they expire. "
+    done = (f"{prefix} can no longer call the AGS or ES API; its certificates stay cryptographically valid until they expire. "
             "Remove any Unix login of the same person separately.")
-    # The registry records the revocation before AGS and ES change, so a
-    # failure later never leaves a name that allow or issue would accept
-    # again. Rerunning revoke finishes a revocation that stopped half way.
+    # The registry records the revocation, the retirement and the services
+    # still to restart before anything else changes, so a failure later never
+    # leaves a name or CA that allow or issue would accept again, and running
+    # revoke again knows what is left to do.
     if entry["state"] != "revoked":
         entry["state"] = "revoked"
         entry["revoked_at"] = iso_utc(utc_now())
         ca.event("revoke", name, "marked revoked")
-        try:
-            ca.save_registry_or_fail()
-        except Failure as exc:
-            raise Failure(f"{exc}; nothing changed") from None
-        rep.action(f"marked {name} revoked")
+    if retire:
+        ca.registry["ca"]["retired_at"] = iso_utc(utc_now())
+        ca.event("revoke", name, "retired the user CA")
+    if units:
+        entry["pending_restarts"] = units
+    try:
+        ca.save_registry_or_fail()
+    except Failure as exc:
+        raise Failure(f"{exc}; nothing changed") from None
+    rep.action(f"recorded in the registry: {name} revoked" + (", user CA retired" if retire else "")
+               + (f", {' and '.join(units)} to restart" if units else ""))
     if not units:
         rep.result = "ok"
         rep.message = done
         return
+    unfinished = (f"the registry marks {name} revoked and lists the services still to restart, so run revoke again "
+                  "to finish")
+    backup = ""
     try:
-        backup = box.apply(r, rep, "revoke", name)
-    except Failure as exc:
-        raise Failure(f"the revocation did not take effect at AGS and ES, {prefix} may still be allowed; "
-                      f"the registry marks {name} revoked, so run revoke again: {exc}") from None
-    ca.event("revoke", name, "user CA removed" if remove_ca and box.files["ags_ca"].changed else "allowlists updated", backup)
+        if any(f.changed for f in box.files.values()):
+            try:
+                backup = box.backup("revoke", name)
+            except OSError as exc:
+                raise Failure(f"AGS and ES were not changed and may still allow {prefix}: could not back up the service "
+                              f"files ({exc.strerror}: {exc.filename}); {unfinished} once that is fixed") from None
+            rep.action(f"backed up the four service files to {backup}")
+        problems, failed = box.apply_forward(r, rep, units)
+    except Interrupted as exc:
+        raise Interrupted(f"{exc}; {unfinished}") from None
+    if problems:
+        entry["pending_restarts"] = ordered_units(L, failed) or units
+        with contextlib.suppress(Failure):
+            ca.save_registry_or_fail()
+        raise Failure(f"the revocation is not complete: {'; '.join(problems)}. Every file that was written keeps the "
+                      f"removal, so a service that starts later starts without {prefix}; nothing was put back. Repair the "
+                      f"service (journalctl -u <unit>), then {unfinished}")
+    entry.pop("pending_restarts", None)
+    detail = "user CA removed" if remove_ca and box.files["ags_ca"].changed else "service files updated"
+    ca.event("revoke", name, detail, backup)
     try:
         ca.save_registry_or_fail()
     except Failure as exc:
         rep.result = "attention"
-        rep.message = (f"{prefix} is revoked in the registry and at AGS and ES, but this run's registry event was not "
-                       f"saved ({exc}); the replaced files are in {backup}")
+        rep.message = (f"{prefix} is revoked in the registry and at AGS and ES, but this run's last registry update was "
+                       f"not saved ({exc}); status shows the restarts as unfinished until revoke runs again")
+        return
+    strays = box.strays()
+    if strays:
+        rep.result = "attention"
+        rep.message = f"{done} The client CA files still hold another user CA ({strays[0][:16]}...); remove it by hand."
         return
     rep.result = "ok"
     rep.message = done
@@ -1914,8 +2617,12 @@ def mode_status(r: Runner, rep: Report) -> None:
             rep.result = "attention"
             return
         left = days_left(ca.cert["not_after"])
-        rep.check("user CA", "attention" if left < L.ca_attention_days else "ok",
-                  f"sha256 {ca.cert['sha256'][:16]}..., valid until {iso_utc(ca.cert['not_after'])} ({left} days)")
+        if ca.retired:
+            rep.check("user CA", "ok", f"sha256 {ca.cert['sha256'][:16]}..., retired at {ca.registry['ca']['retired_at']}; "
+                      "issue and allow refuse it, init-ca --replace makes a new one")
+        else:
+            rep.check("user CA", "attention" if left < L.ca_attention_days else "ok",
+                      f"sha256 {ca.cert['sha256'][:16]}..., valid until {iso_utc(ca.cert['not_after'])} ({left} days)")
         ca_pem = ca.cert_pem
     try:
         files = {}
@@ -1933,38 +2640,84 @@ def mode_status(r: Runner, rep: Report) -> None:
         rep.check(f"{config.label} client CA path", state, str(config.client_ca_file))
     same = files["ags_ca"].old == files["es_ca"].old
     rep.check("client CA files identical", "ok" if same else "attention", "yes" if same else "no")
+    retired = ca.retired_shas() if ca_pem is not None else ()
     present = {}
     for key in ("ags_ca", "es_ca"):
         try:
-            info = analyze_client_ca(files[key].path, files[key].old, ca_pem)
+            info = analyze_client_ca(files[key].path, files[key].old, ca_pem, L, retired)
             present[key] = info["user_ca_present"]
             rep.check(f"{files[key].path}", "ok", f"{info['certificates']} certificate(s); user CA {'present' if info['user_ca_present'] else 'absent'}")
+            for sha in info["strays"]:
+                rep.check(f"{files[key].path} older user CA", "attention",
+                          f"{sha[:16]}... names the user CA or is a retired one, and stays trusted while it is here; remove it")
         except Refusal as exc:
             rep.check(f"{files[key].path}", "fail", str(exc))
             present[key] = None
+    installed = all(present.get(k) for k in ("ags_ca", "es_ca"))
+    try:
+        references = client_ca_references(L, [("AGS", L.ags_config, ags.doc), ("ES", L.es_config, es.doc)]
+                                          + [(os.path.basename(p), p, parse_json_strict(read_box_file(L, p, 1 << 20)[0].decode("utf-8")))
+                                             for p in L.other_service_configs],
+                                          [files["ags_ca"].st, files["es_ca"].st])
+        rep.check("client CA files read elsewhere", "attention" if references else "ok",
+                  "; ".join(references) if references else "only by AGS and ES tls.client_ca_file")
+    except (Refusal, UnicodeDecodeError, ValueError) as exc:
+        rep.check("client CA files read elsewhere", "attention", f"cannot tell: {exc}")
+    sha = ca.cert["sha256"] if ca_pem is not None else None
+    for config in (ags, es):
+        user_bindings = [(p, s) for p, s in config.namespace_issuers or [] if matches_prefix(p, L.path_namespace) or s == sha]
+        if installed:
+            if config.binds(L.path_namespace, sha) and len(user_bindings) == 1:
+                rep.check(f"{config.label} namespace issuer", "ok", f"binds {L.path_namespace} to the user CA")
+            else:
+                rep.check(f"{config.label} namespace issuer", "attention",
+                          f"the user CA is trusted but {L.path_namespace} is not bound to it alone, so it could sign other identities, "
+                          "the operator's included; run allow again to write the binding")
+        elif user_bindings:
+            rep.check(f"{config.label} namespace issuer", "attention",
+                      f"binds {user_bindings[0][0]!r} to {user_bindings[0][1][:16]}..., but the user CA is not installed in both client CA files")
     names = ca.registry["names"] if ca_pem is not None else {}
-    listed = set()
+    listed = {}
     for config in (ags, es):
         for p in config.prefixes:
-            if p == L.path_namespace or p.startswith(L.path_namespace + "/"):
-                listed.add(p)
+            if matches_prefix(p, L.path_namespace):
+                listed.setdefault(p, []).append(config.label)
     for p in sorted(listed):
-        name = p.split("/", 1)[1] if "/" in p else ""
+        stripped = p.strip("/")
+        name = stripped.split("/", 1)[1] if "/" in stripped else ""
         entry = names.get(name)
-        where = [c.label for c in (ags, es) if p in c.prefixes]
-        if entry is None or entry["state"] != "active" or p != prefix_for(L, name):
+        where = listed[p]
+        if p != prefix_for(L, name) or not NAME_RE.match(name):
+            rep.check(f"allowlist {p}", "attention", f"in {'+'.join(where)}; not the exact form {L.path_namespace}/<name>, and it may "
+                      f"authorize more than one name at an older AGS")
+        elif entry is None or entry["state"] != "active":
             rep.check(f"allowlist {p}", "attention", f"in {'+'.join(where)} but not an active registry name")
-        elif len(where) != 2:
+        elif len(where) != len(set(where)):
+            rep.check(f"allowlist {p}", "attention", f"listed more than once ({'+'.join(where)})")
+        elif sorted(where) != ["AGS", "ES"]:
             rep.check(f"allowlist {p}", "attention", f"only in {'+'.join(where)}")
-        elif not all(present.get(k) for k in ("ags_ca", "es_ca")):
+        elif not installed:
             rep.check(f"allowlist {p}", "attention", "allowed, but the user CA is not installed in both client CA files")
         else:
             rep.check(f"allowlist {p}", "ok", "allowed by AGS and ES")
+    namespace_id = f"spiffe://{L.trust_domain}/{L.path_namespace}/"
+    for config in (ags, es):
+        for i, rule in enumerate(config.grant_rules):
+            for field in ("publisher_principal", "caller_principal"):
+                value = rule.get(field, "")
+                if value.startswith(namespace_id):
+                    entry = names.get(value[len(namespace_id):])
+                    if entry is None or entry["state"] != "active":
+                        rep.check(f"{config.label} workload grant rule {i}", "attention",
+                                  f"{field} {value} is not an active user; revoke removes such rules")
     for name in sorted(names):
         entry = names[name]
         unexpired = ca.unexpired(name)
         latest = max((c.get("not_after_epoch", 0) for c in unexpired), default=0)
-        if entry["state"] == "revoked":
+        if entry.get("pending_restarts"):
+            rep.check(f"name {name}", "attention", f"revoked, but {' and '.join(entry['pending_restarts'])} did not confirm a restart "
+                      "without it; run revoke again to finish")
+        elif entry["state"] == "revoked":
             rep.check(f"name {name}", "ok", f"revoked at {entry.get('revoked_at', '?')}; {len(unexpired)} certificate(s) not yet expired")
         elif not unexpired:
             rep.check(f"name {name}", "attention", "active, but every certificate has expired; issue a new one")
@@ -2263,13 +3016,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog=PUBLIC_SCRIPT,
         description="Named user caller identities for AGS and ES on the Remote Alpha box.",
+        # No abbreviated options: --apply is the safety switch.
+        allow_abbrev=False,
     )
     parser.add_argument("mode", choices=BOX_MODES + CALLER_MODES)
     parser.add_argument("--name", help="user name: the identity is spiffe://execution.internal/user/<name>")
     parser.add_argument("--apply", action="store_true", help="box modes: make the changes (default: check and print the plan)")
     parser.add_argument("--csr", help="issue: absolute path of the CSR")
     parser.add_argument("--out", help="issue: absolute path for the new certificate (must not exist)")
-    parser.add_argument("--remove-ca", action="store_true", help="revoke: also remove the user CA from both client CA files")
+    parser.add_argument("--remove-ca", action="store_true", help="revoke: also remove the user CA from both client CA files and retire it")
+    parser.add_argument("--replace", action="store_true", help="init-ca: replace a user CA that is installed nowhere and has no active name")
     parser.add_argument("--renew", action="store_true", help="request: make a new key and CSR for renewal")
     parser.add_argument("--cert", help="install: the issued certificate")
     parser.add_argument("--server-ca", help="install, check: the AGS/ES server CA bundle")
@@ -2281,7 +3037,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 _MODE_OPTIONS = {
     "status": set(),
-    "init-ca": {"apply"},
+    "init-ca": {"apply", "replace"},
     "issue": {"name", "apply", "csr", "out"},
     "allow": {"name", "apply"},
     "revoke": {"name", "apply", "remove_ca"},
@@ -2295,8 +3051,8 @@ _REQUIRED = {"issue": ("name", "csr", "out"), "allow": ("name",), "revoke": ("na
 
 def check_usage(args) -> None:
     allowed = _MODE_OPTIONS[args.mode]
-    defaults = {"apply": False, "remove_ca": False, "renew": False, "service": "es"}
-    for option in ("name", "apply", "csr", "out", "remove_ca", "renew", "cert", "server_ca", "url", "service"):
+    defaults = {"apply": False, "remove_ca": False, "replace": False, "renew": False, "service": "es"}
+    for option in ("name", "apply", "csr", "out", "remove_ca", "replace", "renew", "cert", "server_ca", "url", "service"):
         value = getattr(args, option)
         if option not in allowed and value not in (None, defaults.get(option)):
             raise UsageError(f"--{option.replace('_', '-')} is not an option of {args.mode}")
@@ -2343,7 +3099,7 @@ def main(argv: list, layout: Layout) -> int:
             if args.mode == "status":
                 mode_status(runner, rep)
             elif args.mode == "init-ca":
-                mode_init_ca(runner, rep, args.apply)
+                mode_init_ca(runner, rep, args.apply, args.replace)
             elif args.mode == "issue":
                 mode_issue(runner, rep, args.apply, args.name, args.csr, args.out)
             elif args.mode == "allow":

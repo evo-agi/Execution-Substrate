@@ -112,3 +112,41 @@ func TestCallerAllowlistPrefixRuleIsDocumentedOnce(t *testing.T) {
 		"The current repo-owned AGS and ES configs keep `authorization.allowed_spiffe_path_prefixes=[\"operator/local\"]`",
 	)
 }
+
+// The namespace issuer binding is written once, in contracts section 3A,
+// and the Remote Alpha user identity docs say what holds the user CA to
+// user/ before and after it, and the rule by which a recovery reissue may
+// carry the user CA over (red-team RT70-2 and RT70-3 of ES PR #70).
+func TestNamespaceIssuerBindingAndUserCATrustAreDocumented(t *testing.T) {
+	section := compactDocSection(t, mustRead(t, ".docs/system_overview/contracts.md"), "## 3A. Caller Authentication Contract", "## 4. Workload-Zone Vault Runtime-Config Contract")
+	assertContainsAll(t, "namespace issuer binding contract", section,
+		"AGS and ES also apply namespace issuer bindings, configured in `security.namespace_issuers`.",
+		"The binding holds in both directions. A CA bound to a namespace vouches for no path outside it, and a path in a bound namespace needs that namespace's CA:",
+		"So a CA bound to `user` can never vouch for `operator/local`, and no other CA can vouch for `user/claude`. The rule runs after the bootstrap-issuer rule.",
+		"An X.509 URI name constraint cannot do this: it can hold a CA to the trust domain but not to a path inside it.",
+		"Startup does not check that a bound CA is in the client CA bundle",
+		"ARS, EGS, and CGS have no such field and their client CA bundles must not hold a bound CA.",
+	)
+
+	users := compactDocSection(t, mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md"), "## Remote Alpha User Caller Identities", "## Direct Remote Requirements")
+	assertContainsAll(t, "Remote Alpha user identities", users,
+		"The user CA key can sign a certificate for any identity in `execution.internal`, the operator's and the Control Plane's included",
+		"What holds it to `user/` is the namespace binding that `allow` writes.",
+		"a leaked user CA key can then pass as any `user/<name>` that is allowed, and as no other identity.",
+		"the user CA key is as strong as the operator's certificate.",
+		"`allow` never leaves that state: it writes the binding in the same change that installs the user CA",
+		"it carries the user CA over only when both client CA files being replaced end with that exact certificate (`/etc/execution-substrate/user-ca/ca-cert.pem`), and otherwise installs the new external client CA alone.",
+		"That the file exists is not enough",
+		"`revoke` is forward-only.",
+		"nothing is put back.",
+		"a random 127-bit serial (126 random bits, top bit set)",
+		"`GET /health`, which asks for no allowlist entry, stays readable with them until they expire or `revoke --remove-ca` removes the CA.",
+	)
+
+	runbook := compactText(mustRead(t, ".runbooks/system/Governed Execution ES Remote Alpha User Identity.md"))
+	assertContainsAll(t, "user identity runbook", runbook,
+		"Its external reissue carries the user CA over only when both client CA files being replaced end with that exact certificate (`/etc/execution-substrate/user-ca/ca-cert.pem`), and otherwise installs the new external client CA alone",
+		"`revoke` never puts a removal back.",
+		"The user CA key can sign a certificate for any identity in `execution.internal`, the operator's included.",
+	)
+}

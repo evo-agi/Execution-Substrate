@@ -67,13 +67,43 @@ const userIdentityBootstrapCN = "Bootstrap Root CA Example"
 
 // userIdentityDriver imports the helper from its path and runs main with a
 // Layout built from a JSON file, prints the default Layout, or applies one
-// allowlist change to a config file and prints the edited text. Test code
-// only.
-const userIdentityDriver = `import dataclasses, importlib.util, json, os, sys
+// allowlist change to a config file and prints the edited text. With
+// --with-fault it first replaces one step of the helper with a failing one,
+// for the failures a test cannot cause from outside. Test code only.
+const userIdentityDriver = `import dataclasses, errno, importlib.util, json, os, stat, sys
 spec = importlib.util.spec_from_file_location("ra_user_identity", sys.argv[1])
 mod = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = mod
 spec.loader.exec_module(mod)
+if sys.argv[2] == "--with-fault":
+    fault = sys.argv[3]
+    if fault == "restore-writes-other-bytes":
+        # The rollback's restore writes one byte more than it read.
+        def restore(self):
+            mod.atomic_write(self.path, self.old + b" ", stat.S_IMODE(self.st.st_mode), self.st.st_uid, self.st.st_gid)
+        mod.FileState.restore = restore
+    elif fault == "finish-replacement-fails":
+        def finish_replacement(self):
+            raise OSError(errno.EIO, "Input/output error", self.next_dir)
+        mod.UserCA.finish_replacement = finish_replacement
+    elif fault == "backup-fails":
+        def backup(self, mode, name):
+            raise OSError(errno.ENOSPC, "No space left on device", self.ca.backups_dir)
+        mod.Box.backup = backup
+    elif fault.startswith("owned-by-another-uid="):
+        # One box file reads as owned by the next UID; its directory and
+        # mode stay as they are. A test that is not root cannot chown.
+        base, read = fault.split("=", 1)[1], mod.read_regular_file
+        def read_regular_file(path, limit):
+            found = read(path, limit)
+            if found is None or os.path.basename(path) != base:
+                return found
+            st = tuple(found[1])
+            return found[0], os.stat_result(st[:4] + (st[4] + 1,) + st[5:])
+        mod.read_regular_file = read_regular_file
+    else:
+        sys.exit("unknown fault " + fault)
+    del sys.argv[2:4]
 if sys.argv[2] == "--dump-layout":
     print(json.dumps(dataclasses.asdict(mod.Layout()), sort_keys=True))
     sys.exit(0)
@@ -163,6 +193,8 @@ type userIdentityBox struct {
 	etc       string
 	agsConfig string
 	esConfig  string
+	arsConfig string
+	egsConfig string
 	agsCA     string
 	esCA      string
 	userCADir string
@@ -207,6 +239,8 @@ func newUserIdentityBox(t *testing.T) *userIdentityBox {
 		etc:       etc,
 		agsConfig: filepath.Join(etc, "ags.json"),
 		esConfig:  filepath.Join(etc, "es.json"),
+		arsConfig: filepath.Join(etc, "ars.json"),
+		egsConfig: filepath.Join(etc, "egs.json"),
 		agsCA:     filepath.Join(etc, "tls", "external-client-auth-ca.pem"),
 		esCA:      filepath.Join(etc, "es-tls", "server-client-ca.pem"),
 		userCADir: filepath.Join(etc, "user-ca"),
@@ -235,24 +269,29 @@ func newUserIdentityBox(t *testing.T) *userIdentityBox {
 	// segments. The helper leaves every other entry as it is either way.
 	b.writeConfig("ags", b.agsConfig, b.agsCA, []string{"operator/local", "service/control-plane"})
 	b.writeConfig("es", b.esConfig, b.esCA, []string{"operator/local", "service/control-plane"})
+	// ARS and EGS, which allow checks for any use of the client CA files.
+	for _, other := range []struct{ example, path string }{{"ars", b.arsConfig}, {"egs", b.egsConfig}} {
+		writeUserIdentityFile(t, other.path, mustReadUserIdentityFile(t, filepath.Join(executionSubstrateRepoRoot, ".examples", "config", other.example+".json")), 0o640)
+	}
 	writeUserIdentityFile(t, filepath.Join(b.units, "systemctl"), []byte(userIdentityFakeSystemctl), 0o755)
 	refused := 0
 	if os.Geteuid() == 0 {
 		refused = -1
 	}
 	b.writeLayout(map[string]any{
-		"required_euid":       os.Geteuid(),
-		"box_owner_uid":       os.Geteuid(),
-		"ags_config":          b.agsConfig,
-		"es_config":           b.esConfig,
-		"ags_client_ca":       b.agsCA,
-		"es_client_ca":        b.esCA,
-		"user_ca_dir":         b.userCADir,
-		"lock_path":           b.lock,
-		"systemctl_bin":       filepath.Join(b.units, "systemctl"),
-		"settle_seconds":      0.05,
-		"caller_root":         b.callers,
-		"refused_caller_euid": refused,
+		"required_euid":         os.Geteuid(),
+		"box_owner_uid":         os.Geteuid(),
+		"ags_config":            b.agsConfig,
+		"es_config":             b.esConfig,
+		"ags_client_ca":         b.agsCA,
+		"es_client_ca":          b.esCA,
+		"other_service_configs": []string{b.arsConfig, b.egsConfig},
+		"user_ca_dir":           b.userCADir,
+		"lock_path":             b.lock,
+		"systemctl_bin":         filepath.Join(b.units, "systemctl"),
+		"settle_seconds":        0.05,
+		"caller_root":           b.callers,
+		"refused_caller_euid":   refused,
 	})
 	return b
 }
@@ -326,7 +365,19 @@ func (r userIdentityRun) String() string {
 
 func (b *userIdentityBox) runWith(python string, args ...string) userIdentityRun {
 	b.t.Helper()
-	argv := append([]string{"-I", "-B", "-c", userIdentityDriver, userIdentityModule, b.layout}, args...)
+	return b.runDriver(python, []string{b.layout}, args...)
+}
+
+// boxWithFault runs a box mode with one step of the helper replaced by a
+// failing one (see userIdentityDriver).
+func (b *userIdentityBox) boxWithFault(fault string, args ...string) userIdentityRun {
+	b.t.Helper()
+	return b.runDriver("/usr/bin/python3", []string{"--with-fault", fault, b.layout}, append(args, "--json")...)
+}
+
+func (b *userIdentityBox) runDriver(python string, lead []string, args ...string) userIdentityRun {
+	b.t.Helper()
+	argv := append(append([]string{"-I", "-B", "-c", userIdentityDriver, userIdentityModule}, lead...), args...)
 	cmd := exec.Command(python, argv...)
 	cmd.Env = []string{"PATH=/usr/bin:/bin", "LC_ALL=C"}
 	cmd.Dir = b.root
@@ -469,6 +520,21 @@ func (b *userIdentityBox) registryState(name string) string {
 		b.t.Fatal(err)
 	}
 	return registry.Names[name].State
+}
+
+// pendingRestarts reads the units the registry lists as still to restart
+// for name, joined with commas.
+func (b *userIdentityBox) pendingRestarts(name string) string {
+	b.t.Helper()
+	var registry struct {
+		Names map[string]struct {
+			PendingRestarts []string `json:"pending_restarts"`
+		} `json:"names"`
+	}
+	if err := json.Unmarshal(mustReadUserIdentityFile(b.t, b.registryPath()), &registry); err != nil {
+		b.t.Fatal(err)
+	}
+	return strings.Join(registry.Names[name].PendingRestarts, ",")
 }
 
 // snapshot records every entry under the box's /etc/execution-substrate:
@@ -705,15 +771,23 @@ func startUserIdentityServers(t *testing.T, b *userIdentityBox, cert tls.Certifi
 	if err != nil {
 		t.Fatalf("ags/config refuses the edited ags.json: %v", err)
 	}
+	esIssuers, err := esCfg.Security.ParsedNamespaceIssuers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	agsIssuers, err := agsCfg.Security.ParsedNamespaceIssuers()
+	if err != nil {
+		t.Fatal(err)
+	}
 	s := &userIdentityServers{}
 	started := func() bool { return true }
-	s.es = httptest.NewUnstartedServer(esapi.NewServer(userIdentityESStub{t: t}, esCfg.Security.BootstrapIssuerCommonName, esCfg.Authorization.AllowedSPIFFEPathPrefixes, started).Handler())
+	s.es = httptest.NewUnstartedServer(esapi.NewServer(userIdentityESStub{t: t}, esCfg.Security.BootstrapIssuerCommonName, esCfg.Authorization.AllowedSPIFFEPathPrefixes, started, esIssuers...).Handler())
 	s.es.TLS = userIdentityServerTLS(t, cert, esCfg.TLS.ClientCAFile)
 	s.es.StartTLS()
-	s.ags = httptest.NewUnstartedServer(agsapi.NewServer(userIdentityAGSStub{publishCalls: &s.publishCalls}, agsCfg.Security.BootstrapIssuerCommonName, agsCfg.Authorization.AllowedSPIFFEPathPrefixes, started).Handler())
+	s.ags = httptest.NewUnstartedServer(agsapi.NewServer(userIdentityAGSStub{publishCalls: &s.publishCalls}, agsCfg.Security.BootstrapIssuerCommonName, agsCfg.Authorization.AllowedSPIFFEPathPrefixes, started, agsIssuers...).Handler())
 	s.ags.TLS = userIdentityServerTLS(t, cert, agsCfg.TLS.ClientCAFile)
 	s.ags.StartTLS()
-	authenticator := callerauth.NewAuthenticator(esCfg.Security.BootstrapIssuerCommonName)
+	authenticator := callerauth.NewAuthenticator(esCfg.Security.BootstrapIssuerCommonName).WithNamespaceIssuers(esIssuers...)
 	s.whoami = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if caller, ok := authenticator.Authenticate(w, r); ok {
 			_, _ = io.WriteString(w, caller.ID().String())
@@ -732,17 +806,83 @@ func userIdentityWhoami(t *testing.T, s *userIdentityServers, serverCA []byte, c
 	if err != nil {
 		t.Fatalf("Go cannot load the caller key pair: %v", err)
 	}
+	return userIdentityGet(s.whoami.URL, serverCA, pair)
+}
+
+// userIdentityGet calls GET url with a Go client holding pair and returns
+// "<status> <body>".
+func userIdentityGet(target string, serverCA []byte, pair tls.Certificate) (string, error) {
 	roots := x509.NewCertPool()
 	roots.AppendCertsFromPEM(serverCA)
 	client := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: roots, Certificates: []tls.Certificate{pair}}}, Timeout: 10 * time.Second}
 	defer client.CloseIdleConnections()
-	resp, err := client.Get(s.whoami.URL)
+	resp, err := client.Get(target)
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	return fmt.Sprintf("%d %s", resp.StatusCode, body), nil
+}
+
+// userIdentityAGSPublishStatus posts an empty body to AGS publish with a Go
+// client holding pair and returns the status code.
+func userIdentityAGSPublishStatus(t *testing.T, agsURL string, serverCA []byte, pair tls.Certificate) int {
+	t.Helper()
+	roots := x509.NewCertPool()
+	roots.AppendCertsFromPEM(serverCA)
+	client := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: roots, Certificates: []tls.Certificate{pair}}}, Timeout: 10 * time.Second}
+	defer client.CloseIdleConnections()
+	resp, err := client.Post(agsURL+"/v1/artifacts:publish", "application/json", strings.NewReader(""))
+	if err != nil {
+		t.Fatalf("AGS publish: %v", err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	return resp.StatusCode
+}
+
+// userCASignedPair signs a client certificate for spiffe://execution.internal/
+// <path> with the box's user CA key, as someone holding a copy of that key
+// could, and returns it with its key.
+func (b *userIdentityBox) userCASignedPair(path string) tls.Certificate {
+	b.t.Helper()
+	ca := parseUserIdentityPEMCert(b.t, mustReadUserIdentityFile(b.t, filepath.Join(b.userCADir, "ca-cert.pem")))
+	keyBlock, _ := pem.Decode(mustReadUserIdentityFile(b.t, filepath.Join(b.userCADir, "ca-key.pem")))
+	caKey, err := x509.ParsePKCS8PrivateKey(keyBlock.Bytes)
+	if err != nil {
+		b.t.Fatal(err)
+	}
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		b.t.Fatal(err)
+	}
+	uri, _ := url.Parse("spiffe://execution.internal/" + path)
+	der, err := x509.CreateCertificate(rand.Reader, &x509.Certificate{
+		SerialNumber: big.NewInt(time.Now().UnixNano()), Subject: pkix.Name{CommonName: "forged"},
+		NotBefore: time.Now().Add(-time.Minute), NotAfter: time.Now().Add(time.Hour),
+		KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+		BasicConstraintsValid: true, URIs: []*url.URL{uri},
+	}, ca, &key.PublicKey, caKey)
+	if err != nil {
+		b.t.Fatal(err)
+	}
+	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}
+}
+
+// userCASHA256 is the SHA-256 of the box's user CA certificate, as
+// security.namespace_issuers names it.
+func (b *userIdentityBox) userCASHA256() string {
+	b.t.Helper()
+	sum := sha256.Sum256(parseUserIdentityPEMCert(b.t, mustReadUserIdentityFile(b.t, filepath.Join(b.userCADir, "ca-cert.pem"))).Raw)
+	return hex.EncodeToString(sum[:])
+}
+
+// withUserBinding is a config text from writeConfig with the user CA's
+// namespace binding added the way allow adds it.
+func withUserBinding(text, sha string) string {
+	return strings.Replace(text, `"bootstrap_issuer_common_name": "`+userIdentityBootstrapCN+`"`+"\n",
+		`"bootstrap_issuer_common_name": "`+userIdentityBootstrapCN+`",`+"\n"+`    "namespace_issuers": [{"path_prefix": "user", "issuer_certificate_sha256": "`+sha+`"}]`+"\n", 1)
 }
 
 func (b *userIdentityBox) checkOutcome(name, service, serverURL string) userIdentityRun {
@@ -827,9 +967,9 @@ func TestUserIdentityFlowThroughRealESAndAGSHandlers(t *testing.T) {
 		original []byte
 		last     string
 	}{{b.agsConfig, originalAGS, `"service/control-plane"`}, {b.esConfig, originalES, `"service/control-plane"`}} {
-		want := strings.Replace(string(f.original), "      "+f.last+"\n", "      "+f.last+",\n      \"user/claude\"\n", 1)
+		want := strings.Replace(withUserBinding(string(f.original), b.userCASHA256()), "      "+f.last+"\n", "      "+f.last+",\n      \"user/claude\"\n", 1)
 		if got := string(mustReadUserIdentityFile(t, f.path)); got != want {
-			t.Fatalf("%s after allow is not the original with one added line:\n%s", f.path, got)
+			t.Fatalf("%s after allow is not the original with the namespace binding and one allowlist line added:\n%s", f.path, got)
 		}
 	}
 	// A second allow has nothing to do.
@@ -855,6 +995,20 @@ func TestUserIdentityFlowThroughRealESAndAGSHandlers(t *testing.T) {
 	if err != nil || got != "200 spiffe://execution.internal/user/claude" {
 		t.Fatalf("callerauth identity after allow: %q %v", got, err)
 	}
+	// The binding allow wrote holds the user CA to user/: a certificate its
+	// key signs for the operator or the Control Plane is refused before
+	// authorization by both real handlers, though both allowlists name them.
+	for _, path := range []string{"operator/local", "service/control-plane"} {
+		forged := b.userCASignedPair(path)
+		for _, target := range []string{servers.es.URL + "/v1/executions:contract", servers.whoami.URL} {
+			if got, err := userIdentityGet(target, serverCAPEM, forged); err != nil || got != "401 Authenticated caller identity required" {
+				t.Fatalf("user CA certificate for %s at %s: %q %v", path, target, got, err)
+			}
+		}
+		if code := userIdentityAGSPublishStatus(t, servers.ags.URL, serverCAPEM, forged); code != http.StatusUnauthorized {
+			t.Fatalf("user CA certificate for %s at AGS publish: %d", path, code)
+		}
+	}
 	servers.Close()
 
 	// revoke: authenticated but no longer allowed.
@@ -867,14 +1021,22 @@ func TestUserIdentityFlowThroughRealESAndAGSHandlers(t *testing.T) {
 		}
 	}
 	servers.Close()
-	if !bytes.Equal(mustReadUserIdentityFile(t, b.agsConfig), originalAGS) || !bytes.Equal(mustReadUserIdentityFile(t, b.esConfig), originalES) {
-		t.Fatal("revoke did not restore the original config bytes")
+	for _, f := range []struct {
+		path     string
+		original []byte
+	}{{b.agsConfig, originalAGS}, {b.esConfig, originalES}} {
+		if got := string(mustReadUserIdentityFile(t, f.path)); got != withUserBinding(string(f.original), b.userCASHA256()) {
+			t.Fatalf("%s after revoke is not the original with only the namespace binding added:\n%s", f.path, got)
+		}
 	}
 
 	// revoke --remove-ca: back to the external client CA alone.
 	b.mustOK(b.box("revoke", "--name", "claude", "--remove-ca", "--apply"), "revoke --remove-ca")
 	if !bytes.Equal(mustReadUserIdentityFile(t, b.agsCA), b.extCAPEM) || !bytes.Equal(mustReadUserIdentityFile(t, b.esCA), b.extCAPEM) {
 		t.Fatal("revoke --remove-ca did not restore the external client CA bytes")
+	}
+	if !bytes.Equal(mustReadUserIdentityFile(t, b.agsConfig), originalAGS) || !bytes.Equal(mustReadUserIdentityFile(t, b.esConfig), originalES) {
+		t.Fatal("revoke --remove-ca did not restore the original config bytes")
 	}
 	servers = startUserIdentityServers(t, b, serverCert)
 	defer servers.Close()
@@ -883,7 +1045,7 @@ func TestUserIdentityFlowThroughRealESAndAGSHandlers(t *testing.T) {
 		t.Fatalf("check after --remove-ca: %s", run)
 	}
 
-	// A revoked name is never issued or allowed again.
+	// --remove-ca retired the CA: nothing is issued or allowed under it.
 	b.mustOK(b.caller("request", "--name", "claude", "--renew"), "request --renew")
 	csr := filepath.Join(b.root, "claude-again.csr")
 	writeUserIdentityFile(t, csr, mustReadUserIdentityFile(t, filepath.Join(b.callerDir("claude"), "pending", "request.csr")), 0o644)
@@ -892,8 +1054,8 @@ func TestUserIdentityFlowThroughRealESAndAGSHandlers(t *testing.T) {
 		{"allow", "--name", "claude", "--apply"},
 	} {
 		run := b.box(args...)
-		if run.code != 1 || run.result() != "refused" || !strings.Contains(run.message(), "revoked") {
-			t.Fatalf("%v on a revoked name: %s", args, run)
+		if run.code != 1 || run.result() != "refused" || !strings.Contains(run.message(), "retired by revoke --remove-ca") {
+			t.Fatalf("%v under a retired CA: %s", args, run)
 		}
 	}
 
@@ -915,7 +1077,7 @@ func TestUserIdentityFlowThroughRealESAndAGSHandlers(t *testing.T) {
 	}
 	issuedSerial, _ := entry["certificates"].([]any)[0].(map[string]any)["serial"].(string)
 	want := "init-ca:created the user CA,issue:serial " + issuedSerial + ",allow:user CA installed," +
-		"revoke:marked revoked,revoke:allowlists updated,revoke:user CA removed"
+		"revoke:marked revoked,revoke:service files updated,revoke:retired the user CA,revoke:user CA removed"
 	if got := strings.Join(events, ","); got != want {
 		t.Fatalf("registry events %q, want %q", got, want)
 	}
@@ -935,7 +1097,10 @@ func TestUserIdentityCertificatesMeetTheProfileInGo(t *testing.T) {
 	if !ca.IsCA || !ca.BasicConstraintsValid || ca.MaxPathLen != 0 || !ca.MaxPathLenZero {
 		t.Fatalf("CA constraints: IsCA %v pathlen %d zero %v", ca.IsCA, ca.MaxPathLen, ca.MaxPathLenZero)
 	}
-	if ca.KeyUsage != x509.KeyUsageCertSign|x509.KeyUsageCRLSign || len(ca.ExtKeyUsage) != 0 {
+	// clientAuth only: Go and OpenSSL refuse a chain to this CA for any
+	// other purpose, such as a server certificate.
+	if ca.KeyUsage != x509.KeyUsageCertSign|x509.KeyUsageCRLSign || len(ca.ExtKeyUsage) != 1 ||
+		ca.ExtKeyUsage[0] != x509.ExtKeyUsageClientAuth || len(ca.UnknownExtKeyUsage) != 0 {
 		t.Fatalf("CA usages: %v %v", ca.KeyUsage, ca.ExtKeyUsage)
 	}
 	if !ca.PermittedDNSDomainsCritical || strings.Join(ca.PermittedURIDomains, ",") != "execution.internal" ||
@@ -1041,6 +1206,11 @@ func TestUserIdentityApplyRollsBackToTheExactBytes(t *testing.T) {
 			if run.code != 1 || run.result() != tc.wantResult || !strings.Contains(run.message(), tc.wantMessage) {
 				t.Fatalf("want %s with %q\n%s", tc.wantResult, tc.wantMessage, run)
 			}
+			// This allow adds the namespace binding, which an AGS or ES
+			// older than it refuses at startup: the message says so.
+			if !strings.Contains(run.message(), `unknown field "namespace_issuers"`) || !strings.Contains(run.message(), "redeploy AGS and ES from trunk_dev before allow") {
+				t.Fatalf("a failed allow that added the binding does not name the old-build cause\n%s", run)
+			}
 			if got := strings.Join(b.restarts(), ","); got != tc.wantRestarts {
 				t.Fatalf("restarts %q, want %q", got, tc.wantRestarts)
 			}
@@ -1049,37 +1219,52 @@ func TestUserIdentityApplyRollsBackToTheExactBytes(t *testing.T) {
 		})
 	}
 
-	t.Run("revoke that fails says the name may still be allowed and stays revoked", func(t *testing.T) {
+	t.Run("revoke that fails keeps the removal and finishes when run again", func(t *testing.T) {
 		t.Parallel()
 		b := newUserIdentityBox(t)
 		b.mint("claude")
 		b.mustOK(b.box("allow", "--name", "claude", "--apply"), "allow")
-		before := b.snapshot()
+		b.clearSystemctlLog()
 		b.marker("es.service", "dead-after-next-restart")
 		run := b.box("revoke", "--name", "claude", "--apply")
-		if run.code != 1 || run.result() != "failed" || !strings.Contains(run.message(), "did not take effect") ||
-			!strings.Contains(run.message(), "run revoke again") {
+		if run.code != 1 || run.result() != "failed" || !strings.Contains(run.message(), "the revocation is not complete") ||
+			!strings.Contains(run.message(), "nothing was put back") || !strings.Contains(run.message(), "run revoke again") {
 			t.Fatalf("failed revoke: %s", run)
 		}
-		// The service files are back; only the registry changed, and it
-		// marks the name revoked, so allow refuses it.
-		after := withoutUserIdentityBackups(b.snapshot())
-		registry, _ := filepath.Rel(b.etc, b.registryPath())
-		delete(after, registry)
-		beforeOthers := withoutUserIdentityBackups(before)
-		delete(beforeOthers, registry)
-		requireSameUserIdentitySnapshot(t, beforeOthers, after, "a rolled-back revoke")
+		if got := strings.Join(b.restarts(), ","); got != "ags.service,es.service" {
+			t.Fatalf("restarts %q, want each unit once and no rollback", got)
+		}
+		// Revoke is forward-only: the removal stays on disk, so ES starts
+		// without the name whenever it starts.
+		for _, path := range []string{b.agsConfig, b.esConfig} {
+			if strings.Contains(string(mustReadUserIdentityFile(t, path)), `"user/claude"`) {
+				t.Fatalf("%s still allows user/claude after a failed revoke", path)
+			}
+		}
 		if got := b.registryState("claude"); got != "revoked" {
 			t.Fatalf("registry state %q after a failed revoke, want revoked", got)
 		}
-		if again := b.box("allow", "--name", "claude", "--apply"); again.code != 1 || !strings.Contains(again.message(), "was revoked") {
+		if got := b.pendingRestarts("claude"); got != "es.service" {
+			t.Fatalf("pending restarts %q, want es.service", got)
+		}
+		status := b.box("status")
+		if status.result() != "attention" || !strings.Contains(status.stdout, "es.service") {
+			t.Fatalf("status after a failed revoke does not show the unfinished restart:\n%s", status)
+		}
+		if again := b.box("allow", "--name", "claude", "--apply"); again.code != 1 || !strings.Contains(again.message(), "revoke") {
 			t.Fatalf("allow after a failed revoke: %s", again)
 		}
-		// Running revoke again finishes it.
+		// Running revoke again restarts only what is left and clears it.
+		b.clearSystemctlLog()
 		b.mustOK(b.box("revoke", "--name", "claude", "--apply"), "revoke again")
-		if strings.Contains(string(mustReadUserIdentityFile(t, b.esConfig)), `"user/claude"`) ||
-			strings.Contains(string(mustReadUserIdentityFile(t, b.agsConfig)), `"user/claude"`) {
-			t.Fatal("user/claude is still allowed after revoke ran again")
+		if got := strings.Join(b.restarts(), ","); got != "es.service" {
+			t.Fatalf("restarts on the second revoke %q, want es.service", got)
+		}
+		if got := b.pendingRestarts("claude"); got != "" {
+			t.Fatalf("pending restarts %q after the second revoke, want none", got)
+		}
+		if final := b.box("revoke", "--name", "claude", "--apply"); final.code != 0 || !strings.Contains(final.message(), "nothing to do") {
+			t.Fatalf("third revoke: %s", final)
 		}
 	})
 
@@ -1614,9 +1799,9 @@ func TestUserIdentityAllowlistEditKeepsEveryOtherByte(t *testing.T) {
 	}{
 		{"meaning after the array", multi, added, "slash", "slosh", "allowlist edit check failed"},
 		{"meaning after the array, removing", withUser, added[:2], "slash", "slosh", "allowlist edit check failed"},
-		{"bytes before the array", multi, added, `{"client_ca_file": "/x"}`, `{"client_ca_file":"/x"}`, "changed bytes before the array"},
-		{"bytes after the array", multi, added, `"note": `, `"note" : `, "changed bytes after the array"},
-		{"bytes after the array, removing", withUser, added[:2], "\n}\n", "\n}\n\n", "changed bytes after the array"},
+		{"bytes before the array", multi, added, `{"client_ca_file": "/x"}`, `{"client_ca_file":"/x"}`, "allowlist edit changed bytes before the edited value"},
+		{"bytes after the array", multi, added, `"note": `, `"note" : `, "allowlist edit changed bytes after the edited value"},
+		{"bytes after the array, removing", withUser, added[:2], "\n}\n", "\n}\n\n", "allowlist edit changed bytes after the edited value"},
 	} {
 		t.Run("catches a faulty edit: "+tc.name, func(t *testing.T) {
 			ok, reason := editWith(t, tc.text, tc.prefixes, tc.old, tc.new)
@@ -1873,6 +2058,9 @@ func TestUserIdentityDefaultLayoutIsTheBox(t *testing.T) {
 			t.Errorf("Layout.%s = %v, want %v", key, layout[key], value)
 		}
 	}
+	if got := fmt.Sprint(layout["other_service_configs"]); got != "[/etc/execution-substrate/ars.json /etc/execution-substrate/egs.json]" {
+		t.Errorf("Layout.other_service_configs = %s, want ARS and EGS", got)
+	}
 	wrapper := string(mustReadUserIdentityFile(t, filepath.Join(executionSubstrateRepoRoot, "scripts", "remote_alpha_user_identity.sh")))
 	if !strings.Contains(wrapper, `exec /usr/bin/python3 -I -B "${SCRIPT_DIR}/internal/remote_alpha_user_identity.py" "$@"`) {
 		t.Fatal("the wrapper no longer runs the module with /usr/bin/python3 -I -B")
@@ -2060,6 +2248,16 @@ func TestUserIdentityRefusesACAOffTheProfile(t *testing.T) {
 			c.PermittedURIDomains = []string{"execution.internal"}
 			c.PermittedDNSDomainsCritical = true
 		}, "basic constraints are not CA:TRUE, pathlen:0"},
+		{"no extended key usage", func(c *x509.Certificate) {
+			c.ExtKeyUsage = nil
+			c.PermittedURIDomains = []string{"execution.internal"}
+			c.PermittedDNSDomainsCritical = true
+		}, "extended key usage missing"},
+		{"serverAuth too", func(c *x509.Certificate) {
+			c.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth}
+			c.PermittedURIDomains = []string{"execution.internal"}
+			c.PermittedDNSDomainsCritical = true
+		}, "extended key usage is not exactly clientAuth"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			b := newUserIdentityBox(t)
@@ -2076,6 +2274,7 @@ func TestUserIdentityRefusesACAOffTheProfile(t *testing.T) {
 				BasicConstraintsValid: true,
 				MaxPathLenZero:        true,
 				KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
+				ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 				SubjectKeyId:          old.SubjectKeyId,
 			}
 			tc.edit(template)
@@ -2228,7 +2427,7 @@ func TestUserIdentityReportNeverCarriesAPrivateKey(t *testing.T) {
 // sits next to it, it changes one thing in the signing call (x509 -req), so
 // the certificate issue gets back is not the one it asked for.
 const userIdentityTamperingOpenSSL = `#!/usr/bin/python3
-import os, sys
+import os, subprocess, sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 args = sys.argv[1:]
 marker = os.path.join(HERE, "openssl.tamper")
@@ -2245,6 +2444,13 @@ if args[:2] == ["x509", "-req"] and os.path.exists(marker):
         text = open(args[i]).read().replace("extendedKeyUsage = clientAuth", "extendedKeyUsage = clientAuth, serverAuth")
         args[i] = os.path.join(HERE, "tampered.cnf")
         open(args[i], "w").write(text)
+    elif tamper == "key":
+        # Sign another CSR, so the certificate carries another key.
+        other = os.path.join(HERE, "other.csr")
+        subprocess.run(["/usr/bin/openssl", "req", "-new", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes",
+                        "-keyout", os.path.join(HERE, "other.key"), "-subj", "/CN=claude", "-out", other],
+                       check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        args[args.index("-in") + 1] = other
     else:
         sys.exit("unknown tamper " + tamper)
 os.execv("/usr/bin/openssl", ["/usr/bin/openssl"] + args)
@@ -2277,6 +2483,7 @@ func TestUserIdentityIssueChecksWhatOpenSSLSigned(t *testing.T) {
 		{"serial", "serial differs from the one requested"},
 		{"digest", "not signed with sha256WithRSAEncryption"},
 		{"server-auth", "extended key usage is not exactly clientAuth"},
+		{"key", "public key differs from the CSR's"},
 	} {
 		t.Run(tc.tamper+": "+tc.want, func(t *testing.T) {
 			writeUserIdentityFile(t, filepath.Join(fake, "openssl.tamper"), []byte(tc.tamper), 0o644)

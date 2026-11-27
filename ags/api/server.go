@@ -25,10 +25,13 @@ type Server struct {
 	isStarted           func() bool
 }
 
-func NewServer(service publishingService, bootstrapIssuerCN string, allowedPathPrefixes []string, isStarted func() bool) *Server {
+// NewServer returns the server. namespaceIssuers are the caller namespace
+// issuer bindings from security.namespace_issuers (see
+// callerauth.Authenticator.WithNamespaceIssuers).
+func NewServer(service publishingService, bootstrapIssuerCN string, allowedPathPrefixes []string, isStarted func() bool, namespaceIssuers ...callerauth.NamespaceIssuer) *Server {
 	return &Server{
 		service:             service,
-		callers:             callerauth.NewAuthenticator(bootstrapIssuerCN),
+		callers:             callerauth.NewAuthenticator(bootstrapIssuerCN).WithNamespaceIssuers(namespaceIssuers...),
 		allowedPathPrefixes: append([]string(nil), allowedPathPrefixes...),
 		isStarted:           isStarted,
 	}

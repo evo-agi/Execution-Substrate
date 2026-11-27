@@ -4677,8 +4677,11 @@ that it calls AGS and ES as itself instead of borrowing the operator or
 Control Plane certificate. The first name is `user/claude` (decided by the box
 owner on 2026-11-23); later users follow the same `user/<name>` form. One
 operator-owned helper, `scripts/remote_alpha_user_identity.sh`, mints and
-installs these identities. It changes no ES, AGS, ARS or EGS code, contract,
-route or refusal; it changes only Remote Alpha box files.
+installs these identities. The slice adds one product rule, the namespace
+issuer binding of AGS and ES (`.docs/system_overview/contracts.md` section
+3A, configured in `security.namespace_issuers`), and changes no other ES,
+AGS, ARS or EGS code, contract, route or refusal; everything else it changes
+is a Remote Alpha box file.
 
 A `user/<name>` identity is an API identity only. It is not a Unix account,
 gives no SSH or sudo access, and is unrelated to any Unix login of the same
@@ -4690,17 +4693,31 @@ entirely means revoking both.
 Box modes run as root on the box and change nothing without `--apply`:
 
 - `status`: read-only report of the user CA, the registry, both client CA
-  files, the `user/` entries in both allowlists, and the AGS and ES units.
-- `init-ca [--apply]`: create the user CA once. It touches no service file.
+  files (including any other user CA in them), the namespace bindings, the
+  `user/` entries in both allowlists in every spelling, workload grant rules
+  that name an inactive user, unfinished revocations, and the AGS and ES
+  units.
+- `init-ca [--replace] [--apply]`: create the user CA once. It touches no
+  service file. `--replace` replaces it with a new CA, only while the old one
+  is in neither client CA file, bound by neither service, no `user/` entry is
+  in either allowlist, no name is active and no revocation is unfinished;
+  every revoked name stays revoked.
 - `issue --name <name> --csr <file> --out <file> [--apply]`: sign one leaf
   certificate for `user/<name>` from a CSR made on the caller's machine.
 - `allow --name <name> [--apply]`: install the user CA as a client trust
-  anchor if it is not installed yet, add the exact prefix `user/<name>` to
-  the AGS and ES allowlists, and restart `ags.service` then `es.service`.
+  anchor if it is not installed yet, bind the `user` namespace to it in the
+  AGS and ES `security.namespace_issuers`, add the exact prefix
+  `user/<name>` to the AGS and ES allowlists, and restart `ags.service` then
+  `es.service`.
 - `revoke --name <name> [--apply] [--remove-ca]`: mark the name revoked for
-  good, remove `user/<name>` from both allowlists, and restart both services.
-  `--remove-ca` also removes the user CA from both client CA files, and is
-  refused while any other name is still active.
+  good, remove every entry for `user/<name>` from both allowlists (repeated
+  copies and spellings with extra leading or trailing slashes included) and
+  every workload grant rule whose `publisher_principal` or
+  `caller_principal` is `spiffe://execution.internal/user/<name>`, and
+  restart both services. `--remove-ca` also removes the user CA from both
+  client CA files and the `user` binding from both services, and retires the
+  CA; it is refused while any other name is active or any other `user/`
+  entry remains.
 
 Caller modes run as the caller (refused as root), on the machine that will
 call AGS and ES, and support the Mac's `/usr/bin/python3` (3.9) and its
@@ -4716,9 +4733,10 @@ LibreSSL `openssl`:
   SAN and the client-auth usage and matches the local key (a match with
   `pending/` promotes the renewal key; the old key and certificate move to
   `previous/`). `--server-ca` stores the public AGS/ES server CA bundle for
-  `check`.
+  `check`; every certificate in it must be a CA.
 - `check --name <name> [--url https://<host>:<port> [--service es|ags]]`:
-  check the local files, and with `--url` call the service over mTLS. For ES
+  check the local files, and with `--url` call the service over mTLS,
+  verifying that the server certificate is for that host. For ES
   it calls the read-only `GET /v1/executions:contract`. For AGS it sends
   `POST /v1/artifacts:publish` with an empty body: AGS authenticates and
   authorizes the caller first and then refuses the empty body with `400
@@ -4733,34 +4751,67 @@ never leaves the caller's machine and is never printed.
 
 The user CA is a separate CA, not the external client CA of the
 `.docs/system_overview/remote_alpha_external_tls_one_time_incident_contract.md`
-family, whose two CAs keep signing only their own named roles. Profile:
-RSA-3072, SHA-256, subject `O=Execution Substrate, CN=Execution Substrate
-Remote Alpha User CA`, critical `CA:TRUE, pathlen:0`, critical `keyCertSign,
-cRLSign`, a critical name constraint permitting only URIs in
-`execution.internal`, 400 days. `init-ca` refuses when either service's
+family. Profile: RSA-3072, SHA-256, subject `O=Execution Substrate,
+CN=Execution Substrate Remote Alpha User CA`, critical `CA:TRUE, pathlen:0`,
+critical `keyCertSign, cRLSign`, EKU `clientAuth` only, a critical name
+constraint permitting only URIs in `execution.internal`, 400 days. `init-ca`
+and `allow` refuse when either service's
 `security.bootstrap_issuer_common_name` equals the user CA's Common Name.
+
+The user CA key can sign a certificate for any identity in
+`execution.internal`, the operator's and the Control Plane's included: a URI
+name constraint limits only the host of the URI, so it holds the CA to the
+trust domain but not to `user/`. What holds it to `user/` is the namespace
+binding that `allow` writes. With the binding in force, AGS and ES refuse
+with `401` a caller whose chain ends at the user CA unless its path is in
+`user/`, and a `user/` path whose chain ends at any other CA; a leaked user
+CA key can then pass as any `user/<name>` that is allowed, and as no other
+identity. Without it, which is the state of a client CA file that holds the
+user CA with no binding beside it, or of an AGS or ES build older than the
+binding, the user CA key is as strong as the operator's certificate. `allow`
+never leaves that state: it writes the binding in the same change that
+installs the user CA, and an AGS or ES build without the binding refuses the
+unknown field at startup, so `allow` fails and rolls back on it (redeploy AGS
+and ES from `trunk_dev` first). `status` reports a user CA that is trusted
+without its binding.
 
 Custody: the CA key stays on the box, root-only and without a passphrase, in
 `/etc/execution-substrate/user-ca/` (directory `root:root 0700`, key `0600`).
 Root on the box can already read every service key there, so a passphrase
 would add a secret to keep without protecting against anyone who can reach
-the file. The CA key never leaves the box.
+the file. The CA key never leaves the box. Guard every copy of it (a backup,
+a disk image) like the operator's key: until `revoke --remove-ca`, whoever
+holds one can pass as any allowed user name, and as the operator wherever the
+binding is not in force.
 
 Leaves: critical `CA:FALSE`, critical `digitalSignature` only, EKU
 `clientAuth` only, exactly one SAN, the URI
 `spiffe://execution.internal/user/<name>`, subject `CN=<name>`, subject and
-authority key identifiers, a random 128-bit serial, and 90 days that may not
-outlast the CA. `issue` copies no CSR extension, requires the CSR subject to be
-exactly `CN=<name>` and its self-signature to verify, accepts RSA keys of 3072
-to 8192 bits or EC P-256/P-384 keys, refuses a key that the CA or any earlier
-issued certificate already uses, and checks every field of the signed leaf
-before it records or writes it. Names are 1 to 32 characters of `a-z`, `0-9`
-and `-`, starting with a letter and not ending with `-`.
+authority key identifiers, a random 127-bit serial (126 random bits, top bit
+set), and 90 days that may not outlast the CA. `issue` copies no CSR
+extension, requires the CSR subject to be exactly `CN=<name>` and its
+self-signature to verify, accepts RSA keys of 3072 to 8192 bits or EC
+P-256/P-384 keys, refuses a key that the CA, a retired CA or any earlier
+issued certificate already uses, and checks every field of the signed leaf,
+its key included, before it records or writes it. A malformed CSR is
+refused, never a crash. Names are 1 to 32 characters of `a-z`, `0-9` and
+`-`, starting with a letter and not ending with `-`.
 
-The registry `/etc/execution-substrate/user-ca/registry.json` records each
-name's state and every certificate issued for it (serial, SHA-256 of the
-certificate and of its public key, validity). A revoked name is never issued
-or allowed again. Each issued certificate is also kept in `issued/`.
+The registry `/etc/execution-substrate/user-ca/registry.json` records the
+current CA, every retired one, each name's state and every certificate issued
+for it (serial, SHA-256 of the certificate and of its public key, validity).
+A revoked name is never issued or allowed again, under any CA. Each issued
+certificate is also kept in `issued/`; if `issue` cannot write `--out`, the
+certificate is already recorded and the message names its file there.
+
+`revoke --remove-ca` retires the CA: `issue` and `allow` refuse a retired
+CA, and `init-ca --replace` makes a new one. The replacement keeps the old
+certificate in `retired/<sha256>.pem` and deletes the old key; it stages the
+new CA in `next/`, names it in the registry, and then moves it into place, so
+a stop at any point leaves either the old CA in force (the next `init-ca
+--replace` discards `next/`) or the new one named (the next `init-ca
+--replace --apply` finishes the move), and every other mode refuses until it
+is finished.
 
 ### Trust installation
 
@@ -4776,6 +4827,17 @@ present exactly once as the final block. The external client CA stays first,
 so tools that read only the first certificate of these files (expiry checks
 and `openssl x509`) still see it.
 
+`allow` also refuses, and `status` reports, a certificate in those files
+that carries the user CA's Common Name but is not the current user CA, or
+that is a retired user CA: it would stay trusted with nothing recording it.
+`allow` refuses when any AGS, ES, ARS or EGS config names either file
+anywhere but AGS's and ES's own `tls.client_ca_file`, by path or as the same
+file under another name, because the user CA would then be trusted there
+too. `allow` refuses a binding in either service that would conflict with
+`user` bound to the user CA. `allow` and `revoke` refuse a service file that
+carries an extended attribute other than a `security.` label (an ACL
+included), since replacing the file would drop it.
+
 Appending to the existing files, instead of pointing the services at a new
 bundle file, keeps a stale bundle from ever breaking operator or Control
 Plane access: a recovery reissue that does not know about the user CA can
@@ -4783,41 +4845,60 @@ only drop the user CA, which locks out user callers and nobody else.
 
 `allow` refuses when an allowlist entry other than `user/<name>` already
 authorizes `user/<name>`, because revoking the name could not then take
-effect. `revoke` checks the same after removing the entry. The check uses the
-broader matching rule of the AGS and ES builds before ES PR #38, which also
-lets a bare `user` or `user/` authorize `user/<name>`; builds since then refuse
-such an entry at startup (`internal/callerallowlist`), but the box's AGS may
-be older. Refusing by the broader rule refuses every covering entry under
-either build.
+effect. `revoke` checks the same after removing the name's entries. The
+check uses the broader matching rule of the AGS and ES builds before ES PR
+#38, which also lets a bare `user` or `user/` authorize `user/<name>`;
+builds since then refuse such an entry at startup (`internal/callerallowlist`),
+but the box's AGS may be older. Refusing by the broader rule refuses every
+covering entry under either build, and `status` and `--remove-ca` look for
+`user/` entries by the same rule.
 
 ### Applying, rollback and evidence
 
-`allow` and `revoke` take an exclusive lock, copy the four files they may
-change into `/etc/execution-substrate/user-ca/backups/<time>-<mode>-<name>/`,
-write each new file through a same-directory temporary file and a rename with
-the old owner, group and mode, edit only the allowlist array in each JSON file
-(every other byte is kept; duplicate JSON keys are refused), then restart
-`ags.service` and `es.service` in that order and require each to be active
-with a stable main process. Any failure restores the exact previous bytes,
-restarts the services this run restarted, and reports the result. `allow`
-saves the registry after both services are back, inside the same change: if
-the registry cannot be saved, the service files go back too. `revoke` saves the
-registry first, marking the name revoked before AGS and ES change, so a later
-failure never leaves a name that `allow` or `issue` would accept again; the
-report then says the name may still be allowed, and running `revoke` again
-finishes the change. A revocation cannot be undone; a caller who needs access
-again gets a new name. The backups hold `ags.json`,
-which carries the AGS signer key, so they stay root-only (`0600` files in
-`0700` directories), and the report prints digests of the client CA files but
-never of the configs.
+Every box mode but `status` takes an exclusive lock and refuses a lock path
+that is not a regular file. `allow` and `revoke` copy the four files
+they may change into
+`/etc/execution-substrate/user-ca/backups/<time>-<mode>-<name>/`, write each
+new file through a same-directory temporary file and a rename with the old
+owner, group and mode, and edit only the allowlist array, the namespace
+binding and the grant rules in each JSON file: every other byte is kept, the
+edited document must equal the old one with only that change, and duplicate
+or case-variant JSON keys are refused. They then restart `ags.service` and
+`es.service` in that order and require each to be active with a stable main
+process.
+
+`allow` is one change: any failure, or a stop signal (`SIGHUP`, `SIGINT`,
+`SIGTERM`), restores the exact previous bytes, restarts the services this run
+restarted, reads the files back, and reports the result. A signal that
+arrives during that rollback is held until it ends. `allow` saves the
+registry after both services are back, inside the same change: if the
+registry cannot be saved, the service files go back too.
+
+`revoke` is forward-only. Before any service file changes, it saves in the
+registry that the name is revoked, that the CA is retired (with
+`--remove-ca`), and which services it still has to restart. A failure or a
+stop after that keeps every removal already written, so a service that
+starts later starts without the name; nothing is put back. The report says
+what did not come back and to run `revoke` again; `status` lists the
+services still to restart; `allow` and `init-ca --replace` refuse while any
+revocation is unfinished; and the next `revoke` of that name restarts what is
+left and clears the record. A revocation cannot be undone; a caller who
+needs access again gets a new name. The backups hold `ags.json`, which
+carries the AGS signer key, so they stay root-only (`0600` files in `0700`
+directories), and the report prints digests of the client CA files but never
+of the configs.
 
 ### Revocation and its limits
 
 ES has no certificate revocation list. Revoking a name removes its allowlist
-entry, so AGS and ES answer its calls with `403`, while its certificates stay
-cryptographically valid until they expire. One certificate cannot be revoked
-alone: revoke the name and issue a new name. A compromised user CA key means
-revoking every name and running `revoke --remove-ca`.
+entries, so AGS and ES answer its API calls with `403`, while its
+certificates stay cryptographically valid until they expire. While the user
+CA stays installed, those certificates still complete the TLS handshake, and
+`GET /health`, which asks for no allowlist entry, stays readable with them
+until they expire or `revoke --remove-ca` removes the CA. One certificate
+cannot be revoked alone: revoke the name and issue a new name. A compromised
+user CA key means revoking every name, `revoke --remove-ca`, and `init-ca
+--replace` before the next name.
 
 User certificates are not SPIRE-issued, like the operator and Control Plane
 certificates. ES accepts them because their issuer Common Name is not the
@@ -4827,10 +4908,15 @@ unchanged by this slice.
 ### Recovery runbook interaction
 
 The Archived-Runbooks Remote Alpha Linux Recovery runbook must accept
-`user/<name>` allowlist entries in its topology check and, when it reissues
-the external client CA, append `/etc/execution-substrate/user-ca/ca-cert.pem`
-(when present) to the new client CA before installing it in both places.
-Until it does, its topology check refuses a box with user identities, and an
+`user/<name>` allowlist entries and the `user` namespace binding in its
+topology check. When it reissues the external client CA, it keeps the user
+CA trust state and never creates it: it carries the user CA over only when
+both client CA files being replaced end with that exact certificate
+(`/etc/execution-substrate/user-ca/ca-cert.pem`), and otherwise installs the
+new external client CA alone. That the file exists is not enough: `init-ca`
+creates it before any `allow`, and `revoke --remove-ca` keeps it, because the
+registry beside it is what keeps revoked names revoked. Until the runbook
+does this, its topology check refuses a box with user identities, and an
 external reissue drops user access (and only user access).
 
 ### Network grants for user callers
@@ -4841,24 +4927,28 @@ including one that asks for network access.
 
 Network grants are planned (Workstream F, slice WI-2). With them, ES gives a
 run network access only through an owner rule in
-`admission_policy.workload_grants` that names the run's publisher exactly,
-and refuses other runs that ask for it with `403 network_access_not_granted`.
-An artifact that `user/<name>` publishes then gets no network access until
-the box owner adds a rule that names that identity. `allow` does not add such
-a rule; when grants exist, this section and the runbook will say how to add
-one, and `allow` will name that step instead of adding it. The Remote Alpha
-upgrade that brings grants is planned to write a rule for each allowlist
-entry present at that time, so a name allowed before that upgrade keeps
-network access and a name allowed after it has none until the owner adds a
-rule. Runs that do not ask for network access are not affected.
+`admission_policy.workload_grants` that names both the run's publisher
+(`publisher_principal`) and the ES caller that submits it
+(`caller_principal`), and refuses other runs that ask for it with `403
+network_access_not_granted`. A `user/<name>` caller then gets network access
+only where the box owner writes a rule naming it. `allow` does not add such a
+rule, and the Remote Alpha upgrade that brings grants writes none for a
+`user/` name; when grants exist, this section and the runbook will say how to
+add one, and `allow` will name that step instead of adding it. ES refuses at
+startup a rule whose caller the allowlist does not admit, so `revoke` removes
+every rule naming the identity as publisher or caller in the same write that
+removes its allowlist entry, and `status` reports any rule that names a
+`user/` identity that is not active. Runs that do not ask for network access
+are not affected.
 
 ### Not claimed
 
 This slice adds no per-caller run ownership, quotas, run listing, CRL, OCSP,
-CA renewal, reload without restart, or user role beyond the existing
-allowlists: a `user/<name>` caller can do everything the AGS and ES
-allowlists permit any allowed caller to do. The operator's step-by-step
-procedure is `.runbooks/system/Governed Execution ES Remote Alpha User Identity.md`.
+CA renewal in place (`init-ca --replace` needs every name revoked first),
+reload without restart, or user role beyond the existing allowlists: a
+`user/<name>` caller can do everything the AGS and ES allowlists permit any
+allowed caller to do. The operator's step-by-step procedure is
+`.runbooks/system/Governed Execution ES Remote Alpha User Identity.md`.
 
 ## Direct Remote Requirements
 
