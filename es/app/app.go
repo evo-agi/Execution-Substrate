@@ -15,6 +15,7 @@ import (
 	"execution-substrate/es/admission"
 	"execution-substrate/es/api"
 	"execution-substrate/es/config"
+	"execution-substrate/internal/callerauth"
 )
 
 type App struct {
@@ -43,9 +44,13 @@ func New(cfg config.Config) (*App, error) {
 	}
 
 	server := api.NewServer(service, cfg.Security.BootstrapIssuerCommonName, cfg.Authorization.AllowedSPIFFEPathPrefixes, app.Started)
+	// ConnContext keeps each TLS connection the server accepts with that
+	// connection's requests, where the API's AuthenticateConnection reads the
+	// caller from it: ES never reads its caller from the request.
 	app.httpServer = &http.Server{
 		Addr:         net.JoinHostPort(cfg.HTTP.BindAddress, strconv.Itoa(cfg.HTTP.Port)),
 		Handler:      server.Handler(),
+		ConnContext:  callerauth.ConnContext,
 		ReadTimeout:  cfg.ReadTimeout(),
 		WriteTimeout: cfg.WriteTimeout(),
 		ErrorLog:     log.New(os.Stderr, "es-http: ", log.LstdFlags),

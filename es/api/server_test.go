@@ -2,18 +2,15 @@ package api
 
 import (
 	"context"
-	"crypto/tls"
-	"crypto/x509"
-	"crypto/x509/pkix"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strings"
 	"testing"
-	"time"
 
 	"execution-substrate/es/admission"
+	"execution-substrate/internal/callerauth/callerauthtest"
 )
 
 func TestLifecycleHeadersExposeOutcomeEvidenceForLogsAndResult(t *testing.T) {
@@ -1297,7 +1294,8 @@ func TestExecutionCallerAuthorizationMatchesExactOrSubpathOnly(t *testing.T) {
 // Both :prepare and :submit hand admission the caller that the request's
 // connection authenticated, the one workload grants match on (contracts.md,
 // section 5B): the caller's own SPIFFE ID, not the allowlist entry that
-// admitted it, and never a caller named in the body or a header.
+// admitted it, and never a caller named in the body, a header or the
+// request's TLS state.
 func TestPrepareAndSubmitHandAdmissionTheCallerOfTheConnection(t *testing.T) {
 	const otherCaller = "spiffe://execution.internal/service/control-plane"
 	body := `{"schema_version":"v1","invocation":{"schema_version":"v1","artifact_digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","derivation_spec_digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","output_id":"runtime","annotations":{"caller":"` + otherCaller + `","caller_principal":"` + otherCaller + `","zz_caller":"` + otherCaller + `"}},"mode":"async"}`
@@ -1319,6 +1317,7 @@ func TestPrepareAndSubmitHandAdmissionTheCallerOfTheConnection(t *testing.T) {
 				for _, header := range []string{"X-Caller", "X-Caller-Principal", "X-Forwarded-Client-Cert", "X-SPIFFE-ID"} {
 					request.Header.Set(header, otherCaller)
 				}
+				request.TLS = callerauthtest.State(callerauthtest.Certificate(t, callerauthtest.RuntimeIssuer, otherCaller))
 				recorder := httptest.NewRecorder()
 				server.Handler().ServeHTTP(recorder, request)
 				wantStatus := http.StatusOK
@@ -1451,6 +1450,10 @@ func lifecycleRequestWithCaller(method string, target string, callerPath string)
 	return lifecycleRequestWithCallerAndBody(method, target, callerPath, "")
 }
 
+// lifecycleRequestWithCallerAndBody returns a request that arrived on a TLS
+// connection whose client presented a verified certificate naming callerPath,
+// as ES's server hands it to the handler: the connection is in the request's
+// context, where callerauth's ConnContext hook keeps it.
 func lifecycleRequestWithCallerAndBody(method string, target string, callerPath string, body string) *http.Request {
 	var reader *strings.Reader
 	if body == "" {
@@ -1462,18 +1465,15 @@ func lifecycleRequestWithCallerAndBody(method string, target string, callerPath 
 	if body != "" {
 		request.Header.Set("Content-Type", "application/json")
 	}
-	spiffeURI, _ := url.Parse("spiffe://execution.internal/" + callerPath)
-	request.TLS = &tls.ConnectionState{
-		VerifiedChains: [][]*x509.Certificate{{
-			{
-				Issuer:    pkix.Name{CommonName: "runtime"},
-				NotBefore: time.Now().Add(-time.Hour),
-				NotAfter:  time.Now().Add(time.Hour),
-				URIs:      []*url.URL{spiffeURI},
-			},
-		}},
+	credential, err := callerauthtest.IssueCredentialOrError(callerauthtest.RuntimeIssuer, callerauthtest.LeafProfile{}, callerauthtest.SPIFFEID(callerPath))
+	if err != nil {
+		panic(fmt.Sprintf("caller %q: %v", callerPath, err))
 	}
-	return request
+	ctx, err := callerauthtest.ConnectionContext(request.Context(), credential)
+	if err != nil {
+		panic(fmt.Sprintf("caller %q: %v", callerPath, err))
+	}
+	return request.WithContext(ctx)
 }
 
 func assertHeader(t *testing.T, response *http.Response, key string, want string) {

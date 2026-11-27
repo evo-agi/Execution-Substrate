@@ -3,7 +3,7 @@ package admission
 import (
 	"context"
 	"fmt"
-	"time"
+	"sync"
 
 	"execution-substrate/es/admission/internal/grantcaller"
 	esconfig "execution-substrate/es/config"
@@ -15,19 +15,24 @@ import (
 // API would have authenticated for a test's :prepare or :submit.
 const testGrantCaller = "spiffe://execution.internal/operator/local"
 
-// authenticatedCaller returns the caller that caller authentication builds
-// for a connection whose verified client certificate names caller. Tests
-// build callers the way production does, from a TLS connection state: the
-// grant caller has no other way in.
-func authenticatedCaller(caller string) callerauth.Caller {
-	cert, err := callerauthtest.CertificateOrError("admission-test-issuer", caller)
+// connectionCallers caches authenticatedCaller's results: each one costs a
+// TLS handshake, and a ConnectionCaller never changes.
+var connectionCallers sync.Map
+
+// authenticatedCaller returns the caller that ES's API reads from a TLS
+// connection on which the client's verified certificate names caller. Tests
+// build callers the way production does, from a real TLS connection that
+// callerauth's ConnContext hook kept: the grant caller of a request has no
+// other way in.
+func authenticatedCaller(caller string) callerauth.ConnectionCaller {
+	if cached, ok := connectionCallers.Load(caller); ok {
+		return cached.(callerauth.ConnectionCaller)
+	}
+	authenticated, err := callerauthtest.ConnectionCaller(caller)
 	if err != nil {
 		panic(fmt.Sprintf("test caller %q: %v", caller, err))
 	}
-	authenticated, err := callerauth.CallerFromConnectionState(callerauthtest.State(cert), time.Now())
-	if err != nil {
-		panic(fmt.Sprintf("test caller %q: %v", caller, err))
-	}
+	connectionCallers.Store(caller, authenticated)
 	return authenticated
 }
 

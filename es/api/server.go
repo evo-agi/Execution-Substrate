@@ -274,14 +274,17 @@ func (s *Server) authorizeExecutionCaller(w http.ResponseWriter, r *http.Request
 	return ok
 }
 
-func (s *Server) authorizedExecutionCaller(w http.ResponseWriter, r *http.Request) (callerauth.Caller, bool) {
-	caller, ok := s.callers.Authenticate(w, r)
+// authorizedExecutionCaller authenticates the caller from the TLS connection
+// the request arrived on, which ES's server hands callerauth through its
+// ConnContext hook (es/app), and checks it against the allowlist.
+func (s *Server) authorizedExecutionCaller(w http.ResponseWriter, r *http.Request) (callerauth.ConnectionCaller, bool) {
+	caller, ok := s.callers.AuthenticateConnection(w, r)
 	if !ok {
-		return callerauth.Caller{}, false
+		return callerauth.ConnectionCaller{}, false
 	}
 	if !callerallowlist.MatchesAny(caller.ID(), s.allowedPathPrefixes) {
 		httpx.WriteText(w, http.StatusForbidden, "Caller not authorized for this operation")
-		return callerauth.Caller{}, false
+		return callerauth.ConnectionCaller{}, false
 	}
 	return caller, true
 }

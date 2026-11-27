@@ -6,13 +6,14 @@
 // no code outside this package can put anything there. The Go compiler, not
 // a test, enforces that every Caller comes from one of two constructors:
 //
-//   - FromConnection, which takes a callerauth.Caller: the caller that caller
-//     authentication built from a TLS connection state;
+//   - FromConnection, which takes a callerauth.ConnectionCaller: the caller
+//     that caller authentication read from the TLS connection a request
+//     arrived on. Only callerauth can make one (see its package comment);
 //   - FromDelivery, which takes the caller URI that a private reliable
 //     submit delivery's claim is bound to. It is the only constructor that
-//     takes a string. ES admission calls it in one place, when it builds a
-//     delivery's caller fact, and a guard test in es/admission pins that
-//     call site.
+//     takes a string, so the compiler cannot tell where that string came
+//     from: ES admission calls it in one place, when it builds a delivery's
+//     caller fact, and a guard test in es/admission pins that call site.
 //
 // The zero Caller is no caller: it matches no grant.
 //
@@ -30,10 +31,10 @@ type Caller struct {
 	id callerauth.SPIFFEID
 }
 
-// FromConnection returns the caller that caller authentication built from
-// the TLS connection state of a request. A zero callerauth.Caller gives no
-// caller.
-func FromConnection(caller callerauth.Caller) Caller {
+// FromConnection returns the caller that caller authentication read from
+// the TLS connection a request arrived on. A zero
+// callerauth.ConnectionCaller gives no caller.
+func FromConnection(caller callerauth.ConnectionCaller) Caller {
 	return canonical(caller.ID())
 }
 

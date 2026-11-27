@@ -3,7 +3,6 @@ package grantcaller
 import (
 	"context"
 	"testing"
-	"time"
 
 	"execution-substrate/internal/callerauth"
 	"execution-substrate/internal/callerauth/callerauthtest"
@@ -11,9 +10,11 @@ import (
 
 const operator = "spiffe://execution.internal/operator/local"
 
-func connectionCaller(t *testing.T, uri string) callerauth.Caller {
+// connectionCaller returns the caller callerauth reads from a real TLS
+// connection whose client certificate names uri.
+func connectionCaller(t *testing.T, uri string) callerauth.ConnectionCaller {
 	t.Helper()
-	caller, err := callerauth.CallerFromConnectionState(callerauthtest.State(callerauthtest.Certificate(t, "grantcaller-test", uri)), time.Now())
+	caller, err := callerauthtest.ConnectionCaller(uri)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -26,8 +27,8 @@ func TestFromConnectionKeepsTheAuthenticatedCaller(t *testing.T) {
 			t.Errorf("caller %q, want %q", got, uri)
 		}
 	}
-	if got := FromConnection(callerauth.Caller{}); got != (Caller{}) {
-		t.Errorf("a zero callerauth.Caller gives caller %q, want none", got.Principal())
+	if got := FromConnection(callerauth.ConnectionCaller{}); got != (Caller{}) {
+		t.Errorf("a zero callerauth.ConnectionCaller gives caller %q, want none", got.Principal())
 	}
 }
 

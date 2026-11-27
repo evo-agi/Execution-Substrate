@@ -144,24 +144,25 @@ func newWorkloadGrantFacts(caller grantcaller.Caller, runtimeProfile string, art
 // WithAuthenticatedCaller returns ctx carrying the caller the ES API
 // authenticated over mTLS for this :prepare or :submit. The ES API is its
 // only caller: the caller identity comes from the connection, never from the
-// request body, the evidence or a header. It takes a callerauth.Caller, not
-// a SPIFFE ID or a string, and admission keeps it as a grantcaller.Caller,
-// whose fields only package grantcaller can set, so the Go compiler keeps
-// any other value out of the grant facts.
+// request body, the evidence or a header.
 //
-// A callerauth.Caller comes only from callerauth's two producers,
-// CallerFromConnectionState and Authenticator.Authenticate, which read a TLS
-// connection state; the ES API passes Authenticate the request it is
-// serving, whose connection state Go's TLS server filled in after verifying
-// the client's certificate chain. A guard test,
-// TestTheGrantCallerCanComeOnlyFromAVerifiedConnection, checks the forms of
-// building or editing a connection state that it names.
+// It takes a callerauth.ConnectionCaller, which only callerauth can make,
+// and only from the TLS connection that ES's server handed it through its
+// ConnContext hook, under a context key no other package can set; a TLS
+// connection's verified chain is set by its own handshake only. Admission
+// keeps the caller as a grantcaller.Caller, whose fields only package
+// grantcaller can set. So the Go compiler keeps a value from a request, a
+// header, the evidence, configuration or a built connection state from
+// becoming the caller a connection hands admission here. Which code hands
+// connections to callerauth, and which code reads a caller from them, is
+// checked by type in callerauth's typed guard
+// (TestCallerIdentityIsReadOnlyByCallerauthByType).
 //
-// A zero Caller carries no caller. ES admission reads the caller only to
-// match workload grants, and it never becomes ES request or response
+// A zero ConnectionCaller carries no caller. ES admission reads the caller
+// only to match workload grants, and it never becomes ES request or response
 // grammar. A context without one matches no grant, so its run gets no
 // network.
-func WithAuthenticatedCaller(ctx context.Context, caller callerauth.Caller) context.Context {
+func WithAuthenticatedCaller(ctx context.Context, caller callerauth.ConnectionCaller) context.Context {
 	return grantcaller.With(ctx, grantcaller.FromConnection(caller))
 }
 

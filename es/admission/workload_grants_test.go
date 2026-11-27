@@ -13,7 +13,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -361,7 +360,7 @@ func TestNetworkRunWithoutAGrantIsRefusedOnPrepareAndSubmitBeforeAnyEffect(t *te
 		"a rule for another ES caller": {otherCaller.AdmissionPolicy.WorkloadGrants, testCallerContext()},
 		"a caller below the rule's":    {granted.AdmissionPolicy.WorkloadGrants, callerContext(context.Background(), testGrantCaller+"/sub")},
 		"no authenticated caller":      {granted.AdmissionPolicy.WorkloadGrants, context.Background()},
-		"a zero authenticated caller":  {granted.AdmissionPolicy.WorkloadGrants, WithAuthenticatedCaller(context.Background(), callerauth.Caller{})},
+		"a zero authenticated caller":  {granted.AdmissionPolicy.WorkloadGrants, WithAuthenticatedCaller(context.Background(), callerauth.ConnectionCaller{})},
 	} {
 		for _, operation := range []string{"prepare", "submit"} {
 			t.Run(name+"/"+operation, func(t *testing.T) {
@@ -767,289 +766,23 @@ func TestARunNoGrantNamesReachesNoContentPolicyWhateverItsRuntimeProfile(t *test
 	}
 }
 
-// The caller that workload grants match on comes from the connection ES is
-// serving (re-audit 18 of ES PR #73, L-2; re-check 21, N-2; final checks 22
-// and 26). The Go compiler keeps a callerauth.Caller from being built from
-// a string: it has no exported field. This test checks the rest of how one
-// can come to exist:
-//   - WithAuthenticatedCaller takes a callerauth.Caller, not a SPIFFE ID or a
-//     string;
-//   - in callerauth and callerauthtest, the only exported functions, methods,
-//     variables and constants that produce a Caller are
-//     CallerFromConnectionState and Authenticator.Authenticate, both of which
-//     read a TLS connection state, and no type alias names Caller;
-//   - no non-test Go file of the module outside internal/callerauth calls
-//     CallerFromConnectionState;
-//   - no non-test Go file of ES (es/ and cmd/es) builds a
-//     tls.ConnectionState, or assigns to or takes the address of anything
-//     reached through a TLS, VerifiedChains or PeerCertificates field, and
-//     every call of Authenticate passes the *http.Request parameter of the
-//     handler it is in, whose connection state Go's TLS server filled in
-//     after verifying the client's certificate chain;
-//   - no non-test file outside es/admission reads the grant caller back.
-//
-// It checks the source forms it names, not every way Go can write memory.
-// Reflection, unsafe and cgo are outside what it sees; a new import of any
-// of them in a production file fails
-// TestOperationalGuardImportInventoryIsExact, so it is a reviewed change.
-// Edits to callerauth itself are outside it too: callerauth is reviewed as
-// the trust root it is, and its own typed guard
-// (TestCallerIdentityIsReadOnlyByCallerauthByType) refuses a read of a
-// request's TLS state or of a certificate's identity fields in any other
-// production package.
-//
-// TestOnlyAConnectionOrADeliveryMakesAGrantCaller covers the grant caller
-// inside es/admission.
-func TestTheGrantCallerCanComeOnlyFromAVerifiedConnection(t *testing.T) {
-	want := reflect.TypeOf(func(context.Context, callerauth.Caller) context.Context { return nil })
-	if got := reflect.TypeOf(WithAuthenticatedCaller); got != want {
-		t.Fatalf("WithAuthenticatedCaller has the type %v, want %v", got, want)
-	}
-	caller := reflect.TypeOf(callerauth.Caller{})
-	for i := 0; i < caller.NumField(); i++ {
-		if caller.Field(i).IsExported() {
-			t.Fatalf("callerauth.Caller has the exported field %s", caller.Field(i).Name)
-		}
-	}
-
-	// mentionsCaller reports whether expr names callerauth.Caller, as Caller
-	// inside package callerauth or as callerauth.Caller elsewhere.
-	mentionsCaller := func(pkg string, expr ast.Node) bool {
-		found := false
-		ast.Inspect(expr, func(node ast.Node) bool {
-			switch node := node.(type) {
-			case *ast.Ident:
-				found = found || (pkg == "callerauth" && node.Name == "Caller")
-			case *ast.SelectorExpr:
-				if x, ok := node.X.(*ast.Ident); ok && x.Name == "callerauth" && node.Sel.Name == "Caller" {
-					found = true
-				}
-				return false
-			}
-			return true
-		})
-		return found
-	}
-	producers := map[string]bool{}
-	for _, dir := range []string{"../../internal/callerauth", "../../internal/callerauth/callerauthtest"} {
-		for _, parsed := range parseNonTestGoFiles(t, dir) {
-			pkg := parsed.Name.Name
-			for _, decl := range parsed.Decls {
-				switch decl := decl.(type) {
-				case *ast.FuncDecl:
-					if !decl.Name.IsExported() || decl.Type.Results == nil {
-						continue
-					}
-					name := pkg + "." + decl.Name.Name
-					if decl.Recv != nil {
-						name = pkg + "." + types.ExprString(decl.Recv.List[0].Type) + "." + decl.Name.Name
-					}
-					if mentionsCaller(pkg, decl.Type.Results) {
-						producers[name] = true
-					}
-				case *ast.GenDecl:
-					for _, spec := range decl.Specs {
-						switch spec := spec.(type) {
-						case *ast.TypeSpec:
-							if spec.Assign.IsValid() && mentionsCaller(pkg, spec.Type) {
-								t.Errorf("%s.%s is a type alias of callerauth.Caller", pkg, spec.Name.Name)
-							}
-						case *ast.ValueSpec:
-							for i, name := range spec.Names {
-								if !name.IsExported() {
-									continue
-								}
-								named := spec.Type != nil && mentionsCaller(pkg, spec.Type)
-								if i < len(spec.Values) {
-									named = named || mentionsCaller(pkg, spec.Values[i])
-								}
-								if named {
-									producers[pkg+"."+name.Name] = true
-								}
-							}
-						}
-					}
-				}
-			}
-		}
-	}
-	var got []string
-	for name := range producers {
-		got = append(got, name)
-	}
-	sort.Strings(got)
-	if want := []string{"callerauth.Authenticator.Authenticate", "callerauth.CallerFromConnectionState"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("exported functions, methods, variables and constants that produce a callerauth.Caller: %q, want %q", got, want)
-	}
-
-	// No Go code of the module outside internal/callerauth calls
-	// CallerFromConnectionState, so no code can hand it a state of its own.
-	moduleWalkErr := filepath.WalkDir("../..", func(path string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		slashed := filepath.ToSlash(path)
-		if entry.IsDir() {
-			name := entry.Name()
-			if path != "../.." && (strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_") || name == "testdata" || name == "vendor") {
-				return filepath.SkipDir
-			}
-			if slashed == "../../internal/callerauth" {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
-			return nil
-		}
-		fset := token.NewFileSet()
-		parsed, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
-		if err != nil {
-			return err
-		}
-		ast.Inspect(parsed, func(node ast.Node) bool {
-			if selector, ok := node.(*ast.SelectorExpr); ok && selector.Sel.Name == "CallerFromConnectionState" {
-				t.Errorf("%s uses CallerFromConnectionState; only callerauth's Authenticator calls it", fset.PositionFor(selector.Pos(), false))
-			}
-			return true
-		})
-		return nil
-	})
-	if moduleWalkErr != nil {
-		t.Fatal(moduleWalkErr)
-	}
-
-	// reachesConnectionState reports the TLS, VerifiedChains or
-	// PeerCertificates field that the access path expr goes through, at any
-	// depth (such as r.TLS.VerifiedChains[0][0]), or "".
-	reachesConnectionState := func(expr ast.Expr) string {
-		for expr != nil {
-			switch node := expr.(type) {
-			case *ast.SelectorExpr:
-				switch node.Sel.Name {
-				case "TLS", "VerifiedChains", "PeerCertificates":
-					return node.Sel.Name
-				}
-				expr = node.X
-			case *ast.IndexExpr:
-				expr = node.X
-			case *ast.IndexListExpr:
-				expr = node.X
-			case *ast.SliceExpr:
-				expr = node.X
-			case *ast.StarExpr:
-				expr = node.X
-			case *ast.ParenExpr:
-				expr = node.X
-			default:
-				return ""
-			}
-		}
-		return ""
-	}
-	authenticateCalls := 0
-	for _, root := range []string{"..", "../../cmd/es"} {
-		walkErr := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
-			if err != nil {
-				return err
-			}
-			if entry.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
-				return nil
-			}
-			fset := token.NewFileSet()
-			parsed, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
-			if err != nil {
-				return err
-			}
-			inAdmission := filepath.ToSlash(filepath.Dir(path)) == "../admission"
-			for _, decl := range parsed.Decls {
-				requestParams := map[string]bool{}
-				if function, ok := decl.(*ast.FuncDecl); ok {
-					for _, field := range function.Type.Params.List {
-						if types.ExprString(field.Type) == "*http.Request" {
-							for _, name := range field.Names {
-								requestParams[name.Name] = true
-							}
-						}
-					}
-				}
-				ast.Inspect(decl, func(node ast.Node) bool {
-					if node == nil {
-						return false
-					}
-					at := fset.PositionFor(node.Pos(), false)
-					switch node := node.(type) {
-					case *ast.CompositeLit:
-						if node.Type != nil && types.ExprString(node.Type) == "tls.ConnectionState" {
-							t.Errorf("%s builds a tls.ConnectionState", at)
-						}
-					case *ast.AssignStmt:
-						for _, lhs := range node.Lhs {
-							if field := reachesConnectionState(lhs); field != "" {
-								t.Errorf("%s assigns through a connection state field %s", at, field)
-							}
-						}
-					case *ast.UnaryExpr:
-						if node.Op == token.AND {
-							if field := reachesConnectionState(node.X); field != "" {
-								t.Errorf("%s takes an address through a connection state field %s", at, field)
-							}
-						}
-					case *ast.CallExpr:
-						name := ""
-						switch fun := node.Fun.(type) {
-						case *ast.Ident:
-							name = fun.Name
-						case *ast.SelectorExpr:
-							name = fun.Sel.Name
-						}
-						switch name {
-						case "new":
-							if len(node.Args) == 1 && types.ExprString(node.Args[0]) == "tls.ConnectionState" {
-								t.Errorf("%s builds a tls.ConnectionState", at)
-							}
-						case "Authenticate":
-							authenticateCalls++
-							passesRequest := false
-							if len(node.Args) == 2 {
-								request, ok := node.Args[1].(*ast.Ident)
-								passesRequest = ok && requestParams[request.Name]
-							}
-							if !passesRequest {
-								t.Errorf("%s calls Authenticate with something other than the request its handler serves", at)
-							}
-						case "AuthenticatedCallerPrincipal":
-							if !inAdmission {
-								t.Errorf("%s reads the grant caller outside es/admission", at)
-							}
-						}
-					}
-					return true
-				})
-			}
-			return nil
-		})
-		if walkErr != nil {
-			t.Fatal(walkErr)
-		}
-	}
-	if authenticateCalls == 0 {
-		t.Fatal("control: the scan found no call of Authenticate in ES")
-	}
-}
-
-// The grant caller is a grantcaller.Caller (final checks 22 and 26 of ES PR
-// #73, R22-1 and R26-1). Its fields and its context key are unexported, so
-// the Go compiler keeps every other package, es/admission included, from
-// writing a caller into a Caller or into a context: a Caller comes only from
-// grantcaller.FromConnection, which takes a callerauth.Caller, or from
-// grantcaller.FromDelivery, which takes the URI a private delivery's claim
-// is bound to. Moving a Caller from one variable to another inside
-// admission cannot make a new one. This test is the backstop for what the
-// compiler cannot see:
+// The grant caller is a grantcaller.Caller (final checks 22, 26 and 33 of ES
+// PR #73). Its fields and its context key are unexported, so the Go compiler
+// keeps every other package, es/admission included, from writing a caller
+// into a Caller or into a context: a Caller comes only from
+// grantcaller.FromConnection, which takes a callerauth.ConnectionCaller, or
+// from grantcaller.FromDelivery, which takes the URI a private delivery's
+// claim is bound to. Only callerauth can make a ConnectionCaller, and only
+// from a TLS connection that ES's server handed it through its ConnContext
+// hook, under a context key no other package can set; callerauth's typed
+// guard (TestCallerIdentityIsReadOnlyByCallerauthByType) checks, by what each
+// identifier refers to, which code refers to that hook and to
+// AuthenticateConnection. This test is the backstop for what the compiler
+// cannot see on the grant side:
+//   - WithAuthenticatedCaller takes a callerauth.ConnectionCaller;
 //   - package grantcaller's exported surface is exactly Caller,
-//     FromConnection(callerauth.Caller), FromDelivery(string), With,
-//     From and Caller.Principal; Caller has no exported field, and the
+//     FromConnection(callerauth.ConnectionCaller), FromDelivery(string),
+//     With, From and Caller.Principal; Caller has no exported field, and the
 //     package declares no type alias;
 //   - no Go package but es/admission imports grantcaller;
 //   - in es/admission, FromDelivery is used once: called by
@@ -1058,14 +791,27 @@ func TestTheGrantCallerCanComeOnlyFromAVerifiedConnection(t *testing.T) {
 //     operatePrivateHandoff with peer.String() for its spiffeid.ID
 //     parameter peer, which the function never assigns, redeclares or takes
 //     the address of. Synthetic replays get their caller fact from their own
-//     caller, which today is only tests.
+//     caller, which today is only tests;
+//   - no non-test Go file outside es/admission names
+//     AuthenticatedCallerPrincipal, which reads the grant caller back.
 //
-// It checks the source forms it names. Reflection, unsafe and cgo are
-// outside what it sees; a new import of any of them in a production file
-// fails TestOperationalGuardImportInventoryIsExact. Edits to grantcaller
-// itself are outside it too: grantcaller is reviewed as part of the trust
-// root.
+// FromDelivery takes a string, so its one use is what keeps a value from a
+// request out of a delivery's caller. The use checks count every identifier
+// with those names, however the package is imported, so a reference cannot
+// pass unseen; a lookalike that is not a use fails them too. Reflection,
+// unsafe and cgo are outside what the test sees; a new import of any of them
+// in a production file fails TestOperationalGuardImportInventoryIsExact.
+// Edits to grantcaller itself are reviewed as part of the trust root. Moving
+// one real caller to where another belongs is outside every check: a Caller
+// copied from one variable to another still names a real connection's or
+// delivery's caller, so any edit to how a request's or a delivery's caller is
+// chosen is an auditor-reviewed change.
 func TestOnlyAConnectionOrADeliveryMakesAGrantCaller(t *testing.T) {
+	want := reflect.TypeOf(func(context.Context, callerauth.ConnectionCaller) context.Context { return nil })
+	if got := reflect.TypeOf(WithAuthenticatedCaller); got != want {
+		t.Fatalf("WithAuthenticatedCaller has the type %v, want %v", got, want)
+	}
+
 	signature := func(fields *ast.FieldList) string {
 		if fields == nil {
 			return ""
@@ -1119,7 +865,7 @@ func TestOnlyAConnectionOrADeliveryMakesAGrantCaller(t *testing.T) {
 	}
 	wantSurface := map[string]string{
 		"Caller":           "type struct{id callerauth.SPIFFEID}",
-		"FromConnection":   "func(callerauth.Caller) (Caller)",
+		"FromConnection":   "func(callerauth.ConnectionCaller) (Caller)",
 		"FromDelivery":     "func(string) (Caller)",
 		"With":             "func(context.Context, Caller) (context.Context)",
 		"From":             "func(context.Context) (Caller)",
@@ -1144,7 +890,8 @@ func TestOnlyAConnectionOrADeliveryMakesAGrantCaller(t *testing.T) {
 		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
 			return nil
 		}
-		parsed, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.ImportsOnly)
+		fset := token.NewFileSet()
+		parsed, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
 		if err != nil {
 			return err
 		}
@@ -1152,6 +899,14 @@ func TestOnlyAConnectionOrADeliveryMakesAGrantCaller(t *testing.T) {
 			if spec.Path.Value == strconv.Quote("execution-substrate/es/admission/internal/grantcaller") {
 				importers[filepath.ToSlash(filepath.Dir(path))] = true
 			}
+		}
+		if filepath.ToSlash(filepath.Dir(path)) != "../../es/admission" {
+			ast.Inspect(parsed, func(node ast.Node) bool {
+				if ident, ok := node.(*ast.Ident); ok && ident.Name == "AuthenticatedCallerPrincipal" {
+					t.Errorf("%s names AuthenticatedCallerPrincipal; only es/admission reads the grant caller back", fset.PositionFor(ident.Pos(), false))
+				}
+				return true
+			})
 		}
 		return nil
 	})
