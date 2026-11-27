@@ -25,14 +25,14 @@ import (
 
 	agsapp "execution-substrate/ags/app"
 	agsconfig "execution-substrate/ags/config"
-	arsapi "execution-substrate/ars/api"
 	arsapp "execution-substrate/ars/app"
 	arsconfig "execution-substrate/ars/config"
+	arscontract "execution-substrate/ars/contract"
 	arsindex "execution-substrate/ars/index"
 	arsstore "execution-substrate/ars/store"
 	egsapp "execution-substrate/egs/app"
 	egsconfig "execution-substrate/egs/config"
-	egsmodel "execution-substrate/egs/model"
+	egscontract "execution-substrate/egs/contract"
 	"execution-substrate/es/admission"
 	esapp "execution-substrate/es/app"
 	esconfig "execution-substrate/es/config"
@@ -483,7 +483,7 @@ func TestPrepareRejectsTamperedEvidenceAfterPublish(t *testing.T) {
 	execution := admissionPayload["execution"].(map[string]any)
 	workload := execution["workload"].(map[string]any)
 	workload["target_platform"] = "not-docker"
-	stack.mutateDiscoveryAndRestartARS(t, func(discovery *arsapi.ArtifactDiscovery) {
+	stack.mutateDiscoveryAndRestartARS(t, func(discovery *arscontract.ArtifactDiscovery) {
 		discovery.Evidence.Digest = stack.writeJSONBlob(t, evidence)
 	})
 
@@ -629,16 +629,16 @@ func startDependencyStackWithAGSConfig(t *testing.T, allowedPrefixes []string, n
 			PrivateKeyHex: fixture.egsPrivateKeyHex,
 			PublicKeyHex:  fixture.egsPublicKeyHex,
 		},
-		RuntimeTrust: egsmodel.RuntimeTrustPolicy{
-			SignerPolicy: egsmodel.SignerPolicy{
+		RuntimeTrust: egscontract.RuntimeTrustPolicy{
+			SignerPolicy: egscontract.SignerPolicy{
 				AllowedSigners: []string{fixture.agsKeyID},
 				RevokedSigners: []string{},
 			},
-			ArtifactPolicy: egsmodel.ArtifactPolicy{
+			ArtifactPolicy: egscontract.ArtifactPolicy{
 				RevokedArtifacts: []string{},
 			},
 		},
-		Publication: egsmodel.PublicationMetadata{
+		Publication: egscontract.PublicationMetadata{
 			UpdateRevision: 7,
 			Version:        "1.0.0",
 		},
@@ -1011,20 +1011,20 @@ func (s *publishedStack) loadIndexEntry(t *testing.T) arsindex.Entry {
 	return entry
 }
 
-func (s *publishedStack) loadDescriptor(t *testing.T) (arsindex.Entry, arsapi.ArtifactDescriptor) {
+func (s *publishedStack) loadDescriptor(t *testing.T) (arsindex.Entry, arscontract.ArtifactDescriptor) {
 	t.Helper()
 
 	entry := s.loadIndexEntry(t)
-	var descriptor arsapi.ArtifactDescriptor
+	var descriptor arscontract.ArtifactDescriptor
 	readJSONBlob(t, s.rootDir, entry.DescriptorDigest, &descriptor)
 	return entry, descriptor
 }
 
-func (s *publishedStack) loadDiscovery(t *testing.T) (arsindex.Entry, arsapi.ArtifactDiscovery) {
+func (s *publishedStack) loadDiscovery(t *testing.T) (arsindex.Entry, arscontract.ArtifactDiscovery) {
 	t.Helper()
 
 	entry := s.loadIndexEntry(t)
-	var discovery arsapi.ArtifactDiscovery
+	var discovery arscontract.ArtifactDiscovery
 	readJSONBlob(t, s.rootDir, entry.DiscoveryDigest, &discovery)
 	return entry, discovery
 }
@@ -1061,7 +1061,7 @@ func (s *publishedStack) replaceIndexedBlobAndRestartARS(t *testing.T, mutate fu
 	s.restartARS(t)
 }
 
-func (s *publishedStack) mutateDescriptorAndRestartARS(t *testing.T, mutate func(*arsapi.ArtifactDescriptor)) {
+func (s *publishedStack) mutateDescriptorAndRestartARS(t *testing.T, mutate func(*arscontract.ArtifactDescriptor)) {
 	t.Helper()
 
 	entry, descriptor := s.loadDescriptor(t)
@@ -1075,7 +1075,7 @@ func (s *publishedStack) mutateDescriptorAndRestartARS(t *testing.T, mutate func
 	}
 }
 
-func (s *publishedStack) mutateDiscoveryAndRestartARS(t *testing.T, mutate func(*arsapi.ArtifactDiscovery)) {
+func (s *publishedStack) mutateDiscoveryAndRestartARS(t *testing.T, mutate func(*arscontract.ArtifactDiscovery)) {
 	t.Helper()
 
 	entry, discovery := s.loadDiscovery(t)

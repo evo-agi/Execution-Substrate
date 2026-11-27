@@ -1,14 +1,14 @@
 package api
 
-import "execution-substrate/egs/model"
+import "execution-substrate/egs/contract"
 
 type SignedRuntimeTrustResponse struct {
-	RuntimeTrust  model.RuntimeTrustPolicy  `json:"runtime_trust"`
-	Algorithm     string                    `json:"algorithm"`
-	KeyID         string                    `json:"key_id"`
-	PayloadDigest string                    `json:"payload_digest"`
-	Signature     string                    `json:"signature"`
-	Publication   model.PublicationMetadata `json:"publication"`
+	RuntimeTrust  contract.RuntimeTrustPolicy  `json:"runtime_trust"`
+	Algorithm     string                       `json:"algorithm"`
+	KeyID         string                       `json:"key_id"`
+	PayloadDigest string                       `json:"payload_digest"`
+	Signature     string                       `json:"signature"`
+	Publication   contract.PublicationMetadata `json:"publication"`
 }
 
 type HealthResponse struct {

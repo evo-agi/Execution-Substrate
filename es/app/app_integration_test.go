@@ -24,14 +24,14 @@ import (
 	"testing"
 	"time"
 
-	arsapi "execution-substrate/ars/api"
 	arsapp "execution-substrate/ars/app"
 	arsconfig "execution-substrate/ars/config"
+	arscontract "execution-substrate/ars/contract"
 	arsindex "execution-substrate/ars/index"
 	arsstore "execution-substrate/ars/store"
 	egsapp "execution-substrate/egs/app"
 	egsconfig "execution-substrate/egs/config"
-	egsmodel "execution-substrate/egs/model"
+	egscontract "execution-substrate/egs/contract"
 	"execution-substrate/es/admission"
 	esapp "execution-substrate/es/app"
 	esconfig "execution-substrate/es/config"
@@ -581,16 +581,16 @@ func startDependencyStack(t *testing.T, opts stackOptions) *testStack {
 			PrivateKeyHex: fixture.egsPrivateKeyHex,
 			PublicKeyHex:  fixture.egsPublicKeyHex,
 		},
-		RuntimeTrust: egsmodel.RuntimeTrustPolicy{
-			SignerPolicy: egsmodel.SignerPolicy{
+		RuntimeTrust: egscontract.RuntimeTrustPolicy{
+			SignerPolicy: egscontract.SignerPolicy{
 				AllowedSigners: allowedSigners,
 				RevokedSigners: revokedSigners,
 			},
-			ArtifactPolicy: egsmodel.ArtifactPolicy{
+			ArtifactPolicy: egscontract.ArtifactPolicy{
 				RevokedArtifacts: revokedArtifacts,
 			},
 		},
-		Publication: egsmodel.PublicationMetadata{
+		Publication: egscontract.PublicationMetadata{
 			UpdateRevision: 7,
 			Version:        "1.0.0",
 		},
@@ -1231,23 +1231,23 @@ func artifactDescriptorJSON(
 ) []byte {
 	t.Helper()
 
-	return mustMarshalJSON(t, arsapi.ArtifactDescriptor{
-		SchemaVersion: arsapi.ArtifactDescriptorSchemaVersion,
-		Artifact: arsapi.ArtifactIdentity{
+	return mustMarshalJSON(t, arscontract.ArtifactDescriptor{
+		SchemaVersion: arscontract.ArtifactDescriptorSchemaVersion,
+		Artifact: arscontract.ArtifactIdentity{
 			ArtifactDigest: artifactDigest,
 			ArtifactType:   artifactType,
 			IntentDigest:   intentDigest,
 		},
-		Package: arsapi.ArtifactPackage{
-			Evidence: arsapi.ArtifactBlobRef{
+		Package: arscontract.ArtifactPackage{
+			Evidence: arscontract.ArtifactBlobRef{
 				Digest:    evidenceDigest,
 				MediaType: "application/json",
 			},
-			Payload: arsapi.ArtifactBlobRef{
+			Payload: arscontract.ArtifactBlobRef{
 				Digest:    payloadDigest,
 				MediaType: "application/octet-stream",
 			},
-			Supporting: []arsapi.ArtifactSupportRef{
+			Supporting: []arscontract.ArtifactSupportRef{
 				{
 					Name:      "manifest",
 					Digest:    manifestDigest,
@@ -1268,18 +1268,18 @@ func artifactDiscoveryJSON(
 ) []byte {
 	t.Helper()
 
-	return mustMarshalJSON(t, arsapi.ArtifactDiscovery{
-		SchemaVersion: arsapi.ArtifactDiscoverySchemaVersion,
-		Artifact: arsapi.ArtifactIdentity{
+	return mustMarshalJSON(t, arscontract.ArtifactDiscovery{
+		SchemaVersion: arscontract.ArtifactDiscoverySchemaVersion,
+		Artifact: arscontract.ArtifactIdentity{
 			ArtifactDigest: artifactDigest,
 			ArtifactType:   artifactType,
 			IntentDigest:   intentDigest,
 		},
-		Evidence: arsapi.ArtifactBlobRef{
+		Evidence: arscontract.ArtifactBlobRef{
 			Digest:    evidenceDigest,
 			MediaType: "application/json",
 		},
-		Payload: arsapi.ArtifactBlobRef{
+		Payload: arscontract.ArtifactBlobRef{
 			Digest:    payloadDigest,
 			MediaType: "application/octet-stream",
 		},

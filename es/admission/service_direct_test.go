@@ -22,7 +22,7 @@ import (
 	"testing"
 	"time"
 
-	egsmodel "execution-substrate/egs/model"
+	egscontract "execution-substrate/egs/contract"
 	esconfig "execution-substrate/es/config"
 	runtimeconfigv1 "execution-substrate/internal/contracts/runtimeconfig/v1"
 )
@@ -672,7 +672,7 @@ func TestTrancheB2PreparedAdmissionOrdinaryFormattingAndJSONPrivacy(t *testing.T
 		artifact:                    preparedArtifact{payloadDigest: "private-payload"},
 		workloadVaultPlan:           esconfig.ResolvedWorkloadVaultAuthPlan{Address: "https://private-vault.invalid"},
 		workloadZoneVaultConfigRef:  runtimeconfigv1.WorkloadZoneVaultConfigRef{Digest: labeledDigest("91")},
-		trustModel:                  egsmodel.RuntimeTrustPolicy{SignerPolicy: egsmodel.SignerPolicy{AllowedSigners: []string{"private-signer"}}},
+		trustModel:                  egscontract.RuntimeTrustPolicy{SignerPolicy: egscontract.SignerPolicy{AllowedSigners: []string{"private-signer"}}},
 		policyPayloadBytes:          []byte("private-bytes"),
 		policyPayloadBytesAvailable: true,
 	}
@@ -818,8 +818,8 @@ func TestVerifyTrustModelEnvelopeAcceptsSignedCanonicalAndIgnoresPublication(t *
 	if err != nil {
 		t.Fatalf("generate ed25519 keypair: %v", err)
 	}
-	model := egsmodel.RuntimeTrustPolicy{
-		SignerPolicy: egsmodel.SignerPolicy{
+	model := egscontract.RuntimeTrustPolicy{
+		SignerPolicy: egscontract.SignerPolicy{
 			AllowedSigners: []string{"ags-signer"},
 		},
 	}
@@ -855,8 +855,8 @@ func TestVerifyTrustModelEnvelopeAcceptsSignedCanonicalAndIgnoresPublication(t *
 }
 
 func TestEnforceTrustModelRejectsDisallowedRevokedAndRevokedArtifact(t *testing.T) {
-	err := enforceTrustModel(egsmodel.RuntimeTrustPolicy{
-		SignerPolicy: egsmodel.SignerPolicy{
+	err := enforceTrustModel(egscontract.RuntimeTrustPolicy{
+		SignerPolicy: egscontract.SignerPolicy{
 			AllowedSigners: []string{"allowed"},
 		},
 	}, "other", "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
@@ -864,8 +864,8 @@ func TestEnforceTrustModelRejectsDisallowedRevokedAndRevokedArtifact(t *testing.
 		t.Fatalf("expected signer-not-allowed error, got %+v", err)
 	}
 
-	err = enforceTrustModel(egsmodel.RuntimeTrustPolicy{
-		SignerPolicy: egsmodel.SignerPolicy{
+	err = enforceTrustModel(egscontract.RuntimeTrustPolicy{
+		SignerPolicy: egscontract.SignerPolicy{
 			AllowedSigners: []string{"allowed"},
 			RevokedSigners: []string{"allowed"},
 		},
@@ -874,11 +874,11 @@ func TestEnforceTrustModelRejectsDisallowedRevokedAndRevokedArtifact(t *testing.
 		t.Fatalf("expected signer-revoked error, got %+v", err)
 	}
 
-	err = enforceTrustModel(egsmodel.RuntimeTrustPolicy{
-		SignerPolicy: egsmodel.SignerPolicy{
+	err = enforceTrustModel(egscontract.RuntimeTrustPolicy{
+		SignerPolicy: egscontract.SignerPolicy{
 			AllowedSigners: []string{"allowed"},
 		},
-		ArtifactPolicy: egsmodel.ArtifactPolicy{
+		ArtifactPolicy: egscontract.ArtifactPolicy{
 			RevokedArtifacts: []string{"sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"},
 		},
 	}, "allowed", "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
@@ -906,7 +906,7 @@ func TestHealthReflectsArtifactRegistryReadinessAndLoadedTrustModel(t *testing.T
 				Transport: server.Client().Transport,
 			},
 		},
-		trustModel: &egsmodel.RuntimeTrustPolicy{},
+		trustModel: &egscontract.RuntimeTrustPolicy{},
 	}
 
 	health := service.Health(context.Background())

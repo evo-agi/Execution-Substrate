@@ -20,7 +20,7 @@ import (
 	"sync"
 	"time"
 
-	egsmodel "execution-substrate/egs/model"
+	egscontract "execution-substrate/egs/contract"
 	"execution-substrate/es/admission/internal/reliablesubmit"
 )
 
@@ -51,18 +51,18 @@ type Policy struct {
 // verifier and the selected built-in policies with every configured entry. It
 // is plain data. A view holds its own copy and hands out copies.
 type Content struct {
-	Trust    egsmodel.RuntimeTrustPolicy
+	Trust    egscontract.RuntimeTrustPolicy
 	Verifier Verifier
 	Policies []Policy
 }
 
-func cloneTrust(trust egsmodel.RuntimeTrustPolicy) egsmodel.RuntimeTrustPolicy {
-	return egsmodel.RuntimeTrustPolicy{
-		SignerPolicy: egsmodel.SignerPolicy{
+func cloneTrust(trust egscontract.RuntimeTrustPolicy) egscontract.RuntimeTrustPolicy {
+	return egscontract.RuntimeTrustPolicy{
+		SignerPolicy: egscontract.SignerPolicy{
 			AllowedSigners: slices.Clone(trust.SignerPolicy.AllowedSigners),
 			RevokedSigners: slices.Clone(trust.SignerPolicy.RevokedSigners),
 		},
-		ArtifactPolicy: egsmodel.ArtifactPolicy{
+		ArtifactPolicy: egscontract.ArtifactPolicy{
 			RevokedArtifacts: slices.Clone(trust.ArtifactPolicy.RevokedArtifacts),
 		},
 	}
@@ -256,7 +256,7 @@ func (h State) Confirmable(owner any) (View, bool) {
 // Different content latches supersession for the life of the state. Trust
 // that has no digest, and a view that is not the installed one, change
 // nothing.
-func (h State) Confirm(owner any, confirmed View, trust egsmodel.RuntimeTrustPolicy, started time.Time) {
+func (h State) Confirm(owner any, confirmed View, trust egscontract.RuntimeTrustPolicy, started time.Time) {
 	st := h.held(owner)
 	if st == nil || confirmed.v == nil {
 		return
@@ -356,9 +356,9 @@ func (v View) Token() reliablesubmit.OperationalAdmissionToken {
 }
 
 // Trust returns a copy of the trust lists the view enforces.
-func (v View) Trust() egsmodel.RuntimeTrustPolicy {
+func (v View) Trust() egscontract.RuntimeTrustPolicy {
 	if v.v == nil {
-		return egsmodel.RuntimeTrustPolicy{}
+		return egscontract.RuntimeTrustPolicy{}
 	}
 	return cloneTrust(v.v.content.Trust)
 }

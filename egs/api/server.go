@@ -3,7 +3,7 @@ package api
 import (
 	"net/http"
 
-	"execution-substrate/egs/model"
+	"execution-substrate/egs/contract"
 	"execution-substrate/egs/sign"
 	"execution-substrate/internal/callerauth"
 	"execution-substrate/internal/httpx"
@@ -13,16 +13,16 @@ import (
 const serviceName = "execution-governance"
 
 type Server struct {
-	runtimeTrust model.RuntimeTrustPolicy
-	publication  model.PublicationMetadata
+	runtimeTrust contract.RuntimeTrustPolicy
+	publication  contract.PublicationMetadata
 	signer       sign.Signer
 	callers      callerauth.Authenticator
 	isStarted    func() bool
 }
 
 func NewServer(
-	runtimeTrust model.RuntimeTrustPolicy,
-	publication model.PublicationMetadata,
+	runtimeTrust contract.RuntimeTrustPolicy,
+	publication contract.PublicationMetadata,
 	signer sign.Signer,
 	bootstrapIssuerCN string,
 	isStarted func() bool,
