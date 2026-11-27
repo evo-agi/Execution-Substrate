@@ -10,6 +10,7 @@ package scripts_test
 // see owners change.
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -371,7 +372,21 @@ func TestRemoteAlphaResetDisposableVaultNeverHandsOverAPlantedRaftLink(t *testin
 		}()
 		output, err := f.replace(t, false)
 		close(stop)
-		attackerWon := <-won
+		symlinkSucceeded := <-won
+		// What is at the raft path, not os.Symlink's result, says whether the
+		// link was planted. os.Symlink can report an error for a link it made:
+		// Go retries a symlink call that fails with EINTR, and the retry then
+		// fails with EEXIST. A macOS run saw the reset stop at a link that the
+		// racing process had reported as not made. The racing process has
+		// stopped by now, and only it and the reset write the raft path.
+		info, lstatErr := os.Lstat(f.raft)
+		if lstatErr != nil && !errors.Is(lstatErr, os.ErrNotExist) {
+			t.Fatalf("trial %d: lstat %s: %v\n%s", i, f.raft, lstatErr, output)
+		}
+		attackerWon := lstatErr == nil && info.Mode()&os.ModeSymlink != 0
+		if symlinkSucceeded && !attackerWon {
+			t.Fatalf("trial %d: the racing process planted its link, but %s is no longer that link\n%s", i, f.raft, output)
+		}
 		if got := rootPathStat(t, f.victim); got != victim {
 			t.Fatalf("trial %d: the victim directory changed from %+v to %+v\n%s", i, victim, got, output)
 		}
