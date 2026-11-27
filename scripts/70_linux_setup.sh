@@ -550,22 +550,24 @@ install_nomad_gossip_keyring() {
 # An access ACL keeps entries for the account on the folder itself. Both are
 # the folder's system.posix_acl_* attributes, so removing them needs no acl
 # package, and removing the access ACL keeps the mode install -d set. Once
-# root owns the folder, no other account can set an ACL on it again. The
-# setup stops when it cannot remove one.
+# root owns the folder, no other account can set an ACL on it again. Each
+# removal is reported, since only an account that owned the folder sets one;
+# the setup stops when it cannot read or remove them.
 nomad_folder_take_back() {
   sudo install -d -o root -g root -m "$1" "$2"
   sudo python3 -I - "$2" <<'PY'
-import errno
 import os
 import sys
 
 folder = sys.argv[1]
-for name in ("system.posix_acl_default", "system.posix_acl_access"):
-    try:
-        os.removexattr(folder, name)
-    except OSError as error:
-        if error.errno != errno.ENODATA:
-            sys.exit(f"nomad: cannot remove the ACL of {folder}: {error}")
+try:
+    present = os.listxattr(folder)
+    for name, acl in (("system.posix_acl_default", "default ACL"), ("system.posix_acl_access", "access ACL")):
+        if name in present:
+            os.removexattr(folder, name)
+            print(f"nomad: removed the {acl} that was left on {folder}")
+except OSError as error:
+    sys.exit(f"nomad: cannot remove the ACLs of {folder}: {error}")
 PY
 }
 

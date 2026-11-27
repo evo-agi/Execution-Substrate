@@ -135,10 +135,32 @@ func TestLinuxSetupTakesNomadFoldersBackWithoutAnACL(t *testing.T) {
 		t.Fatal(err)
 	}
 	chmodLog := filepath.Join(t.TempDir(), "chmod.log")
-	command := exec.Command("bash", "-c", linuxSetupServiceHarness(t)+"umask 0\ninstall_nomad_service_config\n", "bash", data)
-	command.Env = []string{"PATH=" + bin + string(os.PathListSeparator) + os.Getenv("PATH"), "CHMOD_LOG=" + chmodLog}
-	if output, err := command.CombinedOutput(); err != nil {
-		t.Fatalf("install_nomad_service_config: %v %s", err, output)
+	run := func() string {
+		t.Helper()
+		command := exec.Command("bash", "-c", linuxSetupServiceHarness(t)+"umask 0\ninstall_nomad_service_config\n", "bash", data)
+		command.Env = []string{"PATH=" + bin + string(os.PathListSeparator) + os.Getenv("PATH"), "CHMOD_LOG=" + chmodLog}
+		output, err := command.CombinedOutput()
+		if err != nil {
+			t.Fatalf("install_nomad_service_config: %v %s", err, output)
+		}
+		return string(output)
+	}
+	output := run()
+	// Each removal is reported, in the order the setup takes the folders
+	// back.
+	var removed []string
+	for _, line := range strings.Split(output, "\n") {
+		if strings.HasPrefix(line, "nomad: removed the ") {
+			removed = append(removed, line)
+		}
+	}
+	var want []string
+	for _, folder := range []string{config, data, tlsDir} {
+		want = append(want, "nomad: removed the default ACL that was left on "+folder,
+			"nomad: removed the access ACL that was left on "+folder)
+	}
+	if strings.Join(removed, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("the run reported removing\n%s\nwant\n%s", strings.Join(removed, "\n"), strings.Join(want, "\n"))
 	}
 
 	for folder, mode := range map[string]os.FileMode{data: 0o700, config: 0o755, tlsDir: 0o755} {
@@ -150,6 +172,11 @@ func TestLinuxSetupTakesNomadFoldersBackWithoutAnACL(t *testing.T) {
 	requireNoACL(t, nomadHCL)
 	if logged, err := os.ReadFile(chmodLog); err != nil || string(logged) != "640\n" {
 		t.Fatalf("the new nomad.hcl was created with mode %q before chmod (%v), want one chmod of a 0640 file", logged, err)
+	}
+
+	// A second run finds no ACL and reports none.
+	if output := run(); strings.Contains(output, "nomad: removed the ") {
+		t.Fatalf("a run on folders without an ACL reported a removal: %s", output)
 	}
 }
 
@@ -185,7 +212,7 @@ func TestLinuxSetupStopsWhenItCannotRemoveAFolderACL(t *testing.T) {
 	plantACLs(t, config)
 	runTestSudo(t, "chown", "0:0", config)
 	_, stderr, err := runLinuxSetupServiceHarness(t, data, "install() { :; }\ninstall_nomad_service_config\n")
-	if err == nil || !strings.Contains(stderr, "nomad: cannot remove the ACL of "+config) {
+	if err == nil || !strings.Contains(stderr, "nomad: cannot remove the ACLs of "+config+": [Errno 1] Operation not permitted") {
 		t.Fatalf("install_nomad_service_config went on past an ACL it could not remove: %v %s", err, stderr)
 	}
 	if _, err := os.Lstat(filepath.Join(config, "nomad.hcl")); !os.IsNotExist(err) {
