@@ -199,20 +199,25 @@ var (
 		// command runs, including pkg-config and the Fortran compiler, where
 		// modules, sources and build results come from or go, or how the
 		// toolchain builds and fetches (every such key go help environment
-		// lists, Go 1.26.5), and the two that change how ES's own Go
-		// supervisor runs in the container; the GNU C compiler's keys that
-		// choose the programs it runs, the headers and libraries it builds
-		// with, extra options, or a file it writes with text the caller
-		// chooses (every such key the GCC 14.2 manual lists, and LPATH and
-		// OBJCPLUS_INCLUDE_PATH, which gcc reads and the manual leaves out);
-		// and the directory, domain and language list bash reads the
-		// translations of $"..." strings from, which it expands as
-		// double-quoted text, so a catalog the caller chooses could run
-		// commands in a script that translates its messages. Upstream glibc's gettext skips a LANGUAGE entry that
-		// holds a path only in set-user-ID programs (intl/dcigettext.c, 2.39
-		// and 2.42), so LANGUAGE=../x can name a catalog outside the
-		// directory; the one Ubuntu build tested ignored such entries, and a
-		// backstop does not rest on one build.
+		// lists, Go 1.26.5), and the two that change how ES's own Go supervisor
+		// runs in the container; the GNU C compiler's keys that choose the
+		// programs it runs, the headers and libraries it builds with, extra
+		// options, or a file it writes with text the caller chooses: every such
+		// key a GCC program reads that the GCC 14.2.0 manual names in any
+		// section (gcc/doc/gcc.texi and the files it includes), not only in its
+		// section on environment variables, among them MAKE, the program
+		// lto-wrapper runs for a parallel link, CXX_MODULE_MAPPER, whose
+		// "|program" form names a program cc1plus starts, and
+		// MSP430_GCC_INCLUDE_DIR, a header and linker-script directory of the
+		// msp430 port; and LPATH and OBJCPLUS_INCLUDE_PATH, which gcc reads and
+		// the manual leaves out; and the directory, domain and language list
+		// bash reads the translations of $"..." strings from, which it expands
+		// as double-quoted text, so a catalog the caller chooses could run
+		// commands in a script that translates its messages. Upstream glibc's
+		// gettext skips a LANGUAGE entry that holds a path only in set-user-ID
+		// programs (intl/dcigettext.c, 2.39 and 2.42), so LANGUAGE=../x can name
+		// a catalog outside the directory; the one Ubuntu build tested ignored
+		// such entries, and a backstop does not rest on one build.
 		"WORKLOAD_VAULT_INSECURE_SKIP_VERIFY": {},
 		"WGETRC":                              {},
 		"NETRC":                               {},
@@ -308,6 +313,9 @@ var (
 		"OBJCPLUS_INCLUDE_PATH":               {},
 		"DEPENDENCIES_OUTPUT":                 {},
 		"SUNPRO_DEPENDENCIES":                 {},
+		"MAKE":                                {},
+		"CXX_MODULE_MAPPER":                   {},
+		"MSP430_GCC_INCLUDE_DIR":              {},
 		"TEXTDOMAINDIR":                       {},
 		"TEXTDOMAIN":                          {},
 		"LANGUAGE":                            {},

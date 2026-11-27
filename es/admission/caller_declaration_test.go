@@ -228,7 +228,8 @@ var mustBeReservedEnvironmentKeys = []string{
 	"GOWORK", "GOAUTH", "GOVCS", "GOEXPERIMENT", "GOTMPDIR", "GCCGO", "GCCGOTOOLDIR", "FC",
 	"GCC_EXEC_PREFIX", "COMPILER_PATH", "LIBRARY_PATH", "CPATH", "C_INCLUDE_PATH", "CPLUS_INCLUDE_PATH",
 	"OBJC_INCLUDE_PATH", "GCC_COMPARE_DEBUG", "LPATH", "OBJCPLUS_INCLUDE_PATH", "DEPENDENCIES_OUTPUT",
-	"SUNPRO_DEPENDENCIES", "TEXTDOMAINDIR", "TEXTDOMAIN", "LANGUAGE",
+	"SUNPRO_DEPENDENCIES", "MAKE", "CXX_MODULE_MAPPER", "MSP430_GCC_INCLUDE_DIR", "TEXTDOMAINDIR",
+	"TEXTDOMAIN", "LANGUAGE",
 }
 
 var mustBeReservedEnvironmentPrefixes = []string{
@@ -372,6 +373,9 @@ func TestReservedEnvironmentKeysAreRefusedEvenWhenTheArtifactDeclaresThem(t *tes
 		// kinds, and pkg-config's search keys.
 		"FC", "PKG_CONFIG", "pkg_config_path", "PKG_CONFIG_LIBDIR", "GCCGOTOOLDIR", "LPATH",
 		"OBJCPLUS_INCLUDE_PATH", "DEPENDENCIES_OUTPUT", "SUNPRO_DEPENDENCIES",
+		// Re-check 27: the keys the GCC 14.2.0 manual names outside its
+		// section on environment variables.
+		"MAKE", "make", "CXX_MODULE_MAPPER", "MSP430_GCC_INCLUDE_DIR",
 	} {
 		t.Run(key, func(t *testing.T) {
 			fixture := base.withEnvironmentVariables(t, []string{key})
@@ -388,9 +392,10 @@ func TestOrdinaryEnvironmentKeysAreNotReserved(t *testing.T) {
 		"APP_MODE", "WORKLOAD_VAULT_SECRET_PATH", "REFERENCE_SECRET_PATH", "REFERENCE_IDENTITY_URL",
 		"NODE_ENV", "LANG", "TZ", "PATHNAME", "HOMEPAGE", "ENVIRONMENT_NAME", "LDAP_URL", "GITHUB_REF",
 		"PYTHO", "_X",
-		// Near misses: the TLS-skip rule is a suffix, and TEXTDOMAIN, GOROOT
-		// and CPATH are exact keys.
+		// Near misses: the TLS-skip rule is a suffix, and TEXTDOMAIN, GOROOT,
+		// CPATH and MAKE are exact keys.
 		"SKIP_VERIFY", "INSECURE_SKIP_VERIFY_NOTE", "TEXTDOMAIN_LABEL", "GOROOT_LABEL", "CPATHS", "CGO",
+		"MAKE_TARGET",
 		// Go keys that choose only among code the artifact already holds or
 		// tune the Go runtime, and gcc keys that change only text it prints.
 		"GOOS", "GOARCH", "GO111MODULE", "GOFIPS140", "SOURCE_DATE_EPOCH", "GCC_EXTRA_DIAGNOSTIC_OUTPUT",

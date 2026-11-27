@@ -1,6 +1,7 @@
 package executionsubstrate_test
 
 import (
+	"encoding/json"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -31,14 +32,23 @@ func TestCallerDeclarationRulesAreInTheLifecycleContract(t *testing.T) {
 		"Environment keys must not use reserved keys, whether or not the artifact declares them.",
 		"ES matches reserved keys with ASCII letters folded to upper case",
 		"`TestReservedEnvironmentKeySetIsPinned` pins it.",
-		"It is a backstop for a publisher's mistake, not the boundary",
+		// Re-check 25 Opus N1: the sentences on keys left open follow the one
+		// that calls the list a backstop.
+		"It is a backstop for a publisher's mistake, not the boundary: no list can name every variable every program reads. The boundary is the allowlist in the next rule. Some keys of these kinds stay open on purpose.",
 		"They do not include every such key; the families below add more",
 		"A family is reserved as a whole, so that the list does not have to keep up with each program's next key",
 		"every key that ends in `INSECURE_SKIP_VERIFY`",
 		// Report 24 on PR #74: why LANGUAGE is reserved and LANG and LC_ALL
 		// are not.
 		"skips a `LANGUAGE` entry that holds a path only in set-user-ID programs",
-		"`LANG` and `LC_ALL` stay open",
+		"`LANG` and `LC_ALL` stay open: glibc refuses a locale name that climbs out of the locale directory and looks a name up only under that directory unless `LOCPATH`, which is reserved, is set (`locale/findlocale.c`), so they select only installed locales.",
+		// Re-checks 25 and 27 on PR #74: the Go and gcc sentences name their
+		// sources, and say which keys of those kinds stay open and why.
+		"every such key `go help environment` lists in Go 1.26.5",
+		"the GNU C compiler's keys that choose the programs it runs, the headers and libraries it builds with, extra options, or a file it writes with text the caller chooses (`GCC_EXEC_PREFIX`, `COMPILER_PATH`, `LIBRARY_PATH`, `LPATH`, `CPATH`, `C_INCLUDE_PATH`, `CPLUS_INCLUDE_PATH`, `OBJC_INCLUDE_PATH`, `OBJCPLUS_INCLUDE_PATH`, `MSP430_GCC_INCLUDE_DIR`, `GCC_COMPARE_DEBUG`, `DEPENDENCIES_OUTPUT`, `SUNPRO_DEPENDENCIES`, `MAKE`, which names the program gcc's link-time optimizer runs for a parallel link, and `CXX_MODULE_MAPPER`, whose `|program` form names a program the C++ compiler starts: every such key a GCC program reads that the GCC 14.2.0 manual, `gcc/doc/gcc.texi` and the files it includes, names in any section, not only in its section on environment variables, and the two that gcc's driver and preprocessor read and the manual leaves out, `LPATH` and `OBJCPLUS_INCLUDE_PATH`);",
+		"`GOOS`, `GOARCH` and the other target keys, `GO111MODULE` and `GOFIPS140` choose only among code the artifact or the Go toolchain already holds.",
+		"gcc's `SOURCE_DATE_EPOCH` and `GCC_EXTRA_DIAGNOSTIC_OUTPUT` change only a timestamp and the text of its diagnostics.",
+		"The gcc keys above are the ones a GCC program reads: keys the GCC manual names that a program built with gcc reads when it runs, such as the sanitizer runtime's `ASAN_OPTIONS` and the coverage runtime's `GCOV_PREFIX`, are outside that class and are not reserved.",
 		// Re-check 25 on PR #74: pkg-config's search keys are reserved with
 		// its program, as a family.
 		"`PKG_CONFIG` (the pkg-config program a cgo build runs, and the keys that choose the `.pc` files that give it flags and libraries)",
@@ -138,7 +148,14 @@ func reservedEnvironmentEntriesInSource(t *testing.T) (map[string]bool, []string
 // reserves a key, from the entries reservedEnvironmentEntriesInSource reads.
 func reservedEnvironmentKeyMatcher(keys map[string]bool, prefixes, suffixes []string) func(string) bool {
 	return func(key string) bool {
-		upper := strings.ToUpper(key)
+		// isReservedRuntimeEnvKey trims white space and folds only the ASCII
+		// letters; read a key the same way.
+		upper := strings.Map(func(r rune) rune {
+			if 'a' <= r && r <= 'z' {
+				return r - ('a' - 'A')
+			}
+			return r
+		}, strings.TrimSpace(key))
 		if keys[upper] || upper == "EXEC_WORKLOAD_IDENTITY_ENDPOINT" {
 			return true
 		}
@@ -202,18 +219,34 @@ func TestLifecycleContractNamesOnlyReservedKeysTheCodeReserves(t *testing.T) {
 // Re-check 25 on PR #74: a runbook or example that declares a reserved key
 // publishes fine, because AGS signs the declaration as given, and its caller
 // is refused only at submit. This keeps the repository's own publish requests
-// free of reserved keys.
+// free of reserved keys. Re-check 27: the scan reads an entry as a publish
+// request carries it (JSON escapes decoded; ES then trims and folds it, as the
+// matcher does), reads single-quoted (Python) lists too, and fails on a
+// declaration in a spelling it cannot read.
 func TestRunbooksAndExamplesDeclareNoReservedEnvironmentKey(t *testing.T) {
 	reservesKey := reservedEnvironmentKeyMatcher(reservedEnvironmentEntriesInSource(t))
-	declaration := regexp.MustCompile(`"environment_variables"\s*:\s*\[([^\]]*)\]`)
-	quoted := regexp.MustCompile(`"([^"]*)"`)
+	// The matcher must read a declared entry as ES does: trimmed, with only
+	// the ASCII letters folded (U+017F is not the letter S to ES).
+	for _, spelling := range []string{" LD_PRELOAD", "ld_preload\t", "Shell"} {
+		if !reservesKey(spelling) {
+			t.Fatalf("the matcher does not reserve %q, which ES reserves", spelling)
+		}
+	}
+	if reservesKey("\u017fhell") {
+		t.Fatal("the matcher folds a non-ASCII letter, which ES does not")
+	}
+	declaration := regexp.MustCompile(`["']environment_variables["']\s*:\s*\[([^\]]*)\]`)
+	// Any spelling of a declaration: quoted or not, escaped quotes, ":" or "=".
+	anyDeclaration := regexp.MustCompile(`environment_variables[\\"']*\s*[:=]\s*\[`)
+	entry := regexp.MustCompile(`"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'`)
 	declared := map[string][]string{}
+	lists := map[string]int{}
 	for _, root := range []string{".runbooks", ".examples", ".docs", "scripts"} {
-		err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		err := filepath.WalkDir(root, func(path string, dirEntry fs.DirEntry, err error) error {
 			if err != nil {
 				return err
 			}
-			if entry.IsDir() {
+			if dirEntry.IsDir() {
 				return nil
 			}
 			switch filepath.Ext(path) {
@@ -224,9 +257,15 @@ func TestRunbooksAndExamplesDeclareNoReservedEnvironmentKey(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			for _, list := range declaration.FindAllStringSubmatch(string(data), -1) {
-				for _, key := range quoted.FindAllStringSubmatch(list[1], -1) {
-					declared[key[1]] = append(declared[key[1]], path)
+			found := declaration.FindAllStringSubmatch(string(data), -1)
+			if spelled := len(anyDeclaration.FindAllStringIndex(string(data), -1)); spelled != len(found) {
+				t.Errorf("%s holds %d environment_variables declarations, but the scan reads %d; teach the scan that spelling", path, spelled, len(found))
+			}
+			lists[root] += len(found)
+			for _, list := range found {
+				for _, match := range entry.FindAllStringSubmatch(list[1], -1) {
+					key := declaredEnvironmentEntry(match)
+					declared[key] = append(declared[key], path)
 				}
 			}
 			return nil
@@ -235,7 +274,13 @@ func TestRunbooksAndExamplesDeclareNoReservedEnvironmentKey(t *testing.T) {
 			t.Fatalf("walk %s: %v", root, err)
 		}
 	}
-	// The scan must see the declarations it guards.
+	// The scan must see the declarations it guards: in each root that holds
+	// some today, and the known keys.
+	for _, root := range []string{".runbooks", ".examples", "scripts"} {
+		if lists[root] == 0 {
+			t.Fatalf("found no environment_variables declaration in %s", root)
+		}
+	}
 	for _, key := range []string{"APP_MODE", "WORKLOAD_VAULT_SECRET_PATH", "REFERENCE_IDENTITY_URL"} {
 		if len(declared[key]) == 0 {
 			t.Fatalf("did not find the declaration of %s in the runbooks and examples", key)
@@ -244,11 +289,33 @@ func TestRunbooksAndExamplesDeclareNoReservedEnvironmentKey(t *testing.T) {
 	var refused []string
 	for key, paths := range declared {
 		if reservesKey(key) {
-			refused = append(refused, key+" in "+strings.Join(paths, ", "))
+			refused = append(refused, strconv.Quote(key)+" in "+strings.Join(paths, ", "))
 		}
 	}
 	sort.Strings(refused)
 	if len(refused) > 0 {
 		t.Fatalf("a runbook or example declares a reserved environment key, which ES refuses from every caller: %s", strings.Join(refused, "; "))
 	}
+}
+
+// declaredEnvironmentEntry decodes one quoted list entry that the guard above
+// matched: a double-quoted entry as JSON, the form a publish request carries,
+// and a single-quoted one as a Python string, whose escapes a key could use
+// Go's string syntax also reads.
+func declaredEnvironmentEntry(match []string) string {
+	if strings.HasPrefix(match[0], `"`) {
+		var decoded string
+		if json.Unmarshal([]byte(match[0]), &decoded) == nil {
+			return decoded
+		}
+		if decoded, err := strconv.Unquote(match[0]); err == nil {
+			return decoded
+		}
+		return match[1]
+	}
+	body := strings.ReplaceAll(strings.ReplaceAll(match[2], `\'`, `'`), `"`, `\"`)
+	if decoded, err := strconv.Unquote(`"` + body + `"`); err == nil {
+		return decoded
+	}
+	return match[2]
 }
