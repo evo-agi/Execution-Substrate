@@ -54,6 +54,7 @@ func TestCallerDeclarationRulesAreInTheLifecycleContract(t *testing.T) {
 			"empty environment-allowlist behavior",
 			"Empty environment allowlist meaning",
 			"current source does not enforce explicit allowlist membership",
+			"empty allowlist behavior",
 		)
 	}
 }

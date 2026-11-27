@@ -122,10 +122,13 @@ var (
 		"TMPDIR":                 {},
 		"TZDIR":                  {},
 
-		// The keys sudo removes from the environment of every command it
-		// runs (sudo 1.9.16p2, plugins/sudoers/env.c, initial_badenv_table,
-		// the entries that apply on Linux; its wildcard entries are prefixes
-		// below), with _JAVA_OPTIONS and CLASSPATH, which later sudo adds.
+		// The keys sudo 1.9.16p2 removes from the environment of every
+		// command it runs (plugins/sudoers/env.c, initial_badenv_table, the
+		// entries that apply on Linux; its wildcard entries are prefixes
+		// below), and the entries sudo's development branch adds to that
+		// table after 1.9.16p2: _JAVA_OPTIONS, CLASSPATH, NODE_OPTIONS and
+		// NODE_PATH here, and PYTHONSTARTUP, GIT_SSH_COMMAND and
+		// GIT_CONFIG_* under the PYTHON and GIT_ prefixes below.
 		"IFS":               {},
 		"CDPATH":            {},
 		"PATH_LOCALE":       {},
@@ -264,14 +267,16 @@ var (
 	reservedRuntimeEnvPrefixes = []string{
 		"EXEC_",
 		"EXEC_WORKLOAD_VAULT_",
-		// The dynamic loader's keys (glibc and musl), and sudo's wildcard
-		// entries LD_*, _RLD*, KRB5_CONFIG* and GIT_CONFIG_*.
+		// The dynamic loader's keys (glibc and musl), and sudo 1.9.16p2's
+		// wildcard entries LD_*, _RLD* and KRB5_CONFIG*.
 		"LD_",
 		"_RLD",
 		"KRB5_CONFIG",
 		// CPython and Git read many keys under these prefixes to load code,
-		// run commands or change TLS verification; this covers sudo's
-		// PYTHON* entries and GIT_SSH_COMMAND and GIT_CONFIG_*.
+		// run commands or change TLS verification. They cover sudo
+		// 1.9.16p2's PYTHONHOME, PYTHONPATH, PYTHONINSPECT and
+		// PYTHONUSERBASE, and the later PYTHONSTARTUP, GIT_SSH_COMMAND and
+		// GIT_CONFIG_*.
 		"PYTHON",
 		"GIT_",
 		// Bash imports a function from a key of this form. Such a key is not

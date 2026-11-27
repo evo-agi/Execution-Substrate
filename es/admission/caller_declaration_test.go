@@ -198,7 +198,8 @@ var mustBeReservedEnvironmentKeys = []string{
 	"MALLOC_ARENA_MAX", "MALLOC_ARENA_TEST", "MALLOC_MMAP_MAX_", "MALLOC_MMAP_THRESHOLD_",
 	"MALLOC_PERTURB_", "MALLOC_TOP_PAD_", "MALLOC_TRACE", "MALLOC_TRIM_THRESHOLD_", "NIS_PATH",
 	"NLSPATH", "RESOLV_HOST_CONF", "RES_OPTIONS", "TMPDIR", "TZDIR",
-	// sudo initial_badenv_table (Linux entries) and its later Java entries.
+	// sudo 1.9.16p2 initial_badenv_table (Linux entries) and the entries
+	// sudo's development branch adds after it.
 	"IFS", "CDPATH", "PATH_LOCALE", "KRB5_KTNAME", "TERMINFO", "TERMINFO_DIRS", "TERMPATH",
 	"TERMCAP", "ENV", "BASH_ENV", "PS4", "GLOBIGNORE", "BASHOPTS", "SHELLOPTS", "JAVA_TOOL_OPTIONS",
 	"_JAVA_OPTIONS", "CLASSPATH", "PERLIO_DEBUG", "PERLLIB", "PERL5LIB", "PERL5OPT", "PERL5DB",

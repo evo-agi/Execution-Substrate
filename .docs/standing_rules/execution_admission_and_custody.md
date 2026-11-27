@@ -135,10 +135,11 @@ legacy decoder rejects a structural `reliable_submit` body, even when a schema
 string alone is supplied. Blank schema/version still defaults to v1, explicit
 nonblank legacy versions remain compatible, mode defaults to async, timeout to
 zero, and omitted CPU/memory to 10/128. Request maps, slices and resources are
-owned after the admission copy. Caller, profile and platform environment
-precedence, empty allowlist behavior, policy-fetched payload reuse and both
-implicit default and explicit `control-plane-normal-shell/v1` profile behavior
-remain in force.
+owned after the admission copy. Environment and mount admission are those of
+the shared admission path (`.docs/execution_lifecycle/contracts.md`, section
+5); the foundation adds no rule of its own. Caller, profile and platform
+environment precedence, policy-fetched payload reuse and both implicit default
+and explicit `control-plane-normal-shell/v1` profile behavior remain in force.
 
 **Bounded slice rule:** `prepareAdmission` first owns a copy of the request and
 performs its established artifact, trust, Vault/auth and policy reads and gates.
