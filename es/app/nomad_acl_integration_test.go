@@ -768,7 +768,7 @@ setup`
 				"Client":    map[string]any{"Options": map[string]any{"driver.allowlist": "docker"}},
 				"Plugins":   supportedNomadDockerPluginAgentConfig(),
 				"TLSConfig": supportedNomadTLSAgentConfig(),
-			}})),
+			}, "stats": supportedNomadAgentStats()})),
 		}, overrides...)...)
 		recorded, err := os.ReadFile(events)
 		if err != nil {
@@ -846,7 +846,7 @@ setup`
 			"Client":    map[string]any{"Options": map[string]any{"driver.allowlist": "docker"}},
 			"Plugins":   plugins,
 			"TLSConfig": supportedNomadTLSAgentConfig(),
-		}})))
+		}, "stats": supportedNomadAgentStats()})))
 		if !strings.Contains(r.output, "the Docker plugin must refuse privileged containers") ||
 			!strings.Contains(r.output, "supported-local Nomad does not limit its drivers the supported way") ||
 			strings.Contains(r.events, "first proof effect") {
