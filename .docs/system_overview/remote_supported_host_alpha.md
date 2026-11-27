@@ -7390,6 +7390,26 @@ Operator interface:
   for a move that is not forward (below).
 - `sudo scripts/remote_alpha_upgrade_es.sh rollback --backup-dir <dir>`
   puts back the backup of the apply that left the host as it is (below).
+- `sudo scripts/remote_alpha_upgrade_es.sh nomad-hook` installs what
+  `scripts/70_linux_setup.sh` installs on a supported host so that a later
+  install or upgrade of HashiCorp's nomad package cannot leave Nomad's
+  folders and files to the `nomad` account: the program
+  `/usr/local/sbin/execution-substrate-nomad-take-back` (root:root 0755)
+  and `/etc/dpkg/dpkg.cfg.d/execution-substrate-nomad` (0644), which has
+  dpkg run it as root at the end of each dpkg run (the package's postinst
+  runs `chown -R nomad:nomad /etc/nomad.d` and `chown nomad:nomad
+  /opt/nomad/data`). It then runs the program once: it takes `/etc/nomad.d`,
+  `/etc/nomad.d/tls` and `/opt/nomad/data` back (root:root, 0755, 0755,
+  0700, no ACL) and each file Nomad reads there (`nomad.env`, the `.hcl`
+  and `.json` files Nomad loads, the TLS files) as a new root-owned file
+  with its contents kept, no write for group or others and no ACL,
+  reporting each one. A link or other entry it cannot take back is named,
+  and the command fails after taking back the rest. It changes nothing
+  else, and running it again writes the same files. Run it before `check`:
+  `check` and `apply` refuse a host without the two files as this clone's
+  setup writes them, and on the box it also takes back the package's
+  `nomad.env`, which `check` otherwise refuses. It is not undone by
+  `rollback`; remove the two files together to take it out.
 
 `backup` and `restore` are steps of `apply` and `rollback`, not commands:
 the wrapper refuses them, since `restore` would put back any backup without
@@ -7621,8 +7641,14 @@ write that record; `apply`'s own rollback logs why and goes on.
   `/etc/nomad.d` holds another `.hcl` or `.json` file that Nomad would load,
   `/etc/nomad.d/nomad.env` (the `EnvironmentFile` of Nomad's unit, which
   Nomad reads as root; the package gives it to the `nomad` account and the
-  setup takes it back) is there but is not a regular `root:root` file
-  without write for group or others, or has an ACL,
+  setup and `nomad-hook` take it back) is there but is not a regular file
+  (remove it), is not `root:root` without write for group or others
+  (`nomad-hook` takes it back), or has an ACL,
+  `/usr/local/sbin/execution-substrate-nomad-take-back` or
+  `/etc/dpkg/dpkg.cfg.d/execution-substrate-nomad` is missing, a link, not
+  `root:root` 0755 or 0644, has an ACL, sits in a folder that is not
+  `root:root` and closed to group and others, or is not what this clone's
+  `scripts/70_linux_setup.sh` writes (`nomad-hook` installs them),
   or `/etc/nomad.d`, `/opt/nomad` (0755) and `/opt/nomad/data` (0700) are not
   `root:root` folders with those modes and no ACL, or `nomad.hcl` has an ACL
   (audit INF-16; an account that owned one of these folders could leave a
@@ -7842,7 +7868,11 @@ binary missing, and a rollback record's name taken, each refused; the
 wrapper refusing `backup` and `restore`; `es.json` gaining a key after
 `check`; `es_config_target` refusing a shape its `es.json` does not match;
 a `nomad.env` others can write, a link there, and a host without one, which
-is not refused; a Nomad folder, `nomad.hcl`, `nomad.env`, the TLS directory
+is not refused; the take-back program or its dpkg configuration missing,
+changed, a link, of another mode or group, or in a folder others can write,
+each refused, and `nomad-hook` installing both as the setup writes them,
+taking back a `nomad.env` others can write, changing nothing else, writing
+the same files again on a rerun and failing on a link it cannot take back; a Nomad folder, `nomad.hcl`, `nomad.env`, the TLS directory
 or `/opt/nomad/data/server` with an ACL (the server folder also with the
 keyring in place), each refused
 before anything changes and naming `setfacl -b -k`; no gossip key or Nomad token in the output, the

@@ -104,6 +104,10 @@ NOMAD_GOSSIP_KEYRING="${NOMAD_DATA_DIR}/server/serf.keyring"
 # although that run changes nothing itself (red-team RT66-2).
 NOMAD_RESTART_PENDING="${NOMAD_DATA_DIR}/execution-substrate-restart-pending"
 NOMAD_MANAGED_MARKER="# Managed by Execution Substrate scripts/70_linux_setup.sh for the single-node workload-zone baseline."
+# The program that takes Nomad's folders and files back after each dpkg run,
+# and the dpkg configuration that runs it (see nomad_take_back_program).
+NOMAD_TAKE_BACK_PROGRAM="/usr/local/sbin/execution-substrate-nomad-take-back"
+NOMAD_DPKG_HOOK="/etc/dpkg/dpkg.cfg.d/execution-substrate-nomad"
 # The supported Nomad enforces ACLs: ES submits only with its own token and
 # refuses a Nomad that accepts jobs without one. This script bootstraps the
 # ACLs and keeps the management token root-only here; after cloning,
@@ -795,6 +799,264 @@ EOF
   printf '%s\n' "${config}" | nomad_config_write "${NOMAD_CONFIG_PATH}"
 }
 
+# BEGIN nomad_package_hook (the tests and the box upgrade run these functions on their own)
+# HashiCorp's nomad package gives Nomad's folders and files to the nomad
+# account each time it is installed or upgraded: its postinst makes the nomad
+# user and group own /etc/nomad.d and everything in it, and /opt/nomad/data
+# (on an upgrade, after the old version's postrm has restarted Nomad). Nomad's
+# unit runs as root and reads them when it next starts. The setup takes them
+# back on each of its runs, but from a package run to the next setup run that
+# account could change what root runs (red-team 45, O45-1). So the setup
+# installs a program that takes them back, and dpkg runs it as root at the
+# end of each of its runs (post-invoke), seconds after the postinst's chown.
+
+# nomad_take_back_program: print the program. Run as root with Nomad's config
+# folder and data folder, it makes the config folder, its tls folder and the
+# data folder root's, with no ACL (0755, 0755, 0700, as the setup does), and
+# takes back the files Nomad reads in the first two as the setup does: each
+# regular file whose owner, mode or ACL is not root's alone is copied into a
+# new file root owns, with its mode less write for group and others, and no
+# ACL, which is renamed over it. An old handle no longer reaches it. The
+# contents are kept, so Nomad needs no restart, and each take-back is
+# reported in dpkg's output, so the operator can check what the file sets. A
+# folder that is missing is passed over (the package was removed, say).
+# Where Nomad reads a folder or file, anything else (a link, say) stops it
+# with a message; dpkg then reports the hook's failure on each run until
+# that is fixed and the program has run again.
+nomad_take_back_program() {
+  cat <<'PY'
+#!/usr/bin/python3 -I
+# Execution Substrate: take Nomad's folders, and the files Nomad reads, back
+# from the nomad account, which the nomad package's postinst gives them to.
+# Written by scripts/70_linux_setup.sh (or the box upgrade) and run as root by
+# dpkg after each of its runs: see /etc/dpkg/dpkg.cfg.d/execution-substrate-nomad.
+import os
+import stat
+import sys
+
+ACLS = (("system.posix_acl_default", "default ACL"), ("system.posix_acl_access", "access ACL"))
+
+
+def say(text):
+    print(f"execution-substrate: {text}", flush=True)
+
+
+def posix_acls(target, **kwargs):
+    """The ACLs that target (a path or a descriptor) has. os has listxattr
+    only on Linux; elsewhere (macOS, where the tests also run) nothing has
+    a POSIX ACL."""
+    listxattr = getattr(os, "listxattr", None)
+    present = listxattr(target, **kwargs) if listxattr else []
+    return [(name, acl) for name, acl in ACLS if name in present]
+
+
+def kind(st):
+    if stat.S_ISLNK(st.st_mode):
+        return "a link"
+    if stat.S_ISREG(st.st_mode):
+        return "a file"
+    if stat.S_ISDIR(st.st_mode):
+        return "a folder"
+    return "neither a file nor a folder"
+
+
+def take_back_folder(path, mode, uid, gid, refusals):
+    """Make the folder at path uid:gid with mode and no ACL. False when
+    nothing is there or it is refused."""
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        return False
+    if not stat.S_ISDIR(st.st_mode):
+        refusals.append(f"{path} is {kind(st)}, not a folder")
+        return False
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        opened = os.fstat(fd)
+        if (opened.st_dev, opened.st_ino) != (st.st_dev, st.st_ino):
+            refusals.append(f"{path} changed while it was taken back")
+            return False
+        if (opened.st_uid, opened.st_gid) != (uid, gid) or stat.S_IMODE(opened.st_mode) != mode:
+            # The owner first: until then the former owner may change the
+            # mode or set an ACL again.
+            os.fchown(fd, uid, gid)
+            os.fchmod(fd, mode)
+            say(f"took {path} back (it was uid {opened.st_uid}, gid {opened.st_gid}, "
+                f"{stat.S_IMODE(opened.st_mode):04o})")
+        for name, acl in posix_acls(fd):
+            os.removexattr(fd, name)
+            say(f"removed the {acl} that was left on {path}")
+    finally:
+        os.close(fd)
+    return True
+
+
+def take_back_files(folder, uid, gid, reads, refusals):
+    """Take back each file in folder (root's by now) whose name Nomad reads."""
+    renamed = False
+    for name in sorted(os.listdir(folder)):
+        if not reads(name):
+            continue
+        path = os.path.join(folder, name)
+        st = os.lstat(path)
+        if stat.S_ISDIR(st.st_mode):
+            continue
+        if not stat.S_ISREG(st.st_mode):
+            refusals.append(f"{path} is {kind(st)}, not a regular file")
+            continue
+        mode = stat.S_IMODE(st.st_mode) & 0o755
+        acl = bool(posix_acls(path, follow_symlinks=False))
+        if (st.st_uid, st.st_gid) == (uid, gid) and stat.S_IMODE(st.st_mode) == mode and not acl:
+            continue
+        source = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            opened = os.fstat(source)
+            if (opened.st_dev, opened.st_ino) != (st.st_dev, st.st_ino):
+                refusals.append(f"{path} changed while it was taken back")
+                continue
+            chunks = []
+            while chunk := os.read(source, 65536):
+                chunks.append(chunk)
+        finally:
+            os.close(source)
+        tmp = path + ".execution-substrate-new"
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+        target = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        try:
+            data = memoryview(b"".join(chunks))
+            while data:
+                data = data[os.write(target, data):]
+            os.fchown(target, uid, gid)
+            os.fchmod(target, mode)
+            # The contents reach the disk before the new name does, so a
+            # crash cannot leave an empty file where Nomad reads its config.
+            os.fsync(target)
+        finally:
+            os.close(target)
+        os.rename(tmp, path)
+        renamed = True
+        was = f"uid {st.st_uid}, gid {st.st_gid}, {stat.S_IMODE(st.st_mode):04o}" + (", with an ACL" if acl else "")
+        say(f"took {path} back (it was {was}); Nomad reads it as root, so check what it sets")
+    if renamed:
+        fd = os.open(folder, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+
+
+def nomad_loads(name):
+    """nomad.service's EnvironmentFile, and what `nomad agent -config <folder>` loads."""
+    if name.startswith(".#"):
+        return False
+    return name == "nomad.env" or name.endswith((".hcl", ".json"))
+
+
+def main(argv):
+    if len(argv) != 3:
+        sys.exit(f"usage: {argv[0]} <Nomad's config folder> <Nomad's data folder>")
+    config, data = argv[1], argv[2]
+    uid, gid = os.getuid(), os.getgid()
+    # A refused entry stops nothing else: the rest is taken back first.
+    refusals = []
+    try:
+        if take_back_folder(config, 0o755, uid, gid, refusals):
+            take_back_files(config, uid, gid, nomad_loads, refusals)
+            tls = os.path.join(config, "tls")
+            if take_back_folder(tls, 0o755, uid, gid, refusals):
+                take_back_files(tls, uid, gid, lambda name: True, refusals)
+        take_back_folder(data, 0o700, uid, gid, refusals)
+    except OSError as error:
+        sys.exit(f"execution-substrate: cannot take back Nomad's folders and files: {error}")
+    for refusal in refusals:
+        print(f"execution-substrate: {refusal}, and Nomad's unit reads it as root", file=sys.stderr)
+    if refusals:
+        sys.exit(f"execution-substrate: fix that, then run {argv[0]} {config} {data} again")
+
+
+if __name__ == "__main__":
+    main(sys.argv)
+PY
+}
+
+# nomad_dpkg_hook_text <program> <config folder> <data folder>: print the
+# dpkg configuration that runs the program after each dpkg run. When the
+# program is gone (removed by hand), dpkg runs nothing rather than failing.
+nomad_dpkg_hook_text() {
+  printf '%s\n' \
+    "# Written by Execution Substrate (scripts/70_linux_setup.sh, or the box upgrade). After each dpkg" \
+    "# run, take Nomad's folders and the files it reads back from the nomad account, which the nomad" \
+    "# package's postinst gives them to. Remove this file and the program together." \
+    "post-invoke=\"if [ -e $1 ]; then $1 $2 $3; fi\""
+}
+
+# nomad_new_file_write <mode> <path>: write standard input to <path> as a
+# new file of the caller's (root's on a host) with <mode>, renamed into place:
+# a link at <path> is replaced, not followed. The folder must be the caller's
+# and closed to group and others; it is made 0755 if missing. Everything acts
+# through descriptors; the new file is synced before the rename and the
+# folder after it.
+nomad_new_file_write() {
+  python3 -I -c '
+import os
+import sys
+
+mode, path = int(sys.argv[1], 8), sys.argv[2]
+folder, name = os.path.split(path)
+data = sys.stdin.buffer.read()
+try:
+    os.makedirs(folder, 0o755, exist_ok=True)
+    fd = os.open(folder, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        st = os.fstat(fd)
+        if st.st_uid != os.getuid() or st.st_mode & 0o022:
+            sys.exit(f"nomad: {folder} is not owned by uid {os.getuid()} and closed to group and others "
+                     f"(uid {st.st_uid}, {st.st_mode & 0o7777:04o}); refusing to write {path} there")
+        tmp = name + ".execution-substrate-new"
+        try:
+            os.unlink(tmp, dir_fd=fd)
+        except FileNotFoundError:
+            pass
+        out = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=fd)
+        try:
+            view = memoryview(data)
+            while view:
+                view = view[os.write(out, view):]
+            os.fchmod(out, mode)
+            os.fsync(out)
+        finally:
+            os.close(out)
+        os.rename(tmp, name, src_dir_fd=fd, dst_dir_fd=fd)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+except OSError as error:
+    sys.exit(f"nomad: could not write {path}: {error}")
+' "$@"
+}
+
+# install_nomad_package_hook <program> <hook> <config folder> <data folder>:
+# as the caller (root on a host), write the program (0755) and the dpkg
+# configuration that names it (0644), then run the program once, so the
+# installed copy is known to run here and anything it refuses stops the
+# install.
+install_nomad_package_hook() {
+  echo "==> Installing $1, which dpkg runs after each package run to take Nomad's folders and files back"
+  nomad_take_back_program | nomad_new_file_write 0755 "$1"
+  nomad_dpkg_hook_text "$1" "$3" "$4" | nomad_new_file_write 0644 "$2"
+  "$1" "$3" "$4"
+}
+
+# nomad_package_hook_as_root <function> <args...>: run one of the functions
+# above as root.
+nomad_package_hook_as_root() {
+  sudo bash -c "set -euo pipefail; $(declare -f nomad_take_back_program nomad_dpkg_hook_text nomad_new_file_write install_nomad_package_hook); \"\$@\"" nomad-package-hook "$@"
+}
+# END nomad_package_hook
+
 # BEGIN nomad_acl_bootstrap (the tests run these functions on their own)
 # nomad_curl <curl args...>: HTTPS to Nomad only, TLS 1.3, trusting only
 # Nomad's CA, with no proxy.
@@ -1234,6 +1496,7 @@ echo "==> Enabling Docker"
 sudo systemctl enable --now docker
 ensure_user_in_docker_group
 install_nomad_service_config
+nomad_package_hook_as_root install_nomad_package_hook "${NOMAD_TAKE_BACK_PROGRAM}" "${NOMAD_DPKG_HOOK}" "${NOMAD_CONFIG_DIR}" "${NOMAD_DATA_DIR}"
 warn_existing_nomad_processes
 
 echo "==> Qualifying supported substrate baseline"

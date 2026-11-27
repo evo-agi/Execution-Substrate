@@ -818,6 +818,7 @@ func newUpgradeHost(t *testing.T, helper string) *upgradeHost {
 	h.mkdir("etc/execution-substrate/retained-result-auth", 0o755)
 	h.write("etc/execution-substrate/retained-result-auth/es.key", strings.Repeat("k", 32), 0o400)
 	h.mkdir("var/backups", 0o755)
+	h.installNomadPackageHook()
 	// Nomad runs, on plain HTTP, and enforces ACLs.
 	h.mark("locked", "")
 
@@ -861,6 +862,53 @@ func newUpgradeHost(t *testing.T, helper string) *upgradeHost {
 		t.Fatal(err)
 	}
 	return h
+}
+
+// Where the program that takes Nomad's folders and files back after each
+// dpkg run, and the dpkg configuration that runs it, are on the host.
+const (
+	nomadTakeBackProgramRel = "usr/local/sbin/execution-substrate-nomad-take-back"
+	nomadDpkgHookRel        = "etc/dpkg/dpkg.cfg.d/execution-substrate-nomad"
+)
+
+// nomadPackageHookTexts is what scripts/70_linux_setup.sh writes as the
+// program and as the dpkg configuration, for a host under root.
+func nomadPackageHookTexts(t *testing.T, root string) (program, hook string) {
+	t.Helper()
+	data, err := os.ReadFile(repoPath("scripts/70_linux_setup.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	start := strings.Index(text, "\n# BEGIN nomad_package_hook")
+	end := strings.Index(text, "\n# END nomad_package_hook\n")
+	if start < 0 || end < start {
+		t.Fatal("70_linux_setup.sh has no nomad_package_hook region")
+	}
+	run := func(steps string, args ...string) string {
+		cmd := exec.Command("bash", append([]string{"-c", "set -euo pipefail\n" + text[start+1:end+1] + steps, "bash"}, args...)...)
+		cmd.Dir = executionSubstrateRepoRoot
+		output, err := cmd.Output()
+		if err != nil {
+			t.Fatalf("%s: %v", steps, err)
+		}
+		return string(output)
+	}
+	program = run("nomad_take_back_program\n")
+	hook = run(`nomad_dpkg_hook_text "$1" "$2" "$3"`+"\n", filepath.Join(root, nomadTakeBackProgramRel),
+		filepath.Join(root, "etc", "nomad.d"), filepath.Join(root, "opt", "nomad", "data"))
+	return program, hook
+}
+
+// installNomadPackageHook writes the program and the dpkg configuration as
+// the setup writes them, which check requires and nomad-hook installs.
+func (h *upgradeHost) installNomadPackageHook() {
+	h.t.Helper()
+	program, hook := nomadPackageHookTexts(h.t, h.root)
+	h.mkdir("usr/local/sbin", 0o755)
+	h.mkdir("etc/dpkg/dpkg.cfg.d", 0o755)
+	h.write(nomadTakeBackProgramRel, program, 0o755)
+	h.write(nomadDpkgHookRel, hook, 0o644)
 }
 
 func (h *upgradeHost) environ() []string {
@@ -1407,17 +1455,50 @@ func TestRemoteAlphaUpgradeESCheckRefusesWhatItWasNotWrittenFor(t *testing.T) {
 		// package leaves it (another account's to write) or as a link.
 		{"nomad.env is writable by others", func(h *upgradeHost) {
 			_ = os.Chmod(h.path("etc/nomad.d/nomad.env"), 0o666)
-		}, "nomad_env", "/etc/nomad.d/nomad.env, which Nomad's unit reads as root, is not a regular root:root file without write for group or others"},
+		}, "nomad_env", "/etc/nomad.d/nomad.env, which Nomad's unit reads as root, is not root:root without write for group or others"},
 		{"nomad.env belongs to another group", func(h *upgradeHost) {
 			giveAnotherGroup(h.t, h.path("etc/nomad.d/nomad.env"))
-		}, "nomad_env", "/etc/nomad.d/nomad.env, which Nomad's unit reads as root, is not a regular root:root file"},
+		}, "nomad_env", "/etc/nomad.d/nomad.env, which Nomad's unit reads as root, is not root:root without write for group or others"},
 		{"nomad.env has the setuid bit", func(h *upgradeHost) {
 			_ = os.Chmod(h.path("etc/nomad.d/nomad.env"), os.ModeSetuid|0o640)
-		}, "nomad_env", "'mode': '4640'"},
+		}, "nomad_env", "'mode': '4640'}); sudo scripts/remote_alpha_upgrade_es.sh nomad-hook takes it back"},
 		{"nomad.env is a link", func(h *upgradeHost) {
 			_ = os.Remove(h.path("etc/nomad.d/nomad.env"))
 			_ = os.Symlink(h.path("etc/execution-substrate/ags.json"), h.path("etc/nomad.d/nomad.env"))
-		}, "nomad_env", "chown root:root and chmod go-w it"},
+		}, "nomad_env", "/etc/nomad.d/nomad.env, which Nomad's unit reads as root, is not a regular file"},
+		// Without the program and the dpkg configuration that takes Nomad's
+		// folders and files back after each package run, as the setup
+		// writes them, the next install or upgrade of the nomad package
+		// gives them to the nomad account (red-team 45, O45-1).
+		{"the take-back program is missing", func(h *upgradeHost) {
+			_ = os.Remove(h.path(nomadTakeBackProgramRel))
+		}, "nomad_package_hook", "/usr/local/sbin/execution-substrate-nomad-take-back is missing: without the program and the dpkg configuration that runs it, the next install or upgrade of the nomad package gives Nomad's folders and files to the nomad account; sudo scripts/remote_alpha_upgrade_es.sh nomad-hook installs them"},
+		{"the dpkg configuration is missing", func(h *upgradeHost) {
+			_ = os.Remove(h.path(nomadDpkgHookRel))
+		}, "nomad_package_hook", "/etc/dpkg/dpkg.cfg.d/execution-substrate-nomad is missing"},
+		{"the take-back program differs from the setup's", func(h *upgradeHost) {
+			data, _ := os.ReadFile(h.path(nomadTakeBackProgramRel))
+			h.write(nomadTakeBackProgramRel, strings.Replace(string(data), "0o700", "0o755", 1), 0o755)
+		}, "nomad_package_hook", "/usr/local/sbin/execution-substrate-nomad-take-back is not what this checkout's scripts/70_linux_setup.sh writes"},
+		{"the dpkg configuration names other folders", func(h *upgradeHost) {
+			data, _ := os.ReadFile(h.path(nomadDpkgHookRel))
+			h.write(nomadDpkgHookRel, strings.ReplaceAll(string(data), "/opt/nomad/data", "/opt/nomad/other"), 0o644)
+		}, "nomad_package_hook", "/etc/dpkg/dpkg.cfg.d/execution-substrate-nomad is not what this checkout's scripts/70_linux_setup.sh writes"},
+		{"the take-back program is writable by its group", func(h *upgradeHost) {
+			_ = os.Chmod(h.path(nomadTakeBackProgramRel), 0o775)
+		}, "nomad_package_hook", "/usr/local/sbin/execution-substrate-nomad-take-back is not root:root 0755"},
+		{"the dpkg configuration belongs to another group", func(h *upgradeHost) {
+			giveAnotherGroup(h.t, h.path(nomadDpkgHookRel))
+		}, "nomad_package_hook", "/etc/dpkg/dpkg.cfg.d/execution-substrate-nomad is not root:root 0644"},
+		{"the take-back program is a link to the setup's text", func(h *upgradeHost) {
+			data, _ := os.ReadFile(h.path(nomadTakeBackProgramRel))
+			h.write("usr/local/lib/take-back", string(data), 0o755)
+			_ = os.Remove(h.path(nomadTakeBackProgramRel))
+			_ = os.Symlink(h.path("usr/local/lib/take-back"), h.path(nomadTakeBackProgramRel))
+		}, "nomad_package_hook", "/usr/local/sbin/execution-substrate-nomad-take-back is a symbolic link"},
+		{"the dpkg configuration's folder is writable by others", func(h *upgradeHost) {
+			_ = os.Chmod(h.path("etc/dpkg/dpkg.cfg.d"), 0o777)
+		}, "nomad_package_hook", "/etc/dpkg/dpkg.cfg.d is not a root:root folder closed to group and others"},
 		{"Nomad's data directory is group-readable", func(h *upgradeHost) {
 			_ = os.Chmod(h.path("opt/nomad/data"), 0o750)
 		}, "nomad_dirs", "/opt/nomad/data is not a root:root 0700 directory"},

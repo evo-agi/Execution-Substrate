@@ -530,7 +530,20 @@ NOMAD_CONFIG_MODE = 0o640  # root:root, as scripts/70_linux_setup.sh writes noma
 # INF-16). ES PR #54's upgrade made these directories root:root with these
 # modes. Nomad's TLS directory goes in the first, root:root 0755 as the
 # setup makes it, and holds exactly the setup's three files.
-NOMAD_DIRS = ((NOMAD_DIR, 0o755), ("/opt/nomad", 0o755), ("/opt/nomad/data", 0o700))
+NOMAD_DATA_DIR = "/opt/nomad/data"
+NOMAD_DIRS = ((NOMAD_DIR, 0o755), ("/opt/nomad", 0o755), (NOMAD_DATA_DIR, 0o700))
+# HashiCorp's package gives /etc/nomad.d, everything in it and the data
+# directory to the nomad account each time it is installed or upgraded (its
+# postinst), and Nomad reads them as root when it next starts.
+# scripts/70_linux_setup.sh installs a program that takes them back, and the
+# dpkg configuration that runs it as root after each dpkg run (its
+# nomad_package_hook region, red-team 45's O45-1). This upgrade requires
+# both, root:root with these modes, as the setup writes them; its nomad-hook
+# command installs them. A test keeps the paths equal to the setup's.
+NOMAD_TAKE_BACK_PROGRAM = "/usr/local/sbin/execution-substrate-nomad-take-back"
+NOMAD_DPKG_HOOK = "/etc/dpkg/dpkg.cfg.d/execution-substrate-nomad"
+NOMAD_PACKAGE_HOOK_FILES = ((NOMAD_TAKE_BACK_PROGRAM, 0o755), (NOMAD_DPKG_HOOK, 0o644))
+NOMAD_HOOK_COMMAND = "sudo scripts/remote_alpha_upgrade_es.sh nomad-hook"
 # Nor may another account keep an ACL on them. HashiCorp's package gives
 # /etc/nomad.d and the data directory to the nomad account, which may set an
 # ACL on a folder while it owns it, and the owner and mode do not show one.
@@ -755,9 +768,10 @@ def root_ids():
 
 
 # The commands that run as root on the host. Each runs code from this
-# checkout as root: this file, and the setup's nomad_tls functions,
-# nomad_acl_setup.sh with nomad_acl.py, and nomad_tls_identity.py next to it.
-CHECKOUT_GUARDED = ("check", "apply", "rollback")
+# checkout as root: this file, and the setup's nomad_tls, nomad_gossip and
+# nomad_package_hook functions, nomad_acl_setup.sh with nomad_acl.py, and
+# nomad_tls_identity.py next to it.
+CHECKOUT_GUARDED = ("check", "apply", "rollback", "nomad-hook")
 
 
 def checkout_owner():
@@ -1515,6 +1529,58 @@ def nomad_gossip(function, *args):
     return run(["bash", "-c", script, "nomad-gossip", function, *args], timeout=60)
 
 
+def nomad_package_hook(function, *args):
+    """Run one of the setup's nomad_package_hook functions as the user
+    running this script: root on the host."""
+    script = "set -euo pipefail\n" + setup_functions("nomad_package_hook") + '"$@"\n'
+    return run(["bash", "-c", script, "nomad-package-hook", function, *args], timeout=120)
+
+
+def nomad_package_hook_text():
+    """What scripts/70_linux_setup.sh writes at each of
+    NOMAD_PACKAGE_HOOK_FILES, for this host's paths."""
+    texts = {}
+    for path, (function, *args) in (
+            (NOMAD_TAKE_BACK_PROGRAM, ("nomad_take_back_program",)),
+            (NOMAD_DPKG_HOOK, ("nomad_dpkg_hook_text", host(NOMAD_TAKE_BACK_PROGRAM), host(NOMAD_DIR), host(NOMAD_DATA_DIR)))):
+        proc = nomad_package_hook(function, *args)
+        if proc.returncode != 0:
+            raise Refusal(f"scripts/70_linux_setup.sh's {function} failed: {(proc.stderr or proc.stdout).strip()[:400]}")
+        texts[path] = proc.stdout.encode()
+    return texts
+
+
+def nomad_package_hook_problems():
+    """Why the program and the dpkg configuration are not as
+    scripts/70_linux_setup.sh writes them on this host, or []."""
+    try:
+        texts = nomad_package_hook_text()
+    except (Refusal, OSError) as exc:
+        return [f"the setup's nomad_package_hook functions cannot be read: {exc}"]
+    problems = []
+    for path, mode in NOMAD_PACKAGE_HOOK_FILES:
+        folder = os.path.dirname(path)
+        try:
+            st = os.lstat(host(folder))
+            if not stat.S_ISDIR(st.st_mode) or not owned_by_root(st) or st.st_mode & 0o022:
+                problems.append(f"{folder} is not a root:root folder closed to group and others ({owner_mode(st)})")
+                continue
+            data, st = read_regular_file(host(path))
+        except FileNotFoundError:
+            problems.append(f"{path} is missing")
+            continue
+        except (Refusal, OSError) as exc:
+            problems.append(str(exc))
+            continue
+        if not owned_by_root(st) or stat.S_IMODE(st.st_mode) != mode:
+            problems.append(f"{path} is not root:root {mode:04o} ({owner_mode(st)})")
+        elif posix_acls(host(path)):
+            problems.append(f"{path} has an ACL ({', '.join(posix_acls(host(path)))})")
+        elif data != texts[path]:
+            problems.append(f"{path} is not what this checkout's scripts/70_linux_setup.sh writes")
+    return problems
+
+
 def server_spki_sha256():
     """The pin: the SHA-256 of the public key in Nomad's server certificate."""
     proc = nomad_tls("nomad_tls_spki_sha256", host(NOMAD_CERT_FILE))
@@ -1849,13 +1915,17 @@ def inspect_host(payload_dir, commit, allow_downgrade=None):
         block("nomad_hcl", str(exc))
     # HashiCorp's package gives nomad.env to the nomad account, as it does
     # everything in /etc/nomad.d; the setup takes it back (re-check 49 of ES
-    # PR #66, O49-2). This upgrade does not, so it refuses one that another
-    # account could change, as it refuses such a nomad.hcl.
+    # PR #66, O49-2), and so does nomad-hook's program. check and apply
+    # change nothing there, so they refuse one that another account could
+    # change, as they refuse such a nomad.hcl.
     try:
         st = os.lstat(host(NOMAD_ENV))
-        if not stat.S_ISREG(st.st_mode) or not owned_by_root(st) or stat.S_IMODE(st.st_mode) & ~0o755:
-            block("nomad_env", f"{NOMAD_ENV}, which Nomad's unit reads as root, is not a regular root:root file "
-                  f"without write for group or others ({owner_mode(st)}); chown root:root and chmod go-w it")
+        if not stat.S_ISREG(st.st_mode):
+            block("nomad_env", f"{NOMAD_ENV}, which Nomad's unit reads as root, is not a regular file "
+                  f"({owner_mode(st)}); remove it")
+        elif not owned_by_root(st) or stat.S_IMODE(st.st_mode) & ~0o755:
+            block("nomad_env", f"{NOMAD_ENV}, which Nomad's unit reads as root, is not root:root without write for "
+                  f"group or others ({owner_mode(st)}); {NOMAD_HOOK_COMMAND} takes it back")
         else:
             acls = posix_acls(host(NOMAD_ENV))
             if acls:
@@ -1864,6 +1934,10 @@ def inspect_host(payload_dir, commit, allow_downgrade=None):
         pass
     except OSError as exc:
         block("nomad_env", str(exc))
+    for problem in nomad_package_hook_problems():
+        block("nomad_package_hook", f"{problem}: without the program and the dpkg configuration that runs it, the "
+              f"next install or upgrade of the nomad package gives Nomad's folders and files to the nomad account; "
+              f"{NOMAD_HOOK_COMMAND} installs them")
     for path, mode in NOMAD_DIRS:
         try:
             st = os.lstat(host(path))
@@ -2667,6 +2741,23 @@ def cmd_rollback(args):
         raise Refusal("after the rollback: " + "; ".join(problems))
 
 
+def cmd_nomad_hook(args):
+    """Install the program that takes Nomad's folders and files back after
+    each dpkg run, and the dpkg configuration that runs it, as
+    scripts/70_linux_setup.sh does on a supported host, and run the program
+    once. It changes nothing else, and running it again writes the same
+    files."""
+    if HOST_ROOT == "/" and not as_root():
+        raise Refusal("run as root (sudo -n)")
+    proc = nomad_package_hook("install_nomad_package_hook", host(NOMAD_TAKE_BACK_PROGRAM), host(NOMAD_DPKG_HOOK),
+                              host(NOMAD_DIR), host(NOMAD_DATA_DIR))
+    for line in proc.stdout.splitlines():
+        say(line)
+    if proc.returncode != 0:
+        raise Refusal(f"the program and its dpkg configuration were not installed, or the program refused: "
+                      f"{(proc.stderr or proc.stdout).strip()[-800:]}")
+
+
 def changeable_refusal(owners, what, problems):
     shown = "; ".join(problems[:20])
     more = f" (and {len(problems) - 20} more)" if len(problems) > 20 else ""
@@ -2910,6 +3001,9 @@ def main(argv):
     rb = sub.add_parser("rollback")
     rb.add_argument("--backup-dir", required=True)
     rb.set_defaults(func=cmd_rollback)
+
+    nh = sub.add_parser("nomad-hook")
+    nh.set_defaults(func=cmd_nomad_hook)
 
     bd = sub.add_parser("build")
     bd.add_argument("--out", required=True)

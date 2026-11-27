@@ -85,6 +85,12 @@ func TestRemoteAlphaUpgradeESRefusesANomadFolderWithAnACL(t *testing.T) {
 		{"nomad.env has an access ACL", func(h *upgradeHost) {
 			setACL(h, "etc/nomad.d/nomad.env", "system.posix_acl_access")
 		}, "nomad_env", "/etc/nomad.d/nomad.env has an ACL (system.posix_acl_access; setfacl -b -k /etc/nomad.d/nomad.env removes it)", false},
+		{"the take-back program has an access ACL", func(h *upgradeHost) {
+			setACL(h, "usr/local/sbin/execution-substrate-nomad-take-back", "system.posix_acl_access")
+		}, "nomad_package_hook", "/usr/local/sbin/execution-substrate-nomad-take-back has an ACL (system.posix_acl_access)", false},
+		{"the dpkg configuration has an access ACL", func(h *upgradeHost) {
+			setACL(h, "etc/dpkg/dpkg.cfg.d/execution-substrate-nomad", "system.posix_acl_access")
+		}, "nomad_package_hook", "/etc/dpkg/dpkg.cfg.d/execution-substrate-nomad has an ACL (system.posix_acl_access)", false},
 		{"Nomad's server folder has a default ACL", func(h *upgradeHost) {
 			setACL(h, "opt/nomad/data/server", "system.posix_acl_default")
 		}, "shape", "Nomad's gossip keyring: /opt/nomad/data/server has an ACL (system.posix_acl_default; setfacl -b -k /opt/nomad/data/server removes it)", false},
