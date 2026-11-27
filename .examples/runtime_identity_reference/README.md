@@ -98,4 +98,8 @@ contract.
 Optional:
 
 - `REFERENCE_SECRET_PATH`
-- `REFERENCE_VAULT_INSECURE_SKIP_VERIFY=1`
+- `REFERENCE_VAULT_INSECURE_SKIP_VERIFY=1`, which turns off the TLS check of the
+  workload's Vault connection. ES refuses this key from a caller, as it does any
+  key that ends in `INSECURE_SKIP_VERIFY`
+  (`.docs/execution_lifecycle/contracts.md`, section 5), so it applies only when
+  you run the entrypoint yourself outside ES.

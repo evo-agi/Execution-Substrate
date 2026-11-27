@@ -374,6 +374,8 @@ func publishSubmitArtifactArchive(t *testing.T, stack *submitStack, archive []by
 type publishSubmitArtifactOptions struct {
 	environmentVariables []string
 	networkAccess        bool
+	// mountTargets, when set, is the artifact's signed mount_targets list.
+	mountTargets []string
 }
 
 func publishSubmitArtifactArchiveWithOptions(t *testing.T, stack *submitStack, archive []byte, opts publishSubmitArtifactOptions) {
@@ -397,10 +399,7 @@ func publishSubmitArtifactArchiveWithOptions(t *testing.T, stack *submitStack, a
 			"build_log_digest": labeledDigest("ee"),
 		},
 		"admission": map[string]any{
-			"runtime": map[string]any{
-				"environment_variables": environmentVariables,
-				"required_capabilities": []string{},
-			},
+			"runtime": submitArtifactRuntimeInterface(environmentVariables, opts.mountTargets),
 			"access": map[string]any{
 				"network_access": opts.networkAccess,
 			},
