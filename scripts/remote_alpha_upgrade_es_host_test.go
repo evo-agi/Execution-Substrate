@@ -490,6 +490,12 @@ s="$FAKE_STATE"
 echo "tls-identity $1 $3" >> "$s/calls.log"
 [[ "$1" == check && "$3" == https://127.0.0.1:4646 ]] || exit 2
 [[ -e "$s/identity-fails" ]] && { echo "nomad tls: Nomad's server key does not match nomad.server_spki_sha256" >&2; exit 1; }
+# identity-fails-after-first: the first check holds (apply's own look at the
+# host), and every later one fails.
+if [[ -e "$s/identity-fails-after-first" ]]; then
+  [[ -e "$s/identity-checked" ]] && { echo "nomad tls: Nomad's server key does not match nomad.server_spki_sha256" >&2; exit 1; }
+  touch "$s/identity-checked"
+fi
 [[ -e "$s/tls" && ! -e "$s/inactive-nomad" ]] || { echo "nomad tls: no TLS 1.3 connection to $3" >&2; exit 1; }
 read -r base ca pin < <(python3 -I -c 'import json, sys
 n = json.load(open(sys.argv[1]))["nomad"]
@@ -511,8 +517,9 @@ echo "docker $*" >> "$s/calls.log"
 # after-check names what something else does to the host once the check has
 # listed the allocations, before apply reads the host again: keyring-loose
 # writes a keyring that others can read, keyring-sound a sound one,
-# keyring-taken moves the keyring into this fake's state, and tls-dir makes
-# Nomad's TLS directory. The host must be the test's own (a t.TempDir()
+# keyring-taken moves the keyring into this fake's state, tls-dir makes
+# Nomad's TLS directory, and es-json-key adds the key http.extra to es.json
+# in place. The host must be the test's own (a t.TempDir()
 # under the test's folder), and nothing is deleted.
 if [[ -e "$s/after-check" && "${FAKE_HOST_ROOT:-}" =~ /[0-9]{3}$ && "$(basename "$(dirname "$FAKE_HOST_ROOT")")" == Test* ]]; then
   keyring="$FAKE_HOST_ROOT/opt/nomad/data/server/serf.keyring"
@@ -522,6 +529,10 @@ if [[ -e "$s/after-check" && "${FAKE_HOST_ROOT:-}" =~ /[0-9]{3}$ && "$(basename 
     keyring-sound) install -m 0600 "$s/after-check-keyring" "$keyring" ;;
     keyring-taken) [[ -f "$keyring" && ! -L "$keyring" ]] && mv "$keyring" "$s/keyring-taken" ;;
     tls-dir) mkdir "$FAKE_HOST_ROOT/etc/nomad.d/tls" ;;
+    es-json-key) python3 -I -c 'import json, sys
+d = json.load(open(sys.argv[1]))
+d["http"]["extra"] = 1
+open(sys.argv[1], "w").write(json.dumps(d, indent=2) + "\n")' "$FAKE_HOST_ROOT/etc/execution-substrate/es.json" ;;
   esac
   mv "$s/after-check" "$s/after-check-done"
 fi

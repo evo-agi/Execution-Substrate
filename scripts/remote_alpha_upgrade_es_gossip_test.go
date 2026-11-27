@@ -329,6 +329,35 @@ func TestRemoteAlphaUpgradeESRollsBackTheGossipKeyring(t *testing.T) {
 	}
 }
 
+// Audit 47, O47-2: apply's own rollback of an https host checks ES's es.json
+// against the running Nomad too, and reports the host unhealthy when it
+// does not hold.
+func TestRemoteAlphaUpgradeESChecksTLSAfterRollingBackAnHTTPSHost(t *testing.T) {
+	helper := buildESConfigCheck(t)
+	h := newUpgradeHost(t, helper)
+	h.toHTTPSWithoutKeyring(previousESCommit)
+	before := h.snapshot()
+	h.mark("identity-fails-after-first", "")
+	stdout, stderr, code := h.apply()
+	if code != 1 || !strings.Contains(stderr, "apply failed; result rolled_back_unhealthy;") {
+		t.Fatalf("apply exited %d\nstdout %s\nstderr %s", code, stdout, stderr)
+	}
+	assertRestored(t, before, h.snapshot())
+	// One look before the changes, one after them, one after the rollback.
+	calls := h.calls("tls-identity")
+	if len(calls) != 3 || calls[0] != "tls-identity check https://127.0.0.1:4646" || calls[1] != calls[0] || calls[2] != calls[0] {
+		t.Fatalf("tls-identity calls %v", calls)
+	}
+	_, summary := readSummary(t, h)
+	afterRollback, _ := summary["after_rollback"].(map[string]any)
+	if summary["result"] != "rolled_back_unhealthy" || afterRollback == nil ||
+		!strings.Contains(fmt.Sprint(afterRollback["problems"]), "ES's Nomad TLS settings do not hold against the running Nomad: nomad tls: Nomad's server key does not match nomad.server_spki_sha256") ||
+		!strings.Contains(fmt.Sprint(afterRollback["nomad_tls_identity"]), "does not match nomad.server_spki_sha256") {
+		t.Fatalf("summary result %v, after_rollback %v", summary["result"], summary["after_rollback"])
+	}
+	noSecretsInOutputOrCalls(t, h, stdout+stderr)
+}
+
 func TestRemoteAlphaUpgradeESRefusesAGossipKeyringItDidNotExpect(t *testing.T) {
 	helper := buildESConfigCheck(t)
 	writeKeyring := func(h *upgradeHost, text string, mode os.FileMode) { h.write(hostGossipKeyring, text, mode) }
@@ -416,6 +445,43 @@ func TestRemoteAlphaUpgradeESRefusesAGossipKeyringItDidNotExpect(t *testing.T) {
 // that appears, turns unsound or goes away on either start, and on a
 // locked-http host a TLS directory that appears. The fake docker makes the
 // change once the check has listed the allocations.
+// es.json is read again after the backup; one that gained a key since the
+// check is refused there by the key-path check of a locked-http host's
+// es.json (START_ES_PATHS), and the backup is put back. Like nomad.hcl
+// (audit 41, O41-2), es.json is not compared with what the check read
+// before the backup.
+func TestRemoteAlphaUpgradeESRollsBackWhenESConfigGainsAKeyAfterCheck(t *testing.T) {
+	helper := buildESConfigCheck(t)
+	h := newUpgradeHost(t, helper)
+	before := h.snapshot()
+	h.mark("after-check", "es-json-key")
+	stdout, stderr, code := h.apply()
+	if code != 1 || !strings.Contains(stderr, "apply failed; result rolled_back;") {
+		t.Fatalf("apply exited %d\nstdout %s\nstderr %s", code, stdout, stderr)
+	}
+	if h.marked("after-check") || !h.marked("after-check-done") {
+		t.Fatal("the check did not list the allocations")
+	}
+	_, summary := readSummary(t, h)
+	if summary["result"] != "rolled_back" ||
+		!strings.Contains(fmt.Sprint(summary["failure"]), "es.json's keys differ from the build this upgrade was written for: unexpected ['http.extra']") {
+		t.Fatalf("summary result %v, failure %v", summary["result"], summary["failure"])
+	}
+	if h.marked("tls") || !h.marked("locked") {
+		t.Fatalf("after the rollback: tls %v, locked %v", h.marked("tls"), h.marked("locked"))
+	}
+	// The host is as it was, but for the change itself, which the backup
+	// holds and the rollback put back.
+	const esConfig = "etc/execution-substrate/es.json"
+	if !strings.Contains(mustRead(t, h.path(esConfig)), `"extra": 1`) {
+		t.Fatal("the rollback did not put back the es.json the backup holds")
+	}
+	after := h.snapshot()
+	delete(before, esConfig)
+	delete(after, esConfig)
+	assertRestored(t, before, after)
+}
+
 func TestRemoteAlphaUpgradeESRefusesAHostThatChangedAfterCheck(t *testing.T) {
 	helper := buildESConfigCheck(t)
 	soundKeyring := `["` + base64.StdEncoding.EncodeToString(make([]byte, 32)) + `"]`

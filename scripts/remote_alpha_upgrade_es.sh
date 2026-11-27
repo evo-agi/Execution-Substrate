@@ -74,6 +74,18 @@ def problems_of(path, folder, sticky_helps):
     return found
 
 
+# backup and restore are steps of apply and rollback: restore puts back any
+# backup with no rollback check and no record (audit 47, O47-1). The first
+# word that names a command of the upgrade is the command (only the test
+# option --host-root and its value can come before it).
+command = None
+for word in args:
+    if word in ("build", "check", "apply", "rollback", "backup", "restore", "migrate-config", "provision-key"):
+        command = word
+        break
+if command in ("backup", "restore"):
+    refuse(command + " is a step of apply and rollback, not a command of this script; use rollback --backup-dir <dir>")
+
 try:
     here = os.getcwd()
 except OSError as exc:

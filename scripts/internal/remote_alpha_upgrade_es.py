@@ -67,6 +67,7 @@ import hashlib
 import json
 import os
 import pwd
+import re
 import shutil
 import signal
 import stat
@@ -1811,11 +1812,21 @@ def acl_files():
             ("observer-token", user_ids(OBSERVER_USER)[0], 0o400))
 
 
+def es_config_target(doc, shape, pin):
+    """(es.json, changes): the es.json apply installs on a host whose es.json
+    doc is in shape "locked-http" or "https", with pin the server key's
+    SHA-256. check and apply both take it from here, so a step that adds
+    keys to es.json is written once."""
+    if shape == "locked-http":
+        return migrate_config(doc, pin, START_ES_PATHS)
+    return migrate_config(doc, pin)
+
+
 def inspect_start(report, block, payload_dir, prov):
     """The checks of a locked-http host, which apply will change."""
     def migrate():
         data, _ = read_regular_file(host(ES_CONFIG))
-        return migrate_config(json.loads(data), PLACEHOLDER_PIN, START_ES_PATHS)
+        return es_config_target(json.loads(data), "locked-http", PLACEHOLDER_PIN)
 
     inspect_ahead(report, block, payload_dir, prov, migrate, nomad_http_addr())
     report["changes"] = [
@@ -1837,7 +1848,7 @@ def inspect_https(report, block, payload_dir, prov, pin, forms):
 
     def migrate():
         data, _ = read_regular_file(host(ES_CONFIG))
-        return migrate_config(json.loads(data), pin)
+        return es_config_target(json.loads(data), "https", pin)
 
     inspect_ahead(report, block, payload_dir, prov, migrate, None)
     changes = []
@@ -1946,6 +1957,14 @@ CREATED_MANIFEST = "created.json"
 # What apply writes into its backup before it changes anything: the move it
 # makes (inspect_move's report).
 MOVE_RECORD = "move.json"
+# The names of the folders in BACKUP_ROOT when apply made the backup, so a
+# rollback can tell which backups were made after the one it puts back,
+# whatever the clock said (audit 47, A47-1).
+EARLIER_BACKUPS = "earlier.json"
+# Written into a backup once a rollback (rollback's or apply's own) has put
+# its files back and removed what its apply created.
+RESTORED_RECORD = "restored-{at}-{pid}.json"
+RESTORED_RECORD_NAME = re.compile(r"restored-\d{8}T\d{6}Z-\d+\.json")
 
 
 def backup_host(commit, created):
@@ -1958,8 +1977,11 @@ def backup_host(commit, created):
     for path in created:
         if os.path.lexists(host(path)):
             raise Refusal(f"{path} exists already; nothing was changed")
-    backup_dir = os.path.join(backup_root_ready(), time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()) + "-" + commit[:12])
+    root = backup_root_ready()
+    earlier = sorted(name for name in os.listdir(root) if stat.S_ISDIR(os.lstat(os.path.join(root, name)).st_mode))
+    backup_dir = os.path.join(root, time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()) + "-" + commit[:12])
     backup_files(backup_dir, [host(p) for p in (ES_CONFIG, ES_BINARY, RUNTIME_SUPPORT, NOMAD_HCL)])
+    write_new_file(os.path.join(backup_dir, EARLIER_BACKUPS), json.dumps(earlier, indent=2) + "\n")
     write_new_file(os.path.join(backup_dir, CREATED_MANIFEST), json.dumps(list(created), indent=2) + "\n")
     return backup_dir
 
@@ -2254,6 +2276,52 @@ def rollback_move(backup_dir, manifest):
     return move, problems
 
 
+def later_backups_not_put_back(backup_dir):
+    """The problems that make backup_dir other than the newest backup still
+    in effect (audit 47, A47-1): it must be a folder of BACKUP_ROOT, and each
+    backup apply made while it was there (whose EARLIER_BACKUPS names it)
+    must have been put back since (it holds a RESTORED_RECORD). Builds are
+    reproducible, so a later apply of the same commit installs bytes equal
+    to an older backup's staged payload, and rollback_move alone would take
+    that older backup. A folder without EARLIER_BACKUPS was made by an
+    earlier version of this script (ES PR #60's or #54's), before any backup
+    this one makes, or by an apply cut off before it changed anything."""
+    root = host(BACKUP_ROOT)
+    name = os.path.basename(os.path.realpath(backup_dir))
+    if os.path.dirname(os.path.realpath(backup_dir)) != os.path.realpath(root):
+        return [f"it is not a folder of {BACKUP_ROOT}, so the backups made after it cannot be told"]
+    problems = []
+    for other in sorted(os.listdir(root)):
+        path = os.path.join(root, other)
+        if other == name or not stat.S_ISDIR(os.lstat(path).st_mode):
+            continue
+        try:
+            data, _ = read_regular_file(os.path.join(path, EARLIER_BACKUPS))
+            earlier = json.loads(data)
+            if not isinstance(earlier, list) or not all(isinstance(entry, str) for entry in earlier):
+                raise ValueError("not a list of names")
+        except FileNotFoundError:
+            continue
+        except (Refusal, OSError, ValueError) as exc:
+            problems.append(f"{os.path.join(path, EARLIER_BACKUPS)} cannot be read ({exc})")
+            continue
+        if name in earlier and not any(RESTORED_RECORD_NAME.fullmatch(entry) and
+                                       stat.S_ISREG(os.lstat(os.path.join(path, entry)).st_mode)
+                                       for entry in os.listdir(path)):
+            problems.append(f"{path} was made after it, and that apply has not been put back "
+                            f"(no {RESTORED_RECORD.format(at='<UTC>', pid='<pid>')} in it)")
+    return problems
+
+
+def record_restored(backup_dir, by):
+    """Write, into a new file in backup_dir, that its files are back and
+    what its apply created is removed. Returns a line for the log."""
+    at = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    path = os.path.join(backup_dir, RESTORED_RECORD.format(at=at, pid=os.getpid()))
+    write_new_file(path, json.dumps({"at": at, "by": by}, indent=2, sort_keys=True) + "\n")
+    return f"put back, recorded in {path}"
+
+
 def record_rollback(backup_dir, move, by):
     """Write the record of a rollback of backup_dir (rollback_move's move),
     with what started it (by: "rollback", or "apply" rolling itself back),
@@ -2280,6 +2348,7 @@ def restore_host(backup_dir, log, by):
     created = load_created(backup_dir)
     if by == "rollback":
         move, problems = rollback_move(backup_dir, manifest)
+        problems = later_backups_not_put_back(backup_dir) + problems
         if problems:
             raise Refusal(f"{backup_dir} is not the backup of the apply that left the host as it is: "
                           + "; ".join(problems) + "; put back the newest backup first; nothing was changed")
@@ -2301,6 +2370,11 @@ def restore_host(backup_dir, log, by):
     result = restore_files(backup_dir)
     result["removed"] = remove_created(created)
     log(f"files restored from {backup_dir}; removed {result['removed']}")
+    try:
+        log(record_restored(backup_dir, by))
+    except OSError as exc:
+        log(f"that the backup is put back could not be recorded ({exc}); a rollback of an earlier backup "
+            "is refused until this one is put back again")
     run(["systemctl", "start", "nomad"], timeout=120, check=True)
     addr = live_nomad_addr()
     leader = bool(wait_for(lambda: nomad_leader_named(addr), LEADER_WAIT_SECONDS))
@@ -2315,11 +2389,23 @@ def restore_host(backup_dir, log, by):
 
 
 def health_after_restore():
+    """(problems, details) after a restore: ES's and AGS's endpoints must
+    answer 200 and, when the restored nomad.hcl serves HTTPS, ES's es.json
+    must hold against the running Nomad (tls_identity_check), since ES's
+    /health does not ask Nomad (audit 47, O47-2)."""
     try:
-        ok = wait_for(lambda: healthy(service_health()), ES_WAIT_SECONDS)
-        return bool(ok), {"services": services_active(), "health": service_health()}
+        problems = []
+        if not wait_for(lambda: healthy(service_health()), ES_WAIT_SECONDS):
+            problems.append("ES and AGS do not all answer 200")
+        details = {"services": services_active(), "health": service_health()}
+        if live_nomad_addr() == nomad_https_addr():
+            ok, details["nomad_tls_identity"] = tls_identity_check()
+            if not ok:
+                problems.append("ES's Nomad TLS settings do not hold against the running Nomad: "
+                                + details["nomad_tls_identity"])
+        return problems, details
     except Exception as exc:  # noqa: BLE001 - reported, never raised
-        return False, {"error": str(exc)}
+        return [str(exc)], {"error": str(exc)}
 
 
 class Interrupted(Exception):
@@ -2433,12 +2519,11 @@ def cmd_apply(args):
             log("es stopped")
             if shape == "locked-http":
                 pin = apply_nomad_tls(log)
-                migrated, _ = migrate_config(config, pin, START_ES_PATHS)
             else:
                 pin = server_spki_sha256()
                 if keyring_absent:
                     apply_nomad_gossip(log)
-                migrated, _ = migrate_config(config, pin)
+            migrated, _ = es_config_target(config, shape, pin)
             install_es(stage_dir, migrated, log)
             run(["systemctl", "start", "es"], timeout=120, check=True)
             log("es started")
@@ -2459,8 +2544,10 @@ def cmd_apply(args):
             report["result"] = "rollback_failed"
             report["rollback_failure"] = repr(rexc)
         else:
-            ok, report["after_rollback"] = health_after_restore()
-            report["result"] = "rolled_back" if ok else "rolled_back_unhealthy"
+            problems, report["after_rollback"] = health_after_restore()
+            if problems:
+                report["after_rollback"]["problems"] = problems
+            report["result"] = "rolled_back_unhealthy" if problems else "rolled_back"
         report["output_lost"] = OUTPUT["lost"]
         write_summary(summary_path, report)
         say(json.dumps(report, indent=2, sort_keys=True))
@@ -2476,10 +2563,10 @@ def cmd_rollback(args):
     # A terminal that hangs up must not break off a restore halfway.
     signal.signal(signal.SIGHUP, signal.SIG_IGN)
     result = restore_host(args.backup_dir, say, "rollback")
-    ok, after = health_after_restore()
+    problems, after = health_after_restore()
     say(json.dumps({"restored": result, "after": after}, indent=2, sort_keys=True))
-    if not ok:
-        raise Refusal("ES and AGS do not all answer 200 after the rollback")
+    if problems:
+        raise Refusal("after the rollback: " + "; ".join(problems))
 
 
 def changeable_refusal(owners, what, problems):

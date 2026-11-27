@@ -542,8 +542,9 @@ leaves the TLS material, `nomad.hcl` and `es.json` as they are and gives
 Nomad a gossip keyring if it has none. It moves ES only forward along the
 clone's history, unless root names a move that is not forward on the
 command line (`--allow-downgrade <installed>..<commit>`), which it records;
-`rollback` puts back only the backup of the apply that left the installed
-ES builds as they are, and records that too.
+`rollback` puts back only the newest backup still in effect (each backup
+made after it put back since, and the installed ES builds those its own
+apply left), and records that too.
 On a box it already moved it only verifies; it refuses any other host shape
 and names what each part looks like; see `.docs/system_overview/remote_supported_host_alpha.md`,
 section "Remote ES Upgrade And Nomad HTTPS".

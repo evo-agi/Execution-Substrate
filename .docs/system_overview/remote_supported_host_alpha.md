@@ -7383,6 +7383,10 @@ Operator interface:
 - `sudo scripts/remote_alpha_upgrade_es.sh rollback --backup-dir <dir>`
   puts back the backup of the apply that left the host as it is (below).
 
+`backup` and `restore` are steps of `apply` and `rollback`, not commands:
+the wrapper refuses them, since `restore` would put back any backup without
+the rollback's checks or its record.
+
 `check` and `apply` take their options only by their full names, so that
 no prefix stands in for `--allow-downgrade`.
 
@@ -7516,16 +7520,36 @@ payload's builds installed already, so they never put another commit's
 builds in place of the installed ones; only a checkout of an earlier,
 unmerged revision of the change that brought this check could.
 
-`rollback` puts back only the backup of the apply that left the installed
-ES binaries as they are: each of `es` and `es-runtime-support` must be,
-byte for byte, either the backup's own copy (that apply stopped before it
-replaced the file, or the backup was put back already) or the copy of the
-payload that apply staged in the backup (it installed that copy). Any other
-backup is refused before a service stops, with nothing changed: an older
-backup after a later apply, a backup after builds were put in place without
-this script, or one whose staged payload is gone, since putting it back
-would move ES to another build without the move check. Put back the newest
-backup first, then the one before it. Each rollback, by `rollback` or by
+`rollback` puts back only the newest backup still in effect, the backup of
+the apply that left the host as it is. Two rules decide it, both before a
+service stops; a backup that fails either is refused with nothing changed
+and nothing recorded:
+
+- Every backup `apply` made after it has been put back since. `apply` lists,
+  in each new backup's `earlier.json`, the folders the backup folder held
+  then, and each rollback writes `restored-<UTC time>-<pid>.json` into its
+  backup once the files are back and what that apply created is removed
+  (only a regular file of that name counts). So
+  the backup must be a folder of `/var/backups/execution-substrate-es-upgrade`,
+  and the order does not rest on the clock. Builds are reproducible, so
+  without this rule a later apply of the same commit would leave bytes equal
+  to an older backup's staged payload, and putting that older backup back
+  would leave `es.json` pinning a key Nomad no longer has. A folder without
+  `earlier.json` was made by an earlier version of this script (ES PR #60's
+  backup on the box) or by an apply cut off before it changed anything. If
+  the `restored-` record cannot be written the rollback goes on and says
+  so; an earlier backup then stays refused until this one is put back again.
+- Each of `es` and `es-runtime-support` is, byte for byte, either the
+  backup's own copy (that apply stopped before it replaced the file, or the
+  backup was put back already) or the copy of the payload that apply staged
+  in the backup (it installed that copy).
+
+So these are refused: an older backup while a later apply is in effect, a
+backup after builds were put in place without this script, and one whose
+staged payload is gone, since putting it back would move ES to another
+build without the move check. Put back the newest backup first, then the
+one before it. A backup may be put back again, for example after a rollback
+that was cut off. Each rollback, by `rollback` or by
 `apply` putting back its own backup, is recorded in that backup before a
 service stops, in a new `rollback-<UTC time>-<pid>.json`: what each
 installed binary is (`the backup's copy`, `the payload its apply
@@ -7690,7 +7714,10 @@ that of an `https` one), because ES's `/health` does not ask Nomad. Nomad
 starts without the keyring it removed, so its gossip is plain again, as it
 was before `apply`; a single server has no peer that still needs the
 key. It records `rolled_back`, `rolled_back_unhealthy` when the endpoints
-do not answer 200 within 60 seconds, or `rollback_failed`, with the failure.
+do not answer 200 within 60 seconds or, when the restored `nomad.hcl` serves
+HTTPS, when `scripts/internal/nomad_tls_identity.py check` finds that the
+restored `es.json` does not hold against the running Nomad, or
+`rollback_failed`, with the failure.
 `rollback` does the same from a backup folder, after the check and the
 record above, ignoring `SIGHUP`, and exits 1 on any of those failures. It refuses a backup of ES PR #54's upgrade
 (schema v1), which the script at `16cbf739` restores. Output that can no
@@ -7699,9 +7726,10 @@ longer be written never stops either one: a terminal that hangs up sends
 so `apply` goes on with its output sent to `/dev/null`; the summary records
 `output_lost` either way. Under `systemd-run`, give the unit
 `KillMode=mixed` and a long `TimeoutStopSec`, so that stopping the unit
-signals `apply` alone and leaves it time to roll back, and pass it
-`SUDO_USER` (`--setenv=SUDO_USER=$SUDO_USER`), so that the records name
-who started it. Neither changes the
+signals `apply` alone and leaves it time to roll back, and pass it the
+operator's name as `SUDO_USER` from the operator's own shell
+(`--setenv=SUDO_USER="$(id -un)"`; `$SUDO_USER` there would be expanded by
+that shell, which has none), so that the records name who started it. Neither changes the
 key, the token files or Nomad's ACL policies back: the policies stay as
 `provision` last wrote them, and the observer's `list-jobs` is a read.
 So after a rollback, `nomad_acl_setup.sh check` from the checkout of

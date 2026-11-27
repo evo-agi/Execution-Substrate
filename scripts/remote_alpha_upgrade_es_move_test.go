@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The upgrade moves the box's ES only forward along the clone's history: to
@@ -741,10 +742,12 @@ func requireRollback(t *testing.T, h *upgradeHost, backupDir string, installed [
 	}
 	h.env["SUDO_USER"] = "operator"
 	records, _ := filepath.Glob(filepath.Join(backupDir, "rollback-*.json"))
+	restored, _ := filepath.Glob(filepath.Join(backupDir, "restored-*.json"))
 	stdout, stderr, code := h.run("rollback", "--backup-dir", backupDir)
 	if code != 0 {
 		t.Fatalf("rollback exited %d\nstdout %s\nstderr %s", code, stdout, stderr)
 	}
+	requireRestoredRecord(t, backupDir, restored, "rollback", stdout)
 	requireListedAtStop(t, backupsAtStops(t, h), 0, "es", backupDir, "rollback-*.json")
 	// The new record is the one name that was not there before: two
 	// rollbacks in one second sort by their pids, not by when they ran.
@@ -785,6 +788,61 @@ func requireRollback(t *testing.T, h *upgradeHost, backupDir string, installed [
 	if !strings.Contains(stdout, said) {
 		t.Fatalf("rollback did not say %q:\n%s", said, stdout)
 	}
+}
+
+// requireRestoredRecord fails unless backupDir holds one restored-*.json
+// more than the names in before, written by by, and output says so.
+func requireRestoredRecord(t *testing.T, backupDir string, before []string, by, output string) {
+	t.Helper()
+	after, _ := filepath.Glob(filepath.Join(backupDir, "restored-*.json"))
+	var added []string
+	for _, name := range after {
+		if !slices.Contains(before, name) {
+			added = append(added, name)
+		}
+	}
+	if len(added) != 1 || len(after) != len(before)+1 {
+		t.Fatalf("restored records before %q, after %q", before, after)
+	}
+	path := added[0]
+	if !regexp.MustCompile(`/restored-\d{8}T\d{6}Z-\d+\.json$`).MatchString(path) || modeOf(t, path) != 0o600 {
+		t.Fatalf("restored record %s, mode %v", path, modeOf(t, path))
+	}
+	var record map[string]any
+	if err := json.Unmarshal([]byte(mustRead(t, path)), &record); err != nil {
+		t.Fatal(err)
+	}
+	if at, _ := record["at"].(string); record["by"] != by || len(record) != 2 || !strings.Contains(path, "restored-"+at+"-") {
+		t.Fatalf("restored record %v, want by %q and its time", record, by)
+	}
+	if !strings.Contains(output, "put back, recorded in "+path) {
+		t.Fatalf("the rollback did not say it recorded %s:\n%s", path, output)
+	}
+}
+
+// requireEarlierBackups fails unless backupDir's earlier.json names exactly
+// the folders in want (by base name), sorted by name as apply writes them
+// (two backups made in one second sort by their commits).
+func requireEarlierBackups(t *testing.T, backupDir string, want ...string) {
+	t.Helper()
+	var names []string
+	if err := json.Unmarshal([]byte(mustRead(t, filepath.Join(backupDir, "earlier.json"))), &names); err != nil {
+		t.Fatal(err)
+	}
+	var bases []string
+	for _, dir := range want {
+		bases = append(bases, filepath.Base(dir))
+	}
+	slices.Sort(bases)
+	if fmt.Sprint(names) != fmt.Sprint(bases) || modeOf(t, filepath.Join(backupDir, "earlier.json")) != 0o600 {
+		t.Fatalf("%s/earlier.json names %q, want %q", backupDir, names, bases)
+	}
+}
+
+// waitForTheNextSecond returns once the UTC second has moved on, so that
+// two applies of one commit do not name the same backup folder.
+func waitForTheNextSecond() {
+	time.Sleep(time.Until(time.Now().Truncate(time.Second).Add(time.Second + 10*time.Millisecond)))
 }
 
 func TestRemoteAlphaUpgradeESRollsBackOnlyTheApplyThatLeftTheHost(t *testing.T) {
@@ -849,6 +907,248 @@ func TestRemoteAlphaUpgradeESRollsBackOnlyTheApplyThatLeftTheHost(t *testing.T) 
 		assertRestored(t, afterFirst, h.snapshot())
 		requireRollback(t, h, first, [2]string{staged, staged}, named, box)
 		assertRestored(t, before, h.snapshot())
+	})
+
+	// Audit 47, A47-1: builds are reproducible, so after B1 and B2 were put
+	// back, a new apply B3 of B2's commit installs bytes equal to B2's
+	// staged payload. B2 is still refused while B3 is in effect, whatever
+	// the folders' names say: putting it back would leave B2's es.json
+	// pinning a key that B3's new TLS material replaced.
+	t.Run("an older backup whose payload a later apply installed again", func(t *testing.T) {
+		h, before, first := applied(t)
+		afterFirst := h.snapshot()
+		requireEarlierBackups(t, first)
+		h.payload, h.commit = secondPayload(t, h, newerESCommit), newerESCommit
+		if stdout, stderr, code := h.apply(); code != 0 {
+			t.Fatalf("the later apply exited %d\nstdout %s\nstderr %s", code, stdout, stderr)
+		}
+		later := func(known ...string) string {
+			t.Helper()
+			for _, dir := range backupDirs(t, h) {
+				if !slices.Contains(known, dir) {
+					return dir
+				}
+			}
+			t.Fatalf("no new backup among %v", backupDirs(t, h))
+			return ""
+		}
+		second := later(first)
+		requireEarlierBackups(t, second, first)
+		requireRollback(t, h, second, [2]string{staged, staged}, newer, named)
+		assertRestored(t, afterFirst, h.snapshot())
+		requireRollback(t, h, first, [2]string{staged, staged}, named, box)
+		assertRestored(t, before, h.snapshot())
+		waitForTheNextSecond()
+		if stdout, stderr, code := h.apply(); code != 0 {
+			t.Fatalf("the apply of the same commit again exited %d\nstdout %s\nstderr %s", code, stdout, stderr)
+		}
+		third := later(first, second)
+		requireEarlierBackups(t, third, first, second)
+		requireRollbackRefused(t, h, second, third+" was made after it, and that apply has not been put back (no restored-<UTC>-<pid>.json in it)")
+		// The same backup named with a trailing slash.
+		requireRollbackRefused(t, h, second+"/", third+" was made after it, and that apply has not been put back")
+		// Only a regular file counts as the record that a backup is put back.
+		elsewhere := filepath.Join(t.TempDir(), "restored.json")
+		if err := os.WriteFile(elsewhere, []byte("{}\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		notARecord := filepath.Join(third, "restored-20991231T235959Z-1.json")
+		if err := os.Symlink(elsewhere, notARecord); err != nil {
+			t.Fatal(err)
+		}
+		requireRollbackRefused(t, h, second, third+" was made after it, and that apply has not been put back")
+		if err := os.Remove(notARecord); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(notARecord, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		requireRollbackRefused(t, h, second, third+" was made after it, and that apply has not been put back")
+		if err := os.Remove(notARecord); err != nil {
+			t.Fatal(err)
+		}
+		// The order is the one apply recorded, not the folders' names.
+		renamed := filepath.Join(filepath.Dir(third), "19991231T235959Z-"+newerESCommit[:12])
+		if err := os.Rename(third, renamed); err != nil {
+			t.Fatal(err)
+		}
+		requireRollbackRefused(t, h, second, renamed+" was made after it, and that apply has not been put back")
+		if err := os.Rename(renamed, third); err != nil {
+			t.Fatal(err)
+		}
+		// Newest first: B3, then (B2 is now refused by its bytes: the host is
+		// where B1's backup left it, not B2's) B1 again.
+		requireRollback(t, h, third, [2]string{staged, staged}, newer, box)
+		assertRestored(t, before, h.snapshot())
+		requireRollbackRefused(t, h, second, "/usr/local/lib/execution-substrate/bin/es (a build of "+boxESCommit+") is neither")
+		h.clearCalls()
+		requireRollback(t, h, first, [2]string{backed, backed}, box, box)
+		assertRestored(t, before, h.snapshot())
+		if calls := h.calls("tls-identity"); len(calls) != 0 {
+			t.Fatalf("the rollback to a locked-http host checked ES's Nomad TLS settings: %v", calls)
+		}
+	})
+
+	t.Run("a backup outside the backup folder", func(t *testing.T) {
+		h, _, backupDir := applied(t)
+		copied := filepath.Join(t.TempDir(), filepath.Base(backupDir))
+		if out, err := exec.Command("cp", "-a", backupDir, copied).CombinedOutput(); err != nil {
+			t.Fatalf("cp: %v %s", err, out)
+		}
+		requireRollbackRefused(t, h, copied, "host as it is: it is not a folder of /var/backups/execution-substrate-es-upgrade, so the backups made after it cannot be told")
+	})
+
+	t.Run("a later backup whose earlier.json cannot be read", func(t *testing.T) {
+		h, _, backupDir := applied(t)
+		other := filepath.Join(filepath.Dir(backupDir), "20991231T235959Z-"+newerESCommit[:12])
+		if err := os.Mkdir(other, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(other, "earlier.json"), []byte("{}\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		requireRollbackRefused(t, h, backupDir, other+"/earlier.json cannot be read (not a list of names)")
+		if err := os.WriteFile(filepath.Join(other, "earlier.json"), []byte("[7]\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		requireRollbackRefused(t, h, backupDir, other+"/earlier.json cannot be read (not a list of names)")
+		if err := os.WriteFile(filepath.Join(other, "earlier.json"), []byte("[\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		requireRollbackRefused(t, h, backupDir, other+"/earlier.json cannot be read (")
+		if err := os.Remove(filepath.Join(other, "earlier.json")); err != nil {
+			t.Fatal(err)
+		}
+		// A folder without earlier.json is not one this version made after it.
+		requireRollback(t, h, backupDir, [2]string{staged, staged}, named, box)
+	})
+
+	// The record that the backup is put back cannot be written: the
+	// rollback goes on and says so, and an earlier backup stays refused
+	// until this one is put back again.
+	t.Run("a rollback whose restored record cannot be written", func(t *testing.T) {
+		h, before, first := applied(t)
+		afterFirst := h.snapshot()
+		h.payload, h.commit = secondPayload(t, h, newerESCommit), newerESCommit
+		if stdout, stderr, code := h.apply(); code != 0 {
+			t.Fatalf("the later apply exited %d\nstdout %s\nstderr %s", code, stdout, stderr)
+		}
+		var second string
+		for _, dir := range backupDirs(t, h) {
+			if dir != first {
+				second = dir
+			}
+		}
+		stdout, stderr, code := runWithPatchedUpgrade(h, `m.RESTORED_RECORD = "no-such-folder/" + m.RESTORED_RECORD`, "rollback", "--backup-dir", second)
+		if code != 0 || !strings.Contains(stdout, "that the backup is put back could not be recorded (") ||
+			!strings.Contains(stdout, "a rollback of an earlier backup is refused until this one is put back again") {
+			t.Fatalf("rollback exited %d\nstdout %s\nstderr %s", code, stdout, stderr)
+		}
+		assertRestored(t, afterFirst, h.snapshot())
+		requireRollbackRefused(t, h, first, second+" was made after it, and that apply has not been put back")
+		requireRollback(t, h, second, [2]string{backed, backed}, named, named)
+		requireRollback(t, h, first, [2]string{staged, staged}, named, box)
+		assertRestored(t, before, h.snapshot())
+	})
+
+	// Audit 47, O47-2: after the restore of an https host, ES's es.json must
+	// hold against the running Nomad, as after apply.
+	t.Run("an https restore whose es.json does not hold against Nomad", func(t *testing.T) {
+		h, _, first := applied(t)
+		afterFirst := h.snapshot()
+		h.payload, h.commit = secondPayload(t, h, newerESCommit), newerESCommit
+		if stdout, stderr, code := h.apply(); code != 0 {
+			t.Fatalf("the later apply exited %d\nstdout %s\nstderr %s", code, stdout, stderr)
+		}
+		var second string
+		for _, dir := range backupDirs(t, h) {
+			if dir != first {
+				second = dir
+			}
+		}
+		h.mark("identity-fails", "")
+		h.clearCalls()
+		stdout, stderr, code := h.run("rollback", "--backup-dir", second)
+		if code != 1 || !strings.Contains(stderr, "after the rollback: ES's Nomad TLS settings do not hold against the running Nomad: nomad tls: Nomad's server key does not match nomad.server_spki_sha256") {
+			t.Fatalf("rollback exited %d\nstdout %s\nstderr %s", code, stdout, stderr)
+		}
+		if calls := h.calls("tls-identity"); len(calls) != 1 || calls[0] != "tls-identity check https://127.0.0.1:4646" {
+			t.Fatalf("tls-identity calls %v", calls)
+		}
+		// The files are back all the same.
+		assertRestored(t, afterFirst, h.snapshot())
+	})
+
+	// A restore cut off after the files are back but before what apply
+	// created is gone is not recorded as put back, so the backups before it
+	// stay refused until it is put back again.
+	t.Run("a restore cut off before it removed what apply created", func(t *testing.T) {
+		h, before, backupDir := applied(t)
+		tlsDir := h.path("etc/nomad.d/tls")
+		if err := os.Chmod(tlsDir, 0o500); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(tlsDir, 0o700) })
+		stdout, stderr, code := h.run("rollback", "--backup-dir", backupDir)
+		if code != 1 || !strings.Contains(stdout, "es and nomad stopped for the restore") || strings.Contains(stdout, "files restored from") ||
+			!strings.Contains(stderr, "PermissionError") {
+			t.Fatalf("a rollback that could not remove %s exited %d\nstdout %s\nstderr %s", tlsDir, code, stdout, stderr)
+		}
+		if records, _ := filepath.Glob(filepath.Join(backupDir, "restored-*.json")); len(records) != 0 {
+			t.Fatalf("a restore cut off partway is recorded as put back: %v", records)
+		}
+		if err := os.Chmod(tlsDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		stdout, stderr, code = h.run("rollback", "--backup-dir", backupDir)
+		if code != 0 {
+			t.Fatalf("the rollback again exited %d\nstdout %s\nstderr %s", code, stdout, stderr)
+		}
+		requireRestoredRecord(t, backupDir, nil, "rollback", stdout)
+		assertRestored(t, before, h.snapshot())
+	})
+
+	// ES and AGS that do not answer after the rollback fail it, as before
+	// the TLS check joined that step.
+	t.Run("a rollback after which ES does not answer", func(t *testing.T) {
+		h, before, backupDir := applied(t)
+		h.mark("unhealthy", "")
+		stdout, stderr, code := h.run("rollback", "--backup-dir", backupDir)
+		if code != 1 || !strings.Contains(stderr, "after the rollback: ES and AGS do not all answer 200") {
+			t.Fatalf("rollback exited %d\nstdout %s\nstderr %s", code, stdout, stderr)
+		}
+		assertRestored(t, before, h.snapshot())
+	})
+
+	// Audit 47, O47-4 (AUD-1): an installed binary that is missing is
+	// neither copy.
+	t.Run("an installed binary missing", func(t *testing.T) {
+		h, _, backupDir := applied(t)
+		if err := os.Remove(h.path(esPath)); err != nil {
+			t.Fatal(err)
+		}
+		requireRollbackRefused(t, h, backupDir, "host as it is: /usr/local/lib/execution-substrate/bin/es cannot be read (")
+	})
+
+	// Audit 47, O47-4 (AUD-2): a rollback record never replaces a file of
+	// the same name.
+	t.Run("a rollback record's name taken", func(t *testing.T) {
+		h, _, backupDir := applied(t)
+		taken := filepath.Join(backupDir, "rollback-taken.json")
+		if err := os.WriteFile(taken, []byte("kept\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		afterApply := h.snapshot()
+		h.clearCalls()
+		_, stderr, code := runWithPatchedUpgrade(h, `m.ROLLBACK_RECORD = "rollback-taken.json"`, "rollback", "--backup-dir", backupDir)
+		if code != 1 || !strings.Contains(stderr, "the rollback cannot be recorded in "+backupDir+" (") {
+			t.Fatalf("rollback exited %d: %s", code, stderr)
+		}
+		onlyReads(t, h, "a rollback whose record's name is taken")
+		assertRestored(t, afterApply, h.snapshot())
+		if got := mustRead(t, taken); got != "kept\n" {
+			t.Fatalf("the rollback record replaced a file: %q", got)
+		}
 	})
 
 	t.Run("builds put in place without the upgrade", func(t *testing.T) {
@@ -940,6 +1240,7 @@ func TestRemoteAlphaUpgradeESRollsBackOnlyTheApplyThatLeftTheHost(t *testing.T) 
 		if !strings.Contains(fmt.Sprint(summary["events"]), "rollback recorded in "+records[0]) {
 			t.Fatalf("apply did not log its rollback record: %v", summary["events"])
 		}
+		requireRestoredRecord(t, backupDir, nil, "apply", fmt.Sprint(summary["events"]))
 	})
 
 	// A record that cannot be written stops the rollback command before a
@@ -988,11 +1289,18 @@ func TestRemoteAlphaUpgradeESRollsBackOnlyTheApplyThatLeftTheHost(t *testing.T) 
 // so that writing it fails.
 func runWithUnwritableRollbackRecords(h *upgradeHost, args ...string) (string, string, int) {
 	h.t.Helper()
+	return runWithPatchedUpgrade(h, `m.ROLLBACK_RECORD = "no-such-folder/" + m.ROLLBACK_RECORD`, args...)
+}
+
+// runWithPatchedUpgrade runs the upgrade on h as h.run does, after the
+// Python statement patch, which may change the module m.
+func runWithPatchedUpgrade(h *upgradeHost, patch string, args ...string) (string, string, int) {
+	h.t.Helper()
 	code := `import importlib.util, sys
 spec = importlib.util.spec_from_file_location("upgrade", sys.argv[1])
 m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
-m.ROLLBACK_RECORD = "no-such-folder/" + m.ROLLBACK_RECORD
+` + patch + `
 sys.exit(m.main(sys.argv[2:]))`
 	cmd := exec.Command("python3", append([]string{"-I", "-c", code, repoPath(upgradeESPython), "--host-root", h.root}, args...)...)
 	cmd.Dir = h.state

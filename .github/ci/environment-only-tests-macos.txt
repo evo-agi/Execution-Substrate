@@ -110,8 +110,10 @@ execution-substrate/scripts TestRemoteAlphaUpgradeESAddsTheGossipKeyringToAnHTTP
 execution-substrate/scripts TestRemoteAlphaUpgradeESKeepsASoundGossipKeyring
 execution-substrate/scripts TestRemoteAlphaUpgradeESAddsOnlyTheMissingKeyring
 execution-substrate/scripts TestRemoteAlphaUpgradeESRollsBackTheGossipKeyring
+execution-substrate/scripts TestRemoteAlphaUpgradeESChecksTLSAfterRollingBackAnHTTPSHost
 execution-substrate/scripts TestRemoteAlphaUpgradeESRefusesAGossipKeyringItDidNotExpect
 execution-substrate/scripts TestRemoteAlphaUpgradeESRefusesAHostThatChangedAfterCheck
+execution-substrate/scripts TestRemoteAlphaUpgradeESRollsBackWhenESConfigGainsAKeyAfterCheck
 # The move and rollback tests apply on a locked-http host, or move their host to HTTPS
 # with that apply first, in at least one case each. They are listed whole:
 # their cases on a locked-http host that only check pass there.
