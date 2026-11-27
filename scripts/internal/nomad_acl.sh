@@ -119,8 +119,9 @@ PY
 # described by a /v1/agent/self answer enables only the Docker driver and
 # limits the Docker plugin the supported way: privileged containers refused,
 # and only capabilities ES's runtime helper uses (audit INF-02); and serves
-# HTTPS and RPC over TLS 1.3 only, verifying server names. Reading
-# /v1/agent/self needs the observer token.
+# HTTPS and RPC over TLS 1.3 only, verifying server names; and encrypts its
+# gossip, so that no process without the key joins it as a peer (red-team
+# RT60-1). Reading /v1/agent/self needs the observer token.
 nomad_runtime_posture_check() {
   python3 -I - "$1" <<'PY'
 import json
@@ -176,13 +177,21 @@ if not (
         "Nomad must serve HTTPS and RPC over TLS 1.3 only and verify server names "
         '(tls { http = true, rpc = true, tls_min_version = "tls13", verify_server_hostname = true })'
     )
+# Nomad reports "true" or "false", as a string.
+stats = document.get("stats") if isinstance(document.get("stats"), dict) else {}
+serf = stats.get("serf") if isinstance(stats.get("serf"), dict) else {}
+if serf.get("encrypted") != "true":
+    problems.append(
+        "Nomad must encrypt its gossip (a keyring in <data_dir>/server/serf.keyring when it starts, "
+        "as scripts/70_linux_setup.sh writes)"
+    )
 if problems:
     print("nomad: " + "; ".join(problems), file=sys.stderr)
     raise SystemExit(1)
 print(
     "nomad: drivers=docker docker_privileged=refused docker_caps="
     + ",".join(sorted(c.lower() for c in capabilities))
-    + " tls=1.3"
+    + " tls=1.3 gossip=encrypted"
 )
 PY
 }
