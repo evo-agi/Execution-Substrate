@@ -590,7 +590,9 @@ PY
 # opened before. So each such file is copied into a new file that is renamed
 # over the old one, which an old handle no longer reaches. Its contents are
 # kept, so Nomad's config does not change and needs no restart; each
-# take-back is reported, so that the operator can check what the file sets.
+# take-back is reported, so that the operator can check what the file sets;
+# a name that is not plain printable ASCII is shown quoted and escaped, so
+# that it cannot forge a line of the report.
 # An entry with such a name that is neither a regular file nor a folder (a
 # link, say) stops the setup. nomad.hcl is left to nomad_config_write, which
 # writes it new. As there, Nomad does not load the temporary name, and
@@ -605,6 +607,15 @@ import sys
 
 folder = sys.argv[1]
 uid, gid = os.getuid(), os.getgid()
+
+
+def shown(path):
+    # The former owner chose the names: one that is not plain printable
+    # ASCII (a newline, say, which could forge a line of this report) is
+    # shown quoted, with Python's escapes.
+    return path if path.isascii() and path.isprintable() else ascii(path)
+
+
 try:
     for name in sorted(os.listdir(folder)):
         if name == "nomad.hcl" or name.startswith(".#"):
@@ -616,7 +627,7 @@ try:
         if stat.S_ISDIR(st.st_mode):
             continue
         if not stat.S_ISREG(st.st_mode):
-            sys.exit(f"nomad: {path} is not a regular file, and Nomad's unit reads it as root; "
+            sys.exit(f"nomad: {shown(path)} is not a regular file, and Nomad's unit reads it as root; "
                      "remove it, or put a regular file there, and rerun")
         mode = stat.S_IMODE(st.st_mode) & 0o755
         attributes = os.listxattr(path)
@@ -627,7 +638,7 @@ try:
         try:
             opened = os.fstat(source)
             if (opened.st_dev, opened.st_ino) != (st.st_dev, st.st_ino):
-                sys.exit(f"nomad: {path} changed while it was taken back; rerun")
+                sys.exit(f"nomad: {shown(path)} changed while it was taken back; rerun")
             chunks = []
             while chunk := os.read(source, 65536):
                 chunks.append(chunk)
@@ -649,7 +660,7 @@ try:
             os.close(target)
         os.rename(tmp, path)
         was = f"uid {st.st_uid}, gid {st.st_gid}, {stat.S_IMODE(st.st_mode):04o}" + (", with an ACL" if acl else "")
-        print(f"nomad: took {path} back ({was}); Nomad's unit reads it as root, so check what it sets")
+        print(f"nomad: took {shown(path)} back ({was}); Nomad's unit reads it as root, so check what it sets")
 except OSError as error:
     sys.exit(f"nomad: cannot take back the files Nomad reads in {folder}: {error}")
 PY

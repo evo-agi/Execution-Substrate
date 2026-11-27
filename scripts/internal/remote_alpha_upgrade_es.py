@@ -430,14 +430,49 @@ def read_backup_document(backup_dir, name, cut_off):
         raise Refusal(f"{path} cannot be read ({exc}): {cut_off}; nothing was changed") from None
 
 
+BACKUP_COPY_NAME = re.compile(r"[0-9]{2,}-[^/]+")
+BACKUP_FILE_MODE = re.compile(r"[0-7]{4}")
+BACKUP_SHA256 = re.compile(r"[0-9a-f]{64}")
+
+
+def check_backup_manifest(manifest, path):
+    """Refuse a manifest, read from path, that is valid JSON but not the
+    document backup_files writes, naming what is wrong, rather than fail
+    with a traceback on a value of another type (re-check 50 of ES PR #67,
+    O50-1): an object with the schema and a list of files, each an object
+    with its path and whether it existed and, if it did, its copy's name in
+    files/, its digest, size, mode, owner and group."""
+    def refuse(what):
+        raise Refusal(f"{path} is not the manifest apply writes ({what}); nothing was changed")
+
+    if not isinstance(manifest, dict):
+        kind = {list: "list", str: "string", int: "number", float: "number", bool: "boolean"}.get(type(manifest), "null")
+        refuse(f"it is a JSON {kind}, not an object")
+    if manifest.get("schema") != BACKUP_SCHEMA:
+        raise Refusal("the backup manifest has an unknown schema")
+    files = manifest.get("files")
+    if not isinstance(files, list):
+        refuse("its files are not a list")
+    for index, entry in enumerate(files):
+        if not isinstance(entry, dict) or not isinstance(entry.get("path"), str) or type(entry.get("exists")) is not bool:
+            refuse(f"file {index} is not an object with a path and whether it existed")
+        if not entry["exists"]:
+            continue
+        copy, digest, mode = entry.get("copy"), entry.get("sha256"), entry.get("mode")
+        if not (isinstance(copy, str) and BACKUP_COPY_NAME.fullmatch(copy)
+                and isinstance(digest, str) and BACKUP_SHA256.fullmatch(digest)
+                and isinstance(mode, str) and BACKUP_FILE_MODE.fullmatch(mode)
+                and all(type(entry.get(key)) is int and entry[key] >= 0 for key in ("size", "uid", "gid"))):
+            refuse(f"file {index}, {entry['path']!r}, lacks its copy's name, digest, size, mode, owner or group")
+
+
 def load_backup(backup_dir):
     st = os.lstat(backup_dir)
     if not stat.S_ISDIR(st.st_mode) or stat.S_IMODE(st.st_mode) != 0o700 or st.st_uid != os.geteuid():
         raise Refusal("the backup directory must be a 0700 directory owned by the user running the restore")
     manifest = read_backup_document(backup_dir, BACKUP_MANIFEST,
                                     "the backup's apply stopped before it changed the host, so there is nothing to put back")
-    if manifest.get("schema") != BACKUP_SCHEMA:
-        raise Refusal("the backup manifest has an unknown schema")
+    check_backup_manifest(manifest, os.path.join(backup_dir, BACKUP_MANIFEST))
     for entry in manifest["files"]:
         if not entry["exists"]:
             continue
@@ -2166,7 +2201,8 @@ def backup_host(commit, created):
 def load_created(backup_dir):
     created = read_backup_document(backup_dir, CREATED_MANIFEST,
                                    "the backup's apply stopped before it changed the host, so there is nothing to put back")
-    if not isinstance(created, list) or not set(created) <= set(CREATED_BY_APPLY):
+    if (not isinstance(created, list) or not all(isinstance(path, str) for path in created)
+            or not set(created) <= set(CREATED_BY_APPLY)):
         raise Refusal(f"the backup's {CREATED_MANIFEST} names paths that apply does not create")
     return created
 
