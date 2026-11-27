@@ -82,7 +82,9 @@ func TestRemoteAlphaUpgradeESRefusesANomadFolderWithAnACL(t *testing.T) {
 		}, "nomad_dirs", "/opt/nomad has an ACL (system.posix_acl_default; setfacl -b -k /opt/nomad removes it)", false},
 		{"nomad.hcl has an access ACL", func(h *upgradeHost) {
 			setACL(h, "etc/nomad.d/nomad.hcl", "system.posix_acl_access")
-		}, "nomad_hcl", "nomad.hcl has an ACL (system.posix_acl_access; setfacl -b -k /etc/nomad.d/nomad.hcl removes it)", false},
+		}, "nomad_hcl", "nomad.hcl has an ACL (system.posix_acl_access); put it back as a new file of root's, then check what it sets: " +
+			"rm -f /etc/nomad.d/nomad.hcl.new && install -o root -g root -m 0640 /etc/nomad.d/nomad.hcl /etc/nomad.d/nomad.hcl.new && " +
+			"mv -T /etc/nomad.d/nomad.hcl.new /etc/nomad.d/nomad.hcl (a chown, a chmod or setfacl leaves a handle that another account opened earlier able to write it)", false},
 		{"nomad.env has an access ACL", func(h *upgradeHost) {
 			setACL(h, "etc/nomad.d/nomad.env", "system.posix_acl_access")
 		}, "nomad_env", "/etc/nomad.d/nomad.env has an ACL (system.posix_acl_access); put it back as a new file of root's, then check what it sets: " +

@@ -430,9 +430,12 @@ def read_backup_document(backup_dir, name, cut_off):
         raise Refusal(f"{path} cannot be read ({exc}): {cut_off}; nothing was changed") from None
 
 
-BACKUP_COPY_NAME = re.compile(r"[0-9]{2,}-[^/]+")
+BACKUP_COPY_NAME = re.compile(r"[0-9]{2,}-[^/\x00]+")
 BACKUP_FILE_MODE = re.compile(r"[0-7]{4}")
 BACKUP_SHA256 = re.compile(r"[0-9a-f]{64}")
+# An owner or group that chown takes: Linux's uid_t and gid_t are 32 bits,
+# and the largest value, (uid_t)-1, means "leave it as it is".
+BACKUP_ID_LIMIT = 2**32 - 1
 
 
 def check_backup_manifest(manifest, path):
@@ -440,8 +443,12 @@ def check_backup_manifest(manifest, path):
     document backup_files writes, naming what is wrong, rather than fail
     with a traceback on a value of another type (re-check 50 of ES PR #67,
     O50-1): an object with the schema and a list of files, each an object
-    with its path and whether it existed and, if it did, its copy's name in
-    files/, its digest, size, mode, owner and group."""
+    with its path (clean and absolute, with no NUL) and whether it existed
+    and, if it did, its copy's name in files/ (with no NUL), its digest,
+    size, mode, and an owner and group that chown takes. Each value it
+    admits is one restore_files can use, so it is refused here, before
+    anything stops, rather than by open() or chown later, after the first
+    file was put back (re-check 51, N67-9 and S51-3)."""
     def refuse(what):
         raise Refusal(f"{path} is not the manifest apply writes ({what}); nothing was changed")
 
@@ -456,13 +463,18 @@ def check_backup_manifest(manifest, path):
     for index, entry in enumerate(files):
         if not isinstance(entry, dict) or not isinstance(entry.get("path"), str) or type(entry.get("exists")) is not bool:
             refuse(f"file {index} is not an object with a path and whether it existed")
+        if "\x00" in entry["path"]:
+            refuse(f"file {index}'s path holds a NUL")
+        if not clean_absolute(entry["path"]):
+            refuse(f"file {index}'s path, {entry['path']!r}, is not a clean absolute path")
         if not entry["exists"]:
             continue
         copy, digest, mode = entry.get("copy"), entry.get("sha256"), entry.get("mode")
         if not (isinstance(copy, str) and BACKUP_COPY_NAME.fullmatch(copy)
                 and isinstance(digest, str) and BACKUP_SHA256.fullmatch(digest)
                 and isinstance(mode, str) and BACKUP_FILE_MODE.fullmatch(mode)
-                and all(type(entry.get(key)) is int and entry[key] >= 0 for key in ("size", "uid", "gid"))):
+                and all(type(entry.get(key)) is int and entry[key] >= 0 for key in ("size", "uid", "gid"))
+                and entry["uid"] < BACKUP_ID_LIMIT and entry["gid"] < BACKUP_ID_LIMIT):
             refuse(f"file {index}, {entry['path']!r}, lacks its copy's name, digest, size, mode, owner or group")
 
 
@@ -476,7 +488,13 @@ def load_backup(backup_dir):
     for entry in manifest["files"]:
         if not entry["exists"]:
             continue
-        copy, _ = read_regular_file(os.path.join(backup_dir, "files", entry["copy"]))
+        copy_path = os.path.join(backup_dir, "files", entry["copy"])
+        try:
+            copy, _ = read_regular_file(copy_path)
+        except FileNotFoundError:
+            raise Refusal(f"the backup copy of {entry['path']}, {copy_path}, is missing; nothing was changed") from None
+        except OSError as exc:
+            raise Refusal(f"the backup copy of {entry['path']}, {copy_path}, cannot be read ({exc}); nothing was changed") from None
         if sha256_bytes(copy) != entry["sha256"] or len(copy) != entry["size"]:
             raise Refusal(f"the backup copy of {entry['path']} does not match its manifest")
     return manifest
@@ -488,6 +506,12 @@ def restore_files(backup_dir):
     The whole backup is verified before anything is written. Files that
     were absent at backup time are left as they are and reported."""
     manifest = load_backup(backup_dir)
+    # Each file goes back into the folder it was taken from: one that is
+    # gone is refused before the first file is put back.
+    for entry in manifest["files"]:
+        parent = os.path.dirname(entry["path"])
+        if entry["exists"] and not os.path.isdir(parent):
+            raise Refusal(f"{parent}, where the backup puts {entry['path']} back, is not a folder; nothing was changed")
     restored, left = [], []
     for entry in manifest["files"]:
         if not entry["exists"]:
@@ -562,10 +586,23 @@ NOMAD_HCL = "/etc/nomad.d/nomad.hcl"
 NOMAD_ENV = "/etc/nomad.d/nomad.env"
 # How root puts nomad.env back as a new file of its own, with its contents:
 # the only way that an old write handle no longer reaches it.
-NOMAD_ENV_REMEDY = (f"put it back as a new file of root's, then check what it sets: rm -f {NOMAD_ENV}.new && "
-                    f"install -o root -g root -m 0600 {NOMAD_ENV} {NOMAD_ENV}.new && mv -T {NOMAD_ENV}.new {NOMAD_ENV} "
-                    f"(a chown, a chmod or setfacl leaves a handle that another account opened earlier able to write it)")
+
+
+def replace_remedy(path, mode):
+    """How the operator puts back a file of Nomad's that another account
+    could write: as a new file of root's, since a chown, a chmod or setfacl
+    in place leaves a handle that the account opened earlier able to write
+    it. install opens its source, so this is for a regular file only."""
+    return (f"put it back as a new file of root's, then check what it sets: rm -f {path}.new && "
+            f"install -o root -g root -m {mode:04o} {path} {path}.new && mv -T {path}.new {path} "
+            f"(a chown, a chmod or setfacl leaves a handle that another account opened earlier able to write it)")
+
+
+NOMAD_ENV_REMEDY = replace_remedy(NOMAD_ENV, 0o600)
 NOMAD_CONFIG_MODE = 0o640  # root:root, as scripts/70_linux_setup.sh writes nomad.hcl
+# apply replaces nomad.hcl only on a host it moves to HTTPS; on one already
+# on HTTPS, nomad.hcl stays the same file (re-check 51 of ES PR #67, S51-1).
+NOMAD_HCL_REMEDY = replace_remedy(NOMAD_HCL, NOMAD_CONFIG_MODE)
 # Nomad runs as root, so only root may change what it reads or keeps (audit
 # INF-16). ES PR #54's upgrade made these directories root:root with these
 # modes. Nomad's TLS directory goes in the first, root:root 0755 as the
@@ -710,6 +747,9 @@ NOMAD_GOSSIP_KEYRING = NOMAD_SERVER_DIR + "/serf.keyring"
 # The paths apply may create. Its backup names those this run creates, and a
 # restore removes them; it removes nothing else.
 CREATED_BY_APPLY = (NOMAD_TLS_DIR, NOMAD_GOSSIP_KEYRING)
+# What apply backs up (backup_host), in that order; restore_host puts back
+# a backup only when its manifest names exactly these (re-check 51, N67-9).
+BACKED_UP_BY_APPLY = (ES_CONFIG, ES_BINARY, RUNTIME_SUPPORT, NOMAD_HCL)
 # `nomad config validate` warns, and still exits 0, when it cannot read the
 # TLS files a config names, and when a config has no TLS at all.
 NOMAD_VALIDATE_REFUSED = ("Error when parsing TLS configuration", "mTLS is not configured")
@@ -1878,10 +1918,10 @@ def inspect_host(payload_dir, commit, allow_downgrade=None):
         _, st = read_regular_file(host(NOMAD_HCL))
         report["nomad_hcl"] = owner_mode(st)
         if not owned_by_root(st) or stat.S_IMODE(st.st_mode) != NOMAD_CONFIG_MODE:
-            block("nomad_hcl", "nomad.hcl is not root:root 0640")
+            block("nomad_hcl", f"nomad.hcl is not root:root 0640 ({owner_mode(st)}); {NOMAD_HCL_REMEDY}")
         acls = posix_acls(host(NOMAD_HCL))
         if acls:
-            block("nomad_hcl", f"nomad.hcl has an ACL ({', '.join(acls)}; setfacl -b -k {NOMAD_HCL} removes it)")
+            block("nomad_hcl", f"nomad.hcl has an ACL ({', '.join(acls)}); {NOMAD_HCL_REMEDY}")
         others = other_nomad_configs()
         if others:
             block("nomad_hcl", f"Nomad would also load {others} from {NOMAD_DIR}")
@@ -1897,8 +1937,13 @@ def inspect_host(payload_dir, commit, allow_downgrade=None):
     try:
         st = os.lstat(host(NOMAD_ENV))
         if not stat.S_ISREG(st.st_mode):
-            block("nomad_env", f"{NOMAD_ENV}, which Nomad's unit reads as root, is not a regular file "
-                  f"({owner_mode(st)}); remove it")
+            # The remedy for the other refusals copies the file (install
+            # opens its source): on a FIFO it would wait, and on a link it
+            # would copy the link's target (re-check 51 of #67, N67-8).
+            kind = ("a link" if stat.S_ISLNK(st.st_mode) else "a folder" if stat.S_ISDIR(st.st_mode)
+                    else "a FIFO" if stat.S_ISFIFO(st.st_mode) else "not a file")
+            block("nomad_env", f"{NOMAD_ENV}, which Nomad's unit reads as root, is {kind}, not a regular file; "
+                  "remove it")
         elif not owned_by_root(st) or stat.S_IMODE(st.st_mode) & ~0o755:
             block("nomad_env", f"{NOMAD_ENV}, which Nomad's unit reads as root, is not root:root without write for "
                   f"group or others ({owner_mode(st)}); {NOMAD_ENV_REMEDY}")
@@ -2115,7 +2160,7 @@ def backup_host(commit, created):
     root = backup_root_ready()
     earlier = sorted(name for name in os.listdir(root) if stat.S_ISDIR(os.lstat(os.path.join(root, name)).st_mode))
     backup_dir = os.path.join(root, time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()) + "-" + commit[:12])
-    backup_files(backup_dir, [host(p) for p in (ES_CONFIG, ES_BINARY, RUNTIME_SUPPORT, NOMAD_HCL)])
+    backup_files(backup_dir, [host(p) for p in BACKED_UP_BY_APPLY])
     write_new_file(os.path.join(backup_dir, CREATED_MANIFEST), json.dumps(list(created), indent=2) + "\n")
     # EARLIER_BACKUPS comes after CREATED_MANIFEST, whole or not at all, and
     # before cmd_apply writes MOVE_RECORD, stages the payload and changes the
@@ -2487,8 +2532,13 @@ def restore_host(backup_dir, log, by):
     putting back its own backup, which goes on whatever it finds. Either way
     the rollback is recorded in the backup before a service is touched;
     apply goes on, logging why, if that record cannot be written."""
-    # The whole backup is verified before a service is touched.
+    # The whole backup is verified before a service is touched, and holds
+    # what apply backs up: restore_files writes each path its manifest names.
     manifest = load_backup(backup_dir)
+    backed_up = [host(path) for path in BACKED_UP_BY_APPLY]
+    if [entry["path"] for entry in manifest["files"]] != backed_up:
+        raise Refusal(f"{backup_dir}'s manifest does not name the files apply backs up ({', '.join(backed_up)}), "
+                      "in that order; nothing was changed")
     created = load_created(backup_dir)
     if by == "rollback":
         move, problems = rollback_move(backup_dir, manifest)

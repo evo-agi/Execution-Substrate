@@ -1404,7 +1404,8 @@ func TestRemoteAlphaUpgradeESCheckRefusesWhatItWasNotWrittenFor(t *testing.T) {
 		}, "es_config", "not root:es 0640"},
 		{"nomad.hcl is world-readable", func(h *upgradeHost) {
 			_ = os.Chmod(h.path("etc/nomad.d/nomad.hcl"), 0o644)
-		}, "nomad_hcl", "nomad.hcl is not root:root 0640"},
+		}, "nomad_hcl", "'mode': '0644'}); put it back as a new file of root's, then check what it sets: rm -f /etc/nomad.d/nomad.hcl.new && " +
+			"install -o root -g root -m 0640 /etc/nomad.d/nomad.hcl /etc/nomad.d/nomad.hcl.new && mv -T /etc/nomad.d/nomad.hcl.new /etc/nomad.d/nomad.hcl"},
 		{"Nomad would load another config", func(h *upgradeHost) {
 			h.write("etc/nomad.d/tls.hcl", "tls {}\n", 0o644)
 		}, "nomad_hcl", "would also load ['tls.hcl']"},
@@ -1427,13 +1428,13 @@ func TestRemoteAlphaUpgradeESCheckRefusesWhatItWasNotWrittenFor(t *testing.T) {
 		{"nomad.env is a folder", func(h *upgradeHost) {
 			_ = os.Remove(h.path("etc/nomad.d/nomad.env"))
 			_ = os.Mkdir(h.path("etc/nomad.d/nomad.env"), 0o755)
-		}, "nomad_env", "/etc/nomad.d/nomad.env, which Nomad's unit reads as root, is not a regular file"},
+		}, "nomad_env", "/etc/nomad.d/nomad.env, which Nomad's unit reads as root, is a folder, not a regular file; remove it"},
 		{"nomad.env is a FIFO", func(h *upgradeHost) {
 			_ = os.Remove(h.path("etc/nomad.d/nomad.env"))
 			if err := syscall.Mkfifo(h.path("etc/nomad.d/nomad.env"), 0o644); err != nil {
 				h.t.Fatal(err)
 			}
-		}, "nomad_env", "/etc/nomad.d/nomad.env, which Nomad's unit reads as root, is not a regular file"},
+		}, "nomad_env", "/etc/nomad.d/nomad.env, which Nomad's unit reads as root, is a FIFO, not a regular file; remove it"},
 		{"nomad.env belongs to another group", func(h *upgradeHost) {
 			giveAnotherGroup(h.t, h.path("etc/nomad.d/nomad.env"))
 		}, "nomad_env", "/etc/nomad.d/nomad.env, which Nomad's unit reads as root, is not root:root without write for group or others"},
@@ -1443,7 +1444,7 @@ func TestRemoteAlphaUpgradeESCheckRefusesWhatItWasNotWrittenFor(t *testing.T) {
 		{"nomad.env is a link", func(h *upgradeHost) {
 			_ = os.Remove(h.path("etc/nomad.d/nomad.env"))
 			_ = os.Symlink(h.path("etc/execution-substrate/ags.json"), h.path("etc/nomad.d/nomad.env"))
-		}, "nomad_env", "/etc/nomad.d/nomad.env, which Nomad's unit reads as root, is not a regular file"},
+		}, "nomad_env", "/etc/nomad.d/nomad.env, which Nomad's unit reads as root, is a link, not a regular file; remove it"},
 		{"Nomad's data directory is group-readable", func(h *upgradeHost) {
 			_ = os.Chmod(h.path("opt/nomad/data"), 0o750)
 		}, "nomad_dirs", "/opt/nomad/data is not a root:root 0700 directory"},

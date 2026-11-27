@@ -739,7 +739,7 @@ func requireCutOffRollbackRefused(t *testing.T, h *upgradeHost, backupDir, says 
 	before, files := h.snapshot(), backupFiles(t, h)
 	h.clearCalls()
 	_, stderr, code := h.run("rollback", "--backup-dir", backupDir)
-	if code != 1 || strings.Contains(stderr, "Traceback") ||
+	if code != 1 || strings.Contains(stderr, "Traceback") || strings.Contains(stderr, "PR #54") ||
 		!strings.Contains(stderr, "remote alpha ES upgrade refused: "+backupDir+says) ||
 		!strings.Contains(stderr, "the backup's apply stopped before it changed the host, so there is nothing to put back") ||
 		!strings.Contains(stderr, "; nothing was changed") {
@@ -1075,10 +1075,81 @@ m.backup_files = _cut`, "/manifest.json is missing: "},
 			"/manifest.json is not the manifest apply writes (file 0 is not an object with a path and whether it existed); nothing was changed"},
 		{"manifest.json with a mode that is not octal", "manifest.json",
 			entryWith(func(entry map[string]any) { entry["mode"] = "rw-r--r--" }), "lacks its copy's name, digest, size, mode, owner or group); nothing was changed"},
+		// Re-check 51 of #67 (N67-9): a slash after the copy's number, so
+		// that only the slash keeps the copy inside files/.
 		{"manifest.json with a copy outside files/", "manifest.json",
-			entryWith(func(entry map[string]any) { entry["copy"] = "../manifest.json" }), "lacks its copy's name, digest, size, mode, owner or group); nothing was changed"},
+			entryWith(func(entry map[string]any) { entry["copy"] = "00-x/../" + entry["copy"].(string) }), "lacks its copy's name, digest, size, mode, owner or group); nothing was changed"},
 		{"manifest.json with an owner that is not a number", "manifest.json",
 			entryWith(func(entry map[string]any) { entry["uid"] = "0" }), "lacks its copy's name, digest, size, mode, owner or group); nothing was changed"},
+		// Re-check 51 of #67 (N67-9): each other rule of the manifest's
+		// check by itself, a NUL in a copy's name or a path (refused before
+		// anything stops, not by open() once ES and Nomad are stopped), and
+		// a path that apply does not back up.
+		{"manifest.json with a path that is not a string", "manifest.json",
+			entryWith(func(entry map[string]any) { entry["path"] = 7 }), "is not an object with a path and whether it existed); nothing was changed"},
+		{"manifest.json with a file that does not say whether it existed", "manifest.json",
+			entryWith(func(entry map[string]any) { delete(entry, "exists") }), "is not an object with a path and whether it existed); nothing was changed"},
+		{"manifest.json with a digest in upper case", "manifest.json",
+			entryWith(func(entry map[string]any) { entry["sha256"] = strings.ToUpper(entry["sha256"].(string)) }), "lacks its copy's name, digest, size, mode, owner or group); nothing was changed"},
+		{"manifest.json with a size that is a string", "manifest.json",
+			entryWith(func(entry map[string]any) { entry["size"] = fmt.Sprint(entry["size"]) }), "lacks its copy's name, digest, size, mode, owner or group); nothing was changed"},
+		{"manifest.json with a negative group", "manifest.json",
+			entryWith(func(entry map[string]any) { entry["gid"] = -1 }), "lacks its copy's name, digest, size, mode, owner or group); nothing was changed"},
+		{"manifest.json with a NUL in a copy's name", "manifest.json",
+			entryWith(func(entry map[string]any) { entry["copy"] = entry["copy"].(string) + "\x00" }), "lacks its copy's name, digest, size, mode, owner or group); nothing was changed"},
+		{"manifest.json with a NUL in a path", "manifest.json",
+			entryWith(func(entry map[string]any) { entry["path"] = entry["path"].(string) + "\x00" }), "path holds a NUL); nothing was changed"},
+		{"manifest.json naming a file that apply does not back up", "manifest.json",
+			entryWith(func(entry map[string]any) { entry["path"] = entry["path"].(string) + ".elsewhere" }),
+			"manifest does not name the files apply backs up ("},
+		{"manifest.json naming apply's files in another order", "manifest.json", func(t *testing.T, manifest []byte) []byte {
+			var doc map[string]any
+			if err := json.Unmarshal(manifest, &doc); err != nil {
+				t.Fatal(err)
+			}
+			files := doc["files"].([]any)
+			files[0], files[1] = files[1], files[0]
+			data, err := json.Marshal(doc)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return data
+		}, "manifest does not name the files apply backs up ("},
+		// Re-check 51 of #67 (Sonnet's S51-2): the other conditions of the
+		// check, each by itself (the path not a string, an upper-case
+		// digest, a size that is a string and a negative group are above).
+		{"manifest.json with a copy name that has a slash after a valid prefix", "manifest.json",
+			entryWith(func(entry map[string]any) { entry["copy"] = "00-x/../../manifest.json" }), "lacks its copy's name, digest, size, mode, owner or group); nothing was changed"},
+		{"manifest.json with a group that is not a number", "manifest.json",
+			entryWith(func(entry map[string]any) { entry["gid"] = "0" }), "lacks its copy's name, digest, size, mode, owner or group); nothing was changed"},
+		{"manifest.json with an owner that is a boolean", "manifest.json",
+			entryWith(func(entry map[string]any) { entry["uid"] = true }), "lacks its copy's name, digest, size, mode, owner or group); nothing was changed"},
+		{"manifest.json with a negative size", "manifest.json",
+			entryWith(func(entry map[string]any) { entry["size"] = -1 }), "lacks its copy's name, digest, size, mode, owner or group); nothing was changed"},
+		{"manifest.json with a mode that has a digit that is not octal", "manifest.json",
+			entryWith(func(entry map[string]any) { entry["mode"] = "0789" }), "lacks its copy's name, digest, size, mode, owner or group); nothing was changed"},
+		{"manifest.json with a digest that is not hex", "manifest.json",
+			entryWith(func(entry map[string]any) { entry["sha256"] = strings.Repeat("g", 64) }), "lacks its copy's name, digest, size, mode, owner or group); nothing was changed"},
+		{"manifest.json with whether it existed not a boolean", "manifest.json",
+			entryWith(func(entry map[string]any) { entry["exists"] = 1 }), "is not an object with a path and whether it existed); nothing was changed"},
+		{"manifest.json with an unknown schema", "manifest.json",
+			fixed(`{"schema": "execution-substrate.remote-alpha.es-upgrade-backup.v9", "files": []}`), "the backup manifest has an unknown schema"},
+		{"manifest.json a string", "manifest.json", fixed(`"x"`), "/manifest.json is not the manifest apply writes (it is a JSON string, not an object); nothing was changed"},
+		{"manifest.json a boolean", "manifest.json", fixed("true"), "/manifest.json is not the manifest apply writes (it is a JSON boolean, not an object); nothing was changed"},
+		{"manifest.json a fraction", "manifest.json", fixed("1.5"), "/manifest.json is not the manifest apply writes (it is a JSON number, not an object); nothing was changed"},
+		// Re-check 51 of #67 (Sonnet's S51-3): values of the right type that
+		// restore could not use, refused before anything stops rather than
+		// by chown or open() after the first file was put back.
+		{"manifest.json with an owner chown does not take", "manifest.json",
+			entryWith(func(entry map[string]any) { entry["uid"] = 4294967295 }), "lacks its copy's name, digest, size, mode, owner or group); nothing was changed"},
+		{"manifest.json with a group far too large", "manifest.json",
+			entryWith(func(entry map[string]any) { entry["gid"] = json.Number("1000000000000000000000000000000") }), "lacks its copy's name, digest, size, mode, owner or group); nothing was changed"},
+		{"manifest.json with an empty path", "manifest.json",
+			entryWith(func(entry map[string]any) { entry["path"] = "" }), "path, '', is not a clean absolute path); nothing was changed"},
+		{"manifest.json with a relative path", "manifest.json",
+			entryWith(func(entry map[string]any) { entry["path"] = "etc/execution-substrate/es.json" }), "path, 'etc/execution-substrate/es.json', is not a clean absolute path); nothing was changed"},
+		{"manifest.json naming a copy that is not in files/", "manifest.json",
+			entryWith(func(entry map[string]any) { entry["copy"] = "99-missing" }), "/files/99-missing, is missing; nothing was changed"},
 		{"created.json naming a list", "created.json", fixed(`[["/etc/nomad.d/tls"]]`), "the backup's created.json names paths that apply does not create"},
 		{"created.json naming a number", "created.json", fixed(`[7]`), "the backup's created.json names paths that apply does not create"},
 	} {

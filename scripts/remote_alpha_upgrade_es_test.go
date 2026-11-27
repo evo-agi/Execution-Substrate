@@ -396,6 +396,38 @@ func TestRemoteAlphaUpgradeESBackupAndRestore(t *testing.T) {
 		t.Fatal("a refused restore wrote a file")
 	}
 
+	// A folder that a file goes back into and that is gone stops the
+	// restore before the first file is put back (re-check 51 of #67,
+	// Sonnet's S51-3).
+	if err := os.WriteFile(copies[0], []byte("\x7fELF old binary"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sub := filepath.Join(root, "sub")
+	if err := os.Mkdir(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	inSub := filepath.Join(sub, "es-runtime-support")
+	if err := os.WriteFile(inSub, []byte("support\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	second := filepath.Join(root, "backup-sub")
+	if _, stderr, code := runUpgradeESPython(t, "backup", "--backup-dir", second, "--path", config, "--path", inSub); code != 0 {
+		t.Fatalf("backup: exit %d, %q", code, stderr)
+	}
+	if err := os.WriteFile(config, []byte(`{"newer":true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(sub); err != nil {
+		t.Fatal(err)
+	}
+	_, stderr, code = runUpgradeESPython(t, "restore", "--backup-dir", second)
+	if code != 1 || strings.Contains(stderr, "Traceback") || !strings.Contains(stderr, sub+", where the backup puts "+inSub+" back, is not a folder; nothing was changed") {
+		t.Fatalf("restore into a folder that is gone: exit %d, %q", code, stderr)
+	}
+	if got, _ := os.ReadFile(config); string(got) != `{"newer":true}` {
+		t.Fatal("a refused restore wrote a file")
+	}
+
 	// A backup directory others can read is refused.
 	_ = os.Chmod(backup, 0o755)
 	if _, stderr, code := runUpgradeESPython(t, "restore", "--backup-dir", backup); code != 1 || !strings.Contains(stderr, "0700") {
