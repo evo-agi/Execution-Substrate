@@ -251,8 +251,9 @@ only while those keys are secret to the host.
 - `scripts/internal/signingkeygen` generates one: `go run
   ./scripts/internal/signingkeygen ags /abs/path/new-file.json` writes a new
   Ed25519 key from `crypto/rand` as the `signer` object AGS and EGS take,
-  into a new file with mode 0600 in a folder that no other user can write
-  (or that has the sticky bit), and prints only the public part
+  into a new file with mode 0600 in a folder that the user running it or
+  root owns and that no other user can write (or that has the sticky bit),
+  and prints only the public part
   (`algorithm`, `key_id`, `public_key_hex`) for ES `verification` and the EGS
   allow list. Its key ID is the role, `ags` or `egs`, a hyphen, and the first
   16 hex digits of the SHA-256 of the public key, so a new key gets a new key

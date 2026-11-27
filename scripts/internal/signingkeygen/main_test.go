@@ -236,3 +236,46 @@ func TestGenerateRefusesAFolderOthersCanWrite(t *testing.T) {
 		}
 	}
 }
+
+// TestCheckFolderRefusesAFolderAnotherUserOwns: the owner of a folder can
+// replace any file in it, sticky bit or not, so a folder another user owns
+// is refused. One root owns is not, since root could replace the key file
+// anyway. The folder has the sticky bit and mode 1777, so that only the
+// owner rule can refuse it.
+func TestCheckFolderRefusesAFolderAnotherUserOwns(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "keys")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, os.ModeSticky|0o777); err != nil {
+		t.Fatal(err)
+	}
+	owner := os.Geteuid()
+	if owner == 0 {
+		// Root gives the folder to another account, and then generate,
+		// which judges the folder with root's own ID, must refuse it too.
+		owner = 65534
+		if err := os.Chown(dir, owner, -1); err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(dir, "ags.json")
+		if _, err := generate("ags", path, rand.Reader); err == nil || !strings.Contains(err.Error(), "belongs to another user") {
+			t.Errorf("root generating into a folder uid %d owns: got %v, want the refusal naming the other owner", owner, err)
+		}
+		if _, err := os.Lstat(path); !os.IsNotExist(err) {
+			t.Errorf("a key was written into a folder another user owns: %v", err)
+		}
+	}
+	if err := checkFolder(dir, owner); err != nil {
+		t.Errorf("a folder of the user's own: %v", err)
+	}
+	for _, other := range []int{owner + 1, 0} {
+		if err := checkFolder(dir, other); err == nil || !strings.Contains(err.Error(), "belongs to another user") {
+			t.Errorf("a folder uid %d owns, judged for uid %d: got %v, want the refusal naming the other owner", owner, other, err)
+		}
+	}
+	// A folder root owns and only root can write is a safe place for anyone.
+	if err := checkFolder("/", owner+1); err != nil {
+		t.Errorf("a folder root owns: %v", err)
+	}
+}
