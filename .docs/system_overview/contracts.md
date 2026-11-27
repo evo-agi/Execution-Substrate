@@ -256,6 +256,103 @@ route, stays with each service and is described in that service's section.
   ever authenticates to an ES service over mutual TLS, this contract refuses
   it until the trust-domain rule is changed explicitly.
 
+## 3B. Known Signing Key Contract
+
+### Purpose
+
+Define once which Ed25519 signing keys no service may sign or verify with,
+because anyone can know their private halves or sign for them without one.
+AGS evidence signatures and EGS runtime-trust signatures are the only proof
+ES has of who published an artifact and which signers are allowed; a key
+whose private half is public, or that needs none, proves nothing.
+
+### Current producers / consumers
+
+- AGS refuses such a key as `signer` at startup, EGS refuses one as `signer`
+  at startup, and ES refuses one as any `verification` key at startup, all
+  through the one shared package `internal/knownkeys`. No service keeps its
+  own copy of the rule.
+- `scripts/internal/signingkeygen` generates each host's own AGS and EGS
+  keys, and `scripts/72_supported_local_setup.sh` uses it for every
+  supported-local install (`configuration.md`, "Signing keys").
+
+### Public surface
+
+`Observed current contract`
+
+- A refused key stops the service before it listens, with an error that
+  names the configuration field, says which family the key is in (the
+  repeated byte of a known key, or a point of small order), and says that the
+  host needs its own key. No network response carries the rule.
+
+### Current invariants
+
+`Current invariant`
+
+- A known key is an Ed25519 key whose 32-byte private seed is one byte
+  repeated: 256 keys. The family includes the two keys of the repository's
+  example configurations and of every supported-local install made before
+  setup generated its own: seed `0x11` repeated (AGS, public key
+  `d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737`) and seed
+  `0x33` repeated (EGS, public key
+  `17cb79fb2b4120f2b1ec65e4198d6e08b28e813feb01e4a400839b85e18080ce`).
+- A public key that needs no private key is refused the same way: one of the
+  14 values that `crypto/ed25519` decodes to a point of small order (the
+  eight such points, the two whose x is 0 also written with the sign bit set,
+  and the four written with y = p or y = p + 1, each with either sign bit).
+  Anyone can make a signature
+  that verifies under such a key. 32 zero bytes is one of them, so a
+  placeholder of zeros is refused like a known key. A test derives the eight
+  points from the curve and checks the list against every encoding of them
+  under which a signature made without a key verifies.
+- AGS and EGS refuse a 64-byte `signer.private_key_hex` whose second half is
+  not the public key of its first half. Its signatures verify under no key,
+  and they would give the seed away once the same bytes were signed again
+  under the right public key.
+- AGS and EGS refuse a configuration file that other users can read or
+  write, or that is not a regular file, since it holds the private key: the
+  check is on the opened file.
+- AGS and EGS check the public key derived from `signer.private_key_hex`
+  (a 32-byte seed, or a 64-byte private key, whose seed and public half are
+  both checked) and `signer.public_key_hex`. ES checks the `public_key_hex`
+  of `verification.trust_model`, `verification.provenance`,
+  `verification.derivation_attestation` and
+  `verification.workload_identity_binding`.
+- The check is part of each service's configuration loading, so every tool
+  that loads a configuration the way the service does refuses the same keys;
+  `scripts/internal/esconfigcheck` is one. A host still on known keys is
+  stopped by AGS, EGS and ES refusing to start on binaries that have the
+  check, whichever path installed them.
+- Outside Go test files, every value given to a signer or verification key
+  field (`private_key_hex`, `public_key_hex`) in the repository is a known
+  key, so no configuration it ships or a script writes can give a real
+  install a key a service accepts. A test in `internal/knownkeys` scans the
+  repository for values given to those fields, and another loads each
+  example configuration: refused as it is, with exactly the known-key error,
+  and accepted with fresh keys. A key held in some other form, such as an
+  unlabelled constant, is not something the scan sees.
+
+### Ownership boundary
+
+- `internal/knownkeys` owns only the definition of a known key, the list of
+  points of small order, and the check. It owns no key, no key ID, no allow
+  list, and no trust decision.
+- Each service owns which keys it configures; EGS owns which AGS key IDs it
+  allows; ES owns which keys it verifies with.
+
+### Temporary compatibility edges
+
+- None. The rule refuses; it keeps no old key working.
+
+### Reopened seams
+
+`Reopened redesign seam`
+
+- Private signer keys are held inline in the AGS and EGS configuration
+  files, protected by the file's owner and mode. A separate key file or
+  key-custody service with its own checks, and key rotation as a service
+  operation rather than a configuration change, are not designed.
+
 ## 4. Workload-Zone Vault Runtime-Config Contract
 
 ### Purpose
@@ -1504,6 +1601,7 @@ The following cross-service seams are active today and explicitly not fixed arch
 - The CGS authorize DTO and `id.conf` policy-input model.
 - The ES/runtime identity handoff surface, including reserved path conventions.
 - The runtime-profile selection vocabulary and whether it remains annotation based.
+- Signing-key custody: AGS and EGS hold their private keys inline in their configuration files, and rotating a key is a configuration change (section 3B).
 
 This section is not a proposal for replacements. It exists to prevent future readers from preserving the current choreography by accident.
 

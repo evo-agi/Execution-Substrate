@@ -16,8 +16,8 @@ import (
 )
 
 // callerAllowlistExampleWithPrefixes writes the repo's example configuration
-// for one service with its allowlist replaced by prefixes, and returns the
-// file's path.
+// for one service with its allowlist replaced by prefixes and fresh signing
+// keys, and returns the file's path.
 func callerAllowlistExampleWithPrefixes(t *testing.T, example string, prefixes []string) string {
 	t.Helper()
 	raw, err := os.ReadFile(filepath.Join(testutil.Root, ".examples", "config", example))
@@ -33,6 +33,11 @@ func callerAllowlistExampleWithPrefixes(t *testing.T, example string, prefixes [
 		t.Fatalf("example %s has no authorization object", example)
 	}
 	authorization["allowed_spiffe_path_prefixes"] = prefixes
+	// The examples carry known signing keys, which AGS and ES refuse
+	// (contracts.md section 3B); ARS has none.
+	if example != "ars.json" {
+		testutil.WithFreshSigningKeys(t, doc)
+	}
 	out, err := json.Marshal(doc)
 	if err != nil {
 		t.Fatalf("encode example %s: %v", example, err)

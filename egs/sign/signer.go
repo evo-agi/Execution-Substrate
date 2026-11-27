@@ -45,7 +45,16 @@ func NewEd25519Signer(keyID string, privateKeyHex string, publicKeyHex string) (
 	case ed25519.SeedSize:
 		privateKey = ed25519.NewKeyFromSeed(privateKeyBytes)
 	case ed25519.PrivateKeySize:
-		privateKey = ed25519.PrivateKey(privateKeyBytes)
+		// A 64-byte key is the seed followed by its public key. Go signs
+		// with the seed, hashes the stored public half into every
+		// signature, and returns that half from Public without deriving it.
+		// A key whose halves do not belong together signs nothing that
+		// verifies, and its signatures give the seed away once the same
+		// bytes are signed again under the right public key.
+		privateKey = ed25519.NewKeyFromSeed(privateKeyBytes[:ed25519.SeedSize])
+		if !bytes.Equal(privateKey, privateKeyBytes) {
+			return nil, fmt.Errorf("signer.private_key_hex is a %d-byte private key whose second half is not the public key of its first half", ed25519.PrivateKeySize)
+		}
 	default:
 		return nil, fmt.Errorf("signer.private_key_hex must be a %d-byte seed or %d-byte private key", ed25519.SeedSize, ed25519.PrivateKeySize)
 	}
