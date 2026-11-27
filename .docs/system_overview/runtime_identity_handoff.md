@@ -353,6 +353,55 @@ F1 replaces this with:
   Workstream E surface (`.docs/system_overview/runtime_config_ownership.md`)
   and changes only the field set, not its owner.
 
+#### Cutting off one named workload
+
+The owner can cut off one named workload without touching any other, and
+WI-3 proves it with tests. The owner does it with the setup scripts, because
+ES holds no SPIRE or Vault administrative access (section 11.3). Cutting off
+a name has these outcomes:
+
+- ES hands the identity to no run. The name leaves the configured list, and
+  every grant rule that names it is removed, lane included, so a run whose
+  profile needs a credential is refused with
+  `403 workload_identity_not_granted` (section 11.5). ES reads its
+  configuration at startup, so the cut-off restarts ES.
+- SPIRE issues no new JWT-SVID for the name: its entry is deleted, so the
+  runtime helper of a new run cannot obtain one (section 11.6).
+- Vault gives the name nothing. Its role `workload-<name>` is deleted, so no
+  login succeeds, including one with a JWT-SVID issued before the cut-off
+  that has not expired yet.
+- A Vault token issued before the cut-off loses access to the name's secrets
+  at once. Deleting the policy `workload-<name>` is expected to do this,
+  because Vault looks up a token's policies on every request; WI-3's tests
+  are the proof. If they show that such a token keeps access, WI-3 stops and
+  brings the owner the choice between revoking each such token and accepting
+  access until the role's `token_max_ttl` ends.
+- A run that holds the identity when the cut-off starts is found by the
+  container label of section 11.4 and cancelled through ES.
+- The name's secrets under `<name>/shared/` stay in Vault: a cut-off removes
+  access, not data. Anything the workload could read is treated as seen, and
+  the runbook says to rotate it where it was issued.
+- The name is never registered again. The setup scripts keep a record of
+  cut-off names and refuse to register one, so an old grant, an old record or
+  the old secrets under `<name>/shared/` never apply to a different workload.
+  A full re-setup keeps that record.
+- The Vault step runs first, so a cut-off that stops halfway leaves the
+  workload without secrets. Readiness refuses `submit-ready` until every step
+  is done, because until then the names registered in SPIRE and Vault differ
+  from the names ES configuration lists.
+
+WI-3's CI integration tests, with real SPIRE, Vault and Docker, register two
+names, cut one off with the setup scripts, and prove each outcome: ES refuses
+a run that needs the cut-off identity with
+`403 workload_identity_not_granted`; a runtime helper cannot obtain a
+JWT-SVID for its ID; a Vault login with a JWT-SVID issued before the cut-off
+fails; a Vault token issued before the cut-off can no longer read
+`<name>/shared/`; registering the name again is refused; readiness reports
+`submit-ready` only once every step is done; and the other name still logs in
+and reads its own secrets. No named identity goes live on a box before these
+tests pass. WI-3's box run also cuts off one throwaway name, with one of its
+runs in flight, and WI-3 adds the cut-off to the runbooks.
+
 ### 11.8 Adding per-run identities later
 
 F1 keeps a path to per-run identities that adds pieces and removes no code:
@@ -409,6 +458,6 @@ open.
 | WI-1 | This decision in `PLANS.md` and `.docs/`, with doc-contract tests. No behavior change. | Audit and the merge gate |
 | WI-2 | Network grants: `admission_policy.workload_grants` with exact-match rules, the lane value `unrestricted` only, `403 network_access_not_granted` on `:prepare` and `:submit`, startup validation, setup scripts that write grants for today's flows, and the readiness report `workload_egress_unrestricted=true` | Audit, red-team and the merge gate |
 | WI-3a | The caller authentication contract refuses `workload` caller paths | Audit and the merge gate |
-| WI-3 | Named identities: sections 11.2 to 11.7, the rewrite of the tests that pin the shared identity, and CI integration tests with real SPIRE, Vault and Docker | Audit, red-team, a box run with scripted rollback, and the merge gate |
+| WI-3 | Named identities: sections 11.2 to 11.7, the rewrite of the tests that pin the shared identity, CI integration tests with real SPIRE, Vault and Docker, and the cut-off of one named workload with its tests and runbook (section 11.7) | Audit, red-team, a box run with scripted rollback, and the merge gate |
 | WI-4 | Egress lanes: Docker `internal` networks whose only exit is a pinned filtering proxy, `network_mode` chosen by lane, the removal of `unrestricted`, and readiness checks. It starts with a box measurement of the hosts the Codex CLI contacts. | Audit, red-team, a box run, and the merge gate |
 | WI-5 | Durable replay and operational formats carry the identity name, the realized SPIFFE ID string and the lane name, with the runtime catalogue's vendor-neutral credential slot | Audit, red-team and the merge gate, before D3 makes those formats live state |
