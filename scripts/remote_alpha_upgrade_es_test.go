@@ -421,7 +421,7 @@ func TestRemoteAlphaUpgradeESBackupAndRestore(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, stderr, code = runUpgradeESPython(t, "restore", "--backup-dir", second)
-	if code != 1 || strings.Contains(stderr, "Traceback") || !strings.Contains(stderr, sub+", where the backup puts "+inSub+" back, is not a folder; nothing was changed") {
+	if code != 1 || strings.Contains(stderr, "Traceback") || !strings.Contains(stderr, sub+", where the backup puts "+inSub+" back, is not a folder; no file was put back") {
 		t.Fatalf("restore into a folder that is gone: exit %d, %q", code, stderr)
 	}
 	if got, _ := os.ReadFile(config); string(got) != `{"newer":true}` {

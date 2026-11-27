@@ -500,6 +500,16 @@ def load_backup(backup_dir):
     return manifest
 
 
+def restore_folder_problem(manifest):
+    """Why a file of the manifest cannot go back into its folder (the folder
+    is gone), or None."""
+    for entry in manifest["files"]:
+        parent = os.path.dirname(entry["path"])
+        if entry["exists"] and not os.path.isdir(parent):
+            return f"{parent}, where the backup puts {entry['path']} back, is not a folder"
+    return None
+
+
 def restore_files(backup_dir):
     """Put every backed-up file back with its bytes, owner and mode.
 
@@ -507,11 +517,12 @@ def restore_files(backup_dir):
     were absent at backup time are left as they are and reported."""
     manifest = load_backup(backup_dir)
     # Each file goes back into the folder it was taken from: one that is
-    # gone is refused before the first file is put back.
-    for entry in manifest["files"]:
-        parent = os.path.dirname(entry["path"])
-        if entry["exists"] and not os.path.isdir(parent):
-            raise Refusal(f"{parent}, where the backup puts {entry['path']} back, is not a folder; nothing was changed")
+    # gone is refused before the first file is put back. restore_host has
+    # refused it before it stopped a service; this is for the restore
+    # command, and for a folder removed in between.
+    problem = restore_folder_problem(manifest)
+    if problem:
+        raise Refusal(f"{problem}; no file was put back")
     restored, left = [], []
     for entry in manifest["files"]:
         if not entry["exists"]:
@@ -2539,6 +2550,9 @@ def restore_host(backup_dir, log, by):
     if [entry["path"] for entry in manifest["files"]] != backed_up:
         raise Refusal(f"{backup_dir}'s manifest does not name the files apply backs up ({', '.join(backed_up)}), "
                       "in that order; nothing was changed")
+    problem = restore_folder_problem(manifest)
+    if problem:
+        raise Refusal(f"{problem}; nothing was changed")
     created = load_created(backup_dir)
     if by == "rollback":
         move, problems = rollback_move(backup_dir, manifest)
