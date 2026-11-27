@@ -404,6 +404,12 @@ remote_alpha_deploy_es_binaries_stage_make_local_payload_tree() {
   chmod 0755 "$payload_dir/es"
   printf 'runtime\n' > "$payload_dir/es-runtime-support"
   chmod 0755 "$payload_dir/es-runtime-support"
+  printf 'esconfigcheck\n' > "$payload_dir/esconfigcheck"
+  chmod 0755 "$payload_dir/esconfigcheck"
+  printf 'agsconfigcheck\n' > "$payload_dir/agsconfigcheck"
+  chmod 0755 "$payload_dir/agsconfigcheck"
+  printf 'egsconfigcheck\n' > "$payload_dir/egsconfigcheck"
+  chmod 0755 "$payload_dir/egsconfigcheck"
   printf '{}\n' > "$payload_dir/build-provenance.json"
 }
 remote_alpha_deploy_es_binaries_stage_main --ssh-target ds@m75q-test --run-id exact-upload --output-dir %q
@@ -446,8 +452,13 @@ remote_alpha_deploy_es_binaries_stage_main --ssh-target ds@m75q-test --run-id ex
 			}
 		}
 	}
-	if len(fileInstalls) != 5 {
-		t.Fatalf("expected exactly five staged files, got %q", fileInstalls)
+	if len(fileInstalls) != 8 {
+		t.Fatalf("expected exactly eight staged files (two scripts, two binaries, three config checks, build provenance), got %q", fileInstalls)
+	}
+	for _, checker := range []string{"esconfigcheck", "agsconfigcheck", "egsconfigcheck"} {
+		if !uploaded["/tmp/execution-substrate-es-binary-deployment-upload-exact-upload/payload/"+checker] {
+			t.Fatalf("the config check %s was not uploaded: %q", checker, uploadedLines)
+		}
 	}
 
 	helperLog := readIfExists(h.helperLogPath)
@@ -512,6 +523,12 @@ remote_alpha_deploy_es_binaries_stage_make_local_upload_tree() {
   chmod 0755 "$upload_dir/payload/es"
   printf 'runtime\n' > "$upload_dir/payload/es-runtime-support"
   chmod 0755 "$upload_dir/payload/es-runtime-support"
+  printf 'esconfigcheck\n' > "$upload_dir/payload/esconfigcheck"
+  chmod 0755 "$upload_dir/payload/esconfigcheck"
+  printf 'agsconfigcheck\n' > "$upload_dir/payload/agsconfigcheck"
+  chmod 0755 "$upload_dir/payload/agsconfigcheck"
+  printf 'egsconfigcheck\n' > "$upload_dir/payload/egsconfigcheck"
+  chmod 0755 "$upload_dir/payload/egsconfigcheck"
   printf '{}\n' > "$upload_dir/payload/build-provenance.json"
 }
 remote_alpha_deploy_es_binaries_stage_main --ssh-target fake-target --run-id missing-upload-source --output-dir %q
@@ -568,6 +585,12 @@ remote_alpha_deploy_es_binaries_stage_make_local_payload_tree() {
   chmod 0755 "$payload_dir/es"
   printf 'runtime\n' > "$payload_dir/es-runtime-support"
   chmod 0755 "$payload_dir/es-runtime-support"
+  printf 'esconfigcheck\n' > "$payload_dir/esconfigcheck"
+  chmod 0755 "$payload_dir/esconfigcheck"
+  printf 'agsconfigcheck\n' > "$payload_dir/agsconfigcheck"
+  chmod 0755 "$payload_dir/agsconfigcheck"
+  printf 'egsconfigcheck\n' > "$payload_dir/egsconfigcheck"
+  chmod 0755 "$payload_dir/egsconfigcheck"
   printf '{}\n' > "$payload_dir/build-provenance.json"
 }
 remote_alpha_deploy_es_binaries_stage_main --ssh-target ds@m75q-test --run-id install-failure --output-dir %q

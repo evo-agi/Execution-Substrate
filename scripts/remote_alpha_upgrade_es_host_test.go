@@ -1441,6 +1441,40 @@ func TestRemoteAlphaUpgradeESApply(t *testing.T) {
 	}
 	h.write("usr/local/lib/execution-substrate/bin/es", string(newESBuild), 0o755)
 
+	// The host this upgrade leaves, once a later commit is named: Nomad on
+	// HTTPS and es.json migrated, but es and es-runtime-support are builds
+	// of the commit installed before, neither 16cbf739 nor the one named.
+	// That is the Remote Alpha box after this upgrade ran, so this upgrade
+	// can never be the path that brings it a later ES: check and apply
+	// refuse it, and nothing is stopped or changed. A later ES reaches the
+	// box through the ES binary deployment, which runs the new EGS's own
+	// config check on egs.json before it installs anything
+	// (remote_alpha_deploy_es_binaries_revoked_digest_test.go).
+	installed := strings.Repeat("b", 40)
+	h.write("usr/local/lib/execution-substrate/bin/es", string(stampedBinary("es", "go1.26.5", installed, "false")), 0o755)
+	h.write("usr/local/bin/es-runtime-support", string(stampedBinary("es-runtime-support", "go1.26.5", installed, "false")), 0o755)
+	laterNamed := h.snapshot()
+	h.clearCalls()
+	report, stderr, code = h.check()
+	if code != 1 || report["shape"] != "unknown" || !strings.Contains(stderr, "blocker(s); nothing was changed") ||
+		!strings.Contains(fmt.Sprint(report["blockers"]), "the host is in no shape this upgrade knows; it takes locked-http to https: "+
+			"nomad.hcl: https (the lock and the supported config's tls block); Nomad's TLS directory: https (") ||
+		!strings.Contains(fmt.Sprint(report["blockers"]), "es.json: https (Nomad at https://127.0.0.1:4646, its server key pinned); "+
+			"the ES binaries: unknown (es built from "+installed+", es-runtime-support built from "+installed+")") {
+		t.Fatalf("check of the migrated host on builds of another commit: exit %d, shape %v, blockers %v, %s", code, report["shape"], report["blockers"], stderr)
+	}
+	_, stderr, code = h.apply()
+	if code != 1 || !strings.Contains(stderr, "nothing was changed") {
+		t.Fatalf("apply of the migrated host on builds of another commit: exit %d: %s", code, stderr)
+	}
+	onlyReads(t, h, "a refused check and apply of the migrated host on builds of another commit")
+	assertRestored(t, laterNamed, h.snapshot())
+	if dirs := backupDirs(t, h); len(dirs) != 1 {
+		t.Fatalf("the refused apply of the migrated host on builds of another commit wrote a backup: %v", dirs)
+	}
+	h.write("usr/local/lib/execution-substrate/bin/es", string(newESBuild), 0o755)
+	h.write("usr/local/bin/es-runtime-support", string(newRuntimeSupportBuild), 0o755)
+
 	// rollback puts the host back exactly: Nomad on plain HTTP, no TLS
 	// directory.
 	h.clearCalls()

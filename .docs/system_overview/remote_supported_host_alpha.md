@@ -5910,6 +5910,9 @@ for this surface:
 - `scripts/internal/remote_alpha_deploy_es_binaries.sh`
 - one staged payload file for `/usr/local/lib/execution-substrate/bin/es`
 - one staged payload file for `/usr/local/bin/es-runtime-support`
+- three staged config checks, `payload/esconfigcheck`,
+  `payload/agsconfigcheck` and `payload/egsconfigcheck`, built from the same
+  tree as the binaries
 - one staged payload provenance file `payload/build-provenance.json`
 
 The repo-side upload step must preserve the exact remote relative paths the
@@ -5919,6 +5922,9 @@ root-owned install step later consumes:
 - `<upload-root>/scripts/internal/remote_alpha_deploy_es_binaries.sh`
 - `<upload-root>/payload/es`
 - `<upload-root>/payload/es-runtime-support`
+- `<upload-root>/payload/esconfigcheck`
+- `<upload-root>/payload/agsconfigcheck`
+- `<upload-root>/payload/egsconfigcheck`
 - `<upload-root>/payload/build-provenance.json`
 
 Execution must still run only from a root-owned staged path under
@@ -5951,6 +5957,34 @@ The required operator flow for this binary-deployment surface is:
 3. Use `--apply` only after explicit approval and after the helper reports no
    blockers other than `deployment_needed`, with
    `plan.service_identity_matches_current_supported_posture=true`.
+   Check-only and apply both run the payload's three config checks on
+   `/etc/execution-substrate/es.json`, `ags.json` and `egs.json` first. Each
+   is a thin wrapper around its service's own `config.Load`
+   (`scripts/internal/esconfigcheck`, `agsconfigcheck`, `egsconfigcheck`),
+   so a config that the ES, AGS or EGS of the payload's tree would refuse at
+   startup, such as one still on the repository's published signing keys
+   (`.docs/system_overview/contracts.md`, section 3B), is the blocker
+   `es_config_check`, `ags_config_check` or `egs_config_check`, and apply
+   then installs nothing and restarts nothing. On the box this puts the
+   signing key rotation ("Remote Signing Key Rotation") before a binary
+   deployment from a tree that refuses the published keys. It also stops a
+   deployment on an `egs.json` whose `revoked_artifacts` holds a digest in
+   any spelling but `sha256:` and 64 lower-case hex characters
+   (`.docs/system_overview/configuration.md`, EGS), naming the entry: the
+   deployment replaces ES and not EGS, so an older EGS that accepted the
+   entry would keep serving it, the new ES would refuse that trust model and
+   not start, and nothing would put the old ES back.
+   `scripts/remote_alpha_deploy_es_binaries_revoked_digest_test.go` runs the
+   deployment with the real `egsconfigcheck` to hold this. The checks are
+   worth something only if `es.service` starts that binary with that
+   `es.json`, so `es_service_posture` is a blocker unless the unit has
+   exactly one `ExecStart`, whose program (systemd's `path=` in
+   `systemctl show`, what it runs) is the pinned binary and whose
+   arguments are that binary and `-config` (or `--config`, or either with
+   `=`) with the pinned config: a second `-config`, which ES would read in
+   place of the first, a config path that only contains the pinned one,
+   and systemd's `@` prefix running another program are each refused. A
+   config check that a signal ends is a blocker that says so.
 4. Preserve the apply summary, backup path, rollback notes, exact changed
    binary paths, preserved live `es.service` identity, and post-restart
    `/health` plus `GET /v1/executions:contract` validation as the bounded
@@ -7342,7 +7376,11 @@ deletes short-lived probe tokens. Anything else is refused, and the refusal name
 of every part: the pre-lock `nomad.hcl` (SHA-256 `5d5e106c…96b8`, ES PR
 #54's upgrade has not run), a file of unknown content, or parts that
 disagree, such as TLS material left by an `apply` that was cut off before
-its rollback.
+its rollback. That includes the box after this upgrade once a later commit
+is named: Nomad and `es.json` are `https`, but `es` and `es-runtime-support`
+are builds of the commit installed before, so `check` and `apply` refuse it
+and stop and change nothing. A later ES reaches the box through the ES
+binary deployment ("Remote ES Binary Deployment Surface").
 
 `check` refuses when:
 
@@ -7481,6 +7519,358 @@ real `nomad_tls_identity.py`, so no stand-in can hide a broken step; the
 test then proves that Nomad answers only over HTTPS and that the observer
 token, kept, now lists ES's jobs. CI runs it with Nomad 2.1.1 and
 passwordless `sudo`.
+
+## Remote Signing Key Rotation
+
+`Bounded slice rule`: gives the Remote Alpha box's AGS and EGS new signing
+keys, points EGS and ES at them, and retires ARS's index, in one step with a
+backup. Each host signs with its own keys
+(`.docs/system_overview/configuration.md`, "Signing keys"), and AGS, EGS and
+ES refuse the keys of the repository's example configurations at startup
+(`.docs/system_overview/contracts.md`, section 3B). The box was set up with
+those keys (read-only check of 2026-11-27). Until this rotation has run, the
+ES binary deployment's config checks refuse the box before they install
+anything, and AGS, EGS and ES refuse to start on binaries that have the
+check, whichever path installed them. The ES upgrade does not reach its own
+config check on the box today: on the box's shape (`https`) it runs none.
+So binaries from such a path reach the box only after this rotation; if
+they reach it first, the services stop, `check` refuses because they do not
+run, and the old binaries go back before the rotation runs. The rotation
+changes only `ags.json`, `egs.json`, `es.json` and
+ARS's index file; it does not change a binary, a unit file, TLS material,
+`ars.json`, or a blob ARS stores.
+
+Scripts:
+
+- public: `scripts/remote_alpha_rotate_signing_keys.sh`, which checks the
+  clone and then runs the Python core with `python3 -I -B`
+- internal: `scripts/internal/remote_alpha_rotate_signing_keys.py`
+
+Operator interface, all as root from a clone root owns. The wrapper checks
+the clone on its own, for every command, before any of the clone's code
+runs, since a check inside the code it guards is gone once someone replaces
+that code. It refuses a start path with `..`; it finds its own physical
+path from the kernel's working folder with every symbolic link resolved
+(never from an inherited `PWD` or `CDPATH`) and refuses a start path that
+is not that path, such as a symbolic link to the wrapper or a path through
+one; and it refuses unless no account but root (for a run by another user,
+root and that user) can change the code: every folder from `/` down to
+`scripts/` must belong to one of them and be writable by neither its group
+nor others unless it has the sticky bit, and `scripts/`,
+`scripts/internal/`, the wrapper and the helper must belong to one of them,
+be no symbolic link and be writable by neither group nor others, and the
+two folders must be folders and the two files regular files (Python runs a
+folder that holds `__main__.py`). Only then
+does it run the helper by that physical path. The helper checks the whole
+`scripts` folder again, as a second line for a start without the wrapper.
+These checks are the ES upgrade wrapper's word for word (ES PR #63), and a
+test holds the two together once that wrapper carries them:
+
+- `sudo scripts/remote_alpha_rotate_signing_keys.sh check` reads only. It
+  prints a JSON report (schema
+  `execution-substrate.remote-alpha.signing-key-rotation.v1`) with each
+  config's SHA-256, owner and mode, the current AGS and EGS key IDs and
+  public keys and whether each private seed is one byte repeated, ARS's
+  index and how many records it holds, the state of the `ars`, `egs`, `ags`
+  and `es` units and their answers, every change `apply` would make, and the
+  problems, and exits 1 with nothing changed when there is one.
+- `sudo scripts/remote_alpha_rotate_signing_keys.sh apply` runs the same
+  checks, then the steps below.
+- `sudo scripts/remote_alpha_rotate_signing_keys.sh rollback --backup-dir <dir>`
+  puts a backup back.
+
+Run `apply` under `systemd-run`, as for the ES upgrade, so that a dropped
+SSH session does not stop it, and give the unit `KillMode=mixed` and a long
+`TimeoutStopSec` (`-p KillMode=mixed -p TimeoutStopSec=300`), so that
+stopping the unit signals `apply` alone and leaves it time to roll back.
+
+The configs are read strictly. The services read them with Go's
+`encoding/json`, which matches a field name in any letter case and lets a
+later duplicate win, so `check` refuses a config with a key that is not
+ASCII, two keys that differ only in letter case, a repeated key, `NaN` or
+`Infinity`, bytes that are not UTF-8, or deeper nesting than a config has:
+each of those could make the services read a key the rotation does not see.
+It also refuses a string with a `\u` escape of half a UTF-16 surrogate pair,
+which Go reads as U+FFFD, and a number written with a fraction or an
+exponent that is too large for a 64-bit float: the rotation could not write
+either back as the services read it, so `check` refuses what `apply` could
+not do.
+
+`check` and `apply` refuse a host where:
+
+- a folder from `/` down to `/etc/execution-substrate` is not root's, is
+  writable by its group or others, or is a link; `ags.json`, `egs.json` or
+  `es.json` is not a regular file `root:<service> 0640` with one link, or
+  `ars.json` is not `root:ars 0640`; or `healthcheck.env` is not a regular
+  file root owns with one link that neither its group nor others can write;
+- a unit (`ars`, `egs`, `ags`, `es`) does not have exactly one `ExecStart`,
+  whose program (systemd's `path=` in `systemctl show`, what it runs) is
+  `/usr/local/lib/execution-substrate/bin/<unit>` and whose arguments are
+  that binary and `-config /etc/execution-substrate/<unit>.json` (with
+  systemd's `@` prefix the first argument is only the name the program is
+  given);
+- a unit's main process (systemd's `MainPID`) does not see, at its config's
+  path and, for ARS, at the index's path, the very file the host has there
+  (the same device and inode), read through `/proc/<pid>/root` one name at a
+  time without following a symbolic link, or the unit has no main process.
+  The `ExecStart` rule pins the command line only: a unit's own root folder
+  or mounts (`RootDirectory=`, `RootImage=`, `BindPaths=`,
+  `TemporaryFileSystem=` and the like) can show its service another file
+  under the same name, and that service would keep the retired key while
+  the rotation said `rotated`. Mounts that show the same file, as
+  `ProtectSystem=` or `ReadOnlyPaths=` make, pass;
+- AGS's or EGS's `signer` is not exactly an Ed25519 key in lower-case hex
+  with its four fields, or AGS and EGS share a key;
+- ES's `verification` does not have exactly its four entries,
+  `verification.trust_model` is not exactly EGS's algorithm, key ID and
+  public key, or `provenance`, `derivation_attestation` or
+  `workload_identity_binding` is not exactly AGS's;
+- EGS's `runtime_trust.signer_policy` has a field other than
+  `allowed_signers` and `revoked_signers`, does not allow AGS's key ID, or
+  EGS has no positive `publication.update_revision`;
+- a rule of ES's `admission_policy.workload_grants` names a
+  `signer_key_id` other than AGS's key ID;
+- ARS's index (`storage.index_file` of `ars.json`) is not a regular file
+  with one link that root or ARS's account owns and neither its group nor
+  others can write, in a folder root or ARS's account owns under folders
+  root owns, none writable by its group or others, or it is not one JSON
+  object of records, as ARS writes it;
+- a rotation or a rollback did not finish: a backup folder has neither
+  `summary.json` nor `rollback.json`, a backup folder is still being built,
+  a rollback started in a backup folder and recorded no end, the last result
+  recorded in a backup folder is `rollback_failed`, or a temporary file of
+  the rotation is left next to a config or the index (see below);
+- the four units are not active, ARS and EGS do not accept connections on
+  the address their configs name, or ES's `/health` and
+  `/v1/executions:contract` and AGS's `/health` do not answer 200 with the
+  operator certificate of `/etc/execution-substrate/healthcheck.env`.
+
+The index must be readable as ARS writes it because the rotation reads its
+records again after the restarts (step 8).
+
+`apply` then:
+
+1. makes a new AGS key and a new EGS key with `/usr/bin/openssl genpkey
+   -algorithm ED25519` and `openssl pkey -pubout`, so nothing built from a
+   checkout runs as root to make them; every child process gets only `PATH`
+   and `LC_ALL`. The private key passes only through pipes. Each key is the
+   `signer` object `scripts/internal/signingkeygen` writes, with its key ID
+   (the role, a hyphen, and the first 16 hex digits of the SHA-256 of the
+   public key). Output that is not an Ed25519 key, a seed that is one byte
+   repeated, or the same key twice is refused before anything changes;
+2. copies the three configs, as `check` read them, into a new folder
+   `/var/backups/execution-substrate-signing-keys/<UTC time>-<new AGS key ID>`
+   (`0700`; copies `0600`, with each one's SHA-256, owner and mode and the
+   SHA-256 of the config that will replace it in `manifest.json`). The folder
+   is built under a `.incomplete-` name and gets its final name only once
+   every copy is on disk and each config still holds what `check` read. The
+   copies hold the old private keys;
+3. writes each config in one rename with its owner and mode kept, after
+   checking once more that it still holds what `check` read, and checks the
+   bytes: AGS's and EGS's new `signer`; in EGS's signer policy the new AGS
+   key ID in place of the old one, the old one added to `revoked_signers`,
+   and `publication.update_revision` one higher; ES's four `verification`
+   entries; and the new AGS key ID in every workload grant rule. Nothing else
+   in the configs changes;
+4. stops `es`, `ags` and `ars`, and checks that `ars` is stopped;
+5. copies ARS's index into the backup (`ars-index.json`, with
+   `ars-index.manifest.json`) and replaces the index with an empty one in
+   one rename, keeping its owner and mode. Every record in it is sealed with
+   the AGS key being retired, so ES would refuse each of them, and ARS keeps
+   one record per artifact digest (`.docs/system_overview/contracts.md`,
+   section 6): an artifact published before the rotation can be published
+   again only into an index without its old record. The blobs stay where
+   they are;
+6. restarts `ars` and waits for it to accept connections, restarts `egs`
+   and waits for it the same way, then restarts `ags` and `es`. Each is a
+   restart, not a start: a start does nothing to a unit that something else
+   started after step 4, and such a process may have read its files before
+   they were written; ARS would then keep the retired records in memory and
+   write them back. ES fetches EGS's
+   trust policy and verifies it with `verification.trust_model` before it
+   listens (`es/app/app.go`, `Start`), so ES answering shows that ES and the
+   new EGS key agree;
+7. waits up to 60 seconds for the four units to be active, ARS and EGS to
+   accept connections, and the three endpoints to answer 200, and then
+   compares the files each restarted unit's main process sees with the
+   host's again, as `check` does, and requires each config to still hold the
+   bytes step 3 wrote (a command a unit runs when it starts could have
+   changed it); either failing fails `apply`, which rolls back;
+8. reads ARS's index once more. ARS holds its index in memory and writes the
+   whole of it on every registration, so an ARS that something else started
+   after step 4, and that took a registration before step 6 stopped it, has
+   written the records it read back to disk. A record of the retired index
+   found unchanged in the index fails `apply`, which rolls back; a record of
+   the same artifact published again since differs from the retired one.
+   `apply` then prints the report and writes it as `summary.json` (`0600`)
+   into the backup folder.
+
+Each file the rotation replaces is written as a new file next to it, named
+`.<name>.signing-key-rotation.<random>`, created exclusively without
+following a link, synced, and renamed over the old one.
+
+From the backup on, any failure puts the backup back: the configs it wrote,
+and the index once it was moved. `SIGTERM`, `SIGHUP`, `SIGINT` and `SIGQUIT`
+are recorded while `apply` runs and turn into the same rollback at its next
+step; the rollback itself does not stop for them. The rollback tries every
+step even when one fails: it stops `es`, `ags` and `ars`, removes the
+rotation's temporary files, puts the files back, restarts the services in
+the order of step 6, waits for them as in step 7, compares the files as in
+step 7 (each unit that runs must see the host's config, and ARS its index,
+and each config must still hold the copy put back; a unit that does not run
+is left to the health check), and reads the index again as in step 8: every
+record of the copy it put back must be in it unchanged.
+The result is `rotated`,
+`rolled_back` (every step worked and the services answer),
+`rolled_back_unhealthy` (the files are back, but a service step failed or
+the services do not answer) or `rollback_failed` (a file could not be put
+back, a restarted unit sees another file or a config no longer holds its
+copy, or the index lacks records of the copy after the restarts; for the
+index the failure names the copy and the index it replaced, which is kept), with
+the failure and each step's outcome; `apply` exits 1 on any but
+the first. The report is printed before `summary.json` is written, so a
+summary that cannot be written is said on its own line without hiding the
+result; `check` then names that backup as unfinished until the printed
+report is saved there.
+
+A `SIGKILL`, a crash or a power loss can stop `apply` where nothing can roll
+back. `check` and `apply` then name the unfinished rotation, its backup
+folder and any temporary file it left, and refuse to run until it is
+settled. `rollback --backup-dir` of that folder puts the backup back and
+removes the temporary files; of a `.incomplete-` folder, which `apply` never
+got past, it removes the folder and changes nothing else. A rotation writes
+only files, so a folder named like one of its temporary files is someone
+else's (ARS's account owns the folder that holds the index and can make
+one there): `check` names it as a folder to look into and remove by hand,
+and a rollback leaves it in place, names it under `folders_left_in_place`,
+and still ends `rolled_back` when everything else worked.
+
+`apply` and `rollback` hold a lock on
+`/var/backups/execution-substrate-signing-keys` for their whole run, so no
+second `apply` or `rollback` runs at the same time; `apply` makes the
+folder, when it is missing, once `check`'s reading finds nothing wrong, and
+reads the backups again under the lock. While one holds the lock, another
+is refused and `check` names it; `check` then leaves that run's backup and
+temporary files alone, since they are its work in progress, and says to run
+`check` again once it has ended. Removing an `.incomplete-` folder takes the
+lock too, so it never removes the backup of an `apply` that is still
+writing it. The lock ends with the process, also on a `SIGKILL`.
+
+`rollback --backup-dir <dir>` takes only a folder directly under
+`/var/backups/execution-substrate-signing-keys`, `0700` and root's, with a
+manifest and copies that match each other, and it puts a backup back only
+while every config is still the one that backup's rotation wrote or the one
+it replaced. So it refuses the backup of an earlier rotation, and a backup
+whose configs were changed since, for example by an ES upgrade. It also
+refuses a backup whose last result is `rolled_back` or
+`rolled_back_unhealthy`: every file is back, and its index copy would drop
+what ARS took since. After `rolled_back_unhealthy` the refusal says to
+restart the services that do not run by hand and run `check`. It says on
+standard error which keys it puts back in place of which, and puts the index
+back as well; records ARS took after the rotation are then gone from the
+index, and their blobs stay. Before it replaces the index, it keeps the
+index it replaces in the backup folder as `ars-index.replaced-<ID>.json`
+(`ars-index.replaced-apply.json` for `apply`'s own rollback), and its
+report names that file, so no rollback destroys the only copy of a record.
+Before it changes anything it writes
+`rollback-started.json` (with an ID) into the backup folder, and when it
+ends it writes its report, with the same ID, to `rollback.json`. A rollback
+that a `SIGKILL` or a crash stops leaves the first without the second, and
+`check` and `apply` name it and the folder whose `rollback --backup-dir`
+finishes it. A rollback that ends `rollback_failed` is named the same way
+until a later rollback of that folder ends otherwise, or, once the host is
+settled by hand, the folder is moved out of the backup root. After each file
+it puts back, the rollback reads the file again and requires the backup's
+bytes.
+
+After the rotation ES refuses evidence sealed with the old AGS key. The
+rotation does not re-sign it: anyone could seal evidence with a known key,
+so re-signing it would vouch for evidence that may be forged. An artifact
+still needed is published again from its source through AGS, and prepares
+again once it is (`ags/app/signing_key_rotation_e2e_test.go`). The report's
+`ars_index_entries` counts the records this applies to.
+
+Other copies of the configs hold keys too. An ES-upgrade backup made before
+the rotation (`/var/backups/execution-substrate-es-upgrade/`) holds an
+`es.json` that trusts the published keys, and a copy of
+`/etc/execution-substrate` made by hand or by the recovery runbook holds
+whatever keys it held then: none of them is a valid rollback target after
+the rotation, and those made after it hold the box's real private keys.
+Once the rotated host has run its smoke test, delete the rotation's backup
+folder, since it holds the old private keys, and treat any later copy of
+`/etc/execution-substrate` as secret. Roll back only while the box runs
+binaries that accept the old keys: after binaries that refuse them are
+installed, a rollback puts back configs those binaries refuse and ends
+`rolled_back_unhealthy` with the services down, so put the old binaries
+back first.
+
+The tests (`scripts/remote_alpha_rotate_signing_keys_test.go`) run `check`,
+`apply` and `rollback` on a host-shaped folder holding the example
+configurations and an ARS index, with a fake `systemctl` that runs
+stand-in listeners for ARS and EGS, a fake `curl`, and an `openssl` that
+makes keys with `crypto/ed25519`: the rotated configs, checked against Go's
+Ed25519, the key ID rule and the known-key rule, and accepted by AGS's,
+EGS's and ES's own `config.Load`; the retired index and its backup; the
+restart order; no private key in any output; a rollback after each failing
+stop, start, restart, readiness or health check, after a stop of `ars` that
+reports success but leaves it running, after a config changed by hand while
+`apply` runs (the change is kept), after each of the four signals, and after
+a kill at each point that leaves something behind; a rollback whose service
+step fails reported as `rolled_back_unhealthy` even when every service
+answers; a rollback that finds ARS still running reported as
+`rollback_failed` without putting the index back under it; a rollback
+stopped by a kill, or ended `rollback_failed`, named by `check` until a
+second rollback settles it; no second rollback of a backup whose files a
+rollback already put back, healthy or not; the index a rollback replaces
+kept in the backup folder; a folder named like a temporary file named by
+`check` and left by a rollback that still ends `rolled_back`; signals held
+by the `rollback` command; a config
+changed while the backup is written, before it is named, and a file changed
+after a write or a restore put it back, each caught by the read that
+follows; an ARS that something else starts while `apply` or a rollback
+writes the index, restarted so that the ARS that runs at the end read the
+index on disk (the fake's `start` does nothing to a running unit, as
+systemd's), one reported as `activating` after the stop, and one that
+writes the index it read back to disk before its restart, which `apply` rolls back and a rollback ends `rollback_failed`
+naming the copy and the kept index; `apply`'s own rollback that cannot put
+the index or a config back, recorded as `rollback_failed` in `summary.json`
+and named by `check`; a rollback that cannot keep the index it would
+replace, which leaves it in place; a unit whose main process sees another
+file at its config's path, a symbolic link there, no main process, or a
+gone one, refused before anything changes, and a unit restarted into a root
+folder of its own or whose config is written again when it starts, rolled
+back; the same after a rollback's restarts (a manual one and `apply`'s own,
+and a unit seen with other files on one read and gone on the next),
+ended `rollback_failed` and settled by a second rollback (the fake shows
+each process's root folder as a link under its state folder); a second `apply`, a `rollback` and `check` while an `apply`
+holds the lock, and while another process holds it, `check` leaving the
+running run's backup alone; the removal of an `.incomplete-` folder refused
+while another run holds the lock; a short wait for a `check` that holds it; a backup that appears
+between `apply`'s reading and its lock, and one whose records cannot be
+read, each named; a time limit that ends
+a command's whole process group; the health calls' TLS arguments; every
+refused host and every refused backup above, each leaving the configs, the
+index, the backups and the units alone; and, as root, the owners and groups
+kept, a file bound over a config or the index in a real process's mount
+namespace refused, and a `--host-root` that is a bind mount of `/` taken
+for the host, so it turns no test hook on. `scripts/remote_alpha_rotate_signing_keys_wrapper_test.go`
+starts the wrapper of a copied clone and plants code that must never run:
+beside a symbolic link to the wrapper, behind a path with `..`, through an
+inherited `PWD` or `CDPATH`, in `PYTHONPATH`, and as a helper replaced
+through a folder its group can write, and as a folder holding
+`__main__.py` (Python runs such a folder) in the helper's place; each is
+refused, or the clone's own helper runs; and, as root, code of another account, an ordinary user's
+clone included, is refused by the wrapper before it runs, and a folder
+above `scripts/` of another account by the helper started on its own (as a
+normal user too, with the helper judging for another owner), and by the
+helper started on its own, a folder above `scripts/` its group can write
+and a clone reached through a symbolic link.
+One test makes the keys with the machine's own `/usr/bin/openssl`.
+`ags/app/signing_key_rotation_e2e_test.go` runs the real script against
+real ARS, EGS, AGS and ES that load the files it writes: an artifact
+published before the rotation publishes and prepares again after it, a
+record sealed with the old AGS key is refused, ES refuses an EGS still on
+its old key, and a rollback brings back the old keys and the old index.
 
 ## Python In The Scripts
 

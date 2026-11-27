@@ -895,6 +895,11 @@ func byPathOwnershipChangeLines(source string) []string {
 // nomad_config_write's new chmod 0640 sets the mode of the temporary file
 // that the same root shell has just created exclusively in the root-owned
 // /etc/nomad.d.
+//
+// remote_alpha_rotate_signing_keys.sh's two lines came with ES PR #76 and
+// are the text of its refusals (the advice to hand the clone to root, and
+// to make it writable by no one else); the wrapper changes no owner or
+// mode itself.
 var byPathOwnershipChangeAllowance = map[string]int{
 	"scripts/01_bringup.sh":                                           1,
 	"scripts/70_linux_setup.sh":                                       8,
@@ -916,6 +921,7 @@ var byPathOwnershipChangeAllowance = map[string]int{
 	"scripts/internal/remote_alpha_vault_workload_auth_check.sh":      2,
 	"scripts/nomad_acl_setup.sh":                                      1,
 	"scripts/remote_alpha_operator.sh":                                10,
+	"scripts/remote_alpha_rotate_signing_keys.sh":                     2,
 	"scripts/remote_alpha_runtime_identity_helper_summary.sh":         2,
 }
 

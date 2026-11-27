@@ -197,3 +197,33 @@ skips-itself execution-substrate/scripts TestRemoteAlphaHostFirewallSSHDDropInWi
 # without root, so the test skips itself there. It makes the key files
 # itself, since the go command never runs as root in the step that runs it.
 skips-itself execution-substrate/scripts TestSupportedLocalRendererRefusesASigningKeyFileAnotherUserOwns
+
+# Scripts package: the Remote Alpha signing key rotation must keep the owner
+# and group of every file it rewrites or restores, and refuse a config, an
+# index or a backup root that another account owns
+# (scripts/internal/remote_alpha_rotate_signing_keys.py). Giving files to
+# other owners and groups needs root, and the runner runs the tests without
+# root, so the test skips itself there. The rest of the rotation's tests run
+# in the gate without root.
+skips-itself execution-substrate/scripts TestSigningKeyRotationKeepsOwnersAndGroupsAsRoot
+
+# Scripts package: run as root, the rotation's wrapper must refuse a clone
+# whose code another account owns, an ordinary user's included, before any
+# of it runs (scripts/remote_alpha_rotate_signing_keys.sh). Giving files to
+# other accounts needs root, so the test skips itself in the step "Test";
+# its checks for a run without root stay in the gate.
+skips-itself execution-substrate/scripts TestSigningKeyRotationWrapperRefusesCodeOfAnotherOwnerAsRoot
+
+# Scripts package: the rotation compares the file each service's main
+# process sees at its config's path and at the index's path with the host's
+# (scripts/internal/remote_alpha_rotate_signing_keys.py, view_problems). The
+# test binds a file over a config or the index in a real process's mount
+# namespace, as systemd does for a unit with BindPaths=, which needs root,
+# so it skips itself in the step "Test". The checks of the same rule with
+# the fake systemctl stay in the gate.
+skips-itself execution-substrate/scripts TestSigningKeyRotationSeesTheFilesEachServiceSeesAsRoot
+
+# Scripts package: a --host-root that is a bind mount of / must be the host
+# itself, so that it turns no test hook on over the host's files. Making the
+# bind mount needs root, so the test skips itself in the step "Test".
+skips-itself execution-substrate/scripts TestSigningKeyRotationHostRootBoundToSlashIsTheHostAsRoot

@@ -47,6 +47,8 @@ if remote_alpha_deploy_es_binaries_stage_make_local_upload_tree %q; then echo "t
 		{"failed toolchain check", "1", "", nil},
 		{"failed first build", "0", "./cmd/es", []string{"./cmd/es"}},
 		{"failed second build", "0", "./cmd/es-runtime-support", []string{"./cmd/es", "./cmd/es-runtime-support"}},
+		{"failed ES config check build", "0", "./scripts/internal/esconfigcheck", []string{"./cmd/es", "./cmd/es-runtime-support", "./scripts/internal/esconfigcheck"}},
+		{"failed EGS config check build", "0", "./scripts/internal/egsconfigcheck", []string{"./cmd/es", "./cmd/es-runtime-support", "./scripts/internal/esconfigcheck", "./scripts/internal/agsconfigcheck", "./scripts/internal/egsconfigcheck"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -92,7 +94,7 @@ func TestRemoteAlphaStageESBinariesLocalUploadTreeStepsReturnOnFailure(t *testin
 	}
 	for name, want := range map[string]int{
 		"remote_alpha_deploy_es_binaries_stage_make_local_upload_tree":  3,
-		"remote_alpha_deploy_es_binaries_stage_make_local_payload_tree": 4,
+		"remote_alpha_deploy_es_binaries_stage_make_local_payload_tree": 7,
 	} {
 		start := "\n" + name + "() {\n"
 		i := strings.Index(helper, start)

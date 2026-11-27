@@ -73,14 +73,16 @@ type layoutImport struct {
 // entry that no file needs any more fails the test, so the list only
 // shrinks.
 var layoutCrossServiceExceptions = map[layoutImport]string{
-	{"ags/app/app_integration_test.go", "ars/index"}:        "reads ARS's on-disk index of an in-process ARS",
-	{"ags/app/app_integration_test.go", "ars/store"}:        "reads ARS's on-disk blob store of an in-process ARS",
-	{"ags/app/app_integration_test.go", "es/admission"}:     "builds ES prepare requests, whose types live in es/admission",
-	{"es/app/app_integration_test.go", "ars/index"}:         "writes ARS's on-disk index for an in-process ARS",
-	{"es/app/app_integration_test.go", "ars/store"}:         "writes ARS's on-disk blob store for an in-process ARS",
-	{"es/app/submit_integration_test.go", "ars/index"}:      "reads ARS's on-disk index of an in-process ARS",
-	{"es/app/submit_integration_test.go", "ars/store"}:      "reads ARS's on-disk blob store of an in-process ARS",
-	{"scripts/internal/esconfigcheck/main.go", "es/config"}: "the ES upgrade script checks a config with ES's own loader",
+	{"ags/app/app_integration_test.go", "ars/index"}:          "reads ARS's on-disk index of an in-process ARS",
+	{"ags/app/app_integration_test.go", "ars/store"}:          "reads ARS's on-disk blob store of an in-process ARS",
+	{"ags/app/app_integration_test.go", "es/admission"}:       "builds ES prepare requests, whose types live in es/admission",
+	{"es/app/app_integration_test.go", "ars/index"}:           "writes ARS's on-disk index for an in-process ARS",
+	{"es/app/app_integration_test.go", "ars/store"}:           "writes ARS's on-disk blob store for an in-process ARS",
+	{"es/app/submit_integration_test.go", "ars/index"}:        "reads ARS's on-disk index of an in-process ARS",
+	{"es/app/submit_integration_test.go", "ars/store"}:        "reads ARS's on-disk blob store of an in-process ARS",
+	{"scripts/internal/esconfigcheck/main.go", "es/config"}:   "the ES upgrade script checks a config with ES's own loader",
+	{"scripts/internal/agsconfigcheck/main.go", "ags/config"}: "the ES binary deployment checks the AGS config with AGS's own loader",
+	{"scripts/internal/egsconfigcheck/main.go", "egs/config"}: "the ES binary deployment checks the EGS config with EGS's own loader",
 }
 
 // layoutGoFileVisible reports whether the go command builds or tests the

@@ -231,7 +231,11 @@ AGS no longer exposes a legacy-signing compatibility control. The current publis
   on a host, check its `revoked_artifacts` for upper-case hex (the check in
   the revocation runbook flags it). Write any such entry in lower case, or
   delete it if the list already holds its lower-case form: a duplicate is
-  refused too.
+  refused too. On the Remote Alpha box the ES binary deployment makes this
+  check itself: its EGS config check refuses such an entry, and names it,
+  before it installs anything
+  (`.docs/system_overview/remote_supported_host_alpha.md`, "Remote ES Binary
+  Deployment Surface").
 - `publication.version` and `publication.update_revision` configure
   EGS-owned publication metadata. They are not trust-contract/schema/API
   versioning for the current EGS v1 surface.
@@ -288,19 +292,29 @@ only while those keys are secret to the host.
   32 zero bytes is one, so a placeholder of zeros is not a key. AGS, EGS and
   ES binaries with this check do not start on a host still on such keys, so
   the host has to get its own keys before it runs them;
-  `scripts/internal/esconfigcheck` refuses the same `es.json`. A
+  `scripts/internal/esconfigcheck`, `agsconfigcheck` and `egsconfigcheck`
+  refuse the same configs with each service's own `config.Load`, and the
+  Remote Alpha ES binary deployment runs all three on the box's configs
+  before it installs anything (`remote_supported_host_alpha.md`, "Remote ES
+  Binary Deployment Surface"). A
   supported-local proof root made before setup generated keys keeps the old
   keys, so its services no longer start; running setup again makes a new
   proof root with its own keys.
 - AGS and EGS refuse a 64-byte private key whose second half is not the
   public key of its first half; `signingkeygen` writes 32-byte seeds.
+- `scripts/remote_alpha_rotate_signing_keys.sh` gives the Remote Alpha box
+  new AGS and EGS keys and points EGS and ES at them, with a backup and a
+  rollback (`remote_supported_host_alpha.md`, "Remote Signing Key
+  Rotation").
 - Changing a host's keys makes ES refuse evidence sealed with the old AGS key,
   so artifacts published before the change must be published again from
   their sources through AGS, into an ARS index that does not hold their old
   records: ARS registers one record per artifact digest and refuses a
   different one for the same digest (`contracts.md`, section 6), and the
-  same artifact sealed with a new key has the same artifact digest. A new
-  supported-local proof root starts with an empty index. Old evidence is not
+  same artifact sealed with a new key has the same artifact digest. The
+  Remote Alpha rotation moves the box's index into its backup and gives ARS
+  an empty one; a new supported-local proof root starts with an empty
+  index. The blobs stay where they are: they are named by their digests. Old evidence is not
   re-signed with the new key: anyone could have sealed evidence with a known
   key, so re-signing it would vouch for evidence the host cannot tell from a
   forgery.
