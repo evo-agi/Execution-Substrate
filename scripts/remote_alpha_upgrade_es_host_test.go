@@ -2245,3 +2245,136 @@ func TestRemoteAlphaUpgradeESApplySurvivesALostSession(t *testing.T) {
 		})
 	}
 }
+
+// TestRemoteAlphaUpgradeESRollbackKeepsANamespaceBinding: rollback and
+// restore put es.json back from a backup, and no backup holds ES's client CA
+// file. After the user identity helper's allow, that file holds the user CA
+// and es.json binds user to it; a backup from before allow would take the
+// binding away and leave the CA trusted for any caller, the operator
+// included. One from before a revoke would admit the revoked name again.
+// Both are refused before a service stops, with nothing changed.
+func TestRemoteAlphaUpgradeESRollbackKeepsANamespaceBinding(t *testing.T) {
+	helper := buildESConfigCheck(t)
+	userCA, _, userCAPEM := userIdentityTestCA(t, "Execution Substrate Remote Alpha User CA")
+	_, _, runtimeCAPEM := userIdentityTestCA(t, "Remote Alpha Runtime CA")
+	userSHA := sha256Hex(userCA.Raw)
+	const esJSON = "etc/execution-substrate/es.json"
+	// The fixture's es.json names /abs/path/tls/runtime-ca.pem as ES's client CA file.
+	const clientCA = "abs/path/tls/runtime-ca.pem"
+
+	applied := func(t *testing.T) (*upgradeHost, string) {
+		h := newUpgradeHost(t, helper)
+		if _, stderr, code := h.apply(); code != 0 {
+			t.Fatalf("apply exited %d: %s", code, stderr)
+		}
+		backupDir, _ := readSummary(t, h)
+		h.mkdir("abs", 0o755)
+		h.mkdir("abs/path", 0o755)
+		h.mkdir("abs/path/tls", 0o755)
+		h.write(clientCA, string(runtimeCAPEM), 0o644)
+		h.clearCalls()
+		return h, backupDir
+	}
+	// edit writes what allow and revoke write into es.json.
+	edit := func(h *upgradeHost, binding bool, add ...string) {
+		var doc map[string]any
+		if err := json.Unmarshal([]byte(mustRead(t, h.path(esJSON))), &doc); err != nil {
+			t.Fatal(err)
+		}
+		security := doc["security"].(map[string]any)
+		delete(security, "namespace_issuers")
+		if binding {
+			security["namespace_issuers"] = []any{map[string]any{"path_prefix": "user", "issuer_certificate_sha256": userSHA}}
+		}
+		auth := doc["authorization"].(map[string]any)
+		var prefixes []any
+		for _, p := range auth["allowed_spiffe_path_prefixes"].([]any) {
+			if !strings.HasPrefix(p.(string), "user/") {
+				prefixes = append(prefixes, p)
+			}
+		}
+		for _, p := range add {
+			prefixes = append(prefixes, p)
+		}
+		auth["allowed_spiffe_path_prefixes"] = prefixes
+		out, err := json.MarshalIndent(doc, "", "  ")
+		if err != nil {
+			t.Fatal(err)
+		}
+		h.write(esJSON, string(out)+"\n", 0o640)
+	}
+
+	t.Run("a backup from before allow is refused before a service stops", func(t *testing.T) {
+		h, backupDir := applied(t)
+		h.write(clientCA, string(runtimeCAPEM)+string(userCAPEM), 0o644)
+		edit(h, true, "user/claude")
+		before := h.snapshot()
+		_, stderr, code := h.run("rollback", "--backup-dir", backupDir)
+		if code != 1 || !strings.Contains(stderr, "would no longer bind user to it") || !strings.Contains(stderr, "remote_alpha_user_identity.sh") ||
+			!strings.Contains(stderr, "nothing was changed") {
+			t.Fatalf("rollback exited %d: %s", code, stderr)
+		}
+		onlyReads(t, h, "a refused rollback")
+		assertRestored(t, before, h.snapshot())
+	})
+
+	t.Run("rollback goes on once the user CA is out of the client CA file", func(t *testing.T) {
+		h, backupDir := applied(t)
+		// revoke --remove-ca takes the CA out of the client CA file first; a
+		// binding left beside it no longer guards any trust.
+		edit(h, true)
+		if _, stderr, code := h.run("rollback", "--backup-dir", backupDir); code != 0 {
+			t.Fatalf("rollback exited %d: %s", code, stderr)
+		}
+		if strings.Contains(mustRead(t, h.path(esJSON)), "namespace_issuers") {
+			t.Fatalf("rollback did not put the older es.json back")
+		}
+	})
+
+	t.Run("restore refuses the same, and a backup from before a revoke", func(t *testing.T) {
+		h, _ := applied(t)
+		h.write(clientCA, string(runtimeCAPEM)+string(userCAPEM), 0o644)
+		edit(h, true, "user/claude", "user/dana")
+		backupDir := filepath.Join(t.TempDir(), "backup")
+		if _, stderr, code := h.run("backup", "--backup-dir", backupDir, "--path", h.path(esJSON)); code != 0 {
+			t.Fatalf("backup exited %d: %s", code, stderr)
+		}
+		edit(h, true, "user/dana") // revoke --name claude
+		before := h.snapshot()
+		_, stderr, code := h.run("restore", "--backup-dir", backupDir)
+		if code != 1 || !strings.Contains(stderr, "would put user/claude back into the allowlist") {
+			t.Fatalf("restore exited %d: %s", code, stderr)
+		}
+		assertRestored(t, before, h.snapshot())
+
+		older := filepath.Join(t.TempDir(), "older")
+		edit(h, false)
+		if _, stderr, code := h.run("backup", "--backup-dir", older, "--path", h.path(esJSON)); code != 0 {
+			t.Fatalf("backup exited %d: %s", code, stderr)
+		}
+		edit(h, true, "user/dana")
+		before = h.snapshot()
+		if _, stderr, code := h.run("restore", "--backup-dir", older); code != 1 || !strings.Contains(stderr, "would no longer bind user to it") {
+			t.Fatalf("restore exited %d: %s", code, stderr)
+		}
+		assertRestored(t, before, h.snapshot())
+	})
+
+	t.Run("a backup es.json that hides a key from this check is refused", func(t *testing.T) {
+		h, _ := applied(t)
+		h.write(clientCA, string(runtimeCAPEM)+string(userCAPEM), 0o644)
+		edit(h, true, "user/claude")
+		bound := mustRead(t, h.path(esJSON))
+		h.write(esJSON, strings.Replace(bound, `"security"`, `"Security"`, 1), 0o640)
+		backupDir := filepath.Join(t.TempDir(), "backup")
+		if _, stderr, code := h.run("backup", "--backup-dir", backupDir, "--path", h.path(esJSON)); code != 0 {
+			t.Fatalf("backup exited %d: %s", code, stderr)
+		}
+		h.write(esJSON, bound, 0o640)
+		before := h.snapshot()
+		if _, stderr, code := h.run("restore", "--backup-dir", backupDir); code != 1 || !strings.Contains(stderr, "cannot be read for its namespace bindings") {
+			t.Fatalf("restore exited %d: %s", code, stderr)
+		}
+		assertRestored(t, before, h.snapshot())
+	})
+}

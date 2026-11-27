@@ -211,16 +211,16 @@ def held_stops_note() -> str:
 
 
 def printable(value) -> str:
-    """value as text with every character that is not printable (a newline,
-    an escape sequence, a direction override) written as a Python escape, so
-    that text from a CSR, a certificate or a file can neither add a line to a
-    report nor rewrite one on the terminal."""
+    """value as text with every character outside printable ASCII (a newline,
+    an escape sequence, a direction override, a character that draws blank)
+    written as a Python escape, so that text from a CSR, a certificate or a
+    file can neither add a line to a report nor rewrite one on the terminal."""
     text = str(value)
-    if text.isprintable():
+    if all(" " <= ch <= "~" for ch in text):
         return text
     out = []
     for ch in text:
-        if ch.isprintable():
+        if " " <= ch <= "~":
             out.append(ch)
         elif ord(ch) < 0x100:
             out.append(f"\\x{ord(ch):02x}")
@@ -653,12 +653,23 @@ def name_is_single_cn(rdns: list, cn: str) -> bool:
             and rdns[0][0][1] in (TAG_UTF8, TAG_PRINTABLE) and rdns[0][0][2] == cn)
 
 
+# Text taken from a CSR or a certificate is cut to this many characters in
+# reports (a name's CN is at most 64 in X.520), so it cannot pad a report
+# line until the terminal wraps and starts a row with text of its own.
+UNTRUSTED_TEXT_CHARS = 64
+
+
 def name_text(rdns: list) -> str:
     labels = {OID_CN: "CN", OID_O: "O"}
     out = []
     for rdn in rdns:
-        out.append("+".join(f"{labels.get(oid, oid)}={printable(text) if text is not None else '?'}" for oid, _, text in rdn))
-    return ", ".join(out)
+        out.append("+".join(f"{labels.get(oid, oid)}={clipped(text) if text is not None else '?'}" for oid, _, text in rdn))
+    return ", ".join(out[:4]) + (f", ... ({len(out) - 4} more)" if len(out) > 4 else "")
+
+
+def clipped(text: str, limit: int = UNTRUSTED_TEXT_CHARS) -> str:
+    text = printable(text)
+    return text if len(text) <= limit else text[:limit] + f"... ({len(text) - limit} more)"
 
 
 @_der_guarded
@@ -2362,7 +2373,9 @@ def mode_init_ca_replace(r: Runner, rep: Report, apply: bool) -> None:
     ca = UserCA(L)
     if not ca.exists():
         raise Refusal("the user CA does not exist; run init-ca without --replace")
-    pending = ca.load(allow_pending=True)
+    # The old key is never read, only replaced: a drifted or deleted one (the
+    # owner may delete a leaked key by hand) does not stop the replacement.
+    pending = ca.load(allow_pending=True, need_key=False)
     if pending == "committed":
         rep.check("replacement", "attention", f"the registry already names the new CA {ca.cert['sha256'][:16]}..., "
                   f"and its move out of {ca.next_dir} did not finish")
@@ -2405,6 +2418,12 @@ def mode_init_ca_replace(r: Runner, rep: Report, apply: bool) -> None:
             raise Refusal(f"{config.label} allowlist still holds {listed[0]!r}")
     old = ca.registry["ca"]
     rep.check("user CA", "ok", f"{old['sha256'][:16]}... is installed nowhere and no name is active")
+    key_st = lstat_or_none(ca.key_path)
+    if key_st is not None and not stat.S_ISREG(key_st.st_mode):
+        raise Refusal(f"{ca.key_path} is not a regular file; remove it by hand, then run init-ca --replace again")
+    key_problem = ca.key_problem()
+    if key_problem:
+        rep.check("old user CA key", "attention", f"{key_problem}; --replace does not need it and replaces it")
     if pending == "staged":
         rep.planned(f"discard the unfinished replacement in {ca.next_dir}, which the registry never named")
     ca_plan(rep, L, ca.next_dir)
@@ -2612,7 +2631,10 @@ def mode_allow(r: Runner, rep: Report, apply: bool, name: str) -> None:
             raise Refusal(f"{config.label} allowlist entry {covering[0]!r} already authorizes {prefix}; revoking the name could not take effect")
         problem = config.binding_problem(L.path_namespace, sha)
         if problem:
-            raise Refusal(f"{config.label} security.namespace_issuers {problem}, which AGS and ES refuse beside the user CA's binding")
+            ca_file = box.files["ags_ca" if config is box.ags else "es_ca"].path
+            raise Refusal(f"{config.label} security.namespace_issuers {problem}, which AGS and ES refuse beside the user CA's binding. "
+                          f"This helper never writes such an entry: take its CA out of {ca_file} first and only then the entry, "
+                          "by hand as \"Revoke by hand\" in the user identity runbook does, restart AGS then ES, and run allow again")
     added_binding = False
     for config in (box.ags, box.es):
         if config.binds(L.path_namespace, sha):
@@ -2737,7 +2759,18 @@ def mode_revoke(r: Runner, rep: Report, apply: bool, name: str, remove_ca: bool)
         rep.planned("restart " + " then ".join(units) + "; a failure keeps the removal on disk and is reported, nothing is put back")
     if entry["state"] != "revoked":
         rep.planned(f"mark {name} revoked in the registry for good")
-    strays = box.strays()
+    # A plain revoke never writes a client CA file, so a file this helper cannot
+    # read in the user CA shape (an extra CA after the user CA, say) must not
+    # stop it; it is reported instead. --remove-ca and a retired CA need to cut
+    # the file, so they still refuse.
+    shape_problem = ""
+    try:
+        strays = box.strays()
+        box.unbound_trust()
+    except Refusal as exc:
+        if remove:
+            raise
+        strays, shape_problem = [], str(exc)
 
     def finish(text: str, unbound: list) -> None:
         # revoke ends "ok" only when no service is left trusting a user CA
@@ -2749,6 +2782,9 @@ def mode_revoke(r: Runner, rep: Report, apply: bool, name: str, remove_ca: bool)
                          f"binding, or revoke --remove-ca once no name is active.")
         if strays:
             notes.append(f"The client CA files still hold another user CA ({strays[0][:16]}...); remove it by hand.")
+        if shape_problem:
+            notes.append(f"A client CA file could not be read ({shape_problem}), so whether the user CA is still trusted "
+                         "there was not checked; look at it by hand.")
         if key_problem:
             notes.append(f"The user CA key file needs attention ({key_problem}); if the key may have leaked, revoke every "
                          "name, run revoke --remove-ca and then init-ca --replace.")
@@ -2756,7 +2792,7 @@ def mode_revoke(r: Runner, rep: Report, apply: bool, name: str, remove_ca: bool)
         rep.message = " ".join([text] + notes)
 
     if not units and entry["state"] == "revoked" and not retire:
-        finish(f"{prefix} is already revoked and in no allowlist; nothing to do", box.unbound_trust())
+        finish(f"{prefix} is already revoked and in no allowlist; nothing to do", [] if shape_problem else box.unbound_trust())
         return
     if not apply:
         rep.result = "planned"
@@ -2784,7 +2820,7 @@ def mode_revoke(r: Runner, rep: Report, apply: bool, name: str, remove_ca: bool)
     rep.action(f"recorded in the registry: {name} revoked" + (", user CA retired" if retire else "")
                + (f", {' and '.join(units)} to restart" if units else ""))
     if not units:
-        finish(done, box.unbound_trust())
+        finish(done, [] if shape_problem else box.unbound_trust())
         return
     unfinished = (f"the registry marks {name} revoked and lists the services still to restart, so run revoke again "
                   "to finish")
@@ -2804,7 +2840,8 @@ def mode_revoke(r: Runner, rep: Report, apply: bool, name: str, remove_ca: bool)
     try:
         unbound = Box(L, ca).unbound_trust(as_read=True)
     except Refusal as exc:
-        problems.append(f"cannot read the service files back: {exc}")
+        if not shape_problem:
+            problems.append(f"cannot read the service files back: {exc}")
         unbound = []
     if problems:
         entry["pending_restarts"] = ordered_units(L, failed) or units
@@ -2837,11 +2874,17 @@ def mode_status(r: Runner, rep: Report) -> None:
         ca_pem = None
     else:
         try:
-            ca.load()
+            # The key is checked on its own below: a drifted or deleted key
+            # (perhaps after a leak) must not hide the per-service checks.
+            ca.load(need_key=False)
         except Refusal as exc:
             rep.check("user CA", "fail", str(exc))
             rep.result = "attention"
             return
+        key_problem = ca.key_problem()
+        if key_problem:
+            rep.check("user CA key", "attention", f"{key_problem}; issue and allow refuse until it is fixed, revoke does not need "
+                      "it, and init-ca --replace makes a new CA and key without it")
         left = days_left(ca.cert["not_after"])
         if ca.retired:
             rep.check("user CA", "ok", f"sha256 {ca.cert['sha256'][:16]}..., retired at {ca.registry['ca']['retired_at']}; "
@@ -2946,7 +2989,9 @@ def mode_status(r: Runner, rep: Report) -> None:
             for field in ("publisher_principal", "caller_principal"):
                 value = rule.get(field, "")
                 if value.startswith(namespace_id):
-                    entry = names.get(value[len(namespace_id):])
+                    # ES admits a caller below an allowlist entry, so a rule
+                    # for user/<name>/x belongs to <name>, as for revoke.
+                    entry = names.get(value[len(namespace_id):].split("/", 1)[0])
                     if entry is None or entry["state"] != "active":
                         rep.check(f"{config.label} workload grant rule {i}", "attention",
                                   f"{field} {value} is not an active user; revoke removes such rules")
@@ -3214,7 +3259,7 @@ def call_service(L: Layout, host: str, port: int, service: str, cert_path: str, 
         return {"outcome": "not_allowed", "status": status,
                 "detail": "authenticated, but the identity is not on the allowlist; run allow on the box"}
     if status == 403:
-        return {"outcome": "refused", "status": status, "detail": f"refused: {text[:200]}"}
+        return {"outcome": "refused", "status": status, "detail": f"refused: {clipped(text, 200)}"}
     return {"outcome": "unexpected", "status": status, "detail": f"unexpected HTTP {status}{(' ' + code) if code else ''}"}
 
 

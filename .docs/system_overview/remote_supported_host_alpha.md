@@ -4897,8 +4897,13 @@ stop after that keeps every removal already written, so a service that
 starts later starts without the name; nothing is put back. A stop signal
 that arrives while `revoke` writes the files is held until the writes end and
 then stops it before the restarts. `revoke` needs no CA key: a CA key file
-whose owner or mode has drifted is reported as `attention`, not a reason to
-stop. What can still refuse a revocation (a service file with an ACL or a
+whose owner or mode has drifted, or that is gone, is reported as `attention`,
+not a reason to stop. `status` reports such a key as a check of its own and
+still checks each service, and `init-ca --replace`, which never reads the old
+key, replaces it. A plain `revoke` writes no client CA file, so one it cannot
+read in the user CA's shape (another CA after the user CA, say) does not stop
+it either: it ends `attention` and says to look at that file; `--remove-ca`
+must cut the file and still refuses. What can still refuse a revocation (a service file with an ACL or a
 `user.` attribute, a directory writable by group or others, an unreadable
 registry or CA certificate, an unfinished `init-ca --replace`) is listed in
 the runbook, with the steps to revoke by hand. The report says
@@ -4955,6 +4960,21 @@ holds beside it; `status` reports each. The owner runs `revoke` again for each
 name it lists, which also finishes removing a retired user CA, and removes an
 older user CA that `init-ca --replace` replaced by hand, as the user identity
 runbook says.
+
+### ES upgrade rollback interaction
+
+The ES upgrade (`scripts/remote_alpha_upgrade_es.sh`) backs up `es.json` but
+not ES's client CA file, so its `rollback` after `allow` would put back an
+`es.json` without the `user` binding beside a client CA file that still holds
+the user CA: ES would then accept a certificate for `operator/local` signed
+with the user CA key. Its `rollback` and `restore` refuse that, and a backup
+that would put back an allowlist entry under `user/` that `es.json` no longer
+lists (a revoked name), before any service stops, and change nothing. To roll
+an ES upgrade back on a box with user identities, revoke every name, run
+`revoke --remove-ca`, then roll back; revoked names stay revoked, so the
+identities come back later under new names. A rollback restores an older ES build,
+which refuses the binding at its start, so `allow` cannot repair this state
+on it.
 
 ### Network grants for user callers
 
@@ -7759,7 +7779,12 @@ a leader within 90 seconds at the address the restored `nomad.hcl` serves
 Nomad. It records `rolled_back`, `rolled_back_unhealthy` when the endpoints
 do not answer 200 within 60 seconds, or `rollback_failed`, with the failure.
 `rollback` does the same from a backup folder, ignoring `SIGHUP`, and exits
-1 on any of those failures. It refuses a backup of ES PR #54's upgrade
+1 on any of those failures. Before it stops anything, `rollback` (and
+`restore`) refuses a backup whose `es.json` would no longer bind a namespace
+to a CA that ES's client CA file holds, or that would put back a `user/`
+allowlist entry `es.json` no longer lists; no backup holds the client CA
+file, so the user identity helper's binding and its CA must not come apart
+("ES upgrade rollback interaction" in the user identity section). It refuses a backup of ES PR #54's upgrade
 (schema v1), which the script at `16cbf739` restores. Output that can no
 longer be written never stops either one: a terminal that hangs up sends
 `SIGHUP`, so `apply` rolls back, while a closed output pipe alone does not,

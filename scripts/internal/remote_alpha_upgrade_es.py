@@ -23,7 +23,10 @@ host steps:
                   material, restart Nomad on HTTPS, provision its ACLs
                   again, migrate es.json, install the binaries, start ES
                   and verify; on any failure, put the backup back
-  rollback        (root) put a backup back and start Nomad and ES
+  rollback        (root) put a backup back and start Nomad and ES; refuse,
+                  before anything stops, a backup whose es.json would leave
+                  ES trusting a CA without its namespace binding or would
+                  admit a user name again
 
 and the host-independent pieces they are built on:
 
@@ -34,13 +37,15 @@ and the host-independent pieces they are built on:
                   apply use it to verify the key the first upgrade made)
   backup          copy named files, with owner, mode and SHA-256, into a
                   new root-only backup directory
-  restore         put every file of such a backup back exactly
+  restore         put every file of such a backup back exactly, with the
+                  same refusal as rollback
 
 Everything refuses what it does not recognise rather than guess. Nothing
 prints key or token material.
 """
 
 import argparse
+import base64
 import errno
 import grp
 import hashlib
@@ -437,12 +442,140 @@ def restore_files(backup_dir):
     return {"restored": restored, "absent_at_backup": left}
 
 
+# A service config binds a path namespace to one client CA
+# (security.namespace_issuers); the CA itself sits in the client CA file the
+# config names (tls.client_ca_file), which no upgrade backup holds. The user
+# identity helper (scripts/remote_alpha_user_identity.sh) binds "user" to its
+# CA in AGS and ES. A config put back from before that binding, beside a client
+# CA file that still holds the CA, lets the CA vouch for any caller, the
+# operator included; a config put back from before a revocation admits the
+# revoked name again. restore and rollback refuse both before anything stops.
+USER_NAMESPACE = "user"
+USER_CA_CERT = "/etc/execution-substrate/user-ca/ca-cert.pem"
+USER_IDENTITY_WAY = ("revoke every user name and then run revoke --name <the last one> --remove-ca --apply with "
+                     "scripts/remote_alpha_user_identity.sh (see the user identity runbook), then run this again")
+
+
+# Go's encoding/json also feeds a field from a case variant of its key, and
+# the last of repeated keys wins: refuse either for the keys read here.
+TRUST_KEYS = {"security", "authorization", "tls", "namespace_issuers", "allowed_spiffe_path_prefixes",
+              "client_ca_file", "path_prefix", "issuer_certificate_sha256"}
+
+
+class HiddenTrustKey(ValueError):
+    """A trust key repeated or in a case variant."""
+
+
+def _strict_object(pairs):
+    keys = [k for k, _ in pairs]
+    for k in keys:
+        if k.lower() in TRUST_KEYS and (k != k.lower() or keys.count(k) > 1):
+            raise HiddenTrustKey(f"key {k!r} is repeated or not lower-case")
+    return dict(pairs)
+
+
+def trust_view(data):
+    """(bindings, allowlist, client CA file) of a service config, or None
+    when the bytes are not a JSON object with authorization or security (a
+    binary, nomad.hcl). Raises ValueError when a service config cannot be read
+    the way the services read it."""
+    try:
+        doc = json.loads(data.decode("utf-8"), object_pairs_hook=_strict_object)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(doc, dict) or not ({"authorization", "security"} & set(doc)):
+        return None
+    section = lambda key: doc.get(key) if isinstance(doc.get(key), dict) else {}  # noqa: E731
+    issuers = section("security").get("namespace_issuers") or []
+    prefixes = section("authorization").get("allowed_spiffe_path_prefixes") or []
+    if not isinstance(issuers, list) or not all(isinstance(i, dict) for i in issuers) or not isinstance(prefixes, list):
+        raise ValueError("namespace_issuers or allowed_spiffe_path_prefixes is not a list")
+    bindings = {(str(i.get("path_prefix")), str(i.get("issuer_certificate_sha256"))) for i in issuers}
+    return bindings, [p for p in prefixes if isinstance(p, str)], section("tls").get("client_ca_file")
+
+
+def pem_certificate_sha256s(data):
+    """SHA-256 of the DER of every certificate block, as ES's binding names it."""
+    out, rest = set(), data.decode("ascii", "replace")
+    while "-----BEGIN CERTIFICATE-----" in rest:
+        rest = rest.split("-----BEGIN CERTIFICATE-----", 1)[1]
+        body, _, rest = rest.partition("-----END CERTIFICATE-----")
+        out.add(sha256_bytes(base64.b64decode("".join(body.split()), validate=True)))
+    return out
+
+
+def under(path, namespace):
+    return path == namespace or path.startswith(namespace + "/")
+
+
+def refuse_split_trust(manifest, backup_dir):
+    """Refuse a restore after which a client CA file would hold a CA that a
+    service config binds now (or the user CA, newly) while the restored config
+    does not bind it so, or after which a config would allow a user path it no
+    longer allows. Reads only; raises Refusal."""
+    restored = {e["path"]: os.path.join(backup_dir, "files", e["copy"]) for e in manifest["files"] if e["exists"]}
+
+    def now_bytes(path):
+        try:
+            return read_regular_file(path)[0]
+        except FileNotFoundError:
+            return None
+
+    def after_bytes(path):
+        return read_regular_file(restored[path])[0] if path in restored else now_bytes(path)
+
+    try:
+        user_sha = next(iter(pem_certificate_sha256s(now_bytes(host(USER_CA_CERT)) or b"")), None)
+    except ValueError as exc:
+        raise Refusal(f"cannot read the user CA certificate {USER_CA_CERT} ({exc}); nothing was changed")
+    for path in sorted(set(restored) | {host(ES_CONFIG)}):
+        after_data = after_bytes(path)
+        if after_data is None:
+            continue
+        try:
+            after = trust_view(after_data)
+        except ValueError as exc:
+            if path not in restored:
+                continue
+            raise Refusal(f"the backup's {path} cannot be read for its namespace bindings ({exc}); nothing was changed")
+        if after is None:
+            continue
+        current = now_bytes(path)
+        try:
+            before = trust_view(current) if current is not None else None
+        except ValueError:
+            before = None
+        before_bindings, before_allowed = (before[0], before[1]) if before else (set(), [])
+        if not after[2]:
+            continue
+        ca_path = host(after[2])
+        try:
+            ca_after = pem_certificate_sha256s(after_bytes(ca_path) or b"")
+            ca_now = pem_certificate_sha256s(now_bytes(ca_path) or b"")
+        except (ValueError, OSError) as exc:
+            raise Refusal(f"cannot read the certificates in {ca_path} ({exc}); nothing was changed")
+        required = {(p, s) for p, s in before_bindings if s in ca_after}
+        if user_sha in ca_after and (before is None or user_sha not in ca_now):
+            required.add((USER_NAMESPACE, user_sha))
+        for prefix, sha in sorted(required - after[0]):
+            raise Refusal(f"after this restore {ca_path} would still hold the CA {sha[:16]}... while {path} would no longer "
+                          f"bind {prefix} to it, so that CA could vouch for any caller, the operator included; nothing was "
+                          f"changed. To put this backup back, first {USER_IDENTITY_WAY}")
+        namespaces = {USER_NAMESPACE} | {p for p, _ in before_bindings}
+        for entry in after[1]:
+            if entry not in before_allowed and any(under(entry, ns) for ns in namespaces):
+                raise Refusal(f"this restore would put {entry} back into the allowlist of {path}, which no longer lists it "
+                              "(a revoked name would be admitted again); nothing was changed. The backup is older than "
+                              "that change and cannot be put back as it is")
+
+
 def cmd_backup(args):
     manifest = backup_files(args.backup_dir, args.path)
     print(json.dumps({"backup_dir": args.backup_dir, "files": len(manifest["files"])}))
 
 
 def cmd_restore(args):
+    refuse_split_trust(load_backup(args.backup_dir), args.backup_dir)
     print(json.dumps(restore_files(args.backup_dir)))
 
 
@@ -1651,6 +1784,10 @@ def cmd_apply(args):
 def cmd_rollback(args):
     # A terminal that hangs up must not break off a restore halfway.
     signal.signal(signal.SIGHUP, signal.SIG_IGN)
+    # Before any service stops: the backup's es.json must not split the user
+    # CA from its binding or admit a revoked name (apply's own rollback
+    # cannot: apply refuses a box with a binding, and its backup is its own).
+    refuse_split_trust(load_backup(args.backup_dir), args.backup_dir)
     result = restore_host(args.backup_dir, say)
     ok, after = health_after_restore()
     say(json.dumps({"restored": result, "after": after}, indent=2, sort_keys=True))
