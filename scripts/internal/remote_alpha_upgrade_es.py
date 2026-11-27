@@ -513,6 +513,14 @@ NOMAD_CONFIG_MODE = 0o640  # root:root, as scripts/70_linux_setup.sh writes noma
 # modes. Nomad's TLS directory goes in the first, root:root 0755 as the
 # setup makes it, and holds exactly the setup's three files.
 NOMAD_DIRS = ((NOMAD_DIR, 0o755), ("/opt/nomad", 0o755), ("/opt/nomad/data", 0o700))
+# Nor may another account keep an ACL on them. HashiCorp's package gives
+# /etc/nomad.d and the data directory to the nomad account, which may set an
+# ACL on a folder while it owns it, and the owner and mode do not show one.
+# A default ACL decides the mode of each file root then creates in the
+# folder, whatever the umask, and an access ACL keeps entries on the folder.
+# scripts/70_linux_setup.sh removes both when it takes the folders back
+# (re-check 48 of ES PR #66); this upgrade refuses a folder that has one.
+POSIX_ACLS = ("system.posix_acl_access", "system.posix_acl_default")
 NOMAD_TLS_DIR_MODE = 0o755
 NOMAD_TLS_FILES = ("ca.pem", "server-key.pem", "server.pem")
 NOMAD_ACL_DIR = "/etc/execution-substrate/nomad-acl"
@@ -1427,6 +1435,17 @@ def other_nomad_configs():
                   if name != "nomad.hcl" and name.endswith((".hcl", ".json")))
 
 
+def posix_acls(path):
+    """The POSIX ACLs that the folder path has. os has listxattr only on
+    Linux, where the box runs; on macOS, where the tests also run, a folder
+    has no POSIX ACL."""
+    listxattr = getattr(os, "listxattr", None)
+    if listxattr is None:
+        return []
+    present = listxattr(path)
+    return [name for name in POSIX_ACLS if name in present]
+
+
 def owner_mode(st):
     return {"uid": st.st_uid, "gid": st.st_gid, "mode": format(stat.S_IMODE(st.st_mode), "04o")}
 
@@ -1501,6 +1520,9 @@ def tls_dir_shape():
         return None, "present, but not a directory"
     if not owned_by_root(st) or stat.S_IMODE(st.st_mode) != NOMAD_TLS_DIR_MODE:
         return None, f"present, but not root:root {NOMAD_TLS_DIR_MODE:04o} ({owner_mode(st)})"
+    acls = posix_acls(path)
+    if acls:
+        return None, f"present, but has an ACL ({', '.join(acls)})"
     names = tuple(sorted(os.listdir(path)))
     if names != NOMAD_TLS_FILES:
         return None, f"present, but holds {list(names)}, not exactly {list(NOMAD_TLS_FILES)}"
@@ -1790,6 +1812,10 @@ def inspect_host(payload_dir, commit, allow_downgrade=None):
             st = os.lstat(host(path))
             if not stat.S_ISDIR(st.st_mode) or not owned_by_root(st) or stat.S_IMODE(st.st_mode) != mode:
                 block("nomad_dirs", f"{path} is not a root:root {mode:04o} directory")
+                continue
+            acls = posix_acls(host(path))
+            if acls:
+                block("nomad_dirs", f"{path} has an ACL ({', '.join(acls)})")
         except OSError as exc:
             block("nomad_dirs", str(exc))
 

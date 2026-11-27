@@ -7445,7 +7445,7 @@ own:
 | Part | `locked-http` | `https` | `https-gossip` |
 | --- | --- | --- | --- |
 | `/etc/nomad.d/nomad.hcl` | the box's file after the lock and the host-network repair of 2026-11-24 (SHA-256 `ea333055…5163`, 1126 bytes) | that file with the `tls` block of `scripts/70_linux_setup.sh` appended | as `https` |
-| `/etc/nomad.d/tls` | absent | `root:root 0755`, holding exactly `ca.pem`, `server.pem` and `server-key.pem`, which pass the setup's `nomad_tls_material_ok` | as `https` |
+| `/etc/nomad.d/tls` | absent | `root:root 0755` with no ACL, holding exactly `ca.pem`, `server.pem` and `server-key.pem`, which pass the setup's `nomad_tls_material_ok` | as `https` |
 | `/etc/execution-substrate/es.json` | the box build's 49 key paths and the four that ES PR #54's upgrade added (`nomad.token_file` `/etc/execution-substrate/nomad-acl/es-token`, `execution.retained_result_auth` `{store_id: remote-alpha, key_id: k1, key_file: /etc/execution-substrate/retained-result-auth/es.key}`), with `nomad.base_url` `http://127.0.0.1:4646` | the same, with `nomad.base_url` `https://127.0.0.1:4646` and `nomad.server_name` `server.global.nomad`, `nomad.root_ca_file` `/etc/nomad.d/tls/ca.pem` and `nomad.server_spki_sha256` the SHA-256 of the public key of the certificate on disk | as `https` |
 | `es` and `es-runtime-support` | clean builds of `16cbf739` by their own Go build info | clean builds of one commit other than `16cbf739` (which `apply` replaces), or the verified payload's builds of `<commit>` | the verified payload's builds of `<commit>` |
 | `/opt/nomad/data/server/serf.keyring` | absent | absent, or sound when the builds are not the payload's | sound |
@@ -7599,7 +7599,9 @@ write that record; `apply`'s own rollback logs why and goes on.
 - `es.json` is not `root:es 0640`, `nomad.hcl` is not `root:root 0640`,
   `/etc/nomad.d` holds another `.hcl` or `.json` file that Nomad would load,
   or `/etc/nomad.d`, `/opt/nomad` (0755) and `/opt/nomad/data` (0700) are not
-  `root:root` folders with those modes (audit INF-16)
+  `root:root` folders with those modes and no ACL (audit INF-16; an account
+  that owned one could leave a default ACL there, which decides the mode of
+  each file root then creates in it, whatever the umask)
 - on `locked-http`: the new ES's `config.Load` refuses the migrated
   `es.json` (with a stand-in pin, since the key does not exist yet); a token
   file under `/etc/execution-substrate/nomad-acl` is not as provision left it
