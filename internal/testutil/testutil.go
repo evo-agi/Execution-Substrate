@@ -1,6 +1,7 @@
 // Package testutil holds helpers that only tests use: the repository root,
-// and reading and searching the repository's documents. Only test files
-// import it, which a test of this package checks.
+// reading and searching the repository's documents, and giving an example
+// configuration fresh signing keys. Only test files import it, which a test
+// of this package checks.
 //
 // go test runs the tests of a package in the package's directory. A test
 // outside the repository root therefore names a repository file through
@@ -14,10 +15,15 @@
 package testutil
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -112,4 +118,80 @@ func ContainsNone(t testing.TB, label string, text string, forbidden ...string) 
 			t.Fatalf("%s must not contain %q", label, phrase)
 		}
 	}
+}
+
+// testSigningKeys holds, for each running test, the key it generated for
+// each key ID, so that every call of WithFreshSigningKeys in one test gives a
+// key ID the same key.
+var testSigningKeys sync.Map // testing.TB -> *testKeys
+
+type testKeys struct {
+	mu   sync.Mutex
+	byID map[string]ed25519.PrivateKey
+}
+
+// WithFreshSigningKeys gives doc, a decoded AGS, EGS or ES configuration,
+// signing keys generated for this test, and returns doc. It replaces the
+// private and public key of "signer" and the public key of every entry of
+// "verification", and keeps every key ID. Within one test a key ID always
+// gets the same key: entries that share a key ID, as AGS's provenance key is
+// shared by three ES entries, get the same new key, and a test that builds
+// the same configuration twice gets the same bytes.
+//
+// The repository's example configurations carry known keys, which AGS, EGS
+// and ES refuse (.docs/system_overview/contracts.md, section 3B), so a test
+// that needs an example its service accepts calls this first.
+func WithFreshSigningKeys(t testing.TB, doc map[string]any) map[string]any {
+	t.Helper()
+	stored, loaded := testSigningKeys.LoadOrStore(t, &testKeys{byID: map[string]ed25519.PrivateKey{}})
+	if !loaded {
+		t.Cleanup(func() { testSigningKeys.Delete(t) })
+	}
+	cache := stored.(*testKeys)
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+	keys := cache.byID
+	key := func(keyID any) ed25519.PrivateKey {
+		id, ok := keyID.(string)
+		if !ok || id == "" {
+			t.Fatalf("WithFreshSigningKeys: an entry has no key_id")
+		}
+		if keys[id] == nil {
+			_, private, err := ed25519.GenerateKey(rand.Reader)
+			if err != nil {
+				t.Fatalf("WithFreshSigningKeys: generate a key: %v", err)
+			}
+			keys[id] = private
+		}
+		return keys[id]
+	}
+	public := func(private ed25519.PrivateKey) string {
+		return hex.EncodeToString(private.Public().(ed25519.PublicKey))
+	}
+	replaced := 0
+	if signer, ok := doc["signer"].(map[string]any); ok {
+		private := key(signer["key_id"])
+		signer["private_key_hex"] = hex.EncodeToString(private.Seed())
+		signer["public_key_hex"] = public(private)
+		replaced++
+	}
+	if verification, ok := doc["verification"].(map[string]any); ok {
+		names := make([]string, 0, len(verification))
+		for name := range verification {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			entry, ok := verification[name].(map[string]any)
+			if !ok {
+				t.Fatalf("WithFreshSigningKeys: verification.%s is not an object", name)
+			}
+			entry["public_key_hex"] = public(key(entry["key_id"]))
+			replaced++
+		}
+	}
+	if replaced == 0 {
+		t.Fatalf("WithFreshSigningKeys: the configuration has no signer and no verification keys")
+	}
+	return doc
 }

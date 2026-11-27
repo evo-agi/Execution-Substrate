@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"execution-substrate/egs/contract"
+	"execution-substrate/internal/knownkeys"
 )
 
 type Config struct {
@@ -56,6 +57,18 @@ func Load(path string) (Config, error) {
 		return Config{}, fmt.Errorf("open config: %w", err)
 	}
 	defer file.Close()
+
+	// This file holds the EGS private signing key, so only the account
+	// that runs the service and root may read it
+	// (.docs/system_overview/configuration.md, "Signing keys"). The check is
+	// on the opened file, so it judges the file that is read.
+	info, err := file.Stat()
+	if err != nil {
+		return Config{}, fmt.Errorf("inspect config: %w", err)
+	}
+	if !info.Mode().IsRegular() || info.Mode().Perm()&0o007 != 0 {
+		return Config{}, fmt.Errorf("config holds the private signing key and must be a regular file that other users cannot read or write: mode %04o", info.Mode().Perm())
+	}
 
 	var cfg Config
 	decoder := json.NewDecoder(file)
@@ -133,16 +146,23 @@ func (s SignerConfig) Validate() error {
 	if strings.TrimSpace(s.PrivateKeyHex) == "" {
 		return fmt.Errorf("signer.private_key_hex is required")
 	}
-	if _, err := hex.DecodeString(strings.TrimSpace(s.PrivateKeyHex)); err != nil {
+	privateKeyBytes, err := hex.DecodeString(strings.TrimSpace(s.PrivateKeyHex))
+	if err != nil {
 		return fmt.Errorf("signer.private_key_hex must be valid hex")
 	}
 	if strings.TrimSpace(s.PublicKeyHex) == "" {
 		return fmt.Errorf("signer.public_key_hex is required")
 	}
-	if _, err := hex.DecodeString(strings.TrimSpace(s.PublicKeyHex)); err != nil {
+	publicKeyBytes, err := hex.DecodeString(strings.TrimSpace(s.PublicKeyHex))
+	if err != nil {
 		return fmt.Errorf("signer.public_key_hex must be valid hex")
 	}
-	return nil
+	// A known key would let anyone sign a trust policy as this EGS
+	// (.docs/system_overview/contracts.md, section 3B).
+	if err := knownkeys.CheckPrivate("signer.private_key_hex", privateKeyBytes); err != nil {
+		return err
+	}
+	return knownkeys.Check("signer.public_key_hex", publicKeyBytes)
 }
 
 func (c Config) ReadTimeout() time.Duration {

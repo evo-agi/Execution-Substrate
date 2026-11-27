@@ -22,7 +22,7 @@ Revoking a signer revokes every artifact that key signed. ES checks every eviden
 - SSH access to the box with `sudo` (the usual path from the Mac).
 - For an artifact: its artifact digest, as printed by the publish step (`artifact_digest` in the publish response; see step 3 of [.runbooks/execution/Governed Execution ES Submit Static Script Workload.md](../execution/Governed%20Execution%20ES%20Submit%20Static%20Script%20Workload.md)). The evidence digest and the payload digest are different values and do not work here.
 - For a signer: the key ID. For the key AGS signs with now, step 1 prints it.
-- To find the runs to cancel in step 5: a shell on the box as the user who owns the Nomad observer token, and the `nomad` command.
+- To find the runs to cancel in step 5: the `nomad` command on the box. Step 5 runs it as root, through `sudo`.
 - To confirm the refusal: the operator client certificate and the ES URL, exported as in steps 2 and 3 of [.runbooks/system/Governed Execution ES System Bring-Up.md](Governed%20Execution%20ES%20System%20Bring-Up.md), and a prepare request file for the revoked artifact (`PREPARE_JSON`, as in step 4 of the static-script runbook).
 
 Each command below prints only the revocation lists, the allowed signers, a key ID, the problems it finds in those lists, or a run's status, run ID and artifact digest. None prints a private key, a Nomad token or the value of any other field of the config files. Do not open `egs.json` in an editor, with `sudo -e` or with `cat`: it holds EGS's private signing key (`signer.private_key_hex`), and whoever has that key can sign a list with no revocations.
@@ -61,32 +61,60 @@ if os.path.islink(path):
     sys.exit(f"{path} is a symbolic link; run this command on the file it points to; nothing changed")
 if action not in ("add", "remove", "drop-invalid"):
     sys.exit("ACTION must be add, remove or drop-invalid; nothing changed")
-if kind == "artifact":
-    policy_key, list_key = "artifact_policy", "revoked_artifacts"
-elif kind == "signer":
-    policy_key, list_key = "signer_policy", "revoked_signers"
-else:
-    sys.exit("KIND must be artifact or signer; nothing changed")
-if action == "add" and kind == "artifact" and not re.fullmatch(r"sha256:[0-9a-f]{64}", value):
+lists = {"artifact": ("artifact_policy", "revoked_artifacts"), "signer": ("signer_policy", "revoked_signers"),
+         "allowed": ("signer_policy", "allowed_signers")}
+if kind not in lists:
+    sys.exit("KIND must be artifact, signer or allowed; nothing changed")
+if kind == "allowed" and action != "drop-invalid":
+    sys.exit("KIND=allowed takes only ACTION=drop-invalid: this runbook never adds or removes an allowed signer; nothing changed")
+policy_key, list_key = lists[kind]
+def well_formed(entry):
+    if not isinstance(entry, str):
+        return False
+    if kind == "artifact":
+        return re.fullmatch(r"sha256:[0-9a-f]{64}", entry) is not None
+    return entry != "" and entry == entry.strip()
+if action == "add" and kind == "artifact" and not well_formed(value):
     sys.exit("an artifact digest is sha256: followed by 64 lowercase hex characters; nothing changed")
-if action == "add" and kind == "signer" and (not value or value != value.strip()):
+if action == "add" and kind == "signer" and not well_formed(value):
     sys.exit("give the key ID exactly, with no surrounding spaces; nothing changed")
 if action == "remove" and not value.strip():
     sys.exit("VALUE is empty; to drop empty or non-string entries, use ACTION=drop-invalid; nothing changed")
 with open(path, encoding="utf-8") as fh:
     doc = json.load(fh)
 trust = doc["runtime_trust"]
-policy = trust.get(policy_key) or {}
-if not isinstance(policy, dict) or not isinstance(policy.get(list_key) or [], list):
+policy = trust.get(policy_key)
+policy = {} if policy is None else policy
+entries = policy.get(list_key) if isinstance(policy, dict) else None
+entries = [] if entries is None and isinstance(policy, dict) else entries
+if not isinstance(entries, list):
     sys.exit(f"runtime_trust.{policy_key}.{list_key} is not a list; repair the file with the tool that wrote it; nothing changed")
-entries = policy.get(list_key) or []
-def same(entry):
-    return isinstance(entry, str) and entry.strip() == value.strip()
-copies = [entry for entry in entries if same(entry)]
+def key(entry):
+    return entry.strip() if isinstance(entry, str) else None
+def keep_one(entries, name):
+    # Of the copies of one value, keep the first well-formed one, else the first one.
+    copies = [entry for entry in entries if key(entry) == name]
+    keep = next((entry for entry in copies if well_formed(entry)), copies[0])
+    out, kept = [], False
+    for entry in entries:
+        if key(entry) == name:
+            if kept or entry != keep:
+                continue
+            kept = True
+        out.append(entry)
+    rest = list(copies)
+    rest.remove(keep)
+    return keep, rest, out
+copies = [entry for entry in entries if key(entry) == value.strip()]
 message = None
 if action == "add":
-    if copies:
-        print(f"already revoked as {copies[0]!r}; the file is unchanged")
+    if copies == [value]:
+        print(f"already revoked as {value!r}; the file is unchanged")
+    elif copies:
+        first = entries.index(copies[0])
+        entries = [entry for index, entry in enumerate(entries) if index == first or key(entry) != value]
+        entries[first] = value
+        message = "replaced " + ", ".join(repr(entry) for entry in copies) + f" with {value!r}, the spelling ES matches"
     else:
         entries.append(value)
         message = "added"
@@ -94,19 +122,25 @@ elif action == "remove":
     if not copies:
         print("not in the list; the file is unchanged")
     elif len(copies) == 1:
-        entries = [entry for entry in entries if not same(entry)]
+        entries = [entry for entry in entries if key(entry) != value.strip()]
         message = "removed"
     else:
-        first = entries.index(copies[0])
-        entries = [entry for index, entry in enumerate(entries) if index == first or not same(entry)]
-        message = f"listed {len(copies)} times; kept one copy, {copies[0]!r}, so it stays revoked; run remove again to lift it"
+        keep, rest, entries = keep_one(entries, value.strip())
+        if well_formed(keep):
+            message = f"listed {len(copies)} times; kept one copy, {keep!r}, so it stays revoked; run remove again to lift it"
+        else:
+            message = f"listed {len(copies)} times; kept one copy, {keep!r}, which is not a spelling ES matches; run remove again to drop it"
 else:
-    bad = [entry for entry in entries if not isinstance(entry, str) or not entry.strip()]
-    if bad:
-        entries = [entry for entry in entries if isinstance(entry, str) and entry.strip()]
-        message = "dropped " + ", ".join(repr(entry) for entry in bad)
+    dropped = [entry for entry in entries if not isinstance(entry, str) or not entry.strip()]
+    entries = [entry for entry in entries if isinstance(entry, str) and entry.strip()]
+    for name in dict.fromkeys(key(entry) for entry in entries):
+        if sum(1 for entry in entries if key(entry) == name) > 1:
+            keep, rest, entries = keep_one(entries, name)
+            dropped.extend(rest)
+    if dropped:
+        message = "dropped " + ", ".join(repr(entry) for entry in dropped)
     else:
-        print("no empty or non-string entries; the file is unchanged")
+        print("no empty, non-string or duplicate entries; the file is unchanged")
 if message:
     policy[list_key] = entries
     trust[policy_key] = policy
@@ -132,6 +166,8 @@ if message:
     finally:
         os.close(dfd)
     print(message + "; the file keeps its owner and mode")
+if kind == "allowed":
+    print("allowed_signers:  ", policy.get("allowed_signers") or [])
 print("revoked_signers:  ", (trust.get("signer_policy") or {}).get("revoked_signers") or [])
 print("revoked_artifacts:", (trust.get("artifact_policy") or {}).get("revoked_artifacts") or [])
 PY
@@ -173,21 +209,21 @@ Expect the prepare to fail with HTTP 403 and the code `artifact_revoked` (or `si
 
 ### 5. Cancel runs that must not finish
 
-A revocation does not stop runs ES already admitted. ES has no route that lists runs, but each job it submits to Nomad records the run ID and the artifact digest (task meta `run_id` and `artifact_digest`; [es/admission/submit.go](../../es/admission/submit.go), function `buildNomadJobSpec`). The jobs are named `exec-<run_id>` and live in the Nomad namespace `es-submit-v1`, and the box's Nomad gives a request without a token no access to them. The read-only observer token can list and read them, and cannot stop them. On the box, as the user who owns that token (the user who ran `sudo scripts/nomad_acl_setup.sh`), run:
+A revocation does not stop runs ES already admitted. ES has no route that lists runs, but each job it submits to Nomad records the run ID and the artifact digest (task meta `run_id` and `artifact_digest`; [es/admission/submit.go](../../es/admission/submit.go), function `buildNomadJobSpec`). The jobs are named `exec-<run_id>` and live in the Nomad namespace `es-submit-v1`, and the box's Nomad gives a request without a token no access to them. The read-only observer token can list and read them, and cannot stop them. On the box that token belongs to root (the ES upgrade sets it up that way: `OBSERVER_USER` in [scripts/internal/remote_alpha_upgrade_es.py](../../scripts/internal/remote_alpha_upgrade_es.py)), so the block runs as root. On the box, run:
 
 ```bash
+sudo bash -s <<'SH'
 export NOMAD_ADDR=https://127.0.0.1:4646 NOMAD_CACERT=/etc/nomad.d/tls/ca.pem
-(
-  IFS= read -r NOMAD_TOKEN < /etc/execution-substrate/nomad-acl/observer-token
-  [ -n "$NOMAD_TOKEN" ] || { echo "no observer token" >&2; exit 1; }
-  export NOMAD_TOKEN NOMAD_NAMESPACE=es-submit-v1
-  for job in $(nomad job status | grep -oE '^exec-run-[0-9a-f]{16}'); do
-    nomad job inspect -t '{{.Status}}{{range .TaskGroups}}{{range .Tasks}} {{index .Meta "run_id"}} {{index .Meta "artifact_digest"}}{{end}}{{end}}' "$job"
-  done
-)
+IFS= read -r NOMAD_TOKEN < /etc/execution-substrate/nomad-acl/observer-token
+[ -n "$NOMAD_TOKEN" ] || { echo "no observer token" >&2; exit 1; }
+export NOMAD_TOKEN NOMAD_NAMESPACE=es-submit-v1
+for job in $(nomad job status | grep -oE '^exec-run-[0-9a-f]{16}'); do
+  nomad job inspect -t '{{.Status}}{{range .TaskGroups}}{{range .Tasks}} {{index .Meta "run_id"}} {{index .Meta "artifact_digest"}}{{end}}{{end}}' "$job"
+done
+SH
 ```
 
-Expect one line for each ES job Nomad still holds: its status (`pending`, `running` or `dead`), its run ID and its artifact digest. The token stays in the environment of the commands in the parentheses: it is never on a command line, and it is gone when they end. The block prints nothing else from the job; Nomad may also print a hint about its web UI. Cancel every `pending` or `running` run whose digest is the revoked one. Nomad does not record the signer: for a revoked signer, take the runs from the callers' records, or cancel every `pending` or `running` run.
+Expect one line for each ES job Nomad still holds: its status (`pending`, `running` or `dead`), its run ID and its artifact digest. The token stays in the environment of the root shell that runs the block: it is never on a command line, and it is gone when that shell ends. The block prints nothing else from the job; Nomad may also print a hint about its web UI. Cancel every `pending` or `running` run whose digest is the revoked one. Nomad does not record the signer: for a revoked signer, take the runs from the callers' records, or cancel every `pending` or `running` run.
 
 From the Mac, with the variables from "What do I need?" exported, cancel each run:
 
@@ -197,20 +233,20 @@ RUN_ID='<run id>' DO_CANCEL=1 WAIT_FOR_TERMINAL=0 scripts/50_lifecycle.sh
 
 Expect the output to end with ES's answer to the cancel, which holds `"status": "cancel_requested"`: ES answered 200 and has asked Nomad to stop the job. The script reads the run's status and logs before it cancels, so if it stops with an error before that answer, no cancel was sent: run it again. A run that is already terminal needs no cancel; if it did not exit 0, the script says so and exits 1 without cancelling.
 
-A cancel is a request to stop, not proof that the workload has stopped. Run the same command with `DO_CANCEL=0 WAIT_FOR_TERMINAL=1` to wait until the status is terminal. After a cancel, expect it to end with `reached terminal state without an exit_code` or `reached terminal state with exit_code=` and a code that is not 0, and exit 1: what matters is that the status is terminal. It gives up after `TIMEOUT_SECONDS` (120 by default). The Nomad block above then shows the job as `dead`.
+A cancel is a request to stop, not proof that the workload has stopped. Run the same command with `DO_CANCEL=0 WAIT_FOR_TERMINAL=1` to wait until the status is terminal. After a cancel, it usually ends with `reached terminal state without an exit_code` or `reached terminal state with exit_code=` and a code that is not 0, and exits 1; a workload that finished with exit code 0 before the stop took effect ends with `lifecycle: execution completed successfully` and exits 0. Either way, what matters is that the status is terminal. It gives up after `TIMEOUT_SECONDS` (120 by default). The Nomad block above then shows the job as `dead`.
 
 ### 6. To undo a revocation
 
-Run step 2 with `ACTION=remove` and the value to lift. Removal matches an entry the way EGS compares entries, ignoring surrounding spaces, and accepts any spelling, so it also removes an entry that EGS refuses, such as a digest without its label. If the value is listed more than once, which EGS refuses, removal keeps one copy and says so: the value stays revoked, and a second removal lifts it. Check the lists with step 1, and restart as in step 3. Lift a revocation only when you know why it was made.
+Run step 2 with `ACTION=remove` and the value to lift. Removal matches an entry the way EGS compares entries, ignoring surrounding spaces, and accepts any spelling, so it also removes an entry that EGS refuses, such as a digest without its label. If the value is listed more than once, which EGS refuses, removal keeps one copy and says which: a copy in the spelling ES matches when there is one, and then the value stays revoked; a second removal lifts it. Check the lists with step 1, and restart as in step 3. Lift a revocation only when you know why it was made.
 
-An entry that is not text, or is empty once spaces are trimmed, names nothing, and EGS refuses to start with it. Run step 2 with `ACTION=drop-invalid`, `KIND` set to the list that holds it, and `VALUE=''`: it drops those entries from that list, and only those, and prints each one it drops.
+`ACTION=drop-invalid`, with `VALUE=''`, repairs one list without lifting or granting anything. It drops the entries that are not text or are empty once spaces are trimmed, which name nothing, and the extra copies of a value listed more than once, keeping one copy in the spelling ES matches when there is one. It prints each entry it drops. `KIND` names the list: `artifact` or `signer` for the two revocation lists, or `allowed` for `allowed_signers`, which EGS also refuses to start with when it holds such entries. `KIND=allowed` takes no other action: this runbook never adds or removes an allowed signer.
 
 ## What do the failures mean?
 
 | What you see | What it means | What to do |
 | --- | --- | --- |
 | Step 2 exits with "an artifact digest is sha256: followed by 64 lowercase hex characters" | The value is not `sha256:` and 64 lower-case hex characters, the only spelling ES matches | Copy the `artifact_digest` from the publish response; nothing was changed |
-| `egs.service` is not `active` after step 3; `journalctl -u egs.service` shows `decode config` or `runtime_trust...` | EGS refuses the file: invalid JSON, an unknown field, a duplicate entry, or a bad digest. Steps 2 and 6 write none of these, so another edit or tool changed the file | Run the check below. Remove a bad list entry with step 6: `ACTION=remove` with the text the check prints between the quotes, or `ACTION=drop-invalid` for an empty or non-string entry. Then repeat step 3. Invalid JSON, a list that is not a list, or an unknown field outside `runtime_trust` came from the tool that last wrote the file: repair it with that tool, not with an editor. ES cannot start until EGS is up |
+| `egs.service` is not `active` after step 3; `journalctl -u egs.service` shows `decode config` or `runtime_trust...` | EGS refuses the file: invalid JSON, an unknown field, a duplicate entry, or a bad digest. Steps 2 and 6 write none of these, so another edit or tool changed the file | Run the check below. For an empty, non-string or duplicate entry in any of the three lists it names, run step 2 with `ACTION=drop-invalid` and `KIND` set to `artifact`, `signer` or `allowed` (step 6). For a revoked digest in a spelling EGS refuses, run step 2 with `ACTION=remove` and the text the check prints between the quotes, then add the digest again with `ACTION=add` if it must stay revoked. Then repeat step 3. Invalid JSON, a list that is not a list, or an unknown field outside `runtime_trust` came from the tool that last wrote the file: repair it with that tool, not with an editor. ES cannot start until EGS is up |
 | `es.service` is not `active` after step 3 | ES could not fetch or verify EGS's list at start | Check that `egs.service` is `active`, then read `journalctl -u es.service` |
 | Step 4 still succeeds | ES is still using the list it fetched before the change, or the value does not match | Repeat step 3 in order; compare the value with the artifact digest or the evidence seal's key ID |
 | Step 4 fails with `signer_not_allowed` instead | The artifact's key is not in `allowed_signers` at all | Nothing to revoke for that key; ES already refuses it |
@@ -227,21 +263,24 @@ except json.JSONDecodeError as exc:
     sys.exit(f"not valid JSON: {exc.msg}: line {exc.lineno}, column {exc.colno}")
 if not isinstance(doc, dict):
     sys.exit("the file is not a JSON object")
-trust = doc.get("runtime_trust") or {}
+trust = doc.get("runtime_trust")
+trust = {} if trust is None else trust
 if not isinstance(trust, dict):
     sys.exit("runtime_trust is not an object")
 known = {"signer_policy": {"allowed_signers", "revoked_signers"}, "artifact_policy": {"revoked_artifacts"}}
 for name in sorted(set(trust) - set(known)):
     print("unknown field in runtime_trust:", name)
 for part, fields in known.items():
-    section = trust.get(part) or {}
+    section = trust.get(part)
+    section = {} if section is None else section
     if not isinstance(section, dict):
         print(f"runtime_trust.{part} is not an object")
         continue
     for name in sorted(set(section) - fields):
         print(f"unknown field in runtime_trust.{part}:", name)
     for field in sorted(fields):
-        entries = section.get(field) or []
+        entries = section.get(field)
+        entries = [] if entries is None else entries
         if not isinstance(entries, list):
             print(f"{field}: not a list")
             continue
@@ -281,10 +320,10 @@ It prints one line for each problem in the lists or unknown field name under `ru
   - `TestRevocationRunbookNoteOnUpperCaseDigestsMatchesEGS` in `egs/contract/trustmodel_test.go` checks every line before this section that mentions upper case: the note in Notes must be the one for what EGS does now, and the check's sentence and failure-table row 1 must hold either way.
   - `TestResolvedSubmitLegacyEquivalenceOneNomadRegistrationAndAuthorityRecovery` in `es/admission/resolved_execution_plan_test.go` checks that each Nomad job records the artifact digest in its task meta, which step 5 reads.
 - **Run outside the box, on 2026-11-27:**
-  - The three Python blocks (steps 1 and 2 and the check), cut from this runbook byte for byte, ran as root against box-shaped config files (owner 1234:5678, mode 0640, a stand-in private key), and each result was loaded with EGS's own `config.Load`. 45 cases passed. Step 2 added an entry and left a second add unchanged; refused a digest that is upper-case, 63 hex characters long or unlabeled, a padded or empty signer, a bad `ACTION` or `KIND`, a symbolic link, and a list that is not a list; and kept the owner, the mode and every other field. `remove` lifted a single entry, kept one copy of a value listed two or three times (EGS then started, and a second `remove` lifted it), matched an entry with surrounding spaces, removed a spelling EGS refuses, and refused an empty value. `drop-invalid` dropped empty, spaces-only, number, null and list entries from one list only, kept a malformed digest, and EGS then started. The check printed the expected lines for duplicates, empty and non-string entries, an upper-case digest, lists and sections of the wrong type, an unknown field, and invalid JSON. No output held the stand-in key.
-  - Step 5's Nomad block, cut from this runbook, ran against Nomad 2.1.1 (a server with ACLs on, the namespace `es-submit-v1`, a client token with the observer policy's rules read from a 0400 file, and two jobs shaped like ES's), over plain HTTP instead of TLS. It printed the status, run ID and digest of each job, and `dead` for a stopped one. The command this step gave before (no token, no namespace) and the observer token in the `default` namespace were both refused with 403, and the observer token could not stop a job. The box's Nomad comes from HashiCorp's apt repository; its version is Unknown.
+  - The three Python blocks (steps 1 and 2 and the check), cut from this runbook byte for byte, ran as root against box-shaped config files (owner 1234:5678, mode 0640, a freshly generated EGS key), and each result was loaded with EGS's own `config.Load`, built with the key and file checks of the per-host signing keys change. 71 cases passed. Step 2 added an entry and left a second add unchanged; replaced a copy with surrounding spaces by the exact spelling; refused a digest that is upper-case, 63 hex characters long or unlabeled, a padded or empty signer, a bad `ACTION` or `KIND`, a symbolic link, and a list that is not a list (an empty object included); and kept the owner, the mode and every other field. `remove` lifted a single entry; kept one copy of a value listed two or three times, the well-formed copy even when a padded copy came first (EGS then started, and a second `remove` lifted it); matched an entry with surrounding spaces; removed a spelling EGS refuses; and refused an empty value. `drop-invalid` dropped empty, spaces-only, number, null and list entries and extra copies from one list only, and EGS then started; it left a malformed digest in place, and EGS still refused that file; with `KIND=allowed` it repaired a duplicate, empty, number or padded entry in `allowed_signers`, and `KIND=allowed` refused `add` and `remove`. The check printed the expected lines for duplicates in each list, empty and non-string entries, an upper-case digest, lists and sections of the wrong type (empty ones included), an unknown field, and invalid JSON. No output held the private key.
+  - Step 5's Nomad block, cut from this runbook, ran against Nomad 2.1.1 (a server with ACLs on, the namespace `es-submit-v1`, a client token with the observer policy's rules in a root-owned 0400 file, and two jobs shaped like ES's), over plain HTTP instead of TLS, started by an ordinary user with `sudo`. It printed the status, run ID and digest of each job, and `dead` for a stopped one. That user could not read the token without `sudo`. The command this step gave before (no token, no namespace) and the observer token in the `default` namespace were both refused with 403, and the observer token could not stop a job. The box's Nomad comes from HashiCorp's apt repository; its version is Unknown.
 - **Not run:** the steps above, as written, have not been run on the box.
 
 ## History
 
-- **2026-11-27:** written, because no runbook said how to revoke an artifact or a signer, and a revocation takes effect only after EGS and then ES restart. Audit fixes the same day: lifting and checking no longer open the file (it holds EGS's private key), step 5's cancel is a working command, step 3 waits before it checks, and the reliable-submit sentence matches the code. Second audit fixes the same day: step 5 finds runs through Nomad with the observer token (ES does record the digest in each job), says what a sent cancel and the wait after it print, `remove` keeps one copy of a value listed more than once, `drop-invalid` drops entries that name nothing, and the reliable-submit sentence names what resumes that path. With #79, EGS and ES refuse a revoked digest in any spelling other than `sha256:` and 64 lower-case hex characters, and the note in Notes says so.
+- **2026-11-27:** written, because no runbook said how to revoke an artifact or a signer, and a revocation takes effect only after EGS and then ES restart. Audit fixes the same day: lifting and checking no longer open the file (it holds EGS's private key), step 5's cancel is a working command, step 3 waits before it checks, and the reliable-submit sentence matches the code. Second audit fixes the same day: step 5 finds runs through Nomad with the observer token (ES does record the digest in each job), says what a sent cancel and the wait after it print, `remove` keeps one copy of a value listed more than once, `drop-invalid` drops entries that name nothing, and the reliable-submit sentence names what resumes that path. Third round the same day: step 5 runs as root, because the box's observer token is root's; `remove` keeps the copy in the spelling ES matches; `add` replaces a copy EGS refuses; `drop-invalid` also drops extra copies and, with `KIND=allowed`, repairs `allowed_signers`; the check reports empty containers of the wrong type. With #79, EGS and ES refuse a revoked digest in any spelling other than `sha256:` and 64 lower-case hex characters, and the note in Notes says so.

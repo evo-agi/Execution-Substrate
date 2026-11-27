@@ -324,6 +324,7 @@ func more(t *testing.T, unknown string) {
 	syscall.Access("PLANS.md", 0)
 	os.StartProcess("/bin/true", nil, nil)
 	syscall.Chdir("/")
+	filepath.Join(testutil.Root, ".git/HEAD")
 }
 `
 	const renamed = `package p
@@ -381,6 +382,7 @@ func g(dir string, name string) {
 	parser.ParseFile(nil, "positions/only.go", source, 0)
 	parser.ParseFile(nil, "own_test.go", nil, 0)
 	syscall.Mkfifo(filepath.Join(dir, "fifo"), 0o600)
+	os.Lstat(filepath.Join(testutil.Root, ".git"))
 	for _, own := range []string{"own.sh", "testdata/own.txt"} {
 		os.Stat(own)
 	}
@@ -457,6 +459,7 @@ var own = func() bool {
 		`bad.go:105: syscall.Access gets the repository-relative path "PLANS.md"`,
 		`bad.go:106: os.StartProcess starts a process without os/exec, so the check cannot see its working directory`,
 		`bad.go:107: syscall.Chdir changes or reads the working directory`,
+		`bad.go:108: filepath.Join resolves ".git/HEAD" against the repository root, which holds no such name`,
 		`renamed.go:4: imports path/filepath as fp, which the check does not follow`,
 		`renamed.go:5: imports os as ., which the check does not follow`,
 	}
@@ -677,7 +680,10 @@ func (l *layout) anchoredProblem(v pathValue) string {
 	}
 	first := firstElement(known)
 	switch {
-	case first == "." || first == "..":
+	// ".git" is the one name a checkout holds at the root and a tree made
+	// with git archive does not; a test may look for it to tell the two
+	// apart (internal/knownkeys does).
+	case first == "." || first == ".." || known == ".git":
 		return ""
 	case !l.atRoot(first):
 		return fmt.Sprintf("resolves %q against the repository root, which holds no such name", v.text)
