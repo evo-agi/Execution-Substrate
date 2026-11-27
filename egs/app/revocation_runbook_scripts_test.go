@@ -62,9 +62,10 @@ func loadRevocationRunbookPrograms(t *testing.T) revocationRunbookPrograms {
 			t.Fatalf("runbook Python block %d starts with\n%s\nwant\n%s\nUpdate this test with the runbook.", i+1, block[1], revocationRunbookCommands[i])
 		}
 	}
-	// A program in another style (another fence language, another heredoc
-	// word, python3 -c) is not cut out above. Every command line of a code
-	// block that names Python has to be one of the three above, so such a
+	// A program in another style (another fence language, a ~~~ fence,
+	// another heredoc word, python3 -c) is not cut out above. Every command
+	// line of a fenced code block that names Python has to be one of the
+	// three above, so such a
 	// program fails here instead of going untested. The lines of a heredoc
 	// are the program, not command lines.
 	var pythonLines []string
@@ -76,7 +77,7 @@ func loadRevocationRunbookPrograms(t *testing.T) revocationRunbookPrograms {
 			if strings.TrimSpace(line) == heredocEnd {
 				heredocEnd = ""
 			}
-		case strings.HasPrefix(strings.TrimSpace(line), "```"):
+		case strings.HasPrefix(strings.TrimSpace(line), "```"), strings.HasPrefix(strings.TrimSpace(line), "~~~"):
 			inBlock = !inBlock
 		case inBlock:
 			if strings.Contains(strings.ToLower(line), "python") {
@@ -789,6 +790,39 @@ func TestRevocationRunbookStep1PrintsOnlyTheLists(t *testing.T) {
 				t.Fatalf("step 1: exit %d, lines %q, want exit 0 and %q", code, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestRevocationRunbookStep2PrintsTheListsAgainAfterTheChange holds the
+// runbook's "Keep them: step 2 prints the lists again after the change": after
+// each run, step 2's last two lines must be the revoked lists exactly as step
+// 1 prints them for the same file, the lines the operator compares.
+func TestRevocationRunbookStep2PrintsTheListsAgainAfterTheChange(t *testing.T) {
+	t.Parallel()
+	rig := newRevocationRunbookRig(t)
+	path := rig.write(t, rig.doc(runbookLists([]any{"k2"}, []any{runbookDigestB})))
+	runs := []step2Run{
+		{action: "add", kind: "artifact", value: runbookDigestA, wantOutput: "added"},
+		{action: "add", kind: "signer", value: "k1", wantOutput: "added"},
+		{action: "add", kind: "artifact", value: runbookDigestA, wantOutput: "already revoked", unchanged: true},
+		{action: "remove", kind: "artifact", value: runbookDigestB, wantOutput: "the file keeps its owner and mode"},
+		{action: "remove", kind: "signer", value: "no-such-key", wantOutput: "not in the list", unchanged: true},
+		{action: "drop-invalid", kind: "artifact", wantOutput: "no empty, non-string or duplicate entries", unchanged: true},
+	}
+	for i, run := range runs {
+		stepTwo := rig.step2(t, path, run)
+		stepOne, code := rig.run(t, rig.programs.step1, path, rig.agsPath)
+		if code != 0 {
+			t.Fatalf("run %d: step 1 exit %d, output\n%s", i+1, code, stepOne)
+		}
+		one := strings.Split(strings.TrimRight(stepOne, "\n"), "\n")
+		two := strings.Split(strings.TrimRight(stepTwo, "\n"), "\n")
+		if len(one) != 4 || !strings.HasPrefix(one[1], "revoked_signers:") || !strings.HasPrefix(one[2], "revoked_artifacts:") {
+			t.Fatalf("run %d: step 1 printed %q, want four lines with the revoked lists second and third", i+1, one)
+		}
+		if len(two) < 3 || !reflect.DeepEqual(two[len(two)-2:], one[1:3]) {
+			t.Fatalf("run %d (%s %s): step 2 ends with %q, want the lists again, as step 1 prints them: %q\nfull output:\n%s", i+1, run.action, run.kind, two[max(0, len(two)-2):], one[1:3], stepTwo)
+		}
 	}
 }
 
