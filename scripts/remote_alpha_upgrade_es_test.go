@@ -10,6 +10,8 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+
+	"execution-substrate/internal/testutil"
 )
 
 const upgradeESPython = "scripts/internal/remote_alpha_upgrade_es.py"
@@ -45,6 +47,9 @@ func preHTTPSExample(t *testing.T) map[string]any {
 	if err := json.Unmarshal(data, &doc); err != nil {
 		t.Fatal(err)
 	}
+	// The box verifies with its own keys; the example's are known keys,
+	// which ES refuses (contracts.md section 3B).
+	testutil.WithFreshSigningKeys(t, doc)
 	nomad := doc["nomad"].(map[string]any)
 	if nomad["base_url"] != "https://127.0.0.1:4646" {
 		t.Fatalf("the submit example's nomad.base_url is %v; this test expects Nomad's loopback HTTPS address", nomad["base_url"])
