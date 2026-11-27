@@ -1,6 +1,9 @@
 package app_test
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -102,6 +105,21 @@ func TestReadinessLineReportsTheLanesESReads(t *testing.T) {
 	var base map[string]any
 	if err := json.Unmarshal(example, &base); err != nil {
 		t.Fatal(err)
+	}
+	// ES refuses the example's published keys, so the file gets keys of its
+	// own, one per key ID.
+	fresh := map[string]string{}
+	for name, entry := range base["verification"].(map[string]any) {
+		entry := entry.(map[string]any)
+		id, _ := entry["key_id"].(string)
+		if fresh[id] == "" {
+			public, _, err := ed25519.GenerateKey(rand.Reader)
+			if err != nil {
+				t.Fatalf("verification.%s: %v", name, err)
+			}
+			fresh[id] = hex.EncodeToString(public)
+		}
+		entry["public_key_hex"] = fresh[id]
 	}
 	delete(base, "admission_policy")
 	keyID := base["verification"].(map[string]any)["provenance"].(map[string]any)["key_id"].(string)

@@ -14,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"execution-substrate/internal/testutil"
 )
 
 func validWorkloadGrantsConfig() *WorkloadGrantsConfig {
@@ -337,7 +339,7 @@ func TestNoLaneNameInESSourceIsAcceptedWhileUnrestrictedStillIs(t *testing.T) {
 	}
 	candidates := map[string]bool{}
 	files := 0
-	walkErr := filepath.WalkDir("..", func(path string, entry fs.DirEntry, err error) error {
+	walkErr := filepath.WalkDir(testutil.Path("es"), func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -625,12 +627,12 @@ func TestNoCodeUsesAnEgressLaneWhileUnrestrictedStillIs(t *testing.T) {
 	var decisionCalls, droppedDecisions, laneReads int
 	files := 0
 	pinned := map[string]bool{}
-	walkErr := filepath.WalkDir("../..", func(path string, entry fs.DirEntry, err error) error {
+	walkErr := filepath.WalkDir(testutil.Root, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if entry.IsDir() {
-			if base := entry.Name(); path != "../.." && (strings.HasPrefix(base, ".") || base == "testdata" || base == "vendor" || base == "node_modules") {
+			if base := entry.Name(); path != testutil.Root && (strings.HasPrefix(base, ".") || base == "testdata" || base == "vendor" || base == "node_modules") {
 				return filepath.SkipDir
 			}
 			return nil
@@ -638,7 +640,11 @@ func TestNoCodeUsesAnEgressLaneWhileUnrestrictedStillIs(t *testing.T) {
 		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
 			return nil
 		}
-		rel := filepath.ToSlash(strings.TrimPrefix(path, "../../"))
+		rel, err := filepath.Rel(testutil.Root, path)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
 		fset := token.NewFileSet()
 		parsed, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
 		if err != nil {
