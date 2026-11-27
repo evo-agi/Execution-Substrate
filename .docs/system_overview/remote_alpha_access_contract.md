@@ -8,8 +8,9 @@ a profile validator, access-status emitter, live route, local profile store,
 host provisioning, scheduled check, or restoration step. The schemas below
 are target contracts, not outputs currently emitted by ES.
 
-`Reopened redesign seam`: `PLANS.md` opens the absent ES access-profile and
-access-status surface for this contract-only decision. Tranche A fixes the v1
+`Reopened redesign seam`: `.docs/standing_rules/remote_alpha_operator_routes.md`
+opens the absent ES access-profile and access-status surface for this
+contract-only decision. Tranche A fixes the v1
 schema envelope, field ownership, role separation, fail-closed safety intent,
 fixed identity-check boundary, status state matrix, redaction, non-authority,
 and scheduling prohibition. The exact static SSH parser and filesystem

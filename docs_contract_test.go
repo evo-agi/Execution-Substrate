@@ -249,7 +249,6 @@ func TestExpectedTreeInventoryClauseLineWrapContract(t *testing.T) {
 }
 
 func TestResolvedExecutionPlanExtractionDocsContract(t *testing.T) {
-	plans := compactText(mustRead(t, "PLANS.md"))
 	boundaries := compactText(mustRead(t, ".docs/system_overview/boundaries.md"))
 	design := compactText(mustRead(t, ".docs/execution_lifecycle/design.md"))
 	implementation := compactText(mustRead(t, ".docs/execution_lifecycle/implementation.md"))
@@ -268,7 +267,7 @@ func TestResolvedExecutionPlanExtractionDocsContract(t *testing.T) {
 		"Semantic-plan equality across qualified host contexts proves admitted-semantic equality only",
 		"Every post-claim return closes descriptors and retains the visible run root",
 	)
-	assertContainsAll(t, "resolved-plan foundation limits in PLANS.md", plans,
+	assertContainsAll(t, "resolved-plan foundation limits in the paired-root custody standing rules", standingRuleSection(t, standingAdmissionRulesPath, pairedRootCustodyHeading),
 		"does not select or implement canonical effective-plan encoding, `PlanBinding`, a complete effective-plan witness, durable material or replay-envelope custody",
 	)
 	assertContainsAll(t, "resolved-plan system boundary", boundaries,
@@ -729,7 +728,7 @@ func TestTrancheAFilesystemAndResourceCustodyDocsContract(t *testing.T) {
 }
 
 func TestESExecutionAdmissionModelFinalAuditRepairContract(t *testing.T) {
-	plans := compactText(mustRead(t, "PLANS.md"))
+	custody := standingRuleSection(t, standingAdmissionRulesPath, pairedRootCustodyHeading)
 	configuration := compactText(mustRead(t, ".docs/system_overview/configuration.md"))
 	capabilities := compactText(mustRead(t, ".docs/system_overview/capability_probing.md"))
 	design := compactText(mustRead(t, ".docs/execution_lifecycle/design.md"))
@@ -739,7 +738,7 @@ func TestESExecutionAdmissionModelFinalAuditRepairContract(t *testing.T) {
 	remoteAlpha := compactText(mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md"))
 	remoteGate := compactDocSection(t, mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md"), "### Current Remote Alpha root-custody observation gate", "It is not the final commercial deployment target.")
 
-	assertContainsAll(t, "current paired-root custody and acceptance scope", plans,
+	assertContainsAll(t, "current paired-root custody and acceptance scope", custody,
 		"### Current paired-root custody and acceptance scope",
 		"**Superseded CUST-1/CUST-2 gate history.**",
 		"That pre-integration linkage is not a current local commit rule.",
@@ -2094,7 +2093,7 @@ func TestSubmitIdempotencyCorrelationAndRecoveryDocsContract(t *testing.T) {
 		"caller namespace refinement beyond authenticated identity",
 		"later Coordinator consumer mapping",
 	)
-	plansPointer := compactDocSection(t, mustRead(t, "PLANS.md"), "## Cross-Repo Hybrid Integration ADR Pointer", "## Highest-Priority Backlog Entry")
+	custody := standingRuleSection(t, standingAdmissionRulesPath, pairedRootCustodyHeading)
 	admissionRules := compactText(mustRead(t, standingAdmissionRulesPath))
 	contractsSubmitTarget := compactDocSection(t, mustRead(t, ".docs/execution_lifecycle/contracts.md"), "### Target reliable keyed-submit contract", "## 7. Status contract")
 	designPressure := compactDocSection(t, mustRead(t, ".docs/execution_lifecycle/design.md"), "## 9A. Submit Idempotency And Recovery Pressure", "## 10. Runtime identity and lifecycle interaction")
@@ -2125,7 +2124,7 @@ func TestSubmitIdempotencyCorrelationAndRecoveryDocsContract(t *testing.T) {
 			"submit_idempotency_correlation_and_recovery.md",
 		)
 	}
-	assertContainsAll(t, "PLANS submit recovery tranche", plansPointer,
+	assertContainsAll(t, "paired-root custody standing rules submit recovery tranche", custody,
 		"unwired",
 		"`reliable-submit-durable-same-operation-replay-repair`",
 		"source tranche is implemented inside the private durable source",
@@ -2374,7 +2373,7 @@ func TestReliableSubmitPureModelDocsAndSourceContract(t *testing.T) {
 	target := compactText(mustRead(t, ".docs/execution_lifecycle/submit_idempotency_correlation_and_recovery.md"))
 	designPressure := compactDocSection(t, mustRead(t, ".docs/execution_lifecycle/design.md"), "## 9A. Submit Idempotency And Recovery Pressure", "## 10. Runtime identity and lifecycle interaction")
 	implementationAbsence := compactDocSection(t, mustRead(t, ".docs/execution_lifecycle/implementation.md"), "**Current keyed-recovery absence**", "## 8. Lifecycle projection implementation")
-	plansPointer := compactDocSection(t, mustRead(t, "PLANS.md"), "## Cross-Repo Hybrid Integration ADR Pointer", "## Highest-Priority Backlog Entry")
+	custody := standingRuleSection(t, standingAdmissionRulesPath, pairedRootCustodyHeading)
 	admissionRules := compactText(mustRead(t, standingAdmissionRulesPath))
 
 	assertContainsAll(t, "reliable submit pure model package placement", target,
@@ -2434,7 +2433,7 @@ func TestReliableSubmitPureModelDocsAndSourceContract(t *testing.T) {
 		"Later reliable-submit tranches must consume this package or explicitly stop and revise it",
 		"no second unused abstraction tranche may be layered on top without a concrete consumer",
 	)
-	assertContainsAll(t, "reliable submit pure model plans", plansPointer,
+	assertContainsAll(t, "reliable submit pure model paired-root custody standing rules", custody,
 		"unwired",
 		"`reliable-submit-durable-same-operation-replay-repair`",
 		"source tranche is implemented inside the private durable source",
@@ -3930,9 +3929,9 @@ func TestReliableSubmitPersistenceAndConcurrencyADRDocsContract(t *testing.T) {
 		"versioned input-binding digest",
 	)
 
-	plansPointer := compactDocSection(t, mustRead(t, "PLANS.md"), "## Cross-Repo Hybrid Integration ADR Pointer", "## Highest-Priority Backlog Entry")
+	custody := standingRuleSection(t, standingAdmissionRulesPath, pairedRootCustodyHeading)
 	admissionRules := compactText(mustRead(t, standingAdmissionRulesPath))
-	assertContainsAll(t, "PLANS reliable-submit persistence ADR pointer", plansPointer,
+	assertContainsAll(t, "paired-root custody standing rules reliable-submit persistence tranche", custody,
 		"`reliable-submit-durable-same-operation-replay-repair`",
 		"source tranche is implemented inside the private durable source",
 		"derives a latest-operation descriptor",
@@ -10444,14 +10443,14 @@ func TestRemoteAlphaOperatorP0vCompanionDocsCurrentStatusAlignment(t *testing.T)
 }
 
 func TestRemoteAlphaOperatorHealthcheckTLSDocsOperatorAuthorizedReplacementDesign(t *testing.T) {
-	plans := compactText(mustRead(t, "PLANS.md"))
+	access := standingRuleSection(t, standingRouteRulesPath, remoteAlphaAccessHeading)
 	remoteRaw := mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md")
 	replacementRaw := mustRead(t, ".docs/remote_alpha_operator_healthcheck_tls_operator_authorized_replacement.md")
 	replacement := compactText(replacementRaw)
 	phases := compactDocSection(t, replacementRaw, "## 7. Operator-Authorized Replacement Phases", "## 8. Post-Checks")
 	stopConditions := compactDocSection(t, replacementRaw, "## 14. Stop Conditions", "## 15. Validation Plan")
 
-	assertContainsAll(t, "operator healthcheck replacement PLANS boundary", plans,
+	assertContainsAll(t, "operator healthcheck replacement access contract standing rules boundary", access,
 		"operator-authorized operator-healthcheck TLS replacement design tranche is also docs/static-test only",
 		"`.docs/remote_alpha_operator_healthcheck_tls_operator_authorized_replacement.md`",
 		"`.docs/remote_alpha_operator_healthcheck_tls_signing_custody.md`",
@@ -10549,7 +10548,7 @@ func TestRemoteAlphaOperatorHealthcheckTLSDocsOperatorAuthorizedReplacementDesig
 }
 
 func TestRemoteAlphaOperatorHealthcheckTLSDocsSigningCustodyDesign(t *testing.T) {
-	plans := compactText(mustRead(t, "PLANS.md"))
+	access := standingRuleSection(t, standingRouteRulesPath, remoteAlphaAccessHeading)
 	remoteRaw := mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md")
 	replacement := compactText(mustRead(t, ".docs/remote_alpha_operator_healthcheck_tls_operator_authorized_replacement.md"))
 	signingRaw := mustRead(t, ".docs/remote_alpha_operator_healthcheck_tls_signing_custody.md")
@@ -10564,7 +10563,7 @@ func TestRemoteAlphaOperatorHealthcheckTLSDocsSigningCustodyDesign(t *testing.T)
 		"recovery_session_operator_healthcheck_tls_status_noninteractive",
 	)
 
-	assertContainsAll(t, "operator healthcheck signing custody PLANS boundary", plans,
+	assertContainsAll(t, "operator healthcheck signing custody access contract standing rules boundary", access,
 		"`.docs/remote_alpha_operator_healthcheck_tls_signing_custody.md`",
 		"blocked/status-only with `unsupported_signing_topology`",
 		"signing authority, signer custody, key custody, CSR/cert flow, backup/rollback evidence, redaction, and post-check semantics remain ES unresolved stop conditions",
@@ -10677,7 +10676,7 @@ func TestRemoteAlphaOperatorHealthcheckTLSDocsSigningCustodyDesign(t *testing.T)
 }
 
 func TestRemoteAlphaOperatorHealthcheckTLSSigningCustodyResolutionCriteria(t *testing.T) {
-	plans := compactText(mustRead(t, "PLANS.md"))
+	access := standingRuleSection(t, standingRouteRulesPath, remoteAlphaAccessHeading)
 	routeRules := compactText(mustRead(t, standingRouteRulesPath))
 	remoteOverview := compactText(mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md"))
 	replacementRaw := mustRead(t, ".docs/remote_alpha_operator_healthcheck_tls_operator_authorized_replacement.md")
@@ -10705,7 +10704,7 @@ func TestRemoteAlphaOperatorHealthcheckTLSSigningCustodyResolutionCriteria(t *te
 	assertNoActiveShellDispatchArm(t, "Remote Alpha operator replacement route remains unimplemented", dispatchSections, "operator-healthcheck-tls-replace")
 	assertNoActiveShellDispatchArm(t, "Remote Alpha operator replacement route remains unimplemented", dispatchSections, "operator-healthcheck-tls-replacement")
 
-	assertContainsAll(t, "operator healthcheck resolution PLANS boundary", plans,
+	assertContainsAll(t, "operator healthcheck resolution access contract standing rules boundary", access,
 		"operator-authorized operator-healthcheck TLS replacement design tranche is also docs/static-test only",
 		"signing authority, signer custody, key custody, CSR/cert flow, backup/rollback evidence, redaction, and post-check semantics remain ES unresolved stop conditions",
 	)
@@ -10912,7 +10911,7 @@ func TestRemoteAlphaOperatorHealthcheckTLSSigningCustodyResolutionCriteria(t *te
 }
 
 func TestRemoteAlphaOperatorHealthcheckTLSDocsSigningCustodyDecisionRecord(t *testing.T) {
-	plans := compactText(mustRead(t, "PLANS.md"))
+	access := standingRuleSection(t, standingRouteRulesPath, remoteAlphaAccessHeading)
 	routeRules := compactText(mustRead(t, standingRouteRulesPath))
 	remoteOverview := compactText(mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md"))
 	replacementRaw := mustRead(t, ".docs/remote_alpha_operator_healthcheck_tls_operator_authorized_replacement.md")
@@ -10935,7 +10934,7 @@ func TestRemoteAlphaOperatorHealthcheckTLSDocsSigningCustodyDecisionRecord(t *te
 	assertNoActiveShellDispatchArm(t, "Remote Alpha operator decision keeps replacement unimplemented", dispatchSections, "operator-healthcheck-tls-replace")
 	assertNoActiveShellDispatchArm(t, "Remote Alpha operator decision keeps replacement unimplemented", dispatchSections, "operator-healthcheck-tls-replacement")
 
-	assertContainsAll(t, "operator healthcheck signing custody decision PLANS boundary", plans,
+	assertContainsAll(t, "operator healthcheck signing custody decision access contract standing rules boundary", access,
 		"operator-authorized operator-healthcheck TLS replacement design tranche is also docs/static-test only",
 		"signing authority, signer custody, key custody, CSR/cert flow, backup/rollback evidence, redaction, and post-check semantics remain ES unresolved stop conditions",
 	)
@@ -11673,10 +11672,10 @@ func TestRemoteAlphaExternalTLSOneTimeIncidentClosureAndSunset(t *testing.T) {
 	}
 	replacement := compactText(mustRead(t, ".docs/remote_alpha_operator_healthcheck_tls_operator_authorized_replacement.md"))
 	assertContainsAll(t, "IM handoff ownership", replacement, "does not authorize IM profile mutation", "exact committed and independently audited IM contract commit and tree before the first ES incident effect", "Profile replacement follows ES acceptance", "runs only under that separate IM contract", "Handoff failure leaves the ES incident \x60CONSUMED_OPEN_INCIDENT\x60", "neither revokes ES acceptance nor automatically rolls back the accepted host TLS set")
-	plans := markedDocSection(t, "PLANS incident", mustRead(t, "PLANS.md"), "The Remote Alpha external TLS single-use incident is a \x60Bounded slice rule\x60", "The Remote Alpha maintenance-monitor contract alignment slice")
+	rules := markedDocSection(t, "route rules incident", mustRead(t, standingRouteRulesPath), "The Remote Alpha external TLS single-use incident is a \x60Bounded slice rule\x60", "The Remote Alpha maintenance-monitor contract alignment slice")
 	overview := markedDocSection(t, "overview incident", mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md"), "### External TLS Single-Use Incident Authorization", "### P0v Operator Healthcheck TLS Noninteractive Status Implementation")
-	assertContainsAll(t, "compact incident cross-references", compactText(plans+"\n"+overview), "Report-derived", "read-only inventory", "adds no executable route", "P0u renewal remains blocked", "remove or convert")
-	assertContainsNone(t, "cross-reference overlay independence", plans+overview, "operator-facade cutoff", "retired evidence-adapter", "retired writable-state", "retired service-user", "blocked by expired material")
+	assertContainsAll(t, "compact incident cross-references", compactText(rules+"\n"+overview), "Report-derived", "read-only inventory", "adds no executable route", "P0u renewal remains blocked", "remove or convert")
+	assertContainsNone(t, "cross-reference overlay independence", rules+overview, "operator-facade cutoff", "retired evidence-adapter", "retired writable-state", "retired service-user", "blocked by expired material")
 	operatorSource := mustRead(t, remoteAlphaOperatorScriptPath())
 	renewUsage := docSection(t, operatorSource, "recovery_session_operator_healthcheck_tls_usage() {", "\nrecovery_session() {")
 	assertContainsAll(t, "existing P0u source boundary", renewUsage, "operator-healthcheck-tls-renew", "unsupported_signing_topology")
@@ -11700,13 +11699,13 @@ func TestRemoteAlphaExternalTLSOneTimeIncidentClosureAndSunset(t *testing.T) {
 	requireRemoteAlphaTLS(t, record.Sunset.Active_authorization_docs_and_tests_removed_or_converted_on_terminal_closure.is(true), "terminal closure must remove or convert active incident docs and tests")
 }
 func TestRemoteAlphaMaintenanceMonitorBoundaryAndRouteMatrix(t *testing.T) {
-	plans := compactText(mustRead(t, "PLANS.md"))
+	access := standingRuleSection(t, standingRouteRulesPath, remoteAlphaAccessHeading)
 	remoteRaw := mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md")
 	monitorSection := compactDocSection(t, remoteRaw, "### Remote Alpha Maintenance Monitor Boundary", "### Historical P0d interactive validation evidence — superseded and non-authoritative")
 	monitor := compactText(monitorSection)
 	artifact := compactText(mustRead(t, ".docs/system_overview/artifact_hygiene.md"))
 
-	assertContainsAll(t, "Remote Alpha maintenance monitor PLANS boundary", plans,
+	assertContainsAll(t, "Remote Alpha maintenance monitor access contract standing rules boundary", access,
 		"maintenance-monitor contract alignment slice is docs/static contract work only",
 		"ES keeps ownership of every Remote Alpha status, renewal, repair, and route-contract semantic",
 		"External schedulers may invoke only documented allowlisted ES commands",
@@ -12581,14 +12580,14 @@ func TestRemoteSupportedHostAlphaESBinaryDeploymentOperatorFlowIsDocumented(t *t
 }
 
 func TestIntegratedResultCustodyDocumentationMatchesSelectedEffects(t *testing.T) {
-	plans := mustRead(t, "PLANS.md")
+	admissionRules := mustRead(t, standingAdmissionRulesPath)
 	design := mustRead(t, ".docs/execution_lifecycle/design.md")
 	implementation := mustRead(t, ".docs/execution_lifecycle/implementation.md")
 	contracts := mustRead(t, ".docs/execution_lifecycle/contracts.md")
 	systemContracts := mustRead(t, ".docs/system_overview/contracts.md")
 	boundaries := mustRead(t, ".docs/system_overview/boundaries.md")
 
-	planCustody := compactDocSection(t, plans, "**Current invariant — staging non-mutation and retained-output independence.**", "The mount-archive namespace validator")
+	planCustody := compactDocSection(t, admissionRules, "**Current invariant — staging non-mutation and retained-output independence.**", "The mount-archive namespace validator")
 	assertContainsAll(t, "current plan result custody", planCustody,
 		"**Bounded slice rule pending integrated review — paired-root qualification.**",
 		"Pair proof is a prerequisite, not deletion or repair authority.",
@@ -13048,7 +13047,7 @@ func TestPrivateOriginalReplayProgressContractSelection(t *testing.T) {
 }
 
 func TestIntegratedAcceptanceGateDocumentationIsConsistent(t *testing.T) {
-	plans := mustRead(t, "PLANS.md")
+	admissionRules := mustRead(t, standingAdmissionRulesPath)
 	record := mustRead(t, plansRecordPath)
 	contracts := mustRead(t, ".docs/execution_lifecycle/contracts.md")
 	design := mustRead(t, ".docs/execution_lifecycle/design.md")
@@ -13089,7 +13088,7 @@ func TestIntegratedAcceptanceGateDocumentationIsConsistent(t *testing.T) {
 		"A local source-preservation commit is a separate, explicitly authorized effect",
 		"Environment-bound operational/rollout acceptance remains open",
 	)
-	currentGate := compactDocSection(t, plans, "### Current paired-root custody and acceptance scope", "**Current invariant — staging non-mutation and retained-output independence.**")
+	currentGate := compactDocSection(t, admissionRules, "### Current paired-root custody and acceptance scope", "**Current invariant — staging non-mutation and retained-output independence.**")
 	assertContainsAll(t, "current integrated gate", currentGate,
 		"**Superseded CUST-1/CUST-2 gate history.**",
 		"That pre-integration linkage is not a current local commit rule",
@@ -13104,12 +13103,12 @@ func TestIntegratedAcceptanceGateDocumentationIsConsistent(t *testing.T) {
 		"The running-deployment observation and mounted fixtures remain pre-final-acceptance and pre-commit gates",
 		"Until all of those gates are complete, these bytes are an implementation candidate",
 	)
-	classification := compactDocSection(t, plans, "**Current invariant — staging non-mutation and retained-output independence.**", "Linux binds each held descriptor")
+	classification := compactDocSection(t, admissionRules, "**Current invariant — staging non-mutation and retained-output independence.**", "Linux binds each held descriptor")
 	assertContainsAll(t, "safety and bounded-rule classification", classification,
 		"Result retention, publication, and read do not mutate a claimed staging root",
 		"**Bounded slice rule pending integrated review — paired-root qualification.**",
 	)
-	fixtureGate := compactDocSection(t, plans, "**App-fixture migration and local revalidation scope.**", "**CUST-2 nsfs assurance continuation.**")
+	fixtureGate := compactDocSection(t, admissionRules, "**App-fixture migration and local revalidation scope.**", "**CUST-2 nsfs assurance continuation.**")
 	assertContainsAll(t, "fixture evidence scope", fixtureGate,
 		"does not qualify an operational deployment",
 		"do not collectively become a blanket local pre-commit requirement",
@@ -13164,7 +13163,7 @@ func TestIntegratedAcceptanceGateDocumentationIsConsistent(t *testing.T) {
 		"refusing an opaque selected root as a pathname-coordinate source",
 		"must not filter away records or substitute mountpoint or configured spelling for source coordinates",
 		"Real repaired-helper mounted-alias evidence remains required where the operational claim depends on it",
-		"`PLANS.md` and `.docs/execution_lifecycle/contracts.md`",
+		"`.docs/standing_rules/execution_admission_and_custody.md` and `.docs/execution_lifecycle/contracts.md`",
 		"not an independent blanket prerequisite to a separately authorized local",
 		"the H/C/T integrated source was unaccepted",
 		"focused changed-interaction assessment and explicit commit authority",
@@ -13223,7 +13222,7 @@ func TestIntegratedAcceptanceGateDocumentationIsConsistent(t *testing.T) {
 		"merge ancestry alone does not create a blanket native campaign",
 		"No integrated native observation, supported-host qualification, or rollout readiness is inferred here",
 		"Operational topology, key exposure, capacity, sensitive-material residence, reclamation, and publication gates remain open",
-		"`PLANS.md` under \"Current paired-root custody and acceptance scope\"",
+		"`.docs/standing_rules/execution_admission_and_custody.md` under \"Current paired-root custody and acceptance scope\"",
 	)
 	assertContainsNone(t, "superseded section 19 blanket commit linkage", archiveAndRoots,
 		"and independent audit remain required before final acceptance or commit",
@@ -13300,8 +13299,8 @@ func TestResolvedPlanCustodyCandidateDocumentation(t *testing.T) {
 			t.Fatalf("admission standing rules missing candidate rule %q", required)
 		}
 	}
-	if !strings.Contains(compactText(mustRead(t, "PLANS.md")), "No result pathname cleanup or whole-root reclamation is selected") {
-		t.Fatal("PLANS missing candidate rule \"No result pathname cleanup or whole-root reclamation is selected\"")
+	if !strings.Contains(standingRuleSection(t, standingAdmissionRulesPath, pairedRootCustodyHeading), "No result pathname cleanup or whole-root reclamation is selected") {
+		t.Fatal("paired-root custody standing rules missing candidate rule \"No result pathname cleanup or whole-root reclamation is selected\"")
 	}
 	for _, required := range []string{
 		"32 MiB for primary Submit payload",
@@ -13603,7 +13602,7 @@ func TestStartupProbeUseAgreementDocsContract(t *testing.T) {
 	assertContainsNone(t, "capability_probing.md every-submission claim", compactText(mustRead(t, ".docs/system_overview/capability_probing.md")),
 		"refuses startup instead of failing every submission",
 	)
-	assertContainsNone(t, "PLANS.md every-submission claim", compactText(mustRead(t, "PLANS.md")),
+	assertContainsNone(t, "PLANS.md and standing rules every-submission claim", plansAndStandingRules(t),
 		"instead of reporting ready while every submission, or every retention, fails",
 	)
 	// Nor may the comments of the admission code (audit 18 of pull request

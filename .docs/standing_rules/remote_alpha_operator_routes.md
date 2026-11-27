@@ -1,10 +1,14 @@
 # Remote Alpha Operator Route Standing Rules
 
 These are the standing rules for the Remote Alpha operator facade routes P0i
-to P0v. They moved here unreworded from the `PLANS.md` section
-"Highest-Priority Backlog Entry" at `trunk_dev` commit
+to P0v and the Remote Alpha access contract v1. They moved here unreworded from
+the `PLANS.md` section "Highest-Priority Backlog Entry" at `trunk_dev` commit
 `8129b82d79b5700049621b6d4e95b6bf37ada7ac`, so that `PLANS.md` holds intent and
-order.
+order. The last section, "Remote Alpha access contract v1 — Tranche A", which
+also holds the operator-healthcheck TLS replacement design, the external TLS
+single-use incident and the maintenance-monitor route eligibility, moved here
+the same way, unreworded, from `PLANS.md` at `trunk_dev` commit
+`923e9c3366775664c8a85f19273e3dd4fc04eb22`.
 
 The detailed route contracts are in
 `.docs/system_overview/remote_supported_host_alpha.md`.
@@ -1618,3 +1622,108 @@ evidence when ES prerequisites are not declared or the route is not invoked.
 CP diagnose rerun and IM profile-lineage refresh remain future owning-repo
 tranches; P0v does not renew, mutate cert/profile/key/trust/env/state, run live
 proof, or widen any cross-repo authority boundary.
+
+### Remote Alpha access contract v1 — Tranche A
+
+`Reopened redesign seam`: ES has no implemented Remote Alpha access-profile
+validator, access-status schema, or fixed identity-only access route at this
+baseline. This tranche freezes only the ES-owned schema envelope, role and
+authority split, fail-closed safety intent, fixed identity-check boundary,
+access-status state matrix, redaction, and scheduling prohibition in
+`.docs/system_overview/remote_alpha_access_contract.md` and its repository
+contract test. It does not deliver an executable validator, route, profile
+store, key, known-hosts pin, or scheduled check. The v1 schema names are
+`es.remote-alpha.access-profile/v1` and
+`es.remote-alpha.access-status/v1`.
+
+`Reopened redesign seam`: Tranche B must first freeze the supported OpenSSH
+directive grammar, Include closure and precedence, system-configuration
+interaction, accepted local filesystem roots and modes, component symlink
+policy, agent/Keychain/certificate interpretation, and safe optional
+directives in governing documentation and fake/static contract tests before
+implementing a validator. Tranche A does not claim that any current local
+profile or operator alias conforms to that still-open static subset.
+
+`Temporary compatibility edge`: the operator-owned
+`host_to_remote_linux_m75q` alias and the existing operator routes' explicit
+`--ssh-target` arguments remain unchanged. The P0s
+`es-service-tls-status` and P0t `es-governance-tls-status` names are
+interactive status-only compatibility edges using the one dedicated
+collector; both renewal counterparts are held before contact. P0v remains a
+separate TLS-specific noninteractive status route. None is the new access
+check or an authority for its SSH profile semantics.
+
+Tranche A fixes the target separation between operator and monitor profiles,
+contact-free static validation intent, fail-closed public-key-only transport,
+a future fixed nonroot UID/account observation, safe versioned evidence, and
+`scheduled_execution_allowed=false` as a producer-owned v1 constant. The
+maintenance-monitor `monitor-eligible` classification below does not
+authorize scheduled SSH.
+Neither a local profile, `ready` evidence, MA configuration, IM readiness,
+foreground SSH success, nor the operator alias can enable it. Changing
+scheduled eligibility requires a later explicit ES/MA route decision,
+scheduled-context acceptance, a versioned contract change, separate
+implementation, host provisioning, validation, and audit.
+
+Subsequent authority decisions remain separate: B first freezes its open
+implementation-contract decisions, then implements and fake-tests the ES
+validator/check-only route; C provisions local/host access material
+under separate sensitive-effect authorization if needed; D lets Maintenance
+Agent consume evidence and only later schedule an expressly eligible route;
+E migrates Infrastructure Manager's access interpretation while preserving
+its current readiness/provenance/diagnostic ownership. No MA or IM contract is
+changed in Tranche A. Public-key SSH does not supply sudo authentication.
+Access evidence cannot repair the contained ES-to-EGS TLS certificate-validity
+failure, establish service health, or prove governed execution.
+
+The operator-authorized operator-healthcheck TLS replacement design tranche is
+also docs/static-test only. It records an ES-owned future replacement path in
+`.docs/remote_alpha_operator_healthcheck_tls_operator_authorized_replacement.md`
+with signing/custody hardening in
+`.docs/remote_alpha_operator_healthcheck_tls_signing_custody.md`
+and an IM-owned profile-lineage refresh counterpart in the Infrastructure
+Manager repo. It is not a P0v route implementation, not renewal execution, not
+Bridge or Maintenance Agent authority, not CP diagnose execution, and not
+profile mutation. It preserves `operator-healthcheck-tls-renew` as
+blocked/status-only with `unsupported_signing_topology` because signing
+authority, signer custody, key custody, CSR/cert flow, backup/rollback
+evidence, redaction, and post-check semantics remain ES unresolved stop
+conditions for the `spiffe://execution.internal/operator/local` operator
+identity.
+
+The Remote Alpha external TLS single-use incident is a `Bounded slice rule`
+recorded in
+`.docs/system_overview/remote_alpha_external_tls_one_time_incident_contract.md`.
+Report-derived evidence indicates certificate-validity failures; a future
+read-only inventory must establish the installed prior state. This is docs-only
+authority for one proof/support host, incident, and execution. It adds no
+executable route or ongoing support, and reusable P0u renewal remains blocked
+with `unsupported_signing_topology`. Its default is
+`RETIRE_BEFORE_LEAF_EXPIRY`. Inventory, private packet and rollback derivation,
+independent audit, foreground execution, any later IM handoff, and terminal
+closure remain separate; closure must remove or convert the active entry,
+authorization document, incident tests, and P0u cross-references.
+
+The Remote Alpha maintenance-monitor contract alignment slice is docs/static
+contract work only. It may codify a future Mac-side maintenance project as a
+scheduler, notifier, local-evidence summarizer, and allowlisted ES-command
+invoker, but it must not implement that project or create a new repository in
+this slice. ES keeps ownership of every Remote Alpha status, renewal, repair,
+and route-contract semantic. External schedulers may invoke only documented
+allowlisted ES commands and may not define their meaning, infer renewal
+eligibility, broaden helper scope, or become ES runtime authority, IM
+readiness/provenance authority, CP run-control authority, a hidden remote
+reconciler, or broad provisioning automation. Remote Alpha remains bounded
+proof/support posture only.
+
+Remote Alpha maintenance route eligibility is fixed for this planning slice:
+`es-service-tls-status`, `es-governance-tls-status`,
+`operator-healthcheck-tls-status`, binary deployment check, workload-auth
+check, and runtime identity summary are read-only monitor-eligible;
+`es-service-tls-renew` and `es-governance-tls-renew` are held and have no
+monitor or scheduled eligibility until a separate route-specific design, tests,
+audit, authorization, and repair contract exist;
+`operator-healthcheck-tls-renew` remains blocked/status-only until a signing
+topology and operator/local identity renewal authority are documented; binary
+deployment apply and workload-auth bootstrap are not monitor auto-renewal
+routes.
