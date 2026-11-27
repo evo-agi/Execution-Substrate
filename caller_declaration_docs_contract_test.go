@@ -396,6 +396,13 @@ func TestEnvironmentDeclarationScanReadsEachSpelling(t *testing.T) {
 		{"escaped quotes", `BODY="{\"environment_variables\": [\"LD_PRELOAD\"]}"`, nil, true},
 		{"unquoted list item", `"environment_variables": [PRELOAD_KEY]`, nil, true},
 		{"Python named escape", `"environment_variables": ["\N{LATIN CAPITAL LETTER L}D_PRELOAD"]`, nil, true},
+		// Re-check 29 Sonnet N29-1: the single-quoted fallback, an upper-case
+		// hex digit in the escape pre-pass, and the two decoding branches that
+		// only a Go escape or an escaped quote reaches.
+		{"Python named escape, single-quoted", `{'environment_variables': ['\N{LATIN CAPITAL LETTER L}D_PRELOAD']}`, nil, true},
+		{"key written with an upper-case escape", `{"environment\u005Fvariables": ["LD_PRELOAD"]}`, nil, true},
+		{"Go escape, double-quoted", `"environment_variables": ["LD_\x50RELOAD"]`, []string{"LD_PRELOAD"}, false},
+		{"escaped quote, single-quoted", `{'environment_variables': ['A\'B']}`, []string{"A'B"}, false},
 	} {
 		_, entries, problems := scanEnvironmentDeclarations(test.text)
 		if test.problem != (len(problems) > 0) {
