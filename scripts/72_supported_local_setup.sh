@@ -1349,12 +1349,15 @@ def read_signer(role):
     path = signing_dir / f"{role}-signer.json"
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
-    except OSError:
+    except FileNotFoundError:
         raise SystemExit(f"supported-local {role} signing key is missing; generate_supported_local_signing_keys makes it")
+    except OSError as exc:
+        raise SystemExit(f"supported-local {role} signing key cannot be opened without following a link: {exc.strerror}")
+    info = os.fstat(fd)
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o077:
+        os.close(fd)
+        raise SystemExit(f"supported-local {role} signing key must be a regular file that only this user can read")
     with os.fdopen(fd, "rb") as handle:
-        info = os.fstat(handle.fileno())
-        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o077:
-            raise SystemExit(f"supported-local {role} signing key must be a regular file that only this user can read")
         try:
             signer = json.loads(handle.read().decode("utf-8"))
         except ValueError:

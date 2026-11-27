@@ -224,6 +224,22 @@ generate_supported_local_signing_keys "$SUPPORTED_LOCAL_PROOF_DIR"`, "bash", scr
 	if output, err := keygen.CombinedOutput(); err != nil {
 		t.Fatalf("generate supported-local signing keys: %v output=%s", err, output)
 	}
+	// Kept to tell, after the render, that the keys in the configs are the
+	// ones this run generated and not keys the renderer brought with it.
+	generatedSeeds := map[string]string{}
+	for _, role := range []string{"ags", "egs"} {
+		data, err := os.ReadFile(filepath.Join(proofDir, "signing", role+"-signer.json"))
+		if err != nil {
+			t.Fatalf("read the generated %s signing key: %v", role, err)
+		}
+		var generated struct {
+			PrivateKeyHex string `json:"private_key_hex"`
+		}
+		if err := json.Unmarshal(data, &generated); err != nil || len(generated.PrivateKeyHex) != 2*ed25519.SeedSize {
+			t.Fatalf("the generated %s signing key file holds no 32-byte seed: %v", role, err)
+		}
+		generatedSeeds[role] = generated.PrivateKeyHex
+	}
 	render := func(pin string) ([]byte, error) {
 		command := exec.Command("/bin/bash", "-c", `source "$1"
 SUPPORTED_LOCAL_NOMAD_SERVER_SPKI_SHA256="$TEST_NOMAD_PIN"
@@ -293,6 +309,23 @@ write_env_file "$SUPPORTED_LOCAL_PROOF_DIR/env.sh"`, "bash", script)
 		t.Fatalf("full rendered ES config rejected: %v", err)
 	}
 	assertRenderedSigningKeysAreThisInstalls(t, proofDir, rendered)
+	for role, seed := range generatedSeeds {
+		data, err := os.ReadFile(filepath.Join(proofDir, role+".json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var written struct {
+			Signer struct {
+				PrivateKeyHex string `json:"private_key_hex"`
+			} `json:"signer"`
+		}
+		if err := json.Unmarshal(data, &written); err != nil {
+			t.Fatalf("decode %s.json: %v", role, err)
+		}
+		if written.Signer.PrivateKeyHex != seed {
+			t.Fatalf("%s.json does not sign with the key setup generated for this install", role)
+		}
+	}
 	// The renderer owns auth metadata. Only dependency/TLS test fixtures replace
 	// unrelated external files before real service construction.
 	rendered.TLS = fixture.TLS

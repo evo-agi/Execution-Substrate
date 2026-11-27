@@ -58,6 +58,18 @@ func Load(path string) (Config, error) {
 	}
 	defer file.Close()
 
+	// This file holds the EGS private signing key, so only the account
+	// that runs the service and root may read it
+	// (.docs/system_overview/configuration.md, "Signing keys"). The check is
+	// on the opened file, so it judges the file that is read.
+	info, err := file.Stat()
+	if err != nil {
+		return Config{}, fmt.Errorf("inspect config: %w", err)
+	}
+	if !info.Mode().IsRegular() || info.Mode().Perm()&0o007 != 0 {
+		return Config{}, fmt.Errorf("config holds the private signing key and must be a regular file that other users cannot read or write: mode %04o", info.Mode().Perm())
+	}
+
 	var cfg Config
 	decoder := json.NewDecoder(file)
 	decoder.DisallowUnknownFields()

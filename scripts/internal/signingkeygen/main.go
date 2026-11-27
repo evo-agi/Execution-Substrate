@@ -4,7 +4,8 @@
 // Usage: signingkeygen <ags|egs> <absolute path of a new file>
 //
 // It creates the file with mode 0600 and refuses to replace or follow
-// anything already at that path. The file holds one JSON object:
+// anything already at that path, or to write into a folder in which another
+// user could replace the file. The file holds one JSON object:
 //
 //	{"algorithm":"ed25519","key_id":"<role>-<16 hex>","private_key_hex":"<64 hex>","public_key_hex":"<64 hex>"}
 //
@@ -72,6 +73,9 @@ func KeyID(role string, public ed25519.PublicKey) string {
 
 // generate writes a new key for role to path and returns its public part.
 func generate(role, path string, random io.Reader) (signer, error) {
+	if err := checkFolder(filepath.Dir(path)); err != nil {
+		return signer{}, err
+	}
 	public, private, err := ed25519.GenerateKey(random)
 	if err != nil {
 		return signer{}, fmt.Errorf("generate an Ed25519 key: %w", err)
@@ -114,4 +118,27 @@ func generate(role, path string, random io.Reader) (signer, error) {
 	}
 	full.PrivateKeyHex = ""
 	return full, nil
+}
+
+// checkFolder refuses a folder in which another user could replace the key
+// file between its creation and its copy into a config, which would hand
+// the host a key that user holds: one owned by another user other than
+// root, or one that group or others can write without the sticky bit, which
+// keeps them from replacing a file they do not own.
+func checkFolder(dir string) error {
+	info, err := os.Stat(dir)
+	if err != nil {
+		return fmt.Errorf("inspect the folder %s: %w", dir, err)
+	}
+	st, ok := info.Sys().(*syscall.Stat_t)
+	if !info.IsDir() || !ok {
+		return fmt.Errorf("%s is not a folder", dir)
+	}
+	if int(st.Uid) != os.Geteuid() && st.Uid != 0 {
+		return fmt.Errorf("the folder %s belongs to another user, who could replace the key file; write the key into a folder of your own", dir)
+	}
+	if info.Mode().Perm()&0o022 != 0 && info.Mode()&os.ModeSticky == 0 {
+		return fmt.Errorf("other users can write the folder %s and could replace the key file; write the key into a folder only you can write", dir)
+	}
+	return nil
 }
