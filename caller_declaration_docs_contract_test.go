@@ -30,6 +30,7 @@ func TestCallerDeclarationRulesAreInTheLifecycleContract(t *testing.T) {
 		"It is a backstop for a publisher's mistake, not the boundary",
 		"They do not include every such key; the families below add more",
 		"A family is reserved as a whole, so that the list does not have to keep up with each program's next key",
+		"every key that ends in `INSECURE_SKIP_VERIFY`",
 		"An empty or absent list admits no caller environment key.",
 		"each target path one the artifact declares in its signed `mount_targets` list",
 		"An artifact that declares no mount target admits no caller mount",
@@ -60,9 +61,9 @@ func TestCallerDeclarationRulesAreInTheLifecycleContract(t *testing.T) {
 }
 
 // reservedEnvironmentEntriesInSource reads the string-literal keys of
-// reservedRuntimeEnvKeys and the elements of reservedRuntimeEnvPrefixes from
-// the ES source.
-func reservedEnvironmentEntriesInSource(t *testing.T) (map[string]bool, []string) {
+// reservedRuntimeEnvKeys and the elements of reservedRuntimeEnvPrefixes and
+// reservedRuntimeEnvSuffixes from the ES source.
+func reservedEnvironmentEntriesInSource(t *testing.T) (map[string]bool, []string, []string) {
 	t.Helper()
 	path := "es/admission/service.go"
 	parsed, err := parser.ParseFile(token.NewFileSet(), path, mustRead(t, path), parser.SkipObjectResolution)
@@ -70,7 +71,7 @@ func reservedEnvironmentEntriesInSource(t *testing.T) (map[string]bool, []string
 		t.Fatalf("parse %s: %v", path, err)
 	}
 	keys := map[string]bool{}
-	var prefixes []string
+	var prefixes, suffixes []string
 	for _, decl := range parsed.Decls {
 		general, ok := decl.(*ast.GenDecl)
 		if !ok || general.Tok != token.VAR {
@@ -97,26 +98,30 @@ func reservedEnvironmentEntriesInSource(t *testing.T) (map[string]bool, []string
 							keys[key] = true
 						}
 					}
-				case "reservedRuntimeEnvPrefixes":
+				case "reservedRuntimeEnvPrefixes", "reservedRuntimeEnvSuffixes":
 					for _, element := range literal.Elts {
-						prefix, err := strconv.Unquote(element.(*ast.BasicLit).Value)
+						entry, err := strconv.Unquote(element.(*ast.BasicLit).Value)
 						if err != nil {
 							t.Fatal(err)
 						}
-						prefixes = append(prefixes, prefix)
+						if name.Name == "reservedRuntimeEnvPrefixes" {
+							prefixes = append(prefixes, entry)
+						} else {
+							suffixes = append(suffixes, entry)
+						}
 					}
 				}
 			}
 		}
 	}
-	if len(keys) == 0 || len(prefixes) == 0 {
+	if len(keys) == 0 || len(prefixes) == 0 || len(suffixes) == 0 {
 		t.Fatalf("did not find the reserved environment entries in %s", path)
 	}
-	return keys, prefixes
+	return keys, prefixes, suffixes
 }
 
 func TestLifecycleContractNamesOnlyReservedKeysTheCodeReserves(t *testing.T) {
-	keys, prefixes := reservedEnvironmentEntriesInSource(t)
+	keys, prefixes, suffixes := reservedEnvironmentEntriesInSource(t)
 	contract := prepareRequestContract(t)
 	start := strings.Index(contract, "Environment keys must not use reserved keys")
 	end := strings.Index(contract, "The exact list is `reservedRuntimeEnvKeys`")
@@ -133,6 +138,11 @@ func TestLifecycleContractNamesOnlyReservedKeysTheCodeReserves(t *testing.T) {
 			t.Fatalf("contracts.md section 5 does not name the reserved prefix %q", prefix)
 		}
 	}
+	for _, suffix := range suffixes {
+		if !strings.Contains(reservedText, "ends in `"+suffix+"`") {
+			t.Fatalf("contracts.md section 5 does not name the reserved suffix %q", suffix)
+		}
+	}
 	reservesKey := func(key string) bool {
 		upper := strings.ToUpper(key)
 		if keys[upper] || upper == "EXEC_WORKLOAD_IDENTITY_ENDPOINT" {
@@ -140,6 +150,11 @@ func TestLifecycleContractNamesOnlyReservedKeysTheCodeReserves(t *testing.T) {
 		}
 		for _, prefix := range prefixes {
 			if strings.HasPrefix(upper, prefix) {
+				return true
+			}
+		}
+		for _, suffix := range suffixes {
+			if strings.HasSuffix(upper, suffix) {
 				return true
 			}
 		}

@@ -185,9 +185,10 @@ func TestDeclaredEnvironmentKeyIsTheOnlyCallerKeyAdmitted(t *testing.T) {
 	}
 }
 
-// mustBeReservedEnvironmentKeys pins the keys a caller may never set. It is
-// the list in reservedRuntimeEnvKeys and reservedRuntimeEnvPrefixes, written
-// out again so that a change to that list is a deliberate change to this one.
+// mustBeReservedEnvironmentKeys pins the keys a caller may never set. With the
+// prefix and suffix lists below it is the list in reservedRuntimeEnvKeys,
+// reservedRuntimeEnvPrefixes and reservedRuntimeEnvSuffixes, written out again
+// so that a change to that list is a deliberate change to this one.
 var mustBeReservedEnvironmentKeys = []string{
 	// ES runtime keys.
 	"PROJECT_NAME", "ENVIRONMENT", "PLATFORM", "GUID", "SERVICE_ID", "SESSION_ID", "PARENT_SESSION_ID",
@@ -212,7 +213,7 @@ var mustBeReservedEnvironmentKeys = []string{
 	"REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "NODE_EXTRA_CA_CERTS", "NODE_TLS_REJECT_UNAUTHORIZED",
 	"SSLKEYLOGFILE",
 	// Keys of the same kinds that no list above names and no prefix covers
-	// (red-team report 19 on PR #74).
+	// (red-team report 19 and re-check 23 on PR #74).
 	"WORKLOAD_VAULT_INSECURE_SKIP_VERIFY", "WGETRC", "NETRC", "AWS_CONFIG_FILE",
 	"AWS_SHARED_CREDENTIALS_FILE", "AWS_CA_BUNDLE", "KUBECONFIG", "GNUPGHOME", "WS_PROXY", "WSS_PROXY",
 	"RSYNC_PROXY", "SOCKS_PROXY", "NODE_REPL_EXTERNAL_MODULE", "NODE_COMPILE_CACHE", "NODE_ICU_DATA",
@@ -223,7 +224,7 @@ var mustBeReservedEnvironmentKeys = []string{
 	"MAKEFILES", "TAR_OPTIONS", "LESSOPEN", "LESSCLOSE", "CC", "CXX", "CPP", "LD", "AR", "AS", "CFLAGS",
 	"CXXFLAGS", "CPPFLAGS", "LDFLAGS", "RUSTFLAGS", "RUSTDOC", "RUSTDOCFLAGS", "GODEBUG", "GOTRACEBACK",
 	"GOFLAGS", "GOENV", "GOTOOLCHAIN", "GOPROXY", "GONOPROXY", "GOPRIVATE", "GOINSECURE", "GOSUMDB",
-	"GONOSUMDB", "GONOSUMCHECK",
+	"GONOSUMDB", "GONOSUMCHECK", "TEXTDOMAINDIR", "TEXTDOMAIN",
 }
 
 var mustBeReservedEnvironmentPrefixes = []string{
@@ -233,10 +234,13 @@ var mustBeReservedEnvironmentPrefixes = []string{
 	"PHP", "LUA_", "CARGO_", "RUSTUP_", "RUSTC", "DOCKER_", "SSH_", "GRPC_", "CURL_",
 }
 
+var mustBeReservedEnvironmentSuffixes = []string{"INSECURE_SKIP_VERIFY"}
+
 // redTeam74FamilyKeys are the keys red-team report 19 on PR #74 found
 // admitted when a package declared them. Each is now reserved by name or by
-// family. The few it listed that stay unreserved, because they load no code
-// and change no trust, are in TestOrdinaryEnvironmentKeysAreNotReserved.
+// family. Of the others it listed, TEXTDOMAINDIR is reserved by name since
+// re-check 23 (see TestReservedEnvironmentKeySetIsPinned), and the six that
+// stay unreserved are in TestOrdinaryEnvironmentKeysAreNotReserved.
 var redTeam74FamilyKeys = []string{
 	"XDG_CONFIG_HOME", "XDG_CONFIG_DIRS", "XDG_DATA_HOME", "XDG_DATA_DIRS", "XDG_CACHE_HOME",
 	"VAULT_AGENT_ADDR", "VAULT_PROXY_ADDR", "VAULT_HTTP_PROXY", "VAULT_SKIP_VERIFY", "VAULT_TLS_SERVER_NAME",
@@ -287,7 +291,11 @@ func TestReservedEnvironmentKeySetIsPinned(t *testing.T) {
 	if strings.Join(reservedRuntimeEnvPrefixes, ",") != strings.Join(mustBeReservedEnvironmentPrefixes, ",") {
 		t.Fatalf("reserved environment prefixes changed:\n got %v\nwant %v", reservedRuntimeEnvPrefixes, mustBeReservedEnvironmentPrefixes)
 	}
-	for _, key := range append(append([]string(nil), mustBeReservedEnvironmentKeys...), mustBeReservedEnvironmentPrefixes...) {
+	if strings.Join(reservedRuntimeEnvSuffixes, ",") != strings.Join(mustBeReservedEnvironmentSuffixes, ",") {
+		t.Fatalf("reserved environment suffixes changed:\n got %v\nwant %v", reservedRuntimeEnvSuffixes, mustBeReservedEnvironmentSuffixes)
+	}
+	entries := append(append([]string(nil), mustBeReservedEnvironmentKeys...), mustBeReservedEnvironmentPrefixes...)
+	for _, key := range append(entries, mustBeReservedEnvironmentSuffixes...) {
 		if key != asciiUpper(key) {
 			t.Fatalf("reserved entry %q must be written in upper case, the form it is matched in", key)
 		}
@@ -309,6 +317,9 @@ func reservedEnvironmentProbeKeys() []string {
 	bases := append([]string(nil), mustBeReservedEnvironmentKeys...)
 	for _, prefix := range mustBeReservedEnvironmentPrefixes {
 		bases = append(bases, prefix+"X1")
+	}
+	for _, suffix := range mustBeReservedEnvironmentSuffixes {
+		bases = append(bases, suffix, "X1_"+suffix)
 	}
 	for _, key := range bases {
 		add(key)
@@ -344,6 +355,11 @@ func TestReservedEnvironmentKeysAreRefusedEvenWhenTheArtifactDeclaresThem(t *tes
 		"npm_config_script_shell", "NOMAD_TOKEN", "OPENAI_BASE_URL", "CODEX_HOME", "PIP_INDEX_URL",
 		"GEM_HOME", "JAVA_HOME", "DOTNET_STARTUP_HOOKS", "PHPRC", "LUA_INIT", "CARGO_HOME", "RUSTC_WRAPPER",
 		"DOCKER_CONFIG", "SSH_ASKPASS", "CURL_HOME", "GODEBUG", "EDITOR", "MAKEFLAGS", "KUBECONFIG",
+		// Re-check 23 on PR #74: bash's translation directory and domain, and
+		// any TLS-skip switch named like Go's InsecureSkipVerify, including
+		// the one the legacy reference workload reads.
+		"TEXTDOMAINDIR", "textdomain", "REFERENCE_VAULT_INSECURE_SKIP_VERIFY",
+		"reference_vault_insecure_skip_verify", "INSECURE_SKIP_VERIFY", "App_Tls_Insecure_Skip_Verify",
 	} {
 		t.Run(key, func(t *testing.T) {
 			fixture := base.withEnvironmentVariables(t, []string{key})
@@ -357,11 +373,22 @@ func TestReservedEnvironmentKeysAreRefusedEvenWhenTheArtifactDeclaresThem(t *tes
 
 func TestOrdinaryEnvironmentKeysAreNotReserved(t *testing.T) {
 	for _, key := range []string{
-		"APP_MODE", "WORKLOAD_VAULT_SECRET_PATH", "REFERENCE_SECRET_PATH", "NODE_ENV", "LANG", "TZ",
-		"PATHNAME", "HOMEPAGE", "ENVIRONMENT_NAME", "LDAP_URL", "GITHUB_REF", "PYTHO", "_X",
-		// Report 19 on PR #74 listed these; they load no code and change no
-		// trust, so they stay available to a publisher that declares them.
-		"LC_ALL", "LANGUAGE", "TEXTDOMAINDIR", "GOMEMLIMIT", "GOGC", "GOMAXPROCS",
+		"APP_MODE", "WORKLOAD_VAULT_SECRET_PATH", "REFERENCE_SECRET_PATH", "REFERENCE_IDENTITY_URL",
+		"NODE_ENV", "LANG", "TZ", "PATHNAME", "HOMEPAGE", "ENVIRONMENT_NAME", "LDAP_URL", "GITHUB_REF",
+		"PYTHO", "_X",
+		// Near misses: the TLS-skip rule is a suffix and TEXTDOMAIN an exact
+		// key.
+		"SKIP_VERIFY", "INSECURE_SKIP_VERIFY_NOTE", "TEXTDOMAIN_LABEL",
+		// Report 19 on PR #74 listed these. LANG and LC_ALL select only
+		// installed locales: glibc refuses a locale name that holds a path
+		// unless LOCPATH, which is reserved, is set. LANGUAGE selects among
+		// the installed message catalogs; glibc 2.39 ignored an entry that
+		// holds a path (re-check 23 and report 24 on PR #74), and the
+		// directory and domain the catalogs come from are reserved.
+		// GOMEMLIMIT, GOGC and GOMAXPROCS tune the Go runtime. None of them
+		// loads code, so they stay available to a publisher that declares
+		// them.
+		"LC_ALL", "LANGUAGE", "GOMEMLIMIT", "GOGC", "GOMAXPROCS",
 	} {
 		if isReservedRuntimeEnvKey(key) {
 			t.Fatalf("%q should not be reserved", key)

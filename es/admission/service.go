@@ -72,9 +72,10 @@ const (
 
 var (
 	labeledSHA256DigestPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
-	// reservedRuntimeEnvKeys and reservedRuntimeEnvPrefixes name the
-	// environment keys a caller may never set, whatever the artifact
-	// declares. They are written in upper case and matched against the
+	// reservedRuntimeEnvKeys, reservedRuntimeEnvPrefixes and
+	// reservedRuntimeEnvSuffixes name the environment keys a caller may
+	// never set, whatever the artifact declares. They are written in upper
+	// case and matched against the
 	// caller's key with ASCII letters folded to upper case, so http_proxy is
 	// reserved with HTTPS_PROXY. They are a backstop, not the boundary: the
 	// boundary is the artifact's signed environment allowlist, which admits
@@ -127,8 +128,9 @@ var (
 		// entries that apply on Linux; its wildcard entries are prefixes
 		// below), and the entries sudo's development branch adds to that
 		// table after 1.9.16p2: _JAVA_OPTIONS, CLASSPATH, NODE_OPTIONS and
-		// NODE_PATH here, and PYTHONSTARTUP, GIT_SSH_COMMAND and
-		// GIT_CONFIG_* under the PYTHON and GIT_ prefixes below.
+		// NODE_PATH here, PYTHONSTARTUP, GIT_SSH_COMMAND and GIT_CONFIG_*
+		// under the PYTHON and GIT_ prefixes below, and GCONV_PATH, which
+		// the glibc list above already holds.
 		"IFS":               {},
 		"CDPATH":            {},
 		"PATH_LOCALE":       {},
@@ -185,15 +187,19 @@ var (
 		"SSLKEYLOGFILE":                {},
 
 		// Keys of the same kinds that the lists above do not name and that
-		// no prefix below covers (red-team report 19 on PR #74): a switch the
-		// repository's own Vault login code reads to skip the TLS check;
-		// client configuration files; other proxies and trust stores; Node.js
-		// keys that load or write files; other Java virtual machines' option
-		// keys; Python environments and settings modules; programs that other
-		// programs start by name; module paths of R and Tcl; build and
-		// archive tool options and helper programs; and Go toolchain keys,
-		// including the two that change how ES's own Go supervisor runs in
-		// the container.
+		// no prefix below covers (red-team report 19 and re-check 23 on PR
+		// #74): a switch the repository's own Vault login code reads to skip
+		// the TLS check (any key ending in INSECURE_SKIP_VERIFY is also
+		// reserved, below); client configuration files; other proxies and
+		// trust stores; Node.js keys that load or write files; other Java
+		// virtual machines' option keys; Python environments and settings
+		// modules; programs that other programs start by name; module paths
+		// of R and Tcl; build and archive tool options and helper programs;
+		// the best-known Go toolchain keys, including the two that change how
+		// ES's own Go supervisor runs in the container; and the directory and
+		// domain bash reads the translations of $"..." strings from, which it
+		// expands as double-quoted text, so a catalog the caller chooses could
+		// run commands in a script that translates its messages.
 		"WORKLOAD_VAULT_INSECURE_SKIP_VERIFY": {},
 		"WGETRC":                              {},
 		"NETRC":                               {},
@@ -263,6 +269,8 @@ var (
 		"GOSUMDB":                             {},
 		"GONOSUMDB":                           {},
 		"GONOSUMCHECK":                        {},
+		"TEXTDOMAINDIR":                       {},
+		"TEXTDOMAIN":                          {},
 	}
 	reservedRuntimeEnvPrefixes = []string{
 		"EXEC_",
@@ -332,6 +340,16 @@ var (
 		"SSH_",
 		"GRPC_",
 		"CURL_",
+	}
+	reservedRuntimeEnvSuffixes = []string{
+		// Switches that turn off a client's TLS certificate check, named
+		// after the InsecureSkipVerify field of Go's crypto/tls. The
+		// repository's own Vault login code reads
+		// WORKLOAD_VAULT_INSECURE_SKIP_VERIFY and the legacy reference
+		// workload reads REFERENCE_VAULT_INSECURE_SKIP_VERIFY. A suffix, not
+		// a list, so that the next workload's switch of the same name is
+		// reserved too.
+		"INSECURE_SKIP_VERIFY",
 	}
 )
 
@@ -1398,6 +1416,11 @@ func isReservedRuntimeEnvKey(key string) bool {
 	}
 	for _, prefix := range reservedRuntimeEnvPrefixes {
 		if strings.HasPrefix(normalized, prefix) {
+			return true
+		}
+	}
+	for _, suffix := range reservedRuntimeEnvSuffixes {
+		if strings.HasSuffix(normalized, suffix) {
 			return true
 		}
 	}
