@@ -7412,7 +7412,9 @@ Operator interface:
   Nomad does not read it, and names it. The command fails while either of
   those folders is there, as `check` does, until the operator has looked
   and removed it; under dpkg the program exits 0 after setting entries
-  aside, so package runs go on. It changes nothing
+  aside, so package runs go on. A step of the command that does not
+  finish within 120 seconds is ended, with every process it started, and
+  refused. It changes nothing
   else, and running it again writes the same files. Run it before `check`:
   `check` and `apply` refuse a host without the two files as this clone's
   setup writes them, and on the box it also takes back the package's
@@ -7580,7 +7582,19 @@ and nothing recorded:
   backup whose `manifest.json` or `created.json` is missing or cut short,
   saying that its apply stopped before it changed the host, and one whose
   `manifest.json` or `created.json` is valid JSON but not the document
-  `apply` writes, naming what is wrong; one cut off
+  `apply` writes, naming what is wrong: a `manifest.json` that is not an
+  object with the schema and a list of files, each an object with a clean
+  absolute path and whether it existed and, for a file that existed, a copy
+  name of the form `NN-<name>` in `files/`, a lower-case SHA-256, a size, a
+  four-digit octal mode and an owner and group that are non-negative
+  integers below 2^32 - 1 (Linux's largest owner and group; `chown` reads
+  2^32 - 1 as "leave it as it is"), with no NUL in a path or a
+  copy name; one that does not name exactly the four files `apply` backs up
+  (`es.json`, `es`, `es-runtime-support` and `nomad.hcl`, in that order);
+  one whose copy is missing from `files/`, is not a regular file there or
+  does not match its digest and size; and a `created.json` that is not a
+  list of the paths `apply` creates. Each is refused before a service is
+  stopped, so no value the check admits ends a restore part way; one cut off
   after `earlier.json` counts as a later backup, so it is put back first
   (it puts back the files it found). If
   the `restored-` record cannot be written the rollback goes on and says
@@ -7652,7 +7666,8 @@ write that record; `apply`'s own rollback logs why and goes on.
   `/etc/nomad.d/nomad.env` (the `EnvironmentFile` of Nomad's unit, which
   Nomad reads as root; the package gives it to the `nomad` account and the
   setup and `nomad-hook` take it back) is there but is not a regular file
-  (remove it), is not `root:root` without write for group or others, or
+  (the refusal says whether it is a link, a folder or a FIFO, and to
+  remove it), is not `root:root` without write for group or others, or
   has an ACL (for these two the refusal names `nomad-hook`, which puts it
   back as a new file of root's with its contents: a `chown`, `chmod` or
   `setfacl` in place leaves a handle that another account opened earlier
@@ -7673,8 +7688,15 @@ write that record; `apply`'s own rollback logs why and goes on.
   in it, whatever the umask, and the mode bits do not show it). Nomad's TLS
   directory and `/opt/nomad/data/server` with an ACL make the host's shape
   unknown, with the keyring in place or not. Each of these refusals names
-  the path and the ACL, and `setfacl -b -k <path>` removes it (but for
-  `nomad.env`, above)
+  the path and the ACL, and `setfacl -b -k <path>` removes it, but for the
+  two files Nomad reads as root that `apply` may leave in place:
+  `nomad.env`, above, and `nomad.hcl`, which `apply` replaces only on a
+  host it moves to HTTPS. For `nomad.hcl` not `root:root 0640` or with an
+  ACL, the refusal gives the commands that put it back as a new file of
+  root's, `0640`, for the same reason (`nomad-hook`'s program keeps a
+  file's mode less write for group and others, so it would leave a `0644`
+  `nomad.hcl` as it is; access to a folder is checked at each use, so a
+  folder needs no such remedy)
 - on `locked-http`: the new ES's `config.Load` refuses the migrated
   `es.json` (with a stand-in pin, since the key does not exist yet); a token
   file under `/etc/execution-substrate/nomad-acl` is not as provision left it
@@ -7881,28 +7903,46 @@ an older backup put back after an apply cut off while it wrote
 `created.json`, or before it, and the cut-off backup refused, saying its
 apply stopped before it changed the host; a `manifest.json` that is a list,
 null or a number, whose files are not a list or hold a value that is not an
-object, or whose backed-up file has a mode that is not octal, a copy outside
-`files/` or an owner that is not a number, and a `created.json` naming a
-list or a number, each refused with nothing changed; an https restore
+object, or with a path that is not a string or a file that does not say
+whether it existed, or whose backed-up file has a mode that is not octal, a
+copy outside `files/` (a slash after its number), an owner that is not a
+number, a digest in upper case, a size that is a string or a negative
+group, or with a NUL in a copy's name or a path, or naming a file `apply`
+does not back up or apply's files in another order, and each other rule
+of the check by itself (a copy name with a slash after a valid prefix, a
+group that is not a number, an owner that is a boolean, a negative size,
+a mode with an 8, a digest that is not hex, whether it existed not a
+boolean, an unknown schema, a manifest that is a string, a boolean or a
+fraction), and values of the right type that a restore could not use (an
+owner of 2^32 - 1, which `chown` reads as "leave it as it is", a group far too large, an empty or relative
+path, a copy missing from `files/`), and a `created.json` naming a list or
+a number, each refused with nothing changed, and a `restore` into a folder
+that is gone refused before the first file is put back; an https restore
 whose `es.json` does not hold against Nomad, by `rollback` and by `apply`'s
 own rollback; a rollback after which ES does not answer; an installed
 binary missing, and a rollback record's name taken, each refused; the
 wrapper refusing `backup` and `restore`; `es.json` gaining a key after
 `check`; `es_config_target` refusing a shape its `es.json` does not match;
 a `nomad.env` others can write, writable by its group or by others only,
-of another group or with the setuid bit, a link, a folder or a FIFO there,
-each refused (the remedy naming `nomad-hook`), and a host without one,
-which is not refused; the take-back program or its dpkg configuration
-missing, changed, a link, of another mode or group, or in a folder others
-can write, each refused, and `nomad-hook` installing both as the setup
-writes them, taking back a `nomad.env` others can write, changing nothing
-else, writing the same files again on a rerun, setting aside a link it
-cannot take back and failing while what it set aside is there, and
-refusing to run without root on a host; a set-aside folder beside
-`/etc/nomad.d` or `/opt/nomad/data` (a folder, or a link), each refused; a Nomad folder, `nomad.hcl`, `nomad.env`, the TLS directory
-or `/opt/nomad/data/server` with an ACL (the server folder also with the
-keyring in place), each refused
-before anything changes and naming `setfacl -b -k`; no gossip key or Nomad token in the output, the
+of another group or with the setuid bit, each refused (the remedy naming
+`nomad-hook`), a link, a folder or a FIFO there, each refused (naming
+which it is, and "remove it"), and a host without one, which is not
+refused; the take-back program or its dpkg configuration missing,
+changed, a link, of another mode or group, or in a folder its group or
+others can write or of another group, each refused, and `nomad-hook`
+installing both as the setup writes them, taking back a `nomad.env`
+others can write, changing nothing else, writing the same files again on
+a rerun, setting aside a link it cannot take back and failing while what
+it set aside is there, refusing to run without root on a host, and ending
+a setup function that does not finish within its timeout, with what it
+started, refused by name (for `nomad-hook`'s install and for `check`);
+a set-aside folder beside `/etc/nomad.d` or `/opt/nomad/data` (a folder,
+or a link), each refused; a Nomad folder, the TLS directory or
+`/opt/nomad/data/server` with an ACL (the server folder also with the
+keyring in place), each refused before anything changes and naming
+`setfacl -b -k`, and `nomad.env` and `nomad.hcl` with an access ACL, and a
+`nomad.hcl` others can read, refused with the remedy putting it back as a
+new file (for `nomad.env`, `nomad-hook`); no gossip key or Nomad token in the output, the
 fakes' logged calls or any `curl` command line; payload binaries whose Go build info names another commit, another Go
 or a modified build, or shows a replaced module, a workspace module or a
 vendored dependency; payload files of another owner or group; a clone that
