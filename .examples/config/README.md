@@ -3,6 +3,16 @@
 These files are templates only. They are not live runtime config, policy truth,
 or proof evidence.
 
+The signer keys in `ags*.json` and `egs.json` and the verification keys in
+`es*.json` are known keys: their private seeds are one byte repeated, and AGS,
+EGS and ES refuse them at startup. Give each host its own AGS and EGS keys with
+`scripts/internal/signingkeygen`, and put their public parts into the ES
+`verification` group and the AGS key ID into the EGS
+`runtime_trust.signer_policy.allowed_signers`
+(`.docs/system_overview/configuration.md`, "Signing keys"). AGS and EGS also
+refuse a config file that other users can read or write, so a copy that holds a
+real key must be mode 0600, or 0640 for a group the service runs in.
+
 Use the default ES templates for successful, non-denying paths:
 
 - `es.json` is the operator-only default ES example.

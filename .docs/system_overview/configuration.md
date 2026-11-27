@@ -27,7 +27,7 @@ For the current slice-0 operator path, ARS, EGS, AGS, and ES run as containers. 
 
 All hot-path control-plane listeners now require a verified client certificate at the TLS boundary, including `/health`. Bring-up and readiness checks must present a runtime-issued client certificate rather than relying on handler-only rejection.
 
-This repository does not ship ready-to-run service config examples. Operators must provide explicit JSON config files that satisfy the current validators.
+This repository does not ship ready-to-run service config examples. Operators must provide explicit JSON config files that satisfy the current validators. The signer and verification keys of the templates under `.examples/config` are keys AGS, EGS and ES refuse; each host generates its own (see "Signing keys").
 
 ## Workload-Zone Vault Runtime Config
 
@@ -180,6 +180,7 @@ until then this section describes current behavior.
 - `authorization.allowed_spiffe_path_prefixes` must contain the SPIFFE path prefixes allowed to call `POST /v1/artifacts:publish`
 - AGS validates each allowed SPIFFE path prefix at startup with the same rule as ARS and ES (see the ES section below and `contracts.md` section 3A)
 - signer key material must match the public key ES verifies and the signer key ID EGS allows
+- the signer key must be this host's own: AGS refuses at startup a key whose private seed is one byte repeated, the keys of the example configurations (see "Signing keys" below)
 - the current repo-owned runbooks, proofs, and generated helper configs keep this allowlist operator-only, but the caller allowlist is now deployment-configured rather than hard-coded in AGS
 - the first repo-owned non-operator caller activation path uses `service/control-plane`; prefer a narrow allowlist such as `["operator/local", "service/control-plane"]` over a broad `service/` prefix
 - the current repo-owned activation path for that caller is the direct API example at `.examples/control_plane_static_script/run.sh`
@@ -218,6 +219,7 @@ AGS no longer exposes a legacy-signing compatibility control. The current publis
 ### Minimal valid configuration
 
 - `signer.algorithm` must be `ed25519`
+- the signer key must be this host's own: EGS refuses at startup a key whose private seed is one byte repeated, the keys of the example configurations (see "Signing keys" below)
 - `publication.update_revision` must be greater than `0`
 - `runtime_trust.signer_policy.allowed_signers` and `revoked_signers` must not contain duplicates or empty values
 - `runtime_trust.artifact_policy.revoked_artifacts`, if present, must contain labeled SHA-256 digests
@@ -234,6 +236,65 @@ AGS no longer exposes a legacy-signing compatibility control. The current publis
   `spiffe://execution.internal/operator` is not an accepted EGS caller.
 
 For a minimal active system, `runtime_trust.signer_policy.allowed_signers` must include the AGS signer key ID used for provenance.
+
+## Signing keys
+
+AGS seals artifact evidence with its signer key and EGS signs the runtime-trust
+policy with its own; ES verifies both with the public keys in its
+`verification` group. Whoever holds the AGS private key can publish as any
+publisher, and whoever holds the EGS private key can allow any signer, so
+ES's publisher checks, including workload grants that name the signer, hold
+only while those keys are secret to the host.
+
+- Each host has its own AGS key and its own EGS key, generated on that host.
+  A key is never copied from this repository or from another host.
+- `scripts/internal/signingkeygen` generates one: `go run
+  ./scripts/internal/signingkeygen ags /abs/path/new-file.json` writes a new
+  Ed25519 key from `crypto/rand` as the `signer` object AGS and EGS take,
+  into a new file with mode 0600 in a folder that the user running it or
+  root owns and that no other user can write (or that has the sticky bit),
+  and prints only the public part
+  (`algorithm`, `key_id`, `public_key_hex`) for ES `verification` and the EGS
+  allow list. Its key ID is the role, `ags` or `egs`, a hyphen, and the first
+  16 hex digits of the SHA-256 of the public key, so a new key gets a new key
+  ID; the key ID is a name, and ES verifies the key itself.
+- `scripts/72_supported_local_setup.sh` generates a fresh AGS key and a fresh
+  EGS key for every proof root this way and writes them into `ags.json` and
+  `egs.json`; every config it writes is created new with mode 0600, and the
+  generated key files are removed once the configs hold the keys.
+- The config file that holds a private key is readable only by the account
+  that runs the service and by root: mode 0600 for supported-local, and
+  `root:<service group>` mode 0640 for the Remote Alpha services. AGS and EGS
+  refuse at startup a config that other users can read or write, or that is
+  not a regular file.
+- AGS and EGS refuse at startup a signer key, and ES refuses at startup any
+  `verification` key, whose private seed is one byte repeated
+  (`.docs/system_overview/contracts.md`, section 3B). That family holds the
+  two keys of the example configurations under `.examples/config`, seed
+  `0x11` repeated for AGS (public key `d04ab232…8737`) and seed `0x33`
+  repeated for EGS (public key `17cb79fb…80ce`), which every supported-local
+  install used before it generated its own. They also refuse a public key
+  that needs no private key at all: the 14 values that `crypto/ed25519`
+  decodes to a point of small order, for which anyone can make a signature.
+  32 zero bytes is one, so a placeholder of zeros is not a key. AGS, EGS and
+  ES binaries with this check do not start on a host still on such keys, so
+  the host has to get its own keys before it runs them;
+  `scripts/internal/esconfigcheck` refuses the same `es.json`. A
+  supported-local proof root made before setup generated keys keeps the old
+  keys, so its services no longer start; running setup again makes a new
+  proof root with its own keys.
+- AGS and EGS refuse a 64-byte private key whose second half is not the
+  public key of its first half; `signingkeygen` writes 32-byte seeds.
+- Changing a host's keys makes ES refuse evidence sealed with the old AGS key,
+  so artifacts published before the change must be published again from
+  their sources through AGS, into an ARS index that does not hold their old
+  records: ARS registers one record per artifact digest and refuses a
+  different one for the same digest (`contracts.md`, section 6), and the
+  same artifact sealed with a new key has the same artifact digest. A new
+  supported-local proof root starts with an empty index. Old evidence is not
+  re-signed with the new key: anyone could have sealed evidence with a known
+  key, so re-signing it would vouch for evidence the host cannot tell from a
+  forgery.
 
 ## ES
 
@@ -280,6 +341,7 @@ For a minimal active system, `runtime_trust.signer_policy.allowed_signers` must 
 
 - all verifier algorithms must be `ed25519`
 - verifier key IDs and public keys must match the active EGS and AGS signers
+- ES refuses at startup a verifier public key whose private seed is one byte repeated, the keys of the example configurations (see "Signing keys" above)
 - all dependency base URLs must be absolute `https://` URLs
 - `authorization.allowed_spiffe_path_prefixes` must contain the SPIFFE path prefixes allowed to call the ES execution and lifecycle APIs
 - ES validates each allowed SPIFFE path prefix as a relative path prefix with

@@ -184,6 +184,13 @@ skips-itself execution-substrate/scripts TestRemoteAlphaVaultWorkloadAuthBootstr
 # passwordless sudo. The upgrade runs only on the box. go.yml runs the test.
 skips-itself execution-substrate/scripts TestRemoteAlphaUpgradeESMovesARealNomadToHTTPS
 
+# The supported-local renderer's signing key tests source
+# scripts/72_supported_local_setup.sh, which runs on Linux; a Mac runs it in
+# its Lima guest. Both tests skip themselves on any other system. go.yml runs
+# the first, and runs the second as root.
+skips-itself execution-substrate/scripts TestSupportedLocalRendererKeepsTheSigningKeysPrivate
+skips-itself execution-substrate/scripts TestSupportedLocalRendererRefusesASigningKeyFileAnotherUserOwns
+
 # The Vault workload-auth bootstrap helper makes its process not dumpable
 # with prctl before it reads anything, and stops on a host where it cannot.
 # macOS has no prctl, so each of these tests skips itself. The helper runs
