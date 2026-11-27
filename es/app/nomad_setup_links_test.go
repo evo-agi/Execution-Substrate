@@ -1,12 +1,15 @@
 package app_test
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 // Audit 46 of ES PR #66. HashiCorp's Nomad package gives Nomad's data
@@ -42,17 +45,18 @@ func linuxSetupDefinitions(t *testing.T, text string, names ...string) string {
 	return strings.Join(lines, "\n") + "\n"
 }
 
-// linuxSetupServiceHarness is linuxSetupGossipHarness with nomad_config_write
-// and install_nomad_service_config added and Nomad's config folder at
-// "$1/etc" (nomad.hcl, its backup name and the TLS folder defined from it as
-// the script does). install stands in for itself as install -d: it makes the
-// folder, following a link there as the real one does, and applies -m. date
-// prints a fixed time, and the TLS and keyring steps do nothing.
+// linuxSetupServiceHarness is linuxSetupGossipHarness with
+// nomad_folder_take_back, nomad_config_write and install_nomad_service_config
+// added and Nomad's config folder at "$1/etc" (nomad.hcl, its backup name and
+// the TLS folder defined from it as the script does). install stands in for
+// itself as install -d: it makes the folder, following a link there as the
+// real one does, and applies -m. date prints a fixed time, and the TLS and
+// keyring steps do nothing.
 func linuxSetupServiceHarness(t *testing.T) string {
 	t.Helper()
 	text := linuxSetupText(t)
 	harness := linuxSetupGossipHarness(t)
-	for _, name := range []string{"nomad_config_write", "install_nomad_service_config"} {
+	for _, name := range []string{"nomad_folder_take_back", "nomad_config_write", "install_nomad_service_config"} {
 		harness += linuxSetupFunction(t, text, name)
 	}
 	return harness + "NOMAD_CONFIG_DIR=\"$1/etc\"\n" +
@@ -398,6 +402,61 @@ printf '%s' "${NOMAD_CONFIG_CHANGED}"
 		}
 	})
 
+	// R48-2 of re-check 48: with two names and no -T, cp copies into the
+	// folder a link at the backup's name points to, and --remove-destination
+	// then applies to the name inside it.
+	t.Run("an unmanaged nomad.hcl is backed up onto its own name, not into a folder a link there points to", func(t *testing.T) {
+		p := setup(t)
+		const operator = "# the operator's own config\n"
+		if err := os.WriteFile(p.nomadHCL, []byte(operator), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		folder := filepath.Join(p.outside, "folder")
+		if err := os.Mkdir(folder, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		backup := p.nomadHCL + ".execution-substrate.bak.20261127000000"
+		if err := os.Symlink(folder, backup); err != nil {
+			t.Fatal(err)
+		}
+		changed, _ := run(t, p)
+		recorded(t, p, changed, "1")
+		written(t, p)
+		if entries, err := os.ReadDir(folder); err != nil || len(entries) != 0 {
+			t.Fatalf("the backup was copied into the linked folder: %v %v", entries, err)
+		}
+		requireFileMode(t, folder, 0o700)
+		info, err := os.Lstat(backup)
+		if err != nil || !info.Mode().IsRegular() {
+			t.Fatalf("the backup is not a regular file: %v %v", info, err)
+		}
+		if data, err := os.ReadFile(backup); err != nil || string(data) != operator {
+			t.Fatalf("the backup holds %q (%v), want the operator's config", data, err)
+		}
+	})
+
+	t.Run("a folder at the backup's name stops the setup before it changes anything", func(t *testing.T) {
+		p := setup(t)
+		const operator = "# the operator's own config\n"
+		if err := os.WriteFile(p.nomadHCL, []byte(operator), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		backup := p.nomadHCL + ".execution-substrate.bak.20261127000000"
+		if err := os.Mkdir(backup, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if _, stderr, err := runLinuxSetupServiceHarness(t, p.data, "install_nomad_service_config\n"); err == nil {
+			t.Fatalf("install_nomad_service_config went on past a folder at the backup's name: %s", stderr)
+		}
+		if entries, err := os.ReadDir(backup); err != nil || len(entries) != 0 {
+			t.Fatalf("the folder at the backup's name holds %v (%v)", entries, err)
+		}
+		requireRegularFile(t, p.nomadHCL, operator, 0o644)
+		if _, err := os.Lstat(p.pending); !os.IsNotExist(err) {
+			t.Fatalf("a restart was recorded: %v", err)
+		}
+	})
+
 	for _, test := range []struct {
 		name  string
 		place func(t *testing.T, at, outside string) func(t *testing.T)
@@ -492,6 +551,9 @@ printf '%s' "${NOMAD_CONFIG_CHANGED}"
 func TestNomadTLSIssueFollowsNoLink(t *testing.T) {
 	t.Run("the folder is a link", func(t *testing.T) {
 		folder := t.TempDir()
+		if err := os.Chmod(folder, 0o700); err != nil {
+			t.Fatal(err)
+		}
 		dir := filepath.Join(t.TempDir(), "tls")
 		if err := os.Symlink(folder, dir); err != nil {
 			t.Fatal(err)
@@ -503,6 +565,9 @@ func TestNomadTLSIssueFollowsNoLink(t *testing.T) {
 		if entries, err := os.ReadDir(folder); err != nil || len(entries) != 0 {
 			t.Fatalf("the linked folder holds %v (%v)", entries, err)
 		}
+		// The refusal comes before the issuer makes or re-modes the folder
+		// (N48-2 of re-check 48): the link's target keeps its mode.
+		requireFileMode(t, folder, 0o700)
 	})
 	// Each kind of link at all three names: mv without -T would move a file
 	// into a linked folder.
@@ -603,5 +668,86 @@ func TestLinuxSetupSummaryClaimsGossipEncryptionOnlyAfterQualification(t *testin
 	ready := strings.Index(qualify, "\n  SUPPORTED_SUBSTRATE_READY=1\n")
 	if check < 0 || ready < check {
 		t.Fatalf("qualify_supported_substrate must check the agent's gossip before it sets SUPPORTED_SUBSTRATE_READY=1 (offsets %d %d)", check, ready)
+	}
+}
+
+// S48-1 of re-check 48 (the test it proposed). configuration.md says the
+// setup reads and backs up the old nomad.hcl only when it is a regular file.
+// A FIFO at nomad.hcl, which the package's former owner can plant, must not
+// make the setup block on reading it; a folder there is refused, and no
+// temporary name is left behind.
+func TestLinuxSetupReadsNomadConfigOnlyWhenItIsARegularFile(t *testing.T) {
+	run := func(t *testing.T, dataDir string) (string, error) {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		command := exec.CommandContext(ctx, "bash", "-c", linuxSetupServiceHarness(t)+"install_nomad_service_config\n", "bash", dataDir)
+		command.Env = []string{"PATH=" + os.Getenv("PATH")}
+		command.WaitDelay = time.Second
+		output, err := command.CombinedOutput()
+		if ctx.Err() != nil {
+			t.Fatalf("install_nomad_service_config did not finish: it blocked on what is at nomad.hcl: %s", output)
+		}
+		return string(output), err
+	}
+	setup := func(t *testing.T) (data, config, hcl string) {
+		t.Helper()
+		data = t.TempDir()
+		config = filepath.Join(data, "etc")
+		if err := os.Mkdir(config, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return data, config, filepath.Join(config, "nomad.hcl")
+	}
+
+	t.Run("a FIFO is replaced, not read", func(t *testing.T) {
+		data, config, hcl := setup(t)
+		if err := syscall.Mkfifo(hcl, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if output, err := run(t, data); err != nil {
+			t.Fatalf("install_nomad_service_config: %v %s", err, output)
+		}
+		requireRegularFile(t, hcl, renderedNomadConfig(t, data, config)+"\n", 0o640)
+		if matches, _ := filepath.Glob(hcl + ".execution-substrate.bak.*"); len(matches) != 0 {
+			t.Fatalf("a FIFO was backed up: %v", matches)
+		}
+	})
+
+	t.Run("a folder is refused and left as it is", func(t *testing.T) {
+		data, _, hcl := setup(t)
+		if err := os.Mkdir(hcl, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		output, err := run(t, data)
+		if err == nil {
+			t.Fatalf("install_nomad_service_config replaced a folder at nomad.hcl: %s", output)
+		}
+		if info, statErr := os.Lstat(hcl); statErr != nil || !info.IsDir() {
+			t.Fatalf("the folder at nomad.hcl is %v (%v)", info, statErr)
+		}
+		if _, statErr := os.Lstat(hcl + ".execution-substrate-new"); !os.IsNotExist(statErr) {
+			t.Fatalf("the temporary name is left after the refusal: %v", statErr)
+		}
+		if !strings.Contains(output, "nomad: could not write "+hcl) {
+			t.Fatalf("the refusal does not name nomad.hcl: %s", output)
+		}
+	})
+}
+
+// A folder at the restart record's name (R6 of re-check 48): the record is
+// written only as a new file, so the setup refuses and leaves the folder, with
+// whatever the former owner put in it, as it is.
+func TestLinuxSetupRefusesAFolderAtTheRestartRecord(t *testing.T) {
+	dataDir := t.TempDir()
+	pending := filepath.Join(dataDir, "execution-substrate-restart-pending")
+	if err := os.MkdirAll(filepath.Join(pending, "inside"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, stderr, err := runLinuxSetupGossipHarness(t, dataDir, "nomad_needs_restart\n"); err == nil {
+		t.Fatalf("nomad_needs_restart replaced a folder at the record's name: %s", stderr)
+	}
+	if info, err := os.Lstat(filepath.Join(pending, "inside")); err != nil || !info.IsDir() {
+		t.Fatalf("what was in the folder at the record's name is gone: %v %v", info, err)
 	}
 }

@@ -680,7 +680,7 @@ func TestLinuxSetupWritesTheNomadGossipKeyringBeforeNomadStarts(t *testing.T) {
 		t.Fatal("70_linux_setup.sh does not keep the gossip keyring where Nomad reads it")
 	}
 	service := linuxSetupFunction(t, text, "install_nomad_service_config")
-	dataDir := strings.Index(service, `sudo install -d -o root -g root -m 0700 "${NOMAD_DATA_DIR}"`)
+	dataDir := strings.Index(service, `nomad_folder_take_back 0700 "${NOMAD_DATA_DIR}"`)
 	install := strings.Index(service, "\n  install_nomad_gossip_keyring\n")
 	config := strings.Index(service, `| nomad_config_write "${NOMAD_CONFIG_PATH}"`)
 	if dataDir < 0 || install < dataDir || config < install {

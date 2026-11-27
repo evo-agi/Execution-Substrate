@@ -540,16 +540,48 @@ install_nomad_gossip_keyring() {
   NOMAD_GOSSIP_ISSUED=1
 }
 
+# nomad_folder_take_back <mode> <folder>: make <folder> (or keep it) a folder
+# root owns, with <mode> and no ACL. HashiCorp's package gives Nomad's folders
+# to the nomad account on each install or upgrade, and an account may set an
+# ACL on a folder it owns. install -d takes the owner and the mode back but
+# keeps the ACL. A default ACL overrides the umask of every file root then
+# creates in the folder: a new nomad.hcl would be that account's to write
+# from its creation, and a handle opened before a later chmod keeps writing.
+# An access ACL keeps entries for the account on the folder itself. Both are
+# the folder's system.posix_acl_* attributes, so removing them needs no acl
+# package, and removing the access ACL keeps the mode install -d set. Once
+# root owns the folder, no other account can set an ACL on it again. The
+# setup stops when it cannot remove one.
+nomad_folder_take_back() {
+  sudo install -d -o root -g root -m "$1" "$2"
+  sudo python3 -I - "$2" <<'PY'
+import errno
+import os
+import sys
+
+folder = sys.argv[1]
+for name in ("system.posix_acl_default", "system.posix_acl_access"):
+    try:
+        os.removexattr(folder, name)
+    except OSError as error:
+        if error.errno != errno.ENODATA:
+            sys.exit(f"nomad: cannot remove the ACL of {folder}: {error}")
+PY
+}
+
 # nomad_config_write <path>: write standard input to <path> as a new file,
 # root:root 0640, and rename it into place. HashiCorp's package gives
 # /etc/nomad.d and everything in it to the nomad account on each install or
 # upgrade; a link left at <path> is replaced, not followed, and a handle kept
-# open on the old file no longer reaches the config. Nomad loads only *.hcl
+# open on the old file no longer reaches the config. The folder holds no
+# default ACL (nomad_folder_take_back), so the umask decides the mode at
+# creation, and chmod sets 0640 whatever the umask. Nomad loads only *.hcl
 # and *.json from the folder, so it never reads the temporary name.
 nomad_config_write() {
   local tmp="$1.execution-substrate-new"
-  if ! sudo sh -c 'umask 027 && rm -f -- "$1" && set -C && cat >"$1" && mv -fT -- "$1" "$2"' sh "${tmp}" "$1"; then
+  if ! sudo sh -c 'umask 027 && rm -f -- "$1" && set -C && cat >"$1" && chmod 0640 -- "$1" && mv -fT -- "$1" "$2"' sh "${tmp}" "$1"; then
     sudo rm -f -- "${tmp}" || true
+    echo "nomad: could not write $1" >&2
     return 1
   fi
 }
@@ -561,8 +593,8 @@ install_nomad_service_config() {
   # Nomad runs as root, so only root may change what it reads or keeps
   # (audit INF-16): its config directory and data directory (Raft state and
   # the keyring) are root-owned.
-  sudo install -d -o root -g root -m 0755 "${NOMAD_CONFIG_DIR}"
-  sudo install -d -o root -g root -m 0700 "${NOMAD_DATA_DIR}"
+  nomad_folder_take_back 0755 "${NOMAD_CONFIG_DIR}"
+  nomad_folder_take_back 0700 "${NOMAD_DATA_DIR}"
   # The package leaves /etc/nomad.d to the nomad account, which can put a link
   # at the TLS folder; install -d would re-own and re-mode the link's target
   # and the issuer would write Nomad's key there. Now that only root can
@@ -571,12 +603,14 @@ install_nomad_service_config() {
     echo "nomad tls: ${NOMAD_TLS_DIR} is a link; replacing it with a folder"
     sudo rm -f -- "${NOMAD_TLS_DIR}"
   fi
-  sudo install -d -o root -g root -m 0755 "${NOMAD_TLS_DIR}"
+  nomad_folder_take_back 0755 "${NOMAD_TLS_DIR}"
   install_nomad_tls_material
   install_nomad_gossip_keyring
 
   # nomad.hcl is read, and backed up, only when it is a regular file and not a
   # link; a link there is replaced by the new file without being followed.
+  # The backup is copied onto its own name (-T): a link there is replaced,
+  # even one to a folder, and a folder there stops the setup.
   local previous_config=""
   local config=""
   if sudo test -L "${NOMAD_CONFIG_PATH}"; then
@@ -585,7 +619,7 @@ install_nomad_service_config() {
     if ! sudo grep -Fq "${NOMAD_MANAGED_MARKER}" "${NOMAD_CONFIG_PATH}"; then
       backup_suffix="$(date +%Y%m%d%H%M%S)"
       echo "Backing up existing Nomad config to ${NOMAD_CONFIG_BACKUP_PATH}.${backup_suffix}"
-      sudo cp --remove-destination -- "${NOMAD_CONFIG_PATH}" "${NOMAD_CONFIG_BACKUP_PATH}.${backup_suffix}"
+      sudo cp -T --remove-destination -- "${NOMAD_CONFIG_PATH}" "${NOMAD_CONFIG_BACKUP_PATH}.${backup_suffix}"
     fi
     previous_config="$(sudo cat -- "${NOMAD_CONFIG_PATH}")"
   fi
