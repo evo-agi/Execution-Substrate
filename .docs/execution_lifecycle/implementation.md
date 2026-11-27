@@ -261,7 +261,9 @@ What the app layer delegates:
    grants an egress lane, else `403 network_access_not_granted`. The ES API
    puts the mTLS caller in the request context
    (`admission.WithAuthenticatedCaller`); a context without one matches no
-   grant. It reads ES configuration only, so a refused run fetches no payload.
+   grant. The runtime-profile check runs first in this step, and a request
+   it refuses gets its `400 unsupported_runtime_profile` here. It reads ES
+   configuration only, so a refused run fetches no payload.
 9. Evaluate ES Admission Policy Layer v0 in the same shared admission helper
    used by `Prepare` and `Submit`. If an enabled policy requires payload
    inspection, read only bounded static-script payload text through the

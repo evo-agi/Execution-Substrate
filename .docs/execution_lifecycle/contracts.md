@@ -868,7 +868,9 @@ Grants live in ES deployment configuration at
     the verified evidence names it; `caller_principal`, the ES caller that
     asks ES to run it, as ES authenticated it over mTLS for the request;
     `signer_key_id`; `artifact_type`; and `runtime_profile` (the effective
-    profile name, `static-script/default` when the request names none). Both
+    profile name, `static-script/default` when the request names none). A
+    request selects the default profile only by naming none: the
+    runtime-profile annotation does not accept `static-script/default`. Both
     principals are SPIFFE IDs that the caller authentication contract in
     `.docs/system_overview/contracts.md`, section 3A, accepts, written in
     that form, with at least two path segments. The publisher principal is
@@ -940,8 +942,10 @@ Rules for these policies:
   `network_access_not_granted`.
 - A request that names a runtime profile ES does not support gets no grant
   decision: the runtime-profile check refuses it with `400
-  unsupported_runtime_profile`, as it does without grants. The grant
-  policies match only the two profile names ES supports.
+  unsupported_runtime_profile`, as it does without grants. That refusal
+  comes at the grant step, before the content policies, so such a request
+  reads no payload, whoever the caller is. The grant policies match only the
+  two profile names ES supports.
 - Both refusals are deterministic policy denials in the existing redacted
   error envelope. A failure to read the workload-zone Vault config remains an
   unavailable dependency, not a grant denial.
@@ -963,8 +967,9 @@ Rules for these policies:
   own, through the host firewall on the Remote Supported Host Alpha box and
   through the full `bridge` network on supported-local hosts.
   WI-4 removes the value, and from then on ES startup refuses a configuration
-  that uses it. A test in `es/config` is the trigger: it fails once ES
-  accepts any other lane while it still accepts `unrestricted`.
+  that uses it. Two tests in `es/config` are the trigger: they fail once ES
+  accepts any other lane, of any shape or by any name written in ES's
+  source, while it still accepts `unrestricted`.
 
 ### Guardrails
 

@@ -278,6 +278,62 @@ func TestPrepareGivesTheNetworkOnlyToTheCallerItsGrantNames(t *testing.T) {
 	}
 }
 
+// The caller allowlist matches by prefix; a workload grant matches the ES
+// caller exactly. So what the ES API hands admission must be the SPIFFE ID of
+// the caller's own certificate, never the allowlist entry that admitted it:
+// one allowlist entry, three certificates at and below it, and a grant that
+// names each in turn. (Red-team 2 of ES PR #73, RT73B-1: the two-caller test
+// above uses callers that are exact allowlist entries, so it could not tell
+// the two apart.) :submit takes its caller through the same function.
+func TestPrepareMatchesTheGrantOnTheCallersOwnIdentityNotTheAllowlistEntryThatAdmittedIt(t *testing.T) {
+	const entry = "operator/local"
+	callers := []string{entry, entry + "/x", entry + "/x/y"}
+	grantTo := func(caller string) func(string) *esconfig.AdmissionPolicyConfig {
+		return func(keyID string) *esconfig.AdmissionPolicyConfig {
+			reaches := true
+			return &esconfig.AdmissionPolicyConfig{WorkloadGrants: &esconfig.WorkloadGrantsConfig{
+				EgressLanes: []esconfig.WorkloadEgressLaneConfig{{Name: esconfig.WorkloadEgressLaneUnrestricted, ReachesWorkloadVault: &reaches}},
+				Rules: []esconfig.WorkloadGrantRuleConfig{{
+					ID:                 "one-caller",
+					PublisherPrincipal: "spiffe://execution.internal/" + entry,
+					CallerPrincipal:    "spiffe://execution.internal/" + caller,
+					SignerKeyID:        keyID,
+					ArtifactType:       "static-service",
+					RuntimeProfile:     esconfig.WorkloadGrantRuntimeProfileDefault,
+					EgressLane:         esconfig.WorkloadEgressLaneUnrestricted,
+				}},
+			}}
+		}
+	}
+	for _, granted := range callers {
+		t.Run("grant names "+granted, func(t *testing.T) {
+			stack := startStack(t, stackOptions{
+				AllowedExecutionCallerPrefixes: []string{entry},
+				NetworkAccess:                  true,
+				AdmissionPolicy:                grantTo(granted),
+			})
+			for _, caller := range callers {
+				response := doJSONRequest(t, stack.es.Addr(), http.MethodPost, "/v1/executions:prepare", stack.fixture.clientTLSConfig(t, caller, false), buildPrepareRequestBody(t, stack))
+				body := mustReadBody(t, response.Body)
+				response.Body.Close()
+				if caller == granted {
+					if response.StatusCode != http.StatusOK {
+						t.Fatalf("caller %s, which the grant names: expected 200, got %d body=%s", caller, response.StatusCode, strings.TrimSpace(string(body)))
+					}
+					continue
+				}
+				if response.StatusCode != http.StatusForbidden {
+					t.Fatalf("caller %s, which the allowlist entry %s admits and the grant for %s does not name: expected 403, got %d body=%s", caller, entry, granted, response.StatusCode, strings.TrimSpace(string(body)))
+				}
+				var refusal admission.ErrorResponse
+				if err := json.Unmarshal(body, &refusal); err != nil || refusal.Code != "network_access_not_granted" {
+					t.Fatalf("caller %s: expected network_access_not_granted, got %s (%v)", caller, strings.TrimSpace(string(body)), err)
+				}
+			}
+		})
+	}
+}
+
 func TestPrepareReturns403WhenDeploymentCallerIsUsed(t *testing.T) {
 	stack := startStack(t, stackOptions{})
 

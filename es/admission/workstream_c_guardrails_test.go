@@ -11108,8 +11108,11 @@ func TestWorkstreamCPrepareRejectsUnsupportedRuntimeProfileWithoutRunState(t *te
 	assertAdmissionError(t, err, http.StatusBadRequest, codeUnsupportedRuntimeProfile)
 	assertDirectoryEmpty(t, stagingRoot)
 	assertDirectoryEmpty(t, resultsRoot)
-	if len(arsCalls) != 4 {
-		t.Fatalf("expected runtime-profile failure to remain admission-bounded, got ARS calls %v", arsCalls)
+	// The runtime-profile refusal comes at the grant step, before the
+	// content policies, so the payload is never read (red-team 2 of ES PR
+	// #73, RT73B-2): discovery, evidence and the workload-zone Vault config.
+	if len(arsCalls) != 3 || arsCalls["/v1/blobs/"+fixture.discovery.Payload.Digest+":bytes"] != 0 {
+		t.Fatalf("expected runtime-profile failure to remain admission-bounded without a payload read, got ARS calls %v", arsCalls)
 	}
 }
 

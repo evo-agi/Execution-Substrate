@@ -222,8 +222,8 @@ func TestEveryRuntimeProfileTheGateResolvesHasAGrantDecision(t *testing.T) {
 					resolved, resolveErr := resolveExecutionRuntimeProfile(execution, req, artifact)
 					if resolveErr != nil {
 						// The gate refuses: no grant decision, and the
-						// caller gets the gate's 400.
-						if grantErr != nil || decision != (workloadGrantDecision{}) || resolveErr.Code != codeUnsupportedRuntimeProfile {
+						// grant step returns the gate's own 400.
+						if grantErr == nil || *grantErr != *resolveErr || decision != (workloadGrantDecision{}) || resolveErr.Code != codeUnsupportedRuntimeProfile {
 							t.Errorf("profile %q (enabled=%t, %s, network=%t): grant decision %+v, %+v; gate %+v",
 								candidate, enabled, artifactType, network, decision, grantErr, resolveErr)
 						}
@@ -665,6 +665,94 @@ func TestPrivateDeliveryMatchesGrantsOnTheCallerItIsBoundTo(t *testing.T) {
 		}
 		if !test.admitted && err == nil {
 			t.Fatalf("delivery bound to %s got the network from a grant for %s", test.bound, testGrantCaller)
+		}
+	}
+}
+
+// Section 5B: the grant policies run before the content policies, so a
+// refused run fetches no payload for policy inspection. A caller that no
+// grant names cannot get past that order by naming a runtime profile the
+// gate refuses: the grant step returns the gate's own 400 then, before any
+// payload read, and the answer does not depend on the owner's content
+// policy. (Red-team 2 of ES PR #73, RT73B-2: before the repair, such a
+// request skipped the grant decision, ES read the payload, and with an
+// owner literal-deny entry the caller saw the content policy's answer.)
+func TestARunNoGrantNamesReachesNoContentPolicyWhateverItsRuntimeProfile(t *testing.T) {
+	const ungranted = "spiffe://execution.internal/user/mallory"
+	fixture, payload := signedStaticScriptFixture(t)
+	if !fixture.evidence.Claims.Admission.Execution.Access.NetworkAccess {
+		t.Fatal("control: the fixture no longer requests the network")
+	}
+	granted := esconfig.Config{}
+	grantFixtureNetwork(&granted, fixture) // names testGrantCaller only
+	const literal = "policy-fixture-ok"    // a text the fixture payload holds
+	payloadPath := "/v1/blobs/" + fixture.discovery.Payload.Digest + ":bytes"
+
+	answer := func(t *testing.T, operation, annotation string, annotated, denyLiteral bool, caller string) (*Error, int) {
+		t.Helper()
+		service, stagingRoot, resultsRoot := workloadGrantsTestService(t, fixture, granted.AdmissionPolicy.WorkloadGrants)
+		if denyLiteral {
+			policy := *service.cfg.AdmissionPolicy
+			policy.ConfiguredStaticScriptLiteralDeny = &esconfig.ConfiguredStaticScriptLiteralDenyPolicyConfig{
+				Mode: esconfig.ConfiguredStaticScriptLiteralDenyModeEnforce,
+				Entries: []esconfig.ConfiguredStaticScriptLiteralDenyEntryConfig{{
+					ID: "owner-rule", InputClass: esconfig.ConfiguredStaticScriptLiteralDenyInputClassStaticScriptPayloadText, Literal: literal,
+				}},
+			}
+			service.cfg.AdmissionPolicy = &policy
+		}
+		handler := newSignedPayloadHandler(t, fixture, payload)
+		service.arsClient = newResolvedPlanDependencyClient(t, handler)
+		nomad := &nomadRegistrationLog{}
+		service.nomadClient = newCountingNomadClient(t, nomad)
+		request := fixture.prepareRequest()
+		if annotated {
+			request.Invocation.Annotations = map[string]string{runtimeProfileAnnotationKey: annotation}
+		}
+		ctx := callerContext(context.Background(), caller)
+		var err *Error
+		if operation == "submit" {
+			request.Mode = ExecutionModeAsync
+			_, err = service.Submit(ctx, request)
+		} else {
+			_, err = service.Prepare(ctx, request)
+		}
+		if caller == ungranted {
+			assertNoRunEffects(t, nomad, stagingRoot, resultsRoot)
+		}
+		return err, handler.log.count(payloadPath)
+	}
+
+	for _, operation := range []string{"prepare", "submit"} {
+		// Control: the owner's entry does deny this payload, for the caller
+		// the grant names. Without it the test would pass for no reason.
+		if err, reads := answer(t, operation, "", false, true, testGrantCaller); err == nil || err.Code != codeConfiguredStaticScriptDenied || reads == 0 {
+			t.Fatalf("control, %s: the granted caller's run should be denied by the owner's literal entry after a payload read, got %+v with %d reads", operation, err, reads)
+		}
+		for name, annotation := range map[string]string{
+			"an unknown profile":                  "nothing/v1",
+			"the profile that is not enabled":     runtimeProfileControlPlaneNormalShell,
+			"a known profile in another case":     "Control-Plane-Normal-Shell/v1",
+			"the default profile's name":          runtimeProfileDefaultStaticScript,
+			"a profile name with a newline in it": "static-script/default\n",
+		} {
+			var codes [2]string
+			for i, denyLiteral := range []bool{false, true} {
+				err, reads := answer(t, operation, annotation, true, denyLiteral, ungranted)
+				if err == nil {
+					t.Fatalf("%s, %s: a caller no grant names was admitted to a run that requests the network", operation, name)
+				}
+				if reads != 0 {
+					t.Errorf("%s, %s, owner literal entry=%t: ES read the payload %d time(s) for a run no grant names (answer %d %s)", operation, name, denyLiteral, reads, err.Status, err.Code)
+				}
+				if err.Status != http.StatusBadRequest || err.Code != codeUnsupportedRuntimeProfile {
+					t.Errorf("%s, %s, owner literal entry=%t: answer %d %s, want the profile gate's 400 %s", operation, name, denyLiteral, err.Status, err.Code, codeUnsupportedRuntimeProfile)
+				}
+				codes[i] = err.Code
+			}
+			if codes[0] != codes[1] {
+				t.Errorf("%s, %s: the answer to a caller no grant names depends on the owner's content policy: %s without the entry, %s with it", operation, name, codes[0], codes[1])
+			}
 		}
 	}
 }

@@ -190,13 +190,16 @@ func authenticatedCallerPrincipal(ctx context.Context) string {
 // resolveExecutionRuntimeProfile, so the grant code keeps no list of profile
 // names: every profile the gate resolves gets a grant decision. When the gate
 // refuses the request (an unknown or disabled profile, or one the artifact
-// does not fit), the grant policies make no decision, and the gate refuses
-// the request with its own 400 unsupported_runtime_profile later in the same
-// :prepare or :submit, before any effect, as it does without grants.
+// does not fit), its own 400 unsupported_runtime_profile is the answer, and
+// it is returned here, before the content policies. So every run leaves
+// admission with a grant decision or a refusal, and a request that names a
+// profile ES refuses reads no payload, whoever the caller is (red-team 2,
+// RT73B-2). Prepare and submit run the same gate again later with the same
+// inputs.
 func (s *Service) decideWorkloadGrants(ctx context.Context, req PrepareRequest, artifact preparedArtifact) (workloadGrantDecision, *Error) {
 	profile, profileErr := resolveExecutionRuntimeProfile(s.cfg.Execution, req, artifact)
 	if profileErr != nil {
-		return workloadGrantDecision{}, nil
+		return workloadGrantDecision{}, profileErr
 	}
 	facts := newWorkloadGrantFacts(authenticatedCallerPrincipal(ctx), profile.name, artifact)
 	return workloadGrantsFromConfig(s.cfg.AdmissionPolicy).decide(facts)

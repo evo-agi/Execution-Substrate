@@ -140,6 +140,8 @@ func TestWorkloadGrantsContractIsDocumented(t *testing.T) {
 	assertContainsAll(t, "workload grants evaluation", grants,
 		"They run on `:prepare` and on `:submit` alike, in the shared admission path after evidence verification and the workload-zone Vault config read, and before the content policies, so a refused run fetches no payload for policy inspection:",
 		"A request that names a runtime profile ES does not support gets no grant decision: the runtime-profile check refuses it with `400 unsupported_runtime_profile`, as it does without grants.",
+		"That refusal comes at the grant step, before the content policies, so such a request reads no payload, whoever the caller is.",
+		"A request selects the default profile only by naming none: the runtime-profile annotation does not accept `static-script/default`.",
 		"The decision holds the matching rule ID, the effective identity name and the effective lane name. These are safe, non-secret values. Until WI-3, nothing reads them: the only lane, `unrestricted`, is realized as the network mode signed `network_access` already selects.",
 		"The effective lane is none when signed `network_access` is false, whatever the rule grants.",
 		"ES finds the rule whose five match fields equal the run's facts: the publisher principal and signer key ID from the verified evidence, with surrounding white space removed; the caller principal ES authenticated for the request; the artifact type; and the effective runtime profile, as the runtime-profile check resolves it.",
@@ -154,7 +156,7 @@ func TestWorkloadGrantsContractIsDocumented(t *testing.T) {
 	assertContainsAll(t, "workload grants temporary edge and its removal condition", grants,
 		"While any rule grants the lane `unrestricted`, readiness reports `workload_egress_unrestricted=true`. This is a `Temporary compatibility edge`",
 		"a granted run reaches the internet without an egress filter of its own, through the host firewall on the Remote Supported Host Alpha box and through the full `bridge` network on supported-local hosts.",
-		"WI-4 removes the value, and from then on ES startup refuses a configuration that uses it. A test in `es/config` is the trigger: it fails once ES accepts any other lane while it still accepts `unrestricted`.",
+		"WI-4 removes the value, and from then on ES startup refuses a configuration that uses it. Two tests in `es/config` are the trigger: they fail once ES accepts any other lane, of any shape or by any name written in ES's source, while it still accepts `unrestricted`.",
 	)
 
 	assertContainsAll(t, "workload grants guardrails", grants,

@@ -2,9 +2,15 @@ package config
 
 import (
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -298,4 +304,85 @@ func TestWorkloadGrantRulesNameTheirCallerExactly(t *testing.T) {
 	if key := grants.Rules[2].MatchKey(); key != [5]string{other.PublisherPrincipal, other.CallerPrincipal, other.SignerKeyID, other.ArtifactType, other.RuntimeProfile} {
 		t.Fatalf("match key order = %q", key)
 	}
+}
+
+// The second half of the unrestricted lane's machine trigger, with
+// TestUnrestrictedLaneIsRefusedOnceAnotherLaneIsAccepted. That test pins the
+// lane type's fields and tries lane names it makes up; a second lane that ES
+// accepts by a built-in name, with no new field, would pass it unless the
+// name were one of those. A built-in name has to be written in ES's own
+// source, so this test takes its candidate names from there: every string
+// literal in every non-test Go file under es/, whole, trimmed and split into
+// words. While ES accepts the temporary lane, it must accept no other lane
+// named by any of them. (Red-team 2 of ES PR #73, RT73B-3.)
+func TestNoLaneNameInESSourceIsAcceptedWhileUnrestrictedStillIs(t *testing.T) {
+	if err := configWithWorkloadGrants(validWorkloadGrantsConfig()).Validate(); err != nil {
+		// The temporary lane is gone: nothing left to trigger.
+		return
+	}
+	candidates := map[string]bool{}
+	files := 0
+	walkErr := filepath.WalkDir("..", func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		parsed, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.SkipObjectResolution)
+		if err != nil {
+			return err
+		}
+		files++
+		ast.Inspect(parsed, func(node ast.Node) bool {
+			literal, ok := node.(*ast.BasicLit)
+			if !ok || literal.Kind != token.STRING {
+				return true
+			}
+			value, err := strconv.Unquote(literal.Value)
+			if err != nil {
+				t.Errorf("%s: cannot read the string literal %s: %v", path, literal.Value, err)
+				return true
+			}
+			// A literal can be a whole name or hold one among other words.
+			candidates[value] = true
+			candidates[strings.TrimSpace(value)] = true
+			for _, word := range strings.FieldsFunc(value, func(r rune) bool {
+				return !(r == '-' || r == '_' || r == '.' || r == '/' || r >= '0' && r <= '9' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z')
+			}) {
+				candidates[word] = true
+			}
+			return true
+		})
+		return nil
+	})
+	if walkErr != nil {
+		t.Fatal(walkErr)
+	}
+	// Controls: the scan read ES's source, and it found the lane it knows.
+	if files < 20 || len(candidates) < 500 {
+		t.Fatalf("control: the scan read %d files and %d candidate names; it no longer reads ES's source", files, len(candidates))
+	}
+	if !candidates[WorkloadEgressLaneUnrestricted] {
+		t.Fatalf("control: the scan did not find %q, the one lane name ES has", WorkloadEgressLaneUnrestricted)
+	}
+
+	var accepted []string
+	for name := range candidates {
+		if name == WorkloadEgressLaneUnrestricted {
+			continue
+		}
+		for _, reaches := range []bool{true, false} {
+			reaches := reaches
+			other := &WorkloadGrantsConfig{EgressLanes: []WorkloadEgressLaneConfig{{Name: name, ReachesWorkloadVault: &reaches}}}
+			if configWithWorkloadGrants(other).Validate() == nil {
+				accepted = append(accepted, strconv.Quote(name)+" reaches_workload_vault="+strconv.FormatBool(reaches))
+			}
+		}
+	}
+	sort.Strings(accepted)
+	for _, lane := range accepted {
+		t.Errorf("ES accepts the lane %s and still accepts %q: egress lanes are landing, so remove the temporary lane (ES must refuse it) in the same change", lane, WorkloadEgressLaneUnrestricted)
+	}
+	t.Logf("tried %d names from %d source files under es/", len(candidates), files)
 }
