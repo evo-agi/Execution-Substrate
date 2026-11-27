@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -39,14 +40,20 @@ var aclNames = []string{"system.posix_acl_access", "system.posix_acl_default"}
 // 2, then each entry's tag, permission bits and ID, little-endian, in the
 // kernel's order. Writing the attribute directly needs no acl package.
 func grantingACL() []byte {
-	value := binary.LittleEndian.AppendUint32(nil, 2)
-	for _, entry := range [][3]uint32{
+	return encodedACL([][3]uint32{
 		{aclUserObj, 7, aclNoID},
 		{aclUser, 7, 65534},
 		{aclGroupObj, 5, aclNoID},
 		{aclMask, 7, aclNoID},
 		{aclOther, 5, aclNoID},
-	} {
+	})
+}
+
+// encodedACL is the kernel's encoding of the ACL entries (tag, permission
+// bits, ID), given in the kernel's order.
+func encodedACL(entries [][3]uint32) []byte {
+	value := binary.LittleEndian.AppendUint32(nil, 2)
+	for _, entry := range entries {
 		value = binary.LittleEndian.AppendUint16(value, uint16(entry[0]))
 		value = binary.LittleEndian.AppendUint16(value, uint16(entry[1]))
 		value = binary.LittleEndian.AppendUint32(value, entry[2])
@@ -221,4 +228,39 @@ func TestLinuxSetupStopsWhenItCannotRemoveAFolderACL(t *testing.T) {
 	if !hasACL(t, config, "system.posix_acl_default") {
 		t.Fatal("the folder lost its default ACL; the refusal was not reached")
 	}
+}
+
+// Re-check 49 (O49-2): a file Nomad loads from the config folder, with an
+// access ACL left by the account that owned it, is taken back as a new file
+// with no ACL, even when its owner and mode bits are already right. The mask
+// caps the entry for that account at read here, so the mode bits show
+// nothing amiss.
+func TestLinuxSetupTakesBackAConfigFileWithAnACL(t *testing.T) {
+	data, config, _ := serviceFolders(t)
+	extra := filepath.Join(config, "extra.hcl")
+	if err := os.WriteFile(extra, []byte("# extra\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	reading := encodedACL([][3]uint32{
+		{aclUserObj, 6, aclNoID},
+		{aclUser, 7, 65534},
+		{aclGroupObj, 4, aclNoID},
+		{aclMask, 4, aclNoID},
+		{aclOther, 4, aclNoID},
+	})
+	if err := syscall.Setxattr(extra, "system.posix_acl_access", reading, 0); err != nil {
+		t.Fatal(err)
+	}
+	requireFileMode(t, extra, 0o644)
+	stdout, stderr, err := runLinuxSetupServiceHarness(t, data, "install_nomad_service_config\n")
+	if err != nil {
+		t.Fatalf("install_nomad_service_config: %v %s", err, stderr)
+	}
+	want := "nomad: took " + extra + " back (uid " + strconv.Itoa(os.Getuid()) + ", gid " + strconv.Itoa(os.Getgid()) +
+		", 0644, with an ACL); Nomad's unit reads it as root, so check what it sets"
+	if got := tookBack(stdout); len(got) != 1 || got[0] != want {
+		t.Fatalf("the setup reported %q, want %q", got, want)
+	}
+	requireRegularFile(t, extra, "# extra\n", 0o644)
+	requireNoACL(t, extra)
 }

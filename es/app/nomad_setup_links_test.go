@@ -46,17 +46,17 @@ func linuxSetupDefinitions(t *testing.T, text string, names ...string) string {
 }
 
 // linuxSetupServiceHarness is linuxSetupGossipHarness with
-// nomad_folder_take_back, nomad_config_write and install_nomad_service_config
-// added and Nomad's config folder at "$1/etc" (nomad.hcl, its backup name and
-// the TLS folder defined from it as the script does). install stands in for
-// itself as install -d: it makes the folder, following a link there as the
-// real one does, and applies -m. date prints a fixed time, and the TLS and
-// keyring steps do nothing.
+// nomad_folder_take_back, nomad_config_files_take_back, nomad_config_write
+// and install_nomad_service_config added, and Nomad's config folder at
+// "$1/etc" (nomad.hcl, its backup name and the TLS folder defined from it as
+// the script does). install stands in for itself as install -d: it makes the
+// folder, following a link there as the real one does, and applies -m. date
+// prints a fixed time, and the TLS and keyring steps do nothing.
 func linuxSetupServiceHarness(t *testing.T) string {
 	t.Helper()
 	text := linuxSetupText(t)
 	harness := linuxSetupGossipHarness(t)
-	for _, name := range []string{"nomad_folder_take_back", "nomad_config_write", "install_nomad_service_config"} {
+	for _, name := range []string{"nomad_folder_take_back", "nomad_config_files_take_back", "nomad_config_write", "install_nomad_service_config"} {
 		harness += linuxSetupFunction(t, text, name)
 	}
 	return harness + "NOMAD_CONFIG_DIR=\"$1/etc\"\n" +
@@ -435,7 +435,9 @@ printf '%s' "${NOMAD_CONFIG_CHANGED}"
 		}
 	})
 
-	t.Run("a folder at the backup's name stops the setup before it changes anything", func(t *testing.T) {
+	// Re-check 49 (O49-1): by then the folders are root's again; nomad.hcl
+	// and the restart record are not touched, and the message says what to do.
+	t.Run("a folder at the backup's name stops the setup before it changes nomad.hcl", func(t *testing.T) {
 		p := setup(t)
 		const operator = "# the operator's own config\n"
 		if err := os.WriteFile(p.nomadHCL, []byte(operator), 0o644); err != nil {
@@ -445,8 +447,12 @@ printf '%s' "${NOMAD_CONFIG_CHANGED}"
 		if err := os.Mkdir(backup, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if _, stderr, err := runLinuxSetupServiceHarness(t, p.data, "install_nomad_service_config\n"); err == nil {
+		_, stderr, err := runLinuxSetupServiceHarness(t, p.data, "install_nomad_service_config\n")
+		if err == nil {
 			t.Fatalf("install_nomad_service_config went on past a folder at the backup's name: %s", stderr)
+		}
+		if want := "nomad: could not back up " + p.nomadHCL + " to " + backup + "; remove what is at that name and rerun"; !strings.Contains(stderr, want) {
+			t.Fatalf("the refusal does not say %q: %s", want, stderr)
 		}
 		if entries, err := os.ReadDir(backup); err != nil || len(entries) != 0 {
 			t.Fatalf("the folder at the backup's name holds %v (%v)", entries, err)
