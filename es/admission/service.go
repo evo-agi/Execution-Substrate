@@ -180,6 +180,86 @@ var (
 		"NODE_EXTRA_CA_CERTS":          {},
 		"NODE_TLS_REJECT_UNAUTHORIZED": {},
 		"SSLKEYLOGFILE":                {},
+
+		// Keys of the same kinds that the lists above do not name and that
+		// no prefix below covers (red-team report 19 on PR #74): a switch the
+		// repository's own Vault login code reads to skip the TLS check;
+		// client configuration files; other proxies and trust stores; Node.js
+		// keys that load or write files; other Java virtual machines' option
+		// keys; Python environments and settings modules; programs that other
+		// programs start by name; module paths of R and Tcl; build and
+		// archive tool options and helper programs; and Go toolchain keys,
+		// including the two that change how ES's own Go supervisor runs in
+		// the container.
+		"WORKLOAD_VAULT_INSECURE_SKIP_VERIFY": {},
+		"WGETRC":                              {},
+		"NETRC":                               {},
+		"AWS_CONFIG_FILE":                     {},
+		"AWS_SHARED_CREDENTIALS_FILE":         {},
+		"AWS_CA_BUNDLE":                       {},
+		"KUBECONFIG":                          {},
+		"GNUPGHOME":                           {},
+		"WS_PROXY":                            {},
+		"WSS_PROXY":                           {},
+		"RSYNC_PROXY":                         {},
+		"SOCKS_PROXY":                         {},
+		"NODE_REPL_EXTERNAL_MODULE":           {},
+		"NODE_COMPILE_CACHE":                  {},
+		"NODE_ICU_DATA":                       {},
+		"NODE_V8_COVERAGE":                    {},
+		"NODE_REDIRECT_WARNINGS":              {},
+		"NODE_REPL_HISTORY":                   {},
+		"OPENJ9_JAVA_OPTIONS":                 {},
+		"IBM_JAVA_OPTIONS":                    {},
+		"VIRTUAL_ENV":                         {},
+		"DJANGO_SETTINGS_MODULE":              {},
+		"SHELL":                               {},
+		"PAGER":                               {},
+		"MANPAGER":                            {},
+		"EDITOR":                              {},
+		"VISUAL":                              {},
+		"BROWSER":                             {},
+		"SUDO_ASKPASS":                        {},
+		"R_PROFILE":                           {},
+		"R_PROFILE_USER":                      {},
+		"R_ENVIRON":                           {},
+		"R_ENVIRON_USER":                      {},
+		"R_LIBS":                              {},
+		"R_LIBS_USER":                         {},
+		"R_LIBS_SITE":                         {},
+		"TCLLIBPATH":                          {},
+		"MAKEFLAGS":                           {},
+		"MFLAGS":                              {},
+		"GNUMAKEFLAGS":                        {},
+		"MAKEFILES":                           {},
+		"TAR_OPTIONS":                         {},
+		"LESSOPEN":                            {},
+		"LESSCLOSE":                           {},
+		"CC":                                  {},
+		"CXX":                                 {},
+		"CPP":                                 {},
+		"LD":                                  {},
+		"AR":                                  {},
+		"AS":                                  {},
+		"CFLAGS":                              {},
+		"CXXFLAGS":                            {},
+		"CPPFLAGS":                            {},
+		"LDFLAGS":                             {},
+		"RUSTFLAGS":                           {},
+		"RUSTDOC":                             {},
+		"RUSTDOCFLAGS":                        {},
+		"GODEBUG":                             {},
+		"GOTRACEBACK":                         {},
+		"GOFLAGS":                             {},
+		"GOENV":                               {},
+		"GOTOOLCHAIN":                         {},
+		"GOPROXY":                             {},
+		"GONOPROXY":                           {},
+		"GOPRIVATE":                           {},
+		"GOINSECURE":                          {},
+		"GOSUMDB":                             {},
+		"GONOSUMDB":                           {},
+		"GONOSUMCHECK":                        {},
 	}
 	reservedRuntimeEnvPrefixes = []string{
 		"EXEC_",
@@ -197,6 +277,56 @@ var (
 		// Bash imports a function from a key of this form. Such a key is not
 		// a valid caller key name in any case (it ends in %%).
 		"BASH_FUNC_",
+		// Whole families whose keys load code, name a program or a
+		// configuration file, or change TLS trust, the address a client
+		// talks to or its credentials (red-team report 19 on PR #74). A
+		// family is reserved as a whole so that the list does not have to
+		// keep up with each program's next key:
+		// the Vault client, beyond the three keys ES sets;
+		"VAULT_",
+		// per-user configuration directories, which stand in for HOME;
+		"XDG_",
+		// OpenSSL's configuration file, modules and engines;
+		"OPENSSL_",
+		// npm settings, which npm reads in either letter case;
+		"NPM_CONFIG_",
+		// the scheduler's own task variables;
+		"NOMAD_",
+		// the agent CLI the control-plane image installs: its configuration
+		// directory, and the address it sends requests and its credential to;
+		"CODEX_",
+		"OPENAI_",
+		// Python's package installer and test runner;
+		"PIP_",
+		"PYTEST_",
+		// Perl and Ruby, which the sudo list covers only in part, and Ruby's
+		// gem and bundler settings;
+		"PERL",
+		"RUBY",
+		"GEM_",
+		"BUNDLE_",
+		// Java's home and option keys, and the two common Java build tools;
+		"JAVA_",
+		"MAVEN_",
+		"GRADLE_",
+		// .NET runtime configuration, startup hooks and profilers;
+		"DOTNET_",
+		"CORECLR_",
+		"COMPLUS_",
+		// PHP's configuration file and scan directory, and Lua's start code
+		// and module paths;
+		"PHP",
+		"LUA_",
+		// Rust's build tool, toolchain installer and compiler wrappers;
+		"CARGO_",
+		"RUSTUP_",
+		"RUSTC",
+		// client configuration that names helper programs, sockets or
+		// trust: Docker, ssh, gRPC and curl.
+		"DOCKER_",
+		"SSH_",
+		"GRPC_",
+		"CURL_",
 	}
 )
 

@@ -28,6 +28,8 @@ func TestCallerDeclarationRulesAreInTheLifecycleContract(t *testing.T) {
 		"ES matches reserved keys with ASCII letters folded to upper case",
 		"`TestReservedEnvironmentKeySetIsPinned` pins it.",
 		"It is a backstop for a publisher's mistake, not the boundary",
+		"They do not include every such key; the families below add more",
+		"A family is reserved as a whole, so that the list does not have to keep up with each program's next key",
 		"An empty or absent list admits no caller environment key.",
 		"each target path one the artifact declares in its signed `mount_targets` list",
 		"An artifact that declares no mount target admits no caller mount",
@@ -36,6 +38,9 @@ func TestCallerDeclarationRulesAreInTheLifecycleContract(t *testing.T) {
 	)
 	assertContainsNone(t, "contracts.md section 5 caller declaration rules", contract,
 		"If the manifest runtime interface declares allowed environment keys, provided keys must stay within that set.",
+		// Red-team report 19 on PR #74: the list does not cover these
+		// languages' keys, only the best-known of them.
+		"and the module paths and option keys of Python, Perl, Ruby, Node.js, Java and Git",
 	)
 	for _, path := range []string{
 		".docs/execution_lifecycle/contracts.md",

@@ -156,7 +156,7 @@ func TestEmptyEnvironmentAllowlistAdmitsNoCallerKey(t *testing.T) {
 
 			harness.run(baseCallerDeclarationRequest(fixture)).admitted(t)
 
-			for _, key := range []string{"APP_MODE", "WORKLOAD_VAULT_INSECURE_SKIP_VERIFY", "A"} {
+			for _, key := range []string{"APP_MODE", "WORKLOAD_VAULT_SECRET_PATH", "A"} {
 				request := baseCallerDeclarationRequest(fixture)
 				request.Invocation.Env = map[string]string{key: "1"}
 				harness.run(request).refusedBeforeAnyEffect(t, "environment key is not allowed by the runtime interface: "+key)
@@ -210,10 +210,66 @@ var mustBeReservedEnvironmentKeys = []string{
 	"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "FTP_PROXY", "NO_PROXY", "SSL_CERT_DIR",
 	"REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "NODE_EXTRA_CA_CERTS", "NODE_TLS_REJECT_UNAUTHORIZED",
 	"SSLKEYLOGFILE",
+	// Keys of the same kinds that no list above names and no prefix covers
+	// (red-team report 19 on PR #74).
+	"WORKLOAD_VAULT_INSECURE_SKIP_VERIFY", "WGETRC", "NETRC", "AWS_CONFIG_FILE",
+	"AWS_SHARED_CREDENTIALS_FILE", "AWS_CA_BUNDLE", "KUBECONFIG", "GNUPGHOME", "WS_PROXY", "WSS_PROXY",
+	"RSYNC_PROXY", "SOCKS_PROXY", "NODE_REPL_EXTERNAL_MODULE", "NODE_COMPILE_CACHE", "NODE_ICU_DATA",
+	"NODE_V8_COVERAGE", "NODE_REDIRECT_WARNINGS", "NODE_REPL_HISTORY", "OPENJ9_JAVA_OPTIONS",
+	"IBM_JAVA_OPTIONS", "VIRTUAL_ENV", "DJANGO_SETTINGS_MODULE", "SHELL", "PAGER", "MANPAGER", "EDITOR",
+	"VISUAL", "BROWSER", "SUDO_ASKPASS", "R_PROFILE", "R_PROFILE_USER", "R_ENVIRON", "R_ENVIRON_USER",
+	"R_LIBS", "R_LIBS_USER", "R_LIBS_SITE", "TCLLIBPATH", "MAKEFLAGS", "MFLAGS", "GNUMAKEFLAGS",
+	"MAKEFILES", "TAR_OPTIONS", "LESSOPEN", "LESSCLOSE", "CC", "CXX", "CPP", "LD", "AR", "AS", "CFLAGS",
+	"CXXFLAGS", "CPPFLAGS", "LDFLAGS", "RUSTFLAGS", "RUSTDOC", "RUSTDOCFLAGS", "GODEBUG", "GOTRACEBACK",
+	"GOFLAGS", "GOENV", "GOTOOLCHAIN", "GOPROXY", "GONOPROXY", "GOPRIVATE", "GOINSECURE", "GOSUMDB",
+	"GONOSUMDB", "GONOSUMCHECK",
 }
 
 var mustBeReservedEnvironmentPrefixes = []string{
 	"EXEC_", "EXEC_WORKLOAD_VAULT_", "LD_", "_RLD", "KRB5_CONFIG", "PYTHON", "GIT_", "BASH_FUNC_",
+	"VAULT_", "XDG_", "OPENSSL_", "NPM_CONFIG_", "NOMAD_", "CODEX_", "OPENAI_", "PIP_", "PYTEST_",
+	"PERL", "RUBY", "GEM_", "BUNDLE_", "JAVA_", "MAVEN_", "GRADLE_", "DOTNET_", "CORECLR_", "COMPLUS_",
+	"PHP", "LUA_", "CARGO_", "RUSTUP_", "RUSTC", "DOCKER_", "SSH_", "GRPC_", "CURL_",
+}
+
+// redTeam74FamilyKeys are the keys red-team report 19 on PR #74 found
+// admitted when a package declared them. Each is now reserved by name or by
+// family. The few it listed that stay unreserved, because they load no code
+// and change no trust, are in TestOrdinaryEnvironmentKeysAreNotReserved.
+var redTeam74FamilyKeys = []string{
+	"XDG_CONFIG_HOME", "XDG_CONFIG_DIRS", "XDG_DATA_HOME", "XDG_DATA_DIRS", "XDG_CACHE_HOME",
+	"VAULT_AGENT_ADDR", "VAULT_PROXY_ADDR", "VAULT_HTTP_PROXY", "VAULT_SKIP_VERIFY", "VAULT_TLS_SERVER_NAME",
+	"VAULT_CAPATH", "VAULT_CLIENT_CERT", "VAULT_CLIENT_KEY", "VAULT_TOKEN",
+	"OPENSSL_CONF", "OPENSSL_MODULES", "OPENSSL_ENGINES", "AWS_CA_BUNDLE", "PIP_CERT",
+	"GRPC_DEFAULT_SSL_ROOTS_FILE_PATH", "PERL_LWP_SSL_VERIFY_HOSTNAME",
+	"WS_PROXY", "WSS_PROXY", "RSYNC_PROXY", "GRPC_PROXY", "CURL_HOME", "WGETRC", "NETRC",
+	"RUBYGEMS_GEMDEPS", "GEM_PATH", "GEM_HOME", "BUNDLE_GEMFILE",
+	"NODE_REPL_EXTERNAL_MODULE", "NODE_COMPILE_CACHE", "NPM_CONFIG_SCRIPT_SHELL", "npm_config_script_shell",
+	"NPM_CONFIG_USERCONFIG",
+	"JAVA_HOME", "OPENJ9_JAVA_OPTIONS", "IBM_JAVA_OPTIONS", "MAVEN_OPTS", "GRADLE_OPTS",
+	"PIP_INDEX_URL", "PIP_CONFIG_FILE", "VIRTUAL_ENV", "PYTEST_ADDOPTS", "DJANGO_SETTINGS_MODULE",
+	"PERL_USE_UNSAFE_INC", "PERL_MM_OPT", "PERL_MB_OPT",
+	"SSH_ASKPASS", "PAGER", "EDITOR", "VISUAL",
+	"DOTNET_STARTUP_HOOKS", "CORECLR_PROFILER_PATH", "PHPRC", "PHP_INI_SCAN_DIR", "LUA_INIT", "LUA_PATH",
+	"LUA_CPATH", "R_PROFILE_USER", "TCLLIBPATH",
+	"MAKEFLAGS", "MAKEFILES", "GNUMAKEFLAGS", "TAR_OPTIONS", "LESSOPEN", "CC", "RUSTC_WRAPPER", "GOFLAGS",
+	"AWS_CONFIG_FILE", "KUBECONFIG", "DOCKER_CONFIG", "GNUPGHOME",
+	"GODEBUG", "GOTRACEBACK",
+	"WORKLOAD_VAULT_INSECURE_SKIP_VERIFY",
+	"CODEX_HOME", "OPENAI_BASE_URL",
+	"NOMAD_TOKEN", "NOMAD_ADDR", "NOMAD_SECRETS_DIR", "NOMAD_TASK_DIR", "NOMAD_ALLOC_DIR", "NOMAD_ALLOC_ID",
+	"NOMAD_META_run_id",
+}
+
+func TestReservedFamiliesCoverTheKeysTheRedTeamFoundOpen(t *testing.T) {
+	if len(redTeam74FamilyKeys) != 87 {
+		t.Fatalf("expected the 87 keys report 19 found open and this repair reserves, got %d", len(redTeam74FamilyKeys))
+	}
+	for _, key := range redTeam74FamilyKeys {
+		if !isReservedRuntimeEnvKey(key) {
+			t.Errorf("%q is not reserved", key)
+		}
+	}
 }
 
 func TestReservedEnvironmentKeySetIsPinned(t *testing.T) {
@@ -283,6 +339,10 @@ func TestReservedEnvironmentKeysAreRefusedEvenWhenTheArtifactDeclaresThem(t *tes
 		"HOME", "PYTHONPATH", "PYTHONSTARTUP", "GIT_SSH_COMMAND", "GIT_CONFIG_COUNT", "NODE_OPTIONS",
 		"GLIBC_TUNABLES", "GCONV_PATH", "SHELLOPTS", "PS4", "BASH_FUNC_X", "SSL_CERT_DIR",
 		"REQUESTS_CA_BUNDLE", "VAULT_ADDR", "traceparent", "Exec_Run_ID",
+		"WORKLOAD_VAULT_INSECURE_SKIP_VERIFY", "VAULT_SKIP_VERIFY", "XDG_CONFIG_HOME", "OPENSSL_CONF",
+		"npm_config_script_shell", "NOMAD_TOKEN", "OPENAI_BASE_URL", "CODEX_HOME", "PIP_INDEX_URL",
+		"GEM_HOME", "JAVA_HOME", "DOTNET_STARTUP_HOOKS", "PHPRC", "LUA_INIT", "CARGO_HOME", "RUSTC_WRAPPER",
+		"DOCKER_CONFIG", "SSH_ASKPASS", "CURL_HOME", "GODEBUG", "EDITOR", "MAKEFLAGS", "KUBECONFIG",
 	} {
 		t.Run(key, func(t *testing.T) {
 			fixture := base.withEnvironmentVariables(t, []string{key})
@@ -298,6 +358,9 @@ func TestOrdinaryEnvironmentKeysAreNotReserved(t *testing.T) {
 	for _, key := range []string{
 		"APP_MODE", "WORKLOAD_VAULT_SECRET_PATH", "REFERENCE_SECRET_PATH", "NODE_ENV", "LANG", "TZ",
 		"PATHNAME", "HOMEPAGE", "ENVIRONMENT_NAME", "LDAP_URL", "GITHUB_REF", "PYTHO", "_X",
+		// Report 19 on PR #74 listed these; they load no code and change no
+		// trust, so they stay available to a publisher that declares them.
+		"LC_ALL", "LANGUAGE", "TEXTDOMAINDIR", "GOMEMLIMIT", "GOGC", "GOMAXPROCS",
 	} {
 		if isReservedRuntimeEnvKey(key) {
 			t.Fatalf("%q should not be reserved", key)
