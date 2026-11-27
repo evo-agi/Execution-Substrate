@@ -274,6 +274,10 @@ only while those keys are secret to the host.
   keys. A supported-local proof root made before setup generated keys keeps
   the old keys, so its services no longer start; running setup again makes a
   new proof root with its own keys.
+- `scripts/remote_alpha_rotate_signing_keys.sh` gives the Remote Alpha box
+  new AGS and EGS keys and points EGS and ES at them, with a backup and a
+  rollback (`remote_supported_host_alpha.md`, "Remote Signing Key
+  Rotation").
 - Changing a host's keys makes ES refuse evidence sealed with the old AGS key,
   so artifacts published before the change must be published again from
   their sources through AGS. Old evidence is not re-signed with the new key:

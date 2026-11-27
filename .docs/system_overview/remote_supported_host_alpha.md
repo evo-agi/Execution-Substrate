@@ -7481,6 +7481,117 @@ test then proves that Nomad answers only over HTTPS and that the observer
 token, kept, now lists ES's jobs. CI runs it with Nomad 2.1.1 and
 passwordless `sudo`.
 
+## Remote Signing Key Rotation
+
+`Bounded slice rule`: gives the Remote Alpha box's AGS and EGS new signing
+keys, and points EGS and ES at them, in one step with a backup. Each host
+signs with its own keys (`.docs/system_overview/configuration.md`, "Signing
+keys"), and AGS, EGS and ES refuse the keys of the repository's example
+configurations at startup (`.docs/system_overview/contracts.md`, section
+3B). The box was set up with those keys (read-only check of 2026-11-27), so
+the ES upgrade's config check refuses it until this rotation has run. The
+rotation changes only `ags.json`, `egs.json` and `es.json`; it does not
+change a binary, a unit file, TLS material, ARS, or anything ARS stores.
+
+Scripts:
+
+- public: `scripts/remote_alpha_rotate_signing_keys.sh`, which runs the
+  Python core with `python3 -I -B`
+- internal: `scripts/internal/remote_alpha_rotate_signing_keys.py`
+
+Operator interface, all as root from a clone root owns:
+
+- `sudo scripts/remote_alpha_rotate_signing_keys.sh check` reads only. It
+  prints a JSON report (schema
+  `execution-substrate.remote-alpha.signing-key-rotation.v1`) with each
+  config's SHA-256, owner and mode, the current AGS and EGS key IDs and
+  public keys and whether each private seed is one byte repeated, the state
+  of the `egs`, `ags` and `es` units and the health answers, how many
+  records ARS's index holds, every change `apply` would make, and the
+  problems, and exits 1 with nothing changed when there is one. A config it
+  cannot read as a regular JSON file (a symbolic link, say) stops it with
+  that reason and no report.
+- `sudo scripts/remote_alpha_rotate_signing_keys.sh apply` runs the same
+  checks, then the steps below.
+- `sudo scripts/remote_alpha_rotate_signing_keys.sh rollback --backup-dir <dir>`
+  puts a backup back.
+
+Run `apply` under `systemd-run`, as for the ES upgrade, so that a dropped
+SSH session does not stop it.
+
+`check` and `apply` refuse a host where:
+
+- a config is not a regular file `root:<service> 0640` with one link (the
+  service being `ags`, `egs` or `es`), or not a JSON object;
+- AGS's or EGS's `signer` is not an Ed25519 key in lower-case hex, or AGS
+  and EGS share a key;
+- ES's `verification.trust_model` is not exactly EGS's algorithm, key ID and
+  public key, or `verification.provenance`,
+  `verification.derivation_attestation` or
+  `verification.workload_identity_binding` is not exactly AGS's;
+- EGS's `runtime_trust.signer_policy.allowed_signers` does not hold AGS's
+  key ID, or EGS has no positive `publication.update_revision`;
+- a rule of ES's `admission_policy.workload_grants` names a
+  `signer_key_id` other than AGS's key ID;
+- the `egs`, `ags` or `es` unit is not active, or ES's `/health` and
+  `/v1/executions:contract` and AGS's `/health` do not answer 200 with the
+  operator certificate of `/etc/execution-substrate/healthcheck.env`.
+
+`apply` then:
+
+1. makes a new AGS key and a new EGS key with `/usr/bin/openssl genpkey
+   -algorithm ED25519` and `openssl pkey -pubout`, so nothing built from a
+   checkout runs as root to make them. The private key passes only through
+   pipes. Each key is the `signer` object `scripts/internal/signingkeygen`
+   writes, with its key ID (the role, a hyphen, and the first 16 hex digits
+   of the SHA-256 of the public key). A seed that is one byte repeated, or
+   the same key twice, is refused before anything changes;
+2. copies the three configs into a new folder
+   `/var/backups/execution-substrate-signing-keys/<UTC time>-<new AGS key ID>`
+   (`0700`; copies `0600` with their SHA-256, owner and mode in
+   `manifest.json`). The copies hold the old private keys;
+3. writes each config in one rename with its owner and mode kept, and
+   checks the bytes: AGS's and EGS's new `signer`; in EGS's signer policy the
+   new AGS key ID in place of the old one, the old one added to
+   `revoked_signers`, and `publication.update_revision` one higher; ES's four
+   `verification` entries; and the new AGS key ID in every workload grant
+   rule. Nothing else in the configs changes;
+4. stops `es`, restarts `egs` and `ags`, and starts `es`, which fetches
+   EGS's trust policy and verifies it with `verification.trust_model` before
+   it listens (`es/app/app.go`, `Start`), so ES answering shows that ES and
+   the new EGS key agree;
+5. waits up to 60 seconds for the three units to be active and the three
+   endpoints to answer 200, and writes `summary.json` (`0600`) into the
+   backup folder.
+
+From the backup on, any failure or interruption puts the backup back,
+restarts the units in the same order and waits for them the same way: the
+result is `rotated`, `rolled_back`, `rolled_back_unhealthy` or
+`rollback_failed`, with the failure, and `apply` exits 1 on any but the
+first. `rollback` does the same from a backup folder and refuses a folder
+that is not a `0700` backup of this rotation with copies matching its
+manifest. No output, report or summary holds a private key.
+
+After the rotation ES refuses evidence sealed with the old AGS key, so every
+artifact published before it is refused at prepare. The rotation does not
+re-sign them: anyone could seal evidence with a known key, so re-signing it
+would vouch for evidence that may be forged. An artifact still needed is
+published again from its source through AGS. The report's
+`ars_index_entries` counts the records this applies to. Once the rotated
+host has run its smoke test, delete the backup folder, since it holds the
+old private keys.
+
+The tests (`scripts/remote_alpha_rotate_signing_keys_test.go`) run `check`,
+`apply` and `rollback` on a host-shaped folder holding the example
+configurations, with fake `systemctl` and `curl` and an `openssl` that makes
+keys with `crypto/ed25519`: the rotated configs, checked against Go's
+Ed25519, the key ID rule and the known-key rule, and accepted by AGS's,
+EGS's and ES's own `config.Load`; the restart order; the backup; no private
+key in any output; a rollback after each failing restart or health check;
+workload grants moved to the new key; and every refused host above, each
+leaving the configs, the backups and the units alone. One test makes the
+keys with the machine's own `/usr/bin/openssl`.
+
 ## Python In The Scripts
 
 Every Python run that a script under `scripts/` starts, the remote alpha
