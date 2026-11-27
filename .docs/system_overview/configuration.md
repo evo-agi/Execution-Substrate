@@ -105,6 +105,11 @@ not claim full ES/runtime de-root, rootless Nomad client, production
 readiness, production Vault readiness, or generalized remote deployment
 architecture.
 
+Workstream F slice F1, recorded in section 11 of the same document, replaces
+the one shared workload identity with one identity per named workload, picked
+by owner grants in `admission_policy.workload_grants`. It lands with WI-3;
+until then this section describes current behavior.
+
 ## ARS
 
 ### Required config groups
@@ -288,6 +293,9 @@ For a minimal active system, `runtime_trust.signer_policy.allowed_signers` must 
   `spiffe://execution.internal/...` ID, a query, or percent encoding is also
   rejected: no authenticated caller path could match such a prefix. ARS, AGS,
   and ES share this rule through `internal/callerallowlist`.
+- A prefix whose first segment is `workload`, in any letter case, such as
+  `workload/codex-agent`, is rejected: workload identities are never callers
+  (`contracts.md` section 3A).
 - ES authorization keeps exact-or-subpath matching after config validation:
   `service/control-plane` authorizes `service/control-plane` and
   `service/control-plane/provider`, but not `service/control-plane-evil`.
@@ -318,6 +326,16 @@ For a minimal active system, `runtime_trust.signer_policy.allowed_signers` must 
   - configured literals and matched content must not be exposed through API
     responses, the producer contract, logs, retained bundles, support bundles,
     docs examples other than harmless placeholder markers, or test output
+- `admission_policy.workload_grants` is decided in Workstream F slice F1 and
+  not yet implemented; ES refuses the key until WI-2 lands. It is ES
+  deployment/admin configuration for the owner's workload grants: the list of
+  registered workload identity names, the list of egress lanes, and at most
+  32 exact-match rules, each keyed on publisher principal, evidence signer key
+  ID, artifact type and runtime profile. The field rules, the startup
+  refusals and the evaluation are in
+  `.docs/execution_lifecycle/contracts.md`, section 5B. No setting turns
+  grants off: once WI-2 lands, a configuration without grants admits only runs
+  that request no network and need no credential.
 - `verification.derivation_attestation.*` and `verification.workload_identity_binding.*` remain required because the current ES startup path still constructs those verifier shapes
 - those two verifier config groups are current configuration/startup-verifier residue, not active shared-kernel authorization meaning, not CGS policy truth, and not a settlement of Workstream E runtime-config ownership or Workstream F runtime-identity handoff
 - `runtime_config.workload_zone_vault_config_ref.digest` must point at the current workload-zone Vault config blob in ARS
@@ -600,7 +618,7 @@ The current host-qualification boundary for the supported Linux environment is d
 - an explicit `plugin "docker"` block that refuses privileged containers (`allow_privileged = false`) and allows only the capabilities ES's runtime helper uses to prepare a run and drop to the workload user: `allow_caps = ["chown", "dac_override", "fowner", "kill", "setgid", "setuid", "setpcap"]` (each one is needed: removing any one fails the real Nomad and Docker submit tests)
 - bind mounts enabled in that block through `volumes { enabled = true }`
 - when enabled local runtime-profile images are part of the supported-local proof/runtime surface, Nomad Docker image garbage collection disabled in that block through `gc { image = false }` so Nomad does not remove the configured local profile image after a stopped allocation (the supported config no longer writes the older `client.options` keys `docker.cleanup.image` and `docker.volumes.enabled`, and readiness reads the plugin block instead, which Nomad 2.1 reports as an object and Nomad 2.0 as a list holding one object; both are accepted)
-- Nomad's configuration directory and its data directory (Raft state and keyring) owned by root (`/etc/nomad.d` 0755 with `nomad.hcl` root:root 0640, data directory 0700), because Nomad runs as root. HashiCorp's package gives `/etc/nomad.d` and everything in it to the `nomad` account, and the data directory (not what is in it) as well, on every install or upgrade, so the setup takes the folders back first and then follows no link it finds at a name it writes there: it writes `nomad.hcl` as a new file (root:root 0640) and renames it into place, so a link at `nomad.hcl` is replaced and a handle kept open on the old file no longer reaches the config; it reads and backs up the old `nomad.hcl` only when it is a regular file, and writes the backup as a new file; it replaces a link at the `tls` folder with a folder, and the certificate files replace links at their names
+- Nomad's configuration directory and its data directory (Raft state and keyring) owned by root (`/etc/nomad.d` 0755 with `nomad.hcl` root:root 0640, data directory 0700), because Nomad runs as root. HashiCorp's package gives `/etc/nomad.d` and everything in it to the `nomad` account, and the data directory (not what is in it) as well, on every install or upgrade, so the setup takes the folders back first (owner, mode, and no ACL: an account that owns a folder may set one, and a default ACL there would decide the mode of each file root then creates in it, whatever the umask) and then follows no link it finds at a name it writes there: it writes `nomad.hcl` as a new file (root:root 0640) and renames it into place, so a link at `nomad.hcl` is replaced and a handle kept open on the old file no longer reaches the config; it reads and backs up the old `nomad.hcl` only when it is a regular file, and copies the backup onto its own name, replacing a link there (a folder there stops the setup); it replaces a link at the `tls` folder with a folder, and the certificate files replace links at their names
 - readiness (`scripts/10_health_check.sh`, bring-up and supported-local setup) refuses a Nomad whose agent does not report the Docker-only allowlist, `allow_privileged = false` and capabilities within the list above (`nomad: drivers=docker docker_privileged=refused docker_caps=...`)
 - explicit local data directory for repeatable manual bring-up
 - when the current slice-0 single-node topology binds Nomad to `127.0.0.1`, the Nomad config must also set explicit loopback `advertise` addresses for `http`, `rpc`, and `serf`
@@ -906,7 +924,7 @@ Readiness still does **not** prove useful downstream credential use by itself. T
 
 Slice `1A` and `1B` now prove platform-owned runtime identity delivery for platform-controlled non-root workloads. In this first workload-identity slice, the platform launches the runtime identity helper as `0:0` and launches the workload as fixed UID:GID `10000:10000` with no supplemental groups and no privilege-escalation path. Root workloads, arbitrary image-user execution, and any mode that gives the workload direct access to raw SPIRE channels are out of scope for this slice. This is a bounded runtime compatibility constraint required to preserve platform-owned identity delivery; it is not a reduction of the workload-identity claim.
 
-On the current Remote Supported-Host Alpha helper proof slice, that `0:0` helper start identity also explains the current persistent SPIRE workload registration shape: the helper proof uses `unix:uid:0` plus `unix:gid:0` for `spiffe://execution.internal/workload` so the installed helper can fetch locally through `/run/spire/sockets/agent.sock` without widening the workload-facing contract. That selector set is broad across root-owned processes and must be treated as Alpha-only proof scope, not product posture. Product hardening must narrow or replace that registration before a broader remote runtime identity claim is accepted, while preserving the current helper-private raw SPIRE boundary and the fixed workload UID:GID `10000:10000` non-exposure rule.
+On the current Remote Supported-Host Alpha helper proof slice, that `0:0` helper start identity also explains the current persistent SPIRE workload registration shape: the helper proof uses `unix:uid:0` plus `unix:gid:0` for `spiffe://execution.internal/workload` so the installed helper can fetch locally through `/run/spire/sockets/agent.sock` without widening the workload-facing contract. That selector set is broad across root-owned processes and must be treated as Alpha-only proof scope, not product posture. Product hardening must narrow or replace that registration before a broader remote runtime identity claim is accepted, while preserving the current helper-private raw SPIRE boundary and the fixed workload UID:GID `10000:10000` non-exposure rule. Workstream F slice F1 is that replacement (`.docs/system_overview/runtime_identity_handoff.md`, section 11): one entry per named workload with the selectors `docker:label:execution-substrate.workload-identity:<name>` and `unix:uid:0`, and no entry that matches every root process. It lands with WI-3.
 
 Useful credential flow is now also proved on top of that slice: one workload uses `EXEC_WORKLOAD_IDENTITY_ENDPOINT` to fetch a bounded real SPIRE-backed JWT-SVID for `workload_vault`, performs `auth/jwt/login` itself against a proof-scoped real Vault dev/test target using the proof Vault CA bundle carried through the workload-zone runtime config, and reads one secret without reintroducing workload-authored identity bridging or platform-owned Vault token brokerage.
 

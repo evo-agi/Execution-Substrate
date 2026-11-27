@@ -5768,7 +5768,7 @@ func slicesContain(values []string, value string) bool {
 // same commit, and a second production file, or a file of another language,
 // is refused. Test files are not held.
 const operationalAdmissionStateDirectory = "es/admission/internal/admissionstate"
-const operationalAdmissionStatePin = "sha256:e07fa2a0b98684fd11fe291d9e8d12ffdb61002e6fcdb83032fc9f30bc625a48"
+const operationalAdmissionStatePin = "sha256:b1c96f343a0ed5e6c0c977b9d8344bf61b3d37ac1c225d39dd5de8a5e67158c1"
 
 func validateOperationalAdmissionStatePackage(listings map[string][]string, sources map[string]string, pin string) error {
 	entries, ok := listings[operationalAdmissionStateDirectory]

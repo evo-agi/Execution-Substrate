@@ -13,7 +13,7 @@ import (
 	"sort"
 	"strings"
 
-	egsmodel "execution-substrate/egs/model"
+	egscontract "execution-substrate/egs/contract"
 )
 
 const (
@@ -150,7 +150,7 @@ func resolvedRuntimeMountTargets(mounts []resolvedMountPlan) []string {
 	return targets
 }
 
-func (s *Service) resolveRuntimeMounts(ctx context.Context, trustModel egsmodel.RuntimeTrustPolicy, mounts []RuntimeMount) ([]resolvedMountPlan, []validatedMountArchive, *Error) {
+func (s *Service) resolveRuntimeMounts(ctx context.Context, trustModel egscontract.RuntimeTrustPolicy, mounts []RuntimeMount) ([]resolvedMountPlan, []validatedMountArchive, *Error) {
 	if mounts == nil {
 		return nil, nil, nil
 	}
@@ -242,7 +242,7 @@ func materializeValidatedRuntimeMounts(custody *stagingCustody, layout execution
 	return staged, nil
 }
 
-func (s *Service) fetchValidatedMountPayload(ctx context.Context, trustModel egsmodel.RuntimeTrustPolicy, artifactDigest string, limit int64) ([]byte, string, string, error, *Error) {
+func (s *Service) fetchValidatedMountPayload(ctx context.Context, trustModel egscontract.RuntimeTrustPolicy, artifactDigest string, limit int64) ([]byte, string, string, error, *Error) {
 	trimmedDigest := strings.TrimSpace(artifactDigest)
 	prepared, err := s.prepareMountArtifact(ctx, trustModel, trimmedDigest)
 	if err != nil {
@@ -256,7 +256,7 @@ func (s *Service) fetchValidatedMountPayload(ctx context.Context, trustModel egs
 	return payloadBytes, prepared.manifest.ArtifactDigest, prepared.payloadDigest, acquisitionErr, nil
 }
 
-func (s *Service) prepareMountArtifact(ctx context.Context, trustModel egsmodel.RuntimeTrustPolicy, artifactDigest string) (preparedArtifact, *Error) {
+func (s *Service) prepareMountArtifact(ctx context.Context, trustModel egscontract.RuntimeTrustPolicy, artifactDigest string) (preparedArtifact, *Error) {
 	discovery, err := s.fetchArtifactDiscovery(ctx, artifactDigest)
 	if err != nil {
 		return preparedArtifact{}, remapMountArtifactPreparationError(err)

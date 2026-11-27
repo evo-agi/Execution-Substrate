@@ -29,7 +29,7 @@ import (
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
 	"golang.org/x/sys/unix"
 
-	egsmodel "execution-substrate/egs/model"
+	egscontract "execution-substrate/egs/contract"
 	"execution-substrate/es/admission/internal/admissionstate"
 	"execution-substrate/es/admission/internal/reliablesubmit"
 )
@@ -171,14 +171,14 @@ type operationalTrustAuthority struct {
 	t       *testing.T
 	private ed25519.PrivateKey
 	mu      sync.Mutex
-	trust   egsmodel.RuntimeTrustPolicy
+	trust   egscontract.RuntimeTrustPolicy
 	fail    bool
 	forge   bool
 	fetches int
 	onFetch func()
 }
 
-func attachOperationalTrustAuthority(t *testing.T, s *Service, trust egsmodel.RuntimeTrustPolicy) *operationalTrustAuthority {
+func attachOperationalTrustAuthority(t *testing.T, s *Service, trust egscontract.RuntimeTrustPolicy) *operationalTrustAuthority {
 	t.Helper()
 	public, private, err := ed25519.GenerateKey(nil)
 	if err != nil {
@@ -236,7 +236,7 @@ func (a *operationalTrustAuthority) handle(w http.ResponseWriter, r *http.Reques
 }
 
 // serve replaces the trust model the synthetic EGS signs from now on.
-func (a *operationalTrustAuthority) serve(trust egsmodel.RuntimeTrustPolicy) {
+func (a *operationalTrustAuthority) serve(trust egscontract.RuntimeTrustPolicy) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.trust = snapshotRuntimeTrustModel(trust)
@@ -955,7 +955,7 @@ type operationalChildFixture struct {
 	Port                                                                                uint16
 	UID, GID                                                                            int
 	Certificate, Template, Request                                                      []byte
-	Trust                                                                               egsmodel.RuntimeTrustPolicy
+	Trust                                                                               egscontract.RuntimeTrustPolicy
 	VerifierKeyID, VerifierAlgorithm                                                    string
 	VerifierKey                                                                         []byte
 	// HoldBeforePrestage makes the child report that it is held between two

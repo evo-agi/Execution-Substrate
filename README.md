@@ -174,12 +174,23 @@ The Control Plane-owned long-running operator mode, releaseability, and scaling 
 
 High-level layout:
 
-- `ars/`, `ags/`, `egs/`, `cgs/`, `es/` for the active Go services
-- `internal/contracts/` for shared cross-service packages
-- `internal/observability/` for cross-cutting support code
+- `ars/`, `ags/`, `egs/`, `cgs/`, `es/` for the five Go services, one folder each
+- `cmd/` for the programs: one per service, plus `es-runtime-support` and `es-workload-api-mock`
+- `internal/` for code that several services share: the shared contracts in `internal/contracts/`, caller authentication in `internal/callerauth/` and `internal/callerallowlist/`, HTTP and logging helpers in `internal/httpx/` and `internal/observability/`, and test helpers in `internal/testtmpdir/` and `internal/testutil/`
 - `.docs/` for authoritative design, contract, boundary, lifecycle, and governance docs
 - `.runbooks/` for operator-facing bring-up and verification steps
 - `scripts/` and `.examples/` for local verification helpers and inputs
+
+Every service folder has the same shape:
+
+- `api/` holds the HTTP handlers.
+- `app/` starts the service.
+- `config/` holds the config file format and its loader.
+- `contract/` holds the types that another service's code needs, and imports no service code. Only a service that others read has one: `ars/contract` (artifact discovery records) and `egs/contract` (the signed trust policy).
+- Other packages are named for what they do, such as `ars/store` or `es/admission`.
+- `internal/` holds packages that only that service may use. For example, `es/internal/staticarchive` is shared by ES's admission code and its runtime helper.
+
+Apart from the repository-wide tests at the repository root, Go code lives only in the five service folders, `cmd/`, `internal/` and `scripts/`. One service's code reaches another service only through that service's `contract/` package. A test may also start another service in-process through its `app/` and `config/` packages. `service_layout_test.go` checks these rules and lists by file the few imports that go further: some test files, and the ES upgrade script's config check (`scripts/internal/esconfigcheck`).
 
 ## Where To Start
 
@@ -206,7 +217,7 @@ Read these in order:
 
 Supporting references:
 
-- `.docs/standing_rules/` for the standing rules that moved out of `PLANS.md`: [the Workstream C admission and custody rules](.docs/standing_rules/execution_admission_and_custody.md) and [the Remote Alpha operator route rules P0i to P0v](.docs/standing_rules/remote_alpha_operator_routes.md)
+- `.docs/standing_rules/` for the standing rules that moved out of `PLANS.md`: [the Workstream C admission and custody rules](.docs/standing_rules/execution_admission_and_custody.md) and [the Remote Alpha operator route rules P0i to P0v and access contract v1](.docs/standing_rules/remote_alpha_operator_routes.md)
 - [.docs/history/plans-record.md](.docs/history/plans-record.md) for the closed dated record that moved out of `PLANS.md` on 2026-11-24 (status entries and selection history); it is historical evidence, so read it only when a change touches a surface it names
 - [.docs/system_overview/configuration.md](.docs/system_overview/configuration.md) for current config requirements
 - [.docs/system_overview/observability.md](.docs/system_overview/observability.md) for observability rules
