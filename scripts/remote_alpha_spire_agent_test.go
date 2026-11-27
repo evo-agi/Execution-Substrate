@@ -422,6 +422,7 @@ type spireAgentHelperBox struct {
 	tmpfilesDir string
 	unitDir     string
 	copyPath    string
+	module      string
 	scratch     string
 	layoutPath  string
 	user        string
@@ -611,7 +612,7 @@ func newSPIREAgentHelperBox(t *testing.T, svidTTL string) *spireAgentHelperBox {
 	}
 	b.user, b.group = cur.Username, grpEntry.Name
 	b.uid, _ = strconv.Atoi(cur.Uid)
-	for _, d := range []string{"bin", "real", "state", "logs", "etc/spire/agent", "etc/spire/server", "etc/systemd/system", "usr/local", "tmpfiles/etc/tmpfiles.d", "var/lib/spire/server", "var/lib/spire/agent", "run/spire/server/private", "run/spire/sockets", "scratch"} {
+	for _, d := range []string{"bin", "real", "state", "logs", "etc/spire/agent", "etc/spire/server", "etc/systemd/system", "usr/local", "src", "tmpfiles/etc/tmpfiles.d", "var/lib/spire/server", "var/lib/spire/agent", "run/spire/server/private", "run/spire/sockets", "scratch"} {
 		if err := os.MkdirAll(filepath.Join(root, d), 0o755); err != nil {
 			t.Fatalf("mkdir %s: %v", d, err)
 		}
@@ -657,6 +658,12 @@ func newSPIREAgentHelperBox(t *testing.T, svidTTL string) *spireAgentHelperBox {
 	b.layoutPath = filepath.Join(root, "layout.json")
 	driver := filepath.Join(root, "driver.py")
 	b.write(driver, spireAgentHelperDriver, 0o644)
+	// The runs use a staged 0644 copy of the helper, as the box run stages
+	// one: pin refuses to install a copy of a helper file others can write,
+	// so running the checkout's file would make these tests depend on the
+	// umask it was checked out with.
+	b.module = filepath.Join(root, "src", "remote_alpha_spire_agent.py")
+	b.write(b.module, string(spireAgentHelperRead(t, spireAgentHelperModule)), 0o644)
 	units := map[string]any{
 		"spire-server.service": map[string]any{"argv": []string{b.realServer, "run", "-config", b.serverConf}, "requires": []string{}, "socket": b.serverSock},
 		"spire-agent.service":  map[string]any{"argv": []string{b.realAgent, "run", "-config", b.agentConf}, "requires": []string{"spire-server.service"}, "socket": b.agentSock},
@@ -665,7 +672,7 @@ func newSPIREAgentHelperBox(t *testing.T, svidTTL string) *spireAgentHelperBox {
 		// unit text pin writes names the box paths, which
 		// TestRemoteAlphaSPIREAgentRefreshUnitTexts pins.
 		spireAgentHelperRefreshUnit + ".service": map[string]any{"oneshot": true, "requires": []string{}, "unit_file": filepath.Join(b.unitDir, spireAgentHelperRefreshUnit+".service"),
-			"argv": []string{python, "-I", "-B", driver, spireAgentHelperModule, b.layoutPath, "refresh", "--apply"}},
+			"argv": []string{python, "-I", "-B", driver, b.module, b.layoutPath, "refresh", "--apply"}},
 		spireAgentHelperRefreshUnit + ".timer": map[string]any{"timer": true, "requires": []string{}, "unit_file": filepath.Join(b.unitDir, spireAgentHelperRefreshUnit+".timer")},
 	}
 	b.writeJSON(filepath.Join(b.stateDir, "units.json"), units)
@@ -975,7 +982,7 @@ func (b *spireAgentHelperBox) helper(args ...string) spireAgentHelperRun {
 	if _, err := os.Stat(driver); err != nil {
 		b.write(driver, spireAgentHelperDriver, 0o644)
 	}
-	full := append([]string{"-I", "-B", driver, spireAgentHelperModule, b.layoutPath}, args...)
+	full := append([]string{"-I", "-B", driver, b.module, b.layoutPath}, args...)
 	full = append(full, "--json")
 	cmd := exec.Command(b.python, full...)
 	cmd.Dir = executionSubstrateRepoRoot
@@ -1002,7 +1009,7 @@ func (b *spireAgentHelperBox) startHelper(args ...string) (*exec.Cmd, *bytes.Buf
 	if _, err := os.Stat(driver); err != nil {
 		b.write(driver, spireAgentHelperDriver, 0o644)
 	}
-	cmd := exec.Command(b.python, append([]string{"-I", "-B", driver, spireAgentHelperModule, b.layoutPath}, append(args, "--json")...)...)
+	cmd := exec.Command(b.python, append([]string{"-I", "-B", driver, b.module, b.layoutPath}, append(args, "--json")...)...)
 	cmd.Dir = executionSubstrateRepoRoot
 	cmd.Env = []string{"PATH=/usr/bin:/bin", "LC_ALL=C"}
 	var out bytes.Buffer
@@ -2021,7 +2028,7 @@ func TestRemoteAlphaSPIREAgentRecoverAgainstRealSPIRE(t *testing.T) {
 	// attesting run at its start, so the signal lands during attestation.
 	b.write(b.holdAttest, "", 0o644)
 	driver := filepath.Join(b.root, "driver.py")
-	sigCmd := exec.Command(b.python, "-I", "-B", driver, spireAgentHelperModule, b.layoutPath, "recover", "--apply", "--json")
+	sigCmd := exec.Command(b.python, "-I", "-B", driver, b.module, b.layoutPath, "recover", "--apply", "--json")
 	sigCmd.Dir = executionSubstrateRepoRoot
 	sigCmd.Env = []string{"PATH=/usr/bin:/bin", "LC_ALL=C"}
 	var sigOut bytes.Buffer
@@ -2069,7 +2076,7 @@ func TestRemoteAlphaSPIREAgentRecoverAgainstRealSPIRE(t *testing.T) {
 	b.writeJSON(shortLayout, short)
 	b.write(b.holdAttest, "", 0o644)
 	b.write(b.linger, "", 0o644)
-	cleanCmd := exec.Command(b.python, "-I", "-B", driver, spireAgentHelperModule, shortLayout, "recover", "--apply", "--json")
+	cleanCmd := exec.Command(b.python, "-I", "-B", driver, b.module, shortLayout, "recover", "--apply", "--json")
 	cleanCmd.Dir = executionSubstrateRepoRoot
 	cleanCmd.Env = []string{"PATH=/usr/bin:/bin", "LC_ALL=C"}
 	var cleanOut bytes.Buffer
