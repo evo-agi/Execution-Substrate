@@ -170,6 +170,11 @@ skips-itself execution-substrate/scripts TestSigningKeyRotationKeysFromOpenSSL
 # without root, so it skips itself. go.yml runs it as root.
 skips-itself execution-substrate/scripts TestSigningKeyRotationKeepsOwnersAndGroupsAsRoot
 
+# The signing key rotation wrapper's test of code that another account owns
+# gives files to other accounts, which needs root. The macOS runner runs the
+# tests without root, so it skips itself. go.yml runs it as root.
+skips-itself execution-substrate/scripts TestSigningKeyRotationWrapperRefusesCodeOfAnotherOwnerAsRoot
+
 # The supported-local renderer's signing key tests source
 # scripts/72_supported_local_setup.sh, which runs on Linux; a Mac runs it in
 # its Lima guest. Both tests skip themselves on any other system. go.yml runs

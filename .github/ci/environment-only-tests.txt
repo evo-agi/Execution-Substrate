@@ -206,3 +206,10 @@ skips-itself execution-substrate/scripts TestSupportedLocalRendererRefusesASigni
 # root, so the test skips itself there. The rest of the rotation's tests run
 # in the gate without root.
 skips-itself execution-substrate/scripts TestSigningKeyRotationKeepsOwnersAndGroupsAsRoot
+
+# Scripts package: run as root, the rotation's wrapper must refuse a clone
+# whose code another account owns, an ordinary user's included, before any
+# of it runs (scripts/remote_alpha_rotate_signing_keys.sh). Giving files to
+# other accounts needs root, so the test skips itself in the step "Test";
+# its checks for a run without root stay in the gate.
+skips-itself execution-substrate/scripts TestSigningKeyRotationWrapperRefusesCodeOfAnotherOwnerAsRoot

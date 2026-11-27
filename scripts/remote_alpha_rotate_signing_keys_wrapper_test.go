@@ -436,70 +436,66 @@ func TestSigningKeyRotationWrapperRefusesACloneOthersCanChange(t *testing.T) {
 	}
 }
 
-// The wrapper accepts code that root or the user running it owns. Code of
-// any other account is refused before it runs, and a run as root, through
-// sudo as the contract has it, accepts root's code only. CI has
-// passwordless sudo; elsewhere this needs root.
-func TestSigningKeyRotationWrapperRefusesCodeOfAnotherOwner(t *testing.T) {
-	asRoot := func(dir string, args ...string) error {
-		var cmd *exec.Cmd
-		if os.Getuid() == 0 {
-			cmd = exec.Command(args[0], args[1:]...)
-		} else {
-			cmd = exec.Command("sudo", append([]string{"-n"}, args...)...)
-		}
-		cmd.Dir = dir
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			return fmt.Errorf("%v: %v: %s", args, err, out)
-		}
-		return nil
+// As root, as the contract runs it, the wrapper accepts only code that root
+// owns: code of any other account, an ordinary user's clone included, is
+// refused before it runs. Giving files to other accounts needs root, so
+// the test skips itself without root; go.yml runs it as root in the step
+// "Listed tests pass as root", the only step of the job that uses sudo.
+func TestSigningKeyRotationWrapperRefusesCodeOfAnotherOwnerAsRoot(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("needs root to give files to other accounts")
 	}
-	if err := asRoot(t.TempDir(), "true"); err != nil {
-		t.Skip("needs root or passwordless sudo to give a file to another account")
-	}
-	uid := strconv.Itoa(os.Getuid())
-
+	t.Run("a clone root owns", func(t *testing.T) {
+		c := newRotationClone(t)
+		stdout, stderr, code := c.check(t.TempDir(), c.wrapper)
+		if code != 1 {
+			// The stand-in systemctl knows no unit, so check refuses the
+			// host; what counts is that the clone's helper ran.
+			t.Fatalf("check of a host without units: exit %d\n%s", code, stderr)
+		}
+		rotationWrapperPassed(t, "root's clone", stdout, stderr)
+	})
 	// Each entry the wrapper checks, given to another account: 65534
 	// (nobody) or 1 (daemon), since a host's service accounts have uids
-	// below 1000. Each is given back before the test folders are removed.
+	// below 1000, and 1000, the first ordinary user of a Linux host.
 	for _, tc := range []struct {
-		name  string
-		uid   string
-		entry func(c *rotationClone) string
+		name    string
+		uid     int
+		chown   func(c *rotationClone) []string
+		problem func(c *rotationClone) string
 	}{
-		{"the helper of another account", "65534", func(c *rotationClone) string { return c.helper }},
-		{"the wrapper of a system account", "1", func(c *rotationClone) string { return c.wrapper }},
-		{"the internal folder of a system account", "1", func(c *rotationClone) string { return filepath.Join(c.scripts, "internal") }},
-		{"a folder above the wrapper's folder of a system account", "1", func(c *rotationClone) string { return c.root }},
+		{"the helper of another account", 65534,
+			func(c *rotationClone) []string { return []string{c.helper} },
+			func(c *rotationClone) string { return c.helper }},
+		{"the wrapper of a system account", 1,
+			func(c *rotationClone) []string { return []string{c.wrapper} },
+			func(c *rotationClone) string { return c.wrapper }},
+		{"the internal folder of a system account", 1,
+			func(c *rotationClone) []string { return []string{filepath.Join(c.scripts, "internal")} },
+			func(c *rotationClone) string { return filepath.Join(c.scripts, "internal") }},
+		{"a folder above the wrapper's folder of a system account", 1,
+			func(c *rotationClone) []string { return []string{c.root} },
+			func(c *rotationClone) string { return c.root }},
+		{"a clone of an ordinary user", 1000,
+			func(c *rotationClone) []string {
+				return []string{c.root, c.scripts, filepath.Join(c.scripts, "internal"), c.wrapper, c.helper}
+			},
+			func(c *rotationClone) string { return c.scripts }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c := newRotationClone(t)
-			entry := tc.entry(c)
-			if err := asRoot(c.base, "chown", tc.uid, entry); err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() {
-				if err := asRoot(c.base, "chown", uid, entry); err != nil {
-					t.Error(err)
+			for _, path := range tc.chown(c) {
+				if err := os.Lchown(path, tc.uid, -1); err != nil {
+					t.Fatal(err)
 				}
-			})
+			}
 			stdout, stderr, code := c.check(t.TempDir(), c.wrapper)
-			rotationWrapperRefused(t, "wrapper", stdout, stderr, code, entry+" belongs to uid "+tc.uid)
+			rotationWrapperRefused(t, "wrapper", stdout, stderr, code, fmt.Sprintf("%s belongs to uid %d", tc.problem(c), tc.uid))
+			if !strings.Contains(stderr, "someone other than root can change the code the wrapper would run as root: ") {
+				t.Fatalf("as root the wrapper must accept root's code only:\n%s", stderr)
+			}
 		})
 	}
-
-	t.Run("through sudo, a clone of the user running sudo", func(t *testing.T) {
-		if os.Getuid() == 0 {
-			t.Skip("runs as root, so the clone is root's")
-		}
-		c := newRotationClone(t)
-		stdout, stderr, code := c.start(t.TempDir(), "sudo", c.env(), "-n", c.wrapper, "--host-root", c.host, "check")
-		rotationWrapperRefused(t, "sudo wrapper", stdout, stderr, code, c.scripts+" belongs to uid "+uid)
-		if !strings.Contains(stderr, "someone other than root can change the code the wrapper would run as root: ") {
-			t.Fatalf("as root the wrapper must accept root's code only:\n%s", stderr)
-		}
-	})
 }
 
 // rotationWrapperGuard returns the parts of a wrapper's embedded program
