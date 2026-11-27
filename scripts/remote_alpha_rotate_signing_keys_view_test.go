@@ -178,9 +178,9 @@ func TestSigningKeyRotationRollsBackWhenARestartedServiceSeesOtherFiles(t *testi
 // the copy put back, since a command a unit runs when it starts could
 // write it again. Otherwise the rollback ends rollback_failed, check names
 // the backup, and a second rollback settles it (Codex review of ES PR #76
-// at afb5bac). A unit that does not run after the rollback is the health
-// check's to judge: TestSigningKeyRotationRollbackTriesEveryStep ends
-// rolled_back_unhealthy.
+// at afb5bac). A unit that does not run after the rollback, or whose
+// process is gone on every read, is the health check's to judge:
+// TestSigningKeyRotationRollbackTriesEveryStep ends rolled_back_unhealthy.
 func TestSigningKeyRotationRollbackComparesWhatItPutBackAfterTheRestarts(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -201,6 +201,19 @@ func TestSigningKeyRotationRollbackComparesWhatItPutBackAfterTheRestarts(t *test
 			h.markWith("proc-root-once-at-restart-ars", h.otherRoot())
 		}, func(h *rotationHost) { h.showRoot("ars", "/") },
 			"ars sees another file at /var/lib/ars/index.json than the host has there"},
+		// AGS's process sees another file on the first read and is gone on
+		// the next two: what was seen is still named, not cleared by a
+		// process that is gone (as one systemd restarts would be).
+		{"AGS seen with a root folder of its own, then gone", func(h *rotationHost) {
+			seen := filepath.Join(h.state, "proc", "4199")
+			if err := os.MkdirAll(seen, 0o755); err != nil {
+				h.t.Fatal(err)
+			}
+			if err := os.Symlink(h.otherRoot(), filepath.Join(seen, "root")); err != nil {
+				h.t.Fatal(err)
+			}
+			h.markWith("mainpid-seq-ags", "4199\n4198\n4198\n")
+		}, func(*rotationHost) {}, "ags sees another file at /etc/execution-substrate/ags.json than the host has there"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newRotationHost(t)

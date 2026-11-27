@@ -7827,7 +7827,8 @@ replace, which leaves it in place; a unit whose main process sees another
 file at its config's path, a symbolic link there, no main process, or a
 gone one, refused before anything changes, and a unit restarted into a root
 folder of its own or whose config is written again when it starts, rolled
-back; the same after a rollback's restarts (a manual one and `apply`'s own),
+back; the same after a rollback's restarts (a manual one and `apply`'s own,
+and a unit seen with other files on one read and gone on the next),
 ended `rollback_failed` and settled by a second rollback (the fake shows
 each process's root folder as a link under its state folder); a second `apply`, a `rollback` and `check` while an `apply`
 holds the lock, and while another process holds it, `check` leaving the

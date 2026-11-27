@@ -148,6 +148,9 @@ func fakeOpenSSL(args []string) int {
 //     starts could write them;
 //   - mainpid-<unit>: show -p MainPID prints this file's number in place of
 //     the unit's usual one (410<n> while it runs, 0 when it is stopped);
+//   - mainpid-seq-<unit>: each show -p MainPID prints this file's first
+//     line and drops it, until the file is empty, as for a unit whose
+//     process changes between two reads;
 //   - proc-root-once-at-<verb>-<unit>: after the job, the unit's process
 //     sees the folder named in this file as its root, as a unit restarted
 //     with a root folder of its own would.
@@ -216,7 +219,10 @@ case "$1" in
   show)
     u=${2%%.service}
     if [[ "${4:-}" == MainPID ]]; then
-      if [[ -e "$s/mainpid-$u" ]]; then echo "MainPID=$(cat "$s/mainpid-$u")"
+      if [[ -s "$s/mainpid-seq-$u" ]]; then
+        echo "MainPID=$(head -n 1 "$s/mainpid-seq-$u")"
+        tail -n +2 "$s/mainpid-seq-$u" > "$s/mainpid-seq-$u.rest" && mv "$s/mainpid-seq-$u.rest" "$s/mainpid-seq-$u"
+      elif [[ -e "$s/mainpid-$u" ]]; then echo "MainPID=$(cat "$s/mainpid-$u")"
       elif [[ -e "$s/inactive-$u" ]]; then echo MainPID=0
       else echo "MainPID=$(main_pid "$u")"; fi
     elif [[ -e "$s/execstart-$u" ]]; then cat "$s/execstart-$u"; else
