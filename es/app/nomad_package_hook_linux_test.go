@@ -22,18 +22,6 @@ import (
 // runs the program itself before it writes there. What the program cannot
 // take back it sets aside, out of Nomad's reach (audit 51 of #83, A51-4).
 
-// nomadPackageHookRegion is the setup's nomad_package_hook region.
-func nomadPackageHookRegion(t *testing.T) string {
-	t.Helper()
-	text := linuxSetupText(t)
-	start := strings.Index(text, "\n# BEGIN nomad_package_hook")
-	end := strings.Index(text, "\n# END nomad_package_hook\n")
-	if start < 0 || end < start {
-		t.Fatal("70_linux_setup.sh has no nomad_package_hook region")
-	}
-	return text[start+1 : end+1]
-}
-
 // runNomadPackageHookRegion runs steps after the region's functions, as the
 // test user, with the given arguments as "$@".
 func runNomadPackageHookRegion(t *testing.T, steps string, args ...string) (string, string, error) {

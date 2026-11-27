@@ -30,6 +30,20 @@ func linuxSetupText(t *testing.T) string {
 	return string(body)
 }
 
+// nomadPackageHookRegion is the setup's nomad_package_hook region. It is here,
+// not in the Linux-only hook tests, because the service harness below uses it
+// on every platform the package builds for.
+func nomadPackageHookRegion(t *testing.T) string {
+	t.Helper()
+	text := linuxSetupText(t)
+	start := strings.Index(text, "\n# BEGIN nomad_package_hook")
+	end := strings.Index(text, "\n# END nomad_package_hook\n")
+	if start < 0 || end < start {
+		t.Fatal("70_linux_setup.sh has no nomad_package_hook region")
+	}
+	return text[start+1 : end+1]
+}
+
 // linuxSetupDefinitions returns the script's own top-level definitions of
 // the named variables, one line each.
 func linuxSetupDefinitions(t *testing.T, text string, names ...string) string {
