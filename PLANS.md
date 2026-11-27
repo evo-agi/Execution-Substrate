@@ -507,6 +507,38 @@ The current bounded planning direction, with the accepted D1b to D1d slices and
 the Workstream D seams that remain reopened, is in
 [`.docs/standing_rules/workstream_decisions.md` § Workstream D decision record](.docs/standing_rules/workstream_decisions.md#workstream-d-decision-record).
 
+D2 re-derives this workstream, as the project owner decided: CGS is retired,
+the owner signs a standing policy that ES applies, and EGS signs publisher
+admissions that ES requires only while the owner's signed switch is on. The
+contract and its build steps are in
+[`.docs/system_overview/policy_governance_contract.md`](.docs/system_overview/policy_governance_contract.md).
+
+Workstream D status: open.
+
+Exit criteria, all required to close Workstream D (contract build steps in
+brackets):
+
+- [ ] CGS is retired [1].
+- [ ] Revoking an artifact or a signer has a runbook, run once on the
+  supported host.
+- [ ] Cutting off one named workload passed WI-3's tests
+  (`.docs/system_overview/runtime_identity_handoff.md`, section 11.7).
+- [ ] Recovery from a lost Vault unseal key and from a full re-setup is built
+  [12], and each CI rehearsal passed once.
+- [ ] AGS's signing key is in Vault's transit engine [11].
+- [ ] The owner's rules are signed and applied by ES, and no host file changes
+  them [2, 4, 6, 7, 10].
+- [ ] An older validly signed policy or EGS list cannot be confirmed as
+  current (`CP-ROLLBACK`) [2, 4, 8].
+- [ ] ES starts without EGS, and service certificates renew automatically
+  [4, 9].
+- [ ] ES loads no unused verifier key [4, 10].
+- [ ] The policy log is copied off the host every hour [5, 6].
+- [ ] The supported host runs steps 1 to 12; the migration run's report is
+  linked here.
+- [ ] `README.md` and its diagram describe this design, rewritten in the change
+  that closes Workstream D [13].
+
 ### Workstream E - Lookup And Config Indirection Reset
 
 Purpose:

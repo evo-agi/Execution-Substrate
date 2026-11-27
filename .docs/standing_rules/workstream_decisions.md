@@ -233,6 +233,15 @@ Current bounded decision status for Milestone 2C.1:
 
 Current bounded planning direction:
 
+- D2, the re-derivation the project owner decided, is
+  `.docs/system_overview/policy_governance_contract.md`.
+- D2 supersedes the limits below that keep a future EGS contract to signer
+  and artifact trust (D1b and D1c): EGS v2 signs publisher admissions under
+  the owner's standing policy, as a new versioned contract.
+- D2 retires CGS, so the future CGS v2 authorize contract that D1b describes
+  is not built.
+- The EGS v1 and CGS v1 surfaces below stay current behavior until D2's build
+  steps 7 and 1 remove them.
 - Treat the current `POST /v1/credential/authorize` request/response shape as a CGS v1 compatibility surface and the current `GET /v1/trust-model` route plus wrapper/payload shape as an EGS v1 compatibility surface.
 - Do not semantically widen either current v1 surface in place. Semantic expansion requires explicit versioning before implementation.
 - Treat `audit.policy_version` and EGS `publication.version` as service-owned audit/publication metadata, not transport/schema/API versioning.
