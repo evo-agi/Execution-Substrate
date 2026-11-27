@@ -69,6 +69,7 @@ func TestRemoteAlphaESBinaryDeploymentStopsOnARevokedDigestTheNewESRefuses(t *te
 	upper := "sha256:" + strings.ToUpper(hexDigits)
 	otherLower := "sha256:" + strings.Repeat("ab", 32)
 	oneUpperDigit := lower[:len(lower)-1] + "F"
+	firstUpperDigit := "sha256:A" + otherLower[len("sha256:a"):]
 	refusal := func(entry string) string {
 		return "/config/egs.json, so nothing is installed: egs config refused: " +
 			"runtime_trust.artifact_policy.revoked_artifacts must contain labeled sha256 digests in lower-case hex " +
@@ -88,6 +89,8 @@ func TestRemoteAlphaESBinaryDeploymentStopsOnARevokedDigestTheNewESRefuses(t *te
 		{name: "upper-case hex", revoked: []string{upper}, scope: "egs_config_check", want: refusal(upper)},
 		{name: "one upper-case hex digit after a lower-case digest", revoked: []string{otherLower, oneUpperDigit},
 			scope: "egs_config_check", want: refusal(oneUpperDigit)},
+		{name: "an upper-case first hex digit", revoked: []string{firstUpperDigit},
+			scope: "egs_config_check", want: refusal(firstUpperDigit)},
 		{name: "upper-case hex, and the payload has no egsconfigcheck", revoked: []string{upper}, noEGSCheck: true,
 			scope: "local_payload", want: "staged payload config checks are missing from the sealed helper payload directory: egsconfigcheck"},
 	}
@@ -134,9 +137,11 @@ func TestRemoteAlphaESBinaryDeploymentStopsOnARevokedDigestTheNewESRefuses(t *te
 				), esBinaryDeploymentExpectedSliceShell(fixture)+"remote_alpha_deploy_es_binaries_main "+args+"\n")
 				report := output
 				if mode == "apply" {
-					if report, err = os.ReadFile(summaryPath); err != nil {
-						t.Fatalf("apply wrote no summary: %v\n%s", err, output)
+					summary, readErr := os.ReadFile(summaryPath)
+					if readErr != nil {
+						t.Fatalf("apply wrote no summary: %v\n%s", readErr, output)
 					}
+					report = summary
 				}
 				payload := parseESBinaryDeploymentOutput(t, report)
 
