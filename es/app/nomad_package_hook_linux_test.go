@@ -195,6 +195,32 @@ func TestNomadTakeBackProgramTakesBackWhatThePackageGaveAway(t *testing.T) {
 		t.Fatal(err)
 	}
 	plantACLs(t, config)
+	// A key that stays root's, with its mode, but that an access ACL lets
+	// the account read: the ACL alone is reason to take it back. Setting
+	// the ACL shows its mask as the group's bits.
+	aclOnly := entry{filepath.Join(tlsDir, "client-key.pem"), "client key\n", 0o600, 0o640}
+	if err := os.WriteFile(aclOnly.path, []byte(aclOnly.content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Setxattr(aclOnly.path, "system.posix_acl_access", encodedACL([][3]uint32{
+		{aclUserObj, 6, aclNoID},
+		{aclUser, 4, 65534},
+		{aclGroupObj, 0, aclNoID},
+		{aclMask, 4, aclNoID},
+		{aclOther, 0, aclNoID},
+	}), 0); err != nil {
+		t.Fatal(err)
+	}
+	runTestSudo(t, "chown", "0:0", "--", aclOnly.path)
+	inodes[aclOnly.path] = inode(t, aclOnly.path)
+	// A file of root's but of another group: the group alone is reason to
+	// take it back (re-check 50 of #66, O50-2, for the program).
+	grouped := entry{filepath.Join(config, "grouped.hcl"), "# grouped\n", 0o640, 0o640}
+	if err := os.WriteFile(grouped.path, []byte(grouped.content), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	runTestSudo(t, "chown", "0:65534", "--", grouped.path)
+	inodes[grouped.path] = inode(t, grouped.path)
 	// What Nomad does not read either: a folder, and an editor's lock file,
 	// which is a link.
 	folder := filepath.Join(config, "conf.d.hcl")
@@ -203,6 +229,16 @@ func TestNomadTakeBackProgramTakesBackWhatThePackageGaveAway(t *testing.T) {
 	}
 	lock := filepath.Join(config, ".#extra.hcl")
 	if err := os.Symlink("operator@host.1234:1700000000", lock); err != nil {
+		t.Fatal(err)
+	}
+	// A link left at the temporary name of a file the program takes back
+	// (by a run cut off, or by the account while it owned the folder): it
+	// is removed, not followed or refused.
+	leftTarget := filepath.Join(t.TempDir(), "left")
+	if err := os.WriteFile(leftTarget, []byte("left\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(leftTarget, filepath.Join(config, "extra.json.execution-substrate-new")); err != nil {
 		t.Fatal(err)
 	}
 	// A handle opened while the file was still writable.
@@ -235,11 +271,13 @@ func TestNomadTakeBackProgramTakesBackWhatThePackageGaveAway(t *testing.T) {
 		"execution-substrate: removed the default ACL that was left on " + config,
 		"execution-substrate: removed the access ACL that was left on " + config,
 		was(filepath.Join(config, "extra.json"), "uid 65534, gid 65534, 0666"),
+		was(grouped.path, "uid 0, gid 65534, 0640"),
 		was(filepath.Join(config, "nomad.env"), "uid 65534, gid 65534, 0644, with an ACL"),
 		was(filepath.Join(config, "nomad.hcl"), "uid 65534, gid 65534, 0640"),
 		was(filepath.Join(config, "setuid.hcl"), "uid 65534, gid 65534, 4775"),
 		"execution-substrate: took " + tlsDir + " back (it was uid 65534, gid 65534, 0755)",
 		was(filepath.Join(tlsDir, "ca.pem"), "uid 65534, gid 65534, 0644"),
+		was(aclOnly.path, "uid 0, gid 0, 0640, with an ACL"),
 		was(filepath.Join(tlsDir, "server-key.pem"), "uid 65534, gid 65534, 0600"),
 		was(filepath.Join(tlsDir, "server.pem"), "uid 65534, gid 65534, 0644"),
 		"execution-substrate: took " + data + " back (it was uid 65534, gid 65534, 0755)",
@@ -253,7 +291,7 @@ func TestNomadTakeBackProgramTakesBackWhatThePackageGaveAway(t *testing.T) {
 	requireFolder(t, config, 0, 0, 0o755)
 	requireFolder(t, tlsDir, 0, 0, 0o755)
 	requireFolder(t, data, 0, 0, 0o700)
-	for _, e := range taken {
+	for _, e := range append(append([]entry{}, taken...), aclOnly, grouped) {
 		requireTaken(t, e.path, e.content, e.after, inodes[e.path])
 	}
 	for _, e := range kept {
@@ -274,6 +312,7 @@ func TestNomadTakeBackProgramTakesBackWhatThePackageGaveAway(t *testing.T) {
 	if got := sudoRead(t, filepath.Join(config, "extra.json")); got != "{\"datacenter\": \"dc1\"}\n" {
 		t.Fatalf("a handle opened before the take-back still writes the config: %q", got)
 	}
+	requireRegularFile(t, leftTarget, "left\n", 0o644)
 	for _, folder := range []string{config, tlsDir} {
 		entries, err := os.ReadDir(folder)
 		if err != nil {
@@ -536,7 +575,7 @@ runpy.run_path(sys.argv[0], run_name="__main__")
 // reads: the program takes back what the setup does, and nomad.hcl, which
 // the setup writes new instead.
 func TestNomadTakeBackProgramTakesBackWhatTheSetupDoesAndNomadHCL(t *testing.T) {
-	names := []string{"nomad.hcl", "nomad.env", "extra.hcl", "extra.json", "a.b.hcl", ".hidden.hcl", ".#lock.hcl",
+	names := []string{"nomad.hcl", "nomad.env", "extra.hcl", "extra.json", "a.b.hcl", ".hidden.hcl", "#hash.json", ".#lock.hcl",
 		"README", "nomad.env.bak", "x.hcl.txt", "x.json~", "#x.hcl#", "x.HCL", "nomad.hcl.execution-substrate.bak.1"}
 	plant := func(t *testing.T) string {
 		t.Helper()
@@ -655,13 +694,22 @@ func TestLinuxSetupInstallsTheNomadPackageHook(t *testing.T) {
 		t.Fatalf("with the program gone, sh -c %q: %v %s", gone, err, output)
 	}
 
-	// A rerun writes the same bytes, as new files.
+	// A rerun writes the same bytes, as new files, past what a cut-off run
+	// may leave at the temporary names: a file, and a link that is removed,
+	// not followed.
+	if err := os.WriteFile(program+".execution-substrate-new", []byte("cut off\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, hook+".execution-substrate-new"); err != nil {
+		t.Fatal(err)
+	}
 	before := inode(t, program)
 	if _, stderr, err := runNomadPackageHookRegion(t, install, program, hook, config, data); err != nil {
 		t.Fatalf("install_nomad_package_hook, again: %v %s", err, stderr)
 	}
 	requireRegularFile(t, program, expected, 0o755)
 	requireRegularFile(t, hook, wantHook, 0o644)
+	requireRegularFile(t, outside, "outside\n", 0o644)
 	if inode(t, program) == before {
 		t.Fatal("a rerun wrote the program in place")
 	}

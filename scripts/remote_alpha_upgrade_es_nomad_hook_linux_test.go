@@ -1,7 +1,9 @@
 package scripts_test
 
 import (
+	"bytes"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -111,5 +113,56 @@ func TestRemoteAlphaUpgradeESNomadHookPathsAreTheSetups(t *testing.T) {
 		if "/"+filepath.ToSlash(rel) != string(inSetup[1]) {
 			t.Fatalf("the tests place %s at %s, the setup at %s", name, rel, inSetup[1])
 		}
+	}
+}
+
+// On a host (no --host-root), nomad-hook refuses to run without root before
+// it writes anything, as check and apply do. The clone is root's, in a
+// folder of root's below /tmp, so that the checkout guard lets it through
+// and the refusal seen is the one for root.
+func TestRemoteAlphaUpgradeESNomadHookRefusesToRunWithoutRootOnAHost(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("runs as root: a run without root cannot be seen")
+	}
+	probe := exec.Command("sudo", "-n", "true")
+	probe.Dir = t.TempDir()
+	if probe.Run() != nil {
+		t.Skip("needs passwordless sudo to give a clone to root")
+	}
+	work := t.TempDir()
+	sudo := func(args ...string) string {
+		t.Helper()
+		run := exec.Command("sudo", append([]string{"-n"}, args...)...)
+		run.Dir = work
+		output, err := run.CombinedOutput()
+		if err != nil {
+			t.Fatalf("sudo %v: %v: %s", args, err, output)
+		}
+		return strings.TrimSpace(string(output))
+	}
+	base := sudo("mktemp", "-d", "/tmp/es-upgrade-nomad-hook-XXXXXXXX")
+	if !strings.HasPrefix(base, "/tmp/es-upgrade-nomad-hook-") || strings.Contains(base, "..") {
+		t.Fatalf("mktemp named %q", base)
+	}
+	t.Cleanup(func() { sudo("rm", "-rf", "--", base) })
+	sudo("chmod", "0755", base)
+	clone := filepath.Join(base, "clone")
+	sudo("install", "-d", "-o", "root", "-g", "root", "-m", "0755", clone, filepath.Join(clone, "scripts"), filepath.Join(clone, "scripts", "internal"))
+	for rel, mode := range map[string]string{"scripts/remote_alpha_upgrade_es.sh": "0755", upgradeESPython: "0644"} {
+		sudo("install", "-o", "root", "-g", "root", "-m", mode, repoPath(rel), filepath.Join(clone, filepath.FromSlash(rel)))
+	}
+	cmd := exec.Command("python3", "-I", filepath.Join(clone, filepath.FromSlash(upgradeESPython)), "nomad-hook")
+	cmd.Dir = t.TempDir()
+	for _, entry := range os.Environ() {
+		if !strings.HasPrefix(entry, "ES_UPGRADE_TEST_") {
+			cmd.Env = append(cmd.Env, entry)
+		}
+	}
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	err := cmd.Run()
+	if exitErr, ok := err.(*exec.ExitError); !ok || exitErr.ExitCode() != 1 ||
+		strings.TrimSpace(stderr.String()) != "remote alpha ES upgrade refused: run as root (sudo -n)" || stdout.Len() != 0 {
+		t.Fatalf("nomad-hook without root on a host: %v\nstdout %s\nstderr %s", err, stdout.String(), stderr.String())
 	}
 }
