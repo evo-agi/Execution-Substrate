@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 )
@@ -45,7 +46,7 @@ func (m RuntimeTrustPolicy) Validate() error {
 	}
 	for _, digest := range m.ArtifactPolicy.RevokedArtifacts {
 		if !isLabeledSHA256Digest(digest) {
-			return fmt.Errorf("runtime_trust.artifact_policy.revoked_artifacts must contain labeled sha256 digests")
+			return fmt.Errorf("runtime_trust.artifact_policy.revoked_artifacts must contain labeled sha256 digests in lower-case hex (sha256: and 64 lower-case hex characters); got %q", digest)
 		}
 	}
 	return nil
@@ -141,14 +142,13 @@ func validateUniqueStrings(field string, values []string) error {
 	return nil
 }
 
+// labeledSHA256Digest is the only digest spelling ES accepts in a request
+// (es/admission/service.go). A revoked-artifact entry in any other spelling,
+// upper-case hex included, would never equal a request's digest, so it would
+// revoke nothing; EGS refuses it instead of normalizing it, so that the
+// operator sees the mistake.
+var labeledSHA256Digest = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+
 func isLabeledSHA256Digest(value string) bool {
-	if !strings.HasPrefix(value, "sha256:") {
-		return false
-	}
-	hexPart := strings.TrimPrefix(value, "sha256:")
-	if len(hexPart) != 64 {
-		return false
-	}
-	_, err := hex.DecodeString(hexPart)
-	return err == nil
+	return labeledSHA256Digest.MatchString(value)
 }
