@@ -111,7 +111,7 @@ const revocationRunbookPath = "../../.runbooks/system/Governed Execution ES Revo
 // the same change.
 const (
 	runbookUpperCaseNoteWhenEGSAccepts = "- EGS accepts upper-case hex in a digest, but ES compares the exact text, so an upper-case entry would pass EGS and never match an artifact. Step 2 accepts lower-case only."
-	runbookUpperCaseNoteWhenEGSRefuses = "- EGS refuses upper-case hex in a digest, as step 2 does: ES compares the exact text, so an upper-case entry could never match an artifact."
+	runbookUpperCaseNoteWhenEGSRefuses = "- EGS refuses upper-case hex in a digest, as step 2 does, and so does ES when it fetches EGS's list: ES compares the exact text, so an upper-case entry could never match an artifact. An older EGS still accepts one, and the box's ES upgrade replaces ES but not EGS, so on the box `egs.service` can be `active` after step 3 while ES refuses to start, with `validate trust model:` and the entry in its journal (see the failure table)."
 )
 
 var runbookUpperCaseLinesEitherWay = []string{
