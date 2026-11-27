@@ -501,8 +501,8 @@ present, public Submit remains unkeyed, and native Linux runtime validation
 remains pending.
 
 This foundation does not synthesize `PrepareRequest` or `Manifest` proof from
-the plan, create a parallel admission engine, tighten the current empty
-environment-allowlist behavior, or introduce canonical encoding, `PlanBinding`,
+the plan, create a parallel admission engine, change environment or mount
+admission, or introduce canonical encoding, `PlanBinding`,
 a witness, durable material custody, host-context replay rules, public reliable
 submit, or reconciliation behavior.
 

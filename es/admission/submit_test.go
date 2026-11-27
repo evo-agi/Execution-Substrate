@@ -341,7 +341,7 @@ func TestResolvedPlanCustodyRepairWideTreeSubmitHandoff(t *testing.T) {
 }
 
 func TestResolvedPlanCustodyRepairMountNamesSubmitHandoff(t *testing.T) {
-	fixture := newPreparedArtifactFixture(t)
+	fixture := newPreparedArtifactFixture(t).withMountTargets(t, "/execution/mounts/config")
 	archive := buildAdmissionPolicyStaticScriptArchive(t, map[string][]byte{
 		staticScriptEntrypointName: []byte(benignPolicyFixtureText()),
 		"dir /a":                   []byte("space"),

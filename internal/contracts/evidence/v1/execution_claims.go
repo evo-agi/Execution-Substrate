@@ -14,6 +14,11 @@ type ExecutionClaims struct {
 type ExecutionRuntime struct {
 	EnvironmentVariables []string `json:"environment_variables"`
 	RequiredCapabilities []string `json:"required_capabilities"`
+	// MountTargets lists the paths at which the artifact accepts a caller
+	// mount. An empty or absent list accepts none. It is omitted from the
+	// canonical bytes when empty, so records signed before the field existed
+	// keep their canonical bytes and their seal.
+	MountTargets []string `json:"mount_targets,omitempty"`
 }
 
 type ExecutionWorkload struct {
@@ -33,6 +38,7 @@ type canonicalExecutionClaims struct {
 type canonicalExecutionRuntime struct {
 	EnvironmentVariables []string `json:"environment_variables"`
 	RequiredCapabilities []string `json:"required_capabilities"`
+	MountTargets         []string `json:"mount_targets,omitempty"`
 }
 
 type canonicalExecutionWorkload struct {
@@ -56,6 +62,7 @@ func (e ExecutionClaims) canonicalize() canonicalExecutionClaims {
 		Runtime: canonicalExecutionRuntime{
 			EnvironmentVariables: normalizeStringSet(e.Runtime.EnvironmentVariables),
 			RequiredCapabilities: normalizeStringSet(e.Runtime.RequiredCapabilities),
+			MountTargets:         normalizeStringSet(e.Runtime.MountTargets),
 		},
 		Workload: canonicalExecutionWorkload{
 			TargetPlatform: strings.TrimSpace(e.Workload.TargetPlatform),

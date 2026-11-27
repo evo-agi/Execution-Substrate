@@ -18,6 +18,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -71,7 +72,17 @@ const (
 
 var (
 	labeledSHA256DigestPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
-	reservedRuntimeEnvKeys     = map[string]struct{}{
+	// reservedRuntimeEnvKeys, reservedRuntimeEnvPrefixes and
+	// reservedRuntimeEnvSuffixes name the environment keys a caller may
+	// never set, whatever the artifact declares. They are written in upper
+	// case and matched against the
+	// caller's key with ASCII letters folded to upper case, so http_proxy is
+	// reserved with HTTPS_PROXY. They are a backstop, not the boundary: the
+	// boundary is the artifact's signed environment allowlist, which admits
+	// no caller key when it is empty (validateInvocationAgainstManifest). No
+	// list can name every variable every program reads.
+	reservedRuntimeEnvKeys = map[string]struct{}{
+		// Keys ES sets or owns for the run's identity, platform and trust.
 		"PROJECT_NAME":                {},
 		"ENVIRONMENT":                 {},
 		"PLATFORM":                    {},
@@ -79,7 +90,7 @@ var (
 		"SERVICE_ID":                  {},
 		"SESSION_ID":                  {},
 		"PARENT_SESSION_ID":           {},
-		"traceparent":                 {},
+		"TRACEPARENT":                 {},
 		"EXEC_SVID_PATH":              {},
 		"VAULT_AGENT_TOKEN_PATH":      {},
 		"VAULT_ADDR":                  {},
@@ -87,10 +98,314 @@ var (
 		"VAULT_NAMESPACE":             {},
 		"SSL_CERT_FILE":               {},
 		runtimeIdentityEndpointEnvKey: {},
+
+		// The keys the GNU C library removes before it starts a set-user-ID
+		// program (glibc 2.42, sysdeps/generic/unsecvars.h). Its LD_ keys are
+		// covered by the LD_ prefix below.
+		"GCONV_PATH":             {},
+		"GETCONF_DIR":            {},
+		"GLIBC_TUNABLES":         {},
+		"HOSTALIASES":            {},
+		"LOCALDOMAIN":            {},
+		"LOCPATH":                {},
+		"MALLOC_ARENA_MAX":       {},
+		"MALLOC_ARENA_TEST":      {},
+		"MALLOC_MMAP_MAX_":       {},
+		"MALLOC_MMAP_THRESHOLD_": {},
+		"MALLOC_PERTURB_":        {},
+		"MALLOC_TOP_PAD_":        {},
+		"MALLOC_TRACE":           {},
+		"MALLOC_TRIM_THRESHOLD_": {},
+		"NIS_PATH":               {},
+		"NLSPATH":                {},
+		"RESOLV_HOST_CONF":       {},
+		"RES_OPTIONS":            {},
+		"TMPDIR":                 {},
+		"TZDIR":                  {},
+
+		// The keys sudo 1.9.16p2 removes from the environment of every
+		// command it runs (plugins/sudoers/env.c, initial_badenv_table, the
+		// entries that apply on Linux; its wildcard entries are prefixes
+		// below), and the entries sudo's development branch adds to that
+		// table after 1.9.16p2: _JAVA_OPTIONS, CLASSPATH, NODE_OPTIONS and
+		// NODE_PATH here, PYTHONSTARTUP, GIT_SSH_COMMAND and GIT_CONFIG_*
+		// under the PYTHON and GIT_ prefixes below, and GCONV_PATH, which
+		// the glibc list above already holds.
+		"IFS":               {},
+		"CDPATH":            {},
+		"PATH_LOCALE":       {},
+		"KRB5_KTNAME":       {},
+		"TERMINFO":          {},
+		"TERMINFO_DIRS":     {},
+		"TERMPATH":          {},
+		"TERMCAP":           {},
+		"ENV":               {},
+		"BASH_ENV":          {},
+		"PS4":               {},
+		"GLOBIGNORE":        {},
+		"BASHOPTS":          {},
+		"SHELLOPTS":         {},
+		"JAVA_TOOL_OPTIONS": {},
+		"_JAVA_OPTIONS":     {},
+		"CLASSPATH":         {},
+		"PERLIO_DEBUG":      {},
+		"PERLLIB":           {},
+		"PERL5LIB":          {},
+		"PERL5OPT":          {},
+		"PERL5DB":           {},
+		"FPATH":             {},
+		"NULLCMD":           {},
+		"READNULLCMD":       {},
+		"ZDOTDIR":           {},
+		"TMPPREFIX":         {},
+		"RUBYLIB":           {},
+		"RUBYOPT":           {},
+		"NODE_OPTIONS":      {},
+		"NODE_PATH":         {},
+
+		// Keys that decide which program a name runs and where programs read
+		// per-user startup and configuration files (Python's user site
+		// directory and its usercustomize module, Git, shells), and the Java
+		// launcher's own options key.
+		"PATH":             {},
+		"HOME":             {},
+		"JDK_JAVA_OPTIONS": {},
+
+		// Keys that send the run's traffic through a host of the caller's
+		// choosing, exempt hosts from a proxy, change which certificates the
+		// run trusts, or write its TLS session keys to a file.
+		"HTTP_PROXY":                   {},
+		"HTTPS_PROXY":                  {},
+		"ALL_PROXY":                    {},
+		"FTP_PROXY":                    {},
+		"NO_PROXY":                     {},
+		"SSL_CERT_DIR":                 {},
+		"REQUESTS_CA_BUNDLE":           {},
+		"CURL_CA_BUNDLE":               {},
+		"NODE_EXTRA_CA_CERTS":          {},
+		"NODE_TLS_REJECT_UNAUTHORIZED": {},
+		"SSLKEYLOGFILE":                {},
+
+		// Keys of the same kinds that the lists above do not name and that
+		// no prefix below covers (red-team report 19 and re-check 23 on PR
+		// #74): a switch the repository's own Vault login code reads to skip
+		// the TLS check (any key ending in INSECURE_SKIP_VERIFY is also
+		// reserved, below); client configuration files; other proxies and
+		// trust stores; Node.js keys that load or write files; other Java
+		// virtual machines' option keys; Python environments and settings
+		// modules; programs that other programs start by name; module paths
+		// of R and Tcl; build and archive tool options and helper programs;
+		// the Go toolchain keys that choose which toolchain, compiler or helper
+		// command runs, including pkg-config and the Fortran compiler, where
+		// modules, sources and build results come from or go, or how the
+		// toolchain builds and fetches (every such key go help environment
+		// lists, Go 1.26.5), and the two that change how ES's own Go supervisor
+		// runs in the container; the GNU C compiler's keys that choose the
+		// programs it runs, the headers and libraries it builds with, extra
+		// options, or a file it writes with text the caller chooses: every such
+		// key a GCC program reads that the GCC 14.2.0 manual names in any
+		// section (gcc/doc/gcc.texi and the files it includes), not only in its
+		// section on environment variables, among them MAKE, the program
+		// lto-wrapper runs for a parallel link, CXX_MODULE_MAPPER, whose
+		// "|program" form names a program cc1plus starts,
+		// MSP430_GCC_INCLUDE_DIR, a header and linker-script directory of the
+		// msp430 port, and VSB_DIR, which gcc's VxWorks 7 specs read for header
+		// directories and to choose a library (the manual's spec-file example);
+		// and LPATH and OBJCPLUS_INCLUDE_PATH, which gcc reads and the manual
+		// leaves out; and the directory, domain and language list bash reads the
+		// translations of $"..." strings from, which it expands as double-quoted
+		// text, so a catalog the caller chooses could run commands in a script
+		// that translates its messages. Upstream glibc's gettext skips a
+		// LANGUAGE entry that holds a path only in set-user-ID programs
+		// (intl/dcigettext.c, 2.39 and 2.42), so LANGUAGE=../x can name a
+		// catalog outside the directory; the one Ubuntu build tested ignored
+		// such entries, and a backstop does not rest on one build.
+		"WORKLOAD_VAULT_INSECURE_SKIP_VERIFY": {},
+		"WGETRC":                              {},
+		"NETRC":                               {},
+		"AWS_CONFIG_FILE":                     {},
+		"AWS_SHARED_CREDENTIALS_FILE":         {},
+		"AWS_CA_BUNDLE":                       {},
+		"KUBECONFIG":                          {},
+		"GNUPGHOME":                           {},
+		"WS_PROXY":                            {},
+		"WSS_PROXY":                           {},
+		"RSYNC_PROXY":                         {},
+		"SOCKS_PROXY":                         {},
+		"NODE_REPL_EXTERNAL_MODULE":           {},
+		"NODE_COMPILE_CACHE":                  {},
+		"NODE_ICU_DATA":                       {},
+		"NODE_V8_COVERAGE":                    {},
+		"NODE_REDIRECT_WARNINGS":              {},
+		"NODE_REPL_HISTORY":                   {},
+		"OPENJ9_JAVA_OPTIONS":                 {},
+		"IBM_JAVA_OPTIONS":                    {},
+		"VIRTUAL_ENV":                         {},
+		"DJANGO_SETTINGS_MODULE":              {},
+		"SHELL":                               {},
+		"PAGER":                               {},
+		"MANPAGER":                            {},
+		"EDITOR":                              {},
+		"VISUAL":                              {},
+		"BROWSER":                             {},
+		"SUDO_ASKPASS":                        {},
+		"R_PROFILE":                           {},
+		"R_PROFILE_USER":                      {},
+		"R_ENVIRON":                           {},
+		"R_ENVIRON_USER":                      {},
+		"R_LIBS":                              {},
+		"R_LIBS_USER":                         {},
+		"R_LIBS_SITE":                         {},
+		"TCLLIBPATH":                          {},
+		"MAKEFLAGS":                           {},
+		"MFLAGS":                              {},
+		"GNUMAKEFLAGS":                        {},
+		"MAKEFILES":                           {},
+		"TAR_OPTIONS":                         {},
+		"LESSOPEN":                            {},
+		"LESSCLOSE":                           {},
+		"CC":                                  {},
+		"CXX":                                 {},
+		"CPP":                                 {},
+		"LD":                                  {},
+		"AR":                                  {},
+		"AS":                                  {},
+		"CFLAGS":                              {},
+		"CXXFLAGS":                            {},
+		"CPPFLAGS":                            {},
+		"LDFLAGS":                             {},
+		"RUSTFLAGS":                           {},
+		"RUSTDOC":                             {},
+		"RUSTDOCFLAGS":                        {},
+		"GODEBUG":                             {},
+		"GOTRACEBACK":                         {},
+		"GOFLAGS":                             {},
+		"GOENV":                               {},
+		"GOTOOLCHAIN":                         {},
+		"GOPROXY":                             {},
+		"GONOPROXY":                           {},
+		"GOPRIVATE":                           {},
+		"GOINSECURE":                          {},
+		"GOSUMDB":                             {},
+		"GONOSUMDB":                           {},
+		"GONOSUMCHECK":                        {},
+		"GOROOT":                              {},
+		"GOPATH":                              {},
+		"GOBIN":                               {},
+		"GOCACHE":                             {},
+		"GOCACHEPROG":                         {},
+		"GOMODCACHE":                          {},
+		"GOWORK":                              {},
+		"GOAUTH":                              {},
+		"GOVCS":                               {},
+		"GOEXPERIMENT":                        {},
+		"GOTMPDIR":                            {},
+		"GCCGO":                               {},
+		"GCCGOTOOLDIR":                        {},
+		"FC":                                  {},
+		"GCC_EXEC_PREFIX":                     {},
+		"COMPILER_PATH":                       {},
+		"LIBRARY_PATH":                        {},
+		"CPATH":                               {},
+		"C_INCLUDE_PATH":                      {},
+		"CPLUS_INCLUDE_PATH":                  {},
+		"OBJC_INCLUDE_PATH":                   {},
+		"GCC_COMPARE_DEBUG":                   {},
+		"LPATH":                               {},
+		"OBJCPLUS_INCLUDE_PATH":               {},
+		"DEPENDENCIES_OUTPUT":                 {},
+		"SUNPRO_DEPENDENCIES":                 {},
+		"MAKE":                                {},
+		"CXX_MODULE_MAPPER":                   {},
+		"MSP430_GCC_INCLUDE_DIR":              {},
+		"VSB_DIR":                             {},
+		"TEXTDOMAINDIR":                       {},
+		"TEXTDOMAIN":                          {},
+		"LANGUAGE":                            {},
 	}
 	reservedRuntimeEnvPrefixes = []string{
 		"EXEC_",
 		"EXEC_WORKLOAD_VAULT_",
+		// The dynamic loader's keys (glibc and musl), and sudo 1.9.16p2's
+		// wildcard entries LD_*, _RLD* and KRB5_CONFIG*.
+		"LD_",
+		"_RLD",
+		"KRB5_CONFIG",
+		// CPython and Git read many keys under these prefixes to load code,
+		// run commands or change TLS verification. They cover sudo
+		// 1.9.16p2's PYTHONHOME, PYTHONPATH, PYTHONINSPECT and
+		// PYTHONUSERBASE, and the later PYTHONSTARTUP, GIT_SSH_COMMAND and
+		// GIT_CONFIG_*.
+		"PYTHON",
+		"GIT_",
+		// Bash imports a function from a key of this form. Such a key is not
+		// a valid caller key name in any case (it ends in %%).
+		"BASH_FUNC_",
+		// Whole families whose keys load code, name a program or a
+		// configuration file, or change TLS trust, the address a client
+		// talks to or its credentials (red-team report 19 on PR #74). A
+		// family is reserved as a whole so that the list does not have to
+		// keep up with each program's next key:
+		// the Vault client, beyond the three keys ES sets;
+		"VAULT_",
+		// per-user configuration directories, which stand in for HOME;
+		"XDG_",
+		// OpenSSL's configuration file, modules and engines;
+		"OPENSSL_",
+		// npm settings, which npm reads in either letter case;
+		"NPM_CONFIG_",
+		// the scheduler's own task variables;
+		"NOMAD_",
+		// the agent CLI the control-plane image installs: its configuration
+		// directory, and the address it sends requests and its credential to;
+		"CODEX_",
+		"OPENAI_",
+		// Python's package installer and test runner;
+		"PIP_",
+		"PYTEST_",
+		// Perl and Ruby, which the sudo list covers only in part, and Ruby's
+		// gem and bundler settings;
+		"PERL",
+		"RUBY",
+		"GEM_",
+		"BUNDLE_",
+		// Java's home and option keys, and the two common Java build tools;
+		"JAVA_",
+		"MAVEN_",
+		"GRADLE_",
+		// .NET runtime configuration, startup hooks and profilers;
+		"DOTNET_",
+		"CORECLR_",
+		"COMPLUS_",
+		// PHP's configuration file and scan directory, and Lua's start code
+		// and module paths;
+		"PHP",
+		"LUA_",
+		// Rust's build tool, toolchain installer and compiler wrappers;
+		"CARGO_",
+		"RUSTUP_",
+		"RUSTC",
+		// cgo's compiler and linker flags and their allow and deny lists, and
+		// the pkg-config program a cgo build runs and the keys that choose
+		// the .pc files that give it flags and libraries;
+		"CGO_",
+		"PKG_CONFIG",
+		// client configuration that names helper programs, sockets or
+		// trust: Docker, ssh, gRPC and curl.
+		"DOCKER_",
+		"SSH_",
+		"GRPC_",
+		"CURL_",
+	}
+	reservedRuntimeEnvSuffixes = []string{
+		// Switches that turn off a client's TLS certificate check, named
+		// after the InsecureSkipVerify field of Go's crypto/tls. The
+		// repository's own Vault login code reads
+		// WORKLOAD_VAULT_INSECURE_SKIP_VERIFY and the legacy reference
+		// workload reads REFERENCE_VAULT_INSECURE_SKIP_VERIFY. A suffix, not
+		// a list, so that the next workload's switch of the same name is
+		// reserved too.
+		"INSECURE_SKIP_VERIFY",
 	}
 )
 
@@ -704,6 +1019,7 @@ func manifestFromEvidence(evidence evidencev1.ArtifactEvidence) Manifest {
 		RuntimeInterface: RuntimeInterface{
 			EnvironmentVariables: append([]string(nil), runtime.EnvironmentVariables...),
 			RequiredCapabilities: append([]string(nil), runtime.RequiredCapabilities...),
+			MountTargets:         append([]string(nil), runtime.MountTargets...),
 		},
 	}
 }
@@ -910,27 +1226,74 @@ func validateInvocationAgainstManifest(invocation ArtifactInvocation, manifest M
 			return &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "invocation.argv " + nomadRewrittenText}
 		}
 	}
-	allowedEnv := make(map[string]struct{}, len(manifest.RuntimeInterface.EnvironmentVariables))
-	for _, key := range manifest.RuntimeInterface.EnvironmentVariables {
-		allowedEnv[strings.TrimSpace(key)] = struct{}{}
-	}
-	for key, value := range invocation.Env {
+	// The artifact's signed runtime interface is the only source of what a
+	// caller may set or mount. An empty or absent list admits nothing.
+	allowedEnv := declaredStringSet(manifest.RuntimeInterface.EnvironmentVariables)
+	for _, key := range sortedMapKeys(invocation.Env) {
+		value := invocation.Env[key]
 		if !nomadPassesAsWritten(key) || !nomadPassesAsWritten(value) {
 			return &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "invocation.env " + nomadEvaluatedText}
+		}
+		if !isPortableEnvironmentKey(key) {
+			return &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: fmt.Sprintf("environment key must be ASCII letters, digits and underscores, not starting with a digit: %q", key)}
 		}
 		if isReservedRuntimeEnvKey(key) {
 			return &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: fmt.Sprintf("environment key is reserved for runtime identity or control-plane use: %s", key)}
 		}
-		if len(allowedEnv) > 0 {
-			if _, ok := allowedEnv[key]; !ok {
-				return &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: fmt.Sprintf("environment key is not allowed by the runtime interface: %s", key)}
-			}
+		if _, ok := allowedEnv[key]; !ok {
+			return &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: fmt.Sprintf("environment key is not allowed by the runtime interface: %s", key)}
 		}
 	}
 	if err := validateRuntimeMounts(invocation.Mounts); err != nil {
 		return err
 	}
+	allowedMountTargets := declaredStringSet(manifest.RuntimeInterface.MountTargets)
+	for _, mount := range invocation.Mounts {
+		if _, ok := allowedMountTargets[mount.TargetPath]; !ok {
+			return &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: fmt.Sprintf("mount target_path is not declared by the runtime interface: %s", mount.TargetPath)}
+		}
+	}
 	return nil
+}
+
+// declaredStringSet returns the trimmed entries of a signed runtime-interface
+// list, the form the evidence canonicalization signs.
+func declaredStringSet(values []string) map[string]struct{} {
+	set := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		set[strings.TrimSpace(value)] = struct{}{}
+	}
+	return set
+}
+
+func sortedMapKeys(values map[string]string) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// isPortableEnvironmentKey reports whether key is a portable environment
+// variable name: an ASCII letter or underscore, then ASCII letters, digits
+// and underscores. A key outside that form could carry an equals sign, which
+// ends the name in the environment string the container receives, so
+// "VAULT_ADDR=x" would set VAULT_ADDR past the reserved-key check.
+func isPortableEnvironmentKey(key string) bool {
+	if key == "" {
+		return false
+	}
+	for index := 0; index < len(key); index++ {
+		c := key[index]
+		switch {
+		case c == '_', 'A' <= c && c <= 'Z', 'a' <= c && c <= 'z':
+		case '0' <= c && c <= '9' && index > 0:
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func newDependencyClient(cfg esconfig.DependencyConfig, dependencyName string) (*dependencyClient, error) {
@@ -1100,7 +1463,7 @@ func isLabeledSHA256Digest(value string) bool {
 }
 
 func isReservedRuntimeEnvKey(key string) bool {
-	normalized := strings.TrimSpace(key)
+	normalized := asciiUpper(strings.TrimSpace(key))
 	if normalized == "" {
 		return false
 	}
@@ -1112,5 +1475,23 @@ func isReservedRuntimeEnvKey(key string) bool {
 			return true
 		}
 	}
+	for _, suffix := range reservedRuntimeEnvSuffixes {
+		if strings.HasSuffix(normalized, suffix) {
+			return true
+		}
+	}
 	return false
+}
+
+// asciiUpper folds only the ASCII letters a to z. Unicode case mapping would
+// fold look-alike letters such as U+017F into ASCII ones, and no program reads
+// a variable through such a fold.
+func asciiUpper(value string) string {
+	folded := []byte(value)
+	for index, c := range folded {
+		if 'a' <= c && c <= 'z' {
+			folded[index] = c - ('a' - 'A')
+		}
+	}
+	return string(folded)
 }

@@ -236,6 +236,7 @@ type ProducerOutcomeEvidenceSurfaceDeclaration struct {
 type RuntimeInterface struct {
 	EnvironmentVariables []string `json:"environment_variables"`
 	RequiredCapabilities []string `json:"required_capabilities"`
+	MountTargets         []string `json:"mount_targets,omitempty"`
 }
 
 type Manifest struct {
