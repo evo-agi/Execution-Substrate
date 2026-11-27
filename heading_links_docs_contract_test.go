@@ -1,6 +1,7 @@
 package executionsubstrate_test
 
 import (
+	"fmt"
 	"net/url"
 	"path"
 	"regexp"
@@ -157,8 +158,9 @@ var claimLedgerESCitation = regexp.MustCompile("\\bES\\s[^;|]*?(?:;|\\||\\b(?:CP
 // ":<line>" or "#L<line>", or only a line number or range such as `51-82`.
 var claimLedgerLineSpan = regexp.MustCompile("`(?:[^`\\n]*(?::|#L)\\d[^`\\n]*|L?\\d+(?:\\s*[-–]\\s*L?\\d+)?)`")
 
-// claimLedgerLineCitations returns the code spans in a line of the claim
-// ledger that cite this repository by line.
+// claimLedgerLineCitations returns every code span in a line of the claim
+// ledger that cites this repository by line, in order: each span of each ES
+// citation of the line, repeats included.
 func claimLedgerLineCitations(line string) []string {
 	var found []string
 	for _, citation := range claimLedgerESCitation.FindAllString(line, -1) {
@@ -176,26 +178,59 @@ func claimLedgerBaselineCellCitesLines(cell string) bool {
 	return numericCell.MatchString(cell) || lineRange.MatchString(cell) || claimLedgerLineSpan.MatchString(cell)
 }
 
+// The Execution Substrate source baseline table of the claim ledger lies
+// between these two headings.
+const (
+	claimLedgerBaselineStart = "### Execution Substrate"
+	claimLedgerBaselineEnd   = "### Control Plane"
+)
+
+// claimLedgerLineProblems returns one message for each place in a claim
+// ledger that cites this repository by line: each line-citing code span of
+// each ES citation, on every line, and each cell of the Execution Substrate
+// source baseline table that cites by line. A ledger without that table is a
+// problem too. TestClaimLedgerCitesThisRepositoryBySection runs it on the
+// real ledger and on small synthetic ones.
+func claimLedgerLineProblems(ledger string) []string {
+	var problems []string
+	lines := strings.Split(ledger, "\n")
+	for i, line := range lines {
+		for _, span := range claimLedgerLineCitations(line) {
+			problems = append(problems, fmt.Sprintf("line %d cites this repository by line (%s); link the section heading instead", i+1, span))
+		}
+	}
+	inBaseline, sawBaseline := false, false
+	for i, line := range lines {
+		switch strings.TrimSpace(line) {
+		case claimLedgerBaselineStart:
+			inBaseline, sawBaseline = true, true
+			continue
+		case claimLedgerBaselineEnd:
+			inBaseline = false
+			continue
+		}
+		if !inBaseline || !strings.HasPrefix(strings.TrimSpace(line), "|") {
+			continue
+		}
+		for _, cell := range strings.Split(strings.Trim(strings.TrimSpace(line), "|"), "|") {
+			if claimLedgerBaselineCellCitesLines(cell) {
+				problems = append(problems, fmt.Sprintf("line %d: a source baseline cell cites this repository by line (%s)", i+1, strings.TrimSpace(cell)))
+			}
+		}
+	}
+	if !sawBaseline {
+		problems = append(problems, fmt.Sprintf("no source baseline table under %q", claimLedgerBaselineStart))
+	}
+	return problems
+}
+
 // TestClaimLedgerCitesThisRepositoryBySection keeps the claim ledger's
 // citations of this repository on section headings: its lines move.
 // TestMarkdownHeadingLinksResolve checks that each linked heading exists.
 func TestClaimLedgerCitesThisRepositoryBySection(t *testing.T) {
 	ledger := mustRead(t, claimLedgerPath)
-	for i, line := range strings.Split(ledger, "\n") {
-		for _, match := range claimLedgerLineCitations(line) {
-			t.Errorf("%s:%d cites this repository by line (%s); link the section heading instead", claimLedgerPath, i+1, match)
-		}
-	}
-	baseline := docSection(t, ledger, "### Execution Substrate", "### Control Plane")
-	for _, line := range strings.Split(baseline, "\n") {
-		if !strings.HasPrefix(line, "|") {
-			continue
-		}
-		for _, cell := range strings.Split(strings.Trim(line, "|"), "|") {
-			if claimLedgerBaselineCellCitesLines(cell) {
-				t.Errorf("%s source baseline cites this repository by line: %q", claimLedgerPath, line)
-			}
-		}
+	for _, problem := range claimLedgerLineProblems(ledger) {
+		t.Errorf("%s: %s", claimLedgerPath, problem)
 	}
 	assertContainsAll(t, "claim ledger citation rule", compactText(ledger),
 		"References into this repository cite sections, not lines, because lines move with every edit.",
@@ -207,35 +242,58 @@ func TestClaimLedgerCitesThisRepositoryBySection(t *testing.T) {
 	if links := strings.Count(ledger, "ES [`"); links < 50 {
 		t.Errorf("%s has %d section links into this repository, want the 50 or more it cites", claimLedgerPath, links)
 	}
+}
 
-	for _, line := range []string{
-		"ES `.docs/mvp.md:40-68`",
-		"ES `README.md:1`",
-		"| ES `.docs/execution_lifecycle/contracts.md:77-158`; CP x |",
-		"ES `.docs/mvp.md#L40`",
-		"ES [`x.md` § A](x.md#a), `51-82`",
-		"| ES [`x.md` § A](x.md#a) and [§ B](x.md#b), `L70` |",
-		"ES [`x.md` § A](x.md#a) (CP compatibility), `160-228`; CP `README.md:1-12`",
-		"ES [`x.md` § A](x.md#a); ES [`y.md` § B](y.md#b), `51-82`",
-		"| ES [`x.md` § A](x.md#a) | ES [`y.md` § B](y.md#b), `L70` |",
+// TestClaimLedgerLineGuardFindsEachCitation shows that the guard above finds
+// every line citation it is meant to refuse, each one once, in any ES
+// citation of a line, and nothing else. Each case lists exactly what must be
+// found, so a guard that keeps only the first or the last citation of a line,
+// stops at the first find, keeps one span per citation, or drops repeats
+// fails here.
+func TestClaimLedgerLineGuardFindsEachCitation(t *testing.T) {
+	a, b, c := "ES [`a.md` § A](a.md#a)", "ES [`b.md` § B](b.md#b)", "ES [`c.md` § C](c.md#c)"
+	for _, tc := range []struct {
+		line string
+		want []string
+	}{
+		// One ES citation.
+		{"ES `.docs/mvp.md:40-68`", []string{"`.docs/mvp.md:40-68`"}},
+		{"ES `README.md:1`", []string{"`README.md:1`"}},
+		{"| ES `.docs/execution_lifecycle/contracts.md:77-158`; CP x |", []string{"`.docs/execution_lifecycle/contracts.md:77-158`"}},
+		{"ES `.docs/mvp.md#L40`", []string{"`.docs/mvp.md#L40`"}},
+		{a + ", `51-82`", []string{"`51-82`"}},
+		{a + ", `51–82`", []string{"`51–82`"}},
+		{a + ", `L70`", []string{"`L70`"}},
+		{a + ", `70`", []string{"`70`"}},
+		{"| ES [`x.md` § A](x.md#a) and [§ B](x.md#b), `L70` |", []string{"`L70`"}},
+		{a + " (CP compatibility), `160-228`; CP `README.md:1-12`", []string{"`160-228`"}},
+		{a + ", `51-82`, `L70`", []string{"`51-82`", "`L70`"}},
+		// Three ES citations on one line, in each of the forms that end one.
+		{a + ", `51-82`; " + b + "; " + c, []string{"`51-82`"}},
+		{a + "; " + b + ", `51-82`; " + c, []string{"`51-82`"}},
+		{a + "; " + b + "; " + c + ", `51-82`", []string{"`51-82`"}},
+		{"| " + a + ", `51-82` | " + b + " | " + c + " |", []string{"`51-82`"}},
+		{"| " + a + " | " + b + ", `51-82` | " + c + " |", []string{"`51-82`"}},
+		{"| " + a + " | " + b + " | " + c + ", `51-82` |", []string{"`51-82`"}},
+		{a + ", `51-82` CP `x.md:1` " + b + "; " + c, []string{"`51-82`"}},
+		{a + ", `51-82`; " + b + "; " + c + ", `90-95`", []string{"`51-82`", "`90-95`"}},
+		{a + ", `51-82`; " + b + ", `51-82`; " + c + ", `51-82`", []string{"`51-82`", "`51-82`", "`51-82`"}},
+		{a + ", `51-82`, `L70`; " + b + ", `README.md:3`; " + c + ", `90–95`", []string{"`51-82`", "`L70`", "`README.md:3`", "`90–95`"}},
+		// Nothing to find.
+		{"CP `README.md:1-12`", nil},
+		{"IM `.docs/commands.md:545-631`, `118-149`", nil},
+		{"ES [`.docs/mvp.md` § Explicit non-claims](../mvp.md#explicit-non-claims)", nil},
+		{"ES `AGENTS.md` section 12", nil},
+		{a + "; CP `README.md:1-12`, `118-149`", nil},
+		{"| " + a + " | IM `.docs/commands.md:545-631`, `296` |", nil},
+		{a + " and IM `.docs/commands.md:545-631`, `296`", nil},
+		{a + "; " + b + "; " + c, nil},
 	} {
-		if len(claimLedgerLineCitations(line)) == 0 {
-			t.Errorf("claimLedgerLineCitations misses %q", line)
+		if got := claimLedgerLineCitations(tc.line); strings.Join(got, " ") != strings.Join(tc.want, " ") || len(got) != len(tc.want) {
+			t.Errorf("claimLedgerLineCitations(%q) = %q, want %q", tc.line, got, tc.want)
 		}
 	}
-	for _, line := range []string{
-		"CP `README.md:1-12`",
-		"IM `.docs/commands.md:545-631`, `118-149`",
-		"ES [`.docs/mvp.md` § Explicit non-claims](../mvp.md#explicit-non-claims)",
-		"ES `AGENTS.md` section 12",
-		"ES [`x.md` § A](x.md#a); CP `README.md:1-12`, `118-149`",
-		"| ES [`x.md` § A](x.md#a) | IM `.docs/commands.md:545-631`, `296` |",
-		"ES [`x.md` § A](x.md#a) and IM `.docs/commands.md:545-631`, `296`",
-	} {
-		if found := claimLedgerLineCitations(line); len(found) > 0 {
-			t.Errorf("claimLedgerLineCitations refuses %q (%q)", line, found)
-		}
-	}
+
 	for _, cell := range []string{"`229`", " 229 ", "Lines `1-229`", "Lines 1-229", "1-229", "`L12`, `L40-L68`", "`README.md:12`", "`.docs/mvp.md#L40`"} {
 		if !claimLedgerBaselineCellCitesLines(cell) {
 			t.Errorf("the source baseline check misses the cell %q", cell)
@@ -251,5 +309,53 @@ func TestClaimLedgerCitesThisRepositoryBySection(t *testing.T) {
 		if claimLedgerBaselineCellCitesLines(cell) {
 			t.Errorf("the source baseline check refuses the cell %q", cell)
 		}
+	}
+
+	// The whole check on small ledgers: every line is scanned, every row of
+	// the baseline table and only that table, and a missing table is found.
+	clean := strings.Join([]string{
+		"# Ledger",
+		"| C1 | claim | " + a + "; CP `README.md:1-12` |",
+		claimLedgerBaselineStart,
+		"| Source | Sections inspected | Why |",
+		"| --- | --- | --- |",
+		"| `x.md` | The whole file | reason |",
+		claimLedgerBaselineEnd,
+		"| `README.md` | `1-12` | CP lines may stay |",
+	}, "\n")
+	if got := claimLedgerLineProblems(clean); len(got) != 0 {
+		t.Errorf("claimLedgerLineProblems finds %q in a clean ledger", got)
+	}
+	dirty := strings.Join([]string{
+		"| C0 | claim | " + b + ", `1-2` |",
+		"| C1 | claim | " + a + ", `51-82`; " + b + ", `README.md:3` |",
+		"| C2 | claim | " + a + "; " + b + "; " + c + ", `L70` |",
+		claimLedgerBaselineStart,
+		"| Source | Sections inspected | Why |",
+		"| --- | --- | --- |",
+		"| `x.md` | `229` | reason |",
+		"| `y.md` | The whole file | reason |",
+		"| `z.md` | Lines 1-229 | reason |",
+		"| `w.md` | `L12` | `1-12` |",
+		claimLedgerBaselineEnd,
+		"| `README.md` | `1-12` | CP lines may stay |",
+		"| C3 | claim | " + c + ", `90-95` |",
+	}, "\n")
+	want := []string{
+		"line 1 cites this repository by line (`1-2`); link the section heading instead",
+		"line 2 cites this repository by line (`51-82`); link the section heading instead",
+		"line 2 cites this repository by line (`README.md:3`); link the section heading instead",
+		"line 3 cites this repository by line (`L70`); link the section heading instead",
+		"line 13 cites this repository by line (`90-95`); link the section heading instead",
+		"line 7: a source baseline cell cites this repository by line (`229`)",
+		"line 9: a source baseline cell cites this repository by line (Lines 1-229)",
+		"line 10: a source baseline cell cites this repository by line (`L12`)",
+		"line 10: a source baseline cell cites this repository by line (`1-12`)",
+	}
+	if got := claimLedgerLineProblems(dirty); strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("claimLedgerLineProblems on a ledger with eight line citations = %q, want %q", got, want)
+	}
+	if got := claimLedgerLineProblems("# Ledger\n| C1 | claim | " + a + " |\n"); len(got) != 1 || !strings.Contains(got[0], "no source baseline table") {
+		t.Errorf("claimLedgerLineProblems on a ledger without a baseline table = %q, want the missing table", got)
 	}
 }
