@@ -70,7 +70,7 @@ Workstream A decision explicitly classifies it that way.
   `payload_digest` identifies payload bytes or payload content identity, while
   `artifact_digest` identifies artifact/package identity as currently derived
   and documented.
-- `claims.package.publication` remains AGS-owned publish-time meaning carried inside the signed record; ES must not treat those publication claims as ES public admission grammar.
+- `claims.package.publication` remains AGS-owned publish-time meaning carried inside the signed record; ES must not treat those publication claims as ES public admission grammar. From WI-2, workload grants (`.docs/execution_lifecycle/contracts.md`, section 5B) read one of them, `claims.package.publication.invoker.principal`, as an exact-match fact against ES configuration; that read adds nothing to ES request or response grammar, and no other publication claim reaches ES admission.
 - `claims.admission.authorization` is intentionally limited to `derivation_spec_digest` and `output_id`.
 - `claims.admission.execution` is intentionally limited to runtime env allowlist, required capabilities, `target_platform`, and `network_access`.
 
@@ -205,6 +205,14 @@ route, stays with each service and is described in that service's section.
   prefix matches the caller path that equals it and every caller path that
   continues it after a `/`, so `operator/local` matches `operator/local/a` but
   not `operator/local-evil`. A prefix that fails the rule matches nothing.
+- Workstream F slice F1 adds one rule to this section when WI-3a lands
+  (`runtime_identity_handoff.md`, section 11.2): a caller whose path is
+  `workload` or starts with `workload/` has no caller identity, at every
+  service. Workload identities, including the reserved per-run paths, are
+  never callers. Until WI-3a lands, no allowlist or `id.conf` that the
+  repository ships or its scripts write names such a path, and workloads
+  receive only JWT-SVIDs for the workload-vault audience, not X.509
+  certificates.
 
 ### Ownership boundary
 
@@ -921,6 +929,11 @@ Current successful response shapes:
 - Runtime network mode is derived directly from signed execution access claims:
   - `network_access=false -> network_mode=none`
   - `network_access=true -> network_mode=bridge`
+  Workstream F slice F1 changes this mapping
+  (`.docs/execution_lifecycle/contracts.md`, section 5B). From WI-2, a run
+  that requests the network also needs an owner grant in ES configuration and
+  is otherwise refused with `network_access_not_granted`. From WI-4, a granted
+  run joins its egress lane's network instead of `bridge`.
 - Caller runtime mounts are currently limited to governed artifact-backed mounts that are:
   - read-only
   - absolute
@@ -1278,6 +1291,15 @@ Describe the current ES-to-runtime identity boundary used during submission and 
 
 The authoritative F0 runtime-identity handoff ownership decision lives in
 `runtime_identity_handoff.md`.
+
+The next slice, F1, is decided and recorded in section 11 of
+`runtime_identity_handoff.md`: one identity per named workload, at
+`spiffe://execution.internal/workload/<name>`, picked by owner grant rules in
+ES configuration and checked by the helper against the expected ID string ES
+passes it; no identity handoff for a run without an identity grant; one SPIRE
+entry per name with a Docker label selector instead of the entry that matches
+every root process; and one Vault role and policy per name. It lands with
+WI-3. Until then this section describes current behavior.
 
 ### Current producers / consumers
 
