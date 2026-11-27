@@ -163,11 +163,15 @@ func TestWorkloadGrantsContractIsDocumented(t *testing.T) {
 
 func TestWorkstreamFF1IsPlannedAndPointedTo(t *testing.T) {
 	plansRaw := mustRead(t, "PLANS.md")
-	workstreamF := compactDocSection(t, plansRaw, "### Workstream F - Runtime Identity Handoff Reset", "## Remote Alpha Hardening History and Current Retirement")
-	f1 := compactDocSection(t, workstreamF, "F1 - Named Workload Identities And Workload Grants:", "Dependencies:")
+	workstreamF := compactDocSection(t, plansRaw, "### Workstream F - Runtime Identity Handoff Reset", "## Host And Runtime Boundary Rules")
+	f1 := compactDocSection(t, workstreamRecord(t, "F"), "F1 - Named Workload Identities And Workload Grants:", "")
 	plans := compactText(plansRaw)
 
-	assertContainsAll(t, "PLANS Workstream F F1", f1,
+	assertContainsAll(t, "PLANS Workstream F points to its record and F1", workstreamF,
+		"the F1 named workload identities and workload grants slice",
+		"[`"+standingWorkstreamsPath+"` § Workstream F decision record]("+standingWorkstreamsPath+"#workstream-f-decision-record)",
+	)
+	assertContainsAll(t, "Workstream F record F1", f1,
 		"F1 is the next behavior-changing Workstream F slice, approved by the project owner. Its caller refusal (WI-3a) is implemented; the rest is not yet implemented. The decision is section 11 of `.docs/system_overview/runtime_identity_handoff.md`; the workload grants it adds to C6 are section 5B of `.docs/execution_lifecycle/contracts.md`.",
 		"It closes two gaps that existed before F1: every workload run shared one SPIFFE ID and one Vault role, so any workload could read any other workload's secrets; and the publisher's signed `network_access` alone decided network access.",
 		"`spiffe://execution.internal/workload/<name>`, with its own SPIRE entry (Docker label selector plus `unix:uid:0`) and its own Vault role and policy.",
@@ -179,11 +183,17 @@ func TestWorkstreamFF1IsPlannedAndPointedTo(t *testing.T) {
 		"It does not mark full Workstream F complete.",
 	)
 
-	assertContainsAll(t, "PLANS C6 workload-grant follow-up and edges", plans,
+	assertContainsAll(t, "Workstream C record C6 workload-grant follow-up", workstreamRecord(t, "C"),
 		"The C6 workload-grant follow-up is part of Workstream F slice F1 and is not yet implemented: two built-in policies read exact-match owner grants from ES deployment/admin configuration, keep every absence listed for the configurable-input follow-up, and cannot be turned off.",
+	)
+	assertContainsAll(t, "hardening tranche F1 edges", hostRuntimeSection(t, raHardeningHeading),
 		"Workstream F slice F1 removes the broad root selector posture and the one shared Vault role with WI-3; it keeps the other three.",
-		"Workstream F slice F1 is the separately documented redesign for the broad root selector posture and the per-workload Vault handoff.",
+	)
+	assertContainsAll(t, "host network slice F1 firewall", hostRuntimeSection(t, raHostNetworkHeading),
 		"Workstream F slice F1 builds on this firewall rather than replacing it.",
+	)
+	assertContainsAll(t, "PLANS privilege-boundary track F1 redesign", plans,
+		"Workstream F slice F1 is the separately documented redesign for the broad root selector posture and the per-workload Vault handoff.",
 	)
 
 	contractsRaw := mustRead(t, ".docs/system_overview/contracts.md")
@@ -278,9 +288,9 @@ var f1StatusSentences = []struct {
 	sentence string
 	parts    []string
 }{
-	{"PLANS.md", "The C6 workload-grant follow-up is part of Workstream F slice F1 and is not yet implemented",
+	{standingWorkstreamsPath, "The C6 workload-grant follow-up is part of Workstream F slice F1 and is not yet implemented",
 		[]string{"network grants (WI-2)", "identity grants (WI-3)"}},
-	{"PLANS.md", "Its caller refusal (WI-3a) is implemented; the rest is not yet implemented.",
+	{standingWorkstreamsPath, "Its caller refusal (WI-3a) is implemented; the rest is not yet implemented.",
 		[]string{"network grants (WI-2)", "identity grants (WI-3)"}},
 	{".docs/execution_lifecycle/contracts.md", "They are not yet implemented: the network policy lands with WI-2 and the identity policy with WI-3.",
 		[]string{"network grants (WI-2)", "identity grants (WI-3)"}},

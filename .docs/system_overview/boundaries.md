@@ -607,8 +607,10 @@ runtimehelper, observer, and receiver from permit-consumption authority. Its
 assumed `RunEntryV4` issuer/key suite/atomic ledger remains an unestablished
 integration dependency, not an assignment to ES, CP, Coordinator, Bridge, IM,
 MA, or an approval loop. Authority-dependent implementation requires the
-explicit decision and gate in `PLANS.md`; current SPIFFE allowlist behavior and
-the `control-plane-normal-shell/v1` temporary compatibility edge continue.
+explicit decision and gate in the
+[outside-observer Stage A rule](../standing_rules/execution_admission_and_custody.md#r6j-r928stage-a--inert-outside-observer-structural-contract);
+current SPIFFE allowlist behavior and the `control-plane-normal-shell/v1`
+temporary compatibility edge continue.
 
 **Boundary pressure points**
 
@@ -813,7 +815,9 @@ production caller and no public route.
   authority, without granting a new effect.
 - Temporary compatibility edge: none. `operational_local_v1` is removed.
 - Reopened redesign seam: the whole path sits on the reliable-submit seam
-  kept open in `PLANS.md`. Installed commissioning, the custody of the right
+  kept open in the
+  [Workstream C admission and custody rules](../standing_rules/execution_admission_and_custody.md)
+  (`PLANS.md` lists it as Correlation And Recovery). Installed commissioning, the custody of the right
   to commission, advance and withdraw, an epoch change, rollback protection
   for the trust publication, identity selection, public routing and policy
   distribution remain separate seams, named as prerequisites in the
