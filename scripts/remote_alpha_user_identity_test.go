@@ -70,7 +70,7 @@ const userIdentityBootstrapCN = "Bootstrap Root CA Example"
 // allowlist change to a config file and prints the edited text. With
 // --with-fault it first replaces one step of the helper with a failing one,
 // for the failures a test cannot cause from outside. Test code only.
-const userIdentityDriver = `import dataclasses, errno, importlib.util, json, os, stat, sys
+const userIdentityDriver = `import dataclasses, errno, importlib.util, json, os, signal, stat, sys
 spec = importlib.util.spec_from_file_location("ra_user_identity", sys.argv[1])
 mod = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = mod
@@ -117,6 +117,23 @@ if sys.argv[2] == "--with-fault":
                 count[0] += 1
                 if count[0] == limit:
                     os._exit(137)
+        mod.atomic_write = atomic_write
+    elif fault == "exit-at-ca-build":
+        # The process dies, as by SIGKILL or a power cut, as the new CA's
+        # build starts, before it has written anything.
+        def make_ca_material(r, L, directory):
+            os._exit(137)
+        mod.make_ca_material = make_ca_material
+    elif fault.startswith("signal-after-writes="):
+        # SIGTERM arrives right after the Nth replacement of a service file
+        # (the registry not counted).
+        limit, write, count = int(fault.split("=", 1)[1]), mod.atomic_write, [0]
+        def atomic_write(path, *args, **kwargs):
+            write(path, *args, **kwargs)
+            if os.path.basename(path) != "registry.json":
+                count[0] += 1
+                if count[0] == limit:
+                    os.kill(os.getpid(), signal.SIGTERM)
         mod.atomic_write = atomic_write
     elif fault.startswith("owned-by-another-uid="):
         # One box file reads as owned by the next UID; its directory and

@@ -2744,9 +2744,9 @@ def mode_revoke(r: Runner, rep: Report, apply: bool, name: str, remove_ca: bool)
         # without its binding and nothing else needs the owner.
         notes = []
         if unbound:
-            notes.append(f"{' and '.join(unbound)} trusts the user CA without its {ns} binding, so a copy of the user CA "
-                         f"key could pass there as the operator: run allow again for an active name to write the binding, "
-                         f"or revoke --remove-ca once no name is active.")
+            notes.append(f"{' and '.join(unbound)} trusts the user CA but does not bind {ns} to it alone, so a copy of the "
+                         f"user CA key could pass there as the operator: run allow again for an active name to write the "
+                         f"binding, or revoke --remove-ca once no name is active.")
         if strays:
             notes.append(f"The client CA files still hold another user CA ({strays[0][:16]}...); remove it by hand.")
         if key_problem:
