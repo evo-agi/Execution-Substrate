@@ -113,22 +113,29 @@ func TestSigningKeyRotationRefusesAServiceThatSeesOtherFiles(t *testing.T) {
 
 // After the restarts, apply asks again: a unit restarted into a root
 // folder of its own, or a config a command at the unit's start rewrote, is
-// a failure, and apply rolls back.
+// a failure, and apply rolls back. A unit that keeps its own root folder
+// when the rollback restarts it still sees other files, so the rollback
+// ends rollback_failed, and a second one settles it once the unit sees the
+// host's files.
 func TestSigningKeyRotationRollsBackWhenARestartedServiceSeesOtherFiles(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		setup func(h *rotationHost)
 		want  string
+		// unit still sees its own root folder when the rollback restarts it,
+		// so the rollback ends rollback_failed until it sees the host's
+		// files again; "" when nothing is left for the rollback to find.
+		unit string
 	}{
 		{"EGS restarted with a root folder of its own", func(h *rotationHost) {
 			h.markWith("proc-root-once-at-restart-egs", h.otherRoot())
-		}, "egs sees another file at /etc/execution-substrate/egs.json than the host has there"},
+		}, "egs sees another file at /etc/execution-substrate/egs.json than the host has there", "egs"},
 		{"ARS restarted with a root folder of its own", func(h *rotationHost) {
 			h.markWith("proc-root-once-at-restart-ars", h.otherRoot())
-		}, "ars sees another file at /etc/execution-substrate/ars.json than the host has there"},
+		}, "ars sees another file at /etc/execution-substrate/ars.json than the host has there", "ars"},
 		{"AGS's config written again when it starts", func(h *rotationHost) {
 			h.markWith("write-config-once-at-restart-ags", string(h.read(rotationConfigPaths["ags"])))
-		}, "/etc/execution-substrate/ags.json no longer holds what the rotation wrote after ags restarted"},
+		}, "/etc/execution-substrate/ags.json no longer holds what the rotation wrote after ags restarted", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newRotationHost(t)
@@ -136,18 +143,130 @@ func TestSigningKeyRotationRollsBackWhenARestartedServiceSeesOtherFiles(t *testi
 			tc.setup(h)
 			stdout, stderr, code := h.run("apply")
 			report := h.report(stdout, stderr, code)
-			if code != 1 || report["result"] != "rolled_back" || !strings.Contains(fmt.Sprint(report["failure"]), tc.want) {
-				t.Fatalf("apply: exit %d result %v failure %v, want %q\n%s", code, report["result"], report["failure"], tc.want, stderr)
+			want := "rolled_back"
+			if tc.unit != "" {
+				want = "rollback_failed"
+			}
+			if code != 1 || report["result"] != want || !strings.Contains(fmt.Sprint(report["failure"]), tc.want) {
+				t.Fatalf("apply: exit %d result %v failure %v, want %s and %q\n%s", code, report["result"], report["failure"], want, tc.want, stderr)
 			}
 			if !reflect.DeepEqual(h.snapshot(), before) {
 				t.Fatal("the rollback did not put the configs and the index back")
 			}
-			for _, unit := range []string{"ars", "egs"} {
-				h.showRoot(unit, "/")
+			if tc.unit != "" {
+				if failure := fmt.Sprint(report["rollback_failure"]); !strings.Contains(failure, tc.want) {
+					t.Fatalf("the rollback's failure %q does not name %q", failure, tc.want)
+				}
+				h.showRoot(tc.unit, "/")
+				stdout, stderr, code = h.run("check")
+				if r := h.report(stdout, stderr, code); code != 1 || !strings.Contains(rotationProblems(r), "could not put everything back (rollback_failed)") {
+					t.Fatalf("check after the failed rollback: exit %d problems %v", code, r["problems"])
+				}
+				stdout, stderr, code = h.run("rollback", "--backup-dir", report["backup_dir"].(string))
+				if r := h.report(stdout, stderr, code); code != 0 || r["result"] != "rolled_back" || !reflect.DeepEqual(h.snapshot(), before) {
+					t.Fatalf("the second rollback: exit %d result %v failure %v\n%s", code, r["result"], r["rollback_failure"], stderr)
+				}
 			}
 			h.requireReady()
 		})
 	}
+}
+
+// A rollback compares what it put back the way apply compares what it
+// wrote: once the services have restarted, each unit that runs must see
+// the host's config (and ARS its index), and each config must still hold
+// the copy put back, since a command a unit runs when it starts could
+// write it again. Otherwise the rollback ends rollback_failed, check names
+// the backup, and a second rollback settles it (Codex review of ES PR #76
+// at afb5bac). A unit that does not run after the rollback, or whose
+// process is gone on every read, is the health check's to judge:
+// TestSigningKeyRotationRollbackTriesEveryStep ends rolled_back_unhealthy.
+func TestSigningKeyRotationRollbackComparesWhatItPutBackAfterTheRestarts(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(h *rotationHost)
+		fix   func(h *rotationHost)
+		want  string
+	}{
+		{"a config written again when its unit starts", func(h *rotationHost) {
+			// What a unit that renders its config when it starts writes:
+			// the rotated config the rollback replaced.
+			h.markWith("write-config-once-at-restart-ags", string(h.read(rotationConfigPaths["ags"])))
+		}, func(*rotationHost) {}, "/etc/execution-substrate/ags.json no longer holds what the rollback put back after ags restarted"},
+		{"AGS restarted with a root folder of its own", func(h *rotationHost) {
+			h.markWith("proc-root-once-at-restart-ags", h.otherRoot())
+		}, func(h *rotationHost) { h.showRoot("ags", "/") },
+			"ags sees another file at /etc/execution-substrate/ags.json than the host has there"},
+		{"ARS restarted with a root folder of its own", func(h *rotationHost) {
+			h.markWith("proc-root-once-at-restart-ars", h.otherRoot())
+		}, func(h *rotationHost) { h.showRoot("ars", "/") },
+			"ars sees another file at /var/lib/ars/index.json than the host has there"},
+		// AGS's process sees another file on the first read and is gone on
+		// the next two: what was seen is still named, not cleared by a
+		// process that is gone (as one systemd restarts would be).
+		{"AGS seen with a root folder of its own, then gone", func(h *rotationHost) {
+			seen := filepath.Join(h.state, "proc", "4199")
+			if err := os.MkdirAll(seen, 0o755); err != nil {
+				h.t.Fatal(err)
+			}
+			if err := os.Symlink(h.otherRoot(), filepath.Join(seen, "root")); err != nil {
+				h.t.Fatal(err)
+			}
+			h.markWith("mainpid-seq-ags", "4199\n4198\n4198\n")
+		}, func(*rotationHost) {}, "ags sees another file at /etc/execution-substrate/ags.json than the host has there"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newRotationHost(t)
+			before := h.snapshot()
+			backup := h.apply()["backup_dir"].(string)
+			tc.setup(h)
+			stdout, stderr, code := h.run("rollback", "--backup-dir", backup)
+			report := h.report(stdout, stderr, code)
+			if failure := fmt.Sprint(report["rollback_failure"]); code != 1 || report["result"] != "rollback_failed" || !strings.Contains(failure, tc.want) {
+				t.Fatalf("rollback: exit %d result %v failure %s, want %q\n%s", code, report["result"], failure, tc.want, stderr)
+			}
+			stdout, stderr, code = h.run("check")
+			if r := h.report(stdout, stderr, code); code != 1 || !strings.Contains(rotationProblems(r), "could not put everything back (rollback_failed)") {
+				t.Fatalf("check after the failed rollback: exit %d problems %v", code, r["problems"])
+			}
+			tc.fix(h)
+			stdout, stderr, code = h.run("rollback", "--backup-dir", backup)
+			if r := h.report(stdout, stderr, code); code != 0 || r["result"] != "rolled_back" {
+				t.Fatalf("the second rollback: exit %d result %v failure %v\n%s", code, r["result"], r["rollback_failure"], stderr)
+			}
+			if !reflect.DeepEqual(h.snapshot(), before) {
+				t.Fatal("the second rollback did not put the configs and the index back")
+			}
+			h.requireReady()
+		})
+	}
+
+	// apply's own rollback: ES does not answer after the restarts, and AGS
+	// writes the rotated config again when the rollback restarts it (the
+	// rollback puts EGS's config back first, so AGS's still holds the
+	// rotated one when the rollback has just put EGS's back).
+	t.Run("apply's own rollback", func(t *testing.T) {
+		h := newRotationHost(t)
+		before := h.snapshot()
+		h.mark("unhealthy-after-es-start-1")
+		stdout, stderr, code := h.runPausedAt("restored-egs.json", func() {
+			h.markWith("write-config-once-at-restart-ags", string(h.read(rotationConfigPaths["ags"])))
+		}, "apply")
+		report := h.report(stdout, stderr, code)
+		want := "/etc/execution-substrate/ags.json no longer holds what the rollback put back after ags restarted"
+		if failure := fmt.Sprint(report["rollback_failure"]); code != 1 || report["result"] != "rollback_failed" || !strings.Contains(failure, want) {
+			t.Fatalf("apply: exit %d result %v failure %s, want %q\n%s", code, report["result"], failure, want, stderr)
+		}
+		backup := report["backup_dir"].(string)
+		if summary, err := os.ReadFile(filepath.Join(backup, "summary.json")); err != nil || !strings.Contains(string(summary), `"result": "rollback_failed"`) {
+			t.Fatalf("summary.json does not record rollback_failed: %v\n%s", err, summary)
+		}
+		stdout, stderr, code = h.run("rollback", "--backup-dir", backup)
+		if r := h.report(stdout, stderr, code); code != 0 || r["result"] != "rolled_back" || !reflect.DeepEqual(h.snapshot(), before) {
+			t.Fatalf("the second rollback: exit %d result %v failure %v\n%s", code, r["result"], r["rollback_failure"], stderr)
+		}
+		h.requireReady()
+	})
 }
 
 // startSeenBy starts a process that stands in for the unit's main process,

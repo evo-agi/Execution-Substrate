@@ -633,12 +633,20 @@ def main_pid(unit):
     return None
 
 
+class ProcessGone(Exception):
+    """The process whose view of the files was to be read is gone."""
+
+
 def stat_as_seen(pid, path):
     """os.lstat of path as the process pid sees it: from its own root folder
     and through its own mounts (/proc/<pid>/root), one name at a time and
     without following a symbolic link, since a link there would be read
     against this process's root folder, not the service's."""
-    fd = os.open(f"{program('PROC', PROC)}/{pid}/root", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    root = f"{program('PROC', PROC)}/{pid}/root"
+    try:
+        fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    except OSError as exc:
+        raise ProcessGone(f"cannot open {root}: {exc.strerror}") from None
     try:
         # A test host root is named by its real path: links above it are
         # the test machine's (/var on macOS), not the service's.
@@ -657,7 +665,7 @@ def stat_as_seen(pid, path):
     raise Failed(f"{path} is not a file path")
 
 
-def view_problems(unit, paths, written=None):
+def view_problems(unit, paths, written=None, writer="the rotation wrote", running_only=False):
     """Why the unit's running process may read other files at paths than
     the host has there (red-team RT10-4). The ExecStart rule pins the
     command line only: a unit's own root folder or mounts (RootDirectory=,
@@ -669,7 +677,12 @@ def view_problems(unit, paths, written=None):
     the host's file must still hold them once the unit has restarted, since
     a command that runs at the unit's start could have changed it. Each
     path is tried three times, a restart by systemd in between taken into
-    account."""
+    account. running_only (a rollback): a unit that shows no main process,
+    or whose process is gone, on every try is not compared, since whether
+    the services run and answer is the health check's to judge (a rollback
+    that puts back configs the installed binaries refuse ends
+    rolled_back_unhealthy); another file seen on an earlier try is still
+    named, and the bytes are still compared."""
     problems = []
     for path in paths:
         problem = None
@@ -679,10 +692,15 @@ def view_problems(unit, paths, written=None):
             try:
                 pid = main_pid(unit)
                 if pid is None:
-                    problem = f"{unit}.service has no main process, so the files it reads cannot be compared"
+                    if not running_only:
+                        problem = f"{unit}.service has no main process, so the files it reads cannot be compared"
                     continue
                 seen = stat_as_seen(pid, path)
                 mine = os.stat(host(path), follow_symlinks=False)
+            except ProcessGone as exc:
+                if not running_only:
+                    problem = f"cannot see {path} as {unit} sees it: {exc}"
+                continue
             except (OSError, Failed, Refusal) as exc:
                 problem = f"cannot see {path} as {unit} sees it: {exc}"
                 continue
@@ -697,19 +715,19 @@ def view_problems(unit, paths, written=None):
             except (Refusal, OSError) as exc:
                 now, problem = None, str(exc)
             if now is not None and now != written[path]:
-                problem = (f"{path} no longer holds what the rotation wrote after {unit} restarted: something that "
-                           f"runs when the unit starts changed it")
+                problem = (f"{path} no longer holds what {writer} after {unit} restarted: something that runs when "
+                           f"the unit starts changed it")
         if problem is not None:
             problems.append(problem)
     return problems
 
 
-def services_view_problems(index_path, written=None):
+def services_view_problems(index_path, written=None, writer="the rotation wrote", running_only=False):
     """view_problems for every unit's config, and for ARS also its index."""
     problems = []
     for unit in UNITS:
         paths = [f"{CONFIG_DIR}/{unit}.json"] + ([index_path] if unit == "ars" and index_path else [])
-        problems += view_problems(unit, paths, written)
+        problems += view_problems(unit, paths, written, writer, running_only)
     return problems
 
 
@@ -1652,7 +1670,10 @@ def restore(report, docs, configs, index, leftovers, keep):
     copy, or None) back, restart the services, and wait for them. keep is
     (backup folder, name) for a copy of the index the restore replaces.
     Every step is tried; the result says what state the host is in, and is
-    rolled_back only when every step worked and the services answer."""
+    rolled_back only when every step worked and the services answer. As
+    after apply's restarts, each unit that runs must see the host's files,
+    each config put back must still hold its copy, and the index must still
+    hold every record of its copy; otherwise the result is rollback_failed."""
     steps = report.setdefault("rollback_steps", [])
     services_ok = stop_services(steps, True)
     restored_ok = True
@@ -1676,6 +1697,15 @@ def restore(report, docs, configs, index, leftovers, keep):
     except Exception as exc:  # noqa: BLE001 - recorded in the result
         ok = False
         report["after_rollback_error"] = str(exc)
+    # As apply does after its restarts: each restarted unit must see the
+    # host's files, and each config put back must still hold the backup's
+    # bytes (a command a unit runs when it starts could rewrite it).
+    try:
+        problems = services_view_problems(index[0]["path"] if index is not None else None,
+                                          {entry["path"]: copy for entry, copy, _ in configs}, "the rollback put back",
+                                          running_only=True)
+    except Exception as exc:  # noqa: BLE001 - recorded in the result
+        problems = [f"cannot compare the files the services see after the restart: {exc}"]
     if index is not None:
         try:
             problem = index_after_restart_problem(index[0]["path"], index[1], "kept")
@@ -1683,10 +1713,12 @@ def restore(report, docs, configs, index, leftovers, keep):
             problem = f"{index[0]['path']} cannot be read after the restart: {exc}"
         if problem is not None:
             kept = report.get("replaced_index_kept")
-            report["result"] = "rollback_failed"
-            report["rollback_failure"] = (problem + f"; the copy put back is {os.path.join(keep[0], INDEX_COPY)}"
-                                          + (f", and the index it replaced is kept as {kept}" if kept else ""))
-            return
+            problems.append(problem + f"; the copy put back is {os.path.join(keep[0], INDEX_COPY)}"
+                            + (f", and the index it replaced is kept as {kept}" if kept else ""))
+    if problems:
+        report["result"] = "rollback_failed"
+        report["rollback_failure"] = "; ".join(problems)
+        return
     report["result"] = "rolled_back" if ok and services_ok else "rolled_back_unhealthy"
 
 

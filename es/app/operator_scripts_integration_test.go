@@ -277,6 +277,11 @@ func TestBringupScriptUpCheckDownFullProfile(t *testing.T) {
 	if err := os.MkdirAll(nomadDataDir, 0o755); err != nil {
 		t.Fatalf("mkdir nomad data dir: %v", err)
 	}
+	// Readiness refuses a Nomad that does not encrypt its gossip, so this
+	// Nomad starts with a keyring the setup script's issuer wrote.
+	if err := issueNomadGossipKeyring(nomadDataDir); err != nil {
+		t.Fatal(err)
+	}
 	nomadConfig := []byte(strings.TrimSpace(`
 data_dir = "`+nomadDataDir+`"
 bind_addr = "127.0.0.1"
@@ -940,6 +945,7 @@ func runFullHealthCheckAgainstFakeNomad(t *testing.T, devMode bool, nodeNetworks
 					"Plugins":    supportedNomadDockerPluginAgentConfig(),
 					"TLSConfig":  supportedNomadTLSAgentConfig(),
 				},
+				"stats": supportedNomadAgentStats(),
 			})
 		case "/v1/nodes":
 			_ = json.NewEncoder(w).Encode([]map[string]any{

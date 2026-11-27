@@ -94,6 +94,15 @@ NOMAD_HTTP_ADDR="${NOMAD_HTTP_ADDR:-https://127.0.0.1:4646}"
 # nomad_tls_issue). Readers trust only this CA; ES also pins the server key.
 NOMAD_TLS_DIR="${NOMAD_CONFIG_DIR}/tls"
 NOMAD_CACERT="${NOMAD_TLS_DIR}/ca.pem"
+# Nomad's gossip (serf) traffic is encrypted with the key in this keyring,
+# which Nomad reads itself (see nomad_gossip_issue); nomad.hcl names no key.
+NOMAD_GOSSIP_KEYRING="${NOMAD_DATA_DIR}/server/serf.keyring"
+# A marker in Nomad's root-only data directory: a change that Nomad reads only
+# when it starts (its TLS material, its gossip keyring, nomad.hcl) waits for a
+# restart. Each such change writes it first, and the restart removes it, so a
+# run cut off between the two leaves it and the next run restarts Nomad,
+# although that run changes nothing itself (red-team RT66-2).
+NOMAD_RESTART_PENDING="${NOMAD_DATA_DIR}/execution-substrate-restart-pending"
 NOMAD_MANAGED_MARKER="# Managed by Execution Substrate scripts/70_linux_setup.sh for the single-node workload-zone baseline."
 # The supported Nomad enforces ACLs: ES submits only with its own token and
 # refuses a Nomad that accepts jobs without one. This script bootstraps the
@@ -109,6 +118,7 @@ NOMAD_LEADER_WAIT_SECONDS=30
 NOMAD_SERVICE_UID=0
 NOMAD_CONFIG_CHANGED=0
 NOMAD_TLS_ISSUED=0
+NOMAD_GOSSIP_ISSUED=0
 NOMAD_QUALIFY_TOKEN=""
 GO_REQUIRED_VERSION="go1.26.5"
 GO_DOWNLOAD_BASE_URL="https://go.dev/dl"
@@ -309,13 +319,19 @@ nomad_tls_issue() {
       -days "${NOMAD_TLS_VALID_DAYS}" -sha256 -extfile server.ext -out server.pem 2>/dev/null || exit 1
     rm -f ca-key.pem || exit 1
     openssl verify -CAfile ca.pem -purpose sslserver server.pem >/dev/null || exit 1
+    # A link at the folder or at a file's name is not followed: the folder is
+    # refused, and mv -T replaces a link at a name with the new file.
+    if [[ -L "${dir}" ]]; then
+      echo "nomad tls: ${dir} is a link; refusing to write Nomad's key through it" >&2
+      exit 1
+    fi
     mkdir -p "${dir}" && chmod 0755 "${dir}" || exit 1
     chmod 0644 ca.pem server.pem && chmod 0600 server-key.pem || exit 1
     # Replace the key first and the CA last: a reader that sees the new CA
     # also finds the certificate it signed.
-    mv -f server-key.pem "${dir}/server-key.pem" || exit 1
-    mv -f server.pem "${dir}/server.pem" || exit 1
-    mv -f ca.pem "${dir}/ca.pem" || exit 1
+    mv -fT server-key.pem "${dir}/server-key.pem" || exit 1
+    mv -fT server.pem "${dir}/server.pem" || exit 1
+    mv -fT ca.pem "${dir}/ca.pem" || exit 1
   ) || status=$?
   rm -rf "${work}"
   return "${status}"
@@ -360,6 +376,31 @@ nomad_tls_as_root() {
 }
 # END nomad_tls
 
+# nomad_needs_restart: record, before a change that Nomad reads only when it
+# starts, that Nomad must restart (NOMAD_RESTART_PENDING); restart_nomad
+# restarts it and removes the record. The record is written only as a new
+# file: whatever is at its name is removed first (a link, not its target), and
+# set -C creates the name exclusively, so a link the data folder's former
+# owner left there is not followed.
+nomad_needs_restart() {
+  sudo sh -c 'umask 077 && rm -f -- "$1" && set -C && : >"$1"' sh "${NOMAD_RESTART_PENDING}"
+  NOMAD_CONFIG_CHANGED=1
+}
+
+# restart_nomad: restart nomad.service when this run, or an earlier one that
+# was cut off before its restart, changed what Nomad reads when it starts;
+# then remove the record. A failed restart keeps the record for the next run.
+restart_nomad() {
+  if [[ "${NOMAD_CONFIG_CHANGED}" != "1" ]] && ! sudo test -e "${NOMAD_RESTART_PENDING}"; then
+    return 0
+  fi
+  if ! sudo systemctl restart nomad; then
+    echo "nomad: failed to restart nomad.service after its config changed" >&2
+    return 1
+  fi
+  sudo rm -f -- "${NOMAD_RESTART_PENDING}"
+}
+
 # Keep Nomad's TLS material while it is sound and has at least
 # NOMAD_TLS_RENEW_DAYS left; otherwise issue new material, which changes the
 # key ES pins (nomad.server_spki_sha256) and restarts Nomad.
@@ -369,9 +410,273 @@ install_nomad_tls_material() {
     return 0
   fi
   echo "==> Issuing Nomad's TLS certificate in ${NOMAD_TLS_DIR}"
+  nomad_needs_restart
   nomad_tls_as_root nomad_tls_issue "${NOMAD_TLS_DIR}"
   NOMAD_TLS_ISSUED=1
-  NOMAD_CONFIG_CHANGED=1
+}
+
+# BEGIN nomad_gossip (the tests run these functions on their own)
+# Nomad's gossip key. Without one, Nomad's serf port accepts any process that
+# reaches it as a peer: a local account can start its own Nomad server, join,
+# and be listed as a member and a raft non-voter (red-team RT60-1). Nomad
+# reads the key from <data_dir>/server/serf.keyring, a JSON list of base64
+# AES keys whose first is in use, when it starts. Written there before Nomad
+# starts, the keyring is the only copy of the key, and nomad.hcl stays free
+# of secrets.
+
+# nomad_gossip_issue <keyring>: write a keyring holding one new 32-byte key,
+# mode 0600 and owned by the user who runs it (root on a host), replacing any
+# keyring file there, or a link there (not what it points to). A folder there
+# is refused. The keyring's own folder is created 0700 if it is missing, and
+# refused unless nomad_gossip_folder_ok accepts it, before anything is
+# written. A hangup, interrupt or termination before the keyring is in place
+# leaves no temporary file behind.
+nomad_gossip_issue() {
+  local keyring=$1
+  local dir
+  local tmp
+  local key
+
+  dir="$(dirname "${keyring}")"
+  if [[ ! -e "${dir}" && ! -L "${dir}" ]]; then
+    (umask 077 && mkdir -p "${dir}") || return 1
+  fi
+  nomad_gossip_folder_ok "${dir}" || return 1
+  key="$(openssl rand -base64 32)" || return 1
+  [[ "${key}" =~ ^[A-Za-z0-9+/]{43}=$ ]] || return 1
+  # The temporary file is in the keyring's folder, so the key never leaves it
+  # and the rename below is atomic. mktemp -u only chooses its name; the file
+  # is created below, after the traps that remove it.
+  tmp="$(mktemp -u "${dir}/.serf.keyring.XXXXXX")" || return 1
+  # A subshell holds the traps, so the caller's own traps stay as they are.
+  # On a hangup, interrupt or termination each removes the temporary file and
+  # ends the subshell with that signal's status (129, 130, 143). The file is
+  # created only once all three are set, and from then on the subshell runs
+  # no command substitution: a signal that reaches bash while it starts one
+  # can keep the trap from running. With noclobber the file is created
+  # exclusively (O_EXCL), 0600 under umask 077, and a regular file already
+  # there is refused and kept; the key goes in only once the mode is checked.
+  # GNU mv's -T (like GNU stat's -c) renames onto the path itself: without
+  # it, a folder there would take the file in.
+  if ! (
+    trap 'rm -f -- "${tmp}"; exit 129' HUP
+    trap 'rm -f -- "${tmp}"; exit 130' INT
+    trap 'rm -f -- "${tmp}"; exit 143' TERM
+    umask 077
+    set -C
+    : >"${tmp}" || exit 1
+    if ! { stat -c '%a' "${tmp}" | grep -qx 600 && printf '["%s"]' "${key}" >|"${tmp}" && mv -fT "${tmp}" "${keyring}"; }; then
+      rm -f -- "${tmp}"
+      exit 1
+    fi
+  ); then
+    return 1
+  fi
+}
+
+# nomad_gossip_folder_ok <folder>: succeed when <folder> is a folder, not a
+# link, owned by the user who runs it (root on a host), that neither its group
+# nor others can write; otherwise say so and fail. Whoever can write in the
+# keyring's folder can put a file of their own where the key is about to be
+# written and read the key, make root write the key through a link, or replace
+# the keyring once it has been checked (red-team RT66-1). Nomad makes the
+# folder 0755 and the issuer 0700; a Nomad that once ran as another account
+# may have left it that account's.
+nomad_gossip_folder_ok() {
+  local folder=$1
+
+  if [[ -L "${folder}" || ! -d "${folder}" || ! -O "${folder}" ]] ||
+    ! stat -c '%a' "${folder}" | grep -Eqx '[0-7]?[0-7][0145][0145]'; then
+    echo "nomad gossip: ${folder} is not a folder of $(id -un)'s that only $(id -un) can write, so nothing was written there; a Nomad that ran as another account may have left it so: make it $(id -un)'s with mode 0700 and rerun" >&2
+    return 1
+  fi
+}
+
+# nomad_gossip_keyring_ok <keyring>: succeed when <keyring> is a regular file
+# owned by the user who runs it, mode 0600, holding a JSON list of one or
+# more base64 32-byte keys, in a folder that nomad_gossip_folder_ok accepts.
+nomad_gossip_keyring_ok() {
+  local keyring=$1
+
+  nomad_gossip_folder_ok "$(dirname "${keyring}")" 2>/dev/null || return 1
+  [[ -f "${keyring}" && ! -L "${keyring}" && -O "${keyring}" ]] || return 1
+  [[ "$(stat -c '%a' "${keyring}")" == "600" ]] || return 1
+  python3 -I - "${keyring}" <<'PY'
+import base64
+import binascii
+import json
+import sys
+
+try:
+    with open(sys.argv[1], encoding="utf-8") as handle:
+        keys = json.load(handle)
+    sound = isinstance(keys, list) and len(keys) > 0 and all(
+        isinstance(key, str) and len(base64.b64decode(key, validate=True)) == 32 for key in keys
+    )
+except (OSError, ValueError, binascii.Error):
+    sound = False
+raise SystemExit(0 if sound else 1)
+PY
+}
+
+# nomad_gossip_as_root <function> <args...>: run one of the functions above as
+# root, so Nomad's gossip key is created and read only by root.
+nomad_gossip_as_root() {
+  sudo bash -c "set -euo pipefail; $(declare -f nomad_gossip_folder_ok nomad_gossip_issue nomad_gossip_keyring_ok); \"\$@\"" nomad-gossip "$@"
+}
+# END nomad_gossip
+
+# Keep Nomad's gossip keyring while it is sound; otherwise write a new one and
+# restart Nomad, which then encrypts its gossip. A single server has no peer
+# that still needs the old key.
+install_nomad_gossip_keyring() {
+  if nomad_gossip_as_root nomad_gossip_keyring_ok "${NOMAD_GOSSIP_KEYRING}"; then
+    echo "nomad gossip: keeping the keyring in ${NOMAD_GOSSIP_KEYRING}"
+    return 0
+  fi
+  echo "==> Writing Nomad's gossip keyring in ${NOMAD_GOSSIP_KEYRING}"
+  nomad_needs_restart
+  nomad_gossip_as_root nomad_gossip_issue "${NOMAD_GOSSIP_KEYRING}"
+  NOMAD_GOSSIP_ISSUED=1
+}
+
+# nomad_folder_take_back <mode> <folder>: make <folder> (or keep it) a folder
+# root owns, with <mode> and no ACL. HashiCorp's package gives Nomad's folders
+# to the nomad account on each install or upgrade, and an account may set an
+# ACL on a folder it owns. install -d takes the owner and the mode back but
+# keeps the ACL. A default ACL overrides the umask of every file root then
+# creates in the folder: a new nomad.hcl would be that account's to write
+# from its creation, and a handle opened before a later chmod keeps writing.
+# An access ACL keeps entries for the account on the folder itself. Both are
+# the folder's system.posix_acl_* attributes, so removing them needs no acl
+# package, and removing the access ACL keeps the mode install -d set. They
+# are removed only after install -d has made root the owner: until then the
+# former owner may set them again, and it can watch the folder for the
+# removal. Once root owns the folder, no other account can set one. Each
+# removal is reported, since only an account that owned the folder sets one;
+# the setup stops when it cannot read or remove them.
+nomad_folder_take_back() {
+  sudo install -d -o root -g root -m "$1" "$2"
+  sudo python3 -I - "$2" <<'PY'
+import os
+import sys
+
+folder = sys.argv[1]
+try:
+    present = os.listxattr(folder)
+    for name, acl in (("system.posix_acl_default", "default ACL"), ("system.posix_acl_access", "access ACL")):
+        if name in present:
+            os.removexattr(folder, name)
+            print(f"nomad: removed the {acl} that was left on {folder}")
+except OSError as error:
+    sys.exit(f"nomad: cannot remove the ACLs of {folder}: {error}")
+PY
+}
+
+# nomad_config_files_take_back <folder>: make each file in <folder> that
+# Nomad's unit reads as root the caller's (root's, under sudo), with no write
+# for group or others and no ACL. HashiCorp's nomad.service reads nomad.env
+# as its EnvironmentFile and runs `nomad agent -config /etc/nomad.d`, which
+# loads each *.hcl and *.json there, names that look hidden (".x.hcl") or
+# temporary ("#x.hcl") included: it skips only folders and an editor's ".#"
+# lock files, so those are all this skips. The package's postinst gives them
+# all to the nomad account (chown -R) on each install or upgrade. Once the folder is root's
+# (nomad_folder_take_back), no other account can add, rename or replace an
+# entry in it, but one can still write a file it owns, or through a handle it
+# opened before. So each such file is copied into a new file that is renamed
+# over the old one, which an old handle no longer reaches. Its contents are
+# kept, so Nomad's config does not change and needs no restart; each
+# take-back is reported, so that the operator can check what the file sets;
+# a name that is not plain printable ASCII is shown quoted and escaped, so
+# that it cannot forge a line of the report.
+# An entry with such a name that is neither a regular file nor a folder (a
+# link, say) stops the setup. nomad.hcl is left to nomad_config_write, which
+# writes it new. As there, Nomad does not load the temporary name, and
+# nothing is synced: a run killed part way leaves the old file or the new
+# one at the name, perhaps with the temporary name beside it, and a rerun
+# removes that name first and takes back what is left.
+nomad_config_files_take_back() {
+  sudo python3 -I - "$1" <<'PY'
+import os
+import stat
+import sys
+
+folder = sys.argv[1]
+uid, gid = os.getuid(), os.getgid()
+
+
+def shown(path):
+    # The former owner chose the names: one that is not plain printable
+    # ASCII (a newline, say, which could forge a line of this report) is
+    # shown quoted, with Python's escapes.
+    return path if path.isascii() and path.isprintable() else ascii(path)
+
+
+try:
+    for name in sorted(os.listdir(folder)):
+        if name == "nomad.hcl" or name.startswith(".#"):
+            continue
+        if name != "nomad.env" and not name.endswith((".hcl", ".json")):
+            continue
+        path = os.path.join(folder, name)
+        st = os.lstat(path)
+        if stat.S_ISDIR(st.st_mode):
+            continue
+        if not stat.S_ISREG(st.st_mode):
+            sys.exit(f"nomad: {shown(path)} is not a regular file, and Nomad's unit reads it as root; "
+                     "remove it, or put a regular file there, and rerun")
+        mode = stat.S_IMODE(st.st_mode) & 0o755
+        attributes = os.listxattr(path)
+        acl = "system.posix_acl_access" in attributes or "system.posix_acl_default" in attributes
+        if (st.st_uid, st.st_gid) == (uid, gid) and stat.S_IMODE(st.st_mode) == mode and not acl:
+            continue
+        source = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            opened = os.fstat(source)
+            if (opened.st_dev, opened.st_ino) != (st.st_dev, st.st_ino):
+                sys.exit(f"nomad: {shown(path)} changed while it was taken back; rerun")
+            chunks = []
+            while chunk := os.read(source, 65536):
+                chunks.append(chunk)
+        finally:
+            os.close(source)
+        tmp = path + ".execution-substrate-new"
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+        target = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        try:
+            data = memoryview(b"".join(chunks))
+            while data:
+                data = data[os.write(target, data):]
+            os.fchown(target, uid, gid)
+            os.fchmod(target, mode)
+        finally:
+            os.close(target)
+        os.rename(tmp, path)
+        was = f"uid {st.st_uid}, gid {st.st_gid}, {stat.S_IMODE(st.st_mode):04o}" + (", with an ACL" if acl else "")
+        print(f"nomad: took {shown(path)} back ({was}); Nomad's unit reads it as root, so check what it sets")
+except OSError as error:
+    sys.exit(f"nomad: cannot take back the files Nomad reads in {folder}: {error}")
+PY
+}
+
+# nomad_config_write <path>: write standard input to <path> as a new file,
+# root:root 0640, and rename it into place. HashiCorp's package gives
+# /etc/nomad.d and everything in it to the nomad account on each install or
+# upgrade; a link left at <path> is replaced, not followed, and a handle kept
+# open on the old file no longer reaches the config. The folder holds no
+# default ACL (nomad_folder_take_back), so the umask decides the mode at
+# creation, and chmod sets 0640 whatever the umask. Nomad loads only *.hcl
+# and *.json from the folder, so it never reads the temporary name.
+nomad_config_write() {
+  local tmp="$1.execution-substrate-new"
+  if ! sudo sh -c 'umask 027 && rm -f -- "$1" && set -C && cat >"$1" && chmod 0640 -- "$1" && mv -fT -- "$1" "$2"' sh "${tmp}" "$1"; then
+    sudo rm -f -- "${tmp}" || true
+    echo "nomad: could not write $1" >&2
+    return 1
+  fi
 }
 
 install_nomad_service_config() {
@@ -381,21 +686,43 @@ install_nomad_service_config() {
   # Nomad runs as root, so only root may change what it reads or keeps
   # (audit INF-16): its config directory and data directory (Raft state and
   # the keyring) are root-owned.
-  sudo install -d -o root -g root -m 0755 "${NOMAD_CONFIG_DIR}"
-  sudo install -d -o root -g root -m 0700 "${NOMAD_DATA_DIR}"
-  sudo install -d -o root -g root -m 0755 "${NOMAD_TLS_DIR}"
+  nomad_folder_take_back 0755 "${NOMAD_CONFIG_DIR}"
+  nomad_config_files_take_back "${NOMAD_CONFIG_DIR}"
+  nomad_folder_take_back 0700 "${NOMAD_DATA_DIR}"
+  # The package leaves /etc/nomad.d to the nomad account, which can put a link
+  # at the TLS folder; install -d would re-own and re-mode the link's target
+  # and the issuer would write Nomad's key there. Now that only root can
+  # change /etc/nomad.d, the link is removed and a folder made in its place.
+  if sudo test -L "${NOMAD_TLS_DIR}"; then
+    echo "nomad tls: ${NOMAD_TLS_DIR} is a link; replacing it with a folder"
+    sudo rm -f -- "${NOMAD_TLS_DIR}"
+  fi
+  nomad_folder_take_back 0755 "${NOMAD_TLS_DIR}"
   install_nomad_tls_material
+  install_nomad_gossip_keyring
 
-  if sudo test -f "${NOMAD_CONFIG_PATH}" && ! sudo grep -Fq "${NOMAD_MANAGED_MARKER}" "${NOMAD_CONFIG_PATH}"; then
-    backup_suffix="$(date +%Y%m%d%H%M%S)"
-    echo "Backing up existing Nomad config to ${NOMAD_CONFIG_BACKUP_PATH}.${backup_suffix}"
-    sudo cp "${NOMAD_CONFIG_PATH}" "${NOMAD_CONFIG_BACKUP_PATH}.${backup_suffix}"
+  # nomad.hcl is read, and backed up, only when it is a regular file and not a
+  # link; a link there is replaced by the new file without being followed.
+  # The backup is copied onto its own name (-T): a link there is replaced,
+  # even one to a folder, and a folder there stops the setup before it
+  # records a restart or writes nomad.hcl (the folders are root's by then).
+  local previous_config=""
+  local config=""
+  if sudo test -L "${NOMAD_CONFIG_PATH}"; then
+    echo "nomad: ${NOMAD_CONFIG_PATH} is a link; replacing it with the config without following it"
+  elif sudo test -f "${NOMAD_CONFIG_PATH}"; then
+    if ! sudo grep -Fq "${NOMAD_MANAGED_MARKER}" "${NOMAD_CONFIG_PATH}"; then
+      backup_suffix="$(date +%Y%m%d%H%M%S)"
+      echo "Backing up existing Nomad config to ${NOMAD_CONFIG_BACKUP_PATH}.${backup_suffix}"
+      if ! sudo cp -T --remove-destination -- "${NOMAD_CONFIG_PATH}" "${NOMAD_CONFIG_BACKUP_PATH}.${backup_suffix}"; then
+        echo "nomad: could not back up ${NOMAD_CONFIG_PATH} to ${NOMAD_CONFIG_BACKUP_PATH}.${backup_suffix}; remove what is at that name and rerun" >&2
+        return 1
+      fi
+    fi
+    previous_config="$(sudo cat -- "${NOMAD_CONFIG_PATH}")"
   fi
 
-  local previous_config=""
-  previous_config="$(sudo cat "${NOMAD_CONFIG_PATH}" 2>/dev/null || true)"
-
-  cat <<EOF | sudo tee "${NOMAD_CONFIG_PATH}" >/dev/null
+  config="$(cat <<EOF
 ${NOMAD_MANAGED_MARKER}
 data_dir = "${NOMAD_DATA_DIR}"
 bind_addr = "127.0.0.1"
@@ -407,6 +734,8 @@ acl {
 server {
   enabled = true
   bootstrap_expect = 1
+  # Gossip is encrypted with the key in ${NOMAD_GOSSIP_KEYRING}, which this
+  # script writes (root, 0600) and Nomad reads when it starts.
 }
 
 client {
@@ -472,11 +801,11 @@ tls {
   tls_min_version        = "tls13"
 }
 EOF
-  sudo chown root:root "${NOMAD_CONFIG_PATH}"
-  sudo chmod 0640 "${NOMAD_CONFIG_PATH}"
-  if [[ "$(sudo cat "${NOMAD_CONFIG_PATH}")" != "${previous_config}" ]]; then
-    NOMAD_CONFIG_CHANGED=1
+)"
+  if [[ "${config}" != "${previous_config}" ]]; then
+    nomad_needs_restart
   fi
+  printf '%s\n' "${config}" | nomad_config_write "${NOMAD_CONFIG_PATH}"
 }
 
 # BEGIN nomad_acl_bootstrap (the tests run these functions on their own)
@@ -740,10 +1069,10 @@ qualify_supported_substrate() {
     sudo systemctl status nomad --no-pager --full || true
     return 1
   fi
-  # A running Nomad reads a changed config (such as the acl block) only when
-  # it restarts. Jobs keep running; the client reattaches to them.
-  if [[ "${NOMAD_CONFIG_CHANGED}" == "1" ]] && ! sudo systemctl restart nomad; then
-    echo "nomad: failed to restart nomad.service after its config changed" >&2
+  # A running Nomad reads a changed config (such as the acl block), TLS
+  # material or gossip keyring only when it restarts. Jobs keep running; the
+  # client reattaches to them.
+  if ! restart_nomad; then
     sudo systemctl status nomad --no-pager --full || true
     return 1
   fi
@@ -818,6 +1147,11 @@ agent = json.loads(pathlib.Path(sys.argv[3]).read_text(encoding="utf-8"))
 config = agent.get("config") or {}
 if config.get("DevMode") is True:
     raise SystemExit("nomad: agent reports DevMode=true; this VM is not a supported profile")
+# Nomad reports "true" or "false", as a string.
+stats = agent.get("stats") if isinstance(agent.get("stats"), dict) else {}
+serf = stats.get("serf") if isinstance(stats.get("serf"), dict) else {}
+if serf.get("encrypted") != "true":
+    raise SystemExit("nomad: the agent does not encrypt its gossip; it reads the keyring this script writes only when it starts, so restart nomad.service (sudo systemctl restart nomad) and rerun")
 
 nodes = json.loads(pathlib.Path(sys.argv[4]).read_text(encoding="utf-8"))
 ready = [node for node in nodes if node.get("Status") == "ready"]
@@ -860,7 +1194,7 @@ if not schedulable:
     raise SystemExit(reason)
 
 details = ", ".join(f"{name}:cpu.totalcompute={cpu}" for name, cpu in schedulable)
-print(f"nomad: leader={leader} mode=non-dev ready_nodes={len(ready)} schedulable_nodes={len(schedulable)} {details}")
+print(f"nomad: leader={leader} mode=non-dev gossip=encrypted ready_nodes={len(ready)} schedulable_nodes={len(schedulable)} {details}")
 PY
   then
     cleanup_tempfiles "${leader_path}" "${agent_path}" "${nodes_path}"
@@ -1009,6 +1343,11 @@ echo "- That Nomad config enables ACLs; the bootstrap management token is in ${N
 echo "- That Nomad config disables Docker image cleanup so local runtime-profile images survive completed allocations for repeated supported-local client runs."
 echo "- That Nomad config enables only the Docker driver, refuses privileged containers and allows only the capabilities ES's runtime helper uses; it and Nomad's data directory are root-owned."
 echo "- That Nomad config serves its API and RPC over TLS 1.3 only, with a certificate this script issued in ${NOMAD_TLS_DIR} (key root-only; the CA's key was destroyed after signing). A rerun keeps it until fewer than ${NOMAD_TLS_RENEW_DAYS} days remain, then issues a new one: update nomad.server_spki_sha256 and restart ES after that."
+if [[ "${SUPPORTED_SUBSTRATE_READY}" == "1" ]]; then
+  echo "- Nomad encrypts its gossip with the key in ${NOMAD_GOSSIP_KEYRING} (root-only), so no process without the key can join it as a peer. A rerun keeps the keyring while it is sound."
+else
+  echo "- Nomad's gossip key is in ${NOMAD_GOSSIP_KEYRING} (root-only), but this run did not qualify Nomad, so it makes no claim that Nomad encrypts its gossip with it. A rerun keeps the keyring while it is sound, and restarts Nomad while a change waits for a restart."
+fi
 echo "- If supported-substrate qualification failed above, do not treat this VM as supported yet."
 echo "- If nomad.service could not start or remain healthy, fix that with root-managed host investigation instead of falling back to a user-started Nomad proof."
 echo "- Some proof VMs may still need manual root investigation or bounded fallback when Nomad fingerprinting leaves cpu.totalcompute at 0."
@@ -1016,6 +1355,9 @@ echo "- A host that still reports cpu.totalcompute=0 under the root-managed non-
 echo "- The workload-visible Vault address must be reachable from bridge-networked containers."
 if [[ "${NOMAD_TLS_ISSUED}" == "1" ]]; then
   echo "- This run issued a new Nomad certificate: its key pin is ${NOMAD_SERVER_SPKI_SHA256}. Put it in nomad.server_spki_sha256 and restart ES."
+fi
+if [[ "${NOMAD_GOSSIP_ISSUED}" == "1" ]]; then
+  echo "- This run wrote a new gossip keyring and restarted Nomad."
 fi
 if [[ "${DOCKER_GROUP_CHANGED}" == "1" ]]; then
   echo "- Docker group membership changed for ${CURRENT_USER}; log out and back in before running repo scripts without sudo."

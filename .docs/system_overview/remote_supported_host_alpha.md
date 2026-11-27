@@ -7715,14 +7715,18 @@ are recorded while `apply` runs and turn into the same rollback at its next
 step; the rollback itself does not stop for them. The rollback tries every
 step even when one fails: it stops `es`, `ags` and `ars`, removes the
 rotation's temporary files, puts the files back, restarts the services in
-the order of step 6, waits for them as in step 7, and reads the index again
-as in step 8: every record of the copy it put back must be in it unchanged.
+the order of step 6, waits for them as in step 7, compares the files as in
+step 7 (each unit that runs must see the host's config, and ARS its index,
+and each config must still hold the copy put back; a unit that does not run
+is left to the health check), and reads the index again as in step 8: every
+record of the copy it put back must be in it unchanged.
 The result is `rotated`,
 `rolled_back` (every step worked and the services answer),
 `rolled_back_unhealthy` (the files are back, but a service step failed or
 the services do not answer) or `rollback_failed` (a file could not be put
-back, or the index lacks records of the copy after the restarts; the
-failure then names the copy and the index it replaced, which is kept), with
+back, a restarted unit sees another file or a config no longer holds its
+copy, or the index lacks records of the copy after the restarts; for the
+index the failure names the copy and the index it replaced, which is kept), with
 the failure and each step's outcome; `apply` exits 1 on any but
 the first. The report is printed before `summary.json` is written, so a
 summary that cannot be written is said on its own line without hiding the
@@ -7835,8 +7839,10 @@ replace, which leaves it in place; a unit whose main process sees another
 file at its config's path, a symbolic link there, no main process, or a
 gone one, refused before anything changes, and a unit restarted into a root
 folder of its own or whose config is written again when it starts, rolled
-back (the fake shows each process's root folder as a link under its state
-folder); a second `apply`, a `rollback` and `check` while an `apply`
+back; the same after a rollback's restarts (a manual one and `apply`'s own,
+and a unit seen with other files on one read and gone on the next),
+ended `rollback_failed` and settled by a second rollback (the fake shows
+each process's root folder as a link under its state folder); a second `apply`, a `rollback` and `check` while an `apply`
 holds the lock, and while another process holds it, `check` leaving the
 running run's backup alone; the removal of an `.incomplete-` folder refused
 while another run holds the lock; a short wait for a `check` that holds it; a backup that appears
