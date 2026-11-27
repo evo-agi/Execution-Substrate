@@ -223,6 +223,7 @@ skips-itself execution-substrate/scripts TestRemoteAlphaVaultWorkloadAuthBootstr
 # its OpenSSL 3, and these tests skip themselves when /usr/bin/openssl is not
 # OpenSSL 3. On macOS it is LibreSSL. The caller-side tests of the helper,
 # which the caller may run on a Mac, do run here.
+skips-itself execution-substrate/scripts TestUserIdentityAllowRefusesAnExpiredCA
 skips-itself execution-substrate/scripts TestUserIdentityApplyRollsBackToTheExactBytes
 skips-itself execution-substrate/scripts TestUserIdentityCertificatesMeetTheProfileInGo
 skips-itself execution-substrate/scripts TestUserIdentityCheckNamesEachOutcome

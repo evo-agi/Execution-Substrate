@@ -475,6 +475,16 @@ func TestUserIdentityRefusesUnsafeStates(t *testing.T) {
 			writeUserIdentityFile(t, path, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leaf.Certificate[0]}), 0o644)
 			return []string{"install", "--name", "claude", "--cert", issued, "--server-ca", path}
 		}, 1, "holds a certificate that is not a CA"},
+		{"issue when the user CA directory's parent is writable by its group", func(t *testing.T, b *userIdentityBox) []string {
+			b.mustOK(b.box("init-ca", "--apply"), "init-ca")
+			b.mustOK(b.caller("request", "--name", "claude"), "request")
+			csr := filepath.Join(b.root, "claude.csr")
+			writeUserIdentityFile(t, csr, mustReadUserIdentityFile(t, filepath.Join(b.callerDir("claude"), "request.csr")), 0o644)
+			if err := os.Chmod(filepath.Dir(b.userCADir), 0o775); err != nil {
+				t.Fatal(err)
+			}
+			return []string{"issue", "--name", "claude", "--csr", csr, "--out", filepath.Join(b.root, "claude.crt"), "--apply"}
+		}, 1, "must be owned by UID"},
 		{"check with a caller root open to others", func(t *testing.T, b *userIdentityBox) []string {
 			minted(t, b)
 			if err := os.Chmod(b.callers, 0o755); err != nil {
@@ -910,6 +920,50 @@ func TestUserIdentityRefusesABoxFileOwnedByAnotherUID(t *testing.T) {
 		}
 	}
 	requireSameUserIdentitySnapshot(t, before, b.snapshot(), "an allow refused for a file owner")
+	if len(b.restarts()) != 0 {
+		t.Fatalf("a refused allow restarted %v", b.restarts())
+	}
+}
+
+// TestUserIdentityAllowRefusesAnExpiredCA swaps in the same CA certificate
+// with a validity that has ended (same key, subject and extensions; the
+// registry names it) while the name still has an unexpired certificate on
+// record. allow refuses and changes nothing.
+func TestUserIdentityAllowRefusesAnExpiredCA(t *testing.T) {
+	requireUserIdentityOpenSSL3(t)
+	b := newUserIdentityBox(t)
+	b.mint("claude")
+	certPath := filepath.Join(b.userCADir, "ca-cert.pem")
+	old := parseUserIdentityPEMCert(t, mustReadUserIdentityFile(t, certPath))
+	caKey := userIdentityPrivateKey(t, filepath.Join(b.userCADir, "ca-key.pem"))
+	template := *old
+	template.RawSubject = old.RawSubject
+	template.NotBefore = time.Now().Add(-48 * time.Hour)
+	template.NotAfter = time.Now().Add(-time.Hour)
+	der, err := x509.CreateCertificate(rand.Reader, &template, &template, &caKey.PublicKey, caKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeUserIdentityFile(t, certPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o644)
+	editUserIdentityFile(t, b.registryPath(), func(s string) string {
+		var registry map[string]any
+		if err := json.Unmarshal([]byte(s), &registry); err != nil {
+			t.Fatal(err)
+		}
+		sum := sha256.Sum256(der)
+		registry["ca"].(map[string]any)["sha256"] = hex.EncodeToString(sum[:])
+		data, err := json.MarshalIndent(registry, "", "  ")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(data) + "\n"
+	})
+	before := b.snapshot()
+	run := b.box("allow", "--name", "claude", "--apply")
+	if run.code != 1 || !strings.Contains(run.message(), "the user CA has expired") {
+		t.Fatalf("allow with an expired user CA:\n%s", run)
+	}
+	requireSameUserIdentitySnapshot(t, before, b.snapshot(), "an allow refused for an expired CA")
 	if len(b.restarts()) != 0 {
 		t.Fatalf("a refused allow restarted %v", b.restarts())
 	}

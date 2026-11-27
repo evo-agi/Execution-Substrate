@@ -142,6 +142,8 @@ sys.exit(mod.main(sys.argv[3:], mod.Layout(**json.load(open(sys.argv[2])))))
 // <unit>.dead-after-next-restart makes the next restart succeed but leave
 // the unit failed, once; <unit>.fail-restarts makes every restart exit 1;
 // <unit>.flapping gives the unit a new PID at every show;
+// <unit>.reloading-after-next-restart makes the next restart succeed and the
+// show after it report active/reload with a main PID, once;
 // <unit>.block-after-next-restart, which holds a path, lets the next restart
 // succeed and then moves that file to <path>.aside and puts a directory in its
 // place, once, so that a later rename onto the path fails.
@@ -167,6 +169,9 @@ if cmd == "restart":
     if take("dead-after-next-restart"):
         open(pidfile, "w").write("0")
         sys.exit(0)
+    if take("reloading-after-next-restart"):
+        # Active with a main process, but not running: the next show says so.
+        open(marker("reloading"), "w").close()
     open(pidfile, "w").write(str(max(pid, 100) + 1))
     if os.path.exists(marker("block-after-next-restart")):
         blocked = open(marker("block-after-next-restart")).read()
@@ -179,7 +184,9 @@ if cmd == "show":
     if pid and os.path.exists(marker("flapping")):
         pid += 1
         open(pidfile, "w").write(str(pid))
-    if pid == 0:
+    if pid and take("reloading"):
+        print("ActiveState=active\nSubState=reload\nMainPID=%d\nLoadState=loaded" % pid)
+    elif pid == 0:
         print("ActiveState=failed\nSubState=failed\nMainPID=0\nLoadState=loaded")
     else:
         print("ActiveState=active\nSubState=running\nMainPID=%d\nLoadState=loaded" % pid)
@@ -1191,6 +1198,7 @@ func TestUserIdentityApplyRollsBackToTheExactBytes(t *testing.T) {
 		{"AGS dies after restart", "ags.service", "dead-after-next-restart", "ags.service,ags.service", "failed", "rolled back"},
 		{"ES restart fails", "es.service", "fail-next-restart", "ags.service,es.service,ags.service,es.service", "failed", "rolled back"},
 		{"ES dies after restart", "es.service", "dead-after-next-restart", "ags.service,es.service,ags.service,es.service", "failed", "rolled back"},
+		{"ES is active but not running after restart", "es.service", "reloading-after-next-restart", "ags.service,es.service,ags.service,es.service", "failed", "es.service is active/reload after restart"},
 		{"ES keeps changing PID", "es.service", "flapping", "ags.service,es.service,ags.service,es.service", "failed", "rollback incomplete"},
 		{"ES never restarts", "es.service", "fail-restarts", "ags.service,es.service,ags.service,es.service", "failed", "rollback incomplete"},
 	}
@@ -2451,6 +2459,19 @@ if args[:2] == ["x509", "-req"] and os.path.exists(marker):
                         "-keyout", os.path.join(HERE, "other.key"), "-subj", "/CN=claude", "-out", other],
                        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         args[args.index("-in") + 1] = other
+    elif tamper in ("issuer", "same-subject-ca"):
+        # Sign with another RSA CA: one with its own subject, or the user
+        # CA's certificate signed again with another key, so the subject
+        # and issuer names match and only the signature does not.
+        key, ca = os.path.join(HERE, "other-ca.key"), os.path.join(HERE, "other-ca.pem")
+        subprocess.run(["/usr/bin/openssl", "genpkey", "-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:2048", "-out", key],
+                       check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if tamper == "issuer":
+            make = ["req", "-x509", "-new", "-key", key, "-subj", "/CN=Another CA", "-days", "30", "-out", ca]
+        else:
+            make = ["x509", "-in", args[args.index("-CA") + 1], "-key", key, "-out", ca]
+        subprocess.run(["/usr/bin/openssl"] + make, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        args[args.index("-CA") + 1], args[args.index("-CAkey") + 1] = ca, key
     else:
         sys.exit("unknown tamper " + tamper)
 os.execv("/usr/bin/openssl", ["/usr/bin/openssl"] + args)
@@ -2484,6 +2505,8 @@ func TestUserIdentityIssueChecksWhatOpenSSLSigned(t *testing.T) {
 		{"digest", "not signed with sha256WithRSAEncryption"},
 		{"server-auth", "extended key usage is not exactly clientAuth"},
 		{"key", "public key differs from the CSR's"},
+		{"issuer", "issuer is not the user CA"},
+		{"same-subject-ca", "openssl does not verify it against the user CA for client use"},
 	} {
 		t.Run(tc.tamper+": "+tc.want, func(t *testing.T) {
 			writeUserIdentityFile(t, filepath.Join(fake, "openssl.tamper"), []byte(tc.tamper), 0o644)
