@@ -870,6 +870,11 @@ func byPathOwnershipChangeLines(source string) []string {
 // /etc/nomad.d is root:root 0755 and that the folder does not exist yet),
 // and the other sets the modes of the new files inside the caller's own
 // mktemp -d folder (0700), which no one else can enter.
+//
+// remote_alpha_rotate_signing_keys.sh's two lines came with ES PR #76 and
+// are the text of its refusals (the advice to hand the clone to root, and
+// to make it writable by no one else); the wrapper changes no owner or
+// mode itself.
 var byPathOwnershipChangeAllowance = map[string]int{
 	"scripts/01_bringup.sh":                                           1,
 	"scripts/70_linux_setup.sh":                                       11,
@@ -891,6 +896,7 @@ var byPathOwnershipChangeAllowance = map[string]int{
 	"scripts/internal/remote_alpha_vault_workload_auth_check.sh":      2,
 	"scripts/nomad_acl_setup.sh":                                      1,
 	"scripts/remote_alpha_operator.sh":                                10,
+	"scripts/remote_alpha_rotate_signing_keys.sh":                     2,
 	"scripts/remote_alpha_runtime_identity_helper_summary.sh":         2,
 }
 
