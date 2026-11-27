@@ -2,6 +2,7 @@ package app_test
 
 import (
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"os"
 	"os/exec"
@@ -263,4 +264,50 @@ func TestLinuxSetupTakesBackAConfigFileWithAnACL(t *testing.T) {
 	}
 	requireRegularFile(t, extra, "# extra\n", 0o644)
 	requireNoACL(t, extra)
+}
+
+// Re-check 49 (T49-1): the take-back removes a folder's ACLs only after
+// install -d has made root its owner. Until then the former owner may set an
+// ACL again, and it can watch the folder for the removal. A stand-in install
+// plants the granting default ACL on the folder before it takes it, as the
+// owner may in its last moment; the removal that follows must clear it. (The
+// re-check's proposed test.)
+func TestLinuxSetupRemovesFolderACLsOnlyAfterTakingTheFolder(t *testing.T) {
+	data, config, tlsDir := serviceFolders(t)
+	steps := `eval "standin_$(declare -f install)"
+install() {
+  local folder="${!#}"
+  if [[ -d "${folder}" ]]; then
+    python3 -I -c 'import os, sys; os.setxattr(sys.argv[1], "system.posix_acl_default", bytes.fromhex(sys.argv[2]))' "${folder}" ` + hex.EncodeToString(grantingACL()) + `
+  fi
+  standin_install "$@"
+}
+install_nomad_service_config
+`
+	if _, stderr, err := runLinuxSetupServiceHarness(t, data, steps); err != nil {
+		t.Fatalf("install_nomad_service_config: %v %s", err, stderr)
+	}
+	for _, folder := range []string{config, data, tlsDir} {
+		requireNoACL(t, folder)
+	}
+}
+
+// Re-check 49 (T49-2): the TLS folder is taken back before the issuer writes
+// into it; until then the former owner may rename and replace what the
+// issuer puts there. A stand-in issuer fails if the folder still holds the
+// ACL planted while that account owned it. (The re-check's proposed test.)
+func TestLinuxSetupTakesTheTLSFolderBackBeforeItIssues(t *testing.T) {
+	data, _, tlsDir := serviceFolders(t)
+	plantACLs(t, tlsDir)
+	steps := `install_nomad_tls_material() {
+  if ! python3 -I -c 'import os, sys; sys.exit("system.posix_acl_default" in os.listxattr(sys.argv[1]))' "${NOMAD_TLS_DIR}"; then
+    echo "the TLS folder was not yet taken back when the material was issued" >&2
+    return 1
+  fi
+}
+install_nomad_service_config
+`
+	if _, stderr, err := runLinuxSetupServiceHarness(t, data, steps); err != nil {
+		t.Fatalf("install_nomad_service_config: %v %s", err, stderr)
+	}
 }

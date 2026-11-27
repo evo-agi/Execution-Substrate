@@ -549,8 +549,10 @@ install_nomad_gossip_keyring() {
 # from its creation, and a handle opened before a later chmod keeps writing.
 # An access ACL keeps entries for the account on the folder itself. Both are
 # the folder's system.posix_acl_* attributes, so removing them needs no acl
-# package, and removing the access ACL keeps the mode install -d set. Once
-# root owns the folder, no other account can set an ACL on it again. Each
+# package, and removing the access ACL keeps the mode install -d set. They
+# are removed only after install -d has made root the owner: until then the
+# former owner may set them again, and it can watch the folder for the
+# removal. Once root owns the folder, no other account can set one. Each
 # removal is reported, since only an account that owned the folder sets one;
 # the setup stops when it cannot read or remove them.
 nomad_folder_take_back() {
