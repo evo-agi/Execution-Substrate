@@ -1,4 +1,4 @@
-package api
+package contract
 
 type BlobErrorResponse struct {
 	Error  string `json:"error"`

@@ -382,7 +382,7 @@ Target files and packages:
 - `internal/contracts/evidence/v1/`
 - `ags/publish/`
 - `es/admission/`
-- `egs/model/`
+- `egs/contract/`
 - `ars/index/`
 
 Success condition:
@@ -421,6 +421,7 @@ Target files and packages:
 - `ags/api/`
 - `ags/publish/`
 - `ars/api/`
+- `ars/contract/`
 - `ars/index/`
 - `ars/store/`
 
@@ -680,7 +681,7 @@ Purpose:
 Target files and packages:
 
 - `egs/api/`
-- `egs/model/`
+- `egs/contract/`
 - `egs/sign/`
 - `cgs/api/`
 - `cgs/policy/`

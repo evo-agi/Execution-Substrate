@@ -1,4 +1,4 @@
-package model
+package contract
 
 import (
 	"crypto/sha256"

@@ -22,7 +22,7 @@ import (
 	"syscall"
 	"testing"
 
-	egsmodel "execution-substrate/egs/model"
+	egscontract "execution-substrate/egs/contract"
 	esconfig "execution-substrate/es/config"
 	evidencev1 "execution-substrate/internal/contracts/evidence/v1"
 	runtimeconfigv1 "execution-substrate/internal/contracts/runtimeconfig/v1"
@@ -87,8 +87,8 @@ func TestResolvedExecutionAdmissionSnapshotDeepCopiesAndPreservesCollectionPrese
 		t.Fatal("owned admitted request did not retain the single normalized mount target")
 	}
 	service := &Service{}
-	nilPlans, nilMaterial, nilErr := service.resolveRuntimeMounts(context.Background(), egsmodel.RuntimeTrustPolicy{}, nil)
-	emptyPlans, emptyMaterial, emptyErr := service.resolveRuntimeMounts(context.Background(), egsmodel.RuntimeTrustPolicy{}, []RuntimeMount{})
+	nilPlans, nilMaterial, nilErr := service.resolveRuntimeMounts(context.Background(), egscontract.RuntimeTrustPolicy{}, nil)
+	emptyPlans, emptyMaterial, emptyErr := service.resolveRuntimeMounts(context.Background(), egscontract.RuntimeTrustPolicy{}, []RuntimeMount{})
 	if nilErr != nil || emptyErr != nil || nilPlans != nil || nilMaterial != nil || emptyPlans == nil || emptyMaterial == nil {
 		t.Fatal("resolved mount inputs did not preserve nil versus concrete-empty presence")
 	}
@@ -304,12 +304,12 @@ func TestResolvedExecutionAdmissionDefaultsOnlyTheOwnedSnapshot(t *testing.T) {
 }
 
 func TestResolvedExecutionTrustAndConfigSnapshotsOwnMutableInputs(t *testing.T) {
-	trust := egsmodel.RuntimeTrustPolicy{
-		SignerPolicy: egsmodel.SignerPolicy{
+	trust := egscontract.RuntimeTrustPolicy{
+		SignerPolicy: egscontract.SignerPolicy{
 			AllowedSigners: []string{"allowed"},
 			RevokedSigners: []string{"revoked"},
 		},
-		ArtifactPolicy: egsmodel.ArtifactPolicy{RevokedArtifacts: []string{labeledDigest("11")}},
+		ArtifactPolicy: egscontract.ArtifactPolicy{RevokedArtifacts: []string{labeledDigest("11")}},
 	}
 	trustSnapshot := snapshotRuntimeTrustModel(trust)
 	trust.SignerPolicy.AllowedSigners[0] = "mutated"
