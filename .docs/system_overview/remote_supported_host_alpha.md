@@ -7818,7 +7818,8 @@ be read, each refused; a rollback whose `restored-` record cannot be
 written, which goes on, says so, and keeps the older backup refused until it
 is put back again; a restore cut off before it removed what `apply`
 created; an older backup put back after an apply cut off while it wrote
-`earlier.json`, and the cut-off backup refused after it; an https restore
+`earlier.json`, and the cut-off backup refused after it; `earlier.json`
+renamed into place and its folder synced right after; an https restore
 whose `es.json` does not hold against Nomad, by `rollback` and by `apply`'s
 own rollback; a rollback after which ES does not answer; an installed
 binary missing, and a rollback record's name taken, each refused; the
