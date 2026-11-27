@@ -6,11 +6,14 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"go/types"
 	"io"
 	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -83,7 +86,7 @@ func TestWorkloadGrantDecisionFollowsTheNetworkGrantPolicy(t *testing.T) {
 		_, err := testWorkloadGrants("").decide(testWorkloadGrantFacts())
 		assertNetworkAccessNotGranted(t, err)
 	})
-	t.Run("matching is byte for byte on each of the four facts", func(t *testing.T) {
+	t.Run("matching is byte for byte on each of the five facts", func(t *testing.T) {
 		for name, change := range map[string]func(*workloadGrantFacts){
 			"publisher": func(f *workloadGrantFacts) {
 				f.evidence.publisherPrincipal = "spiffe://execution.internal/operator/other"
@@ -355,7 +358,7 @@ func TestNetworkRunWithoutAGrantIsRefusedOnPrepareAndSubmitBeforeAnyEffect(t *te
 		"a rule for another ES caller": {otherCaller.AdmissionPolicy.WorkloadGrants, testCallerContext()},
 		"a caller below the rule's":    {granted.AdmissionPolicy.WorkloadGrants, callerContext(context.Background(), testGrantCaller+"/sub")},
 		"no authenticated caller":      {granted.AdmissionPolicy.WorkloadGrants, context.Background()},
-		"a zero authenticated caller":  {granted.AdmissionPolicy.WorkloadGrants, WithAuthenticatedCaller(context.Background(), callerauth.SPIFFEID{})},
+		"a zero authenticated caller":  {granted.AdmissionPolicy.WorkloadGrants, WithAuthenticatedCaller(context.Background(), callerauth.Caller{})},
 		"a caller of another type":     {granted.AdmissionPolicy.WorkloadGrants, context.WithValue(context.Background(), authenticatedCallerKey{}, testGrantCaller)},
 	} {
 		for _, operation := range []string{"prepare", "submit"} {
@@ -635,7 +638,7 @@ func TestPrivateDeliveryMatchesGrantsOnTheCallerItIsBoundTo(t *testing.T) {
 		"workload bound caller":               {testCallerContext(), "spiffe://execution.internal/workload/codex-agent", ""},
 		"workload bound caller in other case": {testCallerContext(), "spiffe://execution.internal/Workload/codex-agent", ""},
 	} {
-		if got := authenticatedCallerPrincipal(withDeliveryCaller(test.ctx, test.bound)); got != test.want {
+		if got := AuthenticatedCallerPrincipal(withDeliveryCaller(test.ctx, test.bound)); got != test.want {
 			t.Errorf("%s: grant caller %q, want %q", name, got, test.want)
 		}
 	}
@@ -756,5 +759,75 @@ func TestARunNoGrantNamesReachesNoContentPolicyWhateverItsRuntimeProfile(t *test
 				t.Errorf("%s, %s: the answer to a caller no grant names depends on the owner's content policy: %s without the entry, %s with it", operation, name, codes[0], codes[1])
 			}
 		}
+	}
+}
+
+// The caller that workload grants match on comes only from a verified TLS
+// connection, by type (re-audit 18 of ES PR #73, L-2). WithAuthenticatedCaller
+// takes a callerauth.Caller, which has no exported fields, and only two
+// exported functions of callerauth produce one, both from a verified client
+// certificate chain: CallerFromConnectionState and Authenticator.Authenticate.
+// callerauthtest, the test support package, produces none. So no string from
+// a request, and no allowlist entry, can become the grant caller. A change
+// to any of that fails here.
+func TestTheGrantCallerCanComeOnlyFromAVerifiedConnection(t *testing.T) {
+	want := reflect.TypeOf(func(context.Context, callerauth.Caller) context.Context { return nil })
+	if got := reflect.TypeOf(WithAuthenticatedCaller); got != want {
+		t.Fatalf("WithAuthenticatedCaller has the type %v, want %v", got, want)
+	}
+	caller := reflect.TypeOf(callerauth.Caller{})
+	for i := 0; i < caller.NumField(); i++ {
+		if caller.Field(i).IsExported() {
+			t.Fatalf("callerauth.Caller has the exported field %s", caller.Field(i).Name)
+		}
+	}
+
+	producers := map[string]bool{}
+	for _, dir := range []string{"../../internal/callerauth", "../../internal/callerauth/callerauthtest"} {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
+				continue
+			}
+			parsed, err := parser.ParseFile(token.NewFileSet(), filepath.Join(dir, entry.Name()), nil, parser.SkipObjectResolution)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, decl := range parsed.Decls {
+				function, ok := decl.(*ast.FuncDecl)
+				if !ok || !function.Name.IsExported() || function.Type.Results == nil {
+					continue
+				}
+				name := parsed.Name.Name + "." + function.Name.Name
+				if function.Recv != nil {
+					name = parsed.Name.Name + "." + types.ExprString(function.Recv.List[0].Type) + "." + function.Name.Name
+				}
+				for _, result := range function.Type.Results.List {
+					ast.Inspect(result.Type, func(node ast.Node) bool {
+						switch node := node.(type) {
+						case *ast.Ident:
+							producers[name] = producers[name] || (parsed.Name.Name == "callerauth" && node.Name == "Caller")
+						case *ast.SelectorExpr:
+							producers[name] = producers[name] || node.Sel.Name == "Caller"
+							return false
+						}
+						return true
+					})
+				}
+			}
+		}
+	}
+	var got []string
+	for name, produces := range producers {
+		if produces {
+			got = append(got, name)
+		}
+	}
+	sort.Strings(got)
+	if want := []string{"callerauth.Authenticator.Authenticate", "callerauth.CallerFromConnectionState"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("exported functions that produce a callerauth.Caller: %q, want %q", got, want)
 	}
 }

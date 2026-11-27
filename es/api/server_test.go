@@ -1294,6 +1294,52 @@ func TestExecutionCallerAuthorizationMatchesExactOrSubpathOnly(t *testing.T) {
 	}
 }
 
+// Both :prepare and :submit hand admission the caller that the request's
+// connection authenticated, the one workload grants match on (contracts.md,
+// section 5B): the caller's own SPIFFE ID, not the allowlist entry that
+// admitted it, and never a caller named in the body or a header.
+func TestPrepareAndSubmitHandAdmissionTheCallerOfTheConnection(t *testing.T) {
+	const otherCaller = "spiffe://execution.internal/service/control-plane"
+	body := `{"schema_version":"v1","invocation":{"schema_version":"v1","artifact_digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","derivation_spec_digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","output_id":"runtime","annotations":{"caller":"` + otherCaller + `","caller_principal":"` + otherCaller + `","zz_caller":"` + otherCaller + `"}},"mode":"async"}`
+	for _, route := range []string{"prepare", "submit"} {
+		for _, callerPath := range []string{"operator/local", "operator/local/x", "operator/local/x/y"} {
+			t.Run(route+" as "+callerPath, func(t *testing.T) {
+				var captured context.Context
+				service := fakeLifecycleService{
+					prepareResult: admission.PrepareResult{Success: true},
+					submitResult:  admission.SubmitResult{Success: true, Submitted: true, RunID: "run-0123456789abcdef", Status: "submitted"},
+				}
+				if route == "prepare" {
+					service.prepareContextSink = &captured
+				} else {
+					service.submitContextSink = &captured
+				}
+				server := NewServer(service, "bootstrap", []string{"operator/local", "service/control-plane"}, func() bool { return true })
+				request := lifecycleRequestWithCallerAndBody(http.MethodPost, "/v1/executions:"+route, callerPath, body)
+				for _, header := range []string{"X-Caller", "X-Caller-Principal", "X-Forwarded-Client-Cert", "X-SPIFFE-ID"} {
+					request.Header.Set(header, otherCaller)
+				}
+				recorder := httptest.NewRecorder()
+				server.Handler().ServeHTTP(recorder, request)
+				wantStatus := http.StatusOK
+				if route == "submit" {
+					wantStatus = http.StatusAccepted
+				}
+				if recorder.Code != wantStatus {
+					t.Fatalf("%s: status %d, body %s", route, recorder.Code, recorder.Body.String())
+				}
+				if captured == nil {
+					t.Fatalf("%s: the service was not called", route)
+				}
+				want := "spiffe://execution.internal/" + callerPath
+				if got := admission.AuthenticatedCallerPrincipal(captured); got != want {
+					t.Fatalf("%s: admission got caller %q, want the connection's caller %q", route, got, want)
+				}
+			})
+		}
+	}
+}
+
 type fakeLifecycleService struct {
 	logsResult            admission.ExecutionLogsResult
 	resultBundle          admission.ExecutionResultBundle
@@ -1307,6 +1353,8 @@ type fakeLifecycleService struct {
 	submitErr             *admission.Error
 	prepareRequestSink    *admission.PrepareRequest
 	submitRequestSink     *admission.PrepareRequest
+	prepareContextSink    *context.Context
+	submitContextSink     *context.Context
 	healthCalls           *int
 	producerContractCalls *int
 	prepareCalls          *int
@@ -1331,7 +1379,10 @@ func (f fakeLifecycleService) ProducerContract(context.Context) admission.Produc
 	return f.producerContract
 }
 
-func (f fakeLifecycleService) Prepare(_ context.Context, request admission.PrepareRequest) (admission.PrepareResult, *admission.Error) {
+func (f fakeLifecycleService) Prepare(ctx context.Context, request admission.PrepareRequest) (admission.PrepareResult, *admission.Error) {
+	if f.prepareContextSink != nil {
+		*f.prepareContextSink = ctx
+	}
 	if f.prepareCalls != nil {
 		*f.prepareCalls = *f.prepareCalls + 1
 	}
@@ -1344,7 +1395,10 @@ func (f fakeLifecycleService) Prepare(_ context.Context, request admission.Prepa
 	return f.prepareResult, nil
 }
 
-func (f fakeLifecycleService) Submit(_ context.Context, request admission.PrepareRequest) (admission.SubmitResult, *admission.Error) {
+func (f fakeLifecycleService) Submit(ctx context.Context, request admission.PrepareRequest) (admission.SubmitResult, *admission.Error) {
+	if f.submitContextSink != nil {
+		*f.submitContextSink = ctx
+	}
 	if f.submitCalls != nil {
 		*f.submitCalls = *f.submitCalls + 1
 	}

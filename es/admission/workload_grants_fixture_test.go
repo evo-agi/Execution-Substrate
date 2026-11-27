@@ -13,13 +13,14 @@ import (
 const testGrantCaller = "spiffe://execution.internal/operator/local"
 
 // callerContext returns a context that carries caller as the authenticated
-// ES caller, the way the ES API hands it to admission.
+// ES caller, as the ES API's WithAuthenticatedCaller would for a connection
+// that authenticated as caller.
 func callerContext(parent context.Context, caller string) context.Context {
 	id, err := callerauth.ParseSPIFFEID(caller)
 	if err != nil {
 		panic(fmt.Sprintf("test caller %q: %v", caller, err))
 	}
-	return WithAuthenticatedCaller(parent, id)
+	return withCallerID(parent, id)
 }
 
 // testCallerContext is context.Background() with testGrantCaller as the

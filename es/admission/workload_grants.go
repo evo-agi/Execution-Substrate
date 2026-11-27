@@ -144,11 +144,21 @@ type authenticatedCallerKey struct{}
 // WithAuthenticatedCaller returns ctx carrying the caller the ES API
 // authenticated over mTLS for this :prepare or :submit. The ES API is its
 // only caller: the caller identity comes from the connection, never from the
-// request body. ES admission reads it only to match workload grants, and it
-// never becomes ES request or response grammar. A context without one
-// matches no grant, so its run gets no network.
-func WithAuthenticatedCaller(ctx context.Context, caller callerauth.SPIFFEID) context.Context {
-	return context.WithValue(ctx, authenticatedCallerKey{}, caller)
+// request body, the evidence or a header. It takes a callerauth.Caller, not
+// a SPIFFE ID or a string, so that rule holds by type: outside callerauth,
+// the only way to get a non-zero Caller is CallerFromConnectionState, which
+// reads a verified TLS chain, and a zero Caller carries no caller. ES
+// admission reads it only to match workload grants, and it never becomes ES
+// request or response grammar. A context without one matches no grant, so
+// its run gets no network.
+func WithAuthenticatedCaller(ctx context.Context, caller callerauth.Caller) context.Context {
+	return withCallerID(ctx, caller.ID())
+}
+
+// withCallerID returns ctx carrying id as the caller workload grants match
+// on, in place of any caller ctx carried.
+func withCallerID(ctx context.Context, id callerauth.SPIFFEID) context.Context {
+	return context.WithValue(ctx, authenticatedCallerKey{}, id)
 }
 
 // withDeliveryCaller returns ctx carrying, in place of any caller ctx
@@ -161,15 +171,17 @@ func WithAuthenticatedCaller(ctx context.Context, caller callerauth.SPIFFEID) co
 func withDeliveryCaller(ctx context.Context, canonicalURI string) context.Context {
 	caller, err := callerauth.ParseSPIFFEID(canonicalURI)
 	if err != nil || caller.String() != canonicalURI {
-		return context.WithValue(ctx, authenticatedCallerKey{}, callerauth.SPIFFEID{})
+		return withCallerID(ctx, callerauth.SPIFFEID{})
 	}
-	return WithAuthenticatedCaller(ctx, caller)
+	return withCallerID(ctx, caller)
 }
 
-// authenticatedCallerPrincipal returns the canonical SPIFFE ID of the
-// authenticated caller in ctx, or empty when ctx carries none or carries a
-// value callerauth would not accept (such as the zero SPIFFEID).
-func authenticatedCallerPrincipal(ctx context.Context) string {
+// AuthenticatedCallerPrincipal returns the canonical SPIFFE ID of the caller
+// that workload grants match on in ctx, or empty when ctx carries none or
+// carries a value callerauth would not accept (such as the zero SPIFFEID).
+// It only reads: the ES API's tests use it to check which caller each
+// handler hands admission.
+func AuthenticatedCallerPrincipal(ctx context.Context) string {
 	caller, ok := ctx.Value(authenticatedCallerKey{}).(callerauth.SPIFFEID)
 	if !ok {
 		return ""
@@ -201,7 +213,7 @@ func (s *Service) decideWorkloadGrants(ctx context.Context, req PrepareRequest, 
 	if profileErr != nil {
 		return workloadGrantDecision{}, profileErr
 	}
-	facts := newWorkloadGrantFacts(authenticatedCallerPrincipal(ctx), profile.name, artifact)
+	facts := newWorkloadGrantFacts(AuthenticatedCallerPrincipal(ctx), profile.name, artifact)
 	return workloadGrantsFromConfig(s.cfg.AdmissionPolicy).decide(facts)
 }
 

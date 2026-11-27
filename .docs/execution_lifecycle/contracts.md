@@ -878,7 +878,10 @@ Grants live in ES deployment configuration at
     as this match fact: it does not become ES request or response grammar,
     and no other publication claim reaches admission. The caller principal
     comes only from the client certificate of the connection the request
-    arrived on, never from the request body, the evidence or a header;
+    arrived on, never from the request body, the evidence or a header.
+    Admission takes it only as the caller that caller authentication built
+    from a verified certificate chain, so no value from a request or from
+    configuration can stand in for it;
   - two optional grant fields: `workload_identity`, a name from
     `workload_identities`, and `egress_lane`, a name from `egress_lanes`.
 - ES startup refuses: more than 32 rules; a duplicate rule ID; two rules with
@@ -914,7 +917,8 @@ inspection:
    the request; the artifact type; and the effective runtime profile, as the
    runtime-profile check resolves it. A private reliable submit delivery,
    which has no public listener yet, matches on the caller its claim is
-   bound to, the authenticated peer of its handoff, and on no other. A
+   bound to, the authenticated peer of its handoff (for a synthetic replay,
+   the caller fact the replay is bound to), and on no other. A
    request or delivery that carries no authenticated ES caller matches no
    rule.
 2. The effective lane is none when signed `network_access` is false,
@@ -968,9 +972,10 @@ Rules for these policies:
   own, through the host firewall on the Remote Supported Host Alpha box and
   through the full `bridge` network on supported-local hosts.
   WI-4 removes the value, and from then on ES startup refuses a configuration
-  that uses it. Two tests in `es/config` are the trigger: they fail once ES
-  accepts any other lane, of any shape or by any name written in ES's
-  source, while it still accepts `unrestricted`.
+  that uses it. Four tests in `es/config` are the trigger: while ES still
+  accepts `unrestricted`, they fail once ES accepts any other lane, of any
+  shape, by any name written in ES's source or listed anywhere in its
+  configuration, or once any code reads the lane a run was granted.
 
 ### Guardrails
 

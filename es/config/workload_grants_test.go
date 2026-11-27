@@ -5,6 +5,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"go/types"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -399,4 +400,367 @@ func TestNoLaneNameInESSourceIsAcceptedWhileUnrestrictedStillIs(t *testing.T) {
 		t.Errorf("ES accepts the lane %s and still accepts %q: egress lanes are landing, so remove the temporary lane (ES must refuse it) in the same change", lane, WorkloadEgressLaneUnrestricted)
 	}
 	t.Logf("tried %d names from %d source files under es/", len(candidates), files)
+}
+
+// The third part of the unrestricted lane's machine trigger. The other two
+// try lane names, as made-up names and as names written in ES's source; a
+// later change could instead accept a lane whose name is listed somewhere
+// else in the configuration, beside the lanes or under another section (a
+// catalogue of networks, say). So this test puts each candidate name into
+// every list of names in the configuration, one list at a time, and checks
+// that ES still accepts no lane by that name. It finds the lists by
+// reflection, so a list added later is tried too. (Re-audit 18 of ES PR #73,
+// L-1.)
+func TestNoConfigurationListAdmitsAnotherLaneWhileUnrestrictedStillIs(t *testing.T) {
+	if err := configWithWorkloadGrants(validWorkloadGrantsConfig()).Validate(); err != nil {
+		// The temporary lane is gone: nothing left to trigger.
+		return
+	}
+	template := configWithWorkloadGrants(validWorkloadGrantsConfig())
+	var slots []configSlot
+	collectConfigSlots(reflect.ValueOf(&template).Elem(), nil, "", &slots)
+
+	// Controls: the walk reaches nested sections and the lists ES has today.
+	seen := map[string]bool{}
+	for _, slot := range slots {
+		seen[slot.name] = true
+	}
+	for _, want := range []string{".Authorization.AllowedSPIFFEPathPrefixes", ".AdmissionPolicy.WorkloadGrants.EgressLanes", ".AdmissionPolicy.WorkloadGrants.Rules"} {
+		if !seen[want] {
+			t.Fatalf("control: the walk did not reach %s; it found %d lists", want, len(slots))
+		}
+	}
+
+	names := []string{"vault-only", "codex-api", "filtered", "default", "none", "bridge", "restricted", "internet",
+		"Unrestricted", "unrestricted ", "unrestricted-v2"}
+	var accepted []string
+	for _, slot := range slots {
+		for _, name := range names {
+			for _, reaches := range []bool{true, false} {
+				for _, shape := range []string{"only that lane", "beside unrestricted", "beside unrestricted, used by a rule"} {
+					cfg := configWithWorkloadGrants(validWorkloadGrantsConfig())
+					grants := cfg.AdmissionPolicy.WorkloadGrants
+					reaches := reaches
+					other := WorkloadEgressLaneConfig{Name: name, ReachesWorkloadVault: &reaches}
+					switch shape {
+					case "only that lane":
+						grants.EgressLanes, grants.Rules = []WorkloadEgressLaneConfig{other}, nil
+					case "beside unrestricted":
+						grants.EgressLanes = append(grants.EgressLanes, other)
+					default:
+						grants.EgressLanes = append(grants.EgressLanes, other)
+						grants.Rules[0].EgressLane = name
+					}
+					if !slot.add(reflect.ValueOf(&cfg).Elem(), name) {
+						continue
+					}
+					if cfg.Validate() == nil {
+						accepted = append(accepted, fmt.Sprintf("%q (reaches_workload_vault=%t, %s) once %s lists it", name, reaches, shape, slot.name))
+					}
+				}
+			}
+		}
+	}
+	sort.Strings(accepted)
+	for _, lane := range accepted {
+		t.Errorf("ES accepts the lane %s, and still accepts %q: egress lanes are landing, so remove the temporary lane (ES must refuse it) in the same change", lane, WorkloadEgressLaneUnrestricted)
+	}
+	t.Logf("tried %d names in %d configuration lists", len(names), len(slots))
+}
+
+// configSlot is one list in the configuration that a name can be added to:
+// a slice of strings, a map keyed by strings, or a slice of structs (a new
+// element with every string field set to the name).
+type configSlot struct {
+	name string
+	path []int
+}
+
+// collectConfigSlots records every list reachable from value through struct
+// fields, pointers and slice elements. A nil pointer to a section is walked
+// as an empty section, and add creates it.
+func collectConfigSlots(value reflect.Value, path []int, name string, slots *[]configSlot) {
+	switch value.Kind() {
+	case reflect.Pointer:
+		if !value.IsNil() {
+			collectConfigSlots(value.Elem(), path, name, slots)
+		} else if value.Type().Elem().Kind() == reflect.Struct {
+			collectConfigSlots(reflect.New(value.Type().Elem()).Elem(), path, name, slots)
+		}
+	case reflect.Struct:
+		for i := 0; i < value.NumField(); i++ {
+			if value.Type().Field(i).IsExported() {
+				collectConfigSlots(value.Field(i), append(append([]int(nil), path...), i), name+"."+value.Type().Field(i).Name, slots)
+			}
+		}
+	case reflect.Slice:
+		if value.Type().Elem().Kind() == reflect.String || value.Type().Elem().Kind() == reflect.Struct {
+			*slots = append(*slots, configSlot{name: name, path: append([]int(nil), path...)})
+		}
+		for i := 0; i < value.Len(); i++ {
+			collectConfigSlots(value.Index(i), append(append([]int(nil), path...), -1-i), fmt.Sprintf("%s[%d]", name, i), slots)
+		}
+	case reflect.Map:
+		if value.Type().Key().Kind() == reflect.String {
+			*slots = append(*slots, configSlot{name: name, path: append([]int(nil), path...)})
+		}
+	}
+}
+
+// add puts name into the slot's list in root, a fresh configuration built
+// the same way as the one the slot was found in. It reports whether it could.
+func (s configSlot) add(root reflect.Value, name string) bool {
+	value := root
+	for _, step := range s.path {
+		for value.Kind() == reflect.Pointer {
+			if value.IsNil() {
+				value.Set(reflect.New(value.Type().Elem()))
+			}
+			value = value.Elem()
+		}
+		if step >= 0 {
+			value = value.Field(step)
+		} else {
+			if value.Kind() != reflect.Slice || -1-step >= value.Len() {
+				return false
+			}
+			value = value.Index(-1 - step)
+		}
+	}
+	switch value.Kind() {
+	case reflect.Slice:
+		element := reflect.New(value.Type().Elem()).Elem()
+		if element.Kind() == reflect.String {
+			element.SetString(name)
+		} else {
+			setStringFields(element, name)
+		}
+		value.Set(reflect.Append(value, element))
+	case reflect.Map:
+		if value.IsNil() {
+			value.Set(reflect.MakeMap(value.Type()))
+		}
+		key := reflect.New(value.Type().Key()).Elem()
+		key.SetString(name)
+		element := reflect.New(value.Type().Elem()).Elem()
+		setStringFields(element, name)
+		value.SetMapIndex(key, element)
+	default:
+		return false
+	}
+	return true
+}
+
+func setStringFields(value reflect.Value, name string) {
+	switch value.Kind() {
+	case reflect.String:
+		value.SetString(name)
+	case reflect.Struct:
+		for i := 0; i < value.NumField(); i++ {
+			if value.Type().Field(i).IsExported() {
+				setStringFields(value.Field(i), name)
+			}
+		}
+	}
+}
+
+// The last part of the unrestricted lane's machine trigger looks at use, not
+// at configuration: a lane does nothing until code reads it, and realizing
+// lanes (WI-4) has to read the lane a run was granted. Today nothing does.
+// ES admission computes the decision and drops it, and only the grant code
+// itself reads a lane. So, while ES still accepts the temporary lane, this
+// test fails when, in any non-test Go file of the module:
+//   - a call of decideWorkloadGrants keeps the decision instead of dropping
+//     it into _;
+//   - the decision's or a rule's egressLane is read outside
+//     workloadGrantsFromConfig and decide in es/admission/workload_grants.go;
+//   - a lane field of the configuration (EgressLane, EgressLanes,
+//     ReachesWorkloadVault) is read outside es/config and
+//     workloadGrantsFromConfig;
+//   - the grant types gain a field, or decide or decideWorkloadGrants return
+//     something else.
+//
+// Identity grants (WI-3) will keep the decision too. Then this test fails
+// early, and that change narrows it to lane reads. (Re-audit 18 of ES PR #73,
+// L-1.)
+func TestNoCodeUsesAnEgressLaneWhileUnrestrictedStillIs(t *testing.T) {
+	if err := configWithWorkloadGrants(validWorkloadGrantsConfig()).Validate(); err != nil {
+		// The temporary lane is gone: nothing left to trigger.
+		return
+	}
+	fail := func(format string, args ...any) {
+		t.Helper()
+		t.Errorf(format+"; ES still accepts the temporary lane %q: if egress lanes are landing, remove it (ES must refuse it) in the same change", append(args, WorkloadEgressLaneUnrestricted)...)
+	}
+
+	pinFields := func(value any, want ...string) {
+		t.Helper()
+		typ := reflect.TypeOf(value)
+		var got []string
+		for i := 0; i < typ.NumField(); i++ {
+			got = append(got, typ.Field(i).Name+" "+string(typ.Field(i).Tag))
+		}
+		if !reflect.DeepEqual(got, want) {
+			fail("%s now has the fields %q, not %q", typ.Name(), got, want)
+		}
+	}
+	pinFields(AdmissionPolicyConfig{},
+		`ConfiguredStaticScriptLiteralDeny json:"configured_static_script_literal_deny,omitempty"`,
+		`WorkloadGrants json:"workload_grants,omitempty"`)
+	pinFields(WorkloadGrantsConfig{}, `EgressLanes json:"egress_lanes"`, `Rules json:"rules"`)
+	pinFields(WorkloadGrantRuleConfig{}, `ID json:"id"`, `PublisherPrincipal json:"publisher_principal"`,
+		`CallerPrincipal json:"caller_principal"`, `SignerKeyID json:"signer_key_id"`, `ArtifactType json:"artifact_type"`,
+		`RuntimeProfile json:"runtime_profile"`, `EgressLane json:"egress_lane,omitempty"`)
+
+	const grantFile = "es/admission/workload_grants.go"
+	laneReaders := map[string]bool{"workloadGrantsFromConfig": true, "decide": true}
+	var decisionCalls, droppedDecisions, laneReads int
+	files := 0
+	pinned := map[string]bool{}
+	walkErr := filepath.WalkDir("../..", func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			if base := entry.Name(); path != "../.." && (strings.HasPrefix(base, ".") || base == "testdata" || base == "vendor" || base == "node_modules") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		rel := filepath.ToSlash(strings.TrimPrefix(path, "../../"))
+		fset := token.NewFileSet()
+		parsed, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
+		if err != nil {
+			return err
+		}
+		files++
+		inConfig := strings.HasPrefix(rel, "es/config/") && !strings.Contains(strings.TrimPrefix(rel, "es/config/"), "/")
+		for _, decl := range parsed.Decls {
+			function, _ := decl.(*ast.FuncDecl)
+			name := ""
+			if function != nil {
+				name = function.Name.Name
+			}
+			if rel == grantFile {
+				pinGrantDeclaration(t, decl, pinned, fail)
+			}
+			ast.Inspect(decl, func(node ast.Node) bool {
+				switch node := node.(type) {
+				case *ast.AssignStmt:
+					if len(node.Rhs) == 1 && isCallOf(node.Rhs[0], "decideWorkloadGrants") {
+						if blank, ok := node.Lhs[0].(*ast.Ident); ok && blank.Name == "_" {
+							droppedDecisions++
+						}
+					}
+				case *ast.CallExpr:
+					if isCallOf(node, "decideWorkloadGrants") {
+						decisionCalls++
+					}
+				case *ast.SelectorExpr:
+					switch node.Sel.Name {
+					case "egressLane":
+						if rel != grantFile || !laneReaders[name] {
+							fail("%s reads egressLane", fset.PositionFor(node.Pos(), false))
+						} else {
+							laneReads++
+						}
+					case "EgressLane", "EgressLanes", "ReachesWorkloadVault":
+						if !inConfig && !(rel == grantFile && name == "workloadGrantsFromConfig") {
+							fail("%s reads the configured lane field %s", fset.PositionFor(node.Pos(), false), node.Sel.Name)
+						}
+					}
+				}
+				return true
+			})
+		}
+		return nil
+	})
+	if walkErr != nil {
+		t.Fatal(walkErr)
+	}
+	// Controls: the walk read the module, found today's one call and the
+	// grant code's own lane reads.
+	if files < 100 || decisionCalls == 0 || laneReads < 3 {
+		t.Fatalf("control: read %d files, %d calls of decideWorkloadGrants, %d lane reads in the grant code; the walk no longer reads the module", files, decisionCalls, laneReads)
+	}
+	for _, name := range []string{"workloadGrantDecision", "workloadGrantRule", "workloadGrants", "decide", "decideWorkloadGrants"} {
+		if !pinned[name] {
+			fail("%s is no longer declared in %s", name, grantFile)
+		}
+	}
+	if droppedDecisions != decisionCalls {
+		fail("%d of %d calls of decideWorkloadGrants keep the decision", decisionCalls-droppedDecisions, decisionCalls)
+	}
+}
+
+func isCallOf(expr ast.Expr, name string) bool {
+	call, ok := expr.(*ast.CallExpr)
+	if !ok {
+		return false
+	}
+	switch fun := call.Fun.(type) {
+	case *ast.SelectorExpr:
+		return fun.Sel.Name == name
+	case *ast.Ident:
+		return fun.Name == name
+	}
+	return false
+}
+
+// pinGrantDeclaration pins the fields of the admission grant types and what
+// decide and decideWorkloadGrants return. It records each name it pinned in
+// seen.
+func pinGrantDeclaration(t *testing.T, decl ast.Decl, seen map[string]bool, fail func(string, ...any)) {
+	t.Helper()
+	fieldsOf := func(list *ast.FieldList) []string {
+		var out []string
+		for _, field := range list.List {
+			for _, name := range field.Names {
+				out = append(out, name.Name+" "+types.ExprString(field.Type))
+			}
+			if len(field.Names) == 0 {
+				out = append(out, types.ExprString(field.Type))
+			}
+		}
+		return out
+	}
+	switch decl := decl.(type) {
+	case *ast.GenDecl:
+		for _, spec := range decl.Specs {
+			typeSpec, ok := spec.(*ast.TypeSpec)
+			if !ok {
+				continue
+			}
+			want, pinned := grantTypeFields[typeSpec.Name.Name]
+			if !pinned {
+				continue
+			}
+			seen[typeSpec.Name.Name] = true
+			var got []string
+			if structType, ok := typeSpec.Type.(*ast.StructType); ok {
+				got = fieldsOf(structType.Fields)
+			}
+			if !reflect.DeepEqual(got, want) {
+				fail("%s now has the fields %q, not %q", typeSpec.Name.Name, got, want)
+			}
+		}
+	case *ast.FuncDecl:
+		if decl.Name.Name != "decide" && decl.Name.Name != "decideWorkloadGrants" {
+			return
+		}
+		seen[decl.Name.Name] = true
+		if got := fieldsOf(decl.Type.Results); !reflect.DeepEqual(got, []string{"workloadGrantDecision", "*Error"}) {
+			fail("%s now returns %q", decl.Name.Name, got)
+		}
+	}
+}
+
+// grantTypeFields are the fields of the admission grant types today.
+var grantTypeFields = map[string][]string{
+	"workloadGrantDecision": {"ruleID string", "egressLane string"},
+	"workloadGrantRule":     {"id string", "match [5]string", "egressLane string"},
+	"workloadGrants":        {"rules []workloadGrantRule"},
 }

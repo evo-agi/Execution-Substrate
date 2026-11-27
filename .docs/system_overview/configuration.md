@@ -424,8 +424,11 @@ only while those keys are secret to the host.
     a network.
   - ES reads `es.json` with exact keys: it refuses a key repeated in one
     object and a key that matches a field only in another letter case,
-    anywhere in the file. `scripts/10_health_check.sh` reads the file the
-    same way.
+    anywhere in the file. `scripts/10_health_check.sh` refuses a repeated key
+    anywhere too, and a key in another letter case along the path it reads
+    (`admission_policy`, `workload_grants`, `rules`, `egress_lane`). So for
+    every file ES starts with, it reports the lanes ES reads; for a file ES
+    refuses only for a key elsewhere, it still prints its line.
   - While any rule grants the lane `unrestricted`, readiness reports
     `workload_egress_unrestricted=true`: `scripts/10_health_check.sh`
     prints that line in its "workload grants" section. It is a `Temporary

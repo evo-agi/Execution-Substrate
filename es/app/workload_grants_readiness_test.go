@@ -83,13 +83,18 @@ func TestHealthCheckPrintsTheWorkloadEgressLine(t *testing.T) {
 	}
 }
 
-// ES and the readiness line read the same es.json the same way: for every
-// file ES starts with, the line reports the lane unrestricted exactly when
-// ES's rules give it, and a file ES refuses for a repeated key or a key in
-// another letter case is refused by the line too. (Red-team of ES PR #73,
-// RT73-1, and audit 10, F4: encoding/json folds letter case and merges
-// repeated keys, Python lets the last one win, so the two used to disagree.)
-func TestReadinessLineAndESReadTheSameConfigurationTheSameWay(t *testing.T) {
+// The readiness line reports the lanes ES reads: for every file ES starts
+// with, the line reports the lane unrestricted exactly when ES's rules give
+// it. A file with a repeated key anywhere, or with a key in another letter
+// case along the path the line reads (admission_policy, workload_grants,
+// rules, egress_lane), is refused by both. ES refuses more: a key in another
+// letter case anywhere else in the file. For such a file the line still
+// prints its answer, which only says more than ES, since ES will not start.
+// (Red-team of ES PR #73, RT73-1, and audit 10, F4: encoding/json folds
+// letter case and merges repeated keys, Python lets the last one win, so the
+// two used to disagree. Re-audit 18, N-2: the line does not check letter
+// case off its path.)
+func TestReadinessLineReportsTheLanesESReads(t *testing.T) {
 	example, err := os.ReadFile(filepath.Join(executionPlatformRepoRoot(t), ".examples", "config", "es.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -114,6 +119,31 @@ func TestReadinessLineAndESReadTheSameConfigurationTheSameWay(t *testing.T) {
 	longS, kelvin := string(rune(0x17f)), string(rune(0x212a))
 
 	rootDir := t.TempDir()
+	// A key in another letter case off the line's path: ES refuses the file,
+	// and the line, which does not read that key, still prints its answer.
+	for i, offPath := range []struct{ name, from, to string }{
+		{"top-level key HTTP", `"http":`, `"HTTP":`},
+		{"top-level key Authorization", `"authorization":`, `"Authorization":`},
+		{"lane list key Egress_Lanes", `"egress_lanes":`, `"Egress_Lanes":`},
+	} {
+		t.Run(offPath.name, func(t *testing.T) {
+			document := withPolicy(`"admission_policy": {"workload_grants": {` + lanes + `, "rules": [` + granting + `]}}`)
+			changed := strings.Replace(document, offPath.from, offPath.to, 1)
+			if changed == document {
+				t.Fatalf("control: %s is not in the document", offPath.from)
+			}
+			path := filepath.Join(rootDir, fmt.Sprintf("off-path-%d.json", i))
+			if err := os.WriteFile(path, []byte(changed), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := esconfig.Load(path); err == nil || !strings.Contains(err.Error(), "must be spelled exactly") {
+				t.Fatalf("ES load: %v, want a refusal of the key", err)
+			}
+			if output, err := runWorkloadEgressLine(t, path); err != nil || !strings.HasPrefix(output, "workload_egress_unrestricted=true") {
+				t.Fatalf("the line printed %q (%v), want its answer for the file's rules", output, err)
+			}
+		})
+	}
 	for i, test := range []struct {
 		name       string
 		policy     string
@@ -122,7 +152,9 @@ func TestReadinessLineAndESReadTheSameConfigurationTheSameWay(t *testing.T) {
 	}{
 		{"exact keys, granting", `"admission_policy": {"workload_grants": {` + lanes + `, "rules": [` + granting + `]}}`, true, true},
 		{"exact keys, no lane", `"admission_policy": {"workload_grants": {` + lanes + `, "rules": [` + rule + `}]}}`, true, false},
-		{"escaped key that decodes exactly", `"admission_policy": {"workload_grants": {` + lanes + `, "rules": [` + rule + `, "egress_lane": "unrestricted"}]}}`, true, true},
+		{"escaped key that decodes exactly", `"admission_policy": {"workload_grants": {` + lanes + `, "rules": [` + rule + `, "\u0065gress_lane": "unrestricted"}]}}`, true, true},
+		{"repeated key spelled with an escape", `"admission_policy": {"workload_grants": {` + lanes + `, "rules": [` + granting + `], "\u0072ules": []}}`, false, false},
+		{"case variant spelled with an escape", `"admission_policy": {"workload_grants": {` + lanes + `, "rules": [` + rule + `, "\u0045gress_lane": "unrestricted"}]}}`, false, false},
 		{"rule key Egress_Lane", `"admission_policy": {"workload_grants": {` + lanes + `, "rules": [` + rule + `, "Egress_Lane": "unrestricted"}]}}`, false, false},
 		{"rule key EGRESS_LANE", `"admission_policy": {"workload_grants": {` + lanes + `, "rules": [` + rule + `, "EGRESS_LANE": "unrestricted"}]}}`, false, false},
 		{"egress_lane empty, then Egress_Lane", `"admission_policy": {"workload_grants": {` + lanes + `, "rules": [` + rule + `, "egress_lane": "", "Egress_Lane": "unrestricted"}]}}`, false, false},

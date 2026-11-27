@@ -495,7 +495,7 @@ type preparedArtifact struct {
 	payloadDigest  string
 	targetPlatform string
 	networkAccess  bool
-	// Two of the four facts a workload grant rule matches on, as signed.
+	// Two of the five facts a workload grant rule matches on, as signed.
 	grantFacts workloadGrantEvidenceFacts
 	// Owned full signed record from the same successful artifact admission.
 	provenanceRecord string

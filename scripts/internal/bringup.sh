@@ -554,10 +554,13 @@ PY
 # 5B): while any grant rule in ES configuration gives the egress lane
 # "unrestricted", granted runs have no egress filter of their own. Egress
 # lanes (Workstream F slice F1, WI-4) remove that lane. ES startup validates
-# the grants; this only reports them. It reads the keys exactly, as ES does:
-# ES refuses a file with a repeated key or with a key spelled in another
-# letter case (es/config/exact_keys.go), and so does this line, so the two
-# never read the same file differently.
+# the grants; this only reports them. It reads the keys it needs exactly:
+# like ES (es/config/exact_keys.go), it refuses a file with a key repeated in
+# any object, or with a key spelled in another letter case along the path it
+# reads (admission_policy, workload_grants, rules, egress_lane). ES also
+# refuses a key in another letter case anywhere else in the file; for such a
+# file this line still prints its answer. So for every file ES starts with,
+# the line reports the lanes ES reads.
 workload_egress_line() {
   local config_path=$1
   python3 -I - "${config_path}" <<'PY'

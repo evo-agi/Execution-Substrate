@@ -266,7 +266,7 @@ func (s *Server) decodeAuthorizedExecutionRequest(w http.ResponseWriter, r *http
 		})
 		return nil, admission.PrepareRequest{}, false
 	}
-	return admission.WithAuthenticatedCaller(r.Context(), caller.ID()), request, true
+	return admission.WithAuthenticatedCaller(r.Context(), caller), request, true
 }
 
 func (s *Server) authorizeExecutionCaller(w http.ResponseWriter, r *http.Request) bool {

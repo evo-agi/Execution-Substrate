@@ -25,9 +25,12 @@ func TestLoadRefusesRepeatedKeysAndKeysNotSpelledExactly(t *testing.T) {
 	if err != nil || len(cfg.AdmissionPolicy.WorkloadGrants.Rules) != 1 || cfg.AdmissionPolicy.WorkloadGrants.Rules[0].EgressLane != WorkloadEgressLaneUnrestricted {
 		t.Fatalf("control: exact keys: %+v, %v", cfg.AdmissionPolicy, err)
 	}
-	escaped := strings.Replace(raw, `"egress_lane": "unrestricted"`, `"egress_lane": "unrestricted"`, 1)
-	if _, err := Load(writeTempConfig(t, escaped)); err != nil {
-		t.Fatalf("control: an escaped key that decodes to the exact spelling: %v", err)
+	escaped := strings.Replace(raw, `"egress_lane": "unrestricted"`, `"\u0065gress_lane": "unrestricted"`, 1)
+	if escaped == raw || !strings.Contains(escaped, `\u0065gress_lane`) {
+		t.Fatal("control: the escaped document is not escaped")
+	}
+	if cfg, err := Load(writeTempConfig(t, escaped)); err != nil || cfg.AdmissionPolicy.WorkloadGrants.Rules[0].EgressLane != WorkloadEgressLaneUnrestricted {
+		t.Fatalf("control: an escaped key that decodes to the exact spelling: %+v, %v", cfg.AdmissionPolicy, err)
 	}
 
 	for name, test := range map[string]struct{ raw, want string }{
@@ -51,8 +54,10 @@ func TestLoadRefusesRepeatedKeysAndKeysNotSpelledExactly(t *testing.T) {
 			`must be spelled exactly "egress_lane"`},
 		"Kelvin sign in workload_grants": {withPolicy(`"admission_policy": {"wor` + kelvin + `load_grants": {` + lanes + `, "rules": [` + granting + `]}},`),
 			`must be spelled exactly "workload_grants"`},
-		"repeated key spelled with an escape": {withPolicy(`"admission_policy": {"workload_grants": {` + lanes + `, "rules": [` + granting + `], "rules": []}},`),
+		"repeated key spelled with an escape": {withPolicy(`"admission_policy": {"workload_grants": {` + lanes + `, "rules": [` + granting + `], "\u0072ules": []}},`),
 			`the key "rules" appears more than once`},
+		"case variant spelled with an escape": {withPolicy(`"admission_policy": {"workload_grants": {` + lanes + `, "rules": [` + rule + `, "\u0045gress_lane": "unrestricted"}]}},`),
+			`the key "Egress_lane" must be spelled exactly "egress_lane"`},
 		"top-level key in capitals": {strings.Replace(validTestConfigJSON(), `"http"`, `"HTTP"`, 1),
 			`the key "HTTP" must be spelled exactly "http"`},
 		"repeated key outside the admission policy": {strings.Replace(validTestConfigJSON(), `"workload_vault_auth"`, `"authorization": {"allowed_spiffe_path_prefixes": ["user/x"]}, "workload_vault_auth"`, 1),
