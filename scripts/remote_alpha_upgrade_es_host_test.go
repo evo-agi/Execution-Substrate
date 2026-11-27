@@ -2262,11 +2262,59 @@ func TestRemoteAlphaUpgradeESApplySurvivesALostSession(t *testing.T) {
 // binding away and leave the CA trusted for any caller, the operator
 // included. One from before a revoke would admit the revoked name again.
 // Both are refused before a service stops, with nothing changed.
+// lockSpanDriver runs one mode of the ES upgrade, as its wrapper does, and
+// asks at each step below whether the user identity helper's lock is held:
+// from a child process that opens the lock file anew, as a run of the helper
+// would. It writes {"code": <exit status>, "seen": [[step, "held"|"free"], ...]}
+// to its third argument.
+const lockSpanDriver = `
+import importlib.util, json, subprocess, sys
+tool, lock, out = sys.argv[1:4]
+spec = importlib.util.spec_from_file_location("upgrade", tool)
+up = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(up)
+PROBE = """
+import fcntl, os, sys
+fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT, 0o600)
+try:
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except BlockingIOError:
+    print("held")
+else:
+    print("free")
+"""
+seen = []
+
+def ask(step):
+    probe = subprocess.run([sys.executable, "-I", "-c", PROBE, lock], capture_output=True, text=True, check=True)
+    seen.append([step, probe.stdout.strip()])
+
+def around(name, first, last=None):
+    real = getattr(up, name)
+
+    def wrapped(*args, **kwargs):
+        ask(first)
+        result = real(*args, **kwargs)
+        if last:
+            ask(last)
+        return result
+    setattr(up, name, wrapped)
+
+around("refuse_split_trust", "the guard's first read")
+around("restore_files", "the restore's first write", "the restore's last write")
+around("inspect_host", "apply's first read")
+around("write_summary", "apply's last write")
+code = up.main(sys.argv[4:])
+ask("the end of the run")
+with open(out, "w") as handle:
+    json.dump({"code": code, "seen": seen}, handle)
+`
+
 func TestRemoteAlphaUpgradeESRollbackKeepsANamespaceBinding(t *testing.T) {
 	helper := buildESConfigCheck(t)
 	userCA, _, userCAPEM := userIdentityTestCA(t, "Execution Substrate Remote Alpha User CA")
-	_, _, runtimeCAPEM := userIdentityTestCA(t, "Remote Alpha Runtime CA")
-	userSHA := sha256Hex(userCA.Raw)
+	runtimeCA, _, runtimeCAPEM := userIdentityTestCA(t, "Remote Alpha Runtime CA")
+	userSHA, runtimeSHA := sha256Hex(userCA.Raw), sha256Hex(runtimeCA.Raw)
 	const esJSON = "etc/execution-substrate/es.json"
 	// The fixture's es.json names /abs/path/tls/runtime-ca.pem as ES's client CA file.
 	const clientCA = "abs/path/tls/runtime-ca.pem"
@@ -2450,8 +2498,6 @@ func TestRemoteAlphaUpgradeESRollbackKeepsANamespaceBinding(t *testing.T) {
 
 	t.Run("a name below another bound namespace comes back", func(t *testing.T) {
 		h, _ := applied(t)
-		runtime, _ := pem.Decode(runtimeCAPEM)
-		runtimeSHA := sha256Hex(runtime.Bytes)
 		h.write(clientCA, string(runtimeCAPEM)+string(userCAPEM), 0o644)
 		writeUserCA(h, string(userCAPEM))
 		bindBoth := func(add ...string) string {
@@ -2528,10 +2574,212 @@ func TestRemoteAlphaUpgradeESRollbackKeepsANamespaceBinding(t *testing.T) {
 		restoreRefused(t, h, []string{"restore", "--backup-dir", twice}, "more than once")
 	})
 
+	// The rules on client CA files and on ags.json, each on its own
+	// (re-check 14, R14-3 and Sonnet's R14-2).
+	backupPaths := func(t *testing.T, h *upgradeHost, rels ...string) string {
+		t.Helper()
+		backupDir := filepath.Join(t.TempDir(), "backup")
+		args := []string{"backup", "--backup-dir", backupDir}
+		for _, rel := range rels {
+			args = append(args, "--path", h.path(rel))
+		}
+		if _, stderr, code := h.run(args...); code != 0 {
+			t.Fatalf("backup exited %d: %s", code, stderr)
+		}
+		return backupDir
+	}
+	// withClientCAFile returns es.json text that names file as ES's client CA file.
+	withClientCAFile := func(text string, file any) string {
+		var doc map[string]any
+		if err := json.Unmarshal([]byte(text), &doc); err != nil {
+			t.Fatal(err)
+		}
+		doc["tls"].(map[string]any)["client_ca_file"] = file
+		out, err := json.MarshalIndent(doc, "", "  ")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(out) + "\n"
+	}
+	const agsJSON = "etc/execution-substrate/ags.json"
+	const agsCA = "abs/path/tls/ags-ca.pem"
+	// agsConfig is ags.json as allow (bound) or revoke --remove-ca (unbound) leaves it.
+	agsConfig := func(bound bool, names ...string) string {
+		doc := map[string]any{"http": map[string]any{"bind_address": "127.0.0.1", "port": 8444},
+			"tls":           map[string]any{"client_ca_file": "/" + agsCA},
+			"authorization": map[string]any{"allowed_spiffe_path_prefixes": append([]string{"operator/local"}, names...)}}
+		if bound {
+			doc["security"] = map[string]any{"namespace_issuers": []any{map[string]any{"path_prefix": "user", "issuer_certificate_sha256": userSHA}}}
+		}
+		out, err := json.MarshalIndent(doc, "", "  ")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(out) + "\n"
+	}
+
+	t.Run("a backup that holds the client CA file only its own es.json names", func(t *testing.T) {
+		h, _ := applied(t)
+		writeUserCA(h, string(userCAPEM))
+		h.write(clientCA, string(runtimeCAPEM)+string(userCAPEM), 0o644)
+		edit(h, false)
+		unbound := mustRead(t, h.path(esJSON))
+		edit(h, true, "user/claude")
+		bound := mustRead(t, h.path(esJSON))
+		// A hand-made backup: an unbound es.json naming another file, and
+		// that file with the user CA in it. The file is gone now, so only
+		// the restored es.json names it.
+		const older = "abs/path/tls/older-ca.pem"
+		h.write(esJSON, withClientCAFile(unbound, "/"+older), 0o640)
+		h.write(older, string(runtimeCAPEM)+string(userCAPEM), 0o644)
+		backupDir := backupPaths(t, h, esJSON, older)
+		h.write(esJSON, bound, 0o640)
+		if err := os.Remove(h.path(older)); err != nil {
+			t.Fatal(err)
+		}
+		restoreRefused(t, h, []string{"restore", "--backup-dir", backupDir}, "this backup holds "+h.path(older)+", the client CA file "+h.path(esJSON)+" names")
+	})
+
+	t.Run("a backup that holds the client CA file only the current ags.json names", func(t *testing.T) {
+		h, _ := applied(t)
+		writeUserCA(h, string(userCAPEM))
+		// Before revoke --remove-ca: AGS's client CA file holds the user CA.
+		h.write(agsCA, string(runtimeCAPEM)+string(userCAPEM), 0o644)
+		backupDir := backupPaths(t, h, agsCA)
+		// After it: the CA is out of the file, then the binding goes.
+		h.write(agsCA, string(runtimeCAPEM), 0o644)
+		h.write(agsJSON, agsConfig(false), 0o640)
+		restoreRefused(t, h, []string{"restore", "--backup-dir", backupDir}, "this backup holds "+h.path(agsCA)+", the client CA file "+h.path(agsJSON)+" names")
+	})
+
+	t.Run("a backup ags.json from before allow", func(t *testing.T) {
+		h, _ := applied(t)
+		writeUserCA(h, string(userCAPEM))
+		h.write(agsCA, string(runtimeCAPEM), 0o644)
+		h.write(agsJSON, agsConfig(false), 0o640)
+		backupDir := backupPaths(t, h, agsJSON)
+		h.write(agsCA, string(runtimeCAPEM)+string(userCAPEM), 0o644)
+		h.write(agsJSON, agsConfig(true, "user/claude"), 0o640)
+		restoreRefused(t, h, []string{"restore", "--backup-dir", backupDir}, "while "+h.path(agsJSON)+" would not bind user to it")
+	})
+
+	t.Run("a backup that holds the client CA file through another directory name", func(t *testing.T) {
+		h, _ := applied(t)
+		writeUserCA(h, string(userCAPEM))
+		h.write(clientCA, string(runtimeCAPEM)+string(userCAPEM), 0o644)
+		if err := os.Symlink("path/tls", h.path("abs/tls-link")); err != nil {
+			t.Fatal(err)
+		}
+		const linked = "abs/tls-link/runtime-ca.pem"
+		backupDir := backupPaths(t, h, linked)
+		// The file is gone now, so only its directory entry matches.
+		if err := os.Remove(h.path(clientCA)); err != nil {
+			t.Fatal(err)
+		}
+		restoreRefused(t, h, []string{"restore", "--backup-dir", backupDir}, "this backup holds "+h.path(linked)+", the client CA file "+h.path(esJSON)+" names")
+	})
+
+	t.Run("a backup that holds a hard link to the client CA file", func(t *testing.T) {
+		h, _ := applied(t)
+		writeUserCA(h, string(userCAPEM))
+		h.write(clientCA, string(runtimeCAPEM)+string(userCAPEM), 0o644)
+		edit(h, true, "user/claude")
+		const hard = "abs/path/tls/hard-link.pem"
+		if err := os.Link(h.path(clientCA), h.path(hard)); err != nil {
+			t.Fatal(err)
+		}
+		backupDir := backupPaths(t, h, hard)
+		restoreRefused(t, h, []string{"restore", "--backup-dir", backupDir}, "this backup holds "+h.path(hard)+", the client CA file "+h.path(esJSON)+" names")
+	})
+
+	t.Run("a client CA file with a block that is not base64", func(t *testing.T) {
+		h, _ := applied(t)
+		writeUserCA(h, string(userCAPEM))
+		edit(h, true, "user/claude")
+		bound := mustRead(t, h.path(esJSON))
+		h.write(clientCA, string(runtimeCAPEM)+string(userCAPEM)+"-----BEGIN CERTIFICATE-----\nnot*base64!!\n-----END CERTIFICATE-----\n", 0o644)
+		backupDir := backupOf(t, h, bound, bound)
+		restoreRefused(t, h, []string{"restore", "--backup-dir", backupDir}, "cannot read the certificates in "+h.path(clientCA))
+	})
+
+	// ES opens a relative tls.client_ca_file from its own working directory,
+	// and its loader accepts one; this tool would read it from its own
+	// (Sonnet re-check 14, R14-3). Only a clean absolute path is read.
+	t.Run("a client CA file that is not a clean absolute path", func(t *testing.T) {
+		for _, tc := range []struct{ name, file string }{
+			{"relative", "runtime-ca.pem"},
+			{"with a dot-dot", "/abs/path/tls/../tls/runtime-ca.pem"},
+			{"with a leading double slash", "//abs/path/tls/runtime-ca.pem"},
+			{"with a NUL", "/abs/path/tls/runtime-ca.pem\x00"},
+		} {
+			file := tc.file
+			shown := strings.ReplaceAll(file, "\x00", `\x00`) // as the refusal prints it
+			t.Run(tc.name, func(t *testing.T) {
+				h, _ := applied(t)
+				writeUserCA(h, string(userCAPEM))
+				h.write(clientCA, string(runtimeCAPEM)+string(userCAPEM), 0o644)
+				edit(h, false)
+				crafted := withClientCAFile(mustRead(t, h.path(esJSON)), file)
+				oracle := filepath.Join(t.TempDir(), "es.json")
+				if err := os.WriteFile(oracle, []byte(crafted), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if cfg, err := esconfig.Load(oracle); err != nil || cfg.TLS.ClientCAFile != file {
+					t.Fatalf("ES's loader does not take %q as the client CA file: %v", file, err)
+				}
+				edit(h, true, "user/claude")
+				bound := mustRead(t, h.path(esJSON))
+				restoreRefused(t, h, []string{"restore", "--backup-dir", backupOf(t, h, crafted, bound)},
+					"tls.client_ca_file '"+shown+"' is not a clean absolute path")
+				// The same in the current es.json.
+				restoreRefused(t, h, []string{"restore", "--backup-dir", backupOf(t, h, bound, withClientCAFile(bound, file))},
+					"is not a clean absolute path")
+			})
+		}
+	})
+
+	// Go reads 10,000 levels; Python's reader can stop sooner. Such a config
+	// is refused with a message, not a traceback (Sonnet re-check 14, R14-4).
+	t.Run("a config nested too deeply to read", func(t *testing.T) {
+		h, _ := applied(t)
+		writeUserCA(h, string(userCAPEM))
+		edit(h, true, "user/claude")
+		bound := mustRead(t, h.path(esJSON))
+		deep := strings.TrimSuffix(bound, "\n}\n") + ",\n  \"probe\": " + strings.Repeat("[", 100000) + strings.Repeat("]", 100000) + "\n}\n"
+		restoreRefused(t, h, []string{"restore", "--backup-dir", backupOf(t, h, deep, bound)}, "the backup's "+h.path(esJSON)+" cannot be read for its namespace bindings (it is nested too deeply to read)")
+		h.write(esJSON, deep, 0o640)
+		restoreRefused(t, h, []string{"restore", "--backup-dir", backupOf(t, h, bound, deep)}, h.path(esJSON)+" cannot be read for its namespace bindings (it is nested too deeply to read)")
+	})
+
+	// laterKey returns text with key set to value as the last member of the
+	// object at, which Go's decoder reads last, so key wins over a field
+	// of the same name in another case.
+	laterKey := func(text string, at func(doc map[string]any) map[string]any, key string, value any) string {
+		t.Helper()
+		var doc map[string]any
+		if err := json.Unmarshal([]byte(text), &doc); err != nil {
+			t.Fatal(err)
+		}
+		// Map keys are written sorted, so a lower-case placeholder that
+		// sorts after every field lands last.
+		at(doc)["zzzz_later"] = value
+		out, err := json.MarshalIndent(doc, "", "  ")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.Replace(string(out), `"zzzz_later"`, `"`+key+`"`, 1) + "\n"
+	}
+	section := func(name string) func(doc map[string]any) map[string]any {
+		return func(doc map[string]any) map[string]any { return doc[name].(map[string]any) }
+	}
+
 	// Each backup below is one that ES's own loader reads as unbound beside a
 	// client CA file that holds the user CA, or as admitting a revoked name,
 	// while a reader that took the JSON otherwise would not (re-check 12,
-	// R12-3; Sonnet re-check 12, R12-2). The guard refuses each one.
+	// R12-3; Sonnet re-check 12, R12-2). The guard refuses each one. The key
+	// rule covers each object the guard reads (re-check 14, R14-2): the top
+	// level and security above, tls, authorization and a namespace_issuers
+	// entry in the last three.
 	t.Run("a backup es.json that ES reads otherwise is refused", func(t *testing.T) {
 		for _, tc := range []struct {
 			name   string
@@ -2552,6 +2800,26 @@ func TestRemoteAlphaUpgradeESRollbackKeepsANamespaceBinding(t *testing.T) {
 			}, "user/claude"},
 			{"a byte that is not UTF-8", func(_, _, unbound string) string {
 				return strings.Replace(unbound, `"bootstrap_issuer_common_name": "`, "\"bootstrap_issuer_common_name\": \"\xff", 1)
+			}, ""},
+			{"a later Client_ca_file in tls names the client CA file", func(_, _, unbound string) string {
+				return laterKey(unbound, func(doc map[string]any) map[string]any {
+					tls := doc["tls"].(map[string]any)
+					tls["client_ca_file"] = "/abs/path/tls/no-user-ca.pem"
+					return tls
+				}, "Client_ca_file", "/"+clientCA)
+			}, ""},
+			{"a later Allowed_spiffe_path_prefixes keeps a revoked name", func(withClaude, bound, _ string) string {
+				var doc map[string]any
+				if err := json.Unmarshal([]byte(withClaude), &doc); err != nil {
+					t.Fatal(err)
+				}
+				return laterKey(bound, section("authorization"), "Allowed_spiffe_path_prefixes",
+					doc["authorization"].(map[string]any)["allowed_spiffe_path_prefixes"])
+			}, "user/claude"},
+			{"a later Issuer_certificate_sha256 binds user to another CA", func(_, bound, _ string) string {
+				return laterKey(bound, func(doc map[string]any) map[string]any {
+					return doc["security"].(map[string]any)["namespace_issuers"].([]any)[0].(map[string]any)
+				}, "Issuer_certificate_sha256", runtimeSHA)
 			}, ""},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
@@ -2603,8 +2871,9 @@ func TestRemoteAlphaUpgradeESRollbackKeepsANamespaceBinding(t *testing.T) {
 		}
 	})
 
-	// JSON Go refuses (NaN), or reads with U+FFFD in place of a lone
-	// surrogate escape, is refused too, though the binding is kept.
+	// JSON Go refuses (NaN, a client CA file that is not a string), or reads
+	// with U+FFFD in place of a lone surrogate escape, is refused too, though
+	// the binding is kept.
 	t.Run("a backup es.json Go would refuse or read with U+FFFD", func(t *testing.T) {
 		for name, craft := range map[string]func(string) string{
 			"NaN": func(bound string) string {
@@ -2612,6 +2881,11 @@ func TestRemoteAlphaUpgradeESRollbackKeepsANamespaceBinding(t *testing.T) {
 			},
 			"a lone surrogate escape": func(bound string) string {
 				return strings.Replace(bound, `"bootstrap_issuer_common_name": "`, `"bootstrap_issuer_common_name": "\ud800`, 1)
+			},
+			// Go refuses it as a type error, so ES would not start; the guard
+			// refuses it rather than read it as no client CA file.
+			"a client CA file that is not a string": func(bound string) string {
+				return withClientCAFile(bound, 7)
 			},
 		} {
 			t.Run(name, func(t *testing.T) {
@@ -2667,8 +2941,15 @@ func TestRemoteAlphaUpgradeESRollbackKeepsANamespaceBinding(t *testing.T) {
 		}
 		hold := func(t *testing.T, h *upgradeHost) { t.Helper(); holdAs(t, h, syscall.LOCK_EX) }
 		const held = "holds /run/execution-substrate-remote-alpha-user-identity.lock; nothing was changed"
+		// The lock comes before the guard's first read (re-check 14, R14-1):
+		// on a host whose backup the guard refuses, a held lock is what the
+		// refusal names.
 		t.Run("rollback and restore", func(t *testing.T) {
 			h, backupDir := applied(t)
+			writeUserCA(h, string(userCAPEM))
+			h.write(clientCA, string(runtimeCAPEM)+string(userCAPEM), 0o644)
+			edit(h, true, "user/claude")
+			restoreRefused(t, h, []string{"rollback", "--backup-dir", backupDir}, "would not bind user to it")
 			hold(t, h)
 			restoreRefused(t, h, []string{"rollback", "--backup-dir", backupDir}, held)
 			restoreRefused(t, h, []string{"restore", "--backup-dir", backupDir}, held)
@@ -2679,13 +2960,62 @@ func TestRemoteAlphaUpgradeESRollbackKeepsANamespaceBinding(t *testing.T) {
 			holdAs(t, h, syscall.LOCK_SH)
 			restoreRefused(t, h, []string{"rollback", "--backup-dir", backupDir}, held)
 		})
+		// And before apply acts on what its check found: on a host the check
+		// blocks, a held lock is what the refusal names. That the lock comes
+		// before the check's first read is the next subtest's.
 		t.Run("apply", func(t *testing.T) {
 			h := newUpgradeHost(t, helper)
+			h.write("etc/nomad.d/nomad.hcl", boxNomadHCL, 0o640)
+			restoreRefused(t, h, []string{"apply", "--payload", h.payload, "--commit", h.commit}, "blocker(s); nothing was changed")
 			hold(t, h)
 			restoreRefused(t, h, []string{"apply", "--payload", h.payload, "--commit", h.commit}, held)
 			if dirs := backupDirs(t, h); len(dirs) != 0 {
 				t.Fatalf("apply refused for the lock left backups: %v", dirs)
 			}
+		})
+		// The lock is held from the first read to the last write and to the
+		// end of the run (re-check 14, R14-1): each mode runs in a driver that
+		// asks, at its first read, its first and last writes and its end,
+		// whether a run of the helper could take the lock.
+		t.Run("held from the first read to the last write", func(t *testing.T) {
+			span := func(t *testing.T, h *upgradeHost, want []string, args ...string) {
+				t.Helper()
+				out := filepath.Join(t.TempDir(), "span.json")
+				cmd := exec.Command("python3", append([]string{"-I", "-c", lockSpanDriver, repoPath(upgradeESPython),
+					h.path(strings.TrimPrefix(helperLock[1], "/")), out, "--host-root", h.root}, args...)...)
+				cmd.Dir, cmd.Env = h.state, h.environ()
+				if output, err := cmd.CombinedOutput(); err != nil {
+					t.Fatalf("the driver failed: %v\n%s", err, output)
+				}
+				var got struct {
+					Code int        `json:"code"`
+					Seen [][]string `json:"seen"`
+				}
+				if err := json.Unmarshal([]byte(mustRead(t, out)), &got); err != nil {
+					t.Fatal(err)
+				}
+				var steps []string
+				for _, step := range got.Seen {
+					steps = append(steps, step[0]+": "+step[1])
+				}
+				if got.Code != 0 || strings.Join(steps, " | ") != strings.Join(want, " | ") {
+					t.Fatalf("%s exited %d and saw\n  %s\nwant\n  %s", args[0], got.Code, strings.Join(steps, " | "), strings.Join(want, " | "))
+				}
+			}
+			restoreSpan := []string{"the guard's first read: held", "the restore's first write: held", "the restore's last write: held", "the end of the run: held"}
+			t.Run("rollback", func(t *testing.T) {
+				h, backupDir := applied(t)
+				span(t, h, restoreSpan, "rollback", "--backup-dir", backupDir)
+			})
+			t.Run("restore", func(t *testing.T) {
+				h, backupDir := applied(t)
+				span(t, h, restoreSpan, "restore", "--backup-dir", backupDir)
+			})
+			t.Run("apply", func(t *testing.T) {
+				h := newUpgradeHost(t, helper)
+				span(t, h, []string{"apply's first read: held", "apply's last write: held", "the end of the run: held"},
+					"apply", "--payload", h.payload, "--commit", h.commit)
+			})
 		})
 		t.Run("a lock file that is not a regular file", func(t *testing.T) {
 			for _, tc := range []struct {

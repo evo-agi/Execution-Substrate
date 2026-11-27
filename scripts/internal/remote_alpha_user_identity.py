@@ -663,8 +663,10 @@ def name_text(rdns: list) -> str:
     """A name from a CSR or a certificate as report text: printable() escapes,
     every space escaped as well, and the whole name cut to NAME_TEXT_CHARS. A
     run of spaces, or of any text, could pad a report line until the terminal
-    wraps and starts a row with the name's own text; with no space in it, that
-    row cannot read as a line of the report, such as "Result: ok"."""
+    wraps and starts a row with the name's own text. The only spaces left are
+    in the ", " between values and in the cut's "... (N more)" note, so a row
+    can start only with a label such as "O=", "(N" or "more)", never with a
+    line of the report, such as "Result: ok"."""
     labels = {OID_CN: "CN", OID_O: "O"}
 
     def value_text(value) -> str:

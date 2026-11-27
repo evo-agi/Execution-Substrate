@@ -473,7 +473,9 @@ USER_IDENTITY_LOCK = "/run/execution-substrate-remote-alpha-user-identity.lock"
 # replaces bytes that are not UTF-8. Every real field name is lower-case
 # ASCII, so a config is read only when no such rule can apply: strict UTF-8
 # JSON, no repeated key anywhere, only lower-case ASCII keys on the objects
-# read here. Any other config is refused, never read a second way.
+# read here. Any other config is refused, never read a second way, and so
+# is one nested too deeply for Python's reader or whose tls.client_ca_file
+# is not a clean absolute path.
 _GO_FIELD_KEY = re.compile(r"\A[a-z0-9_]+\Z")
 
 
@@ -494,9 +496,13 @@ def trust_view(data):
     """(bindings, allowlist, client CA file) of a service config, read as
     ES and AGS read it. Raises ValueError for a config that Go's
     encoding/json could read otherwise than this does."""
-    doc = json.loads(data.decode("utf-8"), object_pairs_hook=_unique_keys, parse_constant=_no_constant)
-    # A lone surrogate escape, which Go reads as U+FFFD.
-    json.dumps(doc, ensure_ascii=False).encode("utf-8")
+    try:
+        doc = json.loads(data.decode("utf-8"), object_pairs_hook=_unique_keys, parse_constant=_no_constant)
+        # A lone surrogate escape, which Go reads as U+FFFD.
+        json.dumps(doc, ensure_ascii=False).encode("utf-8")
+    except RecursionError:
+        # Go reads up to 10,000 levels of nesting; Python's reader can stop sooner.
+        raise ValueError("it is nested too deeply to read") from None
     if not isinstance(doc, dict):
         raise ValueError("it is not a JSON object")
 
@@ -527,6 +533,11 @@ def trust_view(data):
     client_ca = section("tls").get("client_ca_file")
     if client_ca is not None and not isinstance(client_ca, str):
         raise ValueError("tls.client_ca_file is not a string")
+    # ES and AGS open a relative path from their own working directory, which
+    # is not this tool's: only a clean absolute path names one file for both.
+    if client_ca and not (client_ca.startswith("/") and not client_ca.startswith("//") and "\x00" not in client_ca
+                          and os.path.normpath(client_ca) == client_ca):
+        raise ValueError(f"tls.client_ca_file {client_ca!r} is not a clean absolute path")
     return bindings, list(prefixes), client_ca
 
 

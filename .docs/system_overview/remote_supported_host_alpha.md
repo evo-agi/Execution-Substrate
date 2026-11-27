@@ -4967,14 +4967,20 @@ The ES upgrade (`scripts/remote_alpha_upgrade_es.sh`) backs up `es.json` but
 not ES's client CA file, so its `rollback` after `allow` would put back an
 `es.json` without the `user` binding beside a client CA file that still holds
 the user CA: ES would then accept a certificate for `operator/local` signed
-with the user CA key. Its `rollback` and `restore` refuse that, and a backup
-that would put back an allowlist entry under `user/` that `es.json` no longer
-lists (a revoked name), before any service stops, and change nothing. They
-also refuse a backup that holds a client CA file `es.json` or `ags.json`
-names, and a backup or current config that Go's JSON decoder could read
-otherwise than the check does (a repeated key, a key that is not lower-case
-ASCII, such as `ſecurity`, which Go reads as `security`, or bytes that are
-not UTF-8). `apply`, `rollback` and `restore` hold the helper's lock
+with the user CA key. Its `rollback` and `restore` refuse that, the same for
+`ags.json`, and a backup that would put back an allowlist entry under `user/`
+or another bound namespace that the config no longer lists (a revoked name),
+before any service stops, and change nothing. They also refuse a backup that
+holds a client CA file `es.json` or `ags.json` names, now or in the backup
+(matched by path, by file and by directory entry), and a backup or current
+config that Go's JSON decoder could read otherwise than the check does (a
+repeated key, a key that is not lower-case ASCII, such as `ſecurity`, which
+Go reads as `security`, or bytes that are not UTF-8), that is nested too
+deeply for the check to read, or whose `tls.client_ca_file` is not a clean
+absolute path (ES reads a relative one from its own working directory). A
+current config the check cannot read, one that is not JSON at all included,
+blocks `rollback` and `restore` until it is fixed by hand; a missing one
+reads as empty. `apply`, `rollback` and `restore` hold the helper's lock
 (`/run/execution-substrate-remote-alpha-user-identity.lock`) from their
 first read of these files to their last write, so no `allow` or `revoke`
 lands in between; while a run of the helper holds it, they refuse and change
