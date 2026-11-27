@@ -15,10 +15,8 @@ How this file is kept:
   [`execution_admission_and_custody.md`](.docs/standing_rules/execution_admission_and_custody.md)
   holds the Workstream C admission and custody rules, and
   [`remote_alpha_operator_routes.md`](.docs/standing_rules/remote_alpha_operator_routes.md)
-  holds the Remote Alpha operator route rules P0i to P0v. Edit a rule there, in
-  place. Two standing-rule sections are still here and are to move the same
-  way: "Current paired-root custody and acceptance scope" and "Remote Alpha
-  access contract v1 — Tranche A".
+  holds the Remote Alpha operator route rules P0i to P0v and the Remote Alpha
+  access contract v1. Edit a rule there, in place.
 - Cite this file by section heading, never by line number, because its lines
   move.
 - The dated record that used to open this file moved to
@@ -1328,193 +1326,6 @@ contents, ownership, repository placement, and sequencing are reopened target
 seams, not a fixed package decomposition, global blocker, or mandatory next
 implementation sequence.
 
-### Workstream C admission and custody rules
-
-The standing Workstream C admission, material, custody, proof and
-startup-probe rules, with the outside-observer Stage A slice and the
-reliable-submit tranche status, are in
-[`.docs/standing_rules/execution_admission_and_custody.md`](.docs/standing_rules/execution_admission_and_custody.md).
-
-### Current paired-root custody and acceptance scope
-
-**Superseded CUST-1/CUST-2 gate history.** The earlier final-audit sequence
-allowed repository implementation and local validation before a running-
-deployment topology observation, then treated that observation, repaired-helper
-mounted fixtures, sequential native Linux lanes, and a fresh audit as blanket
-pre-commit gates. That pre-integration linkage is not a current local commit
-rule. The accepted predecessor tree supplied source evidence for the
-then-current-base candidate, which at that gate remained uncommitted and
-pending independent audit. That historical source gate closed with PR #8;
-its source publication did not close operating gates. Focused changed-interaction
-assessment, validation, and separately authorized commit were required there.
-C's selected native observations remain historical evidence
-for exact C source and command identities, not executions of this tree. Any
-new bounded witness must be selected for a concrete changed interaction rather
-than inferred from merge ancestry. Operational topology, key exposure,
-capacity, residence, reclamation, and publication gates remain open for their
-operational scope; none is waived by local source work. The one-time WIP
-checkpoint exception is consumed and supplies no authority here.
-
-**Current invariant — staging non-mutation and retained-output independence.**
-Result retention, publication, and read do not mutate a claimed staging root;
-result-side proof supplies no independent deletion or existing-object repair
-authority.
-
-**Bounded slice rule pending integrated review — paired-root qualification.**
-`execution.staging_root_dir` and `execution.results_root_dir` form one
-operation-local qualified root set. Lexical absolute/non-overlap validation is
-an early shape check, not physical proof. Before submit-enabled startup
-provisioning, Submit run-root claim, or current retained-result directory
-creation, new-object initialization, no-replace publication, and authenticated
-read/check, ES qualifies both configured paths component-by-component without
-symlink traversal and proves that they are neither the same backing object nor
-ancestor and descendant in either direction. Every named result operation uses
-the descriptor-held root that participated in a fresh visible-object and
-topology proof; ES does not validate one pathname and reopen an unrelated
-pathname for the operation. Pair proof is a prerequisite, not deletion or
-repair authority. Existing result directories, finals, and normalization
-evidence are validated without metadata repair or adoption.
-
-Linux binds each held descriptor to `fstat`, a complete
-`statx(AT_EMPTY_PATH)` identity including `STATX_MNT_ID`, a no-follow rewalk of
-its `/proc/self/fd` canonical presentation, and the uniquely selected record
-from a stable, at-most-8-MiB/65,536-record `/proc/self/mountinfo` acquisition.
-Mountinfo record integrity is separate from root-coordinate eligibility. Every
-bounded record retains its filesystem type, absolute component-clean
-mountpoint, parent/stack relationships, and classified root value. Ordinary
-canonical pathname roots are coordinate-eligible. An `nsfs` root with the
-source-grounded namespace-object envelope `<kind>:[<canonical decimal inode>]`
-is retained as opaque, where `<kind>` is exactly `mnt`, `net`, `uts`, `ipc`,
-`pid`, `user`, `cgroup`, or `time`; the decimal label is structurally checked
-but not numerically interpreted or given a separate ES width limit.
-`pid_for_children` and `time_for_children` are not root kinds because the
-kernel's namespace-object rendering uses their canonical `pid` and `time`
-operations. Malformed `nsfs` labels and every other non-path root class reject.
-Opaque records still count toward byte/record limits, ID and parent/cycle
-integrity, stacking, and canonical descendant-mount checks. If descriptor
-selection names an opaque record, proof refuses before device shortcuts,
-coordinate arithmetic, or any governed effect; ES never prefixes `/`, joins,
-cleans, substitutes the mountpoint for, or otherwise converts that label into
-a directory coordinate. This recognition does not make `nsfs` a supported
-configured execution-root filesystem.
-Source coordinates derive from the selected record and canonical descriptor
-presentation, never configured spelling. Equal or component-prefix
-coordinates reject; component-disjoint coordinates, including provable sibling
-bind sources, are accepted. The parser permits one unambiguous `/` top-of-tree
-self-parent terminal and parents hidden outside the process view, while
-rejecting duplicate IDs, nontrivial cycles, non-top self-parent records,
-malformed escapes, incomplete identity masks, device disagreement, unstable
-snapshots, ambiguity, and canonical descendant mounts. Darwin binds
-`F_GETPATH`, no-follow descriptor identity, `fstatfs`, and bounded `getfsstat`;
-same-FSID distinct presentations remain unprovable and reject. Neither platform
-uses OS-label branching or a fallback proof.
-
-Missing suffixes are validated intent, not canonical objects. A first absent
-component must be observed as `ENOENT`. Two missing roots under the same
-deepest existing object, or otherwise dependent on comparing unobserved names
-in one lookup context, reject; canonically disjoint existing parents may
-proceed. Startup plans without mutation, provisions one descriptor-relative
-component at a time, and reacquires the pair after every component before any
-later effect. Submit acquires after freeze and reobserves immediately before
-the exclusive staging claim. Retained reads may serve an existing bundle when
-staging or its run is absent, but never provision a missing results root and
-never turn a topology failure into Nomad fallback. Result-side operations use
-a fresh pair at each current named directory creation, new-object metadata
-initialization, temporary creation, final/record publication, and authenticated
-read/check boundary; bytes streamed through an already-held descriptor do not
-rescan topology. New unpublished result temporaries/records and newly created
-normalization evidence may receive their selected owner and mode through
-`Fchown`/`Fchmod`. Existing objects are checked without metadata mutation or
-adoption. Incomplete leaves, uncertain unpublished temporaries, and startup
-probe fixtures remain retained where exact-object cleanup ownership is
-unproved. No result pathname cleanup or whole-root reclamation is selected.
-
-The mount-archive namespace validator uses one invocation-local iterative
-compressed byte-radix ledger. Labels are substring views into retained
-normalized entry names, branching is byte-keyed, ancestry is recognized only
-at `/` boundaries, and commit follows all fallible per-entry work. It retains
-existing namespace/error precedence and the 16/64-MiB complete decompressed-
-stream budgets without adding an ES name or entry cap. Reachable PAX/GNU and
-32,768-header EOF cases exercise production probe/commit counters. The pinned
-`archive/tar` implementation's 1-MiB hidden special-file processing ceiling is
-dependency behavior, not an ES resolved-name or entry-count policy.
-
-**App-fixture migration and local revalidation scope.** The positive app
-integration stack closes its test-fixture `Temporary compatibility edge` by
-exclusively creating exactly two independent, empty execution-root directories
-before `esapp.New`. Regression coverage must prove their configured paths,
-directory type, distinct filesystem identity, current test-owner identity,
-expected mode, and emptiness. This is a fixture refinement that aligns positive
-integration paths with the dual-root `Current invariant` and active `Bounded
-slice rule`; it does not relax dual-missing rejection, pre-create a run object,
-or change production admission, provisioning, custody, or capability behavior.
-The correction is confined to the shared constructor in
-`es/app/submit_integration_test.go`; pre-edit inventory found no identical
-direct-construction defect in another app test.
-
-The corresponding external validation runner must use short, unique,
-mode-`0700` lane scratch roots under `/private/tmp` and preserve the inherited
-umask. This removes runner-created Unix-socket pathname inflation without
-changing `TestProofCodexShimAcquiresCredentialAndMutatesWorkspace` or widening
-its capability skip. Passing local app, admission, default, physical-temp, and race lanes does not
-qualify an operational deployment or turn C's historical native observations
-into integrated-source execution. Running-deployment topology, key exposure,
-capacity, residence, reclamation, publication, and claimed-architecture native
-witnesses remain operational gates. A new integrated-source bounded witness is
-selected only for a concrete changed interaction; these gates do not
-collectively become a blanket local pre-commit requirement.
-
-**CUST-2 nsfs assurance continuation.** The current continuation is a bounded
-test-assurance refinement only: it may align the explicit Linux post-freeze
-semantic-call ledger with the already documented nsfs implementation and may
-replace the proof-Codex test's caller-temp-derived Unix-socket path with a
-unique, owner-only, test-owned short physical fixture beneath `/tmp`.
-Production nsfs behavior, capability policy, lifecycle contracts, credential
-flow assertions, and all external gates remain unchanged. Allocation and
-listener failures in that required local test fail rather than masquerade as a
-capability skip. After a single freeze, validation remains ordered local
-default, local physical-temp, local race, native linux/amd64, then native
-linux/arm64. One distinct successor generation is allowed only after closing
-and preserving a causally demonstrated defect confined to the authorized test
-expectation, socket fixture, or minimal validation plumbing; at most two final
-generations may run, unchanged failures are never retried, and no earlier pass
-is credited to changed bytes. This continuation does not pass or waive the
-running-deployment observation, mounted-topology fixtures, supported-local
-consumer/operator proof, fresh independent audit, or exact-byte publication
-authority.
-
-This foundation does not select or implement canonical effective-plan
-encoding, `PlanBinding`, a complete effective-plan witness, durable material or
-replay-envelope custody, host-context replay treatment, mutable image-content
-identity, state-path configuration, TTL, public reliable-submit vocabulary,
-HTTP or recovery routes, Nomad ambiguity reconciliation, reliable dispatch,
-Coordinator integration, or cross-repository behavior. It must not synthesize
-`PrepareRequest` or `Manifest` proof from the plan, create a parallel admission
-engine, silently tighten the current empty-environment-allowlist contract, or
-infer authority-handoff inapplicability contrary to current `Submit` behavior.
-
-The `reliable-submit-durable-same-operation-replay-repair` source tranche is
-implemented inside the private durable source and remains required before
-reliable-submit config/store lifecycle wiring, producer enablement, or public
-runtime enablement. The committed private durable service now derives a
-latest-operation descriptor, recognizes the current latest committed mutation
-before stale-revision and inactive-state refusal, returns exact replay for same
-mutation plus same operation kind/input binding, returns mutation conflict for
-same-mutation/different-kind-or-binding reuse, reloads CAS losers through the
-same classification, and keeps COMMIT-unknown recovery on stricter full-record
-equality including the descriptor. SQLite schema v2 persists the descriptor for
-codec-2 rows and preserves migrated v1 rows as legacy/unbound without inventing
-operation semantics. Historical mutation retention remains out of scope, and
-the private store remains runtime-unwired, so this repair does not affect
-current public execution behavior.
-
-Reliable dispatch remains blocked until later implementation and audit. Both
-caller-to-ES response loss and ES-to-Nomad registration-response uncertainty
-are in scope for the target contract. The target must prevent duplicate
-semantic execution from transport redelivery while preserving the current
-no-key submit compatibility path, `control-plane-normal-shell/v1`, Nomad
-lifecycle authority, and the prohibition on a broad ES lifecycle store.
-
 The Coordinator current status is bounded durable SQLite mutation authority for
 coding-work state: internal durable writer issuance, private atomic transition
 and global-stop persistence, guarded public delegation, verification of
@@ -1567,6 +1378,14 @@ admission, runtime, lifecycle, status, route, TLS, or noninteractive-route
 authority. This planning pointer does not change ES priorities or ES route
 eligibility. Contract design may proceed only within reopened seam boundaries
 above and must not authorize autonomous execution.
+
+### Workstream C admission and custody rules
+
+The standing Workstream C admission, material, custody, proof and
+startup-probe rules, with the outside-observer Stage A slice, the
+reliable-submit tranche status and the current paired-root custody and
+acceptance scope, are in
+[`.docs/standing_rules/execution_admission_and_custody.md`](.docs/standing_rules/execution_admission_and_custody.md).
 
 ## Highest-Priority Backlog Entry
 
@@ -1675,108 +1494,7 @@ The current route rules for the Remote Alpha operator facade, P0i to P0m
 (Vault unseal and disposable reset), P0o to P0q (Vault workload-auth bootstrap)
 and P0s to P0v (TLS status, renewal and diagnostics), are in
 [`.docs/standing_rules/remote_alpha_operator_routes.md`](.docs/standing_rules/remote_alpha_operator_routes.md).
-
-### Remote Alpha access contract v1 — Tranche A
-
-`Reopened redesign seam`: ES has no implemented Remote Alpha access-profile
-validator, access-status schema, or fixed identity-only access route at this
-baseline. This tranche freezes only the ES-owned schema envelope, role and
-authority split, fail-closed safety intent, fixed identity-check boundary,
-access-status state matrix, redaction, and scheduling prohibition in
-`.docs/system_overview/remote_alpha_access_contract.md` and its repository
-contract test. It does not deliver an executable validator, route, profile
-store, key, known-hosts pin, or scheduled check. The v1 schema names are
-`es.remote-alpha.access-profile/v1` and
-`es.remote-alpha.access-status/v1`.
-
-`Reopened redesign seam`: Tranche B must first freeze the supported OpenSSH
-directive grammar, Include closure and precedence, system-configuration
-interaction, accepted local filesystem roots and modes, component symlink
-policy, agent/Keychain/certificate interpretation, and safe optional
-directives in governing documentation and fake/static contract tests before
-implementing a validator. Tranche A does not claim that any current local
-profile or operator alias conforms to that still-open static subset.
-
-`Temporary compatibility edge`: the operator-owned
-`host_to_remote_linux_m75q` alias and the existing operator routes' explicit
-`--ssh-target` arguments remain unchanged. The P0s
-`es-service-tls-status` and P0t `es-governance-tls-status` names are
-interactive status-only compatibility edges using the one dedicated
-collector; both renewal counterparts are held before contact. P0v remains a
-separate TLS-specific noninteractive status route. None is the new access
-check or an authority for its SSH profile semantics.
-
-Tranche A fixes the target separation between operator and monitor profiles,
-contact-free static validation intent, fail-closed public-key-only transport,
-a future fixed nonroot UID/account observation, safe versioned evidence, and
-`scheduled_execution_allowed=false` as a producer-owned v1 constant. The
-maintenance-monitor `monitor-eligible` classification below does not
-authorize scheduled SSH.
-Neither a local profile, `ready` evidence, MA configuration, IM readiness,
-foreground SSH success, nor the operator alias can enable it. Changing
-scheduled eligibility requires a later explicit ES/MA route decision,
-scheduled-context acceptance, a versioned contract change, separate
-implementation, host provisioning, validation, and audit.
-
-Subsequent authority decisions remain separate: B first freezes its open
-implementation-contract decisions, then implements and fake-tests the ES
-validator/check-only route; C provisions local/host access material
-under separate sensitive-effect authorization if needed; D lets Maintenance
-Agent consume evidence and only later schedule an expressly eligible route;
-E migrates Infrastructure Manager's access interpretation while preserving
-its current readiness/provenance/diagnostic ownership. No MA or IM contract is
-changed in Tranche A. Public-key SSH does not supply sudo authentication.
-Access evidence cannot repair the contained ES-to-EGS TLS certificate-validity
-failure, establish service health, or prove governed execution.
-
-The operator-authorized operator-healthcheck TLS replacement design tranche is
-also docs/static-test only. It records an ES-owned future replacement path in
-`.docs/remote_alpha_operator_healthcheck_tls_operator_authorized_replacement.md`
-with signing/custody hardening in
-`.docs/remote_alpha_operator_healthcheck_tls_signing_custody.md`
-and an IM-owned profile-lineage refresh counterpart in the Infrastructure
-Manager repo. It is not a P0v route implementation, not renewal execution, not
-Bridge or Maintenance Agent authority, not CP diagnose execution, and not
-profile mutation. It preserves `operator-healthcheck-tls-renew` as
-blocked/status-only with `unsupported_signing_topology` because signing
-authority, signer custody, key custody, CSR/cert flow, backup/rollback
-evidence, redaction, and post-check semantics remain ES unresolved stop
-conditions for the `spiffe://execution.internal/operator/local` operator
-identity.
-
-The Remote Alpha external TLS single-use incident is a `Bounded slice rule`
-recorded in
-`.docs/system_overview/remote_alpha_external_tls_one_time_incident_contract.md`.
-Report-derived evidence indicates certificate-validity failures; a future
-read-only inventory must establish the installed prior state. This is docs-only
-authority for one proof/support host, incident, and execution. It adds no
-executable route or ongoing support, and reusable P0u renewal remains blocked
-with `unsupported_signing_topology`. Its default is
-`RETIRE_BEFORE_LEAF_EXPIRY`. Inventory, private packet and rollback derivation,
-independent audit, foreground execution, any later IM handoff, and terminal
-closure remain separate; closure must remove or convert the active entry,
-authorization document, incident tests, and P0u cross-references.
-
-The Remote Alpha maintenance-monitor contract alignment slice is docs/static
-contract work only. It may codify a future Mac-side maintenance project as a
-scheduler, notifier, local-evidence summarizer, and allowlisted ES-command
-invoker, but it must not implement that project or create a new repository in
-this slice. ES keeps ownership of every Remote Alpha status, renewal, repair,
-and route-contract semantic. External schedulers may invoke only documented
-allowlisted ES commands and may not define their meaning, infer renewal
-eligibility, broaden helper scope, or become ES runtime authority, IM
-readiness/provenance authority, CP run-control authority, a hidden remote
-reconciler, or broad provisioning automation. Remote Alpha remains bounded
-proof/support posture only.
-
-Remote Alpha maintenance route eligibility is fixed for this planning slice:
-`es-service-tls-status`, `es-governance-tls-status`,
-`operator-healthcheck-tls-status`, binary deployment check, workload-auth
-check, and runtime identity summary are read-only monitor-eligible;
-`es-service-tls-renew` and `es-governance-tls-renew` are held and have no
-monitor or scheduled eligibility until a separate route-specific design, tests,
-audit, authorization, and repair contract exist;
-`operator-healthcheck-tls-renew` remains blocked/status-only until a signing
-topology and operator/local identity renewal authority are documented; binary
-deployment apply and workload-auth bootstrap are not monitor auto-renewal
-routes.
+The Remote Alpha access contract v1 (Tranche A) and its reopened access-profile
+and access-status seams, the operator-healthcheck TLS replacement design, the
+external TLS single-use incident and the maintenance-monitor route eligibility
+are there too, in the section "Remote Alpha access contract v1 — Tranche A".
