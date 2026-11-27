@@ -31,6 +31,9 @@ func TestCallerDeclarationRulesAreInTheLifecycleContract(t *testing.T) {
 		"They do not include every such key; the families below add more",
 		"A family is reserved as a whole, so that the list does not have to keep up with each program's next key",
 		"every key that ends in `INSECURE_SKIP_VERIFY`",
+		// Audit 21 and re-check 23 on PR #74: what sudo 1.9.16p2 does not
+		// hold is credited to its development branch, by name.
+		"the entries sudo's development branch adds to that table after 1.9.16p2 (read on 2026-11-26): `_JAVA_OPTIONS`, `CLASSPATH`, `PYTHONSTARTUP`, `NODE_OPTIONS`, `NODE_PATH`, `GIT_SSH_COMMAND`, `GIT_CONFIG_*` and `GCONV_PATH`, which the glibc list above already holds.",
 		"An empty or absent list admits no caller environment key.",
 		"each target path one the artifact declares in its signed `mount_targets` list",
 		"An artifact that declares no mount target admits no caller mount",
