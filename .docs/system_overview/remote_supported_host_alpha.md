@@ -7795,8 +7795,9 @@ kept. `scripts/remote_alpha_rotate_signing_keys_wrapper_test.go`
 starts the wrapper of a copied clone and plants code that must never run:
 beside a symbolic link to the wrapper, behind a path with `..`, through an
 inherited `PWD` or `CDPATH`, in `PYTHONPATH`, and as a helper replaced
-through a folder its group can write; each is refused, or the clone's own
-helper runs; and, as root, code of another account, an ordinary user's
+through a folder its group can write, and as a folder holding
+`__main__.py` (Python runs such a folder) in the helper's place; each is
+refused, or the clone's own helper runs; and, as root, code of another account, an ordinary user's
 clone included, is refused by the wrapper before it runs, and a folder
 above `scripts/` of another account by the helper started on its own.
 One test makes the keys with the machine's own `/usr/bin/openssl`.

@@ -421,6 +421,35 @@ func TestSigningKeyRotationWrapperRefusesACloneOthersCanChange(t *testing.T) {
 			}
 			return c.helper + ": No such file or directory"
 		}},
+		// Python runs a folder that holds __main__.py, so a helper folder
+		// that passes the owner and mode checks could still run code that
+		// others can change inside it.
+		{"the helper a folder Python would run", func(c *rotationClone) string {
+			if err := os.Remove(c.helper); err != nil {
+				c.t.Fatal(err)
+			}
+			if err := os.Mkdir(c.helper, 0o755); err != nil {
+				c.t.Fatal(err)
+			}
+			c.chmod(c.helper, 0o755)
+			main := filepath.Join(c.helper, "__main__.py")
+			if err := os.WriteFile(main, []byte("print('"+rotationDecoyRan+"')\n"), 0o666); err != nil {
+				c.t.Fatal(err)
+			}
+			c.chmod(main, 0o666)
+			return c.helper + " is not a regular file"
+		}},
+		{"the internal folder a file", func(c *rotationClone) string {
+			dir := filepath.Join(c.scripts, "internal")
+			if err := os.RemoveAll(dir); err != nil {
+				c.t.Fatal(err)
+			}
+			if err := os.WriteFile(dir, nil, 0o644); err != nil {
+				c.t.Fatal(err)
+			}
+			c.chmod(dir, 0o644)
+			return dir + " is not a folder"
+		}},
 	} {
 		for _, command := range [][]string{{"check"}, {"apply"}, {"rollback", "--backup-dir", "/nonexistent"}} {
 			t.Run(tc.name+" is refused before any Python of the clone runs/"+command[0], func(t *testing.T) {
