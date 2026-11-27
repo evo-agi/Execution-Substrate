@@ -433,3 +433,61 @@ func TestLinuxSetupTakesBackAFileOfAnotherGroup(t *testing.T) {
 		t.Fatalf("%s was changed in place, not replaced by a new file", path)
 	}
 }
+
+// Re-check 50 (O50-1): the former owner of the folder chose the names the
+// take-back reports. A name with a newline would forge a line of the report,
+// one that is not UTF-8 could not be printed, and one with a letter that
+// only looks like ASCII ("nom\u0430d.hcl", a Cyrillic a) could pass for another
+// file, so a name that is not plain printable ASCII is shown quoted, with
+// Python's escapes, in the report and in a refusal.
+func TestLinuxSetupShowsANameThatIsNotPlainPrintableASCIIEscaped(t *testing.T) {
+	t.Run("in the report", func(t *testing.T) {
+		data := t.TempDir()
+		config := filepath.Join(data, "etc")
+		if err := os.Mkdir(config, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		forged := filepath.Join(config, "a\nnomad: took forged back.hcl")
+		undecodable := filepath.Join(config, "bad\xff.json")
+		lookalike := filepath.Join(config, "nom\u0430d.hcl")
+		for _, path := range []string{forged, undecodable, lookalike} {
+			if err := os.WriteFile(path, []byte("# kept\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(path, 0o666); err != nil {
+				t.Fatal(err)
+			}
+		}
+		stdout, stderr, err := runLinuxSetupServiceHarness(t, data, "install_nomad_service_config\n")
+		if err != nil {
+			t.Fatalf("install_nomad_service_config: %v %s", err, stderr)
+		}
+		was := " back (uid " + strconv.Itoa(os.Getuid()) + ", gid " + strconv.Itoa(os.Getgid()) + ", 0666); Nomad's unit reads it as root, so check what it sets"
+		want := []string{
+			"nomad: took '" + config + "/a\\nnomad: took forged back.hcl'" + was,
+			"nomad: took '" + config + "/bad\\udcff.json'" + was,
+			"nomad: took '" + config + "/nom\\u0430d.hcl'" + was,
+		}
+		if got := tookBack(stdout); strings.Join(got, "\n") != strings.Join(want, "\n") {
+			t.Fatalf("the setup reported\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+		}
+		for _, path := range []string{forged, undecodable, lookalike} {
+			requireRegularFile(t, path, "# kept\n", 0o644)
+		}
+	})
+	t.Run("in a refusal", func(t *testing.T) {
+		data := t.TempDir()
+		config := filepath.Join(data, "etc")
+		if err := os.Mkdir(config, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink("/etc/hostname", filepath.Join(config, "link\nx.hcl")); err != nil {
+			t.Fatal(err)
+		}
+		_, stderr, err := runLinuxSetupServiceHarness(t, data, "install_nomad_service_config\n")
+		want := "nomad: '" + config + "/link\\nx.hcl' is not a regular file, and Nomad's unit reads it as root; remove it, or put a regular file there, and rerun"
+		if err == nil || !strings.Contains(stderr, want) {
+			t.Fatalf("install_nomad_service_config went on (%v); want %q in: %s", err, want, stderr)
+		}
+	})
+}
