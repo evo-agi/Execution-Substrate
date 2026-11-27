@@ -205,6 +205,33 @@ route, stays with each service and is described in that service's section.
 - Every service's startup configuration refuses an empty bootstrap issuer
   common name. A service whose authenticator has none refuses every request
   with `401`.
+- AGS and ES also apply namespace issuer bindings, configured in
+  `security.namespace_issuers`. Each binding names a path namespace
+  (`path_prefix`, the path of a SPIFFE ID that this section accepts, without
+  its leading slash, such as `user`) and one CA certificate of the service's
+  client CA bundle by the SHA-256 of its DER encoding
+  (`issuer_certificate_sha256`, 64 lower-case hexadecimal characters). The
+  binding holds in both directions. A CA bound to a namespace vouches for no
+  path outside it, and a path in a bound namespace needs that namespace's CA:
+  a caller gets `401` when a verified chain of its certificate that starts
+  with the leaf ends at a bound CA while its path is neither that namespace
+  nor a path continuing it after a `/`, and when its path is in a bound
+  namespace while any such chain ends at another certificate. So a CA bound
+  to `user` can never vouch for `operator/local`, and no other CA can vouch
+  for `user/claude`. The rule runs after the bootstrap-issuer rule. Without
+  bindings it changes nothing. An X.509 URI name constraint cannot do this:
+  it can hold a CA to the trust domain but not to a path inside it.
+- Startup refuses a malformed binding, a binding of a `workload` namespace
+  (workload identities are never callers, so no CA vouches for one), two
+  bindings of one CA, and two bindings whose namespaces are equal or one
+  lies within the other, and names the entry. Startup does not check that a bound CA is in the client
+  CA bundle: a binding whose CA is absent leaves its namespace with no CA
+  that can vouch for it. ARS, EGS, and CGS have no such field and their
+  client CA bundles must not hold a bound CA. On the Remote Alpha box,
+  `scripts/remote_alpha_user_identity.sh` writes the one binding, `user` to
+  the user CA, with every `allow`, and removes it with `revoke --remove-ca`
+  (`.docs/system_overview/remote_supported_host_alpha.md`, section "Remote
+  Alpha User Caller Identities").
 - After authentication, services authorize the canonical identity only: the
   path after `spiffe://execution.internal/` for path-prefix and exact-path
   allowlists, and the full canonical SPIFFE ID where a service compares
@@ -226,8 +253,9 @@ route, stays with each service and is described in that service's section.
 
 ### Ownership boundary
 
-- `internal/callerauth` owns caller authentication only. It does not own any
-  allowlist, route, policy decision, or service grammar.
+- `internal/callerauth` owns caller authentication only, including the
+  namespace issuer rule. It does not own any allowlist, route, policy
+  decision, or service grammar, nor which bindings a service configures.
 - `internal/callerallowlist` owns only the shape of a valid path prefix and
   the prefix match that ARS, AGS, and ES share. It owns no allowlist content
   and no route: which prefixes each of those services configures, and which

@@ -18,6 +18,7 @@ import (
 	"unicode/utf8"
 
 	"execution-substrate/internal/callerallowlist"
+	"execution-substrate/internal/callerauth"
 	runtimeconfigv1 "execution-substrate/internal/contracts/runtimeconfig/v1"
 	"execution-substrate/internal/knownkeys"
 )
@@ -52,6 +53,16 @@ type TLSConfig struct {
 
 type SecurityConfig struct {
 	BootstrapIssuerCommonName string `json:"bootstrap_issuer_common_name"`
+	// NamespaceIssuers binds caller path namespaces to the client CA that
+	// may vouch for them, and each such CA to its namespace. See
+	// internal/callerauth.NamespaceIssuer. Empty means no binding.
+	NamespaceIssuers []callerauth.NamespaceIssuerConfig `json:"namespace_issuers,omitempty"`
+}
+
+// ParsedNamespaceIssuers returns security.namespace_issuers in the form the
+// caller authenticator applies, or the reason the list is refused.
+func (c SecurityConfig) ParsedNamespaceIssuers() ([]callerauth.NamespaceIssuer, error) {
+	return callerauth.ParseNamespaceIssuers("security.namespace_issuers", c.NamespaceIssuers)
 }
 
 type AuthorizationConfig struct {
@@ -256,6 +267,9 @@ func (c Config) Validate() error {
 
 	if strings.TrimSpace(c.Security.BootstrapIssuerCommonName) == "" {
 		return fmt.Errorf("security.bootstrap_issuer_common_name is required")
+	}
+	if _, err := c.Security.ParsedNamespaceIssuers(); err != nil {
+		return err
 	}
 	if err := c.Authorization.Validate("authorization"); err != nil {
 		return err

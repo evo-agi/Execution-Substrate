@@ -73,14 +73,18 @@ type layoutImport struct {
 // entry that no file needs any more fails the test, so the list only
 // shrinks.
 var layoutCrossServiceExceptions = map[layoutImport]string{
-	{"ags/app/app_integration_test.go", "ars/index"}:        "reads ARS's on-disk index of an in-process ARS",
-	{"ags/app/app_integration_test.go", "ars/store"}:        "reads ARS's on-disk blob store of an in-process ARS",
-	{"ags/app/app_integration_test.go", "es/admission"}:     "builds ES prepare requests, whose types live in es/admission",
-	{"es/app/app_integration_test.go", "ars/index"}:         "writes ARS's on-disk index for an in-process ARS",
-	{"es/app/app_integration_test.go", "ars/store"}:         "writes ARS's on-disk blob store for an in-process ARS",
-	{"es/app/submit_integration_test.go", "ars/index"}:      "reads ARS's on-disk index of an in-process ARS",
-	{"es/app/submit_integration_test.go", "ars/store"}:      "reads ARS's on-disk blob store of an in-process ARS",
-	{"scripts/internal/esconfigcheck/main.go", "es/config"}: "the ES upgrade script checks a config with ES's own loader",
+	{"ags/app/app_integration_test.go", "ars/index"}:               "reads ARS's on-disk index of an in-process ARS",
+	{"ags/app/app_integration_test.go", "ars/store"}:               "reads ARS's on-disk blob store of an in-process ARS",
+	{"ags/app/app_integration_test.go", "es/admission"}:            "builds ES prepare requests, whose types live in es/admission",
+	{"es/app/app_integration_test.go", "ars/index"}:                "writes ARS's on-disk index for an in-process ARS",
+	{"es/app/app_integration_test.go", "ars/store"}:                "writes ARS's on-disk blob store for an in-process ARS",
+	{"es/app/submit_integration_test.go", "ars/index"}:             "reads ARS's on-disk index of an in-process ARS",
+	{"es/app/submit_integration_test.go", "ars/store"}:             "reads ARS's on-disk blob store of an in-process ARS",
+	{"scripts/internal/esconfigcheck/main.go", "es/config"}:        "the ES upgrade script checks a config with ES's own loader",
+	{"scripts/remote_alpha_user_identity_test.go", "ags/api"}:      "serves the minted identity through the real AGS handlers",
+	{"scripts/remote_alpha_user_identity_test.go", "ags/publish"}:  "stubs the AGS publish service behind those handlers, whose types live in ags/publish",
+	{"scripts/remote_alpha_user_identity_test.go", "es/admission"}: "stubs the ES admission service behind the ES handlers, whose types live in es/admission",
+	{"scripts/remote_alpha_user_identity_test.go", "es/api"}:       "serves the minted identity through the real ES handlers",
 }
 
 // layoutGoFileVisible reports whether the go command builds or tests the

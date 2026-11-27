@@ -42,7 +42,11 @@ func New(cfg config.Config) (*App, error) {
 		service: service,
 	}
 
-	server := api.NewServer(service, cfg.Security.BootstrapIssuerCommonName, cfg.Authorization.AllowedSPIFFEPathPrefixes, app.Started)
+	namespaceIssuers, err := cfg.Security.ParsedNamespaceIssuers()
+	if err != nil {
+		return nil, err
+	}
+	server := api.NewServer(service, cfg.Security.BootstrapIssuerCommonName, cfg.Authorization.AllowedSPIFFEPathPrefixes, app.Started, namespaceIssuers...)
 	app.httpServer = &http.Server{
 		Addr:         net.JoinHostPort(cfg.HTTP.BindAddress, strconv.Itoa(cfg.HTTP.Port)),
 		Handler:      server.Handler(),

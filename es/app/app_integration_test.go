@@ -35,6 +35,7 @@ import (
 	"execution-substrate/es/admission"
 	esapp "execution-substrate/es/app"
 	esconfig "execution-substrate/es/config"
+	"execution-substrate/internal/callerauth"
 	evidencev1 "execution-substrate/internal/contracts/evidence/v1"
 	runtimeconfigv1 "execution-substrate/internal/contracts/runtimeconfig/v1"
 )
@@ -226,6 +227,50 @@ func TestPrepareAllowsConfiguredControlPlaneCaller(t *testing.T) {
 	}
 }
 
+// ES applies security.namespace_issuers from its configuration: a CA bound
+// to a namespace vouches for no path outside it, and a path in a bound
+// namespace needs that namespace's CA. Both callers below are allowed and
+// their certificates come from the same client CA, so only the binding
+// tells them apart.
+func TestPrepareAppliesConfiguredNamespaceIssuers(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		boundToCA bool
+		operator  int
+		user      int
+	}{
+		{name: "user_bound_to_the_client_CA", boundToCA: true, operator: http.StatusUnauthorized, user: http.StatusOK},
+		{name: "user_bound_to_another_CA", boundToCA: false, operator: http.StatusOK, user: http.StatusUnauthorized},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stack := startStack(t, stackOptions{
+				AllowedExecutionCallerPrefixes: []string{"operator/local", "user/claude"},
+				NamespaceIssuers: func(fixture *tlsFixture) []callerauth.NamespaceIssuerConfig {
+					digest := sha256.Sum256(fixture.runtimeCA.Raw)
+					if !tc.boundToCA {
+						digest = sha256.Sum256(fixture.bootstrapCA.Raw)
+					}
+					return []callerauth.NamespaceIssuerConfig{{PathPrefix: "user", IssuerCertificateSHA256: hex.EncodeToString(digest[:])}}
+				},
+			})
+			for _, caller := range []struct {
+				path string
+				want int
+			}{{"operator/local", tc.operator}, {"user/claude", tc.user}} {
+				response := doJSONRequest(t, stack.es.Addr(), http.MethodPost, "/v1/executions:prepare", stack.fixture.clientTLSConfig(t, caller.path, false), buildPrepareRequestBody(t, stack))
+				body := strings.TrimSpace(string(mustReadBody(t, response.Body)))
+				response.Body.Close()
+				if response.StatusCode != caller.want {
+					t.Fatalf("prepare as %s: want %d, got %d body=%s", caller.path, caller.want, response.StatusCode, body)
+				}
+				if caller.want == http.StatusUnauthorized && body != "Authenticated caller identity required" {
+					t.Fatalf("prepare as %s: unexpected body %q", caller.path, body)
+				}
+			}
+		})
+	}
+}
+
 func TestPrepareReturns403WhenDeploymentCallerIsUsed(t *testing.T) {
 	stack := startStack(t, stackOptions{})
 
@@ -318,6 +363,9 @@ type stackOptions struct {
 	RevokedArtifact                bool
 	DefaultAuthMode                esconfig.WorkloadVaultAuthMode
 	AllowedExecutionCallerPrefixes []string
+	// NamespaceIssuers, when set, returns security.namespace_issuers for
+	// the stack's TLS fixture.
+	NamespaceIssuers func(*tlsFixture) []callerauth.NamespaceIssuerConfig
 }
 
 type testStack struct {
@@ -346,6 +394,9 @@ func startStack(t *testing.T, opts stackOptions) *testStack {
 		}
 		if len(opts.AllowedExecutionCallerPrefixes) > 0 {
 			cfg.Authorization.AllowedSPIFFEPathPrefixes = append([]string(nil), opts.AllowedExecutionCallerPrefixes...)
+		}
+		if opts.NamespaceIssuers != nil {
+			cfg.Security.NamespaceIssuers = opts.NamespaceIssuers(stack.fixture)
 		}
 	})
 

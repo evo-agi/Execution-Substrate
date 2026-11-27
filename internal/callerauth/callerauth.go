@@ -3,8 +3,10 @@
 // verified TLS client certificate and refuses the request when that identity
 // is missing, ambiguous, malformed, outside the ES trust domain or a workload
 // identity, when the verified chain is no longer (or not yet) within its
-// validity period, when the certificate is not an end-entity certificate, or
-// when the certificate was issued by the configured bootstrap issuer.
+// validity period, when the certificate is not an end-entity certificate,
+// when the certificate was issued by the configured bootstrap issuer, or
+// when a namespace issuer binding ties the caller's path namespace and its
+// issuing CA together and the certificate does not keep to it.
 //
 // The package owns authentication only: who is calling. Which authenticated
 // callers may use which route (authorization) stays with each service.
@@ -15,9 +17,12 @@
 package callerauth
 
 import (
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -48,6 +53,7 @@ var (
 	ErrMalformedSPIFFEID     = errors.New("callerauth: URI SAN is not a conforming SPIFFE ID with a path")
 	ErrForeignTrustDomain    = errors.New("callerauth: SPIFFE ID is outside trust domain " + TrustDomain)
 	ErrWorkloadIdentity      = errors.New("callerauth: SPIFFE ID is a workload identity, and workload identities are never callers")
+	ErrIssuerNamespace       = errors.New("callerauth: the certificate's issuing CA and its path namespace do not keep to a namespace issuer binding")
 )
 
 // workloadPathSegment is the first path segment of every workload identity:
@@ -188,11 +194,149 @@ func CallerFromConnectionState(state *tls.ConnectionState, now time.Time) (Calle
 	return Caller{id: id, issuerCommonName: leaf.Issuer.CommonName}, nil
 }
 
+// verifiedChainAnchors returns the SHA-256 of the last certificate of every
+// verified chain of state that starts with its leaf: the trust anchors from
+// the client CA pool that vouch for the caller.
+func verifiedChainAnchors(state *tls.ConnectionState) [][sha256.Size]byte {
+	if state == nil || len(state.VerifiedChains) == 0 || len(state.VerifiedChains[0]) == 0 || state.VerifiedChains[0][0] == nil {
+		return nil
+	}
+	leaf := state.VerifiedChains[0][0]
+	var anchors [][sha256.Size]byte
+	for _, chain := range state.VerifiedChains {
+		if len(chain) == 0 || (chain[0] != leaf && !chain[0].Equal(leaf)) || chain[len(chain)-1] == nil {
+			continue
+		}
+		anchors = append(anchors, sha256.Sum256(chain[len(chain)-1].Raw))
+	}
+	return anchors
+}
+
+// NamespaceIssuer binds a SPIFFE ID path namespace to the one CA that may
+// vouch for identities in it, and that CA to that namespace. A CA in a
+// service's client CA pool otherwise vouches for any path in the trust
+// domain: an X.509 URI name constraint can hold a CA to the trust domain
+// but not to a path inside it. Make one with ParseNamespaceIssuer.
+type NamespaceIssuer struct {
+	pathPrefix string
+	caSHA256   [sha256.Size]byte
+}
+
+// PathPrefix returns the bound namespace, for example "user".
+func (n NamespaceIssuer) PathPrefix() string {
+	return n.pathPrefix
+}
+
+// CASHA256 returns the SHA-256 of the bound CA certificate's DER encoding,
+// as lower-case hex.
+func (n NamespaceIssuer) CASHA256() string {
+	return hex.EncodeToString(n.caSHA256[:])
+}
+
+// within reports whether path is the bound namespace or lies below it.
+func (n NamespaceIssuer) within(path string) bool {
+	return path == n.pathPrefix || strings.HasPrefix(path, n.pathPrefix+"/")
+}
+
+// ParseNamespaceIssuer accepts pathPrefix only when it is a SPIFFE ID path
+// that ParseSPIFFEID would accept, written without a leading or trailing
+// slash, for example "user" or "user/team" (so never a workload identity),
+// and caSHA256 only when it is exactly 64 lower-case hexadecimal
+// characters: the SHA-256 of the CA certificate's DER encoding.
+func ParseNamespaceIssuer(pathPrefix, caSHA256 string) (NamespaceIssuer, error) {
+	if _, err := ParseSPIFFEID(spiffeScheme + TrustDomain + "/" + pathPrefix); errors.Is(err, ErrWorkloadIdentity) {
+		return NamespaceIssuer{}, fmt.Errorf("path_prefix %q names workload identities, which are never callers", pathPrefix)
+	} else if err != nil {
+		return NamespaceIssuer{}, fmt.Errorf("path_prefix %q is not a SPIFFE ID path such as \"user\"", pathPrefix)
+	}
+	if len(caSHA256) != 2*sha256.Size || strings.ToLower(caSHA256) != caSHA256 {
+		return NamespaceIssuer{}, fmt.Errorf("issuer_certificate_sha256 %q is not 64 lower-case hexadecimal characters", caSHA256)
+	}
+	var digest [sha256.Size]byte
+	if _, err := hex.Decode(digest[:], []byte(caSHA256)); err != nil {
+		return NamespaceIssuer{}, fmt.Errorf("issuer_certificate_sha256 %q is not 64 lower-case hexadecimal characters", caSHA256)
+	}
+	return NamespaceIssuer{pathPrefix: pathPrefix, caSHA256: digest}, nil
+}
+
+// CheckNamespaceIssuers refuses a list in which an entry is not one that
+// ParseNamespaceIssuer returned, two entries name the same CA, or one
+// entry's namespace equals or lies within another's: each CA vouches for
+// one namespace, and each path has at most one CA that may vouch for it.
+func CheckNamespaceIssuers(issuers []NamespaceIssuer) error {
+	for i, issuer := range issuers {
+		if _, err := ParseNamespaceIssuer(issuer.pathPrefix, issuer.CASHA256()); err != nil {
+			return fmt.Errorf("entry %d: %w", i, err)
+		}
+		for j := 0; j < i; j++ {
+			other := issuers[j]
+			if other.caSHA256 == issuer.caSHA256 {
+				return fmt.Errorf("entries %d and %d bind the same CA", j, i)
+			}
+			if other.within(issuer.pathPrefix) || issuer.within(other.pathPrefix) {
+				return fmt.Errorf("entries %d and %d bind overlapping namespaces %q and %q", j, i, other.pathPrefix, issuer.pathPrefix)
+			}
+		}
+	}
+	return nil
+}
+
+// NamespaceIssuerConfig is the configuration form of one NamespaceIssuer,
+// as AGS and ES read it from security.namespace_issuers.
+type NamespaceIssuerConfig struct {
+	PathPrefix              string `json:"path_prefix"`
+	IssuerCertificateSHA256 string `json:"issuer_certificate_sha256"`
+}
+
+// ParseNamespaceIssuers parses and checks a configured list. field names the
+// list in error messages, for example "security.namespace_issuers".
+func ParseNamespaceIssuers(field string, entries []NamespaceIssuerConfig) ([]NamespaceIssuer, error) {
+	issuers := make([]NamespaceIssuer, 0, len(entries))
+	for i, entry := range entries {
+		issuer, err := ParseNamespaceIssuer(entry.PathPrefix, entry.IssuerCertificateSHA256)
+		if err != nil {
+			return nil, fmt.Errorf("%s[%d]: %w", field, i, err)
+		}
+		issuers = append(issuers, issuer)
+	}
+	if err := CheckNamespaceIssuers(issuers); err != nil {
+		return nil, fmt.Errorf("%s: %w", field, err)
+	}
+	return issuers, nil
+}
+
+// namespaceIssuerError returns ErrIssuerNamespace unless the caller keeps to
+// every binding of issuers: when a verified chain of its certificate ends at
+// a bound CA, its path is in that CA's namespace, and when its path is in a
+// bound namespace, every verified chain ends at that namespace's CA.
+func namespaceIssuerError(caller Caller, state *tls.ConnectionState, issuers []NamespaceIssuer) error {
+	if len(issuers) == 0 {
+		return nil
+	}
+	anchors := verifiedChainAnchors(state)
+	if len(anchors) == 0 {
+		return ErrIssuerNamespace
+	}
+	for _, anchor := range anchors {
+		for _, issuer := range issuers {
+			if (anchor == issuer.caSHA256) != issuer.within(caller.id.path) {
+				return ErrIssuerNamespace
+			}
+		}
+	}
+	return nil
+}
+
 // Authenticator applies the caller authentication rules to requests. Make
 // one with NewAuthenticator.
 type Authenticator struct {
 	bootstrapIssuerCommonName string
-	now                       func() time.Time
+	namespaceIssuers          []NamespaceIssuer
+	// invalidNamespaceIssuers is set when WithNamespaceIssuers was given a
+	// list that CheckNamespaceIssuers refuses; the Authenticator then
+	// refuses every request.
+	invalidNamespaceIssuers bool
+	now                     func() time.Time
 }
 
 // NewAuthenticator returns an Authenticator that refuses callers whose
@@ -204,6 +348,21 @@ func NewAuthenticator(bootstrapIssuerCommonName string) Authenticator {
 	return Authenticator{bootstrapIssuerCommonName: strings.TrimSpace(bootstrapIssuerCommonName), now: time.Now}
 }
 
+// WithNamespaceIssuers returns a copy of a that also applies issuers (see
+// Authenticate). AGS and ES read them from security.namespace_issuers; with
+// none, a behaves as before. A list that CheckNamespaceIssuers refuses makes
+// the returned Authenticator refuse every request.
+func (a Authenticator) WithNamespaceIssuers(issuers ...NamespaceIssuer) Authenticator {
+	if err := CheckNamespaceIssuers(issuers); err != nil {
+		a.namespaceIssuers = nil
+		a.invalidNamespaceIssuers = true
+		return a
+	}
+	a.namespaceIssuers = append([]NamespaceIssuer(nil), issuers...)
+	a.invalidNamespaceIssuers = false
+	return a
+}
+
 // Authenticate returns the authenticated caller of r and true. Otherwise it
 // writes the refusal and returns false:
 //
@@ -213,11 +372,18 @@ func NewAuthenticator(bootstrapIssuerCommonName string) Authenticator {
 //     bootstrap issuer;
 //   - 403 "Bootstrap PKI callers are not accepted; use a SPIRE-issued
 //     identity" when the client certificate's issuer common name is the
-//     bootstrap issuer.
+//     bootstrap issuer;
+//   - 401 "Authenticated caller identity required" when the caller does not
+//     keep to a namespace issuer binding: a verified chain of its
+//     certificate ends at a bound CA while its path is outside that CA's
+//     namespace, or its path is in a bound namespace while a verified chain
+//     ends at any other certificate (ErrIssuerNamespace), and when the
+//     Authenticator was given namespace issuers that CheckNamespaceIssuers
+//     refuses.
 //
 // Both bodies are plain text.
 func (a Authenticator) Authenticate(w http.ResponseWriter, r *http.Request) (Caller, bool) {
-	if a.bootstrapIssuerCommonName == "" {
+	if a.bootstrapIssuerCommonName == "" || a.invalidNamespaceIssuers {
 		httpx.WriteText(w, http.StatusUnauthorized, unauthenticatedBody)
 		return Caller{}, false
 	}
@@ -232,6 +398,10 @@ func (a Authenticator) Authenticate(w http.ResponseWriter, r *http.Request) (Cal
 	}
 	if caller.issuerCommonName == a.bootstrapIssuerCommonName {
 		httpx.WriteText(w, http.StatusForbidden, bootstrapIssuerBody)
+		return Caller{}, false
+	}
+	if namespaceIssuerError(caller, r.TLS, a.namespaceIssuers) != nil {
+		httpx.WriteText(w, http.StatusUnauthorized, unauthenticatedBody)
 		return Caller{}, false
 	}
 	return caller, true
