@@ -161,7 +161,6 @@ payload = {
             "environment_variables": [
                 "REFERENCE_IDENTITY_URL",
                 "REFERENCE_SECRET_PATH",
-                "REFERENCE_VAULT_INSECURE_SKIP_VERIFY",
             ],
             "required_capabilities": [],
         },
@@ -322,6 +321,16 @@ If the later publish / prepare / submit / lifecycle helpers fail, first re-run `
   Every post-claim failure and every accepted run retains its root, including
   partial Submit failures that return no receipt, ambiguous registration, and
   terminal success. Failures before run assignment/claim still create no staging.
+- The workload checks Vault's TLS certificate against the trust bundle ES gives
+  it in `SSL_CERT_FILE` when the workload-zone Vault configuration carries one,
+  and otherwise against the image's system trust store. The publish request in
+  step 4 does not declare `REFERENCE_VAULT_INSECURE_SKIP_VERIFY`, the
+  entrypoint's switch that turns that check off. With the check off, anyone
+  who can intercept the workload's traffic to Vault can stand in for Vault,
+  take the token the workload logs in for and hand it false secrets, and a
+  caller should not be able to choose that. ES refuses any caller key that ends in
+  `INSECURE_SKIP_VERIFY`, whatever the artifact declares
+  ([.docs/execution_lifecycle/contracts.md](../../.docs/execution_lifecycle/contracts.md), section 5).
 
 ## Test Evidence
 
@@ -335,3 +344,4 @@ If the later publish / prepare / submit / lifecycle helpers fail, first re-run `
 - **2026-11-18:** retained staging: inspect it whenever exclusive run-root creation may have occurred (PR #8).
 - **2026-11-23:** renamed to its current name (PR #37).
 - **2026-11-25:** restructured into the layout of the project's other runbooks (What is it?, What do I need?, How to use it? with numbered steps and the output to expect, Notes, Test Evidence, History). Packaging the workload moved from the former section "Reference Workload" to step 1, and the former section "Runtime-Identity Contract In This Legacy Reference Path" is now under "What is it?"; the bring-up runbook was renamed to `Governed Execution ES System Bring-Up.md`. The note on inspecting retained staging is under Notes rather than under step 7, because it applies after a success too. No command changed.
+- **2026-11-27:** the publish request no longer declares `REFERENCE_VAULT_INSECURE_SKIP_VERIFY`, because ES now refuses a caller key that ends in `INSECURE_SKIP_VERIFY`; the note under Notes says why (PR #74).

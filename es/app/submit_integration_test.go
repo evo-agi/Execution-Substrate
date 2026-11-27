@@ -1018,12 +1018,12 @@ func listNomadJobIDs(t *testing.T, harness *nomadHarness) []string {
 
 func TestSubmitFlowMountsGovernedArtifactAndLifecycleStillWorks(t *testing.T) {
 	stack := startRuntimeIdentitySubmitStack(t)
-	publishSubmitArtifactArchive(t, stack, buildArchiveFromScript(t, `#!/bin/sh
+	publishSubmitArtifactArchiveWithOptions(t, stack, buildArchiveFromScript(t, `#!/bin/sh
 set -eu
 echo START-BANNER
 cat /execution/mounts/config/app.conf
 echo "{\"status\":\"ok\",\"artifact_digest\":\"${EXEC_ARTIFACT_DIGEST}\"}"
-`))
+`), publishSubmitArtifactOptions{mountTargets: []string{mountedSourceTarget}})
 	mountArtifact := publishAuxiliaryArtifactArchive(t, stack, buildArchiveWithEntries(t, []archiveEntry{{Name: "app.conf", Mode: 0o644, Body: []byte(mountedSourceText)}}), "runtime-mount")
 	response := submitExecutionRequest(t, stack, buildSubmitRequestBodyWithMounts(t, stack, []admission.RuntimeMount{{Source: admission.MountSource{ArtifactDigest: mountArtifact.ArtifactDigest}, TargetPath: mountedSourceTarget, ReadOnly: true}}))
 	defer response.Body.Close()
@@ -1081,7 +1081,7 @@ func TestSubmitFlowMountsGovernedArtifactAndLifecycleWithInstalledSourceIdentity
 			t.Errorf("mount witness: task-owned teardown incomplete (stop=%s job=%s handles=%s)", session.stopResult, session.jobCancelResult, session.handleCloseResult)
 		}
 	})
-	publishSubmitArtifactArchive(t, stack, buildArchiveFromScript(t, `#!/bin/sh
+	publishSubmitArtifactArchiveWithOptions(t, stack, buildArchiveFromScript(t, `#!/bin/sh
 set -eu
 printf 'MOUNT-OBSERVER-READY\n' > /execution/run/result/.mount-observer-ready
 echo START-BANNER
@@ -1093,7 +1093,7 @@ while [ ! -f /execution/run/result/.mount-observer-release ]; do
   [ "$count" -lt 120 ] || exit 78
   sleep 1
 done
-`))
+`), publishSubmitArtifactOptions{mountTargets: []string{mountedSourceTarget}})
 
 	mountArtifact := publishAuxiliaryArtifactArchive(t, stack, buildArchiveWithEntries(t, []archiveEntry{
 		{
@@ -1211,12 +1211,12 @@ func requireMountedSourceNativeCapabilities(t *testing.T) {
 
 func TestSubmitFlowRemovesRuntimeMountArchiveResidueAfterExtraction(t *testing.T) {
 	stack := startSubmitStack(t)
-	publishSubmitArtifactArchive(t, stack, buildArchiveFromScript(t, `#!/bin/sh
+	publishSubmitArtifactArchiveWithOptions(t, stack, buildArchiveFromScript(t, `#!/bin/sh
 set -eu
 echo START-BANNER
 cat /execution/mounts/config/app.conf
 echo "{\"status\":\"ok\",\"artifact_digest\":\"${EXEC_ARTIFACT_DIGEST}\"}"
-`))
+`), publishSubmitArtifactOptions{mountTargets: []string{"/execution/mounts/config"}})
 
 	mountArtifact := publishAuxiliaryArtifactArchive(t, stack, buildArchiveWithEntries(t, []archiveEntry{
 		{
@@ -1260,7 +1260,7 @@ echo "{\"status\":\"ok\",\"artifact_digest\":\"${EXEC_ARTIFACT_DIGEST}\"}"
 }
 
 func TestSubmitRejectsMountArtifactWhenEvidenceBlobIsMissing(t *testing.T) {
-	stack := startSubmitStackWithoutNomad(t)
+	stack := startSubmitStackWithOptionsWithoutNomad(t, submitStackOptions{mountTargets: []string{"/execution/mounts/config"}})
 
 	mountArtifact := publishAuxiliaryArtifactArchive(t, stack, buildArchiveWithEntries(t, []archiveEntry{
 		{
@@ -1286,7 +1286,7 @@ func TestSubmitRejectsMountArtifactWhenEvidenceBlobIsMissing(t *testing.T) {
 }
 
 func TestSubmitRejectsMountArtifactWithPathTraversalArchive(t *testing.T) {
-	stack := startSubmitStackWithoutNomad(t)
+	stack := startSubmitStackWithOptionsWithoutNomad(t, submitStackOptions{mountTargets: []string{"/execution/mounts/config"}})
 
 	mountArtifact := publishAuxiliaryArtifactArchive(t, stack, buildArchiveWithEntries(t, []archiveEntry{
 		{
@@ -1309,7 +1309,7 @@ func TestSubmitRejectsMountArtifactWithPathTraversalArchive(t *testing.T) {
 }
 
 func TestSubmitRejectsMountArtifactWithSymlinkEscape(t *testing.T) {
-	stack := startSubmitStackWithoutNomad(t)
+	stack := startSubmitStackWithOptionsWithoutNomad(t, submitStackOptions{mountTargets: []string{"/execution/mounts/config"}})
 
 	mountArtifact := publishAuxiliaryArtifactArchive(t, stack, buildArchiveWithEntries(t, []archiveEntry{
 		{
@@ -1333,7 +1333,7 @@ func TestSubmitRejectsMountArtifactWithSymlinkEscape(t *testing.T) {
 }
 
 func TestSubmitRejectsMountArtifactThatExceedsSizeLimit(t *testing.T) {
-	stack := startSubmitStackWithoutNomad(t)
+	stack := startSubmitStackWithOptionsWithoutNomad(t, submitStackOptions{mountTargets: []string{"/execution/mounts/config"}})
 
 	mountArtifact := publishAuxiliaryArtifactArchive(t, stack, buildArchiveWithEntries(t, []archiveEntry{
 		{
@@ -1355,8 +1355,57 @@ func TestSubmitRejectsMountArtifactThatExceedsSizeLimit(t *testing.T) {
 	assertErrorResponseCode(t, response, http.StatusConflict, "mount_artifact_invalid")
 }
 
+// The stack publishes through the real AGS, so these cases check that the
+// mount_targets AGS signs is what ES reads back from the evidence. ES refuses
+// before it reads the mount artifact or contacts Nomad: the stack's Nomad
+// stand-in fails the test on any call.
+func TestSubmitRefusesAMountTheSignedArtifactDoesNotDeclare(t *testing.T) {
+	for _, testCase := range []struct {
+		name         string
+		mountTargets []string
+	}{
+		{name: "no mount_targets", mountTargets: nil},
+		{name: "empty mount_targets", mountTargets: []string{}},
+		{name: "another target declared", mountTargets: []string{"/execution/mounts/data"}},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			stack := startSubmitStackWithOptionsWithoutNomad(t, submitStackOptions{mountTargets: testCase.mountTargets})
+			mountArtifact := publishAuxiliaryArtifactArchive(t, stack, buildArchiveWithEntries(t, []archiveEntry{
+				{Name: "app.conf", Mode: 0o644, Body: []byte("MOUNT-CONTENT\n")},
+			}), "runtime-mount")
+			discovery := stack.loadDiscovery(t, mountArtifact.ArtifactDigest)
+			// With the mount artifact's evidence gone, a Submit that read
+			// it would fail with 503 artifact_evidence_unavailable instead.
+			removeBlob(t, stack.arsRootDir, discovery.Evidence.Digest)
+
+			response := submitExecutionRequest(t, stack, buildSubmitRequestBodyWithMounts(t, stack, []admission.RuntimeMount{
+				{
+					Source:     admission.MountSource{ArtifactDigest: mountArtifact.ArtifactDigest},
+					TargetPath: "/execution/mounts/config",
+					ReadOnly:   true,
+				},
+			}))
+			defer response.Body.Close()
+
+			body := strings.TrimSpace(string(mustReadBody(t, response.Body)))
+			if response.StatusCode != http.StatusBadRequest {
+				t.Fatalf("expected 400, got %d body=%s", response.StatusCode, body)
+			}
+			var payload admission.ErrorResponse
+			if err := json.Unmarshal([]byte(body), &payload); err != nil {
+				t.Fatalf("decode error response: %v body=%s", err, body)
+			}
+			if payload.Code != "invalid_request" || !strings.Contains(payload.Error, "mount target_path is not declared by the runtime interface: /execution/mounts/config") {
+				t.Fatalf("expected the undeclared mount target refusal, got %s", body)
+			}
+		})
+	}
+}
+
 func TestSubmitRejectsOverlappingMountTargets(t *testing.T) {
-	stack := startSubmitStackWithoutNomad(t)
+	// Both targets are declared, so the refusal comes from the overlap and
+	// not from the declaration check.
+	stack := startSubmitStackWithOptionsWithoutNomad(t, submitStackOptions{mountTargets: []string{"/execution/mounts/config", "/execution/mounts/config/sub"}})
 
 	response := submitExecutionRequest(t, stack, buildSubmitRequestBodyWithMounts(t, stack, []admission.RuntimeMount{
 		{
@@ -1430,6 +1479,10 @@ type submitStackOptions struct {
 	// nomadESConfig, when set, changes ES's Nomad config after the stack
 	// fills it in (for example a pin for another key).
 	nomadESConfig func(*esconfig.NomadConfig)
+	// mountTargets, when set, is the signed mount_targets list of the
+	// stack's default artifact. Unset, that artifact declares none and ES
+	// admits no caller mount against it.
+	mountTargets []string
 }
 
 func (opts submitStackOptions) nomadHarnessOptions() nomadHarnessOptions {
@@ -1886,7 +1939,7 @@ func startSubmitStackWithOptions(t *testing.T, opts submitStackOptions) *submitS
 	startService(t, esService.Start, esService.Addr, fixture.clientTLSConfigForServer(t, fixture.esServerName, "operator/local", false))
 	stack.esRunning = true
 
-	publishSubmitArtifact(t, stack, opts.networkAccess)
+	publishSubmitArtifact(t, stack, opts.networkAccess, opts.mountTargets)
 
 	t.Cleanup(func() { stack.shutdownAll(t) })
 	return stack
@@ -2292,7 +2345,22 @@ func buildSubmitRequestBodyWithMounts(t *testing.T, stack *submitStack, mounts [
 	})
 }
 
-func publishSubmitArtifact(t *testing.T, stack *submitStack, networkAccess bool) {
+// submitArtifactRuntimeInterface is the runtime interface the stack's
+// publish helpers sign. mount_targets is sent only when the test sets it, so
+// an artifact published without it has the same shape as before the field
+// existed.
+func submitArtifactRuntimeInterface(environmentVariables []string, mountTargets []string) map[string]any {
+	runtime := map[string]any{
+		"environment_variables": environmentVariables,
+		"required_capabilities": []string{},
+	}
+	if mountTargets != nil {
+		runtime["mount_targets"] = mountTargets
+	}
+	return runtime
+}
+
+func publishSubmitArtifact(t *testing.T, stack *submitStack, networkAccess bool, mountTargets []string) {
 	t.Helper()
 
 	requestBody := mustMarshalJSON(t, map[string]any{
@@ -2308,10 +2376,7 @@ func publishSubmitArtifact(t *testing.T, stack *submitStack, networkAccess bool)
 			"build_log_digest": labeledDigest("ee"),
 		},
 		"admission": map[string]any{
-			"runtime": map[string]any{
-				"environment_variables": []string{"APP_MODE"},
-				"required_capabilities": []string{},
-			},
+			"runtime": submitArtifactRuntimeInterface([]string{"APP_MODE"}, mountTargets),
 			"access": map[string]any{
 				"network_access": networkAccess,
 			},
