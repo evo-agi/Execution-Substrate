@@ -964,7 +964,7 @@ func TestTrancheB1PayloadDigestLineageIsDistinctPrivateAndPreEffect(t *testing.T
 }
 
 func TestResolvedMountProvenanceCarriesSignedPayloadDigest(t *testing.T) {
-	fixture := newPreparedArtifactFixture(t)
+	fixture := newPreparedArtifactFixture(t).withMountTargets(t, "/execution/mounts/first", "/execution/mounts/second")
 	policyPayload := buildAdmissionPolicyStaticScriptArchive(t, map[string][]byte{
 		staticScriptEntrypointName: []byte(benignPolicyFixtureText()),
 	})
@@ -1436,7 +1436,7 @@ func TestTrancheB2ControlPlaneNormalShellLiteralNomadJobAndAuthorityHandoff(t *t
 	if len(trancheB2ControlPlaneNormalShellNomadJobTokenLedger) != 14 || len(trancheB2ControlPlaneNormalShellAuthorityHandoffTokenLedger) != 1 {
 		t.Fatal("control-plane golden token occurrence inventory changed")
 	}
-	fixture := newPreparedArtifactFixture(t)
+	fixture := newPreparedArtifactFixture(t).withMountTargets(t, "/execution/mounts/config")
 	policyPayload := buildAdmissionPolicyStaticScriptArchive(t, map[string][]byte{
 		staticScriptEntrypointName: []byte(benignPolicyFixtureText()),
 	})

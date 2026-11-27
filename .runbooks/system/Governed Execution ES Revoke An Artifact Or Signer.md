@@ -29,14 +29,14 @@ Each command below prints only the revocation lists, the allowed signers, a key 
 
 ## How to use it?
 
-Run these on the box, or wrap each one in `ssh <box> '...'` from the Mac.
+Unless a step says "From the Mac", run its commands in a shell on the box: from the Mac, open one with `ssh <box>` and paste each block into it, so that `sudo` can ask for a password if it needs one.
 
 ### 1. Look at the current lists
 
 ```bash
 sudo python3 -I - /etc/execution-substrate/egs.json /etc/execution-substrate/ags.json <<'PY'
 import json, sys
-egs = json.load(open(sys.argv[1], encoding="utf-8"))["runtime_trust"]
+egs = json.load(open(sys.argv[1], encoding="utf-8")).get("runtime_trust") or {}
 print("allowed_signers:  ", (egs.get("signer_policy") or {}).get("allowed_signers") or [])
 print("revoked_signers:  ", (egs.get("signer_policy") or {}).get("revoked_signers") or [])
 print("revoked_artifacts:", (egs.get("artifact_policy") or {}).get("revoked_artifacts") or [])
@@ -57,6 +57,8 @@ VALUE='sha256:<64 lowercase hex characters>'
 sudo python3 -I - /etc/execution-substrate/egs.json "$ACTION" "$KIND" "$VALUE" <<'PY'
 import json, os, re, sys, tempfile
 path, action, kind, value = sys.argv[1:5]
+# The white space EGS trims (Go's strings.TrimSpace); Python's strip() with no argument would also trim U+001C to U+001F.
+SPACE = "\t\n\v\f\r \x85\xa0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000"
 if os.path.islink(path):
     sys.exit(f"{path} is a symbolic link; run this command on the file it points to; nothing changed")
 if action not in ("add", "remove", "drop-invalid"):
@@ -73,24 +75,33 @@ def well_formed(entry):
         return False
     if kind == "artifact":
         return re.fullmatch(r"sha256:[0-9a-f]{64}", entry) is not None
-    return entry != "" and entry == entry.strip()
+    return entry != "" and entry == entry.strip(SPACE)
 if action == "add" and kind == "artifact" and not well_formed(value):
     sys.exit("an artifact digest is sha256: followed by 64 lowercase hex characters; nothing changed")
 if action == "add" and kind == "signer" and not well_formed(value):
     sys.exit("give the key ID exactly, with no surrounding spaces; nothing changed")
-if action == "remove" and not value.strip():
+name = value.strip(SPACE)
+if action == "remove" and not name:
     sys.exit("VALUE is empty; to drop empty or non-string entries, use ACTION=drop-invalid; nothing changed")
 with open(path, encoding="utf-8") as fh:
     doc = json.load(fh)
-trust = doc["runtime_trust"]
+if not isinstance(doc, dict):
+    sys.exit("the file is not a JSON object; repair it with the tool that wrote it; nothing changed")
+trust = doc.get("runtime_trust")
+trust = {} if trust is None else trust
+if not isinstance(trust, dict):
+    sys.exit("runtime_trust is not an object; repair the file with the tool that wrote it; nothing changed")
+for part in ("signer_policy", "artifact_policy"):
+    if trust.get(part) is not None and not isinstance(trust.get(part), dict):
+        sys.exit(f"runtime_trust.{part} is not an object; repair the file with the tool that wrote it; nothing changed")
 policy = trust.get(policy_key)
 policy = {} if policy is None else policy
-entries = policy.get(list_key) if isinstance(policy, dict) else None
-entries = [] if entries is None and isinstance(policy, dict) else entries
+entries = policy.get(list_key)
+entries = [] if entries is None else entries
 if not isinstance(entries, list):
     sys.exit(f"runtime_trust.{policy_key}.{list_key} is not a list; repair the file with the tool that wrote it; nothing changed")
 def key(entry):
-    return entry.strip() if isinstance(entry, str) else None
+    return entry.strip(SPACE) if isinstance(entry, str) else None
 def keep_one(entries, name):
     # Of the copies of one value, keep the first well-formed one, else the first one.
     copies = [entry for entry in entries if key(entry) == name]
@@ -105,7 +116,7 @@ def keep_one(entries, name):
     rest = list(copies)
     rest.remove(keep)
     return keep, rest, out
-copies = [entry for entry in entries if key(entry) == value.strip()]
+copies = [entry for entry in entries if key(entry) == name]
 message = None
 if action == "add":
     if copies == [value]:
@@ -114,7 +125,8 @@ if action == "add":
         first = entries.index(copies[0])
         entries = [entry for index, entry in enumerate(entries) if index == first or key(entry) != value]
         entries[first] = value
-        message = "replaced " + ", ".join(repr(entry) for entry in copies) + f" with {value!r}, the spelling ES matches"
+        spelling = "the spelling ES matches" if kind == "artifact" else "its exact spelling"
+        message = "replaced " + ", ".join(repr(entry) for entry in copies) + f" with {value!r}, {spelling}"
     else:
         entries.append(value)
         message = "added"
@@ -122,20 +134,21 @@ elif action == "remove":
     if not copies:
         print("not in the list; the file is unchanged")
     elif len(copies) == 1:
-        entries = [entry for entry in entries if key(entry) != value.strip()]
+        entries = [entry for entry in entries if key(entry) != name]
         message = "removed"
     else:
-        keep, rest, entries = keep_one(entries, value.strip())
-        if well_formed(keep):
+        keep, rest, entries = keep_one(entries, name)
+        # EGS and ES trim a key ID, so whichever copy of a signer is kept still revokes it.
+        if kind == "signer" or well_formed(keep):
             message = f"listed {len(copies)} times; kept one copy, {keep!r}, so it stays revoked; run remove again to lift it"
         else:
             message = f"listed {len(copies)} times; kept one copy, {keep!r}, which is not a spelling ES matches; run remove again to drop it"
 else:
-    dropped = [entry for entry in entries if not isinstance(entry, str) or not entry.strip()]
-    entries = [entry for entry in entries if isinstance(entry, str) and entry.strip()]
-    for name in dict.fromkeys(key(entry) for entry in entries):
-        if sum(1 for entry in entries if key(entry) == name) > 1:
-            keep, rest, entries = keep_one(entries, name)
+    dropped = [entry for entry in entries if not isinstance(entry, str) or not entry.strip(SPACE)]
+    entries = [entry for entry in entries if isinstance(entry, str) and entry.strip(SPACE)]
+    for each in dict.fromkeys(key(entry) for entry in entries):
+        if sum(1 for entry in entries if key(entry) == each) > 1:
+            keep, rest, entries = keep_one(entries, each)
             dropped.extend(rest)
     if dropped:
         message = "dropped " + ", ".join(repr(entry) for entry in dropped)
@@ -144,6 +157,7 @@ else:
 if message:
     policy[list_key] = entries
     trust[policy_key] = policy
+    doc["runtime_trust"] = trust
     st = os.stat(path)
     folder = os.path.dirname(path)
     fd, tmp = tempfile.mkstemp(dir=folder, prefix=".egs.json.")
@@ -217,13 +231,18 @@ export NOMAD_ADDR=https://127.0.0.1:4646 NOMAD_CACERT=/etc/nomad.d/tls/ca.pem
 IFS= read -r NOMAD_TOKEN < /etc/execution-substrate/nomad-acl/observer-token
 [ -n "$NOMAD_TOKEN" ] || { echo "no observer token" >&2; exit 1; }
 export NOMAD_TOKEN NOMAD_NAMESPACE=es-submit-v1
-for job in $(nomad job status | grep -oE '^exec-run-[0-9a-f]{16}'); do
-  nomad job inspect -t '{{.Status}}{{range .TaskGroups}}{{range .Tasks}} {{index .Meta "run_id"}} {{index .Meta "artifact_digest"}}{{end}}{{end}}' "$job"
+listing=$(nomad job status) || { echo "Nomad did not list the jobs" >&2; exit 1; }
+count=0 rc=0
+for job in $(printf '%s\n' "$listing" | grep -oE '^exec-run-[0-9a-f]{16}'); do
+  count=$((count + 1))
+  nomad job inspect -t '{{.Status}}{{range .TaskGroups}}{{range .Tasks}} {{index .Meta "run_id"}} {{index .Meta "artifact_digest"}}{{end}}{{end}}' "$job" || { echo "could not read $job" >&2; rc=1; }
 done
+echo "ES jobs in Nomad: $count"
+exit "$rc"
 SH
 ```
 
-Expect one line for each ES job Nomad still holds: its status (`pending`, `running` or `dead`), its run ID and its artifact digest. The token stays in the environment of the root shell that runs the block: it is never on a command line, and it is gone when that shell ends. The block prints nothing else from the job; Nomad may also print a hint about its web UI. Cancel every `pending` or `running` run whose digest is the revoked one. Nomad does not record the signer: for a revoked signer, take the runs from the callers' records, or cancel every `pending` or `running` run.
+Expect one line for each ES job Nomad still holds: its status (`pending`, `running` or `dead`), its run ID and its artifact digest, and then `ES jobs in Nomad:` with their number. If Nomad refuses the token or cannot be reached, the block prints Nomad's error and `Nomad did not list the jobs` and exits 1; that does not mean there is nothing to cancel, so fix the error and run it again. If it prints `could not read` for a job, it exits 1 too: run it again. The token stays in the environment of the root shell that runs the block: it is never on a command line, and it is gone when that shell ends. The block prints nothing else from the job; Nomad may also print a hint about its web UI. Cancel every `pending` or `running` run whose digest is the revoked one. Nomad does not record the signer: for a revoked signer, take the runs from the callers' records, or cancel every `pending` or `running` run.
 
 From the Mac, with the variables from "What do I need?" exported, cancel each run:
 
@@ -237,16 +256,16 @@ A cancel is a request to stop, not proof that the workload has stopped. Run the 
 
 ### 6. To undo a revocation
 
-Run step 2 with `ACTION=remove` and the value to lift. Removal matches an entry the way EGS compares entries, ignoring surrounding spaces, and accepts any spelling, so it also removes an entry that EGS refuses, such as a digest without its label. If the value is listed more than once, which EGS refuses, removal keeps one copy and says which: a copy in the spelling ES matches when there is one, and then the value stays revoked; a second removal lifts it. Check the lists with step 1, and restart as in step 3. Lift a revocation only when you know why it was made.
+Run step 2 with `ACTION=remove` and the value to lift. Removal matches an entry the way EGS compares entries, ignoring white space around it, and accepts any spelling, so it also removes an entry that EGS refuses, such as a digest without its label. If the value is listed more than once, which EGS refuses, removal keeps one copy and says which, preferring the exact spelling: for a digest, `sha256:` and 64 lower-case hex characters; for a key ID, no white space around it. A key ID stays revoked whichever copy is kept, because EGS and ES trim white space around it. A digest stays revoked only when the copy kept is the exact spelling, and the message says whether it is. A second removal lifts it. Check the lists with step 1, and restart as in step 3. Lift a revocation only when you know why it was made.
 
-`ACTION=drop-invalid`, with `VALUE=''`, repairs one list without lifting or granting anything. It drops the entries that are not text or are empty once spaces are trimmed, which name nothing, and the extra copies of a value listed more than once, keeping one copy in the spelling ES matches when there is one. It prints each entry it drops. `KIND` names the list: `artifact` or `signer` for the two revocation lists, or `allowed` for `allowed_signers`, which EGS also refuses to start with when it holds such entries. `KIND=allowed` takes no other action: this runbook never adds or removes an allowed signer.
+`ACTION=drop-invalid`, with `VALUE=''`, repairs one list without lifting or granting anything. It drops the entries that are not text or are empty once white space is trimmed, which name nothing, and the extra copies of a value listed more than once, keeping the exact spelling when there is one. It prints each entry it drops. `KIND` names the list: `artifact` or `signer` for the two revocation lists, or `allowed` for `allowed_signers`, which EGS also refuses to start with when it holds such entries. `KIND=allowed` takes no other action: this runbook never adds or removes an allowed signer.
 
 ## What do the failures mean?
 
 | What you see | What it means | What to do |
 | --- | --- | --- |
 | Step 2 exits with "an artifact digest is sha256: followed by 64 lowercase hex characters" | The value is not `sha256:` and 64 lower-case hex characters, the only spelling ES matches | Copy the `artifact_digest` from the publish response; nothing was changed |
-| `egs.service` is not `active` after step 3; `journalctl -u egs.service` shows `decode config` or `runtime_trust...` | EGS refuses the file: invalid JSON, an unknown field, a duplicate entry, or a bad digest. Steps 2 and 6 write none of these, so another edit or tool changed the file | Run the check below. For an empty, non-string or duplicate entry in any of the three lists it names, run step 2 with `ACTION=drop-invalid` and `KIND` set to `artifact`, `signer` or `allowed` (step 6). For a revoked digest in a spelling EGS refuses, run step 2 with `ACTION=remove` and the text the check prints between the quotes, then add the digest again with `ACTION=add` if it must stay revoked. Then repeat step 3. Invalid JSON, a list that is not a list, or an unknown field outside `runtime_trust` came from the tool that last wrote the file: repair it with that tool, not with an editor. ES cannot start until EGS is up |
+| `egs.service` is not `active` after step 3; `journalctl -u egs.service` shows `decode config` or `runtime_trust...` | EGS refuses the file: invalid JSON, an unknown field, a duplicate entry, or a bad digest. Steps 2 and 6 write none of these, so another edit or tool changed the file | Run the check below. For an empty, non-string or duplicate entry in any of the three lists it names, run step 2 with `ACTION=drop-invalid` and `KIND` set to `artifact`, `signer` or `allowed` (step 6). For a revoked digest in a spelling EGS refuses, run step 2 with `ACTION=remove` and the entry as the check prints it between the quotes, leaving out any white space it shows at either end, as spaces or as escapes such as `\n`, `\t` or `\xa0`: `remove` ignores white space around an entry, and an escape is not the character it stands for. Then add the digest again with `ACTION=add` if it must stay revoked. Then repeat step 3. Invalid JSON, a list that is not a list, or an unknown field outside `runtime_trust` came from the tool that last wrote the file: repair it with that tool, not with an editor. ES cannot start until EGS is up |
 | `es.service` is not `active` after step 3 | ES could not fetch or verify EGS's list at start | Check that `egs.service` is `active`, then read `journalctl -u es.service` |
 | Step 4 still succeeds | ES is still using the list it fetched before the change, or the value does not match | Repeat step 3 in order; compare the value with the artifact digest or the evidence seal's key ID |
 | Step 4 fails with `signer_not_allowed` instead | The artifact's key is not in `allowed_signers` at all | Nothing to revoke for that key; ES already refuses it |
@@ -256,6 +275,8 @@ To find the problems in the lists without showing any other field, run the check
 ```bash
 sudo python3 -I - /etc/execution-substrate/egs.json <<'PY'
 import json, re, sys
+# The white space EGS trims (Go's strings.TrimSpace); Python's strip() with no argument would also trim U+001C to U+001F.
+SPACE = "\t\n\v\f\r \x85\xa0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000"
 try:
     with open(sys.argv[1], encoding="utf-8") as fh:
         doc = json.load(fh)
@@ -289,13 +310,13 @@ for part, fields in known.items():
             if not isinstance(entry, str):
                 print(f"{field}: not a string: {entry!r}")
                 continue
-            if entry.strip() in seen:
+            if entry.strip(SPACE) in seen:
                 print(f"{field}: duplicate: {entry!r}")
-            seen.add(entry.strip())
+            seen.add(entry.strip(SPACE))
             if field == "revoked_artifacts":
                 if not re.fullmatch(r"sha256:[0-9a-f]{64}", entry):
                     print(f"{field}: not sha256: and 64 lowercase hex characters: {entry!r}")
-            elif not entry.strip():
+            elif not entry.strip(SPACE):
                 print(f"{field}: empty entry: {entry!r}")
 print("check finished")
 PY
@@ -320,10 +341,10 @@ It prints one line for each problem in the lists or unknown field name under `ru
   - `TestRevocationRunbookNoteOnUpperCaseDigestsMatchesEGS` in `egs/contract/trustmodel_test.go` checks every line before this section that mentions upper case: the note in Notes must be the one for what EGS does now, and the check's sentence and failure-table row 1 must hold either way.
   - `TestResolvedSubmitLegacyEquivalenceOneNomadRegistrationAndAuthorityRecovery` in `es/admission/resolved_execution_plan_test.go` checks that each Nomad job records the artifact digest in its task meta, which step 5 reads.
 - **Run outside the box, on 2026-11-27:**
-  - The three Python blocks (steps 1 and 2 and the check), cut from this runbook byte for byte, ran as root against box-shaped config files (owner 1234:5678, mode 0640, a freshly generated EGS key), and each result was loaded with EGS's own `config.Load`, built with the key and file checks of the per-host signing keys change. 71 cases passed. Step 2 added an entry and left a second add unchanged; replaced a copy with surrounding spaces by the exact spelling; refused a digest that is upper-case, 63 hex characters long or unlabeled, a padded or empty signer, a bad `ACTION` or `KIND`, a symbolic link, and a list that is not a list (an empty object included); and kept the owner, the mode and every other field. `remove` lifted a single entry; kept one copy of a value listed two or three times, the well-formed copy even when a padded copy came first (EGS then started, and a second `remove` lifted it); matched an entry with surrounding spaces; removed a spelling EGS refuses; and refused an empty value. `drop-invalid` dropped empty, spaces-only, number, null and list entries and extra copies from one list only, and EGS then started; it left a malformed digest in place, and EGS still refused that file; with `KIND=allowed` it repaired a duplicate, empty, number or padded entry in `allowed_signers`, and `KIND=allowed` refused `add` and `remove`. The check printed the expected lines for duplicates in each list, empty and non-string entries, an upper-case digest, lists and sections of the wrong type (empty ones included), an unknown field, and invalid JSON. No output held the private key.
-  - Step 5's Nomad block, cut from this runbook, ran against Nomad 2.1.1 (a server with ACLs on, the namespace `es-submit-v1`, a client token with the observer policy's rules in a root-owned 0400 file, and two jobs shaped like ES's), over plain HTTP instead of TLS, started by an ordinary user with `sudo`. It printed the status, run ID and digest of each job, and `dead` for a stopped one. That user could not read the token without `sudo`. The command this step gave before (no token, no namespace) and the observer token in the `default` namespace were both refused with 403, and the observer token could not stop a job. The box's Nomad comes from HashiCorp's apt repository; its version is Unknown.
+  - The three Python blocks (steps 1 and 2 and the check), cut from this runbook byte for byte, ran as root against box-shaped config files (owner 1234:5678, mode 0640, a freshly generated EGS key), and each result was loaded with EGS's own `config.Load`, built with the key and file checks of the per-host signing keys change. 120 cases passed. Step 2 added an entry and left a second add unchanged; replaced a copy with white space around it by the exact spelling; refused a digest that is upper-case, 63 hex characters long or unlabeled, a padded or empty signer, a bad `ACTION` or `KIND`, a symbolic link, a list that is not a list (an empty object included), and a file, `runtime_trust` or policy that is not an object, even a policy other than the one `KIND` names; created `runtime_trust` when it was absent or null, and EGS then started; and kept the owner, the mode and every other field. `remove` lifted a single entry; kept one copy of a value listed two or three times, the well-formed copy even when a padded copy came first (EGS then started, and a second `remove` lifted it), and said that a padded key ID it kept stays revoked; matched an entry with white space around it, including a digest with a trailing line break, a leading tab or a leading no-break space, when given without that white space, while the escape the check prints for it matched nothing; removed a spelling EGS refuses; and refused an empty value. `drop-invalid` dropped empty, white-space-only, number, null and list entries and extra copies from one list only, and EGS then started; it left a malformed digest in place, and EGS still refused that file; it trims only the white space EGS trims, so it kept a key ID ending in U+001C, which EGS accepts as a key ID of its own; with `KIND=allowed` it repaired a duplicate (padded or not), empty or number entry in `allowed_signers` and left a lone padded entry, which EGS accepts, unchanged, and `KIND=allowed` refused `add` and `remove`. The check printed the expected lines for duplicates in each list (one padded with an ideographic space included), empty and non-string entries, an upper-case digest, a digest with a trailing line break (shown as `\n`), lists and sections of the wrong type (empty ones included), an unknown field, and invalid JSON, and no line for a key ID ending in U+001C or one made of U+001F alone, both of which EGS accepts. No output held the private key.
+  - Step 5's Nomad block, cut from this runbook, ran against Nomad 2.1.1 (a server with ACLs on, the namespace `es-submit-v1`, a client token with the observer policy's rules in a root-owned 0400 file, and two jobs shaped like ES's), over plain HTTP instead of TLS, started by an ordinary user with `sudo`. It printed the status, run ID and digest of each job, `dead` for a stopped one, then `ES jobs in Nomad: 2`, and exited 0. That user could not read the token without `sudo`. With an unknown token, and with Nomad unreachable, it printed Nomad's error and `Nomad did not list the jobs` and exited 1; with a token that can list the jobs but not read them, it printed `could not read` for each job and exited 1; with an empty token file, it printed `no observer token` and exited 1; in a namespace with no jobs, it printed `ES jobs in Nomad: 0` and exited 0. In an earlier round, the command this step gave before (no token, no namespace) and the observer token in the `default` namespace were both refused with 403, and the observer token could not stop a job. The box's Nomad comes from HashiCorp's apt repository; its version is Unknown.
 - **Not run:** the steps above, as written, have not been run on the box.
 
 ## History
 
-- **2026-11-27:** written, because no runbook said how to revoke an artifact or a signer, and a revocation takes effect only after EGS and then ES restart. Audit fixes the same day: lifting and checking no longer open the file (it holds EGS's private key), step 5's cancel is a working command, step 3 waits before it checks, and the reliable-submit sentence matches the code. Second audit fixes the same day: step 5 finds runs through Nomad with the observer token (ES does record the digest in each job), says what a sent cancel and the wait after it print, `remove` keeps one copy of a value listed more than once, `drop-invalid` drops entries that name nothing, and the reliable-submit sentence names what resumes that path. Third round the same day: step 5 runs as root, because the box's observer token is root's; `remove` keeps the copy in the spelling ES matches; `add` replaces a copy EGS refuses; `drop-invalid` also drops extra copies and, with `KIND=allowed`, repairs `allowed_signers`; the check reports empty containers of the wrong type. With #79, EGS and ES refuse a revoked digest in any spelling other than `sha256:` and 64 lower-case hex characters, and the note in Notes says so.
+- **2026-11-27:** written, because no runbook said how to revoke an artifact or a signer, and a revocation takes effect only after EGS and then ES restart. Audit fixes the same day: lifting and checking no longer open the file (it holds EGS's private key), step 5's cancel is a working command, step 3 waits before it checks, and the reliable-submit sentence matches the code. Second audit fixes the same day: step 5 finds runs through Nomad with the observer token (ES does record the digest in each job), says what a sent cancel and the wait after it print, `remove` keeps one copy of a value listed more than once, `drop-invalid` drops entries that name nothing, and the reliable-submit sentence names what resumes that path. Third round the same day: step 5 runs as root, because the box's observer token is root's; `remove` keeps the copy in the spelling ES matches; `add` replaces a copy EGS refuses; `drop-invalid` also drops extra copies and, with `KIND=allowed`, repairs `allowed_signers`; the check reports empty containers of the wrong type. Fourth round the same day: a padded key ID is said to stay revoked, because EGS and ES trim it; the failure table says to leave out white space that the check shows as an escape; step 2 and the check trim only the white space EGS trims; step 2 refuses a policy that is not an object before it writes and treats a missing `runtime_trust` as empty; step 5 exits 1 when Nomad does not list or read the jobs, and prints how many it found. With #79, EGS and ES refuse a revoked digest in any spelling other than `sha256:` and 64 lower-case hex characters, and the note in Notes says so.
