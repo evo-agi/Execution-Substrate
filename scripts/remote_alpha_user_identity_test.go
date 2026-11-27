@@ -462,8 +462,19 @@ func (b *userIdentityBox) systemctlCalls() []string {
 	if err != nil {
 		b.t.Fatal(err)
 	}
+	// The fake systemctl may be writing its next line while a test polls:
+	// read only lines that end in a newline.
+	text := string(data)
+	if i := strings.LastIndexByte(text, '\n'); i >= 0 {
+		text = text[:i]
+	} else {
+		text = ""
+	}
 	var calls []string
-	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+	for _, line := range strings.Split(text, "\n") {
+		if line == "" {
+			continue
+		}
 		var argv []string
 		if err := json.Unmarshal([]byte(line), &argv); err != nil {
 			b.t.Fatal(err)
@@ -2005,6 +2016,7 @@ func TestUserIdentityStatusFlagsDrift(t *testing.T) {
 	if run := b.box("status"); run.code != 0 || run.result() != "ok" {
 		t.Fatalf("status after allow: %s", run)
 	}
+	// The rewritten es.json also lacks the namespace binding allow wrote.
 	b.writeConfig("es", b.esConfig, b.esCA, []string{"operator/local", "service/control-plane", "user/claude", "user/ghost"})
 	run := b.box("status")
 	if run.code != 1 || run.result() != "attention" {
@@ -2018,8 +2030,16 @@ func TestUserIdentityStatusFlagsDrift(t *testing.T) {
 		}
 	}
 	got := strings.Join(details, "\n")
-	if !strings.Contains(got, "allowlist user/ghost: in ES but not an active registry name") {
-		t.Fatalf("status attention:\n%s", got)
+	for _, want := range []string{
+		"allowlist user/ghost: in ES but not an active registry name",
+		"ES namespace issuer: the user CA is trusted but user is not bound to it alone",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("status attention does not say %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "AGS namespace issuer") {
+		t.Fatalf("status flags the AGS binding, which allow wrote and nothing changed:\n%s", got)
 	}
 	before := b.snapshot()
 	b.box("status")
