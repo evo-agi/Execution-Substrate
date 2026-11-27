@@ -634,8 +634,8 @@ The profile remains a `static-script` overlay. It currently requires:
 - `static-script` artifact type
 - Docker target platform when a target platform is present
 - `network_access=true`, and therefore a workload grant in ES configuration
-  for the publisher, signer key, artifact type and this profile that names
-  an egress lane (`.docs/execution_lifecycle/contracts.md`, section 5B);
+  for the publisher, the ES caller, signer key, artifact type and this
+  profile that names an egress lane (`.docs/execution_lifecycle/contracts.md`, section 5B);
   `scripts/72_supported_local_setup.sh` writes one for each allowed caller
 - ES config under `execution.runtime_profiles.control_plane_normal_shell`
 - a configured runtime image
@@ -810,7 +810,7 @@ Route based on the first failed boundary. Do not over-classify a later symptom u
 2. Call `GET /v1/executions:contract` and confirm the current producer contract, mandatory outcome-evidence carriers, and any required runtime profile are enabled.
 3. Confirm CP is using the direct API surface, not assuming helper script behavior as product contract.
 4. Confirm AGS and ES configs allow `spiffe://execution.internal/service/control-plane` narrowly.
-5. For `control-plane-normal-shell/v1`, confirm the request sets `invocation.annotations["execution_substrate.runtime_profile"]="control-plane-normal-shell/v1"` and the published artifact has `network_access=true`. A `403 network_access_not_granted` means ES configuration has no workload grant for that publisher, signer key, artifact type and profile (`.docs/execution_lifecycle/contracts.md`, section 5B).
+5. For `control-plane-normal-shell/v1`, confirm the request sets `invocation.annotations["execution_substrate.runtime_profile"]="control-plane-normal-shell/v1"` and the published artifact has `network_access=true`. A `403 network_access_not_granted` means ES configuration has no workload grant for that publisher, ES caller, signer key, artifact type and profile (`.docs/execution_lifecycle/contracts.md`, section 5B).
 6. Confirm the configured profile image exists in the Docker daemon used by Nomad and Nomad's Docker plugin reports `gc.image = false`.
 7. If the workload starts, inspect logs for endpoint/Vault/trust-material failures before treating the issue as submit readiness.
 8. If retained result fetch fails, distinguish `result_unavailable` from `result_not_found`, then check whether the workload wrote result files under `/execution/run/result`.

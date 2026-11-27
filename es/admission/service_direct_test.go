@@ -1023,7 +1023,7 @@ func TestSubmitFailsAtAdmissionWhenWorkloadZoneVaultBlobIsUnavailable(t *testing
 		t.Fatalf("submit must not call nomad when runtime-config admission fails, got %s %q", r.Method, r.URL.Path)
 	}))
 
-	_, err := service.Submit(context.Background(), request)
+	_, err := service.Submit(testCallerContext(), request)
 	assertAdmissionError(t, err, http.StatusServiceUnavailable, codeWorkloadZoneVaultUnavailable)
 	assertExactCallCount(t, arsCalls, "/v1/artifacts/"+fixture.discovery.Artifact.ArtifactDigest+"/discovery", 1)
 	assertExactCallCount(t, arsCalls, "/v1/blobs/"+fixture.discovery.Evidence.Digest+":json", 1)

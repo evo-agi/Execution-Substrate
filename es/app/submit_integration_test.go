@@ -1869,6 +1869,7 @@ func startSubmitStackWithOptions(t *testing.T, opts submitStackOptions) *submitS
 		Authorization: esconfig.AuthorizationConfig{
 			AllowedSPIFFEPathPrefixes: allowedExecutionCallerPrefixes,
 		},
+		AdmissionPolicy: todaysWorkloadGrants(allowedExecutionCallerPrefixes, fixture.agsKeyID),
 		Dependencies: esconfig.DependenciesConfig{
 			ArtifactRegistry: esconfig.DependencyConfig{
 				BaseURL:        "https://" + stack.ars.Addr(),

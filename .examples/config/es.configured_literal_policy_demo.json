@@ -59,6 +59,7 @@
         {
           "id": "operator-local-default",
           "publisher_principal": "spiffe://execution.internal/operator/local",
+          "caller_principal": "spiffe://execution.internal/operator/local",
           "signer_key_id": "ags-key-1",
           "artifact_type": "static-script",
           "runtime_profile": "static-script/default",
@@ -67,6 +68,7 @@
         {
           "id": "operator-local-normal-shell",
           "publisher_principal": "spiffe://execution.internal/operator/local",
+          "caller_principal": "spiffe://execution.internal/operator/local",
           "signer_key_id": "ags-key-1",
           "artifact_type": "static-script",
           "runtime_profile": "control-plane-normal-shell/v1",

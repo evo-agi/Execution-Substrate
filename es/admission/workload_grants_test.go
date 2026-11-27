@@ -2,13 +2,22 @@ package admission
 
 import (
 	"context"
+	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	esconfig "execution-substrate/es/config"
+	"execution-substrate/internal/callerauth"
 )
 
 func testWorkloadGrantFacts() workloadGrantFacts {
@@ -17,16 +26,16 @@ func testWorkloadGrantFacts() workloadGrantFacts {
 			publisherPrincipal: "spiffe://execution.internal/operator/local",
 			signerKeyID:        "ags-artifact-signer",
 		},
-		artifactType:            "static-script",
-		runtimeProfile:          runtimeProfileDefaultStaticScript,
-		runtimeProfileSupported: true,
-		networkAccess:           true,
+		callerPrincipal: testGrantCaller,
+		artifactType:    "static-script",
+		runtimeProfile:  runtimeProfileDefaultStaticScript,
+		networkAccess:   true,
 	}
 }
 
 func testWorkloadGrants(egressLane string) workloadGrants {
 	return workloadGrants{rules: []workloadGrantRule{
-		{id: "other", match: [4]string{"spiffe://execution.internal/service/control-plane", "ags-artifact-signer", "static-script", runtimeProfileDefaultStaticScript}, egressLane: esconfig.WorkloadEgressLaneUnrestricted},
+		{id: "other", match: [5]string{"spiffe://execution.internal/service/control-plane", "spiffe://execution.internal/service/control-plane", "ags-artifact-signer", "static-script", runtimeProfileDefaultStaticScript}, egressLane: esconfig.WorkloadEgressLaneUnrestricted},
 		{id: "operator-default", match: testWorkloadGrantFacts().matchKey(), egressLane: egressLane},
 	}}
 }
@@ -86,6 +95,13 @@ func TestWorkloadGrantDecisionFollowsTheNetworkGrantPolicy(t *testing.T) {
 			"publisher longer": func(f *workloadGrantFacts) {
 				f.evidence.publisherPrincipal = "spiffe://execution.internal/operator/local/x"
 			},
+			"caller":          func(f *workloadGrantFacts) { f.callerPrincipal = "spiffe://execution.internal/service/control-plane" },
+			"caller sub-path": func(f *workloadGrantFacts) { f.callerPrincipal = testGrantCaller + "/x" },
+			"caller case":     func(f *workloadGrantFacts) { f.callerPrincipal = "spiffe://execution.internal/Operator/local" },
+			"no caller":       func(f *workloadGrantFacts) { f.callerPrincipal = "" },
+			"publisher and caller": func(f *workloadGrantFacts) {
+				f.evidence.publisherPrincipal, f.callerPrincipal = "spiffe://execution.internal/service/control-plane", "spiffe://execution.internal/operator/local"
+			},
 			"signer":            func(f *workloadGrantFacts) { f.evidence.signerKeyID = "other-signer" },
 			"signer padded":     func(f *workloadGrantFacts) { f.evidence.signerKeyID = "ags-artifact-signer " },
 			"artifact type":     func(f *workloadGrantFacts) { f.artifactType = "Static-Script" },
@@ -103,14 +119,6 @@ func TestWorkloadGrantDecisionFollowsTheNetworkGrantPolicy(t *testing.T) {
 			}
 		}
 	})
-	t.Run("a profile ES does not support is left to the runtime-profile gate", func(t *testing.T) {
-		facts := testWorkloadGrantFacts()
-		facts.runtimeProfile, facts.runtimeProfileSupported = "unsupported/v1", false
-		decision, err := workloadGrants{}.decide(facts)
-		if err != nil || decision != (workloadGrantDecision{}) {
-			t.Fatalf("decision = %+v, %+v", decision, err)
-		}
-	})
 }
 
 // The configuration builds a rule's key in the order admission builds a
@@ -121,6 +129,7 @@ func TestWorkloadGrantRuleKeysAgreeWithRunFacts(t *testing.T) {
 	rule := esconfig.WorkloadGrantRuleConfig{
 		ID:                 "operator-default",
 		PublisherPrincipal: facts.evidence.publisherPrincipal,
+		CallerPrincipal:    facts.callerPrincipal,
 		SignerKeyID:        facts.evidence.signerKeyID,
 		ArtifactType:       facts.artifactType,
 		RuntimeProfile:     facts.runtimeProfile,
@@ -145,35 +154,150 @@ func TestWorkloadGrantRuleKeysAgreeWithRunFacts(t *testing.T) {
 	}
 }
 
-// The names a rule may give as runtime_profile are the names admission
-// matches on, and the profile names admission reports as supported are
-// exactly those the runtime-profile gate resolves.
-func TestWorkloadGrantRuntimeProfileAgreesWithTheRuntimeProfileGate(t *testing.T) {
+// The grant decision takes the effective runtime profile from the
+// runtime-profile gate, so every profile the gate resolves gets a grant
+// decision on that name, and a request the gate refuses gets the gate's own
+// refusal. The candidate names come from the source, every string literal of
+// the package's production files, so a profile name added to the gate later
+// is among them. (Red-team of ES PR #73, RT73-2: a separate list of profile
+// names in the grant code would let a profile added to the gate alone run
+// with the network and no grant.)
+func TestEveryRuntimeProfileTheGateResolvesHasAGrantDecision(t *testing.T) {
 	if esconfig.WorkloadGrantRuntimeProfileDefault != runtimeProfileDefaultStaticScript ||
 		esconfig.WorkloadGrantRuntimeProfileControlPlaneNormalShell != runtimeProfileControlPlaneNormalShell {
 		t.Fatalf("config profile names %q and %q differ from admission's %q and %q",
 			esconfig.WorkloadGrantRuntimeProfileDefault, esconfig.WorkloadGrantRuntimeProfileControlPlaneNormalShell,
 			runtimeProfileDefaultStaticScript, runtimeProfileControlPlaneNormalShell)
 	}
-	execution := esconfig.ExecutionConfig{BaseImage: "alpine:3.20"}
-	execution.RuntimeProfiles.ControlPlaneNormalShell.Enabled = true
-	artifact := preparedArtifact{manifest: Manifest{ArtifactType: "static-script"}, networkAccess: true}
-	for _, requested := range []string{
-		"", " ", runtimeProfileControlPlaneNormalShell, " " + runtimeProfileControlPlaneNormalShell + "\t",
-		runtimeProfileDefaultStaticScript, "unsupported/v1", "Control-Plane-Normal-Shell/v1",
-	} {
-		req := PrepareRequest{Invocation: ArtifactInvocation{Annotations: map[string]string{runtimeProfileAnnotationKey: requested}}}
-		name, supported := workloadGrantRuntimeProfile(req)
-		resolved, err := resolveExecutionRuntimeProfile(execution, req, artifact)
-		if supported != (err == nil) {
-			t.Errorf("profile %q: grants report supported=%t, the gate reports %+v", requested, supported, err)
+	candidates := map[string]struct{}{"": {}, " " + runtimeProfileControlPlaneNormalShell + "\t": {}, "Control-Plane-Normal-Shell/v1": {}}
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fset := token.NewFileSet()
+	production := 0
+	for _, name := range files {
+		if strings.HasSuffix(name, "_test.go") {
+			continue
 		}
-		if supported && name != resolved.name {
-			t.Errorf("profile %q: grants match on %q, the gate resolves %q", requested, name, resolved.name)
+		parsed, err := parser.ParseFile(fset, name, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		production++
+		ast.Inspect(parsed, func(node ast.Node) bool {
+			if literal, ok := node.(*ast.BasicLit); ok && literal.Kind == token.STRING {
+				if value, err := strconv.Unquote(literal.Value); err == nil {
+					candidates[value] = struct{}{}
+				}
+			}
+			return true
+		})
+	}
+	if production < 10 || len(candidates) < 100 {
+		t.Fatalf("read %d production files and %d string literals: the scan no longer sees the package", production, len(candidates))
+	}
+	for _, mustSee := range []string{runtimeProfileControlPlaneNormalShell, runtimeProfileDefaultStaticScript} {
+		if _, ok := candidates[mustSee]; !ok {
+			t.Fatalf("the scan does not see the profile name %q", mustSee)
 		}
 	}
-	if name, supported := workloadGrantRuntimeProfile(PrepareRequest{}); !supported || name != runtimeProfileDefaultStaticScript {
-		t.Fatalf("a request without annotations matches on %q (%t)", name, supported)
+
+	const publisher, signer = "spiffe://execution.internal/operator/local", "ags-artifact-signer"
+	resolvedWithNetwork := 0
+	for _, enabled := range []bool{true, false} {
+		for _, artifactType := range []string{"static-script", "archive"} {
+			for _, network := range []bool{true, false} {
+				execution := esconfig.ExecutionConfig{BaseImage: "alpine:3.20"}
+				execution.RuntimeProfiles.ControlPlaneNormalShell.Enabled = enabled
+				artifact := preparedArtifact{
+					manifest:      Manifest{ArtifactType: artifactType},
+					networkAccess: network,
+					grantFacts:    workloadGrantEvidenceFacts{publisherPrincipal: publisher, signerKeyID: signer},
+				}
+				for candidate := range candidates {
+					req := PrepareRequest{Invocation: ArtifactInvocation{Annotations: map[string]string{runtimeProfileAnnotationKey: candidate}}}
+					ungranted := &Service{cfg: esconfig.Config{Execution: execution}}
+					decision, grantErr := ungranted.decideWorkloadGrants(testCallerContext(), req, artifact)
+					resolved, resolveErr := resolveExecutionRuntimeProfile(execution, req, artifact)
+					if resolveErr != nil {
+						// The gate refuses: no grant decision, and the
+						// caller gets the gate's 400.
+						if grantErr != nil || decision != (workloadGrantDecision{}) || resolveErr.Code != codeUnsupportedRuntimeProfile {
+							t.Errorf("profile %q (enabled=%t, %s, network=%t): grant decision %+v, %+v; gate %+v",
+								candidate, enabled, artifactType, network, decision, grantErr, resolveErr)
+						}
+						continue
+					}
+					if !network {
+						if grantErr != nil {
+							t.Errorf("profile %q: a run without network was refused: %+v", candidate, grantErr)
+						}
+						continue
+					}
+					resolvedWithNetwork++
+					if grantErr == nil || grantErr.Code != codeNetworkAccessNotGranted {
+						t.Errorf("profile %q resolves to %q and a network run without a grant gets %+v: it would get the network without a grant",
+							candidate, resolved.name, grantErr)
+					}
+					granted := &Service{cfg: esconfig.Config{Execution: execution}}
+					grantNetworkTo(&granted.cfg, publisher, signer, artifactType)
+					for i := range granted.cfg.AdmissionPolicy.WorkloadGrants.Rules {
+						granted.cfg.AdmissionPolicy.WorkloadGrants.Rules[i].RuntimeProfile = resolved.name
+						granted.cfg.AdmissionPolicy.WorkloadGrants.Rules[i].ID = "rule-" + strconv.Itoa(i)
+					}
+					granted.cfg.AdmissionPolicy.WorkloadGrants.Rules = granted.cfg.AdmissionPolicy.WorkloadGrants.Rules[:1]
+					if decision, err := granted.decideWorkloadGrants(testCallerContext(), req, artifact); err != nil || decision.egressLane != esconfig.WorkloadEgressLaneUnrestricted {
+						t.Errorf("profile %q: a grant on the resolved name %q gave %+v, %+v", candidate, resolved.name, decision, err)
+					}
+				}
+			}
+		}
+	}
+	if resolvedWithNetwork == 0 {
+		t.Fatal("no candidate resolved for a network run: the test no longer exercises the gate")
+	}
+}
+
+// A request the runtime-profile gate refuses gets the gate's
+// 400 unsupported_runtime_profile on :prepare and :submit, with or without a
+// grant, as it does without grants: the grant policies do not answer for a
+// profile selection ES refuses (audit 10, F5).
+func TestARequestTheRuntimeProfileGateRefusesGetsItsRefusalNotAGrantDenial(t *testing.T) {
+	fixture, payload := signedStaticScriptFixture(t)
+	granted := esconfig.Config{}
+	grantFixtureNetwork(&granted, fixture)
+	for name, grants := range map[string]*esconfig.WorkloadGrantsConfig{
+		"no grants":  nil,
+		"with grant": granted.AdmissionPolicy.WorkloadGrants,
+	} {
+		for profile, want := range map[string]string{
+			runtimeProfileControlPlaneNormalShell: "runtime profile control-plane-normal-shell/v1 is not enabled",
+			"unsupported/v1":                      `unsupported runtime profile "unsupported/v1"`,
+		} {
+			for _, operation := range []string{"prepare", "submit"} {
+				t.Run(name+"/"+profile+"/"+operation, func(t *testing.T) {
+					service, stagingRoot, resultsRoot := workloadGrantsTestService(t, fixture, grants)
+					service.cfg.Execution.RuntimeProfiles.ControlPlaneNormalShell.Enabled = false
+					service.arsClient = newResolvedPlanDependencyClient(t, newSignedPayloadHandler(t, fixture, payload))
+					nomad := &nomadRegistrationLog{}
+					service.nomadClient = newCountingNomadClient(t, nomad)
+					request := fixture.prepareRequest()
+					request.Invocation.Annotations = map[string]string{runtimeProfileAnnotationKey: profile}
+					var err *Error
+					if operation == "submit" {
+						request.Mode = ExecutionModeAsync
+						_, err = service.Submit(testCallerContext(), request)
+					} else {
+						_, err = service.Prepare(testCallerContext(), request)
+					}
+					if err == nil || err.Status != http.StatusBadRequest || err.Code != codeUnsupportedRuntimeProfile || err.Message != want {
+						t.Fatalf("error = %+v, want 400 %s %q", err, codeUnsupportedRuntimeProfile, want)
+					}
+					assertNoRunEffects(t, nomad, stagingRoot, resultsRoot)
+				})
+			}
+		}
 	}
 }
 
@@ -190,30 +314,53 @@ func workloadGrantsTestService(t *testing.T, fixture preparedArtifactFixture, gr
 	return service, stagingRoot, resultsRoot
 }
 
+// Signed network_access=true is the publisher's request and only a request:
+// a validly signed run that asks for the network gets none unless a rule
+// names its publisher, its ES caller and the rest of its facts, and grants a
+// lane. The ES caller comes from the authenticated connection alone, so a
+// run with no authenticated caller matches no rule, and one caller's grant
+// does not serve another caller of the same artifact.
 func TestNetworkRunWithoutAGrantIsRefusedOnPrepareAndSubmitBeforeAnyEffect(t *testing.T) {
 	fixture, payload := signedStaticScriptFixture(t)
+	if !fixture.evidence.Claims.Admission.Execution.Access.NetworkAccess {
+		t.Fatal("the fixture's signed evidence does not request the network")
+	}
+	publisher := fixture.evidence.Claims.Package.Publication.Invoker.Principal
 	reaches := true
 	noLane := &esconfig.WorkloadGrantsConfig{
 		EgressLanes: []esconfig.WorkloadEgressLaneConfig{{Name: esconfig.WorkloadEgressLaneUnrestricted, ReachesWorkloadVault: &reaches}},
 		Rules: []esconfig.WorkloadGrantRuleConfig{{
 			ID:                 "no-network",
-			PublisherPrincipal: fixture.evidence.Claims.Package.Publication.Invoker.Principal,
+			PublisherPrincipal: publisher,
+			CallerPrincipal:    testGrantCaller,
 			SignerKeyID:        fixture.keyID,
 			ArtifactType:       "static-script",
 			RuntimeProfile:     runtimeProfileDefaultStaticScript,
 		}},
 	}
-	other := esconfig.Config{}
-	grantNetworkTo(&other, "spiffe://execution.internal/service/control-plane", fixture.keyID, "static-script")
+	otherPublisher := esconfig.Config{}
+	grantNetworkTo(&otherPublisher, "spiffe://execution.internal/service/control-plane", fixture.keyID, "static-script")
+	otherCaller := esconfig.Config{}
+	grantNetworkToCaller(&otherCaller, publisher, "spiffe://execution.internal/service/control-plane", fixture.keyID, "static-script")
+	granted := esconfig.Config{}
+	grantFixtureNetwork(&granted, fixture)
 
-	for name, grants := range map[string]*esconfig.WorkloadGrantsConfig{
-		"no grants":              nil,
-		"a rule without a lane":  noLane,
-		"a rule for another run": other.AdmissionPolicy.WorkloadGrants,
+	for name, test := range map[string]struct {
+		grants *esconfig.WorkloadGrantsConfig
+		ctx    context.Context
+	}{
+		"no grants":                    {nil, testCallerContext()},
+		"a rule without a lane":        {noLane, testCallerContext()},
+		"a rule for another publisher": {otherPublisher.AdmissionPolicy.WorkloadGrants, testCallerContext()},
+		"a rule for another ES caller": {otherCaller.AdmissionPolicy.WorkloadGrants, testCallerContext()},
+		"a caller below the rule's":    {granted.AdmissionPolicy.WorkloadGrants, callerContext(context.Background(), testGrantCaller+"/sub")},
+		"no authenticated caller":      {granted.AdmissionPolicy.WorkloadGrants, context.Background()},
+		"a zero authenticated caller":  {granted.AdmissionPolicy.WorkloadGrants, WithAuthenticatedCaller(context.Background(), callerauth.SPIFFEID{})},
+		"a caller of another type":     {granted.AdmissionPolicy.WorkloadGrants, context.WithValue(context.Background(), authenticatedCallerKey{}, testGrantCaller)},
 	} {
 		for _, operation := range []string{"prepare", "submit"} {
 			t.Run(name+"/"+operation, func(t *testing.T) {
-				service, stagingRoot, resultsRoot := workloadGrantsTestService(t, fixture, grants)
+				service, stagingRoot, resultsRoot := workloadGrantsTestService(t, fixture, test.grants)
 				handler := newSignedPayloadHandler(t, fixture, payload)
 				service.arsClient = newResolvedPlanDependencyClient(t, handler)
 				nomad := &nomadRegistrationLog{}
@@ -223,13 +370,13 @@ func TestNetworkRunWithoutAGrantIsRefusedOnPrepareAndSubmitBeforeAnyEffect(t *te
 				if operation == "submit" {
 					request.Mode = ExecutionModeAsync
 					var result SubmitResult
-					result, err = service.Submit(context.Background(), request)
+					result, err = service.Submit(test.ctx, request)
 					if result.Submitted || result.RunID != "" {
 						t.Fatalf("a refused run got receipt %+v", result)
 					}
 				} else {
 					var result PrepareResult
-					result, err = service.Prepare(context.Background(), request)
+					result, err = service.Prepare(test.ctx, request)
 					if result.Success {
 						t.Fatalf("a refused run prepared: %+v", result)
 					}
@@ -255,13 +402,13 @@ func TestNetworkRunWithAGrantIsAdmittedOnPrepareAndSubmit(t *testing.T) {
 	nomad := &nomadRegistrationLog{}
 	service.nomadClient = newCountingNomadClient(t, nomad)
 
-	prepared, err := service.Prepare(context.Background(), fixture.prepareRequest())
+	prepared, err := service.Prepare(testCallerContext(), fixture.prepareRequest())
 	if err != nil || !prepared.Success {
 		t.Fatalf("prepare = %+v, %+v", prepared, err)
 	}
 	request := fixture.prepareRequest()
 	request.Mode = ExecutionModeAsync
-	result, err := service.Submit(context.Background(), request)
+	result, err := service.Submit(testCallerContext(), request)
 	if err != nil || !result.Submitted || nomad.count() != 1 {
 		t.Fatalf("submit = %+v, %+v, nomad=%d", result, err, nomad.count())
 	}
@@ -272,7 +419,7 @@ func TestNetworkRunWithAGrantIsAdmittedOnPrepareAndSubmit(t *testing.T) {
 	// Every delivery that can cause an effect reads the grants ES runs with
 	// at that time: a grant removed after :prepare refuses the next :submit.
 	service.cfg.AdmissionPolicy = nil
-	_, err = service.Submit(context.Background(), request)
+	_, err = service.Submit(testCallerContext(), request)
 	assertNetworkAccessNotGranted(t, err)
 	if nomad.count() != 1 {
 		t.Fatalf("a submit after the grant was removed reached Nomad: %d registrations", nomad.count())
@@ -291,12 +438,12 @@ func TestRunWithoutNetworkNeedsNoGrant(t *testing.T) {
 	nomad := &nomadRegistrationLog{}
 	service.nomadClient = newCountingNomadClient(t, nomad)
 
-	if prepared, err := service.Prepare(context.Background(), fixture.prepareRequest()); err != nil || !prepared.Success {
+	if prepared, err := service.Prepare(testCallerContext(), fixture.prepareRequest()); err != nil || !prepared.Success {
 		t.Fatalf("prepare = %+v, %+v", prepared, err)
 	}
 	request := fixture.prepareRequest()
 	request.Mode = ExecutionModeAsync
-	if result, err := service.Submit(context.Background(), request); err != nil || !result.Submitted || nomad.count() != 1 {
+	if result, err := service.Submit(testCallerContext(), request); err != nil || !result.Submitted || nomad.count() != 1 {
 		t.Fatalf("submit = %+v, %+v, nomad=%d", result, err, nomad.count())
 	}
 }
@@ -340,6 +487,184 @@ func TestWorkloadGrantCodeNamesNoSchedulerOrContainerTerm(t *testing.T) {
 			if strings.Contains(text, term) {
 				t.Errorf("%s names %q", file, term)
 			}
+		}
+	}
+}
+
+// The grant facts are the trimmed publisher principal and seal key ID: the
+// signed canonical claims trim the principal, and the verifier compares the
+// trimmed key ID, so evidence with surrounding white space on either value
+// is the same signed statement and matches the grant for the trimmed values
+// (audit 10, F7).
+func TestPaddedPublisherPrincipalAndSealKeyMatchTheGrantForTheTrimmedValues(t *testing.T) {
+	fixture, payload := signedStaticScriptFixture(t)
+	granted := esconfig.Config{}
+	grantFixtureNetwork(&granted, fixture)
+	principal := fixture.evidence.Claims.Package.Publication.Invoker.Principal
+	fixture.evidence.Claims.Package.Publication.Invoker.Principal = " \t" + principal + "\n "
+	fixture = fixture.resealed(t)
+	fixture.evidence.Seal.KeyID = "  " + fixture.keyID + "\t"
+	fixture.discovery.Evidence.Digest = digestBytes(servedJSONDocument(t, fixture.evidence))
+	if fixture.evidence.Claims.Package.Publication.Invoker.Principal == principal || fixture.evidence.Seal.KeyID == fixture.keyID {
+		t.Fatal("control: the served evidence is not padded")
+	}
+
+	for _, operation := range []string{"prepare", "submit"} {
+		t.Run(operation, func(t *testing.T) {
+			service, _, _ := workloadGrantsTestService(t, fixture, granted.AdmissionPolicy.WorkloadGrants)
+			// The TrustModel's signer list compares the seal's key ID as
+			// written, so this TrustModel names the padded form too.
+			service.trustModel.SignerPolicy.AllowedSigners = append(service.trustModel.SignerPolicy.AllowedSigners, fixture.evidence.Seal.KeyID)
+			service.arsClient = newResolvedPlanDependencyClient(t, newSignedPayloadHandler(t, fixture, payload))
+			nomad := &nomadRegistrationLog{}
+			service.nomadClient = newCountingNomadClient(t, nomad)
+			request := fixture.prepareRequest()
+			if operation == "submit" {
+				request.Mode = ExecutionModeAsync
+				if result, err := service.Submit(testCallerContext(), request); err != nil || !result.Submitted || nomad.count() != 1 {
+					t.Fatalf("submit = %+v, %+v, nomad=%d", result, err, nomad.count())
+				}
+				return
+			}
+			if prepared, err := service.Prepare(testCallerContext(), request); err != nil || !prepared.Success {
+				t.Fatalf("prepare = %+v, %+v", prepared, err)
+			}
+		})
+	}
+}
+
+// The publisher principal is read only to match a grant: it never becomes
+// ES request or response grammar, and it reaches no output of an admitted or
+// refused run (.docs/execution_lifecycle/contracts.md, section 5B). The guard
+// test bounds where the value is read; this test checks where it goes, with
+// a canary principal: the prepare result, the submit receipt, the scheduler
+// job, every staged and result file, and the refusal of an ungranted run.
+// (Red-team of ES PR #73, RT73-5.)
+func TestPublisherPrincipalReachesNoOutputOfARun(t *testing.T) {
+	const canary = "canary-7f3a9d"
+	fixture, payload := signedStaticScriptFixture(t)
+	fixture.evidence.Claims.Package.Publication.Invoker.Principal = "spiffe://execution.internal/operator/" + canary
+	fixture = fixture.resealed(t)
+	granted := esconfig.Config{}
+	grantFixtureNetwork(&granted, fixture)
+	service, stagingRoot, resultsRoot := workloadGrantsTestService(t, fixture, granted.AdmissionPolicy.WorkloadGrants)
+	service.arsClient = newResolvedPlanDependencyClient(t, newSignedPayloadHandler(t, fixture, payload))
+	var mu sync.Mutex
+	job := ""
+	service.nomadClient = newResolvedPlanNomadClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		job += string(body)
+		mu.Unlock()
+		_, _ = w.Write([]byte(`{"EvalID":"eval-canary"}`))
+	}))
+
+	prepared, err := service.Prepare(testCallerContext(), fixture.prepareRequest())
+	if err != nil || !prepared.Success {
+		t.Fatalf("prepare = %+v, %+v", prepared, err)
+	}
+	if strings.Contains(fmt.Sprintf("%+v", prepared), canary) {
+		t.Errorf("the prepare result carries the publisher principal")
+	}
+	request := fixture.prepareRequest()
+	request.Mode = ExecutionModeAsync
+	result, err := service.Submit(testCallerContext(), request)
+	if err != nil || !result.Submitted {
+		t.Fatalf("submit = %+v, %+v", result, err)
+	}
+	if strings.Contains(fmt.Sprintf("%+v", result), canary) {
+		t.Errorf("the submit receipt carries the publisher principal")
+	}
+	mu.Lock()
+	if job == "" || !strings.Contains(job, result.RunID) {
+		t.Errorf("control: the scheduler job was not captured")
+	}
+	if strings.Contains(job, canary) {
+		t.Errorf("the scheduler job carries the publisher principal")
+	}
+	mu.Unlock()
+	files := 0
+	for _, root := range []string{stagingRoot, resultsRoot} {
+		walkErr := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+			if err != nil || entry.IsDir() {
+				return err
+			}
+			files++
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			if strings.Contains(string(data), canary) {
+				t.Errorf("%s carries the publisher principal", path)
+			}
+			return nil
+		})
+		if walkErr != nil {
+			t.Fatal(walkErr)
+		}
+	}
+	if files == 0 {
+		t.Errorf("control: the admitted run staged no file")
+	}
+
+	service.cfg.AdmissionPolicy = nil
+	_, err = service.Submit(testCallerContext(), request)
+	assertNetworkAccessNotGranted(t, err)
+	if strings.Contains(fmt.Sprintf("%+v", *err), canary) {
+		t.Errorf("the refusal carries the publisher principal")
+	}
+}
+
+// A private reliable submit delivery matches workload grants on the caller
+// its claim is bound to, in place of any caller its context carried, and a
+// bound caller that callerauth would not accept leaves it with none.
+func TestPrivateDeliveryMatchesGrantsOnTheCallerItIsBoundTo(t *testing.T) {
+	controlPlane := "spiffe://execution.internal/service/control-plane"
+	for name, test := range map[string]struct {
+		ctx   context.Context
+		bound string
+		want  string
+	}{
+		"bound caller, no context caller":     {context.Background(), testGrantCaller, testGrantCaller},
+		"bound caller replaces another":       {callerContext(context.Background(), controlPlane), testGrantCaller, testGrantCaller},
+		"foreign bound caller clears context": {testCallerContext(), "spiffe://synthetic.test/ns/admission", ""},
+		"bound caller without a path":         {testCallerContext(), "spiffe://execution.internal/", ""},
+		"padded bound caller":                 {testCallerContext(), " " + testGrantCaller, ""},
+		"bound caller in another case":        {testCallerContext(), "SPIFFE://execution.internal/operator/local", ""},
+		"empty bound caller":                  {testCallerContext(), "", ""},
+	} {
+		if got := authenticatedCallerPrincipal(withDeliveryCaller(test.ctx, test.bound)); got != test.want {
+			t.Errorf("%s: grant caller %q, want %q", name, got, test.want)
+		}
+	}
+
+	// End to end: the fixture's run requests the network and its grant names
+	// testGrantCaller. A synthetic replay bound to that caller is admitted; one
+	// bound to another caller is not, though its context names testGrantCaller.
+	for _, test := range []struct {
+		bound    string
+		admitted bool
+	}{
+		{testGrantCaller, true},
+		{controlPlane, false},
+	} {
+		service, raw, _, keys, image := privateReplayServiceFixture(t)
+		caller, err := newSyntheticCallerFact(test.bound)
+		if err != nil {
+			t.Fatal(err)
+		}
+		catalog, err := newPrivateSyntheticKeyCatalog(keys)
+		if err != nil {
+			t.Fatal(err)
+		}
+		custody, _ := openPrivateReplayTestCustody(t)
+		_, err = service.admitPrivateSyntheticReplay(testCallerContext(), custody, raw, caller, catalog, image)
+		_ = custody.Close()
+		if test.admitted && err != nil {
+			t.Fatalf("delivery bound to %s: %v", test.bound, err)
+		}
+		if !test.admitted && err == nil {
+			t.Fatalf("delivery bound to %s got the network from a grant for %s", test.bound, testGrantCaller)
 		}
 	}
 }

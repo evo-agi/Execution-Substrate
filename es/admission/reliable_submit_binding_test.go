@@ -2,7 +2,6 @@ package admission
 
 import (
 	"bytes"
-	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -34,7 +33,7 @@ func reliableBindingResolvedFixture(t *testing.T) (resolvedExecution, reliableBi
 	service.nomadClient = newResolvedPlanNomadClient(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		t.Fatal("private binding resolution must not register a job")
 	}))
-	resolved, resolveErr := service.resolveExecutionForSubmit(context.Background(), fixture.prepareRequest())
+	resolved, resolveErr := service.resolveExecutionForSubmit(testCallerContext(), fixture.prepareRequest())
 	if resolveErr != nil {
 		t.Fatalf("resolve admitted synthetic execution: %v", resolveErr)
 	}
@@ -207,8 +206,8 @@ func TestReliableSubmitBindingEquivalentSparseAndExplicitInputs(t *testing.T) {
 	explicit.Invocation.Argv = []string{}
 	explicit.Invocation.Env = map[string]string{}
 	explicit.Invocation.Mounts = []RuntimeMount{}
-	a, errA := service.resolveExecutionForSubmit(context.Background(), sparse)
-	b, errB := service.resolveExecutionForSubmit(context.Background(), explicit)
+	a, errA := service.resolveExecutionForSubmit(testCallerContext(), sparse)
+	b, errB := service.resolveExecutionForSubmit(testCallerContext(), explicit)
 	if errA != nil || errB != nil {
 		t.Fatalf("actual admission failed: sparse=%v explicit=%v", errA, errB)
 	}
@@ -304,7 +303,7 @@ func TestReliableSubmitBindingEmptyUnresolvedAndApplicability(t *testing.T) {
 	}))
 	request := fixture.prepareRequest()
 	request.Invocation.Annotations = map[string]string{runtimeProfileAnnotationKey: runtimeProfileControlPlaneNormalShell}
-	profiled, resolveErr := service.resolveExecutionForSubmit(context.Background(), request)
+	profiled, resolveErr := service.resolveExecutionForSubmit(testCallerContext(), request)
 	if resolveErr != nil {
 		t.Fatalf("resolve signed synthetic control-plane profile: %v", resolveErr)
 	}
@@ -566,7 +565,7 @@ func TestReliableSubmitBindingRejectsMismatchedSignedMountArtifact(t *testing.T)
 			service.nomadClient = newResolvedPlanNomadClient(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 				t.Fatal("unwired resolver/builder registered a job")
 			}))
-			resolved, resolveErr := service.resolveExecutionForSubmit(context.Background(), request)
+			resolved, resolveErr := service.resolveExecutionForSubmit(testCallerContext(), request)
 			if test.wantDiscoveryRefusal {
 				assertAdmissionError(t, resolveErr, http.StatusConflict, codeMountArtifactInvalid)
 				if resolveErr.Message != "artifact digest mismatch between mount source and artifact discovery" || discoveryReads != 2 || payloadReads != 1 {

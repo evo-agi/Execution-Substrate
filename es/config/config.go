@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
@@ -204,14 +205,13 @@ func Load(path string) (Config, error) {
 		return Config{}, fmt.Errorf("config path is required")
 	}
 
-	file, err := os.Open(path)
+	document, err := os.ReadFile(path)
 	if err != nil {
 		return Config{}, fmt.Errorf("open config: %w", err)
 	}
-	defer file.Close()
 
 	var cfg Config
-	decoder := json.NewDecoder(file)
+	decoder := json.NewDecoder(bytes.NewReader(document))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&cfg); err != nil {
 		return Config{}, fmt.Errorf("decode config: %w", err)
@@ -219,6 +219,9 @@ func Load(path string) (Config, error) {
 	var trailing json.RawMessage
 	if err := decoder.Decode(&trailing); err != io.EOF {
 		return Config{}, fmt.Errorf("decode config: trailing data after first JSON document")
+	}
+	if err := refuseAmbiguousKeys(document, cfg); err != nil {
+		return Config{}, fmt.Errorf("decode config: %w", err)
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -290,7 +293,7 @@ func (c Config) Validate() error {
 		return err
 	}
 	if c.AdmissionPolicy != nil && c.AdmissionPolicy.WorkloadGrants != nil {
-		if err := c.AdmissionPolicy.WorkloadGrants.validateSignerKeys("admission_policy.workload_grants", c.Verification.Provenance.KeyID); err != nil {
+		if err := c.AdmissionPolicy.WorkloadGrants.validateAgainstConfig("admission_policy.workload_grants", c.Verification.Provenance.KeyID, c.Authorization.AllowedSPIFFEPathPrefixes); err != nil {
 			return err
 		}
 	}

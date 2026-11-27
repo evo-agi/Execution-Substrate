@@ -554,21 +554,52 @@ PY
 # 5B): while any grant rule in ES configuration gives the egress lane
 # "unrestricted", granted runs have no egress filter of their own. Egress
 # lanes (Workstream F slice F1, WI-4) remove that lane. ES startup validates
-# the grants; this only reports them.
+# the grants; this only reports them. It reads the keys exactly, as ES does:
+# ES refuses a file with a repeated key or with a key spelled in another
+# letter case (es/config/exact_keys.go), and so does this line, so the two
+# never read the same file differently.
 workload_egress_line() {
   local config_path=$1
   python3 -I - "${config_path}" <<'PY'
 import json
 import sys
 
+REFUSED = "; ES refuses such a file"
+
+
+def exact_pairs(pairs):
+    seen = set()
+    for key, _ in pairs:
+        if key in seen:
+            raise SystemExit(f"es config: the key {key!r} appears more than once in one object{REFUSED}")
+        seen.add(key)
+    return dict(pairs)
+
+
+def refuse_constant(name):
+    raise SystemExit(f"es config: {name} is not JSON{REFUSED}")
+
+
+def member(value, key, where):
+    if not isinstance(value, dict):
+        return None
+    for other in value:
+        if other != key and other.casefold() == key.casefold():
+            raise SystemExit(f"es config: {where}{other!r} must be spelled exactly {key!r}{REFUSED}")
+    return value.get(key)
+
+
 with open(sys.argv[1], encoding="utf-8") as handle:
-    cfg = json.load(handle)
-policy = cfg.get("admission_policy") if isinstance(cfg, dict) else None
-grants = policy.get("workload_grants") if isinstance(policy, dict) else None
-rules = grants.get("rules") if isinstance(grants, dict) else None
+    cfg = json.load(handle, object_pairs_hook=exact_pairs, parse_constant=refuse_constant)
+policy = member(cfg, "admission_policy", "")
+grants = member(policy, "workload_grants", "admission_policy.")
+rules = member(grants, "rules", "admission_policy.workload_grants.")
 if rules is not None and not isinstance(rules, list):
     raise SystemExit("es config: admission_policy.workload_grants.rules must be a list")
-unrestricted = [rule for rule in rules or [] if isinstance(rule, dict) and rule.get("egress_lane") == "unrestricted"]
+unrestricted = [
+    rule for index, rule in enumerate(rules or [])
+    if member(rule, "egress_lane", f"admission_policy.workload_grants.rules[{index}].") == "unrestricted"
+]
 if unrestricted:
     print(f"workload_egress_unrestricted=true ({len(unrestricted)} workload grant rule(s) give the egress lane "
           "unrestricted: granted runs have no egress filter of their own until egress lanes land)")

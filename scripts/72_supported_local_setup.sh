@@ -1453,10 +1453,12 @@ ags_cfg = {
     "signer": ags_signer,
 }
 # Today's workload grants (.docs/execution_lifecycle/contracts.md, section
-# 5B): every caller ES admits may publish static-script runs that request the
-# network, on both runtime profiles, through the only lane before egress
-# lanes land. ES admits a run that requests the network only with a grant,
-# and no setting turns grants off.
+# 5B): for each <prefix> in ES's allowlist, the publisher
+# spiffe://execution.internal/<prefix> may run its own static-script runs
+# that request the network, called by that same principal, on both runtime
+# profiles, through the only lane before egress lanes land. ES admits a run
+# that requests the network only with a grant naming its publisher and its
+# caller, and no setting turns grants off.
 provenance_key_id = ags_signer["key_id"]
 workload_grants = {
     "egress_lanes": [{"name": "unrestricted", "reaches_workload_vault": True}],
@@ -1464,6 +1466,7 @@ workload_grants = {
         {
             "id": f"{prefix.replace('/', '-')}-{profile_id}",
             "publisher_principal": f"spiffe://execution.internal/{prefix}",
+            "caller_principal": f"spiffe://execution.internal/{prefix}",
             "signer_key_id": provenance_key_id,
             "artifact_type": "static-script",
             "runtime_profile": profile,

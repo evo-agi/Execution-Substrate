@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -16,6 +17,7 @@ func validWorkloadGrantsConfig() *WorkloadGrantsConfig {
 			{
 				ID:                 "operator-default",
 				PublisherPrincipal: "spiffe://execution.internal/operator/local",
+				CallerPrincipal:    "spiffe://execution.internal/operator/local",
 				SignerKeyID:        "test-key",
 				ArtifactType:       "static-script",
 				RuntimeProfile:     WorkloadGrantRuntimeProfileDefault,
@@ -24,6 +26,7 @@ func validWorkloadGrantsConfig() *WorkloadGrantsConfig {
 			{
 				ID:                 "cp-codex",
 				PublisherPrincipal: "spiffe://execution.internal/service/control-plane",
+				CallerPrincipal:    "spiffe://execution.internal/service/control-plane",
 				SignerKeyID:        "test-key",
 				ArtifactType:       "static-script",
 				RuntimeProfile:     WorkloadGrantRuntimeProfileControlPlaneNormalShell,
@@ -35,6 +38,7 @@ func validWorkloadGrantsConfig() *WorkloadGrantsConfig {
 
 func configWithWorkloadGrants(grants *WorkloadGrantsConfig) Config {
 	cfg := validTestConfig()
+	cfg.Authorization.AllowedSPIFFEPathPrefixes = []string{"operator/local", "service/control-plane"}
 	cfg.AdmissionPolicy = &AdmissionPolicyConfig{WorkloadGrants: grants}
 	return cfg
 }
@@ -59,7 +63,7 @@ func TestWorkloadGrantsLoadFromJSONAndRefuseIdentityFieldsUntilIdentitiesLand(t 
 	grants := `"admission_policy": {"workload_grants": {
     "egress_lanes": [{"name": "unrestricted", "reaches_workload_vault": true}],
     "rules": [{"id": "operator-default", "publisher_principal": "spiffe://execution.internal/operator/local",
-      "signer_key_id": "test-key", "artifact_type": "static-script", "runtime_profile": "static-script/default",
+      "caller_principal": "spiffe://execution.internal/operator/local", "signer_key_id": "test-key", "artifact_type": "static-script", "runtime_profile": "static-script/default",
       "egress_lane": "unrestricted"}]}},
   "workload_vault_auth"`
 	raw := strings.Replace(validTestConfigJSON(), `"workload_vault_auth"`, grants, 1)
@@ -125,6 +129,24 @@ func TestWorkloadGrantsRefuseInvalidConfiguration(t *testing.T) {
 		"principal non-canonical scheme": {func(g *WorkloadGrantsConfig) {
 			g.Rules[0].PublisherPrincipal = "SPIFFE://execution.internal/operator/local"
 		}, "publisher_principal must be a caller SPIFFE ID"},
+		// No caller allowlist admits a one-segment caller, so AGS never
+		// signs for one and ES is never called by one (red-team 11, OBS-5).
+		"principal of one segment": {func(g *WorkloadGrantsConfig) {
+			g.Rules[0].PublisherPrincipal = "spiffe://execution.internal/operator"
+		}, "publisher_principal must be a caller SPIFFE ID in trust domain execution.internal with at least 2 path segments"},
+		"missing caller":     {func(g *WorkloadGrantsConfig) { g.Rules[0].CallerPrincipal = "" }, "caller_principal is required"},
+		"caller path only":   {func(g *WorkloadGrantsConfig) { g.Rules[0].CallerPrincipal = "operator/local" }, "caller_principal must be a caller SPIFFE ID"},
+		"caller padded":      {func(g *WorkloadGrantsConfig) { g.Rules[0].CallerPrincipal += "\t" }, "caller_principal must not contain leading or trailing whitespace"},
+		"caller one segment": {func(g *WorkloadGrantsConfig) { g.Rules[0].CallerPrincipal = "spiffe://execution.internal/operator" }, "caller_principal must be a caller SPIFFE ID"},
+		"caller foreign": {func(g *WorkloadGrantsConfig) {
+			g.Rules[0].CallerPrincipal = "spiffe://other.internal/operator/local"
+		}, "caller_principal must be a caller SPIFFE ID"},
+		"caller ES does not admit": {func(g *WorkloadGrantsConfig) {
+			g.Rules[0].CallerPrincipal = "spiffe://execution.internal/user/claude"
+		}, "rules[0].caller_principal must be a caller authorization.allowed_spiffe_path_prefixes admits"},
+		"caller above an allowed prefix": {func(g *WorkloadGrantsConfig) {
+			g.Rules[0].CallerPrincipal = "spiffe://execution.internal/service/control"
+		}, "rules[0].caller_principal must be a caller authorization.allowed_spiffe_path_prefixes admits"},
 		"missing signer":    {func(g *WorkloadGrantsConfig) { g.Rules[0].SignerKeyID = "" }, "signer_key_id is required"},
 		"padded signer":     {func(g *WorkloadGrantsConfig) { g.Rules[0].SignerKeyID = "test-key " }, "signer_key_id must not contain leading or trailing whitespace"},
 		"missing type":      {func(g *WorkloadGrantsConfig) { g.Rules[0].ArtifactType = "" }, "artifact_type is required"},
@@ -145,7 +167,7 @@ func TestWorkloadGrantsRefuseInvalidConfiguration(t *testing.T) {
 			for i := 0; i <= MaxWorkloadGrantRules; i++ {
 				g.Rules = append(g.Rules, WorkloadGrantRuleConfig{
 					ID: fmt.Sprintf("rule-%d", i), PublisherPrincipal: fmt.Sprintf("spiffe://execution.internal/operator/p%d", i),
-					SignerKeyID: "test-key", ArtifactType: "static-script", RuntimeProfile: WorkloadGrantRuntimeProfileDefault,
+					CallerPrincipal: "spiffe://execution.internal/operator/local", SignerKeyID: "test-key", ArtifactType: "static-script", RuntimeProfile: WorkloadGrantRuntimeProfileDefault,
 				})
 			}
 		}, "must not contain more than 32 rules"},
@@ -181,7 +203,7 @@ func TestWorkloadGrantsAtTheRuleLimitValidate(t *testing.T) {
 	for i := 0; i < MaxWorkloadGrantRules; i++ {
 		grants.Rules = append(grants.Rules, WorkloadGrantRuleConfig{
 			ID: fmt.Sprintf("rule-%d", i), PublisherPrincipal: fmt.Sprintf("spiffe://execution.internal/operator/p%d", i),
-			SignerKeyID: "test-key", ArtifactType: "static-script", RuntimeProfile: WorkloadGrantRuntimeProfileDefault,
+			CallerPrincipal: "spiffe://execution.internal/operator/local", SignerKeyID: "test-key", ArtifactType: "static-script", RuntimeProfile: WorkloadGrantRuntimeProfileDefault,
 			EgressLane: WorkloadEgressLaneUnrestricted,
 		})
 	}
@@ -202,15 +224,78 @@ func writeTempConfig(t *testing.T, raw string) string {
 // The lane unrestricted is a temporary compatibility edge whose removal
 // condition is egress lanes (WI-4,
 // .docs/execution_lifecycle/contracts.md, section 5B). This test is its
-// machine trigger: once ES accepts any other lane, it fails until ES refuses
-// unrestricted.
+// machine trigger: while ES accepts unrestricted, it fails once ES accepts
+// any other lane, whatever shape that lane takes. It pins the lane type to
+// its two fields, so a lane that needs any further field (what it may
+// reach, a proxy, a network) fails it, and it probes other lane names with
+// both reaches_workload_vault values, as Go values and as JSON with and
+// without extra keys. (Audit 10 F3 and red-team RT73-3: probing one lane
+// shape let a lane with an extra field land without the trigger noticing.)
 func TestUnrestrictedLaneIsRefusedOnceAnotherLaneIsAccepted(t *testing.T) {
-	reaches := true
-	other := &WorkloadGrantsConfig{EgressLanes: []WorkloadEgressLaneConfig{{Name: "filtered", ReachesWorkloadVault: &reaches}}}
-	if configWithWorkloadGrants(other).Validate() != nil {
+	if err := configWithWorkloadGrants(validWorkloadGrantsConfig()).Validate(); err != nil {
+		// The temporary lane is gone: nothing left to trigger.
 		return
 	}
-	if err := configWithWorkloadGrants(validWorkloadGrantsConfig()).Validate(); err == nil {
-		t.Fatalf("ES accepts the lane %q and still accepts %q: egress lanes have landed, so remove the temporary lane", "filtered", WorkloadEgressLaneUnrestricted)
+	const remove = "egress lanes are landing, so remove the temporary lane %q (ES must refuse it) in the same change"
+
+	lane := reflect.TypeOf(WorkloadEgressLaneConfig{})
+	var fields []string
+	for i := 0; i < lane.NumField(); i++ {
+		fields = append(fields, lane.Field(i).Name+" "+lane.Field(i).Type.String()+" "+string(lane.Field(i).Tag))
+	}
+	if want := []string{`Name string json:"name"`, `ReachesWorkloadVault *bool json:"reaches_workload_vault"`}; !reflect.DeepEqual(fields, want) {
+		t.Fatalf("an egress lane now has the fields %q, not %q, and ES still accepts %q: "+remove, fields, want, WorkloadEgressLaneUnrestricted, WorkloadEgressLaneUnrestricted)
+	}
+	if rule, ok := reflect.TypeOf(WorkloadGrantRuleConfig{}).FieldByName("EgressLane"); !ok || rule.Type.Kind() != reflect.String {
+		t.Fatalf("a rule's EgressLane is no longer a lane name, and ES still accepts %q: "+remove, WorkloadEgressLaneUnrestricted, WorkloadEgressLaneUnrestricted)
+	}
+
+	names := []string{"vault-only", "codex-api", "filtered", "default", "none", "bridge", "restricted", "internet",
+		"Unrestricted", "unrestricted ", "unrestricted-v2"}
+	for _, name := range names {
+		for _, reaches := range []bool{true, false} {
+			reaches := reaches
+			other := &WorkloadGrantsConfig{EgressLanes: []WorkloadEgressLaneConfig{{Name: name, ReachesWorkloadVault: &reaches}}}
+			if configWithWorkloadGrants(other).Validate() == nil {
+				t.Errorf("ES accepts the lane %q (reaches_workload_vault=%t) and still accepts %q: "+remove, name, reaches, WorkloadEgressLaneUnrestricted, WorkloadEgressLaneUnrestricted)
+			}
+			for _, extra := range []string{"", `, "allowed_hosts": ["api.openai.com"]`, `, "allowed_destinations": ["10.0.0.1/32"]`,
+				`, "proxy": "http://127.0.0.1:3128"`, `, "network": "codex"`} {
+				raw := strings.Replace(validTestConfigJSON(), `"workload_vault_auth"`, fmt.Sprintf(`"admission_policy": {"workload_grants": {
+    "egress_lanes": [{"name": %q, "reaches_workload_vault": %t%s}], "rules": []}},
+  "workload_vault_auth"`, name, reaches, extra), 1)
+				if _, err := Load(writeTempConfig(t, raw)); err == nil {
+					t.Errorf("ES loads the lane %q (reaches_workload_vault=%t%s) and still accepts %q: "+remove, name, reaches, extra, WorkloadEgressLaneUnrestricted, WorkloadEgressLaneUnrestricted)
+				}
+			}
+		}
+	}
+	reaches := false
+	if configWithWorkloadGrants(&WorkloadGrantsConfig{EgressLanes: []WorkloadEgressLaneConfig{{Name: WorkloadEgressLaneUnrestricted, ReachesWorkloadVault: &reaches}}}).Validate() == nil {
+		t.Errorf("ES accepts %q with reaches_workload_vault=false", WorkloadEgressLaneUnrestricted)
+	}
+}
+
+// A rule names its caller as well as its publisher, and a caller that the
+// caller allowlist admits only through a prefix is named exactly: the rule
+// for operator/local does not cover operator/local/x (red-team 11, RT73-4).
+func TestWorkloadGrantRulesNameTheirCallerExactly(t *testing.T) {
+	grants := validWorkloadGrantsConfig()
+	grants.Rules[0].CallerPrincipal = "spiffe://execution.internal/operator/local/x"
+	if err := configWithWorkloadGrants(grants).Validate(); err != nil {
+		t.Fatalf("a caller the allowlist admits through its prefix: %v", err)
+	}
+	other := grants.Rules[0]
+	other.ID = "operator-default-local"
+	other.CallerPrincipal = "spiffe://execution.internal/operator/local"
+	grants.Rules = append(grants.Rules, other)
+	if err := configWithWorkloadGrants(grants).Validate(); err != nil {
+		t.Fatalf("the same publisher with two callers is two rules: %v", err)
+	}
+	if grants.Rules[0].MatchKey() == grants.Rules[2].MatchKey() {
+		t.Fatal("rules for two callers have the same match key")
+	}
+	if key := grants.Rules[2].MatchKey(); key != [5]string{other.PublisherPrincipal, other.CallerPrincipal, other.SignerKeyID, other.ArtifactType, other.RuntimeProfile} {
+		t.Fatalf("match key order = %q", key)
 	}
 }

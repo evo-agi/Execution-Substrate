@@ -294,10 +294,12 @@ evidence.
   `network_access_not_granted`, implemented by WI-2) and
   `execution-substrate.admission.workload-identity-grant/v1` (reason code
   `workload_identity_not_granted`, lands with WI-3). A grant rule matches
-  exactly on the publisher principal, the evidence signer key ID, the
-  artifact type and the effective runtime profile, and grants an egress lane,
-  a workload identity name, both, or neither. Signed `network_access` stays
-  the publisher's request; network needs that request and a grant. Admission
+  exactly on the publisher principal, the ES caller principal (from the
+  request's mTLS connection only), the evidence signer key ID, the artifact
+  type and the effective runtime profile, and grants an egress lane, a
+  workload identity name, both, or neither. Signed `network_access` stays
+  the publisher's request, and only a request; network needs that request
+  and a grant that names both the publisher and the ES caller. Admission
   produces only scheduler-neutral names, and runtime realization alone maps
   them to job, label, network and environment values. The contract,
   including its limits and refusals, is

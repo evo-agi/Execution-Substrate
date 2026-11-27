@@ -560,8 +560,9 @@ Successful response is `200` JSON with these contract fields:
 - `:prepare` resolves workload-zone vault information through the configured workload-zone Vault config reference and ARS before success.
 - `:prepare` evaluates the network grant policy of section 5B after the
   workload-zone Vault config read and before the content policies: signed
-  `network_access=true` needs a workload grant that names an egress lane,
-  and is otherwise refused with `403 network_access_not_granted` before any
+  `network_access=true` needs a workload grant that names the run's
+  publisher and its authenticated ES caller and grants an egress lane, and
+  is otherwise refused with `403 network_access_not_granted` before any
   payload read. `:submit` evaluates it again in the same place.
 - `:prepare` evaluates ES Admission Policy Layer v0 before success. When an
   enabled policy requires payload inspection, `:prepare` may fetch bounded
@@ -821,6 +822,7 @@ Grants live in ES deployment configuration at
       {
         "id": "cp-codex",
         "publisher_principal": "spiffe://execution.internal/service/control-plane",
+        "caller_principal": "spiffe://execution.internal/service/control-plane",
         "signer_key_id": "<AGS evidence signing key ID>",
         "artifact_type": "static-script",
         "runtime_profile": "control-plane-normal-shell/v1",
@@ -861,20 +863,28 @@ Grants live in ES deployment configuration at
   - `id`: unique, at most 64 bytes, starting and ending with an ASCII letter
     or digit, and containing only ASCII letters, digits, dot, underscore and
     hyphen (the entry ID rule of the configured literal deny policy);
-  - four required match fields, compared byte for byte:
-    `publisher_principal` (a SPIFFE ID that the caller authentication
-    contract in `.docs/system_overview/contracts.md`, section 3A, accepts,
-    written in that form), `signer_key_id`, `artifact_type`, and
-    `runtime_profile` (the effective profile name, `static-script/default`
-    when the request names none). The publisher principal is the one
-    `claims.package.publication` claim ES admission reads, and only as this
-    match fact: it does not become ES request or response grammar, and no
-    other publication claim reaches admission;
+  - five required match fields, compared byte for byte:
+    `publisher_principal`, the AGS caller that published the artifact, as
+    the verified evidence names it; `caller_principal`, the ES caller that
+    asks ES to run it, as ES authenticated it over mTLS for the request;
+    `signer_key_id`; `artifact_type`; and `runtime_profile` (the effective
+    profile name, `static-script/default` when the request names none). Both
+    principals are SPIFFE IDs that the caller authentication contract in
+    `.docs/system_overview/contracts.md`, section 3A, accepts, written in
+    that form, with at least two path segments. The publisher principal is
+    the one `claims.package.publication` claim ES admission reads, and only
+    as this match fact: it does not become ES request or response grammar,
+    and no other publication claim reaches admission. The caller principal
+    comes only from the client certificate of the connection the request
+    arrived on, never from the request body, the evidence or a header;
   - two optional grant fields: `workload_identity`, a name from
     `workload_identities`, and `egress_lane`, a name from `egress_lanes`.
 - ES startup refuses: more than 32 rules; a duplicate rule ID; two rules with
-  the same four match fields, so at most one rule matches a run; a missing or
-  empty match field; a match value with surrounding white space; a name not
+  the same five match fields, so at most one rule matches a run; a missing or
+  empty match field; a match value with surrounding white space; a principal
+  with fewer than two path segments; a `caller_principal` that
+  `authorization.allowed_spiffe_path_prefixes` does not admit, since ES would
+  refuse that caller before admission; a name not
   in its list; a lane other than `unrestricted`, or `unrestricted` with
   `reaches_workload_vault=false`, before WI-4; and a rule that grants an
   identity without a lane that reaches the workload-zone Vault.
@@ -895,9 +905,15 @@ evidence verification and the workload-zone Vault config read, and before
 the content policies, so a refused run fetches no payload for policy
 inspection:
 
-1. ES finds the rule whose four match fields equal the run's facts: the
-   publisher principal and signer key ID from the verified evidence, the
-   artifact type, and the effective runtime profile.
+1. ES finds the rule whose five match fields equal the run's facts: the
+   publisher principal and signer key ID from the verified evidence, with
+   surrounding white space removed; the caller principal ES authenticated for
+   the request; the artifact type; and the effective runtime profile, as the
+   runtime-profile check resolves it. A private reliable submit delivery,
+   which has no public listener yet, matches on the caller its claim is
+   bound to, the authenticated peer of its handoff, and on no other. A
+   request or delivery that carries no authenticated ES caller matches no
+   rule.
 2. The effective lane is none when signed `network_access` is false,
    whatever the rule grants. When `network_access` is true, it is the rule's
    `egress_lane`.
@@ -959,8 +975,15 @@ Rules for these policies:
 - Grant and admission-policy code names no scheduler or container term:
   runtime realization alone maps an identity name and a lane name to job,
   label, network and environment values.
-- Signed `network_access` stays the publisher's least-privilege request. A
-  grant never gives a network to a run that did not request one.
+- Signed `network_access` stays the publisher's least-privilege request, and
+  only a request: AGS signs what the publisher declared and checks nothing
+  about networks, and the ES grant is the one authority that gives a
+  network. A grant never gives a network to a run that did not request one,
+  and a signed request without a grant that names both the publisher and the
+  ES caller gets none.
+- A grant names one ES caller. Another caller of the same artifact, such as
+  a principal under a `user/` prefix that the caller allowlist admits, gets
+  a network only where a rule names it.
 - Grants are not a sandbox, an egress filter or a firewall. Until WI-4, a
   granted run's network is the current `bridge` network: under the host
   firewall on the Remote Supported Host Alpha box, and without one on
@@ -1015,7 +1038,8 @@ bounded receipt, and Nomad submission through ES.
   cannot bypass a policy that `:prepare` would deny.
 - Submit evaluates the workload grants of section 5B again with the
   configuration ES runs with at that time. Signed `network_access=true`
-  without a grant that names an egress lane is refused with `403
+  without a grant that names the run's publisher and its authenticated ES
+  caller and grants an egress lane is refused with `403
   network_access_not_granted` before payload staging, run ID creation and
   Nomad submission.
 - Policy denial happens before payload staging, mount staging, run ID creation,

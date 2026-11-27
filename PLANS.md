@@ -949,8 +949,8 @@ F1 - Named Workload Identities And Workload Grants:
   The entry that gives `spiffe://execution.internal/workload` to every root
   process on the host is removed. ES picks the name from owner grant rules and
   holds no SPIRE or Vault administrative access; publishers request no name.
-- Network: `network_access=true` also needs an owner grant naming an egress
-  lane. Until lanes land, the only lane is `unrestricted`, a `Temporary
+- Network: `network_access=true` is only a request; it also needs an owner
+  grant naming the publisher, the ES caller and an egress lane. Until lanes land, the only lane is `unrestricted`, a `Temporary
   compatibility edge` that readiness reports as
   `workload_egress_unrestricted=true`; its removal condition is WI-4.
 - Workload identities are never callers, a run without an identity grant

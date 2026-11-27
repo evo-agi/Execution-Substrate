@@ -38,6 +38,10 @@ func callerAllowlistExampleWithPrefixes(t *testing.T, example string, prefixes [
 	if example != "ars.json" {
 		testutil.WithFreshSigningKeys(t, doc)
 	}
+	// ES refuses a workload grant whose caller its allowlist does not admit,
+	// and the example's grants name the example's own callers. This test is
+	// about the allowlist rule alone, so the ES example drops its grants.
+	delete(doc, "admission_policy")
 	out, err := json.Marshal(doc)
 	if err != nil {
 		t.Fatalf("encode example %s: %v", example, err)

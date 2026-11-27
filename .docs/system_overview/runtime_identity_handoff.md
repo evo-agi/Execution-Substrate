@@ -250,7 +250,9 @@ F1 replaces this with:
 - names assigned by owner grant rules in ES deployment configuration, not
   requested by publishers;
 - network access that needs both the publisher's signed request and an owner
-  grant. This part is implemented: WI-2 landed it
+  grant that names the publisher and the ES caller. The signed request is
+  only a request: AGS checks nothing about networks. This part is
+  implemented: WI-2 landed it
   (`.docs/execution_lifecycle/contracts.md`, section 5B).
 
 ### 11.2 Names and the SPIFFE ID layout
@@ -275,10 +277,13 @@ F1 replaces this with:
 - ES admission picks the name from an owner grant rule in ES deployment
   configuration, `admission_policy.workload_grants`
   (`.docs/execution_lifecycle/contracts.md`, section 5B).
-- A rule matches exactly on four facts: the publisher principal
+- A rule matches exactly on five facts: the publisher principal
   (`claims.package.publication.invoker.principal`, which AGS takes from its
-  authenticated caller), the evidence signer key ID (`seal.key_id`), the
-  artifact type, and the effective runtime profile name.
+  authenticated caller), the ES caller principal (the caller ES authenticated
+  over mTLS for the request, never a value from the request body or the
+  evidence), the evidence signer key ID (`seal.key_id`), the artifact type,
+  and the effective runtime profile name. Keying on the ES caller keeps one
+  caller's grant from serving another caller that runs the same artifact.
 - Publishers do not request a name. F1 adds no identity claim to signed
   evidence: Workstream A removed `workload_identity_id` from the shared
   execution claims, and F1 keeps it removed.
@@ -408,7 +413,7 @@ open.
 | Pull request | What it lands | Gate |
 | --- | --- | --- |
 | WI-1 | This decision in `PLANS.md` and `.docs/`, with doc-contract tests. No behavior change. | Audit and the merge gate |
-| WI-2 | Network grants: `admission_policy.workload_grants` with exact-match rules, the lane value `unrestricted` only, `403 network_access_not_granted` on `:prepare` and `:submit`, startup validation, setup scripts that write grants for today's flows, and the readiness report `workload_egress_unrestricted=true` | Audit, red-team and the merge gate |
+| WI-2 | Network grants: `admission_policy.workload_grants` with exact-match rules keyed on publisher and ES caller, the lane value `unrestricted` only, `403 network_access_not_granted` on `:prepare` and `:submit`, startup validation, setup scripts that write grants for today's flows, and the readiness report `workload_egress_unrestricted=true` | Audit, red-team and the merge gate |
 | WI-3a | The caller authentication contract refuses `workload` caller paths | Audit and the merge gate |
 | WI-3 | Named identities: sections 11.2 to 11.7, the rewrite of the tests that pin the shared identity, and CI integration tests with real SPIRE, Vault and Docker | Audit, red-team, a box run with scripted rollback, and the merge gate |
 | WI-4 | Egress lanes: Docker `internal` networks whose only exit is a pinned filtering proxy, `network_mode` chosen by lane, the removal of `unrestricted`, and readiness checks. It starts with a box measurement of the hosts the Codex CLI contacts. | Audit, red-team, a box run, and the merge gate |

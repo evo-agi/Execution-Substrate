@@ -257,8 +257,11 @@ What the app layer delegates:
 7. Decode and validate the workload-zone Vault blob through `internal/contracts/runtimeconfig/v1`, then resolve the workload-vault auth plan from that typed config plus ES `workload_vault_auth.default_mode`, including optional non-secret Vault CA trust material.
 8. Evaluate the network grant policy of contracts section 5B
    (`decideWorkloadGrants`): signed `network_access=true` needs a workload
-   grant that names an egress lane, else `403 network_access_not_granted`.
-   It reads ES configuration only, so a refused run fetches no payload.
+   grant that names the run's publisher and its authenticated ES caller and
+   grants an egress lane, else `403 network_access_not_granted`. The ES API
+   puts the mTLS caller in the request context
+   (`admission.WithAuthenticatedCaller`); a context without one matches no
+   grant. It reads ES configuration only, so a refused run fetches no payload.
 9. Evaluate ES Admission Policy Layer v0 in the same shared admission helper
    used by `Prepare` and `Submit`. If an enabled policy requires payload
    inspection, read only bounded static-script payload text through the

@@ -1,17 +1,20 @@
 package admission
 
 import (
+	"context"
 	"net/http"
 	"strings"
 
 	esconfig "execution-substrate/es/config"
+	"execution-substrate/internal/callerauth"
 	evidencev1 "execution-substrate/internal/contracts/evidence/v1"
 )
 
 // Workload grants are the owner's grants in ES deployment configuration
 // (admission_policy.workload_grants). A run that requests the network also
-// needs a grant that names an egress lane. The contract is
-// .docs/execution_lifecycle/contracts.md, section 5B.
+// needs a grant that names its publisher, its caller and an egress lane: the
+// signed network request is the publisher's request, never the authority.
+// The contract is .docs/execution_lifecycle/contracts.md, section 5B.
 //
 // This file decides in grant terms only: a rule ID and an egress lane name.
 // It names no scheduler, container runtime or container label; runtime
@@ -45,25 +48,26 @@ func workloadGrantEvidenceFactsFrom(evidence evidencev1.ArtifactEvidence) worklo
 }
 
 // workloadGrantFacts are the facts a grant rule matches on, plus the
-// publisher's signed network request. runtimeProfileSupported is false when
-// the request names a runtime profile ES does not support.
+// publisher's signed network request. callerPrincipal is the caller the ES
+// API authenticated, or empty when the delivery has none; runtimeProfile is
+// the effective runtime profile the runtime-profile gate resolved.
 type workloadGrantFacts struct {
-	evidence                workloadGrantEvidenceFacts
-	artifactType            string
-	runtimeProfile          string
-	runtimeProfileSupported bool
-	networkAccess           bool
+	evidence        workloadGrantEvidenceFacts
+	callerPrincipal string
+	artifactType    string
+	runtimeProfile  string
+	networkAccess   bool
 }
 
-// matchKey returns the four match facts in the order of
+// matchKey returns the five match facts in the order of
 // esconfig.WorkloadGrantRuleConfig.MatchKey.
-func (f workloadGrantFacts) matchKey() [4]string {
-	return [4]string{f.evidence.publisherPrincipal, f.evidence.signerKeyID, f.artifactType, f.runtimeProfile}
+func (f workloadGrantFacts) matchKey() [5]string {
+	return [5]string{f.evidence.publisherPrincipal, f.callerPrincipal, f.evidence.signerKeyID, f.artifactType, f.runtimeProfile}
 }
 
 type workloadGrantRule struct {
 	id         string
-	match      [4]string
+	match      [5]string
 	egressLane string
 }
 
@@ -95,15 +99,10 @@ func workloadGrantsFromConfig(cfg *esconfig.AdmissionPolicyConfig) workloadGrant
 
 // decide applies the network grant policy,
 // execution-substrate.admission.network-grant/v1. Matching is byte for
-// byte on all four facts; startup guarantees that at most one rule matches.
+// byte on all five facts; startup guarantees that at most one rule matches.
+// Startup refuses a rule with an empty caller, so a delivery without an
+// authenticated caller matches no rule.
 func (g workloadGrants) decide(facts workloadGrantFacts) (workloadGrantDecision, *Error) {
-	if !facts.runtimeProfileSupported {
-		// The runtime-profile gate refuses this request with
-		// 400 unsupported_runtime_profile before any effect, and that is the
-		// refusal the caller gets: the grant policies do not report on a
-		// profile ES does not support.
-		return workloadGrantDecision{}, nil
-	}
 	key := facts.matchKey()
 	var matched *workloadGrantRule
 	for i := range g.rules {
@@ -128,40 +127,79 @@ func (g workloadGrants) decide(facts workloadGrantFacts) (workloadGrantDecision,
 }
 
 // newWorkloadGrantFacts reads the grant facts of a run from its verified
-// artifact and its request.
-func newWorkloadGrantFacts(req PrepareRequest, artifact preparedArtifact) workloadGrantFacts {
-	profile, supported := workloadGrantRuntimeProfile(req)
+// artifact, its authenticated caller and the runtime profile the
+// runtime-profile gate resolved.
+func newWorkloadGrantFacts(callerPrincipal string, runtimeProfile string, artifact preparedArtifact) workloadGrantFacts {
 	return workloadGrantFacts{
-		evidence:                artifact.grantFacts,
-		artifactType:            strings.TrimSpace(artifact.manifest.ArtifactType),
-		runtimeProfile:          profile,
-		runtimeProfileSupported: supported,
-		networkAccess:           artifact.networkAccess,
+		evidence:        artifact.grantFacts,
+		callerPrincipal: callerPrincipal,
+		artifactType:    strings.TrimSpace(artifact.manifest.ArtifactType),
+		runtimeProfile:  runtimeProfile,
+		networkAccess:   artifact.networkAccess,
 	}
 }
 
-// workloadGrantRuntimeProfile returns the effective runtime profile name of a
-// request: static-script/default when the request names none. It reports
-// false for a name the runtime-profile gate refuses by name alone, the way
-// resolveExecutionRuntimeProfile reads the annotation; a test keeps the two
-// in step.
-func workloadGrantRuntimeProfile(req PrepareRequest) (string, bool) {
-	switch requested := strings.TrimSpace(req.Invocation.Annotations[runtimeProfileAnnotationKey]); requested {
-	case "":
-		return runtimeProfileDefaultStaticScript, true
-	case runtimeProfileControlPlaneNormalShell:
-		return requested, true
-	default:
-		return requested, false
+type authenticatedCallerKey struct{}
+
+// WithAuthenticatedCaller returns ctx carrying the caller the ES API
+// authenticated over mTLS for this :prepare or :submit. The ES API is its
+// only caller: the caller identity comes from the connection, never from the
+// request body. ES admission reads it only to match workload grants, and it
+// never becomes ES request or response grammar. A context without one
+// matches no grant, so its run gets no network.
+func WithAuthenticatedCaller(ctx context.Context, caller callerauth.SPIFFEID) context.Context {
+	return context.WithValue(ctx, authenticatedCallerKey{}, caller)
+}
+
+// withDeliveryCaller returns ctx carrying, in place of any caller ctx
+// carried, the caller a private reliable submit delivery is bound to: the
+// authenticated peer of the operational handoff, or the caller fact of a
+// synthetic replay. Such a delivery matches workload grants on the same
+// caller its claim is keyed on, and on no other. A caller that callerauth
+// would not accept, written in exactly that form, leaves ctx with no caller,
+// so the delivery matches no grant.
+func withDeliveryCaller(ctx context.Context, canonicalURI string) context.Context {
+	caller, err := callerauth.ParseSPIFFEID(canonicalURI)
+	if err != nil || caller.String() != canonicalURI {
+		return context.WithValue(ctx, authenticatedCallerKey{}, callerauth.SPIFFEID{})
 	}
+	return WithAuthenticatedCaller(ctx, caller)
+}
+
+// authenticatedCallerPrincipal returns the canonical SPIFFE ID of the
+// authenticated caller in ctx, or empty when ctx carries none or carries a
+// value callerauth would not accept (such as the zero SPIFFEID).
+func authenticatedCallerPrincipal(ctx context.Context) string {
+	caller, ok := ctx.Value(authenticatedCallerKey{}).(callerauth.SPIFFEID)
+	if !ok {
+		return ""
+	}
+	parsed, err := callerauth.ParseSPIFFEID(caller.String())
+	if err != nil || parsed.String() != caller.String() {
+		return ""
+	}
+	return parsed.String()
 }
 
 // decideWorkloadGrants runs in the shared :prepare and :submit admission
 // path, after evidence verification and the workload-zone Vault config read,
 // and before the content policies, so a refused run fetches no payload for
 // policy inspection.
-func (s *Service) decideWorkloadGrants(req PrepareRequest, artifact preparedArtifact) (workloadGrantDecision, *Error) {
-	return workloadGrantsFromConfig(s.cfg.AdmissionPolicy).decide(newWorkloadGrantFacts(req, artifact))
+//
+// The effective runtime profile comes from the runtime-profile gate itself,
+// resolveExecutionRuntimeProfile, so the grant code keeps no list of profile
+// names: every profile the gate resolves gets a grant decision. When the gate
+// refuses the request (an unknown or disabled profile, or one the artifact
+// does not fit), the grant policies make no decision, and the gate refuses
+// the request with its own 400 unsupported_runtime_profile later in the same
+// :prepare or :submit, before any effect, as it does without grants.
+func (s *Service) decideWorkloadGrants(ctx context.Context, req PrepareRequest, artifact preparedArtifact) (workloadGrantDecision, *Error) {
+	profile, profileErr := resolveExecutionRuntimeProfile(s.cfg.Execution, req, artifact)
+	if profileErr != nil {
+		return workloadGrantDecision{}, nil
+	}
+	facts := newWorkloadGrantFacts(authenticatedCallerPrincipal(ctx), profile.name, artifact)
+	return workloadGrantsFromConfig(s.cfg.AdmissionPolicy).decide(facts)
 }
 
 // networkAccessNotGrantedError is the denial of the network grant policy,

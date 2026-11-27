@@ -33,7 +33,7 @@ func TestWorkstreamFF1NamedWorkloadIdentityDecisionIsDocumented(t *testing.T) {
 		"Before F1: - every workload run received the same SPIFFE ID, `spiffe://execution.internal/workload`, and logged in to Vault with one shared role, so any workload could read any other workload's secrets;",
 		"- the SPIRE registration for that ID matched any root process on the host (`unix:uid:0` plus `unix:gid:0`), inside a container or not;",
 		"- the publisher's signed `network_access` alone decided whether a run got a network.",
-		"- network access that needs both the publisher's signed request and an owner grant. This part is implemented: WI-2 landed it (`.docs/execution_lifecycle/contracts.md`, section 5B).",
+		"- network access that needs both the publisher's signed request and an owner grant that names the publisher and the ES caller. The signed request is only a request: AGS checks nothing about networks. This part is implemented: WI-2 landed it (`.docs/execution_lifecycle/contracts.md`, section 5B).",
 	)
 
 	assertContainsAll(t, "F1 names and SPIFFE ID layout", f1,
@@ -47,7 +47,8 @@ func TestWorkstreamFF1NamedWorkloadIdentityDecisionIsDocumented(t *testing.T) {
 	)
 
 	assertContainsAll(t, "F1 owner picks the name", f1,
-		"A rule matches exactly on four facts: the publisher principal (`claims.package.publication.invoker.principal`, which AGS takes from its authenticated caller), the evidence signer key ID (`seal.key_id`), the artifact type, and the effective runtime profile name.",
+		"A rule matches exactly on five facts: the publisher principal (`claims.package.publication.invoker.principal`, which AGS takes from its authenticated caller), the ES caller principal (the caller ES authenticated over mTLS for the request, never a value from the request body or the evidence), the evidence signer key ID (`seal.key_id`), the artifact type, and the effective runtime profile name.",
+		"Keying on the ES caller keeps one caller's grant from serving another caller that runs the same artifact.",
 		"Publishers do not request a name. F1 adds no identity claim to signed evidence",
 		"ES does not create SPIRE entries, Vault roles or Vault policies, and holds no SPIRE or Vault administrative access.",
 		"ES startup refuses a grant that names an identity missing from the configured list.",
@@ -122,10 +123,13 @@ func TestWorkloadGrantsContractIsDocumented(t *testing.T) {
 		"A name is 1 to 63 characters from `a-z`, `0-9` and `-`, starting with a letter or a digit.",
 		"Until WI-4, the only accepted lane is `unrestricted` with `reaches_workload_vault=true`, realized as the current `bridge` network mode. On the Remote Supported Host Alpha box that network sits under the host firewall",
 		"Supported-local hosts have no host firewall, so there `unrestricted` is the full `bridge` network, which reaches the local network and host services.",
-		"four required match fields, compared byte for byte:",
+		"five required match fields, compared byte for byte: `publisher_principal`, the AGS caller that published the artifact, as the verified evidence names it; `caller_principal`, the ES caller that asks ES to run it, as ES authenticated it over mTLS for the request;",
+		"Both principals are SPIFFE IDs that the caller authentication contract in `.docs/system_overview/contracts.md`, section 3A, accepts, written in that form, with at least two path segments.",
+		"The caller principal comes only from the client certificate of the connection the request arrived on, never from the request body, the evidence or a header;",
 		"`runtime_profile` (the effective profile name, `static-script/default` when the request names none)",
-		"The publisher principal is the one `claims.package.publication` claim ES admission reads, and only as this match fact: it does not become ES request or response grammar, and no other publication claim reaches admission;",
-		"ES startup refuses: more than 32 rules; a duplicate rule ID; two rules with the same four match fields, so at most one rule matches a run;",
+		"The publisher principal is the one `claims.package.publication` claim ES admission reads, and only as this match fact: it does not become ES request or response grammar, and no other publication claim reaches admission.",
+		"ES startup refuses: more than 32 rules; a duplicate rule ID; two rules with the same five match fields, so at most one rule matches a run;",
+		"a principal with fewer than two path segments; a `caller_principal` that `authorization.allowed_spiffe_path_prefixes` does not admit, since ES would refuse that caller before admission;",
 		"a lane other than `unrestricted`, or `unrestricted` with `reaches_workload_vault=false`, before WI-4;",
 		"and a rule that grants an identity without a lane that reaches the workload-zone Vault.",
 		"Until WI-3, ES startup refuses `workload_identities` and a rule's `workload_identity` as unknown keys, so no configuration can name an identity that ES would not give.",
@@ -138,6 +142,8 @@ func TestWorkloadGrantsContractIsDocumented(t *testing.T) {
 		"A request that names a runtime profile ES does not support gets no grant decision: the runtime-profile check refuses it with `400 unsupported_runtime_profile`, as it does without grants.",
 		"The decision holds the matching rule ID, the effective identity name and the effective lane name. These are safe, non-secret values. Until WI-3, nothing reads them: the only lane, `unrestricted`, is realized as the network mode signed `network_access` already selects.",
 		"The effective lane is none when signed `network_access` is false, whatever the rule grants.",
+		"ES finds the rule whose five match fields equal the run's facts: the publisher principal and signer key ID from the verified evidence, with surrounding white space removed; the caller principal ES authenticated for the request; the artifact type; and the effective runtime profile, as the runtime-profile check resolves it.",
+		"A private reliable submit delivery, which has no public listener yet, matches on the caller its claim is bound to, the authenticated peer of its handoff, and on no other. A request or delivery that carries no authenticated ES caller matches no rule.",
 		"is refused by `execution-substrate.admission.network-grant/v1` with `403`, reason code `network_access_not_granted` and safe message `network access not granted by admission policy`.",
 		"is refused by `execution-substrate.admission.workload-identity-grant/v1` with `403`, reason code `workload_identity_not_granted` and safe message `workload identity not granted by admission policy`.",
 		"The network policy runs first, so a run refused by both reports `network_access_not_granted`.",
@@ -154,7 +160,9 @@ func TestWorkloadGrantsContractIsDocumented(t *testing.T) {
 	assertContainsAll(t, "workload grants guardrails", grants,
 		"Matching is exact. Grants do not add regex, glob, prefix matching, Boolean policy logic, OPA/Rego, a DSL, customer policy bundles, an external evaluator, request-supplied grants, CP-defined grants, user-defined reason codes or user-defined API messages.",
 		"Grant and admission-policy code names no scheduler or container term",
-		"A grant never gives a network to a run that did not request one.",
+		"Signed `network_access` stays the publisher's least-privilege request, and only a request: AGS signs what the publisher declared and checks nothing about networks, and the ES grant is the one authority that gives a network.",
+		"A grant never gives a network to a run that did not request one, and a signed request without a grant that names both the publisher and the ES caller gets none.",
+		"A grant names one ES caller. Another caller of the same artifact, such as a principal under a `user/` prefix that the caller allowlist admits, gets a network only where a rule names it.",
 		"Grants are not a sandbox, an egress filter or a firewall. Until WI-4, a granted run's network is the current `bridge` network: under the host firewall on the Remote Supported Host Alpha box, and without one on supported-local hosts.",
 	)
 
@@ -170,10 +178,10 @@ func TestWorkloadGrantsContractIsDocumented(t *testing.T) {
 		"Section 5B is their contract. The network policy is implemented; the identity policy is not yet implemented and lands with WI-3.",
 	)
 	assertContainsAll(t, "lifecycle network grant refusal on :prepare and :submit", c6,
-		"- `:prepare` evaluates the network grant policy of section 5B after the workload-zone Vault config read and before the content policies: signed `network_access=true` needs a workload grant that names an egress lane, and is otherwise refused with `403 network_access_not_granted` before any payload read. `:submit` evaluates it again in the same place.",
+		"- `:prepare` evaluates the network grant policy of section 5B after the workload-zone Vault config read and before the content policies: signed `network_access=true` needs a workload grant that names the run's publisher and its authenticated ES caller and grants an egress lane, and is otherwise refused with `403 network_access_not_granted` before any payload read. `:submit` evaluates it again in the same place.",
 		"| Signed `network_access=true` without a workload grant that names an egress lane (section 5B) | `403` | `network_access_not_granted` |",
 		"| Signed `network_access=true` without a workload grant that names an egress lane | `:prepare`, `:submit` | `403` | JSON | `network_access_not_granted` |",
-		"- Submit evaluates the workload grants of section 5B again with the configuration ES runs with at that time. Signed `network_access=true` without a grant that names an egress lane is refused with `403 network_access_not_granted` before payload staging, run ID creation and Nomad submission.",
+		"- Submit evaluates the workload grants of section 5B again with the configuration ES runs with at that time. Signed `network_access=true` without a grant that names the run's publisher and its authenticated ES caller and grants an egress lane is refused with `403 network_access_not_granted` before payload staging, run ID creation and Nomad submission.",
 	)
 }
 
@@ -241,7 +249,11 @@ func TestWorkstreamFF1IsPlannedAndPointedTo(t *testing.T) {
 	)
 	esContract := compactDocSection(t, contractsRaw, "## 7. ES Admission And Execution Contract", "## 8.")
 	assertContainsAll(t, "ES network mapping F1 change", esContract,
-		"A run that requests the network is admitted only with an owner grant in ES configuration that names an egress lane, and is otherwise refused with `network_access_not_granted` (`.docs/execution_lifecycle/contracts.md`, section 5B). The only lane, `unrestricted`, is this `bridge` mapping. From WI-4, a granted run joins its egress lane's network instead of `bridge`.",
+		"A run that requests the network is admitted only with an owner grant in ES configuration that names its publisher and its ES caller and grants an egress lane, and is otherwise refused with `network_access_not_granted` (`.docs/execution_lifecycle/contracts.md`, section 5B). The only lane, `unrestricted`, is this `bridge` mapping. From WI-4, a granted run joins its egress lane's network instead of `bridge`.",
+	)
+	agsPublication := compactDocSection(t, contractsRaw, "## 5. AGS Publication Contract", "## 6. ARS Storage And Discoverability Contract")
+	assertContainsAll(t, "AGS signs the network request without checking it", agsPublication,
+		"It is the publisher's request, signed as the publisher declared it: AGS checks nothing about networks, and a signed `network_access=true` gives no network by itself. ES gives a network only through its own workload grants, which name both the publisher and the ES caller (`.docs/execution_lifecycle/contracts.md`, section 5B).",
 	)
 	runtimeIdentity := compactDocSection(t, contractsRaw, "## 10. Runtime Identity Handoff Contract", "## 11. Temporary Compatibility Edges")
 	assertContainsAll(t, "runtime identity contract F1 pointer", runtimeIdentity,
@@ -259,10 +271,14 @@ func TestWorkstreamFF1IsPlannedAndPointedTo(t *testing.T) {
 	configuration := compactText(mustRead(t, ".docs/system_overview/configuration.md"))
 	assertContainsAll(t, "configuration workload grants", configuration,
 		"`admission_policy.workload_grants` is ES deployment/admin configuration for the owner's workload grants (Workstream F slice F1)",
-		"A run whose signed evidence requests the network needs a rule that names an egress lane, and is otherwise refused with `403 network_access_not_granted`.",
+		"each keyed on publisher principal (the AGS caller that published the artifact), caller principal (the ES caller, as ES authenticated it over mTLS), evidence signer key ID, artifact type and runtime profile.",
+		"A run whose signed evidence requests the network needs a rule that names its publisher and its caller and grants an egress lane, and is otherwise refused with `403 network_access_not_granted`. The signed request alone gives no network.",
+		"A rule's `caller_principal` must be a caller that `authorization.allowed_spiffe_path_prefixes` admits, and both principals need at least two path segments.",
+		"A prefix whose first segment is `user`, in any letter case, gets no grant: a person's caller gets a network only where the owner writes a rule that names it.",
+		"ES reads `es.json` with exact keys: it refuses a key repeated in one object and a key that matches a field only in another letter case, anywhere in the file. `scripts/10_health_check.sh` reads the file the same way.",
 		"No setting turns grants off: a configuration without grants admits only runs that request no network.",
 		"A rule's `signer_key_id` must be `verification.provenance.key_id`, the only key ES admits artifact evidence from, and its `runtime_profile` must be `static-script/default` or `control-plane-normal-shell/v1`.",
-		"Today's grants, written by the example configurations, `scripts/72_supported_local_setup.sh` and the Remote Alpha ES upgrade (`scripts/internal/remote_alpha_upgrade_es.py migrate-config`), give the lane `unrestricted` to `static-script` runs on both runtime profiles, for each publisher `spiffe://execution.internal/<prefix>` whose `<prefix>` is in `authorization.allowed_spiffe_path_prefixes`, signed with the provenance key.",
+		"Today's grants, written by the example configurations, `scripts/72_supported_local_setup.sh` and the Remote Alpha ES upgrade (`scripts/internal/remote_alpha_upgrade_es.py migrate-config`), give the lane `unrestricted` to `static-script` runs on both runtime profiles, for each `<prefix>` in `authorization.allowed_spiffe_path_prefixes`, where `spiffe://execution.internal/<prefix>` is both the publisher and the caller, signed with the provenance key.",
 		"While any rule grants the lane `unrestricted`, readiness reports `workload_egress_unrestricted=true`: `scripts/10_health_check.sh` prints that line in its \"workload grants\" section.",
 		"Workstream F slice F1 is that replacement (`.docs/system_overview/runtime_identity_handoff.md`, section 11)",
 	)

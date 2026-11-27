@@ -130,7 +130,7 @@ func privateReplayServiceFixture(t *testing.T) (*Service, []byte, syntheticCalle
 	if err != nil {
 		t.Fatal(err)
 	}
-	caller, err := newSyntheticCallerFact("spiffe://synthetic.test/ns/admission")
+	caller, err := newSyntheticCallerFact(testGrantCaller)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,7 +151,7 @@ func TestPrivateReplaySameDeliveryPB1Verification(t *testing.T) {
 	if err != nil {
 		t.Fatalf("strict parse: %v", err)
 	}
-	proposal, err := service.composePrivateSyntheticReplay(context.Background(), delivery, keys, image, 1)
+	proposal, err := service.composePrivateSyntheticReplay(testCallerContext(), delivery, keys, image, 1)
 	if err != nil {
 		t.Fatalf("same-delivery resolver and PB1 composer: %v", err)
 	}
@@ -190,7 +190,7 @@ func TestPrivateReplaySameDeliveryPB1Verification(t *testing.T) {
 }
 
 func TestPrivateReplayWinnerOriginalAfterDefaultKeyDrift(t *testing.T) {
-	ctx := context.Background()
+	ctx := testCallerContext()
 	service, raw, caller, original, image := privateReplayServiceFixture(t)
 	custody, _ := openPrivateReplayTestCustody(t)
 	defer custody.Close()
@@ -351,7 +351,7 @@ func TestPrivateReplayClaimRendezvousBoundsTheWaitForArrival(t *testing.T) {
 
 func TestPrivateReplayConcurrentWinnerClassification(t *testing.T) {
 	t.Run("same_facts_positive_control", func(t *testing.T) {
-		ctx := context.Background()
+		ctx := testCallerContext()
 		service, raw, caller, keys, image := privateReplayServiceFixture(t)
 		custody, root := openPrivateReplayTestCustody(t)
 		defer custody.Close()
@@ -396,7 +396,7 @@ func TestPrivateReplayConcurrentWinnerClassification(t *testing.T) {
 		}
 	})
 	t.Run("drifted_defaults_image_placement_and_keys", func(t *testing.T) {
-		ctx := context.Background()
+		ctx := testCallerContext()
 		firstService, raw, caller, firstKeys, firstImage := privateReplayServiceFixture(t)
 		// Construct a distinct service with a fresh mutex. Its controlled
 		// dependencies serve the same signed artifact, while defaults drift.
@@ -614,7 +614,7 @@ func TestPrivateReplayFreshProcessVerifiedOriginal(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		caller, err := newSyntheticCallerFact("spiffe://synthetic.test/ns/admission")
+		caller, err := newSyntheticCallerFact(testGrantCaller)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -681,17 +681,17 @@ func TestPrivateReplayRedactionAndNonwiring(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	proposal, err := service.composePrivateSyntheticReplay(context.Background(), delivery, keys, image, 1)
+	proposal, err := service.composePrivateSyntheticReplay(testCallerContext(), delivery, keys, image, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, value := range []any{caller, delivery, delivery.originalIntent, keys, proposal, proposal.frozen} {
 		formatted := fmt.Sprintf("%v %+v %#v", value, value, value)
-		if !strings.Contains(formatted, "redacted") || strings.Contains(formatted, "Binding-A") || strings.Contains(formatted, "spiffe://synthetic") || strings.Contains(formatted, "artifact_digest") {
+		if !strings.Contains(formatted, "redacted") || strings.Contains(formatted, "Binding-A") || strings.Contains(formatted, "spiffe://") || strings.Contains(formatted, "artifact_digest") {
 			t.Fatal("private aggregate formatting leaked synthetic canary")
 		}
 		encoded, err := json.Marshal(value)
-		if err == nil && (bytes.Contains(encoded, []byte("Binding-A")) || bytes.Contains(encoded, []byte("spiffe://synthetic")) || bytes.Contains(encoded, []byte("artifact_digest"))) {
+		if err == nil && (bytes.Contains(encoded, []byte("Binding-A")) || bytes.Contains(encoded, []byte("spiffe://")) || bytes.Contains(encoded, []byte("artifact_digest"))) {
 			t.Fatal("private aggregate JSON leaked synthetic canary")
 		}
 	}
@@ -843,7 +843,7 @@ func privateBindingCallerInventory() map[string]int {
 
 func TestPrivateReplayProgressAdmissionReplay(t *testing.T) {
 	t.Run("RetainedOriginalAfterRestartAndDrift", func(t *testing.T) {
-		ctx := context.Background()
+		ctx := testCallerContext()
 		service, raw, caller, keys, image := privateReplayServiceFixture(t)
 		root := privateReplayTestRoot(t)
 		open := func() *reliablesubmit.PrivateReplayProgressCustody {
@@ -918,7 +918,7 @@ func TestPrivateReplayProgressAdmissionReplay(t *testing.T) {
 		}
 	})
 	t.Run("ScopeOneOccupiesSameKey", func(t *testing.T) {
-		ctx := context.Background()
+		ctx := testCallerContext()
 		service, raw, caller, keys, image := privateReplayServiceFixture(t)
 		catalog, err := newPrivateSyntheticKeyCatalog(keys)
 		if err != nil {
@@ -1002,7 +1002,7 @@ func TestPrivateReplayProgressAdmissionReplay(t *testing.T) {
 		}
 	})
 	t.Run("OccupiedAtCapacityAndValidMissRefusal", func(t *testing.T) {
-		ctx := context.Background()
+		ctx := testCallerContext()
 		service, raw, caller, keys, image := privateReplayServiceFixture(t)
 		catalog, err := newPrivateSyntheticKeyCatalog(keys)
 		if err != nil {
@@ -1046,7 +1046,7 @@ func TestPrivateReplayProgressAdmissionReplay(t *testing.T) {
 
 func TestPrivateReplayProgressHasNoEffectPaths(t *testing.T) {
 	assertPrivateReplayProgressCallers(t)
-	ctx := context.Background()
+	ctx := testCallerContext()
 	s, raw, caller, keys, image := privateReplayServiceFixture(t)
 	var providerCalls, stagingCalls, liveDependencyCalls atomic.Int64
 	s.nomadClient = newResolvedPlanNomadClient(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

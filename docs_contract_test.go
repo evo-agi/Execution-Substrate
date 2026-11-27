@@ -2862,8 +2862,8 @@ func TestReliableSubmitPublicOptInAndVersioningDocsContract(t *testing.T) {
 	)
 	assertContainsAll(t, "current submit handler source", serverSource,
 		"func (s *Server) handleSubmit",
-		"request, ok := s.decodeAuthorizedExecutionRequest(w, r)",
-		"result, err := s.service.Submit(r.Context(), request)",
+		"ctx, request, ok := s.decodeAuthorizedExecutionRequest(w, r)",
+		"result, err := s.service.Submit(ctx, request)",
 	)
 	assertContainsAll(t, "current schema version default source", serviceSource,
 		"func validatePrepareRequest(req *PrepareRequest) *Error",

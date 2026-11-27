@@ -1419,7 +1419,7 @@ func TestOperationalAdmissionCaptureIsSameResolution(t *testing.T) {
 	}
 	// An independent second resolution of the same request reads the evidence
 	// once more and yields the same plan, PB1 material, host and record.
-	again, failure := f.service.resolveExecutionForSubmit(context.Background(), original.delivery.request)
+	again, failure := f.service.resolveExecutionForSubmit(testCallerContext(), original.delivery.request)
 	if failure != nil {
 		t.Fatalf("independent resolution: %s", failure.Code)
 	}

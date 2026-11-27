@@ -195,7 +195,7 @@ func TestProducerContractSuccessDoesNotImplyPrepareSuccessOrSubmitReadiness(t *t
 		t.Fatalf("expected successful producer declaration, got %+v", declaration)
 	}
 
-	_, err := service.Prepare(context.Background(), fixture.prepareRequest())
+	_, err := service.Prepare(testCallerContext(), fixture.prepareRequest())
 	assertAdmissionError(t, err, http.StatusServiceUnavailable, "trust_model_unavailable")
 }
 

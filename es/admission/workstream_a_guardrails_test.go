@@ -184,6 +184,10 @@ func TestWorkstreamAAdmissionDTOsExcludePublicationARSSupportAndCPGrammar(t *tes
 		"publication",
 		"builder_service",
 		"invoker",
+		// Workload grants read the publisher principal only to match a
+		// grant (.docs/execution_lifecycle/contracts.md, section 5B).
+		"publisher",
+		"publisher_principal",
 		"policy_decisions",
 		"build_log_digest",
 		"descriptor",
@@ -784,6 +788,12 @@ func TestWorkstreamAPublicationAllowRuleJudgesTheCodeNotTheLine(t *testing.T) {
 			"evidence.Seal.KeyID", "evidence.Claims.Package.Publication.BuilderService", 1), "13:Publication"},
 		"the read rooted at a value other than the parameter": {"workload_grants.go", strings.Replace(grants,
 			"evidence.Claims.Package.Publication.Invoker.Principal", "zzOther.Claims.Package.Publication.Invoker.Principal", 1), "12:Publication"},
+		"the read rooted at a closure local that shadows the parameter": {"workload_grants.go", strings.Replace(grants,
+			"\treturn workloadGrantEvidenceFacts{\n",
+			"\tfunc() { evidence := zzOther; _ = evidence.Claims.Package.Publication.Invoker.Principal }()\n\treturn workloadGrantEvidenceFacts{\n", 1), "11:Publication"},
+		"the read rooted at a closure parameter of the same name and type": {"workload_grants.go", strings.Replace(grants,
+			"\treturn workloadGrantEvidenceFacts{\n",
+			"\t_ = func(evidence evidencev1.ArtifactEvidence) string { return evidence.Claims.Package.Publication.Invoker.Principal }(zzOther)\n\treturn workloadGrantEvidenceFacts{\n", 1), "11:Invoker"},
 		"a publisher field in another struct": {"workload_grants.go", grants +
 			"\ntype PrepareView struct {\n\tpublisherPrincipal string\n}\n", "20:publisher"},
 		"a publisher field in a function-local struct of the facts type's name": {"workload_grants.go", grants +
@@ -1458,7 +1468,9 @@ const (
 // as the selectors of the one read
 // <parameter>.Claims.Package.Publication.Invoker.Principal in the top-level
 // function workloadGrantEvidenceFactsFrom, whose only parameter is the
-// verified evidencev1.ArtifactEvidence.
+// verified evidencev1.ArtifactEvidence. The root of the read is compared by
+// object, so a local or a closure parameter of the same name is another
+// value and is refused.
 func workstreamAWorkloadGrantPublisherRead(occurrence workstreamASourceOccurrence) bool {
 	identifier, ok := occurrence.node.(*ast.Ident)
 	if !ok || occurrence.file != workstreamAWorkloadGrantFile || occurrence.syntax == nil ||
@@ -1492,7 +1504,10 @@ func workstreamAWorkloadGrantPublisherRead(occurrence workstreamASourceOccurrenc
 			selectors = append(selectors, selector)
 			next = selector.X
 		}
-		if !workstreamAIsIdent(next, parameter.Names[0].Name) {
+		// The root must be the parameter itself, the object the parser
+		// resolves the identifier to, not another value of the same name.
+		root, ok := next.(*ast.Ident)
+		if !ok || root.Obj == nil || root.Obj != parameter.Names[0].Obj {
 			return true
 		}
 		if occurrence.node == selectors[0].Sel || occurrence.node == selectors[1].Sel {

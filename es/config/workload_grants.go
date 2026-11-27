@@ -6,15 +6,18 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"execution-substrate/internal/callerallowlist"
 	"execution-substrate/internal/callerauth"
 )
 
 // Workload grants are the owner's grants in ES deployment configuration:
 // which runs may have a network (and, once named workload identities land,
-// which identity a run gets). The contract is
-// .docs/execution_lifecycle/contracts.md, section 5B. Matching is exact and
-// there is no setting that turns grants off: a configuration without grants
-// admits only runs that request no network.
+// which identity a run gets). A rule names who published the artifact and
+// who calls ES to run it, so a grant to one publisher is not a grant to every
+// caller ES admits. The contract is .docs/execution_lifecycle/contracts.md,
+// section 5B. Matching is exact and there is no setting that turns grants
+// off: a configuration without grants admits only runs that request no
+// network.
 
 const (
 	// MaxWorkloadGrantRules is the most grant rules a configuration may hold.
@@ -54,28 +57,34 @@ type WorkloadEgressLaneConfig struct {
 	ReachesWorkloadVault *bool  `json:"reaches_workload_vault"`
 }
 
-// WorkloadGrantRuleConfig is one grant rule: four match fields, all
-// required and compared byte for byte, and the grant. EgressLane is empty
-// when the rule grants no network.
+// WorkloadGrantRuleConfig is one grant rule: five match fields, all
+// required and compared byte for byte, and the grant. PublisherPrincipal is
+// the SPIFFE ID that published the artifact through AGS, from its signed
+// evidence; CallerPrincipal is the SPIFFE ID of the caller of ES :prepare or
+// :submit, from the authenticated connection. EgressLane is empty when the
+// rule grants no network.
 type WorkloadGrantRuleConfig struct {
 	ID                 string `json:"id"`
 	PublisherPrincipal string `json:"publisher_principal"`
+	CallerPrincipal    string `json:"caller_principal"`
 	SignerKeyID        string `json:"signer_key_id"`
 	ArtifactType       string `json:"artifact_type"`
 	RuntimeProfile     string `json:"runtime_profile"`
 	EgressLane         string `json:"egress_lane,omitempty"`
 }
 
-// MatchKey returns the rule's four match fields in a fixed order: publisher
-// principal, signer key ID, artifact type and runtime profile. ES admission
-// builds a run's key in the same order and compares the two byte for byte.
-func (r WorkloadGrantRuleConfig) MatchKey() [4]string {
-	return [4]string{r.PublisherPrincipal, r.SignerKeyID, r.ArtifactType, r.RuntimeProfile}
+// MatchKey returns the rule's five match fields in a fixed order: publisher
+// principal, caller principal, signer key ID, artifact type and runtime
+// profile. ES admission builds a run's key in the same order and compares the
+// two byte for byte.
+func (r WorkloadGrantRuleConfig) MatchKey() [5]string {
+	return [5]string{r.PublisherPrincipal, r.CallerPrincipal, r.SignerKeyID, r.ArtifactType, r.RuntimeProfile}
 }
 
 // Validate checks the grants on their own. Config.Validate also checks that
-// every rule's signer key is the key ES verifies artifact evidence with,
-// because a rule naming another key could never match.
+// every rule's signer key is the key ES verifies artifact evidence with and
+// that every rule's caller is one ES's caller allowlist admits, because a
+// rule naming another key or another caller could never match.
 func (c WorkloadGrantsConfig) Validate(field string) error {
 	lanes := map[string]bool{}
 	for i, lane := range c.EgressLanes {
@@ -99,7 +108,7 @@ func (c WorkloadGrantsConfig) Validate(field string) error {
 		return fmt.Errorf("%s.rules must not contain more than %d rules", field, MaxWorkloadGrantRules)
 	}
 	ids := map[string]struct{}{}
-	matches := map[[4]string]string{}
+	matches := map[[5]string]string{}
 	for i, rule := range c.Rules {
 		ruleField := fmt.Sprintf("%s.rules[%d]", field, i)
 		if err := rule.validate(ruleField); err != nil {
@@ -111,7 +120,7 @@ func (c WorkloadGrantsConfig) Validate(field string) error {
 		ids[rule.ID] = struct{}{}
 		key := rule.MatchKey()
 		if other, ok := matches[key]; ok {
-			return fmt.Errorf("%s matches the same publisher_principal, signer_key_id, artifact_type and runtime_profile as rule %q: at most one rule may match a run", ruleField, other)
+			return fmt.Errorf("%s matches the same publisher_principal, caller_principal, signer_key_id, artifact_type and runtime_profile as rule %q: at most one rule may match a run", ruleField, other)
 		}
 		matches[key] = rule.ID
 		if rule.EgressLane != "" {
@@ -123,15 +132,21 @@ func (c WorkloadGrantsConfig) Validate(field string) error {
 	return nil
 }
 
-// validateSignerKeys refuses a rule whose signer key is not the key ES
-// verifies artifact evidence with: ES admits only evidence sealed with that
-// key, so such a rule could never match. The verifier compares the trimmed
-// key ID, so this check does too.
-func (c WorkloadGrantsConfig) validateSignerKeys(field string, provenanceKeyID string) error {
+// validateAgainstConfig refuses a rule that could never match under the
+// rest of ES's configuration. ES admits only evidence sealed with the
+// provenance key, so a rule naming another signer key could never match; the
+// verifier compares the trimmed key ID, so this check does too. ES admits
+// only callers its caller allowlist matches, so a rule naming another caller
+// could never match either.
+func (c WorkloadGrantsConfig) validateAgainstConfig(field string, provenanceKeyID string, allowedCallerPrefixes []string) error {
 	provenanceKeyID = strings.TrimSpace(provenanceKeyID)
 	for i, rule := range c.Rules {
 		if rule.SignerKeyID != provenanceKeyID {
 			return fmt.Errorf("%s.rules[%d].signer_key_id must be verification.provenance.key_id, the only key ES admits artifact evidence from", field, i)
+		}
+		caller, err := callerauth.ParseSPIFFEID(rule.CallerPrincipal)
+		if err != nil || !callerallowlist.MatchesAny(caller, allowedCallerPrefixes) {
+			return fmt.Errorf("%s.rules[%d].caller_principal must be a caller authorization.allowed_spiffe_path_prefixes admits", field, i)
 		}
 	}
 	return nil
@@ -141,12 +156,11 @@ func (r WorkloadGrantRuleConfig) validate(field string) error {
 	if err := validateConfiguredStaticScriptLiteralDenyEntryID(field+".id", r.ID); err != nil {
 		return err
 	}
-	if err := validateWorkloadGrantMatchValue(field+".publisher_principal", r.PublisherPrincipal); err != nil {
+	if err := validateWorkloadGrantPrincipal(field+".publisher_principal", r.PublisherPrincipal); err != nil {
 		return err
 	}
-	id, err := callerauth.ParseSPIFFEID(r.PublisherPrincipal)
-	if err != nil || id.String() != r.PublisherPrincipal {
-		return fmt.Errorf("%s.publisher_principal must be a caller SPIFFE ID in trust domain %s, written exactly in its canonical form", field, callerauth.TrustDomain)
+	if err := validateWorkloadGrantPrincipal(field+".caller_principal", r.CallerPrincipal); err != nil {
+		return err
 	}
 	if err := validateWorkloadGrantMatchValue(field+".signer_key_id", r.SignerKeyID); err != nil {
 		return err
@@ -163,6 +177,21 @@ func (r WorkloadGrantRuleConfig) validate(field string) error {
 		if err := validateWorkloadGrantName(field+".egress_lane", r.EgressLane); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// validateWorkloadGrantPrincipal requires a caller SPIFFE ID written
+// exactly in its canonical form, with at least as many path segments as the
+// shortest prefix a caller allowlist may hold: AGS and ES admit no caller
+// with fewer, so a rule naming one could never match.
+func validateWorkloadGrantPrincipal(field string, value string) error {
+	if err := validateWorkloadGrantMatchValue(field, value); err != nil {
+		return err
+	}
+	id, err := callerauth.ParseSPIFFEID(value)
+	if err != nil || id.String() != value || strings.Count(id.Path(), "/")+1 < callerallowlist.MinimumSegments {
+		return fmt.Errorf("%s must be a caller SPIFFE ID in trust domain %s with at least %d path segments, written exactly in its canonical form", field, callerauth.TrustDomain, callerallowlist.MinimumSegments)
 	}
 	return nil
 }

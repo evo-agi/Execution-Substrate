@@ -1083,13 +1083,21 @@ func TestRemoteAlphaUpgradeESCheckRefusesWhatItWasNotWrittenFor(t *testing.T) {
 				doc["admission_policy"] = exampleOperatorAndControlPlaneAdmissionPolicy(t)
 			})
 		}, "shape", "Nomad's TLS directory: absent; es.json: https keys, but nomad.server_spki_sha256 is not the key of the server certificate on disk"},
-		{"es.json was moved to HTTPS by hand without workload grants", func(h *upgradeHost) {
+		// The box's es.json as ES PR #60's upgrade left it on 2026-11-25: the
+		// start keys and the four Nomad TLS keys, no workload grants. This
+		// upgrade does not move it (it starts from locked-http); the upgrade
+		// between https commits (ES PR #67) does, and writes the grants.
+		{"es.json as an upgrade before workload grants left the box", func(h *upgradeHost) {
 			writeESConfig(h, func(doc map[string]any) {
 				nomad := doc["nomad"].(map[string]any)
 				nomad["base_url"], nomad["server_name"] = "https://127.0.0.1:4646", "server.global.nomad"
 				nomad["root_ca_file"], nomad["server_spki_sha256"] = "/etc/nomad.d/tls/ca.pem", strings.Repeat("a", 64)
+				if _, ok := doc["admission_policy"]; ok {
+					panic("the box's es.json has no admission_policy")
+				}
 			})
-		}, "shape", "es.json: unknown (keys: unexpected ['nomad.root_ca_file', 'nomad.server_name', 'nomad.server_spki_sha256'], missing [])"},
+		}, "shape", "es.json: https without workload grants (where an upgrade before workload grants left it; " +
+			"this upgrade starts from locked-http, and the upgrade between https commits moves it)"},
 		{"es.json has workload grants this upgrade did not write", func(h *upgradeHost) {
 			writeESConfig(h, func(doc map[string]any) {
 				nomad := doc["nomad"].(map[string]any)

@@ -190,6 +190,7 @@ func TestRemoteAlphaUpgradeESWritesTodaysWorkloadGrants(t *testing.T) {
 	for _, shared := range []string{
 		`"id": f"{prefix.replace('/', '-')}-{profile_id}",`,
 		`"publisher_principal": f"spiffe://execution.internal/{prefix}",`,
+		`"caller_principal": f"spiffe://execution.internal/{prefix}",`,
 		`"artifact_type": "static-script",`,
 		`"runtime_profile": profile,`,
 		`(("default", "static-script/default"), ("normal-shell", "control-plane-normal-shell/v1"))`,
@@ -213,14 +214,56 @@ func TestRemoteAlphaUpgradeESWritesTodaysWorkloadGrants(t *testing.T) {
 		t.Error("the setup's AGS and ES allowlists are no longer the list its grants are built from")
 	}
 
-	// An admission_policy the upgrade did not write is refused.
+	// An admission_policy the upgrade did not write is refused, and so is a
+	// present null one, which ES reads as no grants (red-team 11, OBS-1).
+	for name, policy := range map[string]any{"other grants": map[string]any{"workload_grants": map[string]any{}}, "null": nil} {
+		doc := preHTTPSExample(t)
+		doc["admission_policy"] = policy
+		in := filepath.Join(t.TempDir(), "other-grants.json")
+		writeJSONFile(t, in, doc)
+		if _, stderr, code := runUpgradeESPython(t, "migrate-config", "--input", in, "--spki-sha256", upgradeTestPin); code != 1 ||
+			!strings.Contains(stderr, "already has an admission_policy other than the workload grants this upgrade writes") {
+			t.Fatalf("%s: exit %d, stderr %q", name, code, stderr)
+		}
+	}
+
+	// A user caller gets no grant from the upgrade: the owner writes a rule
+	// naming a user when a user should have the network (RT73-4).
 	doc := preHTTPSExample(t)
-	doc["admission_policy"] = map[string]any{"workload_grants": map[string]any{}}
-	in := filepath.Join(t.TempDir(), "other-grants.json")
+	doc["authorization"] = map[string]any{"allowed_spiffe_path_prefixes": []any{"operator/local", "user/claude", "User/other"}}
+	dir := t.TempDir()
+	in, out := filepath.Join(dir, "users.json"), filepath.Join(dir, "users-migrated.json")
 	writeJSONFile(t, in, doc)
-	if _, stderr, code := runUpgradeESPython(t, "migrate-config", "--input", in, "--spki-sha256", upgradeTestPin); code != 1 ||
-		!strings.Contains(stderr, "already has an admission_policy other than the workload grants this upgrade writes") {
-		t.Fatalf("other grants: exit %d, stderr %q", code, stderr)
+	if _, stderr, code := runUpgradeESPython(t, "migrate-config", "--input", in, "--output", out, "--spki-sha256", upgradeTestPin); code != 0 {
+		t.Fatalf("allowlist with users: exit %d, stderr %q", code, stderr)
+	}
+	data, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var migrated struct {
+		AdmissionPolicy struct {
+			WorkloadGrants struct {
+				Rules []struct {
+					Publisher string `json:"publisher_principal"`
+					Caller    string `json:"caller_principal"`
+				} `json:"rules"`
+			} `json:"workload_grants"`
+		} `json:"admission_policy"`
+	}
+	if err := json.Unmarshal(data, &migrated); err != nil {
+		t.Fatal(err)
+	}
+	var principals []string
+	for _, rule := range migrated.AdmissionPolicy.WorkloadGrants.Rules {
+		principals = append(principals, rule.Publisher+" "+rule.Caller)
+	}
+	want := []string{
+		"spiffe://execution.internal/operator/local spiffe://execution.internal/operator/local",
+		"spiffe://execution.internal/operator/local spiffe://execution.internal/operator/local",
+	}
+	if strings.Join(principals, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("grants for an allowlist with users:\n%s\nwant\n%s", strings.Join(principals, "\n"), strings.Join(want, "\n"))
 	}
 }
 

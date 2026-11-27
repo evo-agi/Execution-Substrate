@@ -212,6 +212,7 @@ func TestBringupScriptUpCheckDownFullProfile(t *testing.T) {
 		Authorization: esconfig.AuthorizationConfig{
 			AllowedSPIFFEPathPrefixes: []string{"operator/local"},
 		},
+		AdmissionPolicy: todaysWorkloadGrants([]string{"operator/local"}, fixture.agsKeyID),
 		Dependencies: esconfig.DependenciesConfig{
 			ArtifactRegistry: esconfig.DependencyConfig{
 				BaseURL:        "https://127.0.0.1:" + itoa(t, arsPort),

@@ -492,7 +492,7 @@ Current response shape:
 - AGS signs aggregate artifact evidence using `internal/contracts/evidence/v1`.
 - AGS derives publication caller binding directly from the authenticated caller SPIFFE identity, records the caller path as `claims.package.publication.invoker.service`, and always emits `claims.package.publication.builder_service = "artifact-governance"` in aggregate evidence.
 - AGS now rejects non-docker `admission.workload.target_platform` values at publish time because the active shared runtime contract only admits empty or `docker` target platforms.
-- AGS publish requests currently carry execution access at `admission.access.network_access`; that runtime-facing input is emitted into `claims.admission.execution.access` rather than into shared authorization claims.
+- AGS publish requests currently carry execution access at `admission.access.network_access`; that runtime-facing input is emitted into `claims.admission.execution.access` rather than into shared authorization claims. It is the publisher's request, signed as the publisher declared it: AGS checks nothing about networks, and a signed `network_access=true` gives no network by itself. ES gives a network only through its own workload grants, which name both the publisher and the ES caller (`.docs/execution_lifecycle/contracts.md`, section 5B).
 - AGS publish requests carry the runtime interface at `admission.runtime`: `environment_variables`, `required_capabilities` and the optional `mount_targets`. AGS signs them as given into `claims.admission.execution.runtime` and does not judge them; ES decides what it admits from them. AGS omits `mount_targets` from the evidence and the manifest when the list is empty, so an artifact that declares none has the same evidence bytes as before the field existed.
 - Non-runtime workload metadata such as `artifact_class`, `workload_type`, `service_name`, `workload_identity_id`, and `description` no longer live inside the shared execution/runtime evidence claims.
 - `policy_decisions` are caller-supplied and are normalized structurally for signing, but AGS does not semantically evaluate them.
@@ -1042,7 +1042,8 @@ Current successful response shapes:
   - `network_access=false -> network_mode=none`
   - `network_access=true -> network_mode=bridge`
   A run that requests the network is admitted only with an owner grant in ES
-  configuration that names an egress lane, and is otherwise refused with
+  configuration that names its publisher and its ES caller and grants an
+  egress lane, and is otherwise refused with
   `network_access_not_granted` (`.docs/execution_lifecycle/contracts.md`,
   section 5B). The only lane, `unrestricted`, is this `bridge` mapping. From
   WI-4, a granted run joins its egress lane's network instead of `bridge`.

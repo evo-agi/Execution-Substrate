@@ -871,8 +871,8 @@ func TestReliableSubmitFoundationDoesNotAlterCurrentPublicDeclarationOrConfig(t 
 	)
 	assertAdmissionFoundationContainsAll(t, "server strict submit path", serverSource,
 		"func (s *Server) handleSubmit",
-		"request, ok := s.decodeAuthorizedExecutionRequest(w, r)",
-		"result, err := s.service.Submit(r.Context(), request)",
+		"ctx, request, ok := s.decodeAuthorizedExecutionRequest(w, r)",
+		"result, err := s.service.Submit(ctx, request)",
 	)
 	assertAdmissionFoundationContainsAll(t, "strict decoder", httpxSource,
 		"decoder.DisallowUnknownFields()",

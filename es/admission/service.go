@@ -778,7 +778,7 @@ func (s *Service) prepareAdmission(ctx context.Context, req PrepareRequest, inte
 	// Until named identities land, nothing reads the decision itself: the
 	// only egress lane is realized as the network mode the signed
 	// network_access already selects.
-	if _, grantErr := s.decideWorkloadGrants(req, artifact); grantErr != nil {
+	if _, grantErr := s.decideWorkloadGrants(ctx, req, artifact); grantErr != nil {
 		return preparedAdmission{}, grantErr
 	}
 

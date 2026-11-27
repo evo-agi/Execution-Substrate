@@ -170,7 +170,7 @@ func (s *Service) operatePrivateHandoff(ctx context.Context, d *operationalDomai
 	if err != nil {
 		return operationalFailure(reliablesubmit.OperationalMalformed)
 	}
-	ctx, cancel := context.WithCancel(ctx)
+	ctx, cancel := context.WithCancel(withDeliveryCaller(ctx, parserCaller.canonicalURI))
 	defer cancel()
 	outcome := operationalFailure(reliablesubmit.OperationalUnavailable)
 	// At most one confirmation with EGS per invocation, and only on a path
