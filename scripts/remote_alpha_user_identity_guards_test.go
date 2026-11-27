@@ -1541,7 +1541,7 @@ func TestUserIdentityReportEscapesCSRText(t *testing.T) {
 	csr := filepath.Join(b.root, "odd.csr")
 	writeUserIdentityFile(t, csr, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: der}), 0o644)
 	run := b.runWith("/usr/bin/python3", "issue", "--name", "claude", "--csr", csr, "--out", filepath.Join(b.root, "odd.crt"), "--apply")
-	if run.code != 1 || !strings.Contains(run.stdout, `CN=claude\x0a\x1b[2KResult: ok - forged\u202e, want exactly CN=claude`) {
+	if run.code != 1 || !strings.Contains(run.stdout, `CN=claude\x0a\x1b[2KResult:\x20ok\x20-\x20forged\u202e, want exactly CN=claude`) {
 		t.Fatalf("issue of a CSR with control characters in its subject\n%s", run)
 	}
 	lines := strings.Split(strings.TrimSuffix(run.stdout, "\n"), "\n")
@@ -1566,6 +1566,44 @@ func TestUserIdentityReportEscapesCSRText(t *testing.T) {
 	if run.code != 1 || !strings.Contains(run.stdout, `CN=claude\u2800\u2800`) || strings.Contains(run.stdout, "\u2800") ||
 		strings.Contains(run.stdout, "Result: ok - forged") || !strings.Contains(run.stdout, " more)") {
 		t.Fatalf("issue of a CSR padded with blank-drawing characters\n%s", run)
+	}
+
+	// Plain spaces pad as well (re-check 12, N12-1): every space in a name is
+	// escaped, so no row of the report can read "Result: ok".
+	der, err = x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{Subject: pkix.Name{CommonName: "claude" + strings.Repeat(" ", 44) + "Result: ok - forged"}}, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeUserIdentityFile(t, csr, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: der}), 0o644)
+	run = b.runWith("/usr/bin/python3", "issue", "--name", "claude", "--csr", csr, "--out", filepath.Join(b.root, "odd.crt"), "--apply")
+	if run.code != 1 || !strings.Contains(run.stdout, `CN=claude\x20\x20`) || strings.Contains(run.stdout, "Result: ok") {
+		t.Fatalf("issue of a CSR padded with spaces\n%s", run)
+	}
+
+	// The whole name is cut, however many values one RDN holds.
+	var rdn pkix.RelativeDistinguishedNameSET
+	for i := 0; i < 7; i++ {
+		rdn = append(rdn, pkix.AttributeTypeAndValue{Type: asn1.ObjectIdentifier{2, 5, 4, 10}, Value: strings.Repeat(string(rune('a'+i)), 60)})
+	}
+	subject, err := asn1.Marshal(pkix.RDNSequence{rdn})
+	if err != nil {
+		t.Fatal(err)
+	}
+	der, err = x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{RawSubject: subject}, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeUserIdentityFile(t, csr, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: der}), 0o644)
+	run = b.runWith("/usr/bin/python3", "issue", "--name", "claude", "--csr", csr, "--out", filepath.Join(b.root, "odd.crt"), "--apply")
+	var named string
+	for _, line := range strings.Split(run.stdout, "\n") {
+		if strings.Contains(line, "CSR subject is ") {
+			named = line[strings.Index(line, "CSR subject is ")+len("CSR subject is "):]
+		}
+	}
+	if run.code != 1 || !strings.HasPrefix(named, "O=aaaa") || strings.Contains(named, "ccc") || len(named) < 133 ||
+		!strings.HasPrefix(named[128:], "... (") {
+		t.Fatalf("issue of a CSR with seven values in one RDN: the name is not cut to 128 characters\n%s", run)
 	}
 }
 
@@ -1804,7 +1842,7 @@ func userIdentityRunbookCut(t *testing.T, file, caCert string) string {
 
 // userIdentityRunbookCheck runs the check that step (3) of "Revoke by hand"
 // gives before the binding may go, as the runbook prints it, on file, and
-// returns what it prints: the number of user CA certificates in the file.
+// returns what it prints: "user CA certificates: <n>", or CHECK FAILED.
 func userIdentityRunbookCheck(t *testing.T, file string) string {
 	t.Helper()
 	runbook := string(mustReadUserIdentityFile(t, filepath.Join(executionSubstrateRepoRoot, ".runbooks", "system",
@@ -1821,8 +1859,12 @@ func userIdentityRunbookCheck(t *testing.T, file string) string {
 		t.Fatalf("the check of step (3) no longer starts with %q: %q", vars, check)
 	}
 	cmd := exec.Command("/bin/bash", "-c", "f="+userIdentityShellQuote(file)+"; "+strings.TrimPrefix(check, vars))
+	cmd.Dir = t.TempDir()
 	cmd.Env = []string{"PATH=/usr/bin:/bin"}
-	out, _ := cmd.Output() // grep -c exits 1 when it counts 0
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("the runbook's check exited with %v; it must always end with its echo: %s", err, out)
+	}
 	return strings.TrimSpace(string(out))
 }
 
@@ -1862,7 +1904,7 @@ func (b *userIdentityBox) handCutUserCA(caCert, what string) {
 		if bytes.Contains(mustReadUserIdentityFile(b.t, file), mustReadUserIdentityFile(b.t, caCert)) {
 			b.t.Fatalf("%s: %s still holds %s after the runbook's cut", what, file, caCert)
 		}
-		if got := userIdentityRunbookCheck(b.t, file); got != "0" {
+		if got := userIdentityRunbookCheck(b.t, file); got != "user CA certificates: 0" {
 			b.t.Fatalf("%s: the runbook's check of %s prints %q, not 0, after the cut", what, file, got)
 		}
 	}
@@ -1983,9 +2025,25 @@ func TestUserIdentityHandRemovalFollowsTheRunbook(t *testing.T) {
 // operator/local, and after revoke --remove-ca the older backup goes back.
 func TestUserIdentityESUpgradeRestoreKeepsTheBinding(t *testing.T) {
 	requireUserIdentityOpenSSL3(t)
-	upgrade := func(t *testing.T, args ...string) (string, int) {
+	// The upgrade runs with the fixture root as its host root, so it reads
+	// the fixture's es.json, ags.json and user CA, never the host's, and takes
+	// the lock the helper takes. The fixture's configs name their client CA
+	// files by their full paths, so the root also answers to its own path
+	// inside itself.
+	hostRoot := func(t *testing.T, b *userIdentityBox) {
 		t.Helper()
-		cmd := exec.Command("python3", append([]string{"-I", "-B", repoPath(upgradeESPython)}, args...)...)
+		inside := filepath.Join(b.root, strings.TrimPrefix(b.root, string(filepath.Separator)))
+		if err := os.MkdirAll(filepath.Dir(inside), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(b.root, inside); err != nil {
+			t.Fatal(err)
+		}
+	}
+	upgrade := func(t *testing.T, b *userIdentityBox, args ...string) (string, int) {
+		t.Helper()
+		cmd := exec.Command("python3", append([]string{"-I", "-B", repoPath(upgradeESPython), "--host-root", b.root}, args...)...)
+		cmd.Dir = t.TempDir()
 		cmd.Env = []string{"PATH=/usr/bin:/bin", "LC_ALL=C"}
 		out, err := cmd.CombinedOutput()
 		code := 0
@@ -1998,7 +2056,7 @@ func TestUserIdentityESUpgradeRestoreKeepsTheBinding(t *testing.T) {
 	}
 	backup := func(b *userIdentityBox) string {
 		dir := filepath.Join(t.TempDir(), "es-upgrade-backup")
-		if out, code := upgrade(t, "backup", "--backup-dir", dir, "--path", b.esConfig); code != 0 {
+		if out, code := upgrade(t, b, "backup", "--backup-dir", dir, "--path", b.esConfig); code != 0 {
 			t.Fatalf("upgrade backup exited %d: %s", code, out)
 		}
 		return dir
@@ -2006,19 +2064,20 @@ func TestUserIdentityESUpgradeRestoreKeepsTheBinding(t *testing.T) {
 
 	t.Run("a backup from before allow", func(t *testing.T) {
 		b := newUserIdentityBox(t)
+		hostRoot(t, b)
 		b.mint("claude")
 		dir := backup(b)
 		b.mustOK(b.box("allow", "--name", "claude", "--apply"), "allow")
 		before := b.snapshot()
-		out, code := upgrade(t, "restore", "--backup-dir", dir)
-		if code != 1 || !strings.Contains(out, "would no longer bind user to it") || !strings.Contains(out, "remote_alpha_user_identity.sh") {
+		out, code := upgrade(t, b, "restore", "--backup-dir", dir)
+		if code != 1 || !strings.Contains(out, "would not bind user to it") || !strings.Contains(out, "remote_alpha_user_identity.sh") {
 			t.Fatalf("restore exited %d: %s", code, out)
 		}
 		requireSameUserIdentitySnapshot(t, before, b.snapshot(), "a refused restore")
 		b.requireNoTrustWithoutBinding("after the refused restore")
 
 		b.mustOK(b.box("revoke", "--name", "claude", "--remove-ca", "--apply"), "revoke --remove-ca")
-		if out, code := upgrade(t, "restore", "--backup-dir", dir); code != 0 {
+		if out, code := upgrade(t, b, "restore", "--backup-dir", dir); code != 0 {
 			t.Fatalf("restore after revoke --remove-ca exited %d: %s", code, out)
 		}
 		b.requireNoTrustWithoutBinding("after the restore that follows revoke --remove-ca")
@@ -2026,6 +2085,7 @@ func TestUserIdentityESUpgradeRestoreKeepsTheBinding(t *testing.T) {
 
 	t.Run("a backup from before a revoke", func(t *testing.T) {
 		b := newUserIdentityBox(t)
+		hostRoot(t, b)
 		b.mint("claude")
 		b.mint("dana")
 		b.mustOK(b.box("allow", "--name", "claude", "--apply"), "allow claude")
@@ -2033,12 +2093,59 @@ func TestUserIdentityESUpgradeRestoreKeepsTheBinding(t *testing.T) {
 		dir := backup(b)
 		b.mustOK(b.box("revoke", "--name", "claude", "--apply"), "revoke claude")
 		before := b.snapshot()
-		out, code := upgrade(t, "restore", "--backup-dir", dir)
+		out, code := upgrade(t, b, "restore", "--backup-dir", dir)
 		if code != 1 || !strings.Contains(out, "would put user/claude back into the allowlist") {
 			t.Fatalf("restore exited %d: %s", code, out)
 		}
 		requireSameUserIdentitySnapshot(t, before, b.snapshot(), "a refused restore")
 		b.mustOK(b.box("status"), "status after the refused restore")
+	})
+
+	t.Run("a backup that holds a client CA file", func(t *testing.T) {
+		b := newUserIdentityBox(t)
+		hostRoot(t, b)
+		b.mint("claude")
+		b.mustOK(b.box("allow", "--name", "claude", "--apply"), "allow")
+		dir := filepath.Join(t.TempDir(), "es-upgrade-backup")
+		if out, code := upgrade(t, b, "backup", "--backup-dir", dir, "--path", b.esConfig, "--path", b.esCA); code != 0 {
+			t.Fatalf("upgrade backup exited %d: %s", code, out)
+		}
+		b.mustOK(b.box("revoke", "--name", "claude", "--remove-ca", "--apply"), "revoke --remove-ca")
+		before := b.snapshot()
+		out, code := upgrade(t, b, "restore", "--backup-dir", dir)
+		if code != 1 || !strings.Contains(out, "this backup holds "+b.esCA+", the client CA file") {
+			t.Fatalf("restore exited %d: %s", code, out)
+		}
+		requireSameUserIdentitySnapshot(t, before, b.snapshot(), "a refused restore")
+		b.mustOK(b.box("status"), "status after the refused restore")
+	})
+
+	// The upgrade holds the helper's lock from its first read to its last
+	// write, so neither runs while the other holds it (re-check 12, R12-1).
+	t.Run("while the helper holds its lock", func(t *testing.T) {
+		b := newUserIdentityBox(t)
+		hostRoot(t, b)
+		b.mint("claude")
+		dir := backup(b)
+		b.mustOK(b.box("allow", "--name", "claude", "--apply"), "allow")
+		b.mustOK(b.box("revoke", "--name", "claude", "--remove-ca", "--apply"), "revoke --remove-ca")
+		fd, err := syscall.Open(b.lock, syscall.O_RDWR|syscall.O_CREAT, 0o600)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := syscall.Flock(fd, syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+			t.Fatal(err)
+		}
+		before := b.snapshot()
+		out, code := upgrade(t, b, "restore", "--backup-dir", dir)
+		if code != 1 || !strings.Contains(out, "holds /run/execution-substrate-remote-alpha-user-identity.lock; nothing was changed") {
+			t.Fatalf("restore with the lock held exited %d: %s", code, out)
+		}
+		requireSameUserIdentitySnapshot(t, before, b.snapshot(), "a restore refused for the lock")
+		_ = syscall.Close(fd)
+		if out, code := upgrade(t, b, "restore", "--backup-dir", dir); code != 0 {
+			t.Fatalf("restore once the lock is free exited %d: %s", code, out)
+		}
 	})
 }
 
@@ -2066,6 +2173,12 @@ func TestUserIdentityPlainRevokeGoesOnPastAClientCAFileItCannotRead(t *testing.T
 		}
 	}
 	b.requireNoTrustWithoutBinding("after revoke past a client CA file in another shape")
+	// Run again, it finds nothing to do and still says why it vouches for
+	// nothing about that file.
+	if again := b.box("revoke", "--name", "claude", "--apply"); again.result() != "attention" ||
+		!strings.Contains(again.message(), "already revoked") || !strings.Contains(again.message(), "could not be read") {
+		t.Fatalf("a second plain revoke beside that file:\n%s", again)
+	}
 	before := b.snapshot()
 	if rm := b.box("revoke", "--name", "claude", "--remove-ca", "--apply"); rm.result() != "refused" {
 		t.Fatalf("revoke --remove-ca on that file:\n%s", rm)
@@ -2127,7 +2240,7 @@ func TestUserIdentityStatusAndReplaceGoOnWithABadCAKey(t *testing.T) {
 		want  string
 	}{
 		{"key open to others", func(path string) error { return os.Chmod(path, 0o644) }, "must be owned by UID"},
-		{"key deleted", os.Remove, "does not exist"},
+		{"key deleted", func(path string) error { return os.Remove(path) }, "does not exist"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			b := newUserIdentityBox(t)
@@ -2193,7 +2306,63 @@ func TestUserIdentityHandCutSaysWhenItCutNothing(t *testing.T) {
 	if !bytes.Equal(mustReadUserIdentityFile(t, b.esCA), before) {
 		t.Fatal("the cut that printed NOT CUT changed the file")
 	}
-	if got := userIdentityRunbookCheck(t, b.esCA); got != "1" {
-		t.Fatalf("the runbook's check counts %q user CAs in a file that still holds one", got)
+	if got := userIdentityRunbookCheck(t, b.esCA); got != "user CA certificates: 1" {
+		t.Fatalf("the runbook's check prints %q for a file that still holds the user CA", got)
+	}
+
+	// A file OpenSSL cannot read in full, or a mistyped path, fails the check
+	// rather than counting 0: Go's AppendCertsFromPEM, as ES and AGS load the
+	// file, skips the block it cannot parse and still loads the user CA
+	// (re-check 12, R12-4).
+	userCA := mustReadUserIdentityFile(t, filepath.Join(b.userCADir, "ca-cert.pem"))
+	for _, tc := range []struct{ name, text string }{
+		{"a block that is not base64 after the user CA", string(b.extCAPEM) + string(userCA) +
+			"-----BEGIN CERTIFICATE-----\nnot*base64!!\n-----END CERTIFICATE-----\n"},
+		{"a block that is not a certificate after the user CA", string(b.extCAPEM) + string(userCA) +
+			"-----BEGIN CERTIFICATE-----\naGVsbG8gd29ybGQ=\n-----END CERTIFICATE-----\n"},
+		{"a block OpenSSL skips", string(b.extCAPEM) + strings.Replace(string(userCA), "-----BEGIN", " -----BEGIN", 1)},
+	} {
+		file := filepath.Join(b.root, "odd-client-ca.pem")
+		writeUserIdentityFile(t, file, []byte(tc.text), 0o644)
+		if got := userIdentityRunbookCheck(t, file); got != "CHECK FAILED: "+file+"; keep the binding" {
+			t.Fatalf("the runbook's check with %s prints %q", tc.name, got)
+		}
+	}
+	missing := filepath.Join(b.root, "no-such-client-ca.pem")
+	if got := userIdentityRunbookCheck(t, missing); got != "CHECK FAILED: "+missing+"; keep the binding" {
+		t.Fatalf("the runbook's check with a mistyped path prints %q", got)
+	}
+}
+
+// TestUserIdentityInitCAReplaceRefusesAKeyPathThatIsNotAFile: init-ca
+// --replace never reads the old key, but it replaces it, so a directory or a
+// link in its place is refused before anything changes; the owner removes it
+// by hand (re-check 12, N12-2).
+func TestUserIdentityInitCAReplaceRefusesAKeyPathThatIsNotAFile(t *testing.T) {
+	requireUserIdentityOpenSSL3(t)
+	for _, tc := range []struct {
+		name  string
+		spoil func(key string) error
+	}{
+		{"a directory", func(key string) error { return os.Mkdir(key, 0o700) }},
+		{"a link", func(key string) error { return os.Symlink("ca-cert.pem", key) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b := newUserIdentityBox(t)
+			b.mustOK(b.box("init-ca", "--apply"), "init-ca")
+			key := filepath.Join(b.userCADir, "ca-key.pem")
+			if err := os.Remove(key); err != nil {
+				t.Fatal(err)
+			}
+			if err := tc.spoil(key); err != nil {
+				t.Fatal(err)
+			}
+			before := b.snapshot()
+			run := b.box("init-ca", "--replace", "--apply")
+			if run.result() != "refused" || !strings.Contains(run.message(), key+" is not a regular file; remove it by hand") {
+				t.Fatalf("init-ca --replace with %s at the key path:\n%s", tc.name, run)
+			}
+			requireSameUserIdentitySnapshot(t, before, b.snapshot(), "a refused init-ca --replace")
+		})
 	}
 }

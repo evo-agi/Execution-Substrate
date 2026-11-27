@@ -18,7 +18,13 @@ const upgradeESPython = "scripts/internal/remote_alpha_upgrade_es.py"
 
 func runUpgradeESPython(t *testing.T, args ...string) (string, string, int) {
 	t.Helper()
-	cmd := exec.Command("python3", append([]string{"-I", repoPath(upgradeESPython)}, args...)...)
+	// A host root of its own: restore takes the user identity helper's lock
+	// under it, never the host's.
+	hostRoot := t.TempDir()
+	if err := os.Mkdir(filepath.Join(hostRoot, "run"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("python3", append([]string{"-I", repoPath(upgradeESPython), "--host-root", hostRoot}, args...)...)
 	cmd.Dir = t.TempDir()
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr

@@ -300,10 +300,12 @@ func newUserIdentityBox(t *testing.T) *userIdentityBox {
 		units:     filepath.Join(root, "units"),
 		layout:    filepath.Join(root, "layout.json"),
 		callers:   filepath.Join(root, "callers"),
-		lock:      filepath.Join(root, "user-identity.lock"),
+		lock:      filepath.Join(root, "run", "execution-substrate-remote-alpha-user-identity.lock"),
 		python:    userIdentityCallerPython(),
 	}
-	for _, dir := range []string{filepath.Join(etc, "tls"), filepath.Join(etc, "es-tls"), b.units} {
+	// The lock is where the box keeps it, under the fixture root, so the ES
+	// upgrade run with --host-root root takes the same lock.
+	for _, dir := range []string{filepath.Join(etc, "tls"), filepath.Join(etc, "es-tls"), b.units, filepath.Join(root, "run")} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -1191,7 +1193,11 @@ func TestUserIdentityFlowThroughRealESAndAGSHandlers(t *testing.T) {
 func TestUserIdentityCertificatesMeetTheProfileInGo(t *testing.T) {
 	requireUserIdentityOpenSSL3(t)
 	b := newUserIdentityBox(t)
+	caStart := time.Now()
+	b.mustOK(b.box("init-ca", "--apply"), "init-ca")
+	caEnd := time.Now()
 	issued := b.mint("claude")
+	leafEnd := time.Now()
 	ca := parseUserIdentityPEMCert(t, mustReadUserIdentityFile(t, filepath.Join(b.userCADir, "ca-cert.pem")))
 	leaf := parseUserIdentityPEMCert(t, mustReadUserIdentityFile(t, issued))
 
@@ -1217,9 +1223,7 @@ func TestUserIdentityCertificatesMeetTheProfileInGo(t *testing.T) {
 	if ca.SignatureAlgorithm != x509.SHA256WithRSA {
 		t.Fatalf("CA signature %v", ca.SignatureAlgorithm)
 	}
-	if lifetime := ca.NotAfter.Sub(ca.NotBefore); lifetime != 400*24*time.Hour {
-		t.Fatalf("CA lifetime %v", lifetime)
-	}
+	requireUserIdentityValidity(t, "CA", ca, 400, caStart, caEnd)
 
 	if leaf.IsCA || !leaf.BasicConstraintsValid || leaf.KeyUsage != x509.KeyUsageDigitalSignature {
 		t.Fatalf("leaf constraints: IsCA %v usage %v", leaf.IsCA, leaf.KeyUsage)
@@ -1234,9 +1238,7 @@ func TestUserIdentityCertificatesMeetTheProfileInGo(t *testing.T) {
 	if leaf.Subject.String() != "CN=claude" || !bytes.Equal(leaf.RawIssuer, ca.RawSubject) {
 		t.Fatalf("leaf subject %v issuer %v", leaf.Subject, leaf.Issuer)
 	}
-	if lifetime := leaf.NotAfter.Sub(leaf.NotBefore); lifetime != 90*24*time.Hour {
-		t.Fatalf("leaf lifetime %v", lifetime)
-	}
+	requireUserIdentityValidity(t, "leaf", leaf, 90, caEnd, leafEnd)
 	if leaf.SerialNumber.BitLen() != 127 {
 		t.Fatalf("leaf serial has %d bits, want 127", leaf.SerialNumber.BitLen())
 	}
@@ -1273,6 +1275,22 @@ func TestUserIdentityCertificatesMeetTheProfileInGo(t *testing.T) {
 	foreign, _ := x509.ParseCertificate(foreignDER)
 	if _, err := foreign.Verify(x509.VerifyOptions{Roots: roots, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}}); err == nil {
 		t.Fatal("the user CA's name constraint did not stop a certificate for another trust domain")
+	}
+}
+
+// requireUserIdentityValidity requires cert to run for days from the moment
+// openssl signed it, between start and end. openssl req -x509 -days and
+// openssl x509 -req -days read the clock once for notBefore and again for
+// notAfter, so a certificate signed across a second boundary runs a second
+// longer than its days (Sonnet re-check 12, R12-7); both reads fall inside
+// the run, to the second, and the second is not earlier than the first.
+func requireUserIdentityValidity(t *testing.T, what string, cert *x509.Certificate, days int, start, end time.Time) {
+	t.Helper()
+	first, last := start.UTC().Truncate(time.Second), end.UTC().Truncate(time.Second)
+	notAfterRead := cert.NotAfter.Add(-time.Duration(days) * 24 * time.Hour)
+	if cert.NotBefore.Before(first) || notAfterRead.Before(cert.NotBefore) || notAfterRead.After(last) {
+		t.Fatalf("%s valid %v to %v: want notBefore, and notAfter less %d days, in that order between %v and %v",
+			what, cert.NotBefore, cert.NotAfter, days, first, last)
 	}
 }
 
@@ -2500,6 +2518,23 @@ func TestUserIdentityCheckNamesEachOutcome(t *testing.T) {
 			}
 		})
 	}
+
+	// A server's refusal text is cut at 200 characters.
+	t.Run("a long refusal", func(t *testing.T) {
+		server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", plain)
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = io.WriteString(w, strings.Repeat("x", 200)+strings.Repeat("y", 100))
+		}))
+		server.TLS = &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{serverCert}, ClientAuth: tls.RequireAnyClientCert}
+		server.StartTLS()
+		defer server.Close()
+		run := b.checkOutcome("claude", "es", server.URL)
+		if run.fact("outcome") != "refused" || !strings.Contains(run.stdout, "refused: "+strings.Repeat("x", 200)+"... (100 more)") ||
+			strings.Contains(run.stdout, "xy") || strings.Contains(run.stdout, "yyyy") {
+			t.Fatalf("a 403 with a 300-character body\n%s", run)
+		}
+	})
 }
 
 // TestUserIdentityReportNeverCarriesAPrivateKey hands the report renderer a

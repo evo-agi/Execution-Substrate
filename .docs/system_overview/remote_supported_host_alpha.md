@@ -4969,12 +4969,20 @@ not ES's client CA file, so its `rollback` after `allow` would put back an
 the user CA: ES would then accept a certificate for `operator/local` signed
 with the user CA key. Its `rollback` and `restore` refuse that, and a backup
 that would put back an allowlist entry under `user/` that `es.json` no longer
-lists (a revoked name), before any service stops, and change nothing. To roll
-an ES upgrade back on a box with user identities, revoke every name, run
-`revoke --remove-ca`, then roll back; revoked names stay revoked, so the
-identities come back later under new names. A rollback restores an older ES build,
-which refuses the binding at its start, so `allow` cannot repair this state
-on it.
+lists (a revoked name), before any service stops, and change nothing. They
+also refuse a backup that holds a client CA file `es.json` or `ags.json`
+names, and a backup or current config that Go's JSON decoder could read
+otherwise than the check does (a repeated key, a key that is not lower-case
+ASCII, such as `ſecurity`, which Go reads as `security`, or bytes that are
+not UTF-8). `apply`, `rollback` and `restore` hold the helper's lock
+(`/run/execution-substrate-remote-alpha-user-identity.lock`) from their
+first read of these files to their last write, so no `allow` or `revoke`
+lands in between; while a run of the helper holds it, they refuse and change
+nothing. To roll an ES upgrade back on a box with user identities, revoke
+every name, run `revoke --remove-ca`, then roll back; revoked names stay
+revoked, so the identities come back later under new names. A rollback
+restores an older ES build, which refuses the binding at its start, so
+`allow` cannot repair this state on it.
 
 ### Network grants for user callers
 
@@ -7780,11 +7788,13 @@ Nomad. It records `rolled_back`, `rolled_back_unhealthy` when the endpoints
 do not answer 200 within 60 seconds, or `rollback_failed`, with the failure.
 `rollback` does the same from a backup folder, ignoring `SIGHUP`, and exits
 1 on any of those failures. Before it stops anything, `rollback` (and
-`restore`) refuses a backup whose `es.json` would no longer bind a namespace
-to a CA that ES's client CA file holds, or that would put back a `user/`
-allowlist entry `es.json` no longer lists; no backup holds the client CA
-file, so the user identity helper's binding and its CA must not come apart
-("ES upgrade rollback interaction" in the user identity section). It refuses a backup of ES PR #54's upgrade
+`restore`) refuses a backup whose `es.json` would not bind a namespace to a
+CA that ES's client CA file holds, or the user CA to `user`, or that would
+put back a `user/` allowlist entry `es.json` no longer lists; no backup may
+hold the client CA file, so the user identity helper's binding and its CA
+must not come apart. `apply`, `rollback` and `restore` hold the helper's
+lock throughout ("ES upgrade rollback interaction" in the user identity
+section). It refuses a backup of ES PR #54's upgrade
 (schema v1), which the script at `16cbf739` restores. Output that can no
 longer be written never stops either one: a terminal that hangs up sends
 `SIGHUP`, so `apply` rolls back, while a closed output pipe alone does not,

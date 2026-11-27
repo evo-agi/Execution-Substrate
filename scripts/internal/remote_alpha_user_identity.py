@@ -653,21 +653,28 @@ def name_is_single_cn(rdns: list, cn: str) -> bool:
             and rdns[0][0][1] in (TAG_UTF8, TAG_PRINTABLE) and rdns[0][0][2] == cn)
 
 
-# Text taken from a CSR or a certificate is cut to this many characters in
-# reports (a name's CN is at most 64 in X.520), so it cannot pad a report
-# line until the terminal wraps and starts a row with text of its own.
-UNTRUSTED_TEXT_CHARS = 64
+# Text a server sends is cut to a limit in reports; a name taken from a CSR or
+# a certificate, as name_text writes it, to NAME_TEXT_CHARS (twice X.520's 64
+# for a CN, room for escapes and an O).
+NAME_TEXT_CHARS = 128
 
 
 def name_text(rdns: list) -> str:
+    """A name from a CSR or a certificate as report text: printable() escapes,
+    every space escaped as well, and the whole name cut to NAME_TEXT_CHARS. A
+    run of spaces, or of any text, could pad a report line until the terminal
+    wraps and starts a row with the name's own text; with no space in it, that
+    row cannot read as a line of the report, such as "Result: ok"."""
     labels = {OID_CN: "CN", OID_O: "O"}
-    out = []
-    for rdn in rdns:
-        out.append("+".join(f"{labels.get(oid, oid)}={clipped(text) if text is not None else '?'}" for oid, _, text in rdn))
-    return ", ".join(out[:4]) + (f", ... ({len(out) - 4} more)" if len(out) > 4 else "")
+
+    def value_text(value) -> str:
+        return "?" if value is None else printable(value).replace(" ", "\\x20")
+
+    text = ", ".join("+".join(f"{labels.get(oid, oid)}={value_text(value)}" for oid, _, value in rdn) for rdn in rdns)
+    return clipped(text, NAME_TEXT_CHARS)
 
 
-def clipped(text: str, limit: int = UNTRUSTED_TEXT_CHARS) -> str:
+def clipped(text: str, limit: int) -> str:
     text = printable(text)
     return text if len(text) <= limit else text[:limit] + f"... ({len(text) - limit} more)"
 
@@ -1929,7 +1936,8 @@ def take_lock(L: Layout):
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
         os.close(fd)
-        raise Refusal("another run of this helper holds the lock") from None
+        raise Refusal("another run of this helper, the ES upgrade (scripts/remote_alpha_upgrade_es.sh) or the recovery "
+                      "reissue holds the lock; run this again once it has finished") from None
     return fd
 
 
