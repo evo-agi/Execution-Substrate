@@ -971,9 +971,19 @@ def read_local_agent(r: Runner) -> dict:
         if got is None:
             return {"state": "unattested", "reason": "agent-data.json is missing"}
         # Root passes these bytes to a process running as the SPIRE account,
-        # which owns the directory. A file with a second link may be another
-        # file linked in (fs.protected_hardlinks=0 allows it for a file the
-        # account cannot read); SPIRE replaces agent-data.json by a rename.
+        # which owns the directory, so the file must be one the account can
+        # already read. With fs.protected_hardlinks=0 the account can link a
+        # file it cannot read in as agent-data.json. The owner of the opened
+        # file decides it: no link, unlink or rename changes it, while a link
+        # count read after open can be made 1 by removing the account's own
+        # link in between. SPIRE writes the file as the account and replaces
+        # it by a rename, so it also has a single link.
+        try:
+            spire_uid = pwd.getpwnam(L.spire_user).pw_uid
+        except KeyError:
+            return {"state": "unreadable", "reason": f"there is no account {L.spire_user}"}
+        if got[1].st_uid != spire_uid:
+            return {"state": "unreadable", "reason": f"agent-data.json is owned by uid {got[1].st_uid}, not {L.spire_user}; root passes it to the SPIRE data check only when {L.spire_user} owns it"}
         if got[1].st_nlink != 1:
             return {"state": "unreadable", "reason": f"agent-data.json has {got[1].st_nlink} links; root passes it to the SPIRE data check only with one"}
         try:

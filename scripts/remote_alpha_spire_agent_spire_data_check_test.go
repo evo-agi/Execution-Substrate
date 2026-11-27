@@ -18,6 +18,7 @@ import (
 	"encoding/pem"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -480,6 +481,45 @@ func TestRemoteAlphaSPIREAgentRootParsesNoSPIREData(t *testing.T) {
 		}
 	})
 
+	// The owner of the opened file decides, not only its link count: the
+	// SPIRE account could remove its own link to another file between
+	// root's open and fstat (re-check 31, R31-1). Here the test user owns
+	// agent-data.json and the layout names another SPIRE account.
+	t.Run("agent_data_another_account_owns_is_not_passed_on", func(t *testing.T) {
+		a := newSPIREAgentDataCheckRoot(t)
+		spireAgentDataCheckAgent(t, a)
+		other, err := user.Lookup("nobody")
+		if err != nil {
+			t.Skipf("needs an account named nobody: %v", err)
+		}
+		cur, err := user.Current()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if other.Uid == cur.Uid {
+			t.Skip("runs as nobody")
+		}
+		a.layout["spire_user"] = other.Username
+		_, doc := a.run("agent")
+		agent, _ := doc["agent"].(map[string]any)
+		reason, _ := agent["reason"].(string)
+		if agent["state"] != "unreadable" || !strings.Contains(reason, "agent-data.json is owned by uid "+cur.Uid+", not "+other.Username) {
+			t.Fatalf("agent-data.json owned by uid %s with the SPIRE account %s: %v", cur.Uid, other.Username, doc)
+		}
+		if views := spireAgentDataCheckLog(t, a, "view.log"); len(views) != 0 {
+			t.Fatalf("root passed agent-data.json of another owner to the SPIRE data check: %q", views)
+		}
+
+		a = newSPIREAgentDataCheckRoot(t)
+		spireAgentDataCheckAgent(t, a)
+		a.layout["spire_user"] = "es-no-such-account"
+		_, doc = a.run("agent")
+		agent, _ = doc["agent"].(map[string]any)
+		if reason, _ := agent["reason"].(string); agent["state"] != "unreadable" || reason != "there is no account es-no-such-account" {
+			t.Fatalf("agent-data.json with a SPIRE account that does not exist: %v", doc)
+		}
+	})
+
 	t.Run("root_checks_the_size_and_reads_the_bytes_back", func(t *testing.T) {
 		a := newSPIREAgentDataCheckRoot(t)
 		_, doc := a.run("write-checks")
@@ -529,6 +569,15 @@ func TestRemoteAlphaSPIREAgentRootHandlesSPIREJSONStrictly(t *testing.T) {
 		record := func(expiry string) string {
 			return `{"agents": [{"id": {"trust_domain": "t", "path": "/p"}` + expiry + `}]}`
 		}
+		// The ASCII digits of s written with the digits of the Unicode
+		// block whose zero is zero, as a JSON string.
+		otherDigits := func(zero rune, s string) string {
+			b, err := json.Marshal(strings.Map(func(r rune) rune { return zero + r - '0' }, s))
+			if err != nil {
+				t.Fatal(err)
+			}
+			return string(b)
+		}
 		for _, c := range []struct {
 			name, out, want string
 			expires         float64 // when accepted
@@ -546,6 +595,19 @@ func TestRemoteAlphaSPIREAgentRootHandlesSPIREJSONStrictly(t *testing.T) {
 			{"expiry_true", record(`, "x509svid_expires_at": true`), expiryRule, 0},
 			{"expiry_with_a_space", record(`, "x509svid_expires_at": " 4102444800"`), expiryRule, 0},
 			{"expiry_5000_digits", record(`, "x509svid_expires_at": "` + strings.Repeat("9", 5000) + `"`), expiryRule, 0},
+			// The cases next to the digit rule (re-check 32, N32-1): an empty
+			// string would reach int("") and raise.
+			{"expiry_empty_string", record(`, "x509svid_expires_at": ""`), expiryRule, 0},
+			{"expiry_arabic_indic_digit", record(`, "x509svid_expires_at": ` + otherDigits(0x0660, "3")), expiryRule, 0},
+			{"expiry_twelve_arabic_indic_digits", record(`, "x509svid_expires_at": ` + otherDigits(0x0660, "123456789012")), expiryRule, 0},
+			{"expiry_fullwidth_digits", record(`, "x509svid_expires_at": ` + otherDigits(0xff10, "4102444800")), expiryRule, 0},
+			{"expiry_fraction_in_range", record(`, "x509svid_expires_at": 4102444800.5`), expiryRule, 0},
+			{"expiry_whole_float_in_range", record(`, "x509svid_expires_at": 4102444800.0`), expiryRule, 0},
+			{"expiry_plus_sign", record(`, "x509svid_expires_at": "+4102444800"`), expiryRule, 0},
+			{"expiry_trailing_newline", record(`, "x509svid_expires_at": "4102444800\n"`), expiryRule, 0},
+			{"expiry_null", record(`, "x509svid_expires_at": null`), expiryRule, 0},
+			{"expiry_twelve_digits_with_leading_zeros", record(`, "x509svid_expires_at": "000000000042"`), "", 42},
+			{"expiry_zero_string", record(`, "x509svid_expires_at": "0"`), "", 0},
 			{"expiry_end_of_9999", record(`, "x509svid_expires_at": "253402300799"`), "", 253402300799},
 			{"expiry_a_number", record(`, "x509svid_expires_at": 4102444800`), "", 4102444800},
 			{"expiry_absent", record(``), "", 0},

@@ -7056,11 +7056,12 @@ as any account other than `spire`, and has 120 s to answer. A flaw in
 account already has, and `spire` already decides what the server bundle
 is. Root reads only the files' bytes and the check's JSON reply; it passes
 `agent-data.json`, which lies in a directory `spire` owns, to the check
-only when the file has a single link, so a hard link cannot make root pass
-on a file `spire` cannot read. It accepts a reply only in the exact shapes
-the check produces (every key, type, state and length checked; the PEM
-text only base64, `=`, `-`, space and newline characters, 1 byte to 1 MiB;
-at most 16 certificates; an agent ID under
+only when `spire` owns the opened file (and it has a single link), so root
+never passes on a file `spire` cannot already read: no link, unlink or
+rename changes the owner of the file root opened. It accepts a reply only
+in the exact shapes the check produces (every key, type, state and length
+checked; the PEM text only base64, `=`, `-`, space and newline characters,
+1 byte to 1 MiB; at most 16 certificates; an agent ID under
 `spiffe://execution.internal/spire/agent/`; an SVID expiry from 0 to the
 end of the year 9999), and writes the PEM text as opaque bytes. Root still
 decodes JSON from SPIRE with Python's decoder: the check's reply, and in
@@ -7075,8 +7076,8 @@ so quoted text cannot add a line or reach the terminal as a control
 sequence. In `pin --apply` and `recover --apply` root also runs SPIRE's
 own client, `spire-agent api fetch x509`, to see the agent serve
 `spiffe://execution.internal/workload`; it runs as root because that
-workload's registration entry selects `unix:uid:0`, and the helper only
-matches the `SPIFFE ID:` lines of the client's text.
+workload's registration entry selects `unix:uid:0` and `unix:gid:0`, and
+the helper only matches the `SPIFFE ID:` lines of the client's text.
 
 Every mode bounds what it reads from a command: a command that prints more
 than 4 MiB on stdout or stderr is stopped and the run fails, and so is one
