@@ -9,7 +9,9 @@ EGS and ES refuse them at startup. Give each host its own AGS and EGS keys with
 `scripts/internal/signingkeygen`, and put their public parts into the ES
 `verification` group and the AGS key ID into the EGS
 `runtime_trust.signer_policy.allowed_signers`
-(`.docs/system_overview/configuration.md`, "Signing keys").
+(`.docs/system_overview/configuration.md`, "Signing keys"). AGS and EGS also
+refuse a config file that other users can read or write, so a copy that holds a
+real key must be mode 0600, or 0640 for a group the service runs in.
 
 Use the default ES templates for successful, non-denying paths:
 
