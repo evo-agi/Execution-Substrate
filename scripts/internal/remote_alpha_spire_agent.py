@@ -47,7 +47,6 @@ import fcntl
 import grp
 import hashlib
 import json
-import math
 import os
 import pwd
 import re
@@ -289,12 +288,32 @@ class Report:
             lines.append("Changes made:")
             lines.extend(f"  - {step}" for step in doc["actions"])
         lines.append(f"Result: {doc['result']}" + (f" - {doc['message']}" if doc["message"] else ""))
-        # Details can quote what SPIRE, systemd or openssl printed; control
-        # characters in them must not reach the terminal as escapes.
-        return _TERMINAL_UNSAFE_RE.sub("?", "\n".join(lines)) + "\n"
+        # Details can quote what SPIRE, systemd or openssl printed. Each line
+        # is escaped before the lines are joined, so quoted text can neither
+        # start a line of its own nor reach the terminal as a control
+        # sequence.
+        return "\n".join(report_line(line) for line in lines) + "\n"
 
 
-_TERMINAL_UNSAFE_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+# Every character but printable ASCII other than the backslash.
+_REPORT_ESCAPE_RE = re.compile(r"[^\x20-\x5b\x5d-\x7e]")
+_REPORT_ESCAPES = {"\\": "\\\\", "\n": "\\n", "\r": "\\r", "\t": "\\t"}
+
+
+def _report_escape(match: re.Match) -> str:
+    ch = match.group()
+    if ch in _REPORT_ESCAPES:
+        return _REPORT_ESCAPES[ch]
+    code = ord(ch)
+    return f"\\x{code:02x}" if code < 0x100 else f"\\u{code:04x}" if code < 0x10000 else f"\\U{code:08x}"
+
+
+def report_line(text: str) -> str:
+    """text for one line of the text report: printable ASCII as it is, and
+    every other character (a line break, a tab, a control character, a
+    Unicode line separator or bidirectional override, any non-ASCII
+    character) and the backslash as a Python-style escape."""
+    return _REPORT_ESCAPE_RE.sub(_report_escape, text)
 
 
 # --------------------------------------------------------------------------
@@ -303,6 +322,12 @@ _TERMINAL_UNSAFE_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
 
 def utc_now() -> float:
     return time.time()
+
+
+# The last second of the year 9999: the latest time an X.509 certificate
+# can carry and the latest iso_utc prints. Root takes no time from SPIRE
+# outside 0 to this.
+EPOCH_END_OF_9999 = 253402300799
 
 
 def iso_utc(epoch: float) -> str:
@@ -773,8 +798,10 @@ def check_agent_reply(L: Layout, reply: dict) -> dict:
     prefix = f"spiffe://{L.trust_domain}/spire/agent/"
     if not isinstance(agent_id, str) or len(agent_id) > 2048 or not re.fullmatch(re.escape(prefix) + r"[\x21-\x7e]+", agent_id):
         _bad_reply(f"the agent ID must be printable ASCII without spaces under {prefix}")
-    if type(not_after) not in (int, float) or not math.isfinite(not_after):
-        _bad_reply("the SVID expiry must be a finite number")
+    # A comparison, not math.isfinite: it is false for NaN and raises
+    # nothing for an integer too large for a float.
+    if type(not_after) not in (int, float) or not 0 <= not_after <= EPOCH_END_OF_9999:
+        _bad_reply(f"the SVID expiry must be a finite number of seconds from 0 to {EPOCH_END_OF_9999} (the end of the year 9999)")
     if type(reattestable) is not bool:
         _bad_reply("reattestable must be true or false")
     return {"state": state, "agent_id": agent_id, "not_after": float(not_after), "reattestable": reattestable}
@@ -827,16 +854,22 @@ def server_items(doc: dict, key: str, what: str) -> list[dict]:
     return items
 
 
+_EPOCH_DIGITS_RE = re.compile(r"[0-9]{1,12}")
+
+
 def list_agents(r: Runner) -> list[dict]:
     doc = r.server_json(["agent", "list"])
     if doc.get("next_page_token"):
         raise CommandError("spire-server agent list returned more than one page")
     agents = []
     for item in server_items(doc, "agents", "agent list"):
-        try:
-            expires = int(item.get("x509svid_expires_at", "0"))
-        except (TypeError, ValueError, OverflowError):
-            expires = 0
+        # spire-server prints the expiry as a string of digits (an int64 in
+        # protobuf's JSON) and leaves it out when it is 0.
+        expires = item.get("x509svid_expires_at", 0)
+        if isinstance(expires, str) and _EPOCH_DIGITS_RE.fullmatch(expires):
+            expires = int(expires)
+        if type(expires) is not int or not 0 <= expires <= EPOCH_END_OF_9999:
+            raise CommandError(f"spire-server agent list printed an SVID expiry that is not a whole number of seconds from 0 to {EPOCH_END_OF_9999} (the end of the year 9999)")
         agents.append({
             "id": spiffe_id(item.get("id")),
             "expires_at": expires,
@@ -847,14 +880,21 @@ def list_agents(r: Runner) -> list[dict]:
     return agents
 
 
+_ENTRY_ID_RE = re.compile(r"[\x21-\x7e]{1,255}")
+
+
 def list_entries(r: Runner) -> list[dict]:
     doc = r.server_json(["entry", "show"])
     if doc.get("next_page_token"):
         raise CommandError("spire-server entry show returned more than one page")
     entries = []
     for item in server_items(doc, "entries", "entry show"):
+        # The ID goes on spire-server's command line in recover.
+        entry_id = item.get("id")
+        if not isinstance(entry_id, str) or not _ENTRY_ID_RE.fullmatch(entry_id):
+            raise CommandError("spire-server entry show printed an entry ID that is not 1 to 255 printable ASCII characters without spaces")
         entries.append({
-            "id": str(item.get("id", "")),
+            "id": entry_id,
             "spiffe_id": spiffe_id(item.get("spiffe_id")),
             "parent_id": spiffe_id(item.get("parent_id")),
         })
@@ -930,6 +970,12 @@ def read_local_agent(r: Runner) -> dict:
             return {"state": "unreadable", "reason": str(exc)}
         if got is None:
             return {"state": "unattested", "reason": "agent-data.json is missing"}
+        # Root passes these bytes to a process running as the SPIRE account,
+        # which owns the directory. A file with a second link may be another
+        # file linked in (fs.protected_hardlinks=0 allows it for a file the
+        # account cannot read); SPIRE replaces agent-data.json by a rename.
+        if got[1].st_nlink != 1:
+            return {"state": "unreadable", "reason": f"agent-data.json has {got[1].st_nlink} links; root passes it to the SPIRE data check only with one"}
         try:
             view = agent_view(r, got[0])
         except CommandError as exc:

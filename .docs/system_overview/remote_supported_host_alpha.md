@@ -7048,23 +7048,35 @@ next run tries again.
 The SPIRE data check: everything SPIRE produces that the helper parses as
 certificates (the server bundle, the bundle file it was copied into, the
 agent's SVID in `agent-data.json`) is parsed in a separate process that
-root starts as `spire` with `setpriv` (`/usr/bin/python3 -I -B -S -c`, with
-the helper's own code and the request on stdin). That process runs
+root starts as `spire` with `setpriv` (`/usr/bin/python3 -I -B -S -c`,
+with the helper's own code and the request on stdin). That process runs
 `spire-server bundle show` and every `openssl x509` itself, refuses to run
 as any account other than `spire`, and has 120 s to answer. A flaw in
 `openssl` or in the PEM parsing therefore gives no more than the `spire`
 account already has, and `spire` already decides what the server bundle
-is. Root reads only the files' bytes and the check's JSON reply. It
-accepts a reply only in the exact shapes the check produces (every key,
-type, state and length checked; the PEM text only base64, `=`, `-`, space
-and newline characters, 1 byte to 1 MiB; at most 16 certificates; an agent
-ID under `spiffe://execution.internal/spire/agent/`; a finite SVID
-expiry), and writes the PEM text as opaque bytes. Root still decodes JSON
-from SPIRE with Python's decoder: the check's reply, and in `pin`,
-`recover` and `status` the output of `spire-server agent list`, `entry
-show` and `token generate`. A wrong shape or nesting too deep for the
-decoder is a command error, never a crash, and the text report replaces
-control characters that a detail quotes.
+is. Root reads only the files' bytes and the check's JSON reply; it passes
+`agent-data.json`, which lies in a directory `spire` owns, to the check
+only when the file has a single link, so a hard link cannot make root pass
+on a file `spire` cannot read. It accepts a reply only in the exact shapes
+the check produces (every key, type, state and length checked; the PEM
+text only base64, `=`, `-`, space and newline characters, 1 byte to 1 MiB;
+at most 16 certificates; an agent ID under
+`spiffe://execution.internal/spire/agent/`; an SVID expiry from 0 to the
+end of the year 9999), and writes the PEM text as opaque bytes. Root still
+decodes JSON from SPIRE with Python's decoder: the check's reply, and in
+`pin`, `recover` and `status` the output of `spire-server agent list`,
+`entry show` and `token generate`. A wrong shape, an SVID expiry in `agent
+list` that is not a whole number of seconds from 0 to the end of the year
+9999, an entry ID that is not 1 to 255 printable ASCII characters without
+spaces, or nesting too deep for the decoder is a command error, never a
+crash. The text report shows a backslash and every character other than
+printable ASCII in what it quotes as an escape (`\n`, `\x1b`, `\u2028`),
+so quoted text cannot add a line or reach the terminal as a control
+sequence. In `pin --apply` and `recover --apply` root also runs SPIRE's
+own client, `spire-agent api fetch x509`, to see the agent serve
+`spiffe://execution.internal/workload`; it runs as root because that
+workload's registration entry selects `unix:uid:0`, and the helper only
+matches the `SPIFFE ID:` lines of the client's text.
 
 Every mode bounds what it reads from a command: a command that prints more
 than 4 MiB on stdout or stderr is stopped and the run fails, and so is one

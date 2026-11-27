@@ -78,6 +78,8 @@ try:
         sys.exit(mod.main(["--json", "refresh", "--apply"], L))
     elif case == "refresh":
         sys.exit(mod.main(["--json", "refresh", "--apply"], L))
+    elif case == "status":
+        sys.exit(mod.main(["--json", "status"], L))
     elif case == "write-then-unreadable":
         # The bundle is written, then reading it back is refused: the run
         # must say that the file was written, never "nothing was changed".
@@ -139,13 +141,20 @@ try:
             except mod.CommandError as exc:
                 results.append({"ok": False, "reason": str(exc)})
         out = {"ok": True, "results": results}
-    elif case == "list-agents":
+    elif case in ("list-agents", "list-entries"):
         try:
-            out = {"ok": True, "agents": mod.list_agents(r)}
+            if case == "list-agents":
+                out = {"ok": True, "agents": mod.list_agents(r)}
+            else:
+                out = {"ok": True, "entries": mod.list_entries(r)}
         except mod.CommandError as exc:
             out = {"ok": False, "kind": "CommandError", "reason": str(exc)}
     elif case == "render":
-        rep.check("quoted", "info", "a\x1b[2Jb\x07c\x9bd\x7fe\tf\ng")
+        quoted = "a\x1b[2Jb\x07c\x9bd\x7fe\tf\ngh\ri\x0bj\x0ck\x00l\x9dm\u2028n\u202eo\\p\u00e9q\U0001F600r"
+        rep.check("quoted", "info", quoted)
+        rep.planned("plan " + quoted)
+        rep.action("action " + quoted)
+        rep.result, rep.message = "failed", "message " + quoted
         out = {"ok": True, "text": rep.render_text()}
     elif case == "view-other-account":
         # The SPIRE data check started for an account it is not running as
@@ -211,9 +220,10 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if sys.argv[1:3] == ["bundle", "show"]:
     sys.stdout.write(open(os.path.join(ROOT, "server-bundle.pem")).read())
     sys.exit(0)
-if sys.argv[1:3] == ["agent", "list"] and os.path.exists(os.path.join(ROOT, "agent-list.json")):
-    sys.stdout.write(open(os.path.join(ROOT, "agent-list.json")).read())
-    sys.exit(0)
+for words, name in ((["agent", "list"], "agent-list.json"), (["entry", "show"], "entry-show.json")):
+    if sys.argv[1:3] == words and os.path.exists(os.path.join(ROOT, name)):
+        sys.stdout.write(open(os.path.join(ROOT, name)).read())
+        sys.exit(0)
 sys.exit(1)
 `
 
@@ -926,11 +936,19 @@ func TestRemoteAlphaSPIREAgentStatusFlagsAUnitSystemdDoesNotLoad(t *testing.T) {
 				a := newSPIREAgentGuardRoot(t, python, openssl)
 				a.enabledTimer()
 				a.units[spireAgentHelperRefreshUnit+suffix]["LoadState"] = load
-				a.units[spireAgentHelperRefreshUnit+suffix]["DropInPaths"] = a.unitPath(suffix) + ".d/o.conf"
+				fragment := "/run/systemd/system.control/" + spireAgentHelperRefreshUnit + suffix
+				a.units[spireAgentHelperRefreshUnit+suffix]["FragmentPath"] = fragment
+				dropIn := a.unitPath(suffix) + ".d/o.conf"
+				a.units[spireAgentHelperRefreshUnit+suffix]["DropInPaths"] = dropIn
 				_, doc := a.run("timer-check-0644")
 				state, detail := spireAgentGuardCheck(doc, "refresh timer")
-				if state != "attention" || !strings.Contains(detail, load) {
+				if state != "attention" || !strings.Contains(detail, load+", not loaded") {
 					t.Fatalf("status calls a %s unit that systemd reports as %s: %s %s", suffix, load, state, detail)
+				}
+				// It still names where systemd loads the unit from and its
+				// drop-ins, which say what masks or breaks it.
+				if !strings.Contains(detail, "from "+fragment+", not ") || !strings.Contains(detail, "drop-ins that change it: "+dropIn) {
+					t.Fatalf("status for a %s unit that systemd reports as %s does not name its fragment %s and drop-in %s: %s", suffix, load, fragment, dropIn, detail)
 				}
 			})
 		}

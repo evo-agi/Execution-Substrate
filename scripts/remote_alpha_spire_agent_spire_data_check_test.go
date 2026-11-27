@@ -1,8 +1,9 @@
 package scripts_test
 
 // Regression tests for the boundary between root and the SPIRE data check
-// in the SPIRE agent helper (re-checks 25 and 26 of the bundle refresh):
-// nothing that SPIRE produces is parsed as a certificate in root's process.
+// in the SPIRE agent helper (re-checks 25, 26, 28 and 29 of the bundle
+// refresh): nothing that SPIRE produces is parsed as a certificate in
+// root's process, and what root takes from SPIRE is range-checked.
 // The SPIRE data check, the helper's own code run as the SPIRE account,
 // fetches the server bundle and parses it, the bundle file and the agent's
 // SVID; root checks its JSON reply field by field and writes the bundle's
@@ -101,6 +102,35 @@ func spireAgentDataCheckCA(t *testing.T) []byte {
 	t.Helper()
 	der := spireAgentHelperTestCert(t, true, "spiffe://"+spireAgentHelperTrustDomain, time.Now().Add(time.Hour))
 	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+}
+
+// spireAgentDataCheckAgent points the layout at a new agent data directory
+// whose agent-data.json holds an SVID valid for an hour, and returns the
+// agent ID and the SVID's expiry.
+func spireAgentDataCheckAgent(t *testing.T, a *spireAgentGuardRoot) (string, time.Time) {
+	t.Helper()
+	dir := filepath.Join(a.root, "agent-data")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	a.chmod(dir, 0o755)
+	a.layout["agent_data_dir"] = dir
+	agentID := "spiffe://" + spireAgentHelperTrustDomain + "/spire/agent/join_token/0123"
+	notAfter := time.Now().Add(time.Hour).Truncate(time.Second)
+	leaf := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: spireAgentHelperTestCert(t, false, agentID, notAfter)})
+	data, err := json.Marshal(map[string]any{"svid": []string{base64.StdEncoding.EncodeToString(leaf)}, "reattestable": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.write(filepath.Join(dir, "agent-data.json"), string(data), 0o644)
+	return agentID, notAfter
+}
+
+// spireAgentDataCheckAgentList makes the fake spire-server's agent list
+// hold one record, for agentID, with expiry as its JSON expiry value.
+func spireAgentDataCheckAgentList(a *spireAgentGuardRoot, agentID, expiry string) {
+	path := strings.TrimPrefix(agentID, "spiffe://"+spireAgentHelperTrustDomain)
+	a.write(filepath.Join(a.root, "agent-list.json"), `{"agents": [{"id": {"trust_domain": "`+spireAgentHelperTrustDomain+`", "path": "`+path+`"}, "x509svid_expires_at": `+expiry+`}]}`, 0o644)
 }
 
 func TestRemoteAlphaSPIREAgentRootParsesNoSPIREData(t *testing.T) {
@@ -241,6 +271,17 @@ func TestRemoteAlphaSPIREAgentRootParsesNoSPIREData(t *testing.T) {
 		if _, err := os.Lstat(a.layout["bundle_path"].(string)); !os.IsNotExist(err) {
 			t.Fatalf("refresh wrote the bundle file (%v)", err)
 		}
+
+		// The agent's reply has a bound of its own, 64 KiB.
+		a = newSPIREAgentDataCheckRoot(t)
+		spireAgentDataCheckAgent(t, a)
+		a.write(filepath.Join(a.root, "view-reply-agent"), strings.Repeat(" ", 64<<10+1), 0o644)
+		_, doc = a.run("agent")
+		agent, _ := doc["agent"].(map[string]any)
+		reason, _ := agent["reason"].(string)
+		if agent["state"] != "unreadable" || !strings.Contains(reason, "the SPIRE data check (agent) as") || !strings.Contains(reason, "printed more than 65536 bytes; it was stopped") {
+			t.Fatalf("a check that prints %d bytes for the agent: %v", 64<<10+1, doc)
+		}
 	})
 
 	t.Run("sixteen_server_certificates_pass_and_seventeen_do_not", func(t *testing.T) {
@@ -348,6 +389,17 @@ func TestRemoteAlphaSPIREAgentRootParsesNoSPIREData(t *testing.T) {
 			{"agent_not_after_infinite", "agent", `{"state": "attested", "agent_id": "` + agentID + `", "not_after": 1e999, "reattestable": false}`, false, false, "finite number"},
 			{"agent_not_after_string", "agent", `{"state": "attested", "agent_id": "` + agentID + `", "not_after": "1e9", "reattestable": false}`, false, false, "finite number"},
 			{"agent_not_after_bool", "agent", `{"state": "attested", "agent_id": "` + agentID + `", "not_after": true, "reattestable": false}`, false, false, "finite number"},
+			{"agent_not_after_zero", "agent", `{"state": "attested", "agent_id": "` + agentID + `", "not_after": 0, "reattestable": false}`, false, false, ""},
+			{"agent_not_after_end_of_9999", "agent", `{"state": "attested", "agent_id": "` + agentID + `", "not_after": 253402300799, "reattestable": false}`, false, false, ""},
+			{"agent_not_after_past_9999", "agent", `{"state": "attested", "agent_id": "` + agentID + `", "not_after": 253402300800, "reattestable": false}`, false, false, "from 0 to 253402300799"},
+			{"agent_not_after_negative", "agent", `{"state": "attested", "agent_id": "` + agentID + `", "not_after": -1, "reattestable": false}`, false, false, "from 0 to 253402300799"},
+			{"agent_not_after_huge_float", "agent", `{"state": "attested", "agent_id": "` + agentID + `", "not_after": 1e300, "reattestable": false}`, false, false, "from 0 to 253402300799"},
+			{"agent_not_after_huge_integer", "agent", `{"state": "attested", "agent_id": "` + agentID + `", "not_after": 1` + strings.Repeat("0", 400) + `, "reattestable": false}`, false, false, "from 0 to 253402300799"},
+			{"agent_id_longest", "agent", `{"state": "attested", "agent_id": "` + agentID + strings.Repeat("a", 2048-len(agentID)) + `", "not_after": 1e9, "reattestable": false}`, false, false, ""},
+			{"agent_id_too_long", "agent", `{"state": "attested", "agent_id": "` + agentID + strings.Repeat("a", 2049-len(agentID)) + `", "not_after": 1e9, "reattestable": false}`, false, false, "without spaces"},
+			{"error_text_with_del", "bundle", `{"server": {"ok": false, "kind": "refusal", "error": "a\u007fb"}, "file": null}`, true, false, "printable ASCII"},
+			{"error_text_with_tab", "bundle", `{"server": {"ok": false, "kind": "refusal", "error": "a\tb"}, "file": null}`, true, false, "printable ASCII"},
+			{"pem_with_carriage_return", "bundle", `{"server": {"ok": true, "pem": "-----BEGIN CERTIFICATE-----\r\nAAAA\r\n-----END CERTIFICATE-----\r\n", "count": 1}, "file": null}`, true, false, "PEM characters only"},
 			{"agent_reattestable_number", "agent", `{"state": "attested", "agent_id": "` + agentID + `", "not_after": 1e9, "reattestable": 1}`, false, false, "true or false"},
 			{"agent_reason_too_long", "agent", `{"state": "unreadable", "reason": "` + strings.Repeat("r", 501) + `"}`, false, false, "at most 500"},
 		}
@@ -383,20 +435,7 @@ func TestRemoteAlphaSPIREAgentRootParsesNoSPIREData(t *testing.T) {
 
 	t.Run("the_agent_svid_is_read_in_the_spire_data_check", func(t *testing.T) {
 		a := newSPIREAgentDataCheckRoot(t)
-		dir := filepath.Join(a.root, "agent-data")
-		if err := os.Mkdir(dir, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		a.chmod(dir, 0o755)
-		a.layout["agent_data_dir"] = dir
-		agentID := "spiffe://" + spireAgentHelperTrustDomain + "/spire/agent/join_token/0123"
-		notAfter := time.Now().Add(time.Hour).Truncate(time.Second)
-		leaf := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: spireAgentHelperTestCert(t, false, agentID, notAfter)})
-		data, err := json.Marshal(map[string]any{"svid": []string{base64.StdEncoding.EncodeToString(leaf)}, "reattestable": true})
-		if err != nil {
-			t.Fatal(err)
-		}
-		a.write(filepath.Join(dir, "agent-data.json"), string(data), 0o644)
+		agentID, notAfter := spireAgentDataCheckAgent(t, a)
 		_, doc := a.run("agent")
 		agent, _ := doc["agent"].(map[string]any)
 		if agent["state"] != "valid" || agent["agent_id"] != agentID || agent["reattestable"] != true || agent["not_after"] != float64(notAfter.Unix()) {
@@ -420,6 +459,24 @@ func TestRemoteAlphaSPIREAgentRootParsesNoSPIREData(t *testing.T) {
 		reason, _ := agent["reason"].(string)
 		if agent["state"] != "unreadable" || !strings.Contains(reason, "not one root accepts") {
 			t.Fatalf("agent with a reply outside the trust domain: %v", doc)
+		}
+
+		// agent-data.json with a second link may be another file linked into
+		// the SPIRE account's directory: root does not pass it on.
+		a = newSPIREAgentDataCheckRoot(t)
+		spireAgentDataCheckAgent(t, a)
+		data := filepath.Join(a.layout["agent_data_dir"].(string), "agent-data.json")
+		if err := os.Link(data, filepath.Join(a.root, "second-link")); err != nil {
+			t.Fatal(err)
+		}
+		_, doc = a.run("agent")
+		agent, _ = doc["agent"].(map[string]any)
+		reason, _ = agent["reason"].(string)
+		if agent["state"] != "unreadable" || !strings.Contains(reason, "agent-data.json has 2 links") {
+			t.Fatalf("agent-data.json with two links: %v", doc)
+		}
+		if views := spireAgentDataCheckLog(t, a, "view.log"); len(views) != 0 {
+			t.Fatalf("root passed agent-data.json with two links to the SPIRE data check: %q", views)
 		}
 	})
 
@@ -462,18 +519,37 @@ func TestRemoteAlphaSPIREAgentRootParsesNoSPIREData(t *testing.T) {
 // pin, recover and status the output of spire-server agent list, entry show
 // and token generate. Python's decoder is not certificate parsing; what
 // root does with the result must still hold for any JSON the SPIRE account
-// can print. A wrong shape is a command error, never a crash, and a text
-// report shows no control character that a detail quoted.
+// can print. A wrong shape, a number out of range or an entry ID that
+// cannot go on a command line is a command error, never a crash, and the
+// text report escapes every character a detail quotes that could start a
+// line or reach the terminal as a control sequence.
 func TestRemoteAlphaSPIREAgentRootHandlesSPIREJSONStrictly(t *testing.T) {
+	const expiryRule = "printed an SVID expiry that is not a whole number of seconds from 0 to 253402300799"
 	t.Run("agent_list", func(t *testing.T) {
-		for _, c := range []struct{ name, out, want string }{
-			{"agents_an_object", `{"agents": {"a": 1}}`, "printed agents that is not a list of objects"},
-			{"agents_strings", `{"agents": ["a"]}`, "printed agents that is not a list of objects"},
-			{"nested_too_deep", strings.Repeat("[", 200000), "printed no JSON"},
-			{"not_an_object", `[1]`, "printed unexpected JSON"},
-			{"expiry_infinite", `{"agents": [{"id": {"trust_domain": "t", "path": "/p"}, "x509svid_expires_at": 1e999}]}`, ""},
-			{"expiry_nan", `{"agents": [{"id": {"trust_domain": "t", "path": "/p"}, "x509svid_expires_at": NaN}]}`, ""},
-			{"id_parts_not_text", `{"agents": [{"id": {"trust_domain": ["t"], "path": {"p": 1}}}]}`, ""},
+		record := func(expiry string) string {
+			return `{"agents": [{"id": {"trust_domain": "t", "path": "/p"}` + expiry + `}]}`
+		}
+		for _, c := range []struct {
+			name, out, want string
+			expires         float64 // when accepted
+		}{
+			{"agents_an_object", `{"agents": {"a": 1}}`, "printed agents that is not a list of objects", 0},
+			{"agents_strings", `{"agents": ["a"]}`, "printed agents that is not a list of objects", 0},
+			{"nested_too_deep", strings.Repeat("[", 200000), "printed no JSON", 0},
+			{"not_an_object", `[1]`, "printed unexpected JSON", 0},
+			{"expiry_infinite", record(`, "x509svid_expires_at": 1e999`), expiryRule, 0},
+			{"expiry_nan", record(`, "x509svid_expires_at": NaN`), expiryRule, 0},
+			{"expiry_past_9999", record(`, "x509svid_expires_at": "253402300800"`), expiryRule, 0},
+			{"expiry_negative", record(`, "x509svid_expires_at": "-1"`), expiryRule, 0},
+			{"expiry_negative_number", record(`, "x509svid_expires_at": -1`), expiryRule, 0},
+			{"expiry_a_float", record(`, "x509svid_expires_at": 1e15`), expiryRule, 0},
+			{"expiry_true", record(`, "x509svid_expires_at": true`), expiryRule, 0},
+			{"expiry_with_a_space", record(`, "x509svid_expires_at": " 4102444800"`), expiryRule, 0},
+			{"expiry_5000_digits", record(`, "x509svid_expires_at": "` + strings.Repeat("9", 5000) + `"`), expiryRule, 0},
+			{"expiry_end_of_9999", record(`, "x509svid_expires_at": "253402300799"`), "", 253402300799},
+			{"expiry_a_number", record(`, "x509svid_expires_at": 4102444800`), "", 4102444800},
+			{"expiry_absent", record(``), "", 0},
+			{"id_parts_not_text", `{"agents": [{"id": {"trust_domain": ["t"], "path": {"p": 1}}}]}`, "", 0},
 		} {
 			t.Run(c.name, func(t *testing.T) {
 				a := newSPIREAgentDataCheckRoot(t)
@@ -482,17 +558,17 @@ func TestRemoteAlphaSPIREAgentRootHandlesSPIREJSONStrictly(t *testing.T) {
 				reason, _ := doc["reason"].(string)
 				if c.want != "" {
 					if doc["ok"] != false || !strings.Contains(reason, c.want) {
-						t.Fatalf("agent list printing %.40q: %v; want a command error naming %q", c.out, doc, c.want)
+						t.Fatalf("agent list printing %.60q: %v; want a command error naming %q", c.out, doc, c.want)
 					}
 					return
 				}
 				agents, _ := doc["agents"].([]any)
 				if doc["ok"] != true || len(agents) != 1 {
-					t.Fatalf("agent list printing %.40q: %v", c.out, doc)
+					t.Fatalf("agent list printing %.60q: %v", c.out, doc)
 				}
 				agent := agents[0].(map[string]any)
-				if agent["expires_at"] != float64(0) {
-					t.Errorf("an expiry that is no whole number reads as %v; want 0", agent["expires_at"])
+				if agent["expires_at"] != c.expires {
+					t.Errorf("agent list printing %.60q: expiry %v; want %v", c.out, agent["expires_at"], c.expires)
 				}
 				if c.name == "id_parts_not_text" && agent["id"] != "" {
 					t.Errorf("an ID whose parts are not text reads as %q; want none", agent["id"])
@@ -500,12 +576,161 @@ func TestRemoteAlphaSPIREAgentRootHandlesSPIREJSONStrictly(t *testing.T) {
 			})
 		}
 	})
-	t.Run("text_report_shows_no_control_characters", func(t *testing.T) {
+
+	t.Run("entry_show", func(t *testing.T) {
+		const idRule = "printed an entry ID that is not 1 to 255 printable ASCII characters without spaces"
+		ids := `"spiffe_id": {"trust_domain": "t", "path": "/w"}, "parent_id": {"trust_domain": "t", "path": "/a"}`
+		for _, c := range []struct{ name, id, want string }{
+			{"id_with_nul", `"id": "ab\u0000cd", `, idRule},
+			{"id_with_a_space", `"id": "a b", `, idRule},
+			{"id_with_a_newline", `"id": "ab\n", `, idRule},
+			{"id_not_ascii", `"id": "é", `, idRule},
+			{"id_empty", `"id": "", `, idRule},
+			{"id_256_characters", `"id": "` + strings.Repeat("a", 256) + `", `, idRule},
+			{"id_a_number", `"id": 5, `, idRule},
+			{"id_absent", ``, idRule},
+			{"id_255_characters", `"id": "` + strings.Repeat("a", 255) + `", `, ""},
+			{"id_a_uuid", `"id": "0f6f2c1e-4b7a-4c1d-9a51-2f0e8d3c7b6a", `, ""},
+		} {
+			t.Run(c.name, func(t *testing.T) {
+				a := newSPIREAgentDataCheckRoot(t)
+				a.write(filepath.Join(a.root, "entry-show.json"), `{"entries": [{`+c.id+ids+`}]}`, 0o644)
+				_, doc := a.run("list-entries")
+				reason, _ := doc["reason"].(string)
+				if c.want != "" {
+					if doc["ok"] != false || !strings.Contains(reason, c.want) {
+						t.Fatalf("entry show with %s: %v; want a command error naming %q", c.id, doc, c.want)
+					}
+					return
+				}
+				entries, _ := doc["entries"].([]any)
+				if doc["ok"] != true || len(entries) != 1 {
+					t.Fatalf("entry show with %s: %v", c.id, doc)
+				}
+				entry := entries[0].(map[string]any)
+				if want := strings.TrimSuffix(strings.TrimPrefix(c.id, `"id": "`), `", `); entry["id"] != want || entry["spiffe_id"] != "spiffe://t/w" || entry["parent_id"] != "spiffe://t/a" {
+					t.Fatalf("entry show with %s reads as %v", c.id, entry)
+				}
+			})
+		}
+	})
+
+	t.Run("text_report_escapes_what_it_quotes", func(t *testing.T) {
 		a := newSPIREAgentDataCheckRoot(t)
 		_, doc := a.run("render")
 		text, _ := doc["text"].(string)
-		if !strings.Contains(text, "[info] quoted: a?[2Jb?c?d?e\tf\ng\n") {
-			t.Fatalf("text report: %q", text)
+		esc := `a\x1b[2Jb\x07c\x9bd\x7fe\tf\ngh\ri\x0bj\x0ck\x00l\x9dm\u2028n\u202eo\\p\xe9q\U0001f600r`
+		want := strings.Join([]string{
+			"  [info] quoted: " + esc,
+			"Planned steps:",
+			"  - plan " + esc,
+			"Changes made:",
+			"  - action " + esc,
+			"Result: failed - message " + esc,
+		}, "\n") + "\n"
+		if !strings.HasPrefix(text, "SPIRE agent render (") || !strings.HasSuffix(text, "\n"+want) || strings.Count(text, "\n") != 7 {
+			t.Fatalf("text report: %q; want a header line, then %q", text, want)
+		}
+	})
+
+	// status, end to end through main: a time out of range in the agent
+	// list or in the check's reply is a failing check in a report, never a
+	// traceback; the last second of the year 9999 still prints.
+	t.Run("status_reports_times_out_of_range", func(t *testing.T) {
+		for _, expiry := range []string{`"253402300800"`, `"99999999999999"`, `"9223372036854775807"`, `"-99999999999999"`, `1e15`, `1e18`} {
+			t.Run("agent_list_"+strings.Trim(expiry, `"`), func(t *testing.T) {
+				a := newSPIREAgentDataCheckRoot(t)
+				agentID, _ := spireAgentDataCheckAgent(t, a)
+				spireAgentDataCheckAgentList(a, agentID, expiry)
+				_, doc := a.run("status")
+				if state, detail := spireAgentGuardCheck(doc, "server queries"); state != "fail" || !strings.Contains(detail, expiryRule) {
+					t.Fatalf("status with an agent list expiry of %s: server queries %s %q (result %v)", expiry, state, detail, doc["result"])
+				}
+			})
+		}
+		for _, c := range []struct{ expiry, want string }{{`"4102444800"`, "expires 2100-01-01T00:00:00Z"}, {`"253402300799"`, "expires 9999-12-31T23:59:59Z"}} {
+			a := newSPIREAgentDataCheckRoot(t)
+			agentID, _ := spireAgentDataCheckAgent(t, a)
+			spireAgentDataCheckAgentList(a, agentID, c.expiry)
+			_, doc := a.run("status")
+			if state, detail := spireAgentGuardCheck(doc, "server agent record"); state != "ok" || !strings.HasPrefix(detail, c.want) {
+				t.Fatalf("status with an agent list expiry of %s: server agent record %s %q", c.expiry, state, detail)
+			}
+		}
+		for _, notAfter := range []string{"253402300800", "-1", "-1e15", "1e12", "1e300", "1" + strings.Repeat("0", 400), strings.Repeat("9", 400)} {
+			t.Run("check_reply_"+notAfter[:min(len(notAfter), 12)], func(t *testing.T) {
+				a := newSPIREAgentDataCheckRoot(t)
+				agentID, _ := spireAgentDataCheckAgent(t, a)
+				spireAgentDataCheckAgentList(a, agentID, `"4102444800"`)
+				a.write(filepath.Join(a.root, "view-reply-agent"), `{"state": "attested", "agent_id": "`+agentID+`", "not_after": `+notAfter+`, "reattestable": false}`, 0o644)
+				_, doc := a.run("status")
+				if state, detail := spireAgentGuardCheck(doc, "agent identity"); state != "fail" || !strings.Contains(detail, "unreadable") || !strings.Contains(detail, "from 0 to 253402300799") {
+					t.Fatalf("status with a reply expiry of %.20s: agent identity %s %q (result %v)", notAfter, state, detail, doc["result"])
+				}
+			})
+		}
+		a := newSPIREAgentDataCheckRoot(t)
+		agentID, _ := spireAgentDataCheckAgent(t, a)
+		spireAgentDataCheckAgentList(a, agentID, `"4102444800"`)
+		a.write(filepath.Join(a.root, "view-reply-agent"), `{"state": "attested", "agent_id": "`+agentID+`", "not_after": 253402300799, "reattestable": true}`, 0o644)
+		_, doc := a.run("status")
+		if state, detail := spireAgentGuardCheck(doc, "agent identity"); state != "ok" || !strings.Contains(detail, "SVID valid until 9999-12-31T23:59:59Z") {
+			t.Fatalf("status with a reply expiry at the end of the year 9999: agent identity %s %q", state, detail)
+		}
+	})
+}
+
+// What status says for each outcome of the SPIRE data check that only the
+// check can now report (re-check 29, R29-2): a server bundle the check
+// refused or could not read, a reply root refuses, and a bundle file with
+// more certificates than the helper accepts.
+func TestRemoteAlphaSPIREAgentStatusReportsEachOutcomeOfTheSPIREDataCheck(t *testing.T) {
+	for _, c := range []struct{ name, kind string }{{"server_bundle_refused", "refusal"}, {"server_bundle_failed", "command"}} {
+		t.Run(c.name, func(t *testing.T) {
+			a := newSPIREAgentDataCheckRoot(t)
+			agentID, _ := spireAgentDataCheckAgent(t, a)
+			spireAgentDataCheckAgentList(a, agentID, `"4102444800"`)
+			a.write(filepath.Join(a.root, "view-reply-bundle"), `{"server": {"ok": false, "kind": "`+c.kind+`", "error": "the server bundle is not usable"}, "file": null}`, 0o644)
+			_, doc := a.run("status")
+			if state, detail := spireAgentGuardCheck(doc, "server queries"); state != "fail" || detail != "the server bundle is not usable" {
+				t.Fatalf("server queries: %s %q; want fail with the check's reason (result %v)", state, detail, doc["result"])
+			}
+		})
+	}
+
+	t.Run("a_reply_root_refuses_is_one_failing_check", func(t *testing.T) {
+		a := newSPIREAgentDataCheckRoot(t)
+		agentID, _ := spireAgentDataCheckAgent(t, a)
+		spireAgentDataCheckAgentList(a, agentID, `"4102444800"`)
+		a.write(filepath.Join(a.root, "view-reply-bundle"), `[]`, 0o644)
+		_, doc := a.run("status")
+		if doc["result"] != "attention" {
+			t.Fatalf("status result %v %q; want attention, with the other checks shown", doc["result"], doc["message"])
+		}
+		if state, detail := spireAgentGuardCheck(doc, "server queries"); state != "fail" || !strings.Contains(detail, "printed JSON that is not an object") {
+			t.Fatalf("server queries: %s %q", state, detail)
+		}
+		if state, detail := spireAgentGuardCheck(doc, "bundle file"); state != "attention" || !strings.Contains(detail, "unreadable") {
+			t.Fatalf("bundle file: %s %q", state, detail)
+		}
+		// The fixture's SVID has an hour left, which status calls attention.
+		if state, detail := spireAgentGuardCheck(doc, "agent identity"); state != "attention" || !strings.Contains(detail, "SVID valid until") {
+			t.Fatalf("agent identity not shown: %s %q", state, detail)
+		}
+	})
+
+	t.Run("a_bundle_file_with_17_certificates", func(t *testing.T) {
+		a := newSPIREAgentDataCheckRoot(t)
+		agentID, _ := spireAgentDataCheckAgent(t, a)
+		spireAgentDataCheckAgentList(a, agentID, `"4102444800"`)
+		var b strings.Builder
+		for i := 0; i < 17; i++ {
+			b.Write(spireAgentDataCheckCA(t))
+		}
+		a.write(a.layout["bundle_path"].(string), b.String(), 0o644)
+		_, doc := a.run("status")
+		if state, detail := spireAgentGuardCheck(doc, "bundle file"); state != "attention" || !strings.Contains(detail, "holds 17 certificates, more than the 16") {
+			t.Fatalf("bundle file: %s %q", state, detail)
 		}
 	})
 }
