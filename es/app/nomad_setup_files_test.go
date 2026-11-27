@@ -27,7 +27,8 @@ import (
 // The re-check's proposed test, with the take-back program added: it
 // redefines sudo to record what it runs, and requires the program's install
 // and run under sudo's bash first, then, for each of Nomad's three folders,
-// install -d and then python3 on it, both under sudo.
+// install -d and then python3 on it, both under sudo, and last the removal of
+// the stand-in that a move of Nomad's state leaves (A52-2 of #83).
 func TestLinuxSetupTakesEachFolderBackAsRootAndRemovesItsACLsAfterwards(t *testing.T) {
 	data := t.TempDir()
 	config := filepath.Join(data, "etc")
@@ -56,9 +57,13 @@ func TestLinuxSetupTakesEachFolderBackAsRootAndRemovesItsACLsAfterwards(t *testi
 	for _, folder := range []string{config, data, filepath.Join(config, "tls")} {
 		want = append(want, "install "+folder, "python3 "+folder)
 	}
+	// Once nomad.hcl is written, the stand-in a move of Nomad's state leaves
+	// in the package's data folder is removed, by nomad_data_move under
+	// sudo's bash ("$1" here).
+	want = append(want, "bash "+data)
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("sudo ran\n%s\nwant the take-back program first, then, for each folder, install -d and then python3, "+
-			"all under sudo:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+			"then the stand-in's removal, all under sudo:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
 }
 

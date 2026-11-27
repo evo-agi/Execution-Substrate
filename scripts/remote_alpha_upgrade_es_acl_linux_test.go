@@ -64,7 +64,8 @@ func TestRemoteAlphaUpgradeESRefusesANomadFolderWithAnACL(t *testing.T) {
 		says  string
 		// keyring: run on a host that apply has moved already, so the
 		// keyring is in place (re-check 49 of #67, S67-1: the server
-		// folder's ACL was pinned only while the keyring was absent).
+		// folder's ACL was pinned only while the keyring was absent), in
+		// the folder Nomad's state moved to.
 		keyring bool
 	}{
 		{"Nomad's config folder has a default ACL", func(h *upgradeHost) {
@@ -99,11 +100,20 @@ func TestRemoteAlphaUpgradeESRefusesANomadFolderWithAnACL(t *testing.T) {
 			setACL(h, "opt/nomad/data/server", "system.posix_acl_default")
 		}, "shape", "Nomad's gossip keyring: /opt/nomad/data/server has an ACL (system.posix_acl_default; setfacl -b -k /opt/nomad/data/server removes it)", false},
 		{"Nomad's server folder has a default ACL, with the keyring in place", func(h *upgradeHost) {
-			setACL(h, "opt/nomad/data/server", "system.posix_acl_default")
-		}, "shape", "Nomad's gossip keyring: /opt/nomad/data/server has an ACL (system.posix_acl_default; setfacl -b -k /opt/nomad/data/server removes it)", true},
+			setACL(h, "opt/nomad/es-data/server", "system.posix_acl_default")
+		}, "shape", "Nomad's gossip keyring: /opt/nomad/es-data/server has an ACL (system.posix_acl_default; setfacl -b -k /opt/nomad/es-data/server removes it)", true},
 		{"Nomad's server folder has an access ACL, with the keyring in place", func(h *upgradeHost) {
-			setACL(h, "opt/nomad/data/server", "system.posix_acl_access")
-		}, "shape", "Nomad's gossip keyring: /opt/nomad/data/server has an ACL (system.posix_acl_access; setfacl -b -k /opt/nomad/data/server removes it)", true},
+			setACL(h, "opt/nomad/es-data/server", "system.posix_acl_access")
+		}, "shape", "Nomad's gossip keyring: /opt/nomad/es-data/server has an ACL (system.posix_acl_access; setfacl -b -k /opt/nomad/es-data/server removes it)", true},
+		// Once Nomad's state has moved, its folder is held to the same rule,
+		// and so is the package's folder when a dpkg run made it again.
+		{"the folder Nomad's state moved to has a default ACL", func(h *upgradeHost) {
+			setACL(h, "opt/nomad/es-data", "system.posix_acl_default")
+		}, "nomad_dirs", "/opt/nomad/es-data has an ACL (system.posix_acl_default; setfacl -b -k /opt/nomad/es-data removes it)", true},
+		{"the package's data folder, made again by dpkg, has an access ACL", func(h *upgradeHost) {
+			h.mkdir("opt/nomad/data", 0o700)
+			setACL(h, "opt/nomad/data", "system.posix_acl_access")
+		}, "nomad_dirs", "/opt/nomad/data has an ACL (system.posix_acl_access; setfacl -b -k /opt/nomad/data removes it)", true},
 		{"Nomad's TLS directory has a default ACL", func(h *upgradeHost) {
 			h.issueTLS()
 			setACL(h, "etc/nomad.d/tls", "system.posix_acl_default")
@@ -116,7 +126,7 @@ func TestRemoteAlphaUpgradeESRefusesANomadFolderWithAnACL(t *testing.T) {
 				if stdout, stderr, code := h.apply(); code != 0 {
 					t.Fatalf("apply exited %d\nstdout %s\nstderr %s", code, stdout, stderr)
 				}
-				if _, err := os.Lstat(h.path(hostGossipKeyring)); err != nil {
+				if _, err := os.Lstat(h.path(hostMovedGossipKeyring)); err != nil {
 					t.Fatalf("no keyring after apply: %v", err)
 				}
 			}

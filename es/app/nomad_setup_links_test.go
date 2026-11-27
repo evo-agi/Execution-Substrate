@@ -35,11 +35,18 @@ func linuxSetupText(t *testing.T) string {
 // on every platform the package builds for.
 func nomadPackageHookRegion(t *testing.T) string {
 	t.Helper()
+	return linuxSetupRegion(t, "nomad_package_hook")
+}
+
+// linuxSetupRegion returns the functions of one region of the setup
+// script, between its "# BEGIN <name>" and "# END <name>" lines.
+func linuxSetupRegion(t *testing.T, name string) string {
+	t.Helper()
 	text := linuxSetupText(t)
-	start := strings.Index(text, "\n# BEGIN nomad_package_hook")
-	end := strings.Index(text, "\n# END nomad_package_hook\n")
+	start := strings.Index(text, "\n# BEGIN "+name+" ")
+	end := strings.Index(text, "\n# END "+name+"\n")
 	if start < 0 || end < start {
-		t.Fatal("70_linux_setup.sh has no nomad_package_hook region")
+		t.Fatalf("70_linux_setup.sh has no %s region", name)
 	}
 	return text[start+1 : end+1]
 }
@@ -67,20 +74,32 @@ func linuxSetupDefinitions(t *testing.T, text string, names ...string) string {
 // "$1/sbin" and "$1/dpkg.cfg.d", which the harness makes. install stands in
 // for itself as install -d: it makes the folder, following a link there as
 // the real one does, and applies -m. date prints a fixed time, and the TLS
-// and keyring steps do nothing.
+// and keyring steps do nothing. Nomad's data folder is "$1" whichever of
+// its two names the setup uses: install_nomad_data_folder only takes it back
+// (nomad_data_move_linux_test.go runs the real one), and the stand-in's
+// removal finds none.
 func linuxSetupServiceHarness(t *testing.T) string {
 	t.Helper()
 	text := linuxSetupText(t)
-	harness := linuxSetupGossipHarness(t) + nomadPackageHookRegion(t)
+	harness := linuxSetupGossipHarness(t) + nomadPackageHookRegion(t) + linuxSetupRegion(t, "nomad_data_move")
 	for _, name := range []string{"nomad_folder_take_back", "nomad_config_write", "install_nomad_service_config"} {
 		harness += linuxSetupFunction(t, text, name)
 	}
-	return harness + "NOMAD_CONFIG_DIR=\"$1/etc\"\n" +
+	return harness + "NOMAD_CONFIG_DIR=\"$1/etc\"\nNOMAD_PACKAGE_DATA_DIR=\"$1\"\n" +
 		"NOMAD_TAKE_BACK_PROGRAM=\"$1/sbin/execution-substrate-nomad-take-back\"\n" +
 		"NOMAD_DPKG_HOOK=\"$1/dpkg.cfg.d/execution-substrate-nomad\"\n" +
 		"mkdir -p -m 0755 \"$1/sbin\" \"$1/dpkg.cfg.d\"\n" +
 		linuxSetupDefinitions(t, text, "NOMAD_CONFIG_PATH", "NOMAD_CONFIG_BACKUP_PATH", "NOMAD_TLS_DIR", "NOMAD_MANAGED_MARKER") + `
-install() {
+` + linuxSetupInstallStandIn + `date() { echo 20261127000000; }
+install_nomad_tls_material() { :; }
+install_nomad_gossip_keyring() { :; }
+install_nomad_data_folder() { nomad_folder_take_back 0700 "${NOMAD_DATA_DIR}"; }
+`
+}
+
+// linuxSetupInstallStandIn stands in for install -d: it makes the folder,
+// following a link there as the real one does, and applies -m.
+const linuxSetupInstallStandIn = `install() {
   local mode=""
   while [[ $# -gt 1 ]]; do
     case "$1" in
@@ -93,11 +112,7 @@ install() {
   mkdir -p -- "$1"
   [[ -z "${mode}" ]] || chmod "${mode}" -- "$1"
 }
-date() { echo 20261127000000; }
-install_nomad_tls_material() { :; }
-install_nomad_gossip_keyring() { :; }
 `
-}
 
 // runLinuxSetupServiceHarness runs steps after linuxSetupServiceHarness for
 // the data directory dataDir.

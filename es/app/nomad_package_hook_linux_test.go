@@ -1541,7 +1541,7 @@ func TestLinuxSetupWritesTheHookFilesOnlyIntoAFolderOfItsOwnClosedToOthers(t *te
 // function the install needs to sudo's bash.
 func TestLinuxSetupInstallsTheNomadPackageHookAsRootFirstInTheServiceConfig(t *testing.T) {
 	text := linuxSetupText(t)
-	call := `nomad_package_hook_as_root install_nomad_package_hook "${NOMAD_TAKE_BACK_PROGRAM}" "${NOMAD_DPKG_HOOK}" "${NOMAD_CONFIG_DIR}" "${NOMAD_DATA_DIR}"` + "\n"
+	call := `nomad_package_hook_as_root install_nomad_package_hook "${NOMAD_TAKE_BACK_PROGRAM}" "${NOMAD_DPKG_HOOK}" "${NOMAD_CONFIG_DIR}" "${NOMAD_PACKAGE_DATA_DIR}"` + "\n"
 	var first []string
 	for _, line := range strings.Split(linuxSetupFunction(t, text, "install_nomad_service_config"), "\n")[1:] {
 		trimmed := strings.TrimSpace(line)
@@ -1558,6 +1558,12 @@ func TestLinuxSetupInstallsTheNomadPackageHookAsRootFirstInTheServiceConfig(t *t
 	for _, line := range []string{
 		`NOMAD_TAKE_BACK_PROGRAM="/usr/local/sbin/execution-substrate-nomad-take-back"`,
 		`NOMAD_DPKG_HOOK="/etc/dpkg/dpkg.cfg.d/execution-substrate-nomad"`,
+		// The folders the package gives to the nomad account, which the
+		// program takes back: the config folder, and its own data folder,
+		// where Nomad no longer keeps its state (re-check 52, A52-2).
+		`NOMAD_CONFIG_DIR="/etc/nomad.d"`,
+		`NOMAD_OPT_DIR="/opt/nomad"`,
+		`NOMAD_PACKAGE_DATA_DIR="${NOMAD_OPT_DIR}/data"`,
 	} {
 		if !regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(line) + `$`).MatchString(text) {
 			t.Fatalf("the setup does not define %s", line)

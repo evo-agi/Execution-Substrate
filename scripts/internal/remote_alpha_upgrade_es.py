@@ -4,18 +4,22 @@ API behind HTTPS and its gossip encrypted.
 
 This file is the implementation behind scripts/remote_alpha_upgrade_es.sh.
 It leaves the box at the named commit with Nomad serving its API and RPC only
-over TLS 1.3 (part 2b of the Nomad lock) and encrypting its gossip with a
-keyring the setup's nomad_gossip_issue wrote (red-team RT60-1): the shape
-"https-gossip". check and apply first read the host's shape from nomad.hcl,
-Nomad's TLS directory, es.json, the installed ES binaries and Nomad's gossip
-keyring. They start from either of two shapes:
+over TLS 1.3 (part 2b of the Nomad lock), encrypting its gossip with a
+keyring the setup's nomad_gossip_issue wrote (red-team RT60-1), and keeping
+its state in /opt/nomad/es-data, which the nomad package never gives to the
+nomad account (re-check 52 of ES PR #83, A52-2): the shape "https-gossip".
+check and apply first read the host's shape from nomad.hcl, Nomad's TLS
+directory, es.json, the installed ES binaries, where Nomad keeps its state
+and Nomad's gossip keyring. They start from either of two shapes:
 
   locked-http     where the upgrade of ES PR #54 left the box: ES built from
-                  16cbf739, Nomad enforcing ACLs on plain HTTP, no keyring
+                  16cbf739, Nomad enforcing ACLs on plain HTTP, its state in
+                  /opt/nomad/data, no keyring
   https           where the upgrade of ES PR #60 left it, or a later run of
                   this one: Nomad on HTTPS with ES's pin, ES a clean build of
-                  any commit but 16cbf739, and either no keyring or a sound
-                  one, but not both the payload's build and a keyring
+                  any commit but 16cbf739, and either Nomad's state in
+                  /opt/nomad/data with no keyring or a sound one, or its
+                  state moved with a sound keyring and another build
 
 On either, check reports every change apply would make. On "https-gossip"
 for the named commit there is nothing to do: both exit 0 and change nothing.
@@ -38,13 +42,16 @@ in that backup. The host steps:
                   this upgrade was not written for
   apply           (root) check, back up, stop ES; on locked-http issue
                   Nomad's TLS material; write the gossip keyring if there
-                  is none; restart Nomad when either changed (on HTTPS,
-                  with its ACLs provisioned again or checked); migrate
-                  es.json, install the binaries, start ES and verify; on
-                  any failure, put the backup back
+                  is none; move Nomad's state to /opt/nomad/es-data if it
+                  is not there, with Nomad stopped, and name it in
+                  nomad.hcl; restart Nomad when any of them changed (on
+                  HTTPS, with its ACLs provisioned again or checked);
+                  migrate es.json, install the binaries, start ES and
+                  verify; on any failure, put the backup back
   rollback        (root) put back the backup of the apply that left the
-                  host as it is, remove what apply created (the TLS
-                  directory, the keyring) and start Nomad and ES
+                  host as it is, with Nomad's state moved back to the
+                  folder its nomad.hcl names, remove what apply created
+                  (the TLS directory, the keyring) and start Nomad and ES
 
 and the host-independent pieces they are built on:
 
@@ -643,15 +650,29 @@ def replace_remedy(path, mode):
 
 
 NOMAD_CONFIG_MODE = 0o640  # root:root, as scripts/70_linux_setup.sh writes nomad.hcl
-# apply replaces nomad.hcl only on a host it moves to HTTPS; on one already
-# on HTTPS, nomad.hcl stays the same file (re-check 51 of ES PR #67, S51-1).
+# apply replaces nomad.hcl only on a host whose Nomad it moves to HTTPS or
+# whose Nomad state it moves; otherwise nomad.hcl stays the same file
+# (re-check 51 of ES PR #67, S51-1).
 NOMAD_HCL_REMEDY = replace_remedy(NOMAD_HCL, NOMAD_CONFIG_MODE)
 # Nomad runs as root, so only root may change what it reads or keeps (audit
 # INF-16). ES PR #54's upgrade made these directories root:root with these
 # modes. Nomad's TLS directory goes in the first, root:root 0755 as the
 # setup makes it, and holds exactly the setup's three files.
-NOMAD_DATA_DIR = "/opt/nomad/data"
-NOMAD_DIRS = ((NOMAD_DIR, 0o755), ("/opt/nomad", 0o755), (NOMAD_DATA_DIR, 0o700))
+NOMAD_OPT_DIR = "/opt/nomad"
+NOMAD_DIRS = ((NOMAD_DIR, 0o755), (NOMAD_OPT_DIR, 0o755))
+# Nomad keeps its state (Raft, its ACL tokens, the gossip keyring) in its
+# data folder, root:root 0700. HashiCorp's package makes
+# NOMAD_PACKAGE_DATA_DIR and gives it to the nomad account on each install
+# or upgrade, and while that account owns it, it can rename root's entries
+# there: with Nomad's server folder renamed, Nomad starts a new cluster and
+# hands out a new ACL bootstrap token (re-check 52 of ES PR #83, A52-2). So
+# Nomad's state moves to NOMAD_DATA_DIR, which the package never touches:
+# apply moves it with the setup's nomad_data_move, with Nomad stopped, and
+# names it in nomad.hcl's data_dir; a rollback moves it back. The setup
+# keeps it there on a supported host.
+NOMAD_PACKAGE_DATA_DIR = NOMAD_OPT_DIR + "/data"
+NOMAD_DATA_DIR = NOMAD_OPT_DIR + "/es-data"
+NOMAD_DATA_DIR_MODE = 0o700
 # HashiCorp's package gives /etc/nomad.d, everything in it and the data
 # directory to the nomad account each time it is installed or upgraded (its
 # postinst), and Nomad reads them as root when it next starts.
@@ -668,7 +689,7 @@ NOMAD_HOOK_COMMAND = "sudo scripts/remote_alpha_upgrade_es.sh nomad-hook"
 # folders (an entry Nomad would read that is not a regular file, say): beside
 # the folder. This upgrade refuses a host where either is there, as the
 # setup does, until the operator has looked and removed it.
-NOMAD_SET_ASIDE = tuple(folder + ".execution-substrate-set-aside" for folder in (NOMAD_DIR, NOMAD_DATA_DIR))
+NOMAD_SET_ASIDE = tuple(folder + ".execution-substrate-set-aside" for folder in (NOMAD_DIR, NOMAD_PACKAGE_DATA_DIR))
 # nomad-hook's program puts nomad.env back as a new file of root's, with its
 # contents: the only way that an old write handle no longer reaches it.
 NOMAD_ENV_REMEDY = (f"{NOMAD_HOOK_COMMAND} puts it back as a new file of root's, then check what it sets "
@@ -803,12 +824,24 @@ tls {{
   tls_min_version        = "tls13"
 }}
 """
-# Nomad's gossip keyring, which Nomad reads from its data directory when it
-# starts (scripts/70_linux_setup.sh's NOMAD_GOSSIP_KEYRING on a supported
-# host), and the server folder Nomad keeps it in. Nomad makes that folder
-# 0755 inside its 0700 data directory.
-NOMAD_SERVER_DIR = "/opt/nomad/data/server"
-NOMAD_GOSSIP_KEYRING = NOMAD_SERVER_DIR + "/serf.keyring"
+# Nomad's gossip keyring, which Nomad reads from the server folder of its
+# data directory when it starts (scripts/70_linux_setup.sh's
+# NOMAD_GOSSIP_KEYRING on a supported host). Nomad makes that folder 0755
+# inside its 0700 data directory.
+
+
+def nomad_server_dir(data_dir):
+    return data_dir + "/server"
+
+
+def nomad_gossip_keyring(data_dir):
+    return nomad_server_dir(data_dir) + "/serf.keyring"
+
+
+# apply writes a missing keyring before it moves Nomad's state, so into the
+# package's data folder, and the move takes it along; a rollback moves the
+# state back first, and then removes it there.
+NOMAD_GOSSIP_KEYRING = nomad_gossip_keyring(NOMAD_PACKAGE_DATA_DIR)
 # The paths apply may create. Its backup names those this run creates, and a
 # restore removes them; it removes nothing else.
 CREATED_BY_APPLY = (NOMAD_TLS_DIR, NOMAD_GOSSIP_KEYRING)
@@ -1670,6 +1703,26 @@ def nomad_gossip(function, *args):
     return run(["bash", "-c", script, "nomad-gossip", function, *args], timeout=60)
 
 
+def nomad_data_move(*args):
+    """Run the setup's nomad_data_move, which moves Nomad's state between
+    its data folders in one step, as the user running this script: root on
+    the host."""
+    script = "set -euo pipefail\n" + setup_functions("nomad_data_move") + 'nomad_data_move "$@"\n'
+    return run(["bash", "-c", script, "nomad-data-move", *args], timeout=60)
+
+
+def nomad_data_plan():
+    """The setup's nomad_data_move plan for the host's two data folders:
+    "keep" (Nomad's state is in NOMAD_DATA_DIR), "move" (it is in
+    NOMAD_PACKAGE_DATA_DIR) or "new" (neither holds it); a Refusal, with
+    nomad_data_move's words, for anything else."""
+    proc = nomad_data_move("plan", host(NOMAD_PACKAGE_DATA_DIR), host(NOMAD_DATA_DIR))
+    plan = proc.stdout.strip()
+    if proc.returncode != 0 or plan not in ("keep", "move", "new"):
+        raise Refusal((proc.stderr or proc.stdout).strip()[:400] or f"nomad_data_move plan exited {proc.returncode}")
+    return plan
+
+
 def nomad_package_hook(function, *args):
     """Run one of the setup's nomad_package_hook functions as the user
     running this script: root on the host. One that does not finish within
@@ -1686,7 +1739,8 @@ def nomad_package_hook_text():
     texts = {}
     for path, (function, *args) in (
             (NOMAD_TAKE_BACK_PROGRAM, ("nomad_take_back_program",)),
-            (NOMAD_DPKG_HOOK, ("nomad_dpkg_hook_text", host(NOMAD_TAKE_BACK_PROGRAM), host(NOMAD_DIR), host(NOMAD_DATA_DIR)))):
+            (NOMAD_DPKG_HOOK, ("nomad_dpkg_hook_text", host(NOMAD_TAKE_BACK_PROGRAM), host(NOMAD_DIR),
+                                host(NOMAD_PACKAGE_DATA_DIR)))):
         proc = nomad_package_hook(function, *args)
         if proc.returncode != 0:
             raise Refusal(f"scripts/70_linux_setup.sh's {function} failed: {(proc.stderr or proc.stdout).strip()[:400]}")
@@ -1740,16 +1794,45 @@ def server_spki_sha256():
 # the binaries and the keyring the forms below) or None, and state says what
 # was found. host_shape puts the parts together.
 
+def data_dir_line(folder):
+    return f'data_dir = "{folder}"\n'.encode()
+
+
+def nomad_hcl_moved(text):
+    """text, whose data_dir line names the package's data folder once, with
+    that line naming NOMAD_DATA_DIR: what apply writes when it moves
+    Nomad's state."""
+    old, new = data_dir_line(NOMAD_PACKAGE_DATA_DIR), data_dir_line(NOMAD_DATA_DIR)
+    if text.count(old) != 1 or new in text:
+        raise Refusal(f"nomad.hcl does not name {NOMAD_PACKAGE_DATA_DIR} once as its data_dir")
+    return text.replace(old, new)
+
+
+def nomad_hcl_unmoved(text):
+    """(text as it was before apply moved Nomad's state, moved): when text
+    names NOMAD_DATA_DIR once as its data_dir (and the package's data folder
+    nowhere), that line naming the package's data folder again, and True;
+    otherwise text itself and False."""
+    old, new = data_dir_line(NOMAD_PACKAGE_DATA_DIR), data_dir_line(NOMAD_DATA_DIR)
+    if text.count(new) == 1 and old not in text:
+        return text.replace(new, old), True
+    return text, False
+
+
 def nomad_hcl_shape(text):
-    digest = sha256_bytes(text)
-    if digest == NOMAD_HCL_LOCKED_SHA256:
-        return "locked-http", "locked-http (ES PR #54's lock, plain HTTP)"
-    if digest == NOMAD_HCL_PRELOCK_SHA256:
-        return None, "pre-lock (Remote Alpha 0.7's config: ES PR #54's upgrade has not run)"
+    """(form, state, data folder): the data folder is the one nomad.hcl
+    names, for a form this upgrade knows, or None."""
+    base, moved = nomad_hcl_unmoved(text)
+    digest = sha256_bytes(base)
+    data_dir = NOMAD_DATA_DIR if moved else NOMAD_PACKAGE_DATA_DIR
+    if digest == NOMAD_HCL_LOCKED_SHA256 and not moved:
+        return "locked-http", "locked-http (ES PR #54's lock, plain HTTP)", data_dir
+    if digest == NOMAD_HCL_PRELOCK_SHA256 and not moved:
+        return None, "pre-lock (Remote Alpha 0.7's config: ES PR #54's upgrade has not run)", None
     block = NOMAD_TLS_BLOCK.encode()
-    if text.endswith(block) and sha256_bytes(text[:-len(block)]) == NOMAD_HCL_LOCKED_SHA256:
-        return "https", "https (the lock and the supported config's tls block)"
-    return None, f"unknown (SHA-256 {digest})"
+    if base.endswith(block) and sha256_bytes(base[:-len(block)]) == NOMAD_HCL_LOCKED_SHA256:
+        return "https", f"https (the lock and the supported config's tls block; data_dir {data_dir})", data_dir
+    return None, f"unknown (SHA-256 {sha256_bytes(text)})", None
 
 
 def tls_dir_shape():
@@ -1829,30 +1912,77 @@ def binaries_shape(commit, prov):
     return None, "unknown (" + ", ".join(f"{name} built from {rev}" for name, rev in revisions.items()) + ")", None
 
 
-def keyring_shape():
-    """Nomad's gossip keyring: "absent", or "sound" when it is root's and the
-    setup's nomad_gossip_keyring_ok accepts it. Nomad's server folder must
-    be root's and writable by no one else either way."""
-    folder = host(NOMAD_SERVER_DIR)
+def data_folder_shape(named):
+    """Where Nomad keeps its state: "package" when nomad.hcl names the
+    package's data folder and NOMAD_DATA_DIR is not there, "moved" when
+    nomad.hcl names NOMAD_DATA_DIR, which holds Nomad's state, and the
+    package's data folder is missing or an empty folder (a dpkg run makes
+    it again, and the take-back program makes it root's). named is the
+    folder nomad.hcl names (nomad_hcl_shape), or None. inspect_host checks
+    each folder's owner, mode and ACLs (nomad_data_dirs)."""
+    if named is None:
+        return None, "unknown (nomad.hcl is in no form this upgrade knows)"
+    try:
+        plan = nomad_data_plan()
+    except Refusal as exc:
+        return None, f"unknown ({exc})"
+    if named == NOMAD_PACKAGE_DATA_DIR:
+        if plan == "move" and not os.path.lexists(host(NOMAD_DATA_DIR)):
+            return "package", (f"in {NOMAD_PACKAGE_DATA_DIR}, which the nomad package gives to the nomad account "
+                               f"(apply moves it to {NOMAD_DATA_DIR})")
+        return None, (f"nomad.hcl names {NOMAD_PACKAGE_DATA_DIR}, but Nomad's state is not there alone (nomad_data_move "
+                      f"plan: {plan}); an apply cut off while it moved Nomad's state is undone by rolling back its backup")
+    if plan == "keep" and stat.S_ISDIR(os.lstat(host(NOMAD_DATA_DIR)).st_mode) and \
+            os.listdir(host(NOMAD_DATA_DIR)) and not os.path.isfile(host(NOMAD_PACKAGE_DATA_DIR)):
+        return "moved", f"moved (in {NOMAD_DATA_DIR}, which the nomad package never touches)"
+    return None, (f"nomad.hcl names {NOMAD_DATA_DIR}, but Nomad's state is not there alone, with {NOMAD_PACKAGE_DATA_DIR} "
+                  f"missing or empty (nomad_data_move plan: {plan}); an apply cut off while it moved Nomad's state is "
+                  "undone by rolling back its backup")
+
+
+def nomad_data_dirs(data_form):
+    """(folder, mode) of each of Nomad's data folders that must be root's
+    with that mode and no ACL: the package's while Nomad's state is there,
+    and NOMAD_DATA_DIR once it moved, with the package's when a dpkg run
+    made it again."""
+    if data_form != "moved":
+        return ((NOMAD_PACKAGE_DATA_DIR, NOMAD_DATA_DIR_MODE),)
+    package = ((NOMAD_PACKAGE_DATA_DIR, NOMAD_DATA_DIR_MODE),) if os.path.lexists(host(NOMAD_PACKAGE_DATA_DIR)) else ()
+    return ((NOMAD_DATA_DIR, NOMAD_DATA_DIR_MODE),) + package
+
+
+def keyring_shape(data_dir):
+    """Nomad's gossip keyring in data_dir, the folder that holds Nomad's
+    state: "absent", or "sound" when it is root's and the setup's
+    nomad_gossip_keyring_ok accepts it. Nomad's server folder must be root's
+    and writable by no one else either way."""
+    server_dir, keyring = nomad_server_dir(data_dir), nomad_gossip_keyring(data_dir)
+    folder = host(server_dir)
     try:
         st = os.lstat(folder)
     except FileNotFoundError:
-        return None, f"{NOMAD_SERVER_DIR} is missing (Nomad makes it when it first starts)"
+        return None, f"{server_dir} is missing (Nomad makes it when it first starts)"
     if not stat.S_ISDIR(st.st_mode) or not owned_by_root(st) or stat.S_IMODE(st.st_mode) & 0o022:
-        return None, f"{NOMAD_SERVER_DIR} is not a root:root directory only root can write ({owner_mode(st)})"
+        return None, f"{server_dir} is not a root:root directory only root can write ({owner_mode(st)})"
     acls = posix_acls(folder)
     if acls:
         # A default ACL there would make the setup's issuer refuse the
         # keyring it writes, after ES has stopped.
-        return None, f"{NOMAD_SERVER_DIR} has an ACL ({', '.join(acls)}; setfacl -b -k {NOMAD_SERVER_DIR} removes it)"
-    if not os.path.lexists(host(NOMAD_GOSSIP_KEYRING)):
+        return None, f"{server_dir} has an ACL ({', '.join(acls)}; setfacl -b -k {server_dir} removes it)"
+    if not os.path.lexists(host(keyring)):
         return "absent", "absent"
-    if nomad_gossip("nomad_gossip_keyring_ok", host(NOMAD_GOSSIP_KEYRING)).returncode != 0:
+    if nomad_gossip("nomad_gossip_keyring_ok", host(keyring)).returncode != 0:
         return None, "present, but it fails the setup's nomad_gossip_keyring_ok"
     return "sound", "sound (root's keyring that passes the setup's nomad_gossip_keyring_ok)"
 
 
-SHAPE_PARTS = ("nomad.hcl", "Nomad's TLS directory", "es.json", "the ES binaries", "Nomad's gossip keyring")
+def state_dir(data_form):
+    """The folder that holds Nomad's state for a data folder form."""
+    return NOMAD_DATA_DIR if data_form == "moved" else NOMAD_PACKAGE_DATA_DIR
+
+
+SHAPE_PARTS = ("nomad.hcl", "Nomad's TLS directory", "es.json", "the ES binaries", "Nomad's data folder",
+               "Nomad's gossip keyring")
 TLS_PARTS = SHAPE_PARTS[:3]
 
 
@@ -1861,12 +1991,16 @@ def host_shape(commit, prov):
     installed is the one commit the installed ES binaries are clean builds
     of, or None. Reads only. The shapes:
 
-      locked-http     every TLS part and the binaries locked-http, no keyring
+      locked-http     every TLS part and the binaries locked-http, Nomad's
+                      state in the package's data folder, no keyring
       https           every TLS part https, the binaries the payload's
-                      builds or other clean builds, the keyring absent or
-                      sound, but not the payload's builds with a keyring
-      https-gossip    every TLS part https, the payload's builds, a sound
-                      keyring: where apply leaves the host
+                      builds or other clean builds, and either Nomad's
+                      state in the package's data folder with the keyring
+                      absent or sound, or Nomad's state moved with a sound
+                      keyring and other clean builds
+      https-gossip    every TLS part https, the payload's builds, Nomad's
+                      state moved, a sound keyring: where apply leaves the
+                      host
     """
     def guarded(read, *fallback):
         try:
@@ -1875,7 +2009,8 @@ def host_shape(commit, prov):
             return (None, f"unreadable ({exc})", *fallback)
 
     found = {}
-    found["nomad.hcl"] = guarded(lambda: nomad_hcl_shape(read_regular_file(host(NOMAD_HCL))[0]))
+    form, state, named = guarded(lambda: nomad_hcl_shape(read_regular_file(host(NOMAD_HCL))[0]), None)
+    found["nomad.hcl"] = (form, state)
     found["Nomad's TLS directory"] = guarded(tls_dir_shape)
     pin = None
     if found["Nomad's TLS directory"][0] == "https":
@@ -1886,14 +2021,19 @@ def host_shape(commit, prov):
     found["es.json"] = guarded(lambda: es_config_shape(json.loads(read_regular_file(host(ES_CONFIG))[0]), pin))
     binaries_form, binaries_state, installed = guarded(lambda: binaries_shape(commit, prov), None)
     found["the ES binaries"] = (binaries_form, binaries_state)
-    found["Nomad's gossip keyring"] = guarded(keyring_shape)
+    found["Nomad's data folder"] = guarded(lambda: data_folder_shape(named))
+    data = found["Nomad's data folder"][0]
+    found["Nomad's gossip keyring"] = guarded(lambda: keyring_shape(named if data is None and named else state_dir(data)))
     tls = {found[part][0] for part in TLS_PARTS}
     binaries, keyring = found["the ES binaries"][0], found["Nomad's gossip keyring"][0]
     shape = None
-    if tls == {"locked-http"} and binaries == "locked-http" and keyring == "absent":
+    if tls == {"locked-http"} and binaries == "locked-http" and data == "package" and keyring == "absent":
         shape = "locked-http"
-    elif tls == {"https"} and binaries in ("https", "other") and keyring in ("absent", "sound"):
-        shape = "https-gossip" if (binaries, keyring) == ("https", "sound") else "https"
+    elif tls == {"https"} and binaries in ("https", "other"):
+        if data == "package" and keyring in ("absent", "sound"):
+            shape = "https"
+        elif data == "moved" and keyring == "sound":
+            shape = "https-gossip" if binaries == "https" else "https"
     forms = {part: found[part][0] for part in SHAPE_PARTS}
     return shape, {part: found[part][1] for part in SHAPE_PARTS}, pin, forms, installed
 
@@ -2094,7 +2234,7 @@ def inspect_host(payload_dir, commit, allow_downgrade=None):
         if os.path.lexists(host(path)):
             block("nomad_set_aside", f"{path} holds what the take-back program set aside from Nomad's folders, where "
                   f"Nomad would have read it as root; look at it, then remove it (rm -rf -- {path})")
-    for path, mode in NOMAD_DIRS:
+    for path, mode in NOMAD_DIRS + nomad_data_dirs(forms["Nomad's data folder"]):
         try:
             st = os.lstat(host(path))
             if not stat.S_ISDIR(st.st_mode) or not owned_by_root(st) or stat.S_IMODE(st.st_mode) != mode:
@@ -2141,6 +2281,10 @@ def es_config_target(doc, shape, pin):
     return migrate_config(doc, pin)
 
 
+MOVE_CHANGE = (f"stop Nomad, move its state from {NOMAD_PACKAGE_DATA_DIR} to {NOMAD_DATA_DIR} with the setup's "
+               f"nomad_data_move, and name {NOMAD_DATA_DIR} as nomad.hcl's data_dir")
+
+
 def inspect_start(report, block, payload_dir, prov):
     """The checks of a locked-http host, which apply will change."""
     def migrate():
@@ -2151,6 +2295,7 @@ def inspect_start(report, block, payload_dir, prov):
     report["changes"] = [
         f"issue Nomad's TLS material into {NOMAD_TLS_DIR} with the setup's nomad_tls_issue",
         f"write Nomad's gossip keyring to {NOMAD_GOSSIP_KEYRING} with the setup's nomad_gossip_issue",
+        MOVE_CHANGE,
         "append the supported config's tls block to nomad.hcl and restart Nomad on HTTPS, with its gossip encrypted",
         "provision Nomad's ACLs again (the observer policy gains list-jobs) and check placement",
         "es.json: " + ", ".join(report.get("es_config", {}).get("changes", [])),
@@ -2163,6 +2308,7 @@ def inspect_https(report, block, payload_dir, prov, pin, forms):
     as an https host does (and encrypt its gossip if it has a keyring), and
     the host must be ready for the change."""
     keyring_absent = forms["Nomad's gossip keyring"] == "absent"
+    moving = forms["Nomad's data folder"] == "package"
     inspect_migrated(report, block, gossip=not keyring_absent)
 
     def migrate():
@@ -2172,8 +2318,10 @@ def inspect_https(report, block, payload_dir, prov, pin, forms):
     inspect_ahead(report, block, payload_dir, prov, migrate, None)
     changes = []
     if keyring_absent:
-        changes += [f"write Nomad's gossip keyring to {NOMAD_GOSSIP_KEYRING} with the setup's nomad_gossip_issue",
-                    "restart Nomad on HTTPS, which then encrypts its gossip, and check its ACLs and placement"]
+        changes.append(f"write Nomad's gossip keyring to {NOMAD_GOSSIP_KEYRING} with the setup's nomad_gossip_issue")
+    if moving:
+        changes += [MOVE_CHANGE, "restart Nomad on HTTPS" + (", which then encrypts its gossip," if keyring_absent else "")
+                    + " and check its ACLs and placement"]
     if forms["the ES binaries"] != "https":
         changes.append(f"install es and es-runtime-support built from {report['commit']}")
     report["changes"] = changes
@@ -2215,7 +2363,7 @@ def inspect_ahead(report, block, payload_dir, prov, migrate, leader_addr):
 
     if shutil.which("openssl") is None:
         block("tools", "openssl is not installed; the setup's nomad_tls and nomad_gossip functions need it")
-    for region in ("nomad_tls", "nomad_gossip"):
+    for region in ("nomad_tls", "nomad_gossip", "nomad_data_move"):
         try:
             setup_functions(region)
         except (Refusal, OSError, UnicodeDecodeError) as exc:
@@ -2385,7 +2533,7 @@ def issue_gossip_keyring(log):
     proc = nomad_gossip("nomad_gossip_issue", host(NOMAD_GOSSIP_KEYRING))
     if proc.returncode != 0:
         raise Refusal(f"nomad_gossip_issue failed: {proc.stderr.strip()[:300]}")
-    shape, state = keyring_shape()
+    shape, state = keyring_shape(NOMAD_PACKAGE_DATA_DIR)
     if shape != "sound":
         raise Refusal(f"Nomad's new gossip keyring is {state}")
     log(f"Nomad's gossip keyring written to {NOMAD_GOSSIP_KEYRING}")
@@ -2398,10 +2546,44 @@ def require_gossip_encrypted(log):
     log('Nomad reports its gossip encrypted (stats.serf.encrypted "true")')
 
 
+def move_nomad_data(src, dst, log):
+    """Move Nomad's state from the data folder src to dst, with Nomad
+    stopped, with the setup's nomad_data_move: in one step, leaving at src a
+    stand-in, a file where Nomad cannot keep its state, so that a Nomad that
+    starts before nomad.hcl names dst (a dpkg run's postrm restarts it)
+    fails to start rather than starting a new cluster."""
+    proc = nomad_data_move("swap", host(src), host(dst))
+    if proc.returncode != 0:
+        raise Refusal(f"nomad_data_move swap failed: {(proc.stderr or proc.stdout).strip()[:400]}")
+    log(f"Nomad's state moved from {src} to {dst}, with a stand-in at {src} until nomad.hcl names {dst}")
+
+
+def finish_nomad_data(path, log):
+    """Remove the stand-in that move_nomad_data left at path, once nomad.hcl
+    no longer names path. Nothing else there is touched."""
+    proc = nomad_data_move("finish", host(path))
+    if proc.returncode != 0:
+        raise Refusal(f"nomad_data_move finish failed: {(proc.stderr or proc.stdout).strip()[:400]}")
+    log(f"no stand-in left at {path}")
+
+
+def write_moved_nomad_hcl(new_text, log):
+    """Stop Nomad, move its state out of the package's data folder, and
+    write new_text, which names NOMAD_DATA_DIR, as nomad.hcl."""
+    stop_service("nomad")
+    log("nomad stopped")
+    move_nomad_data(NOMAD_PACKAGE_DATA_DIR, NOMAD_DATA_DIR, log)
+    ruid, rgid = root_ids()
+    atomic_replace(host(NOMAD_HCL), new_text, ruid, rgid, NOMAD_CONFIG_MODE)
+    log(f"nomad.hcl written, naming {NOMAD_DATA_DIR} as its data_dir")
+    finish_nomad_data(NOMAD_PACKAGE_DATA_DIR, log)
+
+
 def apply_nomad_tls(log):
-    """Issue Nomad's TLS material and write its gossip keyring, restart Nomad
-    on HTTPS, check that it encrypts its gossip, provision its ACLs again
-    and prove that it places ES's jobs. Returns the server key's pin."""
+    """Issue Nomad's TLS material and write its gossip keyring, move Nomad's
+    state out of the package's data folder, restart Nomad on HTTPS, check
+    that it encrypts its gossip, provision its ACLs again and prove that it
+    places ES's jobs. Returns the server key's pin."""
     text, _ = read_regular_file(host(NOMAD_HCL))
     if sha256_bytes(text) != NOMAD_HCL_LOCKED_SHA256:
         raise Refusal("nomad.hcl changed after check")
@@ -2413,15 +2595,11 @@ def apply_nomad_tls(log):
         raise Refusal(f"Nomad's new TLS directory is {state}")
     pin = server_spki_sha256()
     log(f"Nomad's TLS material issued in {NOMAD_TLS_DIR}; server key SHA-256 {pin}")
-    new_text = text + NOMAD_TLS_BLOCK.encode()
+    new_text = nomad_hcl_moved(text + NOMAD_TLS_BLOCK.encode())
     validate_nomad_hcl(new_text.decode("utf-8"))
-    log("nomad.hcl with the tls block validated")
+    log(f"nomad.hcl with the tls block and data_dir {NOMAD_DATA_DIR} validated")
     issue_gossip_keyring(log)
-    stop_service("nomad")
-    log("nomad stopped")
-    ruid, rgid = root_ids()
-    atomic_replace(host(NOMAD_HCL), new_text, ruid, rgid, NOMAD_CONFIG_MODE)
-    log("tls block added to nomad.hcl")
+    write_moved_nomad_hcl(new_text, log)
     started_at = int(time.time())
     run(["systemctl", "start", "nomad"], timeout=120, check=True)
     if not wait_for(lambda: nomad_leader_named(nomad_https_addr()), LEADER_WAIT_SECONDS):
@@ -2434,12 +2612,22 @@ def apply_nomad_tls(log):
     return pin
 
 
-def apply_nomad_gossip(log):
-    """Write Nomad's gossip keyring and restart Nomad on HTTPS, which then
-    encrypts its gossip; check its ACLs and prove that it places ES's jobs."""
-    issue_gossip_keyring(log)
-    stop_service("nomad")
-    log("nomad stopped")
+def apply_nomad_move(log, keyring_absent):
+    """On an https host with Nomad's state in the package's data folder:
+    write Nomad's gossip keyring when it is absent, move Nomad's state to
+    NOMAD_DATA_DIR and name it in nomad.hcl, and restart Nomad on HTTPS,
+    which then encrypts its gossip; check its ACLs and prove that it places
+    ES's jobs."""
+    text, _ = read_regular_file(host(NOMAD_HCL))
+    form, _, named = nomad_hcl_shape(text)
+    if (form, named) != ("https", NOMAD_PACKAGE_DATA_DIR):
+        raise Refusal("nomad.hcl changed after check")
+    new_text = nomad_hcl_moved(text)
+    validate_nomad_hcl(new_text.decode("utf-8"))
+    log(f"nomad.hcl with data_dir {NOMAD_DATA_DIR} validated")
+    if keyring_absent:
+        issue_gossip_keyring(log)
+    write_moved_nomad_hcl(new_text, log)
     started_at = int(time.time())
     run(["systemctl", "start", "nomad"], timeout=120, check=True)
     if not wait_for(lambda: nomad_leader_named(nomad_https_addr()), LEADER_WAIT_SECONDS):
@@ -2688,6 +2876,11 @@ def restore_host(backup_dir, log, by):
         if problems:
             raise Refusal(f"{backup_dir} is not the backup of the apply that left the host as it is: "
                           + "; ".join(problems) + "; put back the newest backup first; nothing was changed")
+    # Where Nomad's state goes back is asked only of the backup that left
+    # the host as it is: an older or cut-off backup is refused for that
+    # first, since its nomad.hcl need not name the folder the state is in.
+    data_back = restore_data_plan(backup_dir, manifest)
+    if by == "rollback":
         try:
             log(record_rollback(backup_dir, move, by))
         except OSError as exc:
@@ -2703,7 +2896,16 @@ def restore_host(backup_dir, log, by):
     stop_service("es")
     stop_service("nomad")
     log("es and nomad stopped for the restore")
+    # Nomad's state goes back before nomad.hcl does, and the stand-in the
+    # move leaves keeps Nomad from starting in between; the stand-in goes
+    # once nomad.hcl names the folder Nomad's state is in again. The keyring
+    # apply created is in that folder by then.
+    if data_back:
+        move_nomad_data(NOMAD_DATA_DIR, NOMAD_PACKAGE_DATA_DIR, log)
     result = restore_files(backup_dir)
+    for path in (NOMAD_DATA_DIR, NOMAD_PACKAGE_DATA_DIR):
+        finish_nomad_data(path, log)
+    result["moved_back"] = data_back
     result["removed"] = remove_created(created)
     log(f"files restored from {backup_dir}; removed {result['removed']}")
     try:
@@ -2722,6 +2924,36 @@ def restore_host(backup_dir, log, by):
         raise Refusal(f"Nomad named no leader at {addr} within {LEADER_WAIT_SECONDS} s of the restore")
     log(f"nomad has a named leader at {addr}")
     return result
+
+
+def restore_data_plan(backup_dir, manifest):
+    """Whether a restore of the backup, whose manifest load_backup verified,
+    moves Nomad's state back to the package's data folder: True when the
+    backup's nomad.hcl names that folder and Nomad's state is in
+    NOMAD_DATA_DIR now (apply moved it), False when Nomad's state is in the
+    folder that nomad.hcl names. Anything else is refused, before a service
+    is touched: nomad.hcl naming another folder, or Nomad's state where it
+    cannot be told apart (the setup's nomad_data_move plan)."""
+    copies = {entry["path"]: entry for entry in manifest["files"]}
+    entry = copies.get(host(NOMAD_HCL), {"exists": False})
+    if not entry["exists"]:
+        raise Refusal(f"the backup holds no {NOMAD_HCL}, so it does not say where Nomad keeps its state; nothing was changed")
+    copy, _ = read_regular_file(os.path.join(backup_dir, "files", entry["copy"]))
+    named = re.findall(rb'^data_dir = "([^"\n]*)"$', copy, re.MULTILINE)
+    if named not in ([NOMAD_PACKAGE_DATA_DIR.encode()], [NOMAD_DATA_DIR.encode()]):
+        raise Refusal(f"the backup's {NOMAD_HCL} does not name {NOMAD_PACKAGE_DATA_DIR} or {NOMAD_DATA_DIR} once as its "
+                      "data_dir; nothing was changed")
+    try:
+        plan = nomad_data_plan()
+    except Refusal as exc:
+        raise Refusal(f"{exc}; nothing was changed") from None
+    if named == [NOMAD_PACKAGE_DATA_DIR.encode()]:
+        if plan in ("keep", "move"):
+            return plan == "keep"
+    elif plan == "keep":
+        return False
+    raise Refusal(f"the backup's {NOMAD_HCL} names {named[0].decode()} as Nomad's data folder, but Nomad's state is not "
+                  f"there to put back (nomad_data_move plan: {plan}); nothing was changed")
 
 
 def health_after_restore():
@@ -2815,15 +3047,20 @@ def cmd_apply(args):
         report["result"] = "nothing to do"
         say(json.dumps(report, indent=2, sort_keys=True))
         return
-    # What apply does to the keyring follows from the form check found
-    # (absent: write one; sound: keep it), so the keyring must still have
-    # that form now, on either start. Any change since the check, a keyring
-    # that appeared, went away or turned unsound, is refused before the
-    # backup, with nothing changed.
-    form, state = keyring_shape()
+    # What apply does to Nomad's state and keyring follows from the forms
+    # check found (state in the package's data folder: move it; keyring
+    # absent: write one; sound: keep it), so they must still have those
+    # forms now, on either start. Any change since the check, a keyring that
+    # appeared, went away or turned unsound, or a data folder made or moved,
+    # is refused before the backup, with nothing changed.
+    data_form, state = data_folder_shape(state_dir(forms["Nomad's data folder"]))
+    if data_form != forms["Nomad's data folder"]:
+        raise Refusal(f"Nomad's data folder changed after check: {state}; nothing was changed")
+    form, state = keyring_shape(state_dir(data_form))
     if form != forms["Nomad's gossip keyring"]:
         raise Refusal(f"Nomad's gossip keyring changed after check: {state}; nothing was changed")
     keyring_absent = form == "absent"
+    moving = data_form == "package"
     created = ([NOMAD_TLS_DIR] if shape == "locked-http" else []) + ([NOMAD_GOSSIP_KEYRING] if keyring_absent else [])
     prov = load_payload(args.payload, args.commit)
     backup_dir = backup_host(args.commit, created)
@@ -2857,8 +3094,8 @@ def cmd_apply(args):
                 pin = apply_nomad_tls(log)
             else:
                 pin = server_spki_sha256()
-                if keyring_absent:
-                    apply_nomad_gossip(log)
+                if moving:
+                    apply_nomad_move(log, keyring_absent)
             migrated, _ = es_config_target(config, shape, pin)
             install_es(stage_dir, migrated, log)
             run(["systemctl", "start", "es"], timeout=120, check=True)
@@ -2914,7 +3151,7 @@ def cmd_nomad_hook(args):
     if HOST_ROOT == "/" and not as_root():
         raise Refusal("run as root (sudo -n)")
     proc = nomad_package_hook("install_nomad_package_hook", host(NOMAD_TAKE_BACK_PROGRAM), host(NOMAD_DPKG_HOOK),
-                              host(NOMAD_DIR), host(NOMAD_DATA_DIR))
+                              host(NOMAD_DIR), host(NOMAD_PACKAGE_DATA_DIR))
     # Every line, in full: what the program set aside, and why, is in its
     # words, one line each, and a cut would leave a path half shown.
     for line in proc.stdout.splitlines():

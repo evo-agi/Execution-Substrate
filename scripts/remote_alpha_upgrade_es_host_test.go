@@ -148,7 +148,9 @@ tls {
 }
 `
 
-// boxNomadHCLHTTPS is the box's nomad.hcl where this upgrade leaves it.
+// boxNomadHCLHTTPS is the box's nomad.hcl where ES PR #60's upgrade left
+// it; this upgrade also names the folder it moves Nomad's state to
+// (boxNomadHCLMoved).
 const boxNomadHCLHTTPS = boxNomadHCLLocked + boxNomadTLSBlock
 
 // The commits of the module fixture (moduleFixture), the history that check
@@ -328,9 +330,24 @@ case "$1" in
       hcl="$FAKE_HOST_ROOT/etc/nomad.d/nomad.hcl"
       if grep -q '^acl {' "$hcl"; then touch "$s/locked"; else rm -f "$s/locked"; fi
       if grep -q '^tls {' "$hcl"; then touch "$s/tls"; else rm -f "$s/tls"; fi
+      # Nomad keeps its state in the data_dir that nomad.hcl names. It cannot
+      # keep it in a file (a move's stand-in), so it does not start; where
+      # nothing is there, it makes the folder and starts a new cluster, which
+      # fresh-nomad-state records.
+      data="$FAKE_HOST_ROOT$(sed -n 's/^data_dir = "\(.*\)"$/\1/p' "$hcl")"
+      if [[ -L "$data" || ( -e "$data" && ! -d "$data" ) ]]; then
+        echo "start nomad: data_dir $data is not a folder" >> "$s/calls.log"
+        echo "Job for $2.service failed" >&2
+        exit 1
+      fi
+      if [[ ! -e "$data" ]]; then
+        mkdir -p "$data"
+        echo "$data" >> "$s/fresh-nomad-state"
+      fi
+      printf 'data_dir = "%s"\n' "$data" > "$s/override-data.hcl"
       # Nomad reads its gossip keyring when it starts; gossip-ignored stands
       # for a Nomad that does not.
-      if [[ -e "$FAKE_HOST_ROOT/opt/nomad/data/server/serf.keyring" && ! -e "$s/gossip-ignored" ]]; then
+      if [[ -e "$data/server/serf.keyring" && ! -e "$s/gossip-ignored" ]]; then
         touch "$s/gossip"
       else
         rm -f "$s/gossip"
@@ -348,7 +365,7 @@ case "$1" in
         rm -f "$s/no-leader" "$s/no-leader-was-once"
       fi
       if [[ -e "$s/real-nomad" ]] && ! real_nomad_running; then
-        args=(-config "$hcl" -config "$s/override.hcl")
+        args=(-config "$hcl" -config "$s/override.hcl" -config "$s/override-data.hcl")
         [[ -e "$s/tls" ]] && args+=(-config "$s/override-tls.hcl")
         rm -f "$s/nomad.pid"
         # A session of its own, so that the upgrade's end of systemctl's
@@ -531,6 +548,9 @@ if [[ -e "$s/after-check" && "${FAKE_HOST_ROOT:-}" =~ /[0-9]{3}$ && "$(basename 
     keyring-sound) install -m 0600 "$s/after-check-keyring" "$keyring" ;;
     keyring-taken) [[ -f "$keyring" && ! -L "$keyring" ]] && mv "$keyring" "$s/keyring-taken" ;;
     tls-dir) mkdir "$FAKE_HOST_ROOT/etc/nomad.d/tls" ;;
+    data-made) mkdir -m 0700 "$FAKE_HOST_ROOT/opt/nomad/es-data" && : >"$FAKE_HOST_ROOT/opt/nomad/es-data/made" ;;
+    data-empty) mkdir -m 0700 "$FAKE_HOST_ROOT/opt/nomad/es-data" ;;
+    package-file) [[ ! -e "$FAKE_HOST_ROOT/opt/nomad/data" ]] && printf 'a file\n' >"$FAKE_HOST_ROOT/opt/nomad/data" ;;
     es-json-key) python3 -I -c 'import json, sys
 d = json.load(open(sys.argv[1]))
 d["http"]["extra"] = 1
@@ -1066,7 +1086,12 @@ func (h *upgradeHost) snapshot() map[string]string {
 // there but its server folder and the gossip keyring, which the upgrade
 // reads and writes.
 func realNomadState(rel string) bool {
-	return strings.HasPrefix(rel, "opt/nomad/data/") && rel != "opt/nomad/data/server" && rel != hostGossipKeyring
+	for _, data := range []string{"opt/nomad/data", "opt/nomad/es-data"} {
+		if strings.HasPrefix(rel, data+"/") && rel != data+"/server" && rel != data+"/server/serf.keyring" {
+			return true
+		}
+	}
+	return false
 }
 
 // issueTLS runs scripts/70_linux_setup.sh's nomad_tls_issue into the host's
@@ -1331,7 +1356,9 @@ func TestRemoteAlphaUpgradeESCheckChangesNothing(t *testing.T) {
 	parts := report["parts"].(map[string]any)
 	for part, want := range map[string]string{
 		"nomad.hcl": "locked-http (", "Nomad's TLS directory": "absent", "es.json": "locked-http (Nomad at http://127.0.0.1:4646)",
-		"the ES binaries": "locked-http (builds of " + boxESCommit + ")", "Nomad's gossip keyring": "absent",
+		"the ES binaries":        "locked-http (builds of " + boxESCommit + ")",
+		"Nomad's data folder":    "in /opt/nomad/data, which the nomad package gives to the nomad account (apply moves it to /opt/nomad/es-data)",
+		"Nomad's gossip keyring": "absent",
 	} {
 		if state, _ := parts[part].(string); !strings.HasPrefix(state, want) {
 			t.Errorf("part %s: %q, want %q", part, state, want)
@@ -1345,8 +1372,9 @@ func TestRemoteAlphaUpgradeESCheckChangesNothing(t *testing.T) {
 	if report["retained_result_key"] != "exists" || report["nomad_allocation_containers"] != float64(0) {
 		t.Fatalf("retained_result_key %v, allocation containers %v", report["retained_result_key"], report["nomad_allocation_containers"])
 	}
-	if changes := report["changes"].([]any); len(changes) != 6 ||
-		changes[1] != "write Nomad's gossip keyring to /opt/nomad/data/server/serf.keyring with the setup's nomad_gossip_issue" {
+	if changes := report["changes"].([]any); len(changes) != 7 ||
+		changes[1] != "write Nomad's gossip keyring to /opt/nomad/data/server/serf.keyring with the setup's nomad_gossip_issue" ||
+		changes[2] != "stop Nomad, move its state from /opt/nomad/data to /opt/nomad/es-data with the setup's nomad_data_move, and name /opt/nomad/es-data as nomad.hcl's data_dir" {
 		t.Fatalf("changes %v", changes)
 	}
 	health := report["health"].(map[string]any)
@@ -1404,7 +1432,7 @@ func TestRemoteAlphaUpgradeESCheckRefusesWhatItWasNotWrittenFor(t *testing.T) {
 		}, "shape", "nomad.hcl: unknown (SHA-256 "},
 		{"nomad.hcl has the tls block but nothing else moved", func(h *upgradeHost) {
 			h.write("etc/nomad.d/nomad.hcl", boxNomadHCLHTTPS, 0o640)
-		}, "shape", "nomad.hcl: https (the lock and the supported config's tls block); Nomad's TLS directory: absent"},
+		}, "shape", "nomad.hcl: https (the lock and the supported config's tls block; data_dir /opt/nomad/data); Nomad's TLS directory: absent"},
 		{"an empty TLS directory exists", func(h *upgradeHost) {
 			h.mkdir("etc/nomad.d/tls", 0o755)
 		}, "shape", "Nomad's TLS directory: present, but holds [], not exactly ['ca.pem', 'server-key.pem', 'server.pem']"},
@@ -1561,6 +1589,35 @@ func TestRemoteAlphaUpgradeESCheckRefusesWhatItWasNotWrittenFor(t *testing.T) {
 			_ = os.RemoveAll(h.path("opt/nomad/data"))
 			_ = os.Symlink(h.path("var/backups"), h.path("opt/nomad/data"))
 		}, "nomad_dirs", "/opt/nomad/data is not a root:root 0700 directory"},
+		// Where Nomad's state is (re-check 52 of ES PR #83, A52-2): apply
+		// moves it only from the package's data folder to a missing
+		// /opt/nomad/es-data; anything else, an apply cut off on either
+		// side of its swap among them, is refused. Its rollback is the
+		// remedy for a cut-off apply.
+		{"a folder with entries where Nomad's state goes", func(h *upgradeHost) {
+			h.write(hostMovedData+"/made", "", 0o600)
+			_ = os.Chmod(h.path(hostMovedData), 0o700)
+		}, "shape", "Nomad's data folder: unknown (nomad data: Nomad's state cannot be told apart: "},
+		{"an empty folder where Nomad's state goes", func(h *upgradeHost) { h.mkdir(hostMovedData, 0o700) },
+			"shape", "Nomad's data folder: nomad.hcl names /opt/nomad/data, but Nomad's state is not there alone (nomad_data_move plan: move); " +
+				"an apply cut off while it moved Nomad's state is undone by rolling back its backup"},
+		{"a link where Nomad's state goes", func(h *upgradeHost) {
+			_ = os.Symlink(h.path("var/backups"), h.path(hostMovedData))
+		}, "shape", "Nomad's data folder: unknown (nomad data: Nomad's state cannot be told apart: "},
+		{"the stand-in where Nomad's state goes: an apply cut off before its swap", func(h *upgradeHost) {
+			writeNomadStandIn(h, hostMovedData)
+		}, "shape", "Nomad's data folder: nomad.hcl names /opt/nomad/data, but Nomad's state is not there alone (nomad_data_move plan: move); " +
+			"an apply cut off while it moved Nomad's state is undone by rolling back its backup"},
+		{"Nomad's state moved but nomad.hcl not written: an apply cut off after its swap", func(h *upgradeHost) {
+			if err := os.Rename(h.path(hostPackageData), h.path(hostMovedData)); err != nil {
+				h.t.Fatal(err)
+			}
+			writeNomadStandIn(h, hostPackageData)
+		}, "shape", "Nomad's data folder: nomad.hcl names /opt/nomad/data, but Nomad's state is not there alone (nomad_data_move plan: keep); " +
+			"an apply cut off while it moved Nomad's state is undone by rolling back its backup"},
+		{"nomad.hcl names the folder Nomad's state moves to on a locked-http host", func(h *upgradeHost) {
+			h.write("etc/nomad.d/nomad.hcl", strings.Replace(boxNomadHCLLocked, `data_dir = "/opt/nomad/data"`, `data_dir = "/opt/nomad/es-data"`, 1), 0o640)
+		}, "shape", "nomad.hcl: unknown (SHA-256 "},
 		{"the ES token file is missing", func(h *upgradeHost) {
 			_ = os.Remove(h.path("etc/execution-substrate/nomad-acl/es-token"))
 		}, "nomad_acl", "/etc/execution-substrate/nomad-acl/es-token: No such file or directory"},
@@ -1840,15 +1897,22 @@ func TestRemoteAlphaUpgradeESApply(t *testing.T) {
 	}
 	pin := serverKeyPin(t, filepath.Join(tlsDir, "server.pem"))
 
-	// nomad.hcl gains the tls block and nothing else.
-	if got := mustRead(t, h.path("etc/nomad.d/nomad.hcl")); got != boxNomadHCLHTTPS {
+	// nomad.hcl gains the tls block and names the folder Nomad's state moved
+	// to, and nothing else.
+	if got := mustRead(t, h.path("etc/nomad.d/nomad.hcl")); got != boxNomadHCLMoved {
 		t.Fatalf("nomad.hcl after apply:\n%s", got)
 	}
 	// Nomad's gossip keyring: what the setup's nomad_gossip_issue writes,
-	// which Nomad read when it started on HTTPS.
+	// which Nomad read when it started on HTTPS, from its moved state.
 	requireIssuedKeyring(t, h)
 	if !h.marked("gossip") {
 		t.Fatal("Nomad did not start with its gossip keyring")
+	}
+	if got := modeOf(t, h.path(hostMovedData)); got != 0o700 {
+		t.Fatalf("%s mode %04o, want 0700", hostMovedData, got)
+	}
+	if fresh, err := os.ReadFile(filepath.Join(h.state, "fresh-nomad-state")); err == nil {
+		t.Fatalf("Nomad started in a new, empty data folder: %s", fresh)
 	}
 
 	// ES's own config loader accepts the migrated es.json, which reaches
@@ -1897,17 +1961,10 @@ func TestRemoteAlphaUpgradeESApply(t *testing.T) {
 	}
 	noSecretsInOutputOrCalls(t, h, stdout+stderr)
 	// Everything else stays as it was: the ACL token files, the retained-
-	// result key, Nomad's state, and the files the upgrade does not own.
-	after := h.snapshot()
-	for path, entry := range before {
-		switch path {
-		case "etc/execution-substrate/es.json", "usr/local/lib/execution-substrate/bin/es", "usr/local/bin/es-runtime-support", "etc/nomad.d/nomad.hcl":
-			continue
-		}
-		if after[path] != entry {
-			t.Errorf("%s changed: %q -> %q", path, entry, after[path])
-		}
-	}
+	// result key, Nomad's state (moved, as it was), and the files the
+	// upgrade does not own.
+	requireMovedState(t, before, h.snapshot(), "etc/execution-substrate/es.json", "usr/local/lib/execution-substrate/bin/es",
+		"usr/local/bin/es-runtime-support", "etc/nomad.d/nomad.hcl")
 
 	// The order: ES stops; the TLS material is issued and the new nomad.hcl
 	// validated before Nomad stops; Nomad starts on HTTPS; its ACLs are
@@ -1936,6 +1993,17 @@ func TestRemoteAlphaUpgradeESApply(t *testing.T) {
 	backupDir, summary := readSummary(t, h)
 	if summary["result"] != "applied" || summary["shape"] != "locked-http" {
 		t.Fatalf("summary result %v, shape %v", summary["result"], summary["shape"])
+	}
+	events := fmt.Sprint(summary["events"])
+	at = 0
+	for _, event := range []string{"Nomad's gossip keyring written to /opt/nomad/data/server/serf.keyring", "nomad stopped",
+		"Nomad's state moved from /opt/nomad/data to /opt/nomad/es-data, with a stand-in at /opt/nomad/data until nomad.hcl names /opt/nomad/es-data",
+		"nomad.hcl written, naming /opt/nomad/es-data as its data_dir", "no stand-in left at /opt/nomad/data"} {
+		next := strings.Index(events[at:], event)
+		if next < 0 {
+			t.Fatalf("%q does not follow the events before it in %s", event, events)
+		}
+		at += next
 	}
 	for _, name := range []string{"manifest.json", "created.json", "payload/es", "payload/es-runtime-support", "payload/esconfigcheck"} {
 		if _, err := os.Lstat(filepath.Join(backupDir, name)); err != nil {
@@ -2029,12 +2097,21 @@ func TestRemoteAlphaUpgradeESApply(t *testing.T) {
 	}
 	h.write("usr/local/lib/execution-substrate/bin/es", string(newESBuild), 0o755)
 
-	// rollback puts the host back exactly: Nomad on plain HTTP, no TLS
-	// directory, no gossip keyring.
+	// rollback puts the host back exactly: Nomad on plain HTTP with its
+	// state back in the package's data folder, no TLS directory, no gossip
+	// keyring.
 	h.clearCalls()
 	stdout, stderr, code = h.run("rollback", "--backup-dir", backupDir)
 	if code != 0 {
 		t.Fatalf("rollback exited %d\nstdout %s\nstderr %s", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, `"moved_back": true`) ||
+		!strings.Contains(stdout, "Nomad's state moved from /opt/nomad/es-data to /opt/nomad/data, with a stand-in at /opt/nomad/es-data") ||
+		!strings.Contains(stdout, "no stand-in left at /opt/nomad/es-data") {
+		t.Fatalf("the rollback did not say it moved Nomad's state back:\n%s", stdout)
+	}
+	if fresh, err := os.ReadFile(filepath.Join(h.state, "fresh-nomad-state")); err == nil {
+		t.Fatalf("Nomad started in a new, empty data folder: %s", fresh)
 	}
 	assertRestored(t, before, h.snapshot())
 	if h.marked("tls") || h.marked("gossip") || !h.marked("locked") || h.marked("inactive-es") || h.marked("inactive-nomad") {
@@ -2391,8 +2468,9 @@ func TestRemoteAlphaUpgradeESMovesARealNomadToHTTPS(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.realNomadData = true
-	override := fmt.Sprintf(`data_dir = %q
-ports {
+	// The fake systemctl names the data_dir that nomad.hcl names, under the
+	// host root, in override-data.hcl.
+	override := fmt.Sprintf(`ports {
   http = %d
   rpc  = %d
   serf = %d
@@ -2405,7 +2483,7 @@ advertise {
 client {
   servers = ["127.0.0.1:%d"]
 }
-`, nomadData, ports[0], ports[1], ports[2], ports[0], ports[1], ports[2], ports[1])
+`, ports[0], ports[1], ports[2], ports[0], ports[1], ports[2], ports[1])
 	overrideTLS := fmt.Sprintf("tls {\n  ca_file   = %q\n  cert_file = %q\n  key_file  = %q\n}\n",
 		h.path("etc/nomad.d/tls/ca.pem"), h.path("etc/nomad.d/tls/server.pem"), h.path("etc/nomad.d/tls/server-key.pem"))
 	for name, text := range map[string]string{"override.hcl": override, "override-tls.hcl": overrideTLS} {
@@ -2535,9 +2613,15 @@ client {
 	if status, _ := nomadRequest(t, plain, "GET", plainAddr+"/v1/status/leader", "", nil); status == 200 {
 		t.Fatalf("Nomad still answers plain HTTP")
 	}
-	// Nomad read the keyring that apply wrote and encrypts its gossip.
+	// Nomad read the keyring that apply wrote and encrypts its gossip. It
+	// runs on the state apply moved to /opt/nomad/es-data, not on a new
+	// cluster in an empty folder: the tokens made before the move still
+	// work (a new cluster knows none of them).
 	requireIssuedKeyring(t, h)
 	requireNomadGossip(t, secure, httpsAddr, tokens["es-observer-v1"], "true")
+	if fresh, err := os.ReadFile(filepath.Join(h.state, "fresh-nomad-state")); err == nil {
+		t.Fatalf("Nomad started in a new, empty data folder: %s", fresh)
+	}
 	// The real nomad_acl_setup.sh provision rewrote the observer policy and
 	// kept both tokens.
 	if status, body := nomadRequest(t, secure, "GET", httpsAddr+"/v1/jobs?namespace=es-submit-v1", tokens["es-observer-v1"], nil); status != 200 {
@@ -2556,7 +2640,7 @@ client {
 		nomad["server_spki_sha256"] != serverKeyPin(t, h.path("etc/nomad.d/tls/server.pem")) {
 		t.Fatalf("es.json's nomad block %v", nomad)
 	}
-	if got := mustRead(t, h.path("etc/nomad.d/nomad.hcl")); got != boxNomadHCLHTTPS {
+	if got := mustRead(t, h.path("etc/nomad.d/nomad.hcl")); got != boxNomadHCLMoved {
 		t.Fatalf("nomad.hcl after apply:\n%s", got)
 	}
 	backupDir, summary := readSummary(t, h)
@@ -2630,19 +2714,21 @@ client {
 		t.Fatalf("check of the migrated host after the anonymous policy is gone: exit %d, blockers %v, %s", code, report["blockers"], stderr)
 	}
 
-	// The box's path: Nomad on HTTPS without a keyring, and ES a build of an
-	// earlier commit, as ES PR #60's upgrade left the box.
+	// The box's path: Nomad on HTTPS with its state in the package's data
+	// folder and without a keyring, and ES a build of an earlier commit, as
+	// ES PR #60's upgrade left the box.
+	h.installBuilds(previousESCommit)
+	h.systemctl("stop", "nomad")
+	h.unmoveNomadData()
 	if err := os.Remove(h.path(hostGossipKeyring)); err != nil {
 		t.Fatal(err)
 	}
-	h.installBuilds(previousESCommit)
-	h.systemctl("stop", "nomad")
 	h.systemctl("start", "nomad")
 	waitForLeader(t, secure, httpsAddr, dumpNomad)
 	requireNomadGossip(t, secure, httpsAddr, tokens["es-observer-v1"], "false")
 	atHTTPS := h.snapshot()
 	report, stderr, code = h.check()
-	if code != 0 || report["shape"] != "https" || len(report["changes"].([]any)) != 3 {
+	if code != 0 || report["shape"] != "https" || len(report["changes"].([]any)) != 4 {
 		t.Fatalf("check of the box's https host: exit %d, shape %v, changes %v, blockers %v, %s", code, report["shape"], report["changes"], report["blockers"], stderr)
 	}
 	firstBackup := backupDirs(t, h)
@@ -2651,8 +2737,16 @@ client {
 		t.Fatalf("apply to the box's https host exited %d\nstdout %s\nstderr %s\nnomad log:\n%s", code, stdout, stderr, dumpNomad())
 	}
 	noSecretsInOutputOrCalls(t, h, stdout+stderr)
+	// Nomad's state moved with Nomad stopped, and Nomad came back on it: the
+	// observer token still works.
 	requireIssuedKeyring(t, h)
 	requireNomadGossip(t, secure, httpsAddr, tokens["es-observer-v1"], "true")
+	if got := mustRead(t, h.path("etc/nomad.d/nomad.hcl")); got != boxNomadHCLMoved {
+		t.Fatalf("nomad.hcl after the box's apply:\n%s", got)
+	}
+	if fresh, err := os.ReadFile(filepath.Join(h.state, "fresh-nomad-state")); err == nil {
+		t.Fatalf("Nomad started in a new, empty data folder: %s", fresh)
+	}
 	if report, stderr, code := h.check(); code != 0 || report["shape"] != "https-gossip" || report["result"] != "nothing to do" {
 		t.Fatalf("check after the box's apply: exit %d, shape %v, result %v, blockers %v, %s", code, report["shape"], report["result"], report["blockers"], stderr)
 	}
@@ -2668,13 +2762,18 @@ client {
 	if got := strings.Join(strings.Fields(mustRead(t, filepath.Join(secondBackup, "created.json"))), ""); got != `["/opt/nomad/data/server/serf.keyring"]` {
 		t.Fatalf("the box's apply created %s", got)
 	}
-	// Its rollback takes the keyring away, and Nomad's gossip is plain again.
+	// Its rollback moves Nomad's state back and takes the keyring away, and
+	// Nomad's gossip is plain again, on the same state: the observer token
+	// still works.
 	stdout, stderr, code = h.run("rollback", "--backup-dir", secondBackup)
-	if code != 0 {
+	if code != 0 || !strings.Contains(stdout, `"moved_back": true`) {
 		t.Fatalf("rollback of the box's apply exited %d\nstdout %s\nstderr %s\nnomad log:\n%s", code, stdout, stderr, dumpNomad())
 	}
 	assertRestored(t, atHTTPS, h.snapshot())
 	requireNomadGossip(t, secure, httpsAddr, tokens["es-observer-v1"], "false")
+	if fresh, err := os.ReadFile(filepath.Join(h.state, "fresh-nomad-state")); err == nil {
+		t.Fatalf("Nomad started in a new, empty data folder: %s", fresh)
+	}
 	if report, stderr, code := h.check(); code != 0 || report["shape"] != "https" {
 		t.Fatalf("check after the box's rollback exited %d: shape %v, blockers %v, %s", code, report["shape"], report["blockers"], stderr)
 	}
@@ -3676,8 +3775,8 @@ func TestRemoteAlphaUpgradeESApplySurvivesALostSession(t *testing.T) {
 			}
 			if tc.result == "rolled_back" {
 				assertRestored(t, before, h.snapshot())
-			} else if got := mustRead(t, h.path("etc/nomad.d/nomad.hcl")); got != boxNomadHCLHTTPS {
-				t.Fatalf("the applied run did not move Nomad to HTTPS")
+			} else if got := mustRead(t, h.path("etc/nomad.d/nomad.hcl")); got != boxNomadHCLMoved {
+				t.Fatalf("the applied run did not move Nomad to HTTPS and its state to /opt/nomad/es-data")
 			}
 		})
 	}

@@ -88,7 +88,14 @@ HASHICORP_LIST="/etc/apt/sources.list.d/hashicorp.list"
 NOMAD_CONFIG_DIR="/etc/nomad.d"
 NOMAD_CONFIG_PATH="${NOMAD_CONFIG_DIR}/nomad.hcl"
 NOMAD_CONFIG_BACKUP_PATH="${NOMAD_CONFIG_DIR}/nomad.hcl.execution-substrate.bak"
-NOMAD_DATA_DIR="/opt/nomad/data"
+# Nomad keeps its state (Raft, its ACL tokens, the gossip keyring) in
+# NOMAD_DATA_DIR, a folder of root's that the nomad package never touches.
+# The package's postinst makes NOMAD_PACKAGE_DATA_DIR and gives it to the
+# nomad account on each install or upgrade (see nomad_data_move). Both are in
+# NOMAD_OPT_DIR, which the package makes with mkdir -p and leaves root's.
+NOMAD_OPT_DIR="/opt/nomad"
+NOMAD_PACKAGE_DATA_DIR="${NOMAD_OPT_DIR}/data"
+NOMAD_DATA_DIR="${NOMAD_OPT_DIR}/es-data"
 NOMAD_HTTP_ADDR="${NOMAD_HTTP_ADDR:-https://127.0.0.1:4646}"
 # Nomad's API and RPC use TLS 1.3 with a certificate this script issues (see
 # nomad_tls_issue). Readers trust only this CA; ES also pins the server key.
@@ -595,23 +602,227 @@ nomad_config_write() {
   fi
 }
 
+# BEGIN nomad_data_move (the tests and the box upgrade run these functions on their own)
+# Nomad keeps its state (Raft, its ACL tokens, the gossip keyring) in a
+# folder of root's that the nomad package never touches. The package's
+# postinst makes /opt/nomad/data and gives it to the nomad account on each
+# install or upgrade, and while an account owns a folder it can rename
+# root's entries in it: with Nomad's server folder renamed, Nomad starts a
+# new cluster and hands a new ACL bootstrap token to whoever asks first
+# (re-check 52 of ES PR #83, A52-2). The take-back program, run after each
+# dpkg run, looks at who owns each entry, not where root's entries went. A
+# host set up before keeps Nomad's state in /opt/nomad/data, and it moves
+# once, with Nomad stopped.
+
+# nomad_data_move <plan|swap|can-swap|finish> <args>: run as root (the
+# tests run it as themselves, and their uid stands for root's). The folders
+# it is given sit side by side in a folder that only that uid can change.
+#   plan <package folder> <data folder>: print what the setup has to do:
+#     "move" when <package folder> holds Nomad's state and <data folder> is
+#     missing, an empty folder (a run cut off after it made one), or the
+#     stand-in below (a swap cut off before its one step); "keep" when
+#     <data folder> is a folder and <package folder> is missing, an empty
+#     folder or the stand-in; "new" when <data folder> is missing and
+#     <package folder> is missing or empty. Anything else fails, naming
+#     what is there.
+#   swap <from> <to>: move the folder <from> to <to> in one step (renameat2
+#     with RENAME_EXCHANGE), leaving at <from> a stand-in: a file of root's,
+#     0600, with the text of STAND_IN. <to> must be missing, an empty folder
+#     (removed first) or the stand-in. Nomad cannot keep its state in a
+#     file, so a Nomad that starts while nomad.hcl still names <from> (a dpkg
+#     run's postrm restarts Nomad; so does a reboot) fails to start rather
+#     than starting a new cluster in an empty folder, which it would make.
+#     The box upgrade's rollback swaps the other way.
+#   can-swap <from> <to>: check what swap checks, changing nothing.
+#   finish <folder>: remove the stand-in at <folder>, once nomad.hcl no
+#     longer names it. Anything else there is left as it is.
+nomad_data_move() {
+  python3 -I - "$@" <<'PY'
+import ctypes
+import os
+import stat
+import sys
+
+STAND_IN = (b"Execution Substrate: Nomad's state is moving to the folder beside this file. Nomad cannot\n"
+            b"keep its state in a file, so it does not start with a nomad.hcl that names this path.\n"
+            b"scripts/70_linux_setup.sh, or the box upgrade, removes this file once the move is done.\n")
+UID = os.getuid()
+
+
+def fail(message):
+    sys.exit(f"nomad data: {message}")
+
+
+def look(path):
+    """What is at path: "absent", "stand-in", "empty" or "folder" (a folder
+    of UID's, with nothing or something in it), or what else it is."""
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        return "absent"
+    if stat.S_ISDIR(st.st_mode):
+        if st.st_uid != UID:
+            return f"a folder of uid {st.st_uid}"
+        return "folder" if os.listdir(path) else "empty"
+    if stat.S_ISREG(st.st_mode) and st.st_uid == UID and st.st_size == len(STAND_IN):
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            if os.read(fd, len(STAND_IN) + 1) == STAND_IN:
+                return "stand-in"
+        finally:
+            os.close(fd)
+    if stat.S_ISLNK(st.st_mode):
+        return "a link"
+    return f"a file of uid {st.st_uid}, not the stand-in" if stat.S_ISREG(st.st_mode) else "neither a file nor a folder"
+
+
+def shown(state):
+    return {"absent": "missing", "stand-in": "the stand-in", "empty": "an empty folder",
+            "folder": "a folder that holds entries"}.get(state, state)
+
+
+def side_by_side(a, b):
+    parent = os.path.dirname(a)
+    if os.path.dirname(b) != parent or a == b:
+        fail(f"{a} and {b} are not two folders side by side")
+    st = os.lstat(parent)
+    if not stat.S_ISDIR(st.st_mode) or st.st_uid != UID or st.st_mode & 0o022:
+        fail(f"{parent} is not a folder of uid {UID} that only it can change")
+    return parent
+
+
+def sync(folder):
+    fd = os.open(folder, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def swap_problem(src, dst):
+    side_by_side(src, dst)
+    there = look(src)
+    if there not in ("folder", "empty"):
+        return f"{src}, where Nomad's state should be, is {shown(there)}"
+    there = look(dst)
+    if there not in ("absent", "empty", "stand-in"):
+        return f"{dst}, where Nomad's state goes, is {shown(there)}"
+    return None
+
+
+def exchange(a, b):
+    renameat2 = getattr(ctypes.CDLL(None, use_errno=True), "renameat2", None)
+    if renameat2 is None:
+        fail(f"this system has no renameat2, which moves Nomad's state in one step; {a} stays where it is")
+    at_fdcwd, rename_exchange = -100, 2
+    if renameat2(at_fdcwd, os.fsencode(a), at_fdcwd, os.fsencode(b), rename_exchange) != 0:
+        error = ctypes.get_errno()
+        fail(f"could not swap {a} and {b} ({os.strerror(error)}); {a} stays where it is")
+
+
+def main(argv):
+    command, args = (argv[1], argv[2:]) if len(argv) > 1 else (None, [])
+    if command == "plan" and len(args) == 2:
+        package, data = args
+        side_by_side(package, data)
+        p, d = look(package), look(data)
+        if d in ("folder", "empty") and p in ("absent", "empty", "stand-in"):
+            print("keep")
+        elif d in ("absent", "empty", "stand-in") and p == "folder":
+            print("move")
+        elif d == "absent" and p in ("absent", "empty"):
+            print("new")
+        else:
+            fail(f"Nomad's state cannot be told apart: {data} is {shown(d)}, and {package} is {shown(p)}; look at "
+                 f"both, and leave Nomad's state in {data} and nothing in {package}")
+    elif command in ("swap", "can-swap") and len(args) == 2:
+        src, dst = args
+        problem = swap_problem(src, dst)
+        if problem:
+            fail(f"{problem}; nothing was moved")
+        if command == "can-swap":
+            return
+        parent = os.path.dirname(src)
+        if look(dst) == "empty":
+            os.rmdir(dst)
+        if look(dst) == "absent":
+            fd = os.open(dst, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            try:
+                os.write(fd, STAND_IN)
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+        exchange(src, dst)
+        sync(parent)
+        print(f"nomad data: moved Nomad's state from {src} to {dst}; {src} holds a stand-in until nomad.hcl names {dst}")
+    elif command == "finish" and len(args) == 1:
+        if look(args[0]) == "stand-in":
+            os.unlink(args[0])
+            sync(os.path.dirname(args[0]))
+    else:
+        fail(f"usage: nomad_data_move plan <package folder> <data folder> | swap <from> <to> | "
+             f"can-swap <from> <to> | finish <folder>")
+
+
+try:
+    main(sys.argv)
+except OSError as error:
+    fail(str(error))
+PY
+}
+
+# nomad_data_move_as_root <args...>: nomad_data_move as root.
+nomad_data_move_as_root() {
+  sudo bash -c "set -euo pipefail; $(declare -f nomad_data_move); nomad_data_move \"\$@\"" nomad-data-move "$@"
+}
+# END nomad_data_move
+
+# install_nomad_data_folder: make NOMAD_DATA_DIR Nomad's data folder, root's
+# 0700 with no ACL, in NOMAD_OPT_DIR, which is taken back first (root's 0755,
+# no ACL): the package makes it and never gives it away, but a move relies on
+# it. A host set up before kept Nomad's state in NOMAD_PACKAGE_DATA_DIR,
+# which the package gives to the nomad account: it moves here once, with
+# Nomad stopped, and Nomad restarts with the new nomad.hcl. Until that
+# nomad.hcl is written, the stand-in nomad_data_move leaves keeps a Nomad
+# started meanwhile from starting a new cluster; install_nomad_service_config
+# removes it once nomad.hcl names NOMAD_DATA_DIR. A run cut off in between
+# finds Nomad's state here, and the stand-in there, and goes on.
+install_nomad_data_folder() {
+  local plan
+  nomad_folder_take_back 0755 "${NOMAD_OPT_DIR}"
+  plan="$(nomad_data_move_as_root plan "${NOMAD_PACKAGE_DATA_DIR}" "${NOMAD_DATA_DIR}")"
+  if [[ "${plan}" == move ]]; then
+    echo "==> Moving Nomad's state from ${NOMAD_PACKAGE_DATA_DIR}, which the nomad package gives to the nomad account, to ${NOMAD_DATA_DIR}"
+    if ! sudo systemctl stop nomad; then
+      echo "nomad: could not stop nomad.service to move its state; nothing was moved" >&2
+      return 1
+    fi
+    nomad_data_move_as_root swap "${NOMAD_PACKAGE_DATA_DIR}" "${NOMAD_DATA_DIR}"
+    nomad_needs_restart
+  fi
+  nomad_folder_take_back 0700 "${NOMAD_DATA_DIR}"
+}
+
 install_nomad_service_config() {
   local backup_suffix
 
   echo "==> Installing supported single-node Nomad service config"
   # Nomad runs as root, so only root may change what it reads or keeps
   # (audit INF-16): its config directory and data directory (Raft state and
-  # the keyring) are root-owned. The package gives them, and every file in
-  # the config folder, to the nomad account on each install or upgrade. The
-  # take-back program (nomad_take_back_program) is installed first, with
-  # the dpkg configuration that runs it after each package run, and run
-  # once: it takes them back before the setup writes there, and the setup
-  # stops if it set anything aside, now or on an earlier run. The setup's
-  # own steps below then find them root's; they make the folders that are
-  # missing.
-  nomad_package_hook_as_root install_nomad_package_hook "${NOMAD_TAKE_BACK_PROGRAM}" "${NOMAD_DPKG_HOOK}" "${NOMAD_CONFIG_DIR}" "${NOMAD_DATA_DIR}"
+  # the keyring) are root-owned. The package gives the config folder, every
+  # file in it and its own data folder (NOMAD_PACKAGE_DATA_DIR) to the
+  # nomad account on each install or upgrade. Nomad keeps its state in
+  # NOMAD_DATA_DIR instead, which the package never touches
+  # (install_nomad_data_folder). The take-back program
+  # (nomad_take_back_program) is installed first, with the dpkg
+  # configuration that runs it after each package run, and run once: it
+  # takes the package's folders back before the setup writes there, and the
+  # setup stops if it set anything aside, now or on an earlier run. The
+  # setup's own steps below then find them root's; they make the folders
+  # that are missing.
+  nomad_package_hook_as_root install_nomad_package_hook "${NOMAD_TAKE_BACK_PROGRAM}" "${NOMAD_DPKG_HOOK}" "${NOMAD_CONFIG_DIR}" "${NOMAD_PACKAGE_DATA_DIR}"
   nomad_folder_take_back 0755 "${NOMAD_CONFIG_DIR}"
-  nomad_folder_take_back 0700 "${NOMAD_DATA_DIR}"
+  install_nomad_data_folder
   # The package leaves /etc/nomad.d to the nomad account, which can put a link
   # at the TLS folder; install -d would re-own and re-mode the link's target
   # and the issuer would write Nomad's key there. Now that only root can
@@ -729,6 +940,9 @@ EOF
     nomad_needs_restart
   fi
   printf '%s\n' "${config}" | nomad_config_write "${NOMAD_CONFIG_PATH}"
+  # nomad.hcl names NOMAD_DATA_DIR now, so the stand-in that a move leaves
+  # in the package's data folder has done its work.
+  nomad_data_move_as_root finish "${NOMAD_PACKAGE_DATA_DIR}"
 }
 
 # BEGIN nomad_package_hook (the tests and the box upgrade run these functions on their own)
@@ -736,8 +950,11 @@ EOF
 # account each time it is installed or upgraded: its postinst makes the nomad
 # user and group own /etc/nomad.d and everything in it, and /opt/nomad/data
 # (on an upgrade, after the old version's postrm has restarted Nomad). Nomad's
-# unit runs as root and reads them when it next starts (red-team 45, O45-1).
-# So the setup installs a program that takes them back, runs it before it
+# unit runs as root and reads the config folder when it next starts
+# (red-team 45, O45-1). Nomad keeps its state in a folder the package never
+# touches (nomad_data_move), and the package's data folder is taken back all
+# the same, so that it is root's should a nomad.hcl ever name it again. So
+# the setup installs a program that takes them back, runs it before it
 # writes Nomad's config, and has dpkg run it as root at the end of each of
 # its runs (post-invoke).
 
@@ -761,7 +978,11 @@ EOF
 # apt go on (A51-4); the setup and the box upgrade refuse the host until the
 # operator has looked and removed that folder. It exits 1 only for what the
 # nomad account cannot cause: the config or data folder not a folder, or a
-# set-aside folder it cannot use.
+# set-aside folder it cannot use. A file at the data folder is made root's
+# (0600, no ACL) in place and otherwise left alone: the setup and the box
+# upgrade leave one there while they move Nomad's state out of it
+# (nomad_data_move), the postinst gives it to the nomad account, and Nomad
+# cannot keep its state in a file.
 nomad_take_back_program() {
   cat <<'PY'
 #!/usr/bin/python3 -I
@@ -1062,6 +1283,48 @@ def set_aside_others(folder, uid, aside, problems):
             aside.move(path, f"{kind(st)} of uid {st.st_uid}, not uid {uid}")
 
 
+def data_file(path, uid, gid):
+    """True when a regular file stands at the data folder's path, which is
+    then uid:gid, 0600, with no ACL. Only root can put one there (its parent
+    is never the nomad account's): the setup and the box upgrade leave one
+    there while they move Nomad's state out of that folder
+    (nomad_data_move), and Nomad cannot keep its state in a file, so it
+    never reads it. The package's postinst gives whatever is at that path to
+    the nomad account, as it does the folder it expects there, so a file
+    there is made root's again, in place: nothing reads what it holds, so
+    nothing needs copying. nomad_data_move takes it for its stand-in only
+    while its bytes are the stand-in's."""
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        return False
+    if not stat.S_ISREG(st.st_mode):
+        return False
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        opened = os.fstat(fd)
+        if (opened.st_dev, opened.st_ino) != (st.st_dev, st.st_ino):
+            raise Odd("it changed while it was taken back")
+        acls = posix_acls(fd)
+        if (opened.st_uid, opened.st_gid) != (uid, gid) or stat.S_IMODE(opened.st_mode) != 0o600 or acls:
+            # The owner first: until then the former owner may change the
+            # mode or set an ACL again.
+            os.fchown(fd, uid, gid)
+            os.fchmod(fd, 0o600)
+            for name, _ in acls:
+                os.removexattr(fd, name)
+            say(f"took {shown(path)} back (it was uid {opened.st_uid}, gid {opened.st_gid}, "
+                f"{stat.S_IMODE(opened.st_mode):04o}" + (", with an ACL" if acls else "") + "), a file where Nomad "
+                "cannot keep its state (the setup and the box upgrade leave one there while they move Nomad's state "
+                "out of it)")
+        else:
+            say(f"passed over {shown(path)}: a file of root's, where Nomad cannot keep its state (the setup and the "
+                f"box upgrade leave one there while they move Nomad's state out of it)")
+    finally:
+        os.close(fd)
+    return True
+
+
 def nomad_loads(name):
     """nomad.service's EnvironmentFile, and what `nomad agent -config <folder>` loads."""
     if name.startswith(".#"):
@@ -1098,7 +1361,13 @@ def main(argv):
             config_aside.move(tls, f"it could not be taken back: {error.strerror}")
         if tls_there:
             take_back_files(tls, uid, gid, tls_reads, config_aside, "tls", problems)
-    if take_back_top(data, 0o700, uid, gid, problems):
+    try:
+        data_is_file = data_file(data, uid, gid)
+    except (Odd, OSError) as error:
+        data_is_file = True
+        problems.append(f"{shown(data)}, a file where Nomad cannot keep its state, could not be taken back "
+                        f"({getattr(error, 'strerror', None) or error})")
+    if not data_is_file and take_back_top(data, 0o700, uid, gid, problems):
         set_aside_others(data, uid, data_aside, problems)
     for aside in (config_aside, data_aside):
         if aside.count:
