@@ -525,6 +525,11 @@ NOMAD_HCL = "/etc/nomad.d/nomad.hcl"
 # The EnvironmentFile of the package's nomad.service, which Nomad reads as
 # root; optional ("-" in the unit).
 NOMAD_ENV = "/etc/nomad.d/nomad.env"
+# How root puts nomad.env back as a new file of its own, with its contents:
+# the only way that an old write handle no longer reaches it.
+NOMAD_ENV_REMEDY = (f"put it back as a new file of root's, then check what it sets: rm -f {NOMAD_ENV}.new && "
+                    f"install -o root -g root -m 0600 {NOMAD_ENV} {NOMAD_ENV}.new && mv -T {NOMAD_ENV}.new {NOMAD_ENV} "
+                    f"(a chown, a chmod or setfacl leaves a handle that another account opened earlier able to write it)")
 NOMAD_CONFIG_MODE = 0o640  # root:root, as scripts/70_linux_setup.sh writes nomad.hcl
 # Nomad runs as root, so only root may change what it reads or keeps (audit
 # INF-16). ES PR #54's upgrade made these directories root:root with these
@@ -1850,16 +1855,22 @@ def inspect_host(payload_dir, commit, allow_downgrade=None):
     # HashiCorp's package gives nomad.env to the nomad account, as it does
     # everything in /etc/nomad.d; the setup takes it back (re-check 49 of ES
     # PR #66, O49-2). This upgrade does not, so it refuses one that another
-    # account could change, as it refuses such a nomad.hcl.
+    # account could change, as it refuses such a nomad.hcl. Its remedy puts
+    # the file back as a new one, as the setup does: a chown, a chmod or
+    # setfacl in place leaves a handle that account opened earlier able to
+    # write it (re-check 50 of #67, S67-3).
     try:
         st = os.lstat(host(NOMAD_ENV))
-        if not stat.S_ISREG(st.st_mode) or not owned_by_root(st) or stat.S_IMODE(st.st_mode) & ~0o755:
-            block("nomad_env", f"{NOMAD_ENV}, which Nomad's unit reads as root, is not a regular root:root file "
-                  f"without write for group or others ({owner_mode(st)}); chown root:root and chmod go-w it")
+        if not stat.S_ISREG(st.st_mode):
+            block("nomad_env", f"{NOMAD_ENV}, which Nomad's unit reads as root, is not a regular file "
+                  f"({owner_mode(st)}); remove it")
+        elif not owned_by_root(st) or stat.S_IMODE(st.st_mode) & ~0o755:
+            block("nomad_env", f"{NOMAD_ENV}, which Nomad's unit reads as root, is not root:root without write for "
+                  f"group or others ({owner_mode(st)}); {NOMAD_ENV_REMEDY}")
         else:
             acls = posix_acls(host(NOMAD_ENV))
             if acls:
-                block("nomad_env", f"{NOMAD_ENV} has an ACL ({', '.join(acls)}; setfacl -b -k {NOMAD_ENV} removes it)")
+                block("nomad_env", f"{NOMAD_ENV} has an ACL ({', '.join(acls)}); {NOMAD_ENV_REMEDY}")
     except FileNotFoundError:
         pass
     except OSError as exc:
@@ -2085,8 +2096,7 @@ def backup_host(commit, created):
 
 def load_created(backup_dir):
     created = read_backup_document(backup_dir, CREATED_MANIFEST,
-                                   "the backup's apply stopped before it changed the host, so there is nothing to put back "
-                                   "(or an earlier version of this script, ES PR #54's, made it)")
+                                   "the backup's apply stopped before it changed the host, so there is nothing to put back")
     if not isinstance(created, list) or not set(created) <= set(CREATED_BY_APPLY):
         raise Refusal(f"the backup's {CREATED_MANIFEST} names paths that apply does not create")
     return created

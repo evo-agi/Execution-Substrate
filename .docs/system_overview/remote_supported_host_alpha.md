@@ -7621,8 +7621,11 @@ write that record; `apply`'s own rollback logs why and goes on.
   `/etc/nomad.d` holds another `.hcl` or `.json` file that Nomad would load,
   `/etc/nomad.d/nomad.env` (the `EnvironmentFile` of Nomad's unit, which
   Nomad reads as root; the package gives it to the `nomad` account and the
-  setup takes it back) is there but is not a regular `root:root` file
-  without write for group or others, or has an ACL,
+  setup takes it back) is there but is not a regular file (remove it), is
+  not `root:root` without write for group or others, or has an ACL (for
+  these two the refusal gives the commands that put it back as a new file
+  of root's with its contents: a `chown`, `chmod` or `setfacl` in place
+  leaves a handle that another account opened earlier able to write it),
   or `/etc/nomad.d`, `/opt/nomad` (0755) and `/opt/nomad/data` (0700) are not
   `root:root` folders with those modes and no ACL, or `nomad.hcl` has an ACL
   (audit INF-16; an account that owned one of these folders could leave a
@@ -7630,7 +7633,8 @@ write that record; `apply`'s own rollback logs why and goes on.
   in it, whatever the umask, and the mode bits do not show it). Nomad's TLS
   directory and `/opt/nomad/data/server` with an ACL make the host's shape
   unknown, with the keyring in place or not. Each of these refusals names
-  the path and the ACL, and `setfacl -b -k <path>` removes it
+  the path and the ACL, and `setfacl -b -k <path>` removes it (but for
+  `nomad.env`, above)
 - on `locked-http`: the new ES's `config.Load` refuses the migrated
   `es.json` (with a stand-in pin, since the key does not exist yet); a token
   file under `/etc/execution-substrate/nomad-acl` is not as provision left it
@@ -7841,8 +7845,10 @@ own rollback; a rollback after which ES does not answer; an installed
 binary missing, and a rollback record's name taken, each refused; the
 wrapper refusing `backup` and `restore`; `es.json` gaining a key after
 `check`; `es_config_target` refusing a shape its `es.json` does not match;
-a `nomad.env` others can write, a link there, and a host without one, which
-is not refused; a Nomad folder, `nomad.hcl`, `nomad.env`, the TLS directory
+a `nomad.env` others can write, writable by its group or by others only,
+of another group or with the setuid bit, a link, a folder or a FIFO there,
+each refused (the remedy putting it back as a new file), and a host
+without one, which is not refused; a Nomad folder, `nomad.hcl`, `nomad.env`, the TLS directory
 or `/opt/nomad/data/server` with an ACL (the server folder also with the
 keyring in place), each refused
 before anything changes and naming `setfacl -b -k`; no gossip key or Nomad token in the output, the
