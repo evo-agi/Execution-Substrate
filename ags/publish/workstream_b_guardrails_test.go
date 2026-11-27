@@ -15,7 +15,7 @@ import (
 	"testing"
 
 	"execution-substrate/ags/sign"
-	arsapi "execution-substrate/ars/api"
+	arscontract "execution-substrate/ars/contract"
 	evidencev1 "execution-substrate/internal/contracts/evidence/v1"
 )
 
@@ -30,7 +30,7 @@ func TestWorkstreamBPublicationOutputProducesSignedEvidenceAndRuntimeDiscovery(t
 	}
 
 	uploaded := map[string][]byte{}
-	var registerRequest arsapi.RegisterArtifactRequest
+	var registerRequest arscontract.RegisterArtifactRequest
 	registry := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/v1/blobs/"):
@@ -126,7 +126,7 @@ func TestWorkstreamBPublicationOutputProducesSignedEvidenceAndRuntimeDiscovery(t
 		t.Fatalf("expected caller-bound publication invoker, got %+v", evidence.Claims.Package.Publication.Invoker)
 	}
 
-	var discovery arsapi.ArtifactDiscovery
+	var discovery arscontract.ArtifactDiscovery
 	if err := json.Unmarshal(uploaded[result.DiscoveryDigest], &discovery); err != nil {
 		t.Fatalf("decode uploaded discovery: %v", err)
 	}

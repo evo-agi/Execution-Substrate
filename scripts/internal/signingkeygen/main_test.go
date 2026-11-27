@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -44,10 +45,12 @@ func readSigner(t *testing.T, path string) signer {
 	return s
 }
 
+// TestGenerateWritesAFreshKeyOnlyItsOwnerCanRead generates each role twice,
+// so a generator that gave either role the same key again fails here.
 func TestGenerateWritesAFreshKeyOnlyItsOwnerCanRead(t *testing.T) {
 	dir := t.TempDir()
 	seen := map[string]bool{}
-	for _, role := range []string{"ags", "egs", "ags"} {
+	for _, role := range []string{"ags", "egs", "ags", "egs"} {
 		path := filepath.Join(dir, role+"-"+hex.EncodeToString([]byte{byte(len(seen))})+".json")
 		// A permissive umask must not widen the file.
 		old := syscall.Umask(0)
@@ -122,12 +125,7 @@ func TestGenerateRefusesAKnownKeyFromABrokenRandomSource(t *testing.T) {
 // The command prints only the public part, and only after the file holds
 // the key; usage errors exit 2 and write nothing.
 func TestCommandPrintsOnlyThePublicPart(t *testing.T) {
-	bin := filepath.Join(t.TempDir(), "signingkeygen")
-	build := exec.Command("go", "build", "-o", bin, "execution-substrate/scripts/internal/signingkeygen")
-	build.Env = append(os.Environ(), "CGO_ENABLED=0")
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build: %v\n%s", err, out)
-	}
+	bin := buildCommand(t)
 	dir := t.TempDir()
 	path := filepath.Join(dir, "egs.json")
 	var stdout, stderr bytes.Buffer
@@ -164,5 +162,77 @@ func TestCommandPrintsOnlyThePublicPart(t *testing.T) {
 	entries, err := os.ReadDir(dir)
 	if err != nil || len(entries) != 1 {
 		t.Fatalf("usage errors wrote files: %v %v", entries, err)
+	}
+}
+
+// buildCommand builds the command as setup runs it.
+func buildCommand(t *testing.T) string {
+	t.Helper()
+	bin := filepath.Join(t.TempDir(), "signingkeygen")
+	build := exec.Command("go", "build", "-o", bin, "execution-substrate/scripts/internal/signingkeygen")
+	build.Env = append(os.Environ(), "CGO_ENABLED=0")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build: %v\n%s", err, out)
+	}
+	return bin
+}
+
+// TestCommandWritesADifferentKeyOnEveryRun runs the built command, so it sees
+// the random source the command itself uses, which the tests of generate
+// pass in: every run writes a key no other run wrote (red-team RT75-3 of ES
+// PR #75).
+func TestCommandWritesADifferentKeyOnEveryRun(t *testing.T) {
+	bin := buildCommand(t)
+	dir := t.TempDir()
+	seen := map[string]string{}
+	for _, role := range []string{"ags", "egs"} {
+		for run := 0; run < 4; run++ {
+			path := filepath.Join(dir, role+"-"+strconv.Itoa(run)+".json")
+			command := exec.Command(bin, role, path)
+			command.Dir = dir
+			if out, err := command.CombinedOutput(); err != nil {
+				t.Fatalf("run: %v\n%s", err, out)
+			}
+			private := readSigner(t, path).PrivateKeyHex
+			if earlier, ok := seen[private]; ok {
+				t.Fatalf("%s holds the private key that %s already holds: the command's random source repeats", path, earlier)
+			}
+			seen[private] = path
+		}
+	}
+}
+
+// TestGenerateRefusesAFolderOthersCanWrite: in a folder that another user
+// can write, that user could replace the key file before it is copied into
+// a config. The sticky bit keeps others from replacing a file they do not
+// own, as in /tmp.
+func TestGenerateRefusesAFolderOthersCanWrite(t *testing.T) {
+	for _, c := range []struct {
+		mode os.FileMode
+		ok   bool
+	}{
+		{0o700, true}, {0o755, true}, {0o750, true}, {os.ModeSticky | 0o777, true}, {os.ModeSticky | 0o770, true},
+		{0o777, false}, {0o770, false}, {0o720, false}, {0o702, false},
+	} {
+		dir := filepath.Join(t.TempDir(), "keys")
+		if err := os.Mkdir(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(dir, c.mode); err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(dir, "ags.json")
+		_, err := generate("ags", path, rand.Reader)
+		if c.ok && err != nil {
+			t.Errorf("folder mode %v refused: %v", c.mode, err)
+		}
+		if !c.ok {
+			if err == nil || !strings.Contains(err.Error(), "could replace the key file") {
+				t.Errorf("folder mode %v: got %v, want the refusal of a folder others can write", c.mode, err)
+			}
+			if _, statErr := os.Lstat(path); !os.IsNotExist(statErr) {
+				t.Errorf("folder mode %v: a key was written: %v", c.mode, statErr)
+			}
+		}
 	}
 }

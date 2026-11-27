@@ -9,17 +9,17 @@ import (
 	"strings"
 	"time"
 
-	"execution-substrate/egs/model"
+	"execution-substrate/egs/contract"
 	"execution-substrate/internal/knownkeys"
 )
 
 type Config struct {
-	HTTP         HTTPConfig                `json:"http"`
-	TLS          TLSConfig                 `json:"tls"`
-	Security     SecurityConfig            `json:"security"`
-	Signer       SignerConfig              `json:"signer"`
-	RuntimeTrust model.RuntimeTrustPolicy  `json:"runtime_trust"`
-	Publication  model.PublicationMetadata `json:"publication"`
+	HTTP         HTTPConfig                   `json:"http"`
+	TLS          TLSConfig                    `json:"tls"`
+	Security     SecurityConfig               `json:"security"`
+	Signer       SignerConfig                 `json:"signer"`
+	RuntimeTrust contract.RuntimeTrustPolicy  `json:"runtime_trust"`
+	Publication  contract.PublicationMetadata `json:"publication"`
 }
 
 type HTTPConfig struct {
@@ -57,6 +57,18 @@ func Load(path string) (Config, error) {
 		return Config{}, fmt.Errorf("open config: %w", err)
 	}
 	defer file.Close()
+
+	// This file holds the EGS private signing key, so only the account
+	// that runs the service and root may read it
+	// (.docs/system_overview/configuration.md, "Signing keys"). The check is
+	// on the opened file, so it judges the file that is read.
+	info, err := file.Stat()
+	if err != nil {
+		return Config{}, fmt.Errorf("inspect config: %w", err)
+	}
+	if !info.Mode().IsRegular() || info.Mode().Perm()&0o007 != 0 {
+		return Config{}, fmt.Errorf("config holds the private signing key and must be a regular file that other users cannot read or write: mode %04o", info.Mode().Perm())
+	}
 
 	var cfg Config
 	decoder := json.NewDecoder(file)

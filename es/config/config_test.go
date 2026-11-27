@@ -1,6 +1,9 @@
 package config
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -1099,22 +1102,22 @@ func validTestConfigJSON() string {
     "trust_model": {
       "algorithm": "ed25519",
       "key_id": "test-key",
-      "public_key_hex": "0000000000000000000000000000000000000000000000000000000000000000"
+      "public_key_hex": "` + testVerificationPublicKeyHex + `"
     },
     "provenance": {
       "algorithm": "ed25519",
       "key_id": "test-key",
-      "public_key_hex": "0000000000000000000000000000000000000000000000000000000000000000"
+      "public_key_hex": "` + testVerificationPublicKeyHex + `"
     },
     "derivation_attestation": {
       "algorithm": "ed25519",
       "key_id": "test-key",
-      "public_key_hex": "0000000000000000000000000000000000000000000000000000000000000000"
+      "public_key_hex": "` + testVerificationPublicKeyHex + `"
     },
     "workload_identity_binding": {
       "algorithm": "ed25519",
       "key_id": "test-key",
-      "public_key_hex": "0000000000000000000000000000000000000000000000000000000000000000"
+      "public_key_hex": "` + testVerificationPublicKeyHex + `"
     }
   },
   "workload_vault_auth": {
@@ -1138,7 +1141,7 @@ func validTestSignerVerifierConfig() SignerVerifierConfig {
 	return SignerVerifierConfig{
 		Algorithm:    "ed25519",
 		KeyID:        "test-key",
-		PublicKeyHex: strings.Repeat("00", 32),
+		PublicKeyHex: testVerificationPublicKeyHex,
 	}
 }
 
@@ -1322,3 +1325,15 @@ func TestNomadTokenFileMustStayOutsideExecutionStorageAndDifferFromTheResultKey(
 		})
 	}
 }
+
+// testVerificationPublicKeyHex is a key generated for this test run. A
+// placeholder such as 32 zero bytes is not a key: it is a point of small
+// order, for which anyone can sign, and ES refuses it (contracts.md, section
+// 3B).
+var testVerificationPublicKeyHex = func() string {
+	public, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		panic(err)
+	}
+	return hex.EncodeToString(public)
+}()

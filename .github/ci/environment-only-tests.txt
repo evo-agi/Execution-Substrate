@@ -190,3 +190,10 @@ skips-itself execution-substrate/scripts TestRemoteAlphaHostFirewallRealKernelTr
 skips-itself execution-substrate/scripts TestRemoteAlphaHostFirewallRealKernelApplyConfirmRollback
 skips-itself execution-substrate/scripts TestRemoteAlphaHostFirewallRealKernelBridgeIsolation
 skips-itself execution-substrate/scripts TestRemoteAlphaHostFirewallSSHDDropInWithRealSSHD
+
+# Scripts package: the supported-local renderer must refuse a signing key file
+# that another account owns (scripts/72_supported_local_setup.sh,
+# read_signer). Making such a file needs root, and the runner runs the tests
+# without root, so the test skips itself there. It makes the key files
+# itself, since the go command never runs as root in the step that runs it.
+skips-itself execution-substrate/scripts TestSupportedLocalRendererRefusesASigningKeyFileAnotherUserOwns

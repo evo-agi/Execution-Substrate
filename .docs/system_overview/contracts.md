@@ -261,10 +261,10 @@ route, stays with each service and is described in that service's section.
 ### Purpose
 
 Define once which Ed25519 signing keys no service may sign or verify with,
-because anyone can know their private halves. AGS evidence signatures and EGS
-runtime-trust signatures are the only proof ES has of who published an
-artifact and which signers are allowed; a key whose private half is public
-proves nothing.
+because anyone can know their private halves or sign for them without one.
+AGS evidence signatures and EGS runtime-trust signatures are the only proof
+ES has of who published an artifact and which signers are allowed; a key
+whose private half is public, or that needs none, proves nothing.
 
 ### Current producers / consumers
 
@@ -284,8 +284,9 @@ proves nothing.
 `Observed current contract`
 
 - A refused key stops the service before it listens, with an error that
-  names the configuration field and the repeated byte and says that the host
-  needs its own key. No network response carries the rule.
+  names the configuration field, says which family the key is in (the
+  repeated byte of a known key, or a point of small order), and says that the
+  host needs its own key. No network response carries the rule.
 
 ### Current invariants
 
@@ -298,6 +299,21 @@ proves nothing.
   `d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737`) and seed
   `0x33` repeated (EGS, public key
   `17cb79fb2b4120f2b1ec65e4198d6e08b28e813feb01e4a400839b85e18080ce`).
+- A public key that needs no private key is refused the same way: one of the
+  14 values that `crypto/ed25519` decodes to a point of small order (the
+  eight such points, the two whose x is 0 also written with the sign bit set,
+  and the two written with y = p and y = p + 1). Anyone can make a signature
+  that verifies under such a key. 32 zero bytes is one of them, so a
+  placeholder of zeros is refused like a known key. A test derives the eight
+  points from the curve and checks the list against every encoding of them
+  under which a signature made without a key verifies.
+- AGS and EGS refuse a 64-byte `signer.private_key_hex` whose second half is
+  not the public key of its first half. Its signatures verify under no key,
+  and they would give the seed away once the same bytes were signed again
+  under the right public key.
+- AGS and EGS refuse a configuration file that other users can read or
+  write, or that is not a regular file, since it holds the private key: the
+  check is on the opened file.
 - AGS and EGS check the public key derived from `signer.private_key_hex`
   (a 32-byte seed, or a 64-byte private key, whose seed and public half are
   both checked) and `signer.public_key_hex`. ES checks the `public_key_hex`
@@ -306,18 +322,23 @@ proves nothing.
   `verification.workload_identity_binding`.
 - The check is part of each service's configuration loading, so every tool
   that loads a configuration the way the service does refuses the same keys;
-  `scripts/internal/esconfigcheck`, which the Remote Alpha upgrade runs on
-  the migrated `es.json` before it changes anything, is one.
-- Outside Go test files, every signing key value the repository holds is a
-  known key, so no configuration it ships or a script writes can give a real
+  `scripts/internal/esconfigcheck` is one. A host still on known keys is
+  stopped by AGS, EGS and ES refusing to start on binaries that have the
+  check, whichever path installed them.
+- Outside Go test files, every value given to a signer or verification key
+  field (`private_key_hex`, `public_key_hex`) in the repository is a known
+  key, so no configuration it ships or a script writes can give a real
   install a key a service accepts. A test in `internal/knownkeys` scans the
-  repository for that, and another loads each example configuration: refused
-  as it is, with exactly the known-key error, and accepted with fresh keys.
+  repository for values given to those fields, and another loads each
+  example configuration: refused as it is, with exactly the known-key error,
+  and accepted with fresh keys. A key held in some other form, such as an
+  unlabelled constant, is not something the scan sees.
 
 ### Ownership boundary
 
-- `internal/knownkeys` owns only the definition of a known key and the
-  check. It owns no key, no key ID, no allow list, and no trust decision.
+- `internal/knownkeys` owns only the definition of a known key, the list of
+  points of small order, and the check. It owns no key, no key ID, no allow
+  list, and no trust decision.
 - Each service owns which keys it configures; EGS owns which AGS key IDs it
   allows; ES owns which keys it verifies with.
 

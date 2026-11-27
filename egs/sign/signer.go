@@ -8,19 +8,19 @@ import (
 	"fmt"
 	"strings"
 
-	"execution-substrate/egs/model"
+	"execution-substrate/egs/contract"
 )
 
 type Result struct {
-	RuntimeTrust  model.RuntimeTrustPolicy `json:"runtime_trust"`
-	Algorithm     string                   `json:"algorithm"`
-	KeyID         string                   `json:"key_id"`
-	PayloadDigest string                   `json:"payload_digest"`
-	Signature     string                   `json:"signature"`
+	RuntimeTrust  contract.RuntimeTrustPolicy `json:"runtime_trust"`
+	Algorithm     string                      `json:"algorithm"`
+	KeyID         string                      `json:"key_id"`
+	PayloadDigest string                      `json:"payload_digest"`
+	Signature     string                      `json:"signature"`
 }
 
 type Signer interface {
-	Sign(runtimeTrust model.RuntimeTrustPolicy) (Result, error)
+	Sign(runtimeTrust contract.RuntimeTrustPolicy) (Result, error)
 	Algorithm() string
 	KeyID() string
 }
@@ -42,12 +42,21 @@ func NewEd25519Signer(keyID string, privateKeyHex string, publicKeyHex string) (
 	}
 	var privateKey ed25519.PrivateKey
 	switch len(privateKeyBytes) {
-		case ed25519.SeedSize:
-			privateKey = ed25519.NewKeyFromSeed(privateKeyBytes)
-		case ed25519.PrivateKeySize:
-			privateKey = ed25519.PrivateKey(privateKeyBytes)
-		default:
-			return nil, fmt.Errorf("signer.private_key_hex must be a %d-byte seed or %d-byte private key", ed25519.SeedSize, ed25519.PrivateKeySize)
+	case ed25519.SeedSize:
+		privateKey = ed25519.NewKeyFromSeed(privateKeyBytes)
+	case ed25519.PrivateKeySize:
+		// A 64-byte key is the seed followed by its public key. Go signs
+		// with the seed, hashes the stored public half into every
+		// signature, and returns that half from Public without deriving it.
+		// A key whose halves do not belong together signs nothing that
+		// verifies, and its signatures give the seed away once the same
+		// bytes are signed again under the right public key.
+		privateKey = ed25519.NewKeyFromSeed(privateKeyBytes[:ed25519.SeedSize])
+		if !bytes.Equal(privateKey, privateKeyBytes) {
+			return nil, fmt.Errorf("signer.private_key_hex is a %d-byte private key whose second half is not the public key of its first half", ed25519.PrivateKeySize)
+		}
+	default:
+		return nil, fmt.Errorf("signer.private_key_hex must be a %d-byte seed or %d-byte private key", ed25519.SeedSize, ed25519.PrivateKeySize)
 	}
 
 	publicKeyBytes, err := hex.DecodeString(strings.TrimSpace(publicKeyHex))
@@ -73,7 +82,7 @@ func NewEd25519Signer(keyID string, privateKeyHex string, publicKeyHex string) (
 	}, nil
 }
 
-func (s *Ed25519Signer) Sign(runtimeTrust model.RuntimeTrustPolicy) (Result, error) {
+func (s *Ed25519Signer) Sign(runtimeTrust contract.RuntimeTrustPolicy) (Result, error) {
 	payloadDigest, err := runtimeTrust.PayloadDigest()
 	if err != nil {
 		return Result{}, err

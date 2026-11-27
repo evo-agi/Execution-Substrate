@@ -23,7 +23,7 @@ import (
 	"testing"
 	"time"
 
-	egsmodel "execution-substrate/egs/model"
+	egscontract "execution-substrate/egs/contract"
 	esconfig "execution-substrate/es/config"
 	runtimeconfigv1 "execution-substrate/internal/contracts/runtimeconfig/v1"
 	"execution-substrate/internal/knownkeys"
@@ -224,6 +224,22 @@ generate_supported_local_signing_keys "$SUPPORTED_LOCAL_PROOF_DIR"`, "bash", scr
 	if output, err := keygen.CombinedOutput(); err != nil {
 		t.Fatalf("generate supported-local signing keys: %v output=%s", err, output)
 	}
+	// Kept to tell, after the render, that the keys in the configs are the
+	// ones this run generated and not keys the renderer brought with it.
+	generatedSeeds := map[string]string{}
+	for _, role := range []string{"ags", "egs"} {
+		data, err := os.ReadFile(filepath.Join(proofDir, "signing", role+"-signer.json"))
+		if err != nil {
+			t.Fatalf("read the generated %s signing key: %v", role, err)
+		}
+		var generated struct {
+			PrivateKeyHex string `json:"private_key_hex"`
+		}
+		if err := json.Unmarshal(data, &generated); err != nil || len(generated.PrivateKeyHex) != 2*ed25519.SeedSize {
+			t.Fatalf("the generated %s signing key file holds no 32-byte seed: %v", role, err)
+		}
+		generatedSeeds[role] = generated.PrivateKeyHex
+	}
 	render := func(pin string) ([]byte, error) {
 		command := exec.Command("/bin/bash", "-c", `source "$1"
 SUPPORTED_LOCAL_NOMAD_SERVER_SPKI_SHA256="$TEST_NOMAD_PIN"
@@ -293,6 +309,23 @@ write_env_file "$SUPPORTED_LOCAL_PROOF_DIR/env.sh"`, "bash", script)
 		t.Fatalf("full rendered ES config rejected: %v", err)
 	}
 	assertRenderedSigningKeysAreThisInstalls(t, proofDir, rendered)
+	for role, seed := range generatedSeeds {
+		data, err := os.ReadFile(filepath.Join(proofDir, role+".json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var written struct {
+			Signer struct {
+				PrivateKeyHex string `json:"private_key_hex"`
+			} `json:"signer"`
+		}
+		if err := json.Unmarshal(data, &written); err != nil {
+			t.Fatalf("decode %s.json: %v", role, err)
+		}
+		if written.Signer.PrivateKeyHex != seed {
+			t.Fatalf("%s.json does not sign with the key setup generated for this install", role)
+		}
+	}
 	// The renderer owns auth metadata. Only dependency/TLS test fixtures replace
 	// unrelated external files before real service construction.
 	rendered.TLS = fixture.TLS
@@ -683,7 +716,7 @@ func TestTrancheB2PreparedAdmissionOrdinaryFormattingAndJSONPrivacy(t *testing.T
 		artifact:                    preparedArtifact{payloadDigest: "private-payload"},
 		workloadVaultPlan:           esconfig.ResolvedWorkloadVaultAuthPlan{Address: "https://private-vault.invalid"},
 		workloadZoneVaultConfigRef:  runtimeconfigv1.WorkloadZoneVaultConfigRef{Digest: labeledDigest("91")},
-		trustModel:                  egsmodel.RuntimeTrustPolicy{SignerPolicy: egsmodel.SignerPolicy{AllowedSigners: []string{"private-signer"}}},
+		trustModel:                  egscontract.RuntimeTrustPolicy{SignerPolicy: egscontract.SignerPolicy{AllowedSigners: []string{"private-signer"}}},
 		policyPayloadBytes:          []byte("private-bytes"),
 		policyPayloadBytesAvailable: true,
 	}
@@ -829,8 +862,8 @@ func TestVerifyTrustModelEnvelopeAcceptsSignedCanonicalAndIgnoresPublication(t *
 	if err != nil {
 		t.Fatalf("generate ed25519 keypair: %v", err)
 	}
-	model := egsmodel.RuntimeTrustPolicy{
-		SignerPolicy: egsmodel.SignerPolicy{
+	model := egscontract.RuntimeTrustPolicy{
+		SignerPolicy: egscontract.SignerPolicy{
 			AllowedSigners: []string{"ags-signer"},
 		},
 	}
@@ -866,8 +899,8 @@ func TestVerifyTrustModelEnvelopeAcceptsSignedCanonicalAndIgnoresPublication(t *
 }
 
 func TestEnforceTrustModelRejectsDisallowedRevokedAndRevokedArtifact(t *testing.T) {
-	err := enforceTrustModel(egsmodel.RuntimeTrustPolicy{
-		SignerPolicy: egsmodel.SignerPolicy{
+	err := enforceTrustModel(egscontract.RuntimeTrustPolicy{
+		SignerPolicy: egscontract.SignerPolicy{
 			AllowedSigners: []string{"allowed"},
 		},
 	}, "other", "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
@@ -875,8 +908,8 @@ func TestEnforceTrustModelRejectsDisallowedRevokedAndRevokedArtifact(t *testing.
 		t.Fatalf("expected signer-not-allowed error, got %+v", err)
 	}
 
-	err = enforceTrustModel(egsmodel.RuntimeTrustPolicy{
-		SignerPolicy: egsmodel.SignerPolicy{
+	err = enforceTrustModel(egscontract.RuntimeTrustPolicy{
+		SignerPolicy: egscontract.SignerPolicy{
 			AllowedSigners: []string{"allowed"},
 			RevokedSigners: []string{"allowed"},
 		},
@@ -885,11 +918,11 @@ func TestEnforceTrustModelRejectsDisallowedRevokedAndRevokedArtifact(t *testing.
 		t.Fatalf("expected signer-revoked error, got %+v", err)
 	}
 
-	err = enforceTrustModel(egsmodel.RuntimeTrustPolicy{
-		SignerPolicy: egsmodel.SignerPolicy{
+	err = enforceTrustModel(egscontract.RuntimeTrustPolicy{
+		SignerPolicy: egscontract.SignerPolicy{
 			AllowedSigners: []string{"allowed"},
 		},
-		ArtifactPolicy: egsmodel.ArtifactPolicy{
+		ArtifactPolicy: egscontract.ArtifactPolicy{
 			RevokedArtifacts: []string{"sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"},
 		},
 	}, "allowed", "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
@@ -917,7 +950,7 @@ func TestHealthReflectsArtifactRegistryReadinessAndLoadedTrustModel(t *testing.T
 				Transport: server.Client().Transport,
 			},
 		},
-		trustModel: &egsmodel.RuntimeTrustPolicy{},
+		trustModel: &egscontract.RuntimeTrustPolicy{},
 	}
 
 	health := service.Health(context.Background())

@@ -114,7 +114,7 @@ go run ./scripts/internal/signingkeygen ags /abs/path/private/ags-signer.json
 go run ./scripts/internal/signingkeygen egs /abs/path/private/egs-signer.json
 ```
 
-Each command prints the key's public part. Put the AGS one into the ES `verification` entries `provenance`, `derivation_attestation` and `workload_identity_binding`, the EGS one into `verification.trust_model`, and the AGS `key_id` into the EGS `runtime_trust.signer_policy.allowed_signers`. Remove the two key files once the configs hold the keys. `scripts/72_supported_local_setup.sh` does all of this itself.
+Each command prints the key's public part. Put the AGS one into the ES `verification` entries `provenance`, `derivation_attestation` and `workload_identity_binding`, the EGS one into `verification.trust_model`, and the AGS `key_id` into the EGS `runtime_trust.signer_policy.allowed_signers`. `ags.json` and `egs.json` now hold private keys: make each readable only by the account that runs its service (for example `chmod 0600`), since AGS and EGS refuse to start on a config other users can read. Remove the two key files once the configs hold the keys. `scripts/72_supported_local_setup.sh` does all of this itself.
 
 For the clean supported-host path, use `BRINGUP_PROFILE=prepare-only scripts/01_bringup.sh up` for the control plane and `BRINGUP_PROFILE=full scripts/01_bringup.sh check` against the already-running pre-managed Nomad endpoint.
 
