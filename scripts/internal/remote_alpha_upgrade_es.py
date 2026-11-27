@@ -25,9 +25,10 @@ the named one, in the clone's history: one that is not forward (to an older
 commit, to one on another line, or to one whose order the clone cannot
 show) runs only when root names it on the command line as
 --allow-downgrade <installed commit>..<named commit>, and apply records it
-in its backup. rollback puts back only the backup of the apply that left
-the installed ES binaries as they are, and records each rollback in that
-backup. The host steps:
+in its backup. rollback puts back a backup only when no backup made after
+it is still in effect (each was put back since) and the installed ES
+binaries are what its apply left (the byte rule), and records each rollback
+in that backup. The host steps:
 
   build           (unprivileged) build es, es-runtime-support and the
                   config check helper from this clean checkout, with
@@ -519,7 +520,8 @@ NOMAD_DIRS = ((NOMAD_DIR, 0o755), ("/opt/nomad", 0o755), ("/opt/nomad/data", 0o7
 # A default ACL decides the mode of each file root then creates in the
 # folder, whatever the umask, and an access ACL keeps entries on the folder.
 # scripts/70_linux_setup.sh removes both when it takes the folders back
-# (re-check 48 of ES PR #66); this upgrade refuses a folder that has one.
+# (re-check 48 of ES PR #66); this upgrade refuses a folder that has one,
+# and nomad.hcl, Nomad's TLS directory and its server folder with one.
 POSIX_ACLS = ("system.posix_acl_access", "system.posix_acl_default")
 NOMAD_TLS_DIR_MODE = 0o755
 NOMAD_TLS_FILES = ("ca.pem", "server-key.pem", "server.pem")
@@ -943,6 +945,19 @@ def write_new_file(path, text):
         handle.write(text)
         handle.flush()
         os.fsync(handle.fileno())
+
+
+def write_new_file_renamed(path, text):
+    """write_new_file to a temporary name beside path, then rename it to
+    path and sync the folder: path is either absent or whole."""
+    tmp = path + ".new"
+    write_new_file(tmp, text)
+    os.rename(tmp, path)
+    dir_fd = os.open(os.path.dirname(path), os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
 
 
 def curl_status(url, extra=(), timeout=10):
@@ -1436,9 +1451,9 @@ def other_nomad_configs():
 
 
 def posix_acls(path):
-    """The POSIX ACLs that the folder path has. os has listxattr only on
-    Linux, where the box runs; on macOS, where the tests also run, a folder
-    has no POSIX ACL."""
+    """The POSIX ACLs that path has. os has listxattr only on Linux, where
+    the box runs; on macOS, where the tests also run, nothing has a POSIX
+    ACL."""
     listxattr = getattr(os, "listxattr", None)
     if listxattr is None:
         return []
@@ -1598,6 +1613,11 @@ def keyring_shape():
         return None, f"{NOMAD_SERVER_DIR} is missing (Nomad makes it when it first starts)"
     if not stat.S_ISDIR(st.st_mode) or not owned_by_root(st) or stat.S_IMODE(st.st_mode) & 0o022:
         return None, f"{NOMAD_SERVER_DIR} is not a root:root directory only root can write ({owner_mode(st)})"
+    acls = posix_acls(folder)
+    if acls:
+        # A default ACL there would make the setup's issuer refuse the
+        # keyring it writes, after ES has stopped.
+        return None, f"{NOMAD_SERVER_DIR} has an ACL ({', '.join(acls)})"
     if not os.path.lexists(host(NOMAD_GOSSIP_KEYRING)):
         return "absent", "absent"
     if nomad_gossip("nomad_gossip_keyring_ok", host(NOMAD_GOSSIP_KEYRING)).returncode != 0:
@@ -1802,6 +1822,9 @@ def inspect_host(payload_dir, commit, allow_downgrade=None):
         report["nomad_hcl"] = owner_mode(st)
         if not owned_by_root(st) or stat.S_IMODE(st.st_mode) != NOMAD_CONFIG_MODE:
             block("nomad_hcl", "nomad.hcl is not root:root 0640")
+        acls = posix_acls(host(NOMAD_HCL))
+        if acls:
+            block("nomad_hcl", f"nomad.hcl has an ACL ({', '.join(acls)})")
         others = other_nomad_configs()
         if others:
             block("nomad_hcl", f"Nomad would also load {others} from {NOMAD_DIR}")
@@ -1842,7 +1865,13 @@ def es_config_target(doc, shape, pin):
     """(es.json, changes): the es.json apply installs on a host whose es.json
     doc is in shape "locked-http" or "https", with pin the server key's
     SHA-256. check and apply both take it from here, so a step that adds
-    keys to es.json is written once."""
+    keys to es.json is written once. doc must have Nomad's TLS keys exactly
+    when shape is "https", so such a step may rely on the shape it is given
+    (re-check 48 of ES PR #67: nothing else made a wrong shape fail)."""
+    nomad = doc.get("nomad") if isinstance(doc, dict) else None
+    has_tls = isinstance(nomad, dict) and any(key in nomad for key in NOMAD_TLS_KEYS)
+    if has_tls != (shape == "https"):
+        raise Refusal(f"es.json {'has' if has_tls else 'has no'} Nomad TLS keys, but the host's shape is {shape}")
     if shape == "locked-http":
         return migrate_config(doc, pin, START_ES_PATHS)
     return migrate_config(doc, pin)
@@ -2007,8 +2036,13 @@ def backup_host(commit, created):
     earlier = sorted(name for name in os.listdir(root) if stat.S_ISDIR(os.lstat(os.path.join(root, name)).st_mode))
     backup_dir = os.path.join(root, time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()) + "-" + commit[:12])
     backup_files(backup_dir, [host(p) for p in (ES_CONFIG, ES_BINARY, RUNTIME_SUPPORT, NOMAD_HCL)])
-    write_new_file(os.path.join(backup_dir, EARLIER_BACKUPS), json.dumps(earlier, indent=2) + "\n")
     write_new_file(os.path.join(backup_dir, CREATED_MANIFEST), json.dumps(list(created), indent=2) + "\n")
+    # EARLIER_BACKUPS goes last, whole or not at all (re-check 48 of ES PR
+    # #67, S1): an apply cut off before it leaves a folder the order rule
+    # skips and rollback can put back, and one that has it has
+    # CREATED_MANIFEST too. A partial EARLIER_BACKUPS would block the
+    # rollback of every other backup.
+    write_new_file_renamed(os.path.join(backup_dir, EARLIER_BACKUPS), json.dumps(earlier, indent=2) + "\n")
     return backup_dir
 
 

@@ -14,8 +14,8 @@ import (
 // owner and mode do not show the ACL. A default ACL decides the mode of each
 // file root then creates in the folder, so the upgrade's new nomad.hcl would
 // carry an entry for that account. check and apply refuse a Nomad folder
-// that has either ACL, before they change anything. The setup removes both
-// when it takes the folders back.
+// that has either ACL, and nomad.hcl with one, before they change anything.
+// The setup removes both when it takes the folders back.
 
 // upgradeGrantingACL gives the account with ID 65534 (nobody, standing in for
 // the nomad account) every right, under a mask that lets the entry count,
@@ -71,6 +71,12 @@ func TestRemoteAlphaUpgradeESRefusesANomadFolderWithAnACL(t *testing.T) {
 		{"the folder above the data directory has a default ACL", func(h *upgradeHost) {
 			setACL(h, "opt/nomad", "system.posix_acl_default")
 		}, "nomad_dirs", "/opt/nomad has an ACL (system.posix_acl_default)"},
+		{"nomad.hcl has an access ACL", func(h *upgradeHost) {
+			setACL(h, "etc/nomad.d/nomad.hcl", "system.posix_acl_access")
+		}, "nomad_hcl", "nomad.hcl has an ACL (system.posix_acl_access)"},
+		{"Nomad's server folder has a default ACL", func(h *upgradeHost) {
+			setACL(h, "opt/nomad/data/server", "system.posix_acl_default")
+		}, "shape", "Nomad's gossip keyring: /opt/nomad/data/server has an ACL (system.posix_acl_default)"},
 		{"Nomad's TLS directory has a default ACL", func(h *upgradeHost) {
 			h.issueTLS()
 			setACL(h, "etc/nomad.d/tls", "system.posix_acl_default")

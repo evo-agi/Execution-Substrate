@@ -7520,9 +7520,8 @@ payload's builds installed already, so they never put another commit's
 builds in place of the installed ones; only a checkout of an earlier,
 unmerged revision of the change that brought this check could.
 
-`rollback` puts back only the newest backup still in effect, the backup of
-the apply that left the host as it is. Two rules decide it, both before a
-service stops; a backup that fails either is refused with nothing changed
+`rollback` puts back a backup only when two rules hold, both checked before
+a service stops; a backup that fails either is refused with nothing changed
 and nothing recorded:
 
 - Every backup `apply` made after it has been put back since. `apply` lists,
@@ -7536,7 +7535,9 @@ and nothing recorded:
   to an older backup's staged payload, and putting that older backup back
   would leave `es.json` pinning a key Nomad no longer has. A folder without
   `earlier.json` was made by an earlier version of this script (ES PR #60's
-  backup on the box) or by an apply cut off before it changed anything. If
+  backup on the box) or by an apply cut off before it changed anything:
+  `apply` writes `earlier.json` last, after `created.json`, through a
+  temporary name, so a backup has all of it or none. If
   the `restored-` record cannot be written the rollback goes on and says
   so; an earlier backup then stays refused until this one is put back again.
 - Each of `es` and `es-runtime-support` is, byte for byte, either the
@@ -7549,7 +7550,12 @@ backup after builds were put in place without this script, and one whose
 staged payload is gone, since putting it back would move ES to another
 build without the move check. Put back the newest backup first, then the
 one before it. A backup may be put back again, for example after a rollback
-that was cut off. Each rollback, by `rollback` or by
+that was cut off. The first rule looks only at backups made after it, so
+after an earlier backup has been put back as well, putting this one back
+again passes only when the byte rule holds: when that earlier apply left the
+ES builds as they were, or a move root named brought them back. It then puts
+back this backup's files and builds, and records it, like any rollback.
+Each rollback, by `rollback` or by
 `apply` putting back its own backup, is recorded in that backup before a
 service stops, in a new `rollback-<UTC time>-<pid>.json`: what each
 installed binary is (`the backup's copy`, `the payload its apply
@@ -7599,9 +7605,12 @@ write that record; `apply`'s own rollback logs why and goes on.
 - `es.json` is not `root:es 0640`, `nomad.hcl` is not `root:root 0640`,
   `/etc/nomad.d` holds another `.hcl` or `.json` file that Nomad would load,
   or `/etc/nomad.d`, `/opt/nomad` (0755) and `/opt/nomad/data` (0700) are not
-  `root:root` folders with those modes and no ACL (audit INF-16; an account
-  that owned one could leave a default ACL there, which decides the mode of
-  each file root then creates in it, whatever the umask)
+  `root:root` folders with those modes and no ACL, or `nomad.hcl` has an ACL
+  (audit INF-16; an account that owned one of these folders could leave a
+  default ACL there, which decides the mode of each file root then creates
+  in it, whatever the umask, and the mode bits do not show it). Nomad's TLS
+  directory and `/opt/nomad/data/server` with an ACL make the host's shape
+  unknown
 - on `locked-http`: the new ES's `config.Load` refuses the migrated
   `es.json` (with a stand-in pin, since the key does not exist yet); a token
   file under `/etc/execution-substrate/nomad-acl` is not as provision left it
@@ -7792,7 +7801,23 @@ of a modified checkout and with the staged payload gone, each refused with
 nothing changed and nothing recorded, and of the newest backup and then the
 older one, after an `apply` cut off between the two binaries or before it
 installed either, and of a backup put back already, each recorded before ES
-stops, as `apply`'s own rollback is; no gossip key or Nomad token in the output, the
+stops, as `apply`'s own rollback is; `rollback` of an older backup whose
+staged payload a later apply of the same commit installed again (also named
+with a trailing slash, with a link or a folder as the later backup's
+`restored-` record, and with that backup's folder renamed), of a backup
+outside the backup folder, and while a later backup's `earlier.json` cannot
+be read, each refused; a rollback whose `restored-` record cannot be
+written, which goes on, says so, and keeps the older backup refused until it
+is put back again; a restore cut off before it removed what `apply`
+created; an older backup put back after an apply cut off while it wrote
+`earlier.json`, and the cut-off backup refused after it; an https restore
+whose `es.json` does not hold against Nomad, by `rollback` and by `apply`'s
+own rollback; a rollback after which ES does not answer; an installed
+binary missing, and a rollback record's name taken, each refused; the
+wrapper refusing `backup` and `restore`; `es.json` gaining a key after
+`check`; `es_config_target` refusing a shape its `es.json` does not match;
+a Nomad folder, `nomad.hcl`, the TLS directory or `/opt/nomad/data/server`
+with an ACL, each refused before anything changes; no gossip key or Nomad token in the output, the
 fakes' logged calls or any `curl` command line; payload binaries whose Go build info names another commit, another Go
 or a modified build, or shows a replaced module, a workspace module or a
 vendored dependency; payload files of another owner or group; a clone that

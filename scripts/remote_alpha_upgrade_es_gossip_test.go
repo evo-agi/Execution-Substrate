@@ -100,6 +100,32 @@ func (h *upgradeHost) installBuilds(revision string) {
 	h.write("usr/local/bin/es-runtime-support", string(stampedBinary("es-runtime-support", "go1.26.5", revision, "false")), 0o755)
 }
 
+// es_config_target takes the host's shape as given, and on an https host
+// no step reads it today: migrate_config returns at its TLS-keys branch, so
+// a check of an https host given "locked-http" passed every test
+// (re-check 48 of #67, the writer's mutant 24). A step added there may rely
+// on the shape, so es_config_target now refuses a shape its document does
+// not match. One TLS key is enough to make a document https's.
+func TestRemoteAlphaUpgradeESConfigTargetRefusesAShapeItsDocumentDoesNotMatch(t *testing.T) {
+	h := newUpgradeHost(t, buildESConfigCheck(t))
+	const probe = `def _probe(argv):
+    for doc, shape in (({"nomad": {"server_name": "server.global.nomad"}}, "locked-http"),
+                       ({"nomad": {"base_url": "https://127.0.0.1:4646"}}, "https")):
+        try:
+            m.es_config_target(doc, shape, "a" * 64)
+            print("accepted")
+        except m.Refusal as exc:
+            print(exc)
+    return 0
+m.main = _probe`
+	stdout, stderr, code := runWithPatchedUpgrade(h, probe)
+	want := "es.json has Nomad TLS keys, but the host's shape is locked-http\n" +
+		"es.json has no Nomad TLS keys, but the host's shape is https\n"
+	if code != 0 || stdout != want {
+		t.Fatalf("es_config_target: exit %d\nstdout %q, want %q\nstderr %s", code, stdout, want, stderr)
+	}
+}
+
 func TestRemoteAlphaUpgradeESAddsTheGossipKeyringToAnHTTPSHost(t *testing.T) {
 	helper := buildESConfigCheck(t)
 	h := newUpgradeHost(t, helper)
@@ -440,11 +466,6 @@ func TestRemoteAlphaUpgradeESRefusesAGossipKeyringItDidNotExpect(t *testing.T) {
 	}
 }
 
-// What apply does follows from what check found, so a host that changes in
-// between is refused before the backup, with nothing changed: a keyring
-// that appears, turns unsound or goes away on either start, and on a
-// locked-http host a TLS directory that appears. The fake docker makes the
-// change once the check has listed the allocations.
 // es.json is read again after the backup; one that gained a key since the
 // check is refused there by the key-path check of a locked-http host's
 // es.json (START_ES_PATHS), and the backup is put back. Like nomad.hcl
@@ -482,6 +503,11 @@ func TestRemoteAlphaUpgradeESRollsBackWhenESConfigGainsAKeyAfterCheck(t *testing
 	assertRestored(t, before, after)
 }
 
+// What apply does follows from what check found, so a host that changes in
+// between is refused before the backup, with nothing changed: a keyring
+// that appears, turns unsound or goes away on either start, and on a
+// locked-http host a TLS directory that appears. The fake docker makes the
+// change once the check has listed the allocations.
 func TestRemoteAlphaUpgradeESRefusesAHostThatChangedAfterCheck(t *testing.T) {
 	helper := buildESConfigCheck(t)
 	soundKeyring := `["` + base64.StdEncoding.EncodeToString(make([]byte, 32)) + `"]`

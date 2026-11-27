@@ -909,6 +909,49 @@ func TestRemoteAlphaUpgradeESRollsBackOnlyTheApplyThatLeftTheHost(t *testing.T) 
 		assertRestored(t, before, h.snapshot())
 	})
 
+	// Re-check 48 of #67, S1: an apply cut off while it writes earlier.json
+	// (a full disk here, after half the text) leaves a backup folder with
+	// created.json and no earlier.json, and the host as it was. The order
+	// rule skips that folder, so the older backup is put back; the cut-off
+	// folder is then refused like any other stale backup, not with a
+	// traceback. Written first, or straight to its name, a half earlier.json
+	// blocked every older rollback.
+	t.Run("an older backup after an apply cut off while it wrote earlier.json", func(t *testing.T) {
+		h, before, first := applied(t)
+		afterFirst := h.snapshot()
+		h.payload, h.commit = secondPayload(t, h, newerESCommit), newerESCommit
+		const cut = `_write = m.write_new_file
+def _cut(path, text):
+    if path.endswith(("/earlier.json", "/earlier.json.new")):
+        _write(path, text[:len(text) // 2])
+        raise OSError(28, "No space left on device")
+    return _write(path, text)
+m.write_new_file = _cut`
+		if _, stderr, code := runWithPatchedUpgrade(h, cut, "apply", "--payload", h.payload, "--commit", h.commit); code != 1 ||
+			!strings.Contains(stderr, "No space left on device") {
+			t.Fatalf("the cut-off apply exited %d: %s", code, stderr)
+		}
+		assertRestored(t, afterFirst, h.snapshot())
+		var cutOff string
+		for _, dir := range backupDirs(t, h) {
+			if dir != first {
+				cutOff = dir
+			}
+		}
+		if cutOff == "" || len(backupDirs(t, h)) != 2 {
+			t.Fatalf("backups %v", backupDirs(t, h))
+		}
+		if _, err := os.Lstat(filepath.Join(cutOff, "created.json")); err != nil {
+			t.Fatalf("the cut-off backup has no created.json: %v", err)
+		}
+		if _, err := os.Lstat(filepath.Join(cutOff, "earlier.json")); !os.IsNotExist(err) {
+			t.Fatalf("the cut-off backup has an earlier.json: %v", err)
+		}
+		requireRollback(t, h, first, [2]string{staged, staged}, named, box)
+		assertRestored(t, before, h.snapshot())
+		requireRollbackRefused(t, h, cutOff)
+	})
+
 	// Audit 47, A47-1: builds are reproducible, so after B1 and B2 were put
 	// back, a new apply B3 of B2's commit installs bytes equal to B2's
 	// staged payload. B2 is still refused while B3 is in effect, whatever
