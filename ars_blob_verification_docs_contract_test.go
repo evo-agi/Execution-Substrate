@@ -12,7 +12,8 @@ import (
 const arsBlobVerificationContractHeading = "## 5A. ARS blob byte verification contract"
 
 // arsBlobVerificationContractSection returns contracts.md section 5A, which
-// must sit directly before the Submit contract.
+// must sit directly before the workload grants contract (section 5B), which
+// in turn sits directly before the Submit contract.
 func arsBlobVerificationContractSection(t *testing.T) string {
 	t.Helper()
 	contracts := mustRead(t, ".docs/execution_lifecycle/contracts.md")
@@ -25,8 +26,13 @@ func arsBlobVerificationContractSection(t *testing.T) string {
 	if end < 0 {
 		t.Fatal("contracts.md section 5A has no following section")
 	}
-	if !strings.HasPrefix(rest[end+1:], "## 6. Submit contract\n") {
-		t.Fatal("contracts.md section 5A must come directly before the Submit contract")
+	if !strings.HasPrefix(rest[end+1:], "## 5B. Workload grants contract\n") {
+		t.Fatal("contracts.md section 5A must come directly before section 5B, the workload grants contract")
+	}
+	after := rest[end+1+len("## 5B. Workload grants contract\n"):]
+	next := strings.Index(after, "\n## ")
+	if next < 0 || !strings.HasPrefix(after[next+1:], "## 6. Submit contract\n") {
+		t.Fatal("contracts.md section 5B must come directly before the Submit contract")
 	}
 	return rest[:end]
 }

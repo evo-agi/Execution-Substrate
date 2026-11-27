@@ -217,3 +217,197 @@ F0 intentionally leaves these Workstream F seams open for F1/F2:
 
 The next behavior-changing Workstream F slice must update `PLANS.md` and the
 authoritative `.docs/` pages before changing runtime source files.
+
+Section 11 records that slice, F1. It settles the SPIRE selector posture, the
+Vault posture of workload identities, and the layout of workload SPIFFE IDs
+under `workload/`. The other seams in this section stay open.
+
+## 11. F1 decision: named workload identities and workload grants
+
+F1 is the next behavior-changing Workstream F slice. The project owner
+approved its design; the pull requests in section 11.10 implement it. Until
+the pull request that lands a part merges, sections 1 to 10 and the other
+`.docs/` pages describe current behavior for that part, and this section is
+the target it implements. Each of those pull requests moves the matching
+current-behavior text to the new rule in the same change.
+
+### 11.1 What F1 changes and why
+
+Before F1:
+
+- every workload run received the same SPIFFE ID,
+  `spiffe://execution.internal/workload`, and logged in to Vault with one
+  shared role, so any workload could read any other workload's secrets;
+- the SPIRE registration for that ID matched any root process on the host
+  (`unix:uid:0` plus `unix:gid:0`), inside a container or not;
+- the publisher's signed `network_access` alone decided whether a run got a
+  network.
+
+F1 replaces this with:
+
+- one identity per named workload, such as `codex-agent`, each with its own
+  SPIRE registration, Vault role and Vault policy;
+- names assigned by owner grant rules in ES deployment configuration, not
+  requested by publishers;
+- network access that needs both the publisher's signed request and an owner
+  grant.
+
+### 11.2 Names and the SPIFFE ID layout
+
+- A workload identity name is a single SPIFFE path segment of 1 to 63
+  characters from `a-z`, `0-9` and `-`, starting with a letter or a digit.
+- A named identity is `spiffe://execution.internal/workload/<name>`.
+- `spiffe://execution.internal/workload/<name>/run/<run_id>` is reserved for
+  per-run identities. F1 registers none. Every other path under `workload/`
+  is reserved and unused.
+- The shared ID `spiffe://execution.internal/workload` is retired when the
+  identity part of F1 lands.
+- Workload identities are never callers. The caller authentication contract
+  refuses every caller whose path is `workload` or starts with `workload/`
+  (`.docs/system_overview/contracts.md`, section 3A), for ARS, AGS, EGS, CGS
+  and ES alike, including the reserved per-run paths. A later design that
+  lets a workload call a service must change that rule explicitly.
+
+### 11.3 Who picks the name
+
+- ES admission picks the name from an owner grant rule in ES deployment
+  configuration, `admission_policy.workload_grants`
+  (`.docs/execution_lifecycle/contracts.md`, section 5B).
+- A rule matches exactly on four facts: the publisher principal
+  (`claims.package.publication.invoker.principal`, which AGS takes from its
+  authenticated caller), the evidence signer key ID (`seal.key_id`), the
+  artifact type, and the effective runtime profile name.
+- Publishers do not request a name. F1 adds no identity claim to signed
+  evidence: Workstream A removed `workload_identity_id` from the shared
+  execution claims, and F1 keeps it removed.
+- ES does not create SPIRE entries, Vault roles or Vault policies, and holds
+  no SPIRE or Vault administrative access. It can pick only names the owner
+  registered with the repository's setup scripts. ES startup refuses a grant
+  that names an identity missing from the configured list.
+
+### 11.4 Realization: one place translates names
+
+- Admission produces scheduler-neutral results only: an identity name or
+  none, and an egress lane name or none. Grant rules, policy decisions and
+  the abstract parts of durable formats name only these.
+- Runtime realization alone turns a name into the expected SPIFFE ID string,
+  the container label `execution-substrate.workload-identity=<name>`, the
+  Vault role `workload-<name>`, and the environment the helper and the
+  workload receive. It is the only code that maps grants to Nomad or Docker
+  terms.
+- A guard test fails if grant or admission-policy code names Nomad, Docker or
+  the container label.
+- F1 adds no scheduler plug-in interface. Nomad remains the lifecycle
+  authority, and the Docker driver remains the only driver.
+
+### 11.5 Runs without an identity
+
+- A run whose matching rule names no identity, or that matches no rule, gets
+  no identity handoff: no runtime helper endpoint, no
+  `EXEC_WORKLOAD_IDENTITY_ENDPOINT`, no helper-private SPIRE socket mount, no
+  runtime-identity tmpfs, and no workload-zone Vault environment. The
+  supervisor still starts the workload as fixed `10000:10000`.
+- A runtime profile that needs a credential, today
+  `control-plane-normal-shell/v1`, is refused at admission with
+  `403 workload_identity_not_granted` when no identity is granted.
+- An identity is handed off only when the run's egress lane reaches the
+  workload-zone Vault. ES startup refuses a rule that pairs an identity with a
+  lane that does not.
+
+### 11.6 The helper checks the identity it serves
+
+- ES passes the runtime helper the expected SPIFFE ID string of the run.
+- The helper refuses to serve the endpoint unless the JWT-SVID that SPIRE
+  returns names exactly that ID. A mismatch is task-fatal before the workload
+  starts.
+- A per-run identity later changes only that string.
+
+### 11.7 SPIRE and Vault posture
+
+- The setup scripts register one SPIRE entry per configured name, with the
+  selectors `docker:label:execution-substrate.workload-identity:<name>` and
+  `unix:uid:0`. Only the root runtime helper inside a container that carries
+  that label matches it: a root process outside any container, an unlabelled
+  container, and the fixed `10000:10000` workload process do not.
+- The broad entry that gives `spiffe://execution.internal/workload` to every
+  root process is removed in the same change. Readiness refuses
+  `submit-ready` while any `workload` entry uses only `unix` selectors or
+  lacks the label selector, or while the registered names differ from the
+  names ES configuration lists, in either direction: an entry that names an
+  identity ES configuration does not list, and a listed identity with no
+  registered entry, Vault role or Vault policy.
+- The SPIRE agent enables the Docker workload attestor. That attestor reads
+  container labels through the Docker API, which is root-equivalent access.
+  How the agent gets that access, and how it is limited, is decided and
+  red-teamed in the identity pull request.
+- Each name gets a Vault JWT role and a Vault policy, both named
+  `workload-<name>`, with `bound_subject` set to the name's exact SPIFFE ID
+  and explicit `token_ttl`, `token_max_ttl` and `token_bound_cidrs`. The
+  defaults are those of the current shared role: `15m`, `30m`, and the
+  workload bridge subnet.
+- A name's secrets live under `<name>/shared/` in the workload secret mount.
+  `<name>/runs/` stays free for later per-run secrets.
+- The workload-zone Vault runtime config moves to a version 2 blob without a
+  single `auth_role`, because the role follows from the name. This is a
+  Workstream E surface (`.docs/system_overview/runtime_config_ownership.md`)
+  and changes only the field set, not its owner.
+
+### 11.8 Adding per-run identities later
+
+F1 keeps a path to per-run identities that adds pieces and removes no code:
+
+- a small dedicated service, neither ES nor EGS, that creates a run's SPIRE
+  entry before submit and lets it expire after, called from realization;
+- a SPIRE access policy that limits that service to
+  `workload/<name>/run/*` entries;
+- replay-safe entry creation in reliable submit;
+- for each name switched to per-run, a Vault role that binds the subject by
+  glob (`bound_claims` with `bound_claims_type=glob`), and the retirement of
+  that name's static entry with one setup-script command.
+
+The ID layout of section 11.2, the realization seam of section 11.4, the
+expected-ID string of section 11.6, the realized ID string in durable formats
+(section 11.10, WI-5) and the `<name>/shared/` folder are what keep that path
+open.
+
+### 11.9 What F1 does not change
+
+- `EXEC_WORKLOAD_IDENTITY_ENDPOINT` stays the workload-visible discovery
+  contract, and the raw SPIRE socket stays helper-private.
+- The helper still starts as `0:0`, the Nomad task user is still `0:0`, and
+  the workload still runs as fixed `10000:10000` with no supplemental groups.
+- SPIRE issues JWT-SVIDs and Vault issues tokens, secrets and leases. ES
+  brokers none of them.
+- The ES public execution request DTO, the response DTOs apart from their
+  `authority_handoff` field, `GET /v1/executions:contract`,
+  `outcome_evidence`, and M6 support-bundle inputs keep their shapes.
+  Admission gains two refusal reason codes, `network_access_not_granted` and
+  `workload_identity_not_granted`, in the existing redacted error envelope.
+- `authority_handoff` stays non-secret evidence, and F1 changes its shape.
+  Its field names are a temporary compatibility edge that CP and IM consume
+  (`.docs/execution_lifecycle/es_execution_admission_model.md`, section 4C),
+  so the identity pull request changes them only with a documented
+  replacement handoff vocabulary and an explicit compatibility and
+  versioning plan, for CP and IM consumers alike. For a run with an identity
+  it keeps every current field, `workload_vault.auth_role` names that name's
+  `workload-<name>` role, and `identity_handoff` gains the non-secret fields
+  `workload_identity` (the name) and `spiffe_id` (the expected ID string). For
+  a run without an identity, including a `static-script/default` run whose
+  grant names no identity, `identity_handoff.mode` is `none`, and the fields
+  that describe an endpoint or a Vault login are absent: that run's response
+  loses fields it carries today. The identity pull request records the exact
+  shape, including `authority_path`, in
+  `.docs/execution_lifecycle/contracts.md` before it changes code. A
+  `control-plane-normal-shell/v1` run always has an identity, so it keeps
+  every field it carries today.
+
+### 11.10 Delivery
+
+| Pull request | What it lands | Gate |
+| --- | --- | --- |
+| WI-1 | This decision in `PLANS.md` and `.docs/`, with doc-contract tests. No behavior change. | Audit and the merge gate |
+| WI-2 | Network grants: `admission_policy.workload_grants` with exact-match rules, the lane value `unrestricted` only, `403 network_access_not_granted` on `:prepare` and `:submit`, startup validation, setup scripts that write grants for today's flows, and the readiness report `workload_egress_unrestricted=true` | Audit, red-team and the merge gate |
+| WI-3a | The caller authentication contract refuses `workload` caller paths | Audit and the merge gate |
+| WI-3 | Named identities: sections 11.2 to 11.7, the rewrite of the tests that pin the shared identity, and CI integration tests with real SPIRE, Vault and Docker | Audit, red-team, a box run with scripted rollback, and the merge gate |
+| WI-4 | Egress lanes: Docker `internal` networks whose only exit is a pinned filtering proxy, `network_mode` chosen by lane, the removal of `unrestricted`, and readiness checks. It starts with a box measurement of the hosts the Codex CLI contacts. | Audit, red-team, a box run, and the merge gate |
+| WI-5 | Durable replay and operational formats carry the identity name, the realized SPIFFE ID string and the lane name, with the runtime catalogue's vendor-neutral credential slot | Audit, red-team and the merge gate, before D3 makes those formats live state |
