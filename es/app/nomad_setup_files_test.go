@@ -322,14 +322,15 @@ func TestLinuxSetupStopsAtAFileNomadReadsThatItCannotTakeBack(t *testing.T) {
 // Re-check 50 (T50-1): Nomad 2.1.1 loads every *.hcl and *.json in its
 // config folder but an editor's ".#" lock file, names that look hidden or
 // temporary to a person included (`nomad config validate` loads
-// ".hidden.hcl" and "#hash.hcl"), so the take-back covers them too.
+// ".hidden.hcl" and "#hash.hcl"), so the take-back covers them too, with
+// each prefix and each suffix (re-check 51 of #66, Sonnet's S51-1).
 func TestLinuxSetupTakesBackNomadLoadedNamesThatLookHidden(t *testing.T) {
 	data := t.TempDir()
 	config := filepath.Join(data, "etc")
 	if err := os.Mkdir(config, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	names := []string{".hidden.hcl", "#hash.json"}
+	names := []string{".hidden.hcl", ".hidden.json", "#hash.hcl", "#hash.json"}
 	for _, name := range names {
 		path := filepath.Join(config, name)
 		if err := os.WriteFile(path, []byte("# "+name+"\n"), 0o600); err != nil {
@@ -473,6 +474,53 @@ func TestLinuxSetupShowsANameThatIsNotPlainPrintableASCIIEscaped(t *testing.T) {
 		}
 		for _, path := range []string{forged, undecodable, lookalike} {
 			requireRegularFile(t, path, "# kept\n", 0o644)
+		}
+	})
+	// Re-check 51 of #66 (Sonnet's S51-1): a control character other than
+	// a newline (a carriage return or an escape sequence can overwrite what
+	// the operator's terminal already shows; a tab or a DEL can hide a
+	// character) is shown escaped too.
+	t.Run("with a control character other than a newline", func(t *testing.T) {
+		data := t.TempDir()
+		config := filepath.Join(data, "etc")
+		if err := os.Mkdir(config, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		escaped := map[string]string{
+			"cr\rx.hcl":       `cr\rx.hcl`,
+			"del\x7fx.hcl":    `del\x7fx.hcl`,
+			"esc\x1b[2Kx.hcl": `esc\x1b[2Kx.hcl`,
+			"tab\tx.hcl":      `tab\tx.hcl`,
+		}
+		var names []string
+		for name := range escaped {
+			path := filepath.Join(config, name)
+			if err := os.WriteFile(path, []byte("# kept\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(path, 0o666); err != nil {
+				t.Fatal(err)
+			}
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		stdout, stderr, err := runLinuxSetupServiceHarness(t, data, "install_nomad_service_config\n")
+		if err != nil {
+			t.Fatalf("install_nomad_service_config: %v %s", err, stderr)
+		}
+		was := " back (uid " + strconv.Itoa(os.Getuid()) + ", gid " + strconv.Itoa(os.Getgid()) + ", 0666); Nomad's unit reads it as root, so check what it sets"
+		var want []string
+		for _, name := range names {
+			want = append(want, "nomad: took '"+config+"/"+escaped[name]+"'"+was)
+		}
+		if got := tookBack(stdout); strings.Join(got, "\n") != strings.Join(want, "\n") {
+			t.Fatalf("the setup reported\n%q\nwant\n%q", got, want)
+		}
+		if strings.ContainsAny(stdout, "\r\x1b\x7f\t") {
+			t.Fatalf("the setup's output holds a raw control character: %q", stdout)
+		}
+		for _, name := range names {
+			requireRegularFile(t, filepath.Join(config, name), "# kept\n", 0o644)
 		}
 	})
 	t.Run("in a refusal", func(t *testing.T) {
