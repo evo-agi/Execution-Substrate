@@ -190,8 +190,12 @@ case "$1" in
   show)
     user="${REMOTE_ALPHA_TEST_SYSTEMCTL_USER:-es}"
     group="${REMOTE_ALPHA_TEST_SYSTEMCTL_GROUP:-es}"
+    if [ -n "${REMOTE_ALPHA_TEST_SYSTEMCTL_EXEC_START:-}" ]; then
+      printf '%%s\n' "${REMOTE_ALPHA_TEST_SYSTEMCTL_EXEC_START}"
+    else
+      echo "ExecStart={ path=%s ; argv[]=%s -config %s ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }"
+    fi
     cat <<EOF
-ExecStart={ path=%s ; argv[]=%s -config %s ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }
 User=$user
 Group=$group
 ActiveState=%s
@@ -677,6 +681,16 @@ func TestRemoteAlphaESBinaryDeploymentStopsOnAConfigTheNewBinariesRefuse(t *test
 // after mutate has changed the fixture, and returns its report.
 func runESBinaryDeploymentCheckOnly(t *testing.T, mutate func(t *testing.T, f esBinaryDeploymentFixture), extraEnv ...string) map[string]any {
 	t.Helper()
+	return runESBinaryDeploymentCheckOnlyWith(t, func(f esBinaryDeploymentFixture) []string {
+		mutate(t, f)
+		return extraEnv
+	})
+}
+
+// runESBinaryDeploymentCheckOnlyWith is runESBinaryDeploymentCheckOnly with
+// an environment that may name the fixture's paths.
+func runESBinaryDeploymentCheckOnlyWith(t *testing.T, prepare func(f esBinaryDeploymentFixture) []string) map[string]any {
+	t.Helper()
 	tmpDir := t.TempDir()
 	fakeBin := filepath.Join(tmpDir, "bin")
 	if err := os.MkdirAll(fakeBin, 0o755); err != nil {
@@ -684,7 +698,7 @@ func runESBinaryDeploymentCheckOnly(t *testing.T, mutate func(t *testing.T, f es
 	}
 	fixture := setupESBinaryDeploymentFixture(t, tmpDir)
 	setupFakeESBinaryDeploymentCommands(t, fakeBin, fixture)
-	mutate(t, fixture)
+	extraEnv := prepare(fixture)
 	summaryPath := filepath.Join(tmpDir, "check-summary.json")
 	output, _ := runSourcedESBinaryDeploymentHelper(t, envWithPath(fakeBin, extraEnv...),
 		esBinaryDeploymentExpectedSliceShell(fixture)+fmt.Sprintf("remote_alpha_deploy_es_binaries_main --summary-path %q\n", summaryPath))
@@ -721,5 +735,78 @@ func TestRemoteAlphaESBinaryDeploymentConfigChecksDoNotSeeTheCallersEnvironment(
 	es := nestedMap(t, nestedMap(t, nestedMap(t, payload, "validation"), "config_checks"), "es")
 	if es["classification"] != "pass" {
 		t.Fatalf("the config check saw the caller's environment: %v", es)
+	}
+}
+
+// A staged config check that a signal ends gave no verdict: a blocker that
+// says so, not a pass and not a refusal of the config (red-team RT10-9 D09
+// and its note on the wording).
+func TestRemoteAlphaESBinaryDeploymentConfigCheckEndedByASignalIsABlocker(t *testing.T) {
+	t.Parallel()
+	payload := runESBinaryDeploymentCheckOnly(t, func(t *testing.T, f esBinaryDeploymentFixture) {
+		if err := os.WriteFile(filepath.Join(f.PayloadDir, "egsconfigcheck"), []byte("#!/bin/sh\nkill -9 $$\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	})
+	egs := nestedMap(t, nestedMap(t, nestedMap(t, payload, "validation"), "config_checks"), "egs")
+	if egs["classification"] != "blocker" || !strings.Contains(fmt.Sprint(egs["summary"]), "the config check egsconfigcheck was ended by signal 9, so nothing is installed") {
+		t.Fatalf("a config check ended by a signal: %v", egs)
+	}
+}
+
+// The unit must start exactly the pinned binary with the pinned config, or
+// the config checks judge a file ES does not read (red-team RT10-8): a
+// second -config, a config path that only contains the pinned one, systemd's
+// @ prefix running another program, two ExecStart lines, and a line not in
+// systemctl show's form are each a service_posture blocker. The forms ES
+// reads the same way pass.
+func TestRemoteAlphaESBinaryDeploymentRequiresTheExactExecStart(t *testing.T) {
+	t.Parallel()
+	show := func(path, argv string) string {
+		return "ExecStart={ path=" + path + " ; argv[]=" + argv + " ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }"
+	}
+	posture := func(t *testing.T, line func(f esBinaryDeploymentFixture) string) map[string]any {
+		t.Helper()
+		payload := runESBinaryDeploymentCheckOnlyWith(t, func(f esBinaryDeploymentFixture) []string {
+			return []string{"REMOTE_ALPHA_TEST_SYSTEMCTL_EXEC_START=" + line(f)}
+		})
+		return nestedMap(t, nestedMap(t, payload, "validation"), "es_service_posture")
+	}
+	for _, tc := range []struct {
+		name    string
+		line    func(f esBinaryDeploymentFixture) string
+		refused bool
+	}{
+		{"the pinned binary and config", func(f esBinaryDeploymentFixture) string {
+			return show(f.LiveESBinaryPath, f.LiveESBinaryPath+" -config "+f.ConfigPath)
+		}, false},
+		{"--config=", func(f esBinaryDeploymentFixture) string {
+			return show(f.LiveESBinaryPath, f.LiveESBinaryPath+" --config="+f.ConfigPath)
+		}, false},
+		{"a second -config", func(f esBinaryDeploymentFixture) string {
+			return show(f.LiveESBinaryPath, f.LiveESBinaryPath+" -config "+f.ConfigPath+" -config /nonexistent/second.json")
+		}, true},
+		{"a config path that contains the pinned one", func(f esBinaryDeploymentFixture) string {
+			return show(f.LiveESBinaryPath, f.LiveESBinaryPath+" -config "+f.ConfigPath+".d/es.json")
+		}, true},
+		{"another program under the binary's name", func(f esBinaryDeploymentFixture) string {
+			return show("/opt/other/es", f.LiveESBinaryPath+" -config "+f.ConfigPath)
+		}, true},
+		{"two ExecStart lines", func(f esBinaryDeploymentFixture) string {
+			l := show(f.LiveESBinaryPath, f.LiveESBinaryPath+" -config "+f.ConfigPath)
+			return l + "\n" + l
+		}, true},
+		{"a line not in systemctl show's form", func(f esBinaryDeploymentFixture) string {
+			return "ExecStart=" + f.LiveESBinaryPath + " -config " + f.ConfigPath
+		}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := posture(t, tc.line)
+			blocked := got["classification"] == "blocker" && strings.Contains(fmt.Sprint(got["summary"]), "ExecStart")
+			if blocked != tc.refused {
+				t.Fatalf("service posture %v, want refused=%v", got, tc.refused)
+			}
+		})
 	}
 }

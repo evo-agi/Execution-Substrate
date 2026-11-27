@@ -444,6 +444,38 @@ def service_identity_is_accepted(effective_user, effective_group):
     return (effective_user, effective_group) == CURRENT_SUPPORTED_SERVICE_IDENTITY
 
 
+def exec_start_problem(commands):
+    """Why the unit does not start exactly the pinned binary with the pinned
+    config, or None: one ExecStart, whose program (systemd's path=, what it
+    runs) is the binary and whose argv is the binary and -config <path> (or
+    --config, or either with =). systemctl show prints each command as
+    { path=<program> ; argv[]=<words> ; ... }; with systemd's @ prefix argv[0]
+    is only the name the program is given. A second -config, or a path that
+    only contains the pinned one, would have ES read a config the checks
+    above never judged. The signing key rotation applies the same rule
+    (scripts/internal/remote_alpha_rotate_signing_keys.py,
+    exec_start_problems)."""
+    if len(commands) != 1:
+        return f"service has {len(commands)} ExecStart commands, not one"
+    text = commands[0]
+    path, argv = "?", []
+    if text.startswith("{ path="):
+        path_end = text.find(" ; ")
+        if path_end > 0:
+            path = text[len("{ path="):path_end]
+            rest = text[path_end + len(" ; "):]
+            if rest.startswith("argv[]="):
+                argv_end = rest.find(" ;")
+                if argv_end > 0:
+                    argv = rest[len("argv[]="):argv_end].split()
+    allowed = [[BINARY_PATH, flag, CONFIG_PATH] for flag in ("-config", "--config")] + \
+        [[BINARY_PATH, f"{flag}={CONFIG_PATH}"] for flag in ("-config", "--config")]
+    if path != BINARY_PATH or argv not in allowed:
+        return ("service ExecStart does not match the pinned binary/config path: it runs "
+                f"{path} as {' '.join(argv) or '?'}, not {BINARY_PATH} with -config {CONFIG_PATH}")
+    return None
+
+
 def parse_systemctl_show():
     unit_name = SERVICE_NAME if SERVICE_NAME.endswith(".service") else SERVICE_NAME + ".service"
     proc = run_command(
@@ -472,11 +504,14 @@ def parse_systemctl_show():
             f"failed to inspect {unit_name} through systemctl show: {proc.stderr.strip() or proc.stdout.strip()}",
             **fields,
         )
+    exec_starts = []
     for raw in proc.stdout.splitlines():
         key, _, value = raw.partition("=")
         value = value.strip()
         if key == "ExecStart":
-            fields["exec_start"] = value
+            if value:
+                exec_starts.append(value)
+            fields["exec_start"] = "\n".join(exec_starts)
         elif key == "User":
             fields["user"] = value
             fields["effective_user"] = value or "root(default)"
@@ -494,8 +529,9 @@ def parse_systemctl_show():
     blockers = []
     if fields["fragment_path"] and fields["fragment_path"] != SERVICE_UNIT_PATH:
         blockers.append(f"service fragment path mismatch: {fields['fragment_path']}")
-    if BINARY_PATH not in fields["exec_start"] or CONFIG_PATH not in fields["exec_start"]:
-        blockers.append("service ExecStart does not match the pinned binary/config path")
+    problem = exec_start_problem(exec_starts)
+    if problem:
+        blockers.append(problem)
     if not service_identity_is_accepted(fields["effective_user"], fields["effective_group"]):
         blockers.append(
             "service identity is not the current supported binary-deployment posture: "
@@ -744,6 +780,15 @@ def run_config_checks(payload):
             continue
         if proc.returncode == 0:
             results[service] = make_status("pass", f"the new {service} accepts {config_path}", **fields)
+            continue
+        if proc.returncode < 0:
+            # A check that a signal ended gave no verdict on the config.
+            results[service] = make_status(
+                "blocker",
+                f"the config check {checker} was ended by signal {-proc.returncode}, so nothing is installed",
+                exit_status=proc.returncode,
+                **fields,
+            )
             continue
         reason = (proc.stderr.strip() or proc.stdout.strip() or f"exit status {proc.returncode}")[:600]
         results[service] = make_status(

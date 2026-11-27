@@ -496,6 +496,21 @@ func TestSigningKeyRotationWrapperRefusesCodeOfAnotherOwnerAsRoot(t *testing.T) 
 			}
 		})
 	}
+	// The helper's own check, the second line for a start without the
+	// wrapper, also asks who owns the folders above scripts/ (red-team
+	// RT10-9, mutant N41).
+	t.Run("the helper on its own, under a folder of a system account", func(t *testing.T) {
+		c := newRotationClone(t)
+		if err := os.Lchown(c.root, 1, -1); err != nil {
+			t.Fatal(err)
+		}
+		stdout, stderr, code := c.start(t.TempDir(), "/usr/bin/python3", c.env("SIGNING_KEY_ROTATION_TEST_CHECKOUT_OWNER=0"),
+			"-I", "-B", c.helper, "--host-root", c.host, "check")
+		if code != 1 || stdout != "" || !strings.Contains(stderr, "someone other than root can change the code this rotation runs as root") ||
+			!strings.Contains(stderr, c.root+" belongs to uid 1") {
+			t.Fatalf("the helper on its own: exit %d\nstdout %s\nstderr %s", code, stdout, stderr)
+		}
+	})
 }
 
 // rotationWrapperGuard returns the parts of a wrapper's embedded program

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -70,7 +71,7 @@ func rotationProblems(report map[string]any) string { return fmt.Sprint(report["
 // backup that finishes it; rolling that backup back again settles the
 // host (Opus re-audit F3).
 func TestSigningKeyRotationNamesARollbackThatDidNotFinish(t *testing.T) {
-	for _, step := range []string{"stop-ars", "start-ars", "start-es"} {
+	for _, step := range []string{"stop-ars", "restart-ars", "restart-es"} {
 		t.Run(step, func(t *testing.T) {
 			h := newRotationHost(t)
 			before := h.snapshot()
@@ -191,7 +192,7 @@ func TestSigningKeyRotationDoesNotRollBackTwice(t *testing.T) {
 // The rollback command records TERM, HUP, INT and QUIT and does not stop
 // for them (Sonnet N01, Opus A64).
 func TestSigningKeyRotationRollbackCommandHoldsSignals(t *testing.T) {
-	for sig, step := range map[string]string{"TERM": "stop-ars", "HUP": "start-ars", "INT": "restart-egs", "QUIT": "start-es"} {
+	for sig, step := range map[string]string{"TERM": "stop-ars", "HUP": "restart-ars", "INT": "restart-egs", "QUIT": "restart-es"} {
 		t.Run(sig, func(t *testing.T) {
 			h := newRotationHost(t)
 			before := h.snapshot()
@@ -418,5 +419,149 @@ func TestSigningKeyRotationHealthCallsUseTheOperatorCertificate(t *testing.T) {
 				t.Fatalf("a health call lacks %q: %s", want, line)
 			}
 		}
+	}
+}
+
+// Something that starts ARS after apply's stop and before the empty index
+// is in place gives an ARS that keeps the retired records in memory; a
+// start of a running unit does nothing, so apply restarts ARS, AGS and ES,
+// and the ARS that runs at the end read the empty index (red-team RT10-7).
+// The rollback restarts them the same way.
+func TestSigningKeyRotationRestartsWhatSomethingElseStarted(t *testing.T) {
+	h := newRotationHost(t)
+	startARS := func() {
+		cmd := exec.Command(filepath.Join(h.bin, "systemctl"), "start", "ars")
+		cmd.Dir = h.state
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("start ars: %v %s", err, out)
+		}
+		if loaded, err := os.ReadFile(filepath.Join(h.state, "ars-loaded-index")); err != nil || !strings.Contains(string(loaded), `"a"`) {
+			t.Fatalf("the ARS started in the window did not read the old index: %q (%v)", loaded, err)
+		}
+	}
+	stdout, stderr, code := h.runPausedAt("index-temp-written", startARS, "apply")
+	if r := h.report(stdout, stderr, code); code != 0 || r["result"] != "rotated" {
+		t.Fatalf("apply: exit %d result %v\n%s", code, r["result"], stderr)
+	}
+	if loaded, err := os.ReadFile(filepath.Join(h.state, "ars-loaded-index")); err != nil || string(loaded) != string(h.read(rotationIndex)) || strings.Contains(string(loaded), `"a"`) {
+		t.Fatalf("the ARS running after apply did not read the empty index: %q (%v); on disk %q", loaded, err, h.read(rotationIndex))
+	}
+	backups := h.backupDirs()
+	if len(backups) != 1 {
+		t.Fatalf("backups: %v", backups)
+	}
+	backup := backups[0]
+	stdout, stderr, code = h.runPausedAt("restored-index", startARS, "rollback", "--backup-dir", backup)
+	if r := h.report(stdout, stderr, code); code != 0 || r["result"] != "rolled_back" {
+		t.Fatalf("rollback: exit %d result %v steps %v\n%s", code, r["result"], r["rollback_steps"], stderr)
+	}
+	if loaded, err := os.ReadFile(filepath.Join(h.state, "ars-loaded-index")); err != nil || string(loaded) != string(h.read(rotationIndex)) {
+		t.Fatalf("the ARS running after the rollback did not read the restored index: %q (%v)", loaded, err)
+	}
+}
+
+// One apply or rollback at a time (red-team RT10-5, Sonnet O-S2). While an
+// apply holds the lock on the backup root, here held just before it writes
+// egs.json, a second apply and a rollback are refused and change nothing,
+// and check names the running apply; the first apply then rotates.
+func TestSigningKeyRotationRunsOneAtATime(t *testing.T) {
+	h := newRotationHost(t)
+	earlier := h.apply()["backup_dir"].(string)
+	stdout, stderr, code := h.runPausedAt("config-temp-written:egs", func() {
+		mid := h.snapshot()
+		calls := len(h.serviceCalls())
+		stdout, stderr, code := h.run("apply")
+		if r := h.report(stdout, stderr, code); code != 1 || !strings.Contains(rotationProblems(r), "an apply or rollback is running now") {
+			t.Errorf("a second apply while one runs: exit %d problems %v\n%s", code, r["problems"], stderr)
+		}
+		stdout, stderr, code = h.run("check")
+		if r := h.report(stdout, stderr, code); code != 1 || !strings.Contains(rotationProblems(r), "an apply or rollback is running now") {
+			t.Errorf("check while an apply runs: exit %d problems %v", code, r["problems"])
+		}
+		_, stderr, code = h.run("rollback", "--backup-dir", earlier)
+		if code != 1 || !strings.Contains(stderr, "another apply or rollback is running: it holds the lock on /"+rotationBackupRoot) {
+			t.Errorf("a rollback while an apply runs: exit %d\n%s", code, stderr)
+		}
+		if !reflect.DeepEqual(h.snapshot(), mid) || len(h.serviceCalls()) != calls {
+			t.Error("a refused run changed something")
+		}
+	}, "apply")
+	if r := h.report(stdout, stderr, code); code != 0 || r["result"] != "rotated" {
+		t.Fatalf("the apply that held the lock: exit %d result %v\n%s", code, r["result"], stderr)
+	}
+	h.requireReady()
+}
+
+// A lock that another process holds on the backup root, as an apply or a
+// rollback would, stops apply and rollback, and check names it; once it
+// is released, both run.
+func TestSigningKeyRotationWaitsForNoOneHoldingTheLock(t *testing.T) {
+	h := newRotationHost(t)
+	backup := h.apply()["backup_dir"].(string)
+	lock, err := os.Open(h.path(rotationBackupRoot))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Close()
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+	before := h.snapshot()
+	for _, args := range [][]string{{"check"}, {"apply"}} {
+		stdout, stderr, code := h.run(args...)
+		if r := h.report(stdout, stderr, code); code != 1 || !strings.Contains(rotationProblems(r), "an apply or rollback is running now") {
+			t.Fatalf("%s while the lock is held: exit %d problems %v", args[0], code, r["problems"])
+		}
+	}
+	if _, stderr, code := h.run("rollback", "--backup-dir", backup); code != 1 || !strings.Contains(stderr, "another apply or rollback is running") {
+		t.Fatalf("rollback while the lock is held: exit %d\n%s", code, stderr)
+	}
+	if !reflect.DeepEqual(h.snapshot(), before) {
+		t.Fatal("a refused run changed a config or the index")
+	}
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_UN); err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr, code := h.run("rollback", "--backup-dir", backup)
+	if r := h.report(stdout, stderr, code); code != 0 || r["result"] != "rolled_back" {
+		t.Fatalf("rollback once the lock is released: exit %d result %v\n%s", code, r["result"], stderr)
+	}
+}
+
+// Before a rollback puts the backup's index back, it keeps the index it
+// replaces in the backup folder, so records ARS took since are not lost
+// with no copy (red-team RT10-3). apply's own rollback keeps it too.
+func TestSigningKeyRotationRollbackKeepsTheIndexItReplaces(t *testing.T) {
+	h := newRotationHost(t)
+	backup := h.apply()["backup_dir"].(string)
+	h.writeJSON(rotationIndex, map[string]any{"taken-after-the-rotation": 1}, 0o600)
+	taken := h.read(rotationIndex)
+	stdout, stderr, code := h.run("rollback", "--backup-dir", backup)
+	report := h.report(stdout, stderr, code)
+	if code != 0 || report["result"] != "rolled_back" {
+		t.Fatalf("rollback: exit %d result %v\n%s", code, report["result"], stderr)
+	}
+	want := filepath.Join(backup, "ars-index.replaced-"+fmt.Sprint(report["rollback_id"])+".json")
+	if report["replaced_index_kept"] != want {
+		t.Fatalf("the report names %v as the kept index, want %s", report["replaced_index_kept"], want)
+	}
+	kept, err := os.ReadFile(want)
+	if err != nil || !bytes.Equal(kept, taken) {
+		t.Fatalf("the kept index %q (%v), want the replaced one %q", kept, err, taken)
+	}
+	if st, err := os.Lstat(want); err != nil || st.Mode().Perm() != 0o600 {
+		t.Fatalf("the kept index is not 0600: %v %v", st, err)
+	}
+
+	h = newRotationHost(t)
+	h.mark("unhealthy-after-es-start-1")
+	stdout, stderr, code = h.run("apply")
+	report = h.report(stdout, stderr, code)
+	if code != 1 || report["result"] != "rolled_back" {
+		t.Fatalf("apply: exit %d result %v\n%s", code, report["result"], stderr)
+	}
+	want = filepath.Join(fmt.Sprint(report["backup_dir"]), "ars-index.replaced-apply.json")
+	if kept, err := os.ReadFile(want); err != nil || string(kept) != "{}\n" || report["replaced_index_kept"] != want {
+		t.Fatalf("apply's rollback kept %q (%v) as %v, want the empty index at %s", kept, err, report["replaced_index_kept"], want)
 	}
 }

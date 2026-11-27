@@ -20,9 +20,9 @@ a key the rotation retires:
             old one revoked, the publication revision one higher), ES's four
             verification keys and every workload grant's signer key ID; stop
             ES, AGS and ARS; move ARS's index into the backup and give ARS an
-            empty one; start ARS, restart EGS, start AGS and ES, and check
-            that all four run and answer; on any failure or interrupting
-            signal, put the backup back and start them again
+            empty one; restart ARS, EGS, AGS and ES, and check that all
+            four run and answer; on any failure or interrupting signal, put
+            the backup back and restart them again
   rollback  (root) put a backup back and start the services again, or
             remove the folder an apply stopped before it changed anything;
             it records its start (rollback-started.json) before it changes
@@ -50,6 +50,7 @@ Everything refuses what it does not recognise rather than guess.
 
 import argparse
 import errno
+import fcntl
 import grp
 import hashlib
 import json
@@ -73,6 +74,10 @@ INDEX_COPY = "ars-index.json"
 SUMMARY = "summary.json"
 ROLLBACK_RECORD = "rollback.json"
 ROLLBACK_STARTED = "rollback-started.json"
+# Before a rollback replaces ARS's index, the index it replaces is kept in
+# the backup folder under this name, with the rollback's ID (or "apply" for
+# apply's own rollback), so no rollback destroys the only copy of a record.
+INDEX_REPLACED = "ars-index.replaced-{}.json"
 # An apply builds its backup under this prefix and renames it to its final
 # name once every copy and the manifest are on disk. No config is written
 # before that rename, so a folder still named this way holds nothing that
@@ -147,10 +152,16 @@ HOST_ROOT = "/"
 
 
 def set_host_root(value):
-    """A --host-root whose real path is / is the host itself, whatever its
-    spelling (//, /., /etc/..), so it never turns the test hooks on."""
+    """A --host-root that is the folder / is the host itself, whatever its
+    spelling (//, /., /etc/..) and also through a bind mount of / at another
+    path (the same device and inode as /), so it never turns the test hooks
+    on over the host's own files."""
     global HOST_ROOT
-    HOST_ROOT = "/" if os.path.realpath(value) == "/" else value
+    try:
+        same = os.path.samefile(value, "/")
+    except OSError:
+        same = False
+    HOST_ROOT = "/" if same or os.path.realpath(value) == "/" else value
 
 
 def host(path):
@@ -608,7 +619,7 @@ def http_address(name, doc):
     address, port = http.get("bind_address"), http.get("port")
     if not isinstance(address, str) or not address or ":" in address or not isinstance(port, int) \
             or isinstance(port, bool) or not 0 < port < 65536:
-        raise Refusal(f"{name}.json has no IPv4 http.bind_address and http.port")
+        raise Refusal(f"{name}.json has no http.bind_address (an address without a port) and http.port")
     return address, port
 
 
@@ -1047,6 +1058,7 @@ def inspect(mode):
             problems.append(str(exc))
     try:
         problems += unfinished_problems()
+        problems += lock_problems()
     except Refusal as exc:
         problems.append(str(exc))
     index = {"path": None, "entries": None}
@@ -1089,6 +1101,58 @@ def inspect(mode):
 
 
 # Backups.
+
+# The lock apply and rollback hold on the backup root for their whole run.
+LOCK = {"fd": None}
+LOCK_WAIT_SECONDS = 3
+
+
+def take_lock(root):
+    """Hold an exclusive lock on the backup root folder root for the rest
+    of this run, so that no second apply or rollback runs at the same time
+    (red-team RT10-5, Sonnet O-S2): each rechecks a config before it writes
+    it, but a rollback puts its copies back without asking what another run
+    wrote since. The lock ends with the process, also on a SIGKILL. A check,
+    which takes the lock for a moment only, is waited for a few seconds."""
+    fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    deadline = time.monotonic() + LOCK_WAIT_SECONDS
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except BlockingIOError:
+            if time.monotonic() >= deadline:
+                os.close(fd)
+                raise Refusal(f"another apply or rollback is running: it holds the lock on {BACKUP_ROOT}; "
+                              "nothing was changed") from None
+            time.sleep(0.1)
+        except OSError as exc:
+            os.close(fd)
+            raise Refusal(f"cannot lock {BACKUP_ROOT}: {exc.strerror}; nothing was changed") from None
+    LOCK["fd"] = fd
+    test_point("locked")
+
+
+def lock_problems():
+    """check: an apply or rollback that holds the lock now. Nothing when
+    this run holds it, or when there is no backup root yet."""
+    if LOCK["fd"] is not None:
+        return []
+    try:
+        fd = os.open(host(BACKUP_ROOT), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except OSError:
+        return []
+    try:
+        fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return [f"an apply or rollback is running now (it holds the lock on {BACKUP_ROOT}); "
+                "run check again once it has ended"]
+    except OSError as exc:
+        return [f"cannot lock {BACKUP_ROOT}: {exc.strerror}"]
+    finally:
+        os.close(fd)
+    return []
+
 
 def backup_root_ready():
     root = host(BACKUP_ROOT)
@@ -1353,7 +1417,8 @@ def require_root_only_checkout():
         shown = "; ".join(problems[:20])
         more = f" (and {len(problems) - 20} more)" if len(problems) > 20 else ""
         raise Refusal(f"someone other than {who} can change the code this rotation runs as root: {shown}{more}; "
-                      "hand the clone to root first (chown -R root:root and chmod -R go-w); nothing was changed")
+                      "hand the clone to root first (chown -R root:root and chmod -R go-w), in folders that only "
+                      "root can change; nothing was changed")
 
 
 # The service steps. apply stops at the first failed step and rolls back; a
@@ -1382,16 +1447,20 @@ def stop_services(steps, best_effort):
 
 
 def start_services(steps, docs, best_effort):
-    """Start ARS on its index, restart EGS on its key, then AGS, then ES,
-    which fetches EGS's trust policy when it starts, so EGS must already
-    accept connections. Returns whether every step worked."""
+    """Restart ARS on its index, EGS on its key, then AGS, then ES, which
+    fetches EGS's trust policy when it starts, so EGS must already accept
+    connections. Each is a restart, never a start: start does nothing to a
+    unit that something else started after the stop, and such a process
+    may have read the files before they were written (red-team RT10-7). A
+    restart gives a process that read them after. Returns whether every
+    step worked."""
     ok = True
-    ok &= take_step(steps, "start ars", lambda: systemctl("start", "ars"), best_effort)
+    ok &= take_step(steps, "restart ars", lambda: systemctl("restart", "ars"), best_effort)
     ok &= take_step(steps, "wait for ars", lambda: wait_listening("ars", docs), best_effort)
     ok &= take_step(steps, "restart egs", lambda: systemctl("restart", "egs"), best_effort)
     ok &= take_step(steps, "wait for egs", lambda: wait_listening("egs", docs), best_effort)
-    ok &= take_step(steps, "start ags", lambda: systemctl("start", "ags"), best_effort)
-    ok &= take_step(steps, "start es", lambda: systemctl("start", "es"), best_effort)
+    ok &= take_step(steps, "restart ags", lambda: systemctl("restart", "ags"), best_effort)
+    ok &= take_step(steps, "restart es", lambda: systemctl("restart", "es"), best_effort)
     return ok
 
 
@@ -1401,10 +1470,11 @@ def require_ars_stopped():
         raise Refusal(f"ars is {state} after systemctl stop ars")
 
 
-def restore(report, docs, configs, index, leftovers):
+def restore(report, docs, configs, index, leftovers, keep):
     """Put configs (entries with their copies) and the index (record and
-    copy, or None) back, start the services again, and wait for them. Every
-    step is tried; the result says what state the host is in, and is
+    copy, or None) back, restart the services, and wait for them. keep is
+    (backup folder, name) for a copy of the index the restore replaces.
+    Every step is tried; the result says what state the host is in, and is
     rolled_back only when every step worked and the services answer."""
     steps = report.setdefault("rollback_steps", [])
     services_ok = stop_services(steps, True)
@@ -1415,7 +1485,11 @@ def restore(report, docs, configs, index, leftovers):
     for entry, copy, _ in configs:
         restored_ok &= take_step(steps, f"restore {entry['path']}", lambda e=entry, c=copy: restore_config(e, c), True)
     if index is not None:
-        restored_ok &= take_step(steps, f"restore {index[0]['path']}", lambda: restore_index(*index), True)
+        def put_index_back():
+            kept = restore_index(*index, keep)
+            if kept is not None:
+                report["replaced_index_kept"] = kept
+        restored_ok &= take_step(steps, f"restore {index[0]['path']}", put_index_back, True)
     services_ok &= start_services(steps, docs, True)
     if not restored_ok:
         report["result"] = "rollback_failed"
@@ -1436,13 +1510,29 @@ def restore_config(entry, copy):
         raise Failed(f"{entry['path']} does not match its backup after the restore")
 
 
-def restore_index(record, copy):
+def restore_index(record, copy, keep):
+    """Put the index copy back. The index it replaces, when it differs, is
+    first kept in the backup folder (keep: folder and name), so a rollback
+    never destroys the only copy of a record ARS took since (red-team
+    RT10-3). Returns the kept copy's path, or None."""
     require_ars_stopped()
     dir_fd, problems = open_index_folder(record["path"])
+    kept = None
     try:
         if problems:
             raise Failed("; ".join(problems))
         name = os.path.basename(record["path"])
+        try:
+            os.lstat(name, dir_fd=dir_fd)
+            current, _ = read_regular_file(name, INDEX_MAX_BYTES, dir_fd=dir_fd, shown=record["path"])
+        except FileNotFoundError:
+            current = None
+        if current is not None and current != copy:
+            folder, keep_name = keep
+            write_new_file(os.path.join(folder, keep_name), current)
+            sync_dir(folder)
+            kept = os.path.join(folder, keep_name)
+        test_point("index-replaced-kept")
         replace_file(dir_fd, name, copy, record["uid"], record["gid"], int(record["mode"], 8))
         test_point("restored-index")
         after, _ = read_regular_file(name, INDEX_MAX_BYTES, dir_fd=dir_fd, shown=record["path"])
@@ -1450,6 +1540,7 @@ def restore_index(record, copy):
             raise Failed(f"{record['path']} does not match its backup after the restore")
     finally:
         os.close(dir_fd)
+    return kept
 
 
 def remove_leftovers(report, leftovers):
@@ -1525,6 +1616,15 @@ def cmd_apply(_args):
     if report["problems"]:
         say(json.dumps(report, indent=2, sort_keys=True))
         raise Refusal(f"{len(report['problems'])} problem(s); nothing was changed")
+    # From here on this run holds the lock (the backup root is made, when it
+    # is missing, to hold it). A run that started or ended since inspect
+    # left records or changed configs: the records are read again here, and
+    # each config is checked again before it is copied and before it is
+    # written.
+    take_lock(backup_root_ready())
+    late = unfinished_problems()
+    if late:
+        raise Refusal("; ".join(late) + "; nothing was changed")
     docs = state["docs"]
     try:
         check_stop()
@@ -1600,7 +1700,7 @@ def cmd_apply(_args):
                 record = index_backup["record"]
                 copy, _ = read_regular_file(os.path.join(backup_dir, INDEX_COPY), INDEX_MAX_BYTES)
                 index = ({k: record[k] for k in ("path", "uid", "gid", "mode")}, copy)
-            restore(report, docs, configs, index, find_leftovers(docs["ars"]))
+            restore(report, docs, configs, index, find_leftovers(docs["ars"]), (backup_dir, INDEX_REPLACED.format("apply")))
         except Exception as exc:  # noqa: BLE001 - recorded in the result
             report["result"] = "rollback_failed"
             report["rollback_failure"] = str(exc)
@@ -1620,15 +1720,24 @@ def cmd_rollback(args):
     parent, name = os.path.split(os.path.normpath(backup_dir))
     if os.path.realpath(parent) != os.path.realpath(root) or not name or name.startswith(".") and not name.startswith(INCOMPLETE_PREFIX):
         raise Refusal(f"{backup_dir} is not a folder directly under {BACKUP_ROOT}")
+
+    def lock_root():
+        st = os.lstat(root)
+        if not stat.S_ISDIR(st.st_mode) or st.st_uid != root_uid():
+            raise Refusal(f"{BACKUP_ROOT} must be a folder root owns")
+        take_lock(root)
+
     if name.startswith(INCOMPLETE_PREFIX):
         st = os.lstat(backup_dir)
         if not stat.S_ISDIR(st.st_mode) or st.st_uid != root_uid():
             raise Refusal(f"{backup_dir} is not a folder root owns")
+        lock_root()
         shutil.rmtree(backup_dir)
         sync_dir(root)
         say(json.dumps({"schema": SCHEMA, "mode": "rollback", "backup_dir": backup_dir,
                         "result": "removed_incomplete_backup"}, indent=2, sort_keys=True))
         return
+    lock_root()
     entries, index = read_backup(backup_dir)
     problems = stale_problems(entries)
     if problems:
@@ -1639,7 +1748,7 @@ def cmd_rollback(args):
     if result in ("rolled_back", "rolled_back_unhealthy") and not unfinished:
         hint = "" if result == "rolled_back" else (
             "; the services did not all start or answer then: start the ones that do not run"
-            " (systemctl start ars, then egs, ags and es) and run check")
+            " (systemctl restart ars, then egs, ags and es) and run check")
         raise Refusal(f"{backup_dir} was rolled back already (result {result}): its files are back, and putting its "
                       f"index back again would drop the records ARS took since, so nothing was changed{hint}")
     current_docs = {}
@@ -1663,7 +1772,8 @@ def cmd_rollback(args):
     write_record(backup_dir, ROLLBACK_STARTED, {"schema": SCHEMA, "rollback_id": rollback_id,
                                                 "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
     try:
-        restore(report, docs, entries, index, find_leftovers(current_docs["ars"]))
+        restore(report, docs, entries, index, find_leftovers(current_docs["ars"]),
+                (backup_dir, INDEX_REPLACED.format(rollback_id)))
     except Exception as exc:  # noqa: BLE001 - recorded in the result
         report["result"] = "rollback_failed"
         report["rollback_failure"] = str(exc)

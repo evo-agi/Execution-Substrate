@@ -118,7 +118,10 @@ func fakeOpenSSL(args []string) int {
 // in the state folder:
 //
 //   - inactive-<unit>: is-active says inactive (stop makes one, start and
-//     restart remove it);
+//     restart remove it; start does nothing to a unit without one, as
+//     systemd's start of a running unit);
+//   - ars-loaded-index: each start or restart of ars copies the index file
+//     here, as ARS reads its index when it starts;
 //   - execstart-<unit>: show prints this file instead of the unit's usual
 //     ExecStart;
 //   - fail-<verb>-<unit>-once and fail-<verb>-<unit>-always: the job fails,
@@ -135,8 +138,8 @@ func fakeOpenSSL(args []string) int {
 //   - rm-healthcheck-at-es-start-<n>: the nth start of es removes
 //     healthcheck.env.
 //
-// Each start of es is counted in es-starts, and one that finds EGS not
-// accepting connections is counted in es-started-before-egs.
+// Each start or restart of es is counted in es-starts, and one that finds
+// EGS not accepting connections is counted in es-started-before-egs.
 const rotationFakeSystemctl = `#!/usr/bin/env bash
 set -u
 s=%q
@@ -203,11 +206,14 @@ case "$1" in
     fi
     if [[ "$1" == stop && -e "$s/stop-leaves-running-$2-once" ]]; then
       rm -f "$s/stop-leaves-running-$2-once"
+    elif [[ "$1" == start && ! -e "$s/inactive-$2" ]]; then
+      # As systemd: start does nothing to a unit that runs.
+      :
     elif [[ "$1" == stop ]]; then
       touch "$s/inactive-$2"
       stop_listener "$2"
     else
-      if [[ "$1 $2" == "start es" ]]; then
+      if [[ "$2" == es ]]; then
         echo x >> "$s/es-starts"
         if port=$(cat "$s/port-egs" 2>/dev/null) && ! (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null; then
           echo x >> "$s/es-started-before-egs"
@@ -217,6 +223,8 @@ case "$1" in
       fi
       rm -f "$s/inactive-$2"
       if [[ "$2" == ars || "$2" == egs ]]; then listen "$2"; fi
+      # ARS reads its index when it starts and keeps it in memory.
+      if [[ "$2" == ars ]]; then cat "$root/var/lib/ars/index.json" > "$s/ars-loaded-index" 2>/dev/null || :; fi
     fi ;;
   *) echo "fake systemctl: unexpected $*" >&2; exit 2 ;;
 esac
@@ -328,7 +336,7 @@ func newRotationHost(t *testing.T) *rotationHost {
 		if err := os.WriteFile(filepath.Join(h.state, "port-"+unit), []byte(strconv.Itoa(port)), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		start := exec.Command(filepath.Join(h.bin, "systemctl"), "start", unit)
+		start := exec.Command(filepath.Join(h.bin, "systemctl"), "restart", unit)
 		start.Dir = h.state
 		if out, err := start.CombinedOutput(); err != nil {
 			t.Fatalf("start the %s stand-in: %v %s", unit, err, out)
@@ -670,7 +678,7 @@ func withoutKeys(t *testing.T, doc map[string]any, paths ...[]string) map[string
 	return out
 }
 
-const rotationOrder = "systemctl stop es | systemctl stop ags | systemctl stop ars | systemctl start ars | systemctl restart egs | systemctl start ags | systemctl start es"
+const rotationOrder = "systemctl stop es | systemctl stop ags | systemctl stop ars | systemctl restart ars | systemctl restart egs | systemctl restart ags | systemctl restart es"
 
 // TestSigningKeyRotationCheckChangesNothing runs check on the box as it is:
 // it reports the published keys and every change apply would make, and
@@ -889,10 +897,10 @@ func TestSigningKeyRotationApplyRotatesAllThreeConfigs(t *testing.T) {
 func TestSigningKeyRotationRollsBack(t *testing.T) {
 	for _, tc := range []struct{ name, marker, failure string }{
 		{"ES does not answer after the restart", "unhealthy-after-es-start-1", "do not all run and answer"},
-		{"AGS does not start", "fail-start-ags-once", "systemctl start ags failed"},
+		{"AGS does not start", "fail-restart-ags-once", "systemctl restart ags failed"},
 		{"EGS does not restart", "fail-restart-egs-once", "systemctl restart egs failed"},
-		{"ES does not start", "fail-start-es-once", "systemctl start es failed"},
-		{"ARS does not start", "fail-start-ars-once", "systemctl start ars failed"},
+		{"ES does not start", "fail-restart-es-once", "systemctl restart es failed"},
+		{"ARS does not start", "fail-restart-ars-once", "systemctl restart ars failed"},
 		{"ARS does not stop", "fail-stop-ars-once", "systemctl stop ars failed"},
 		// ARS must not be running while its index is replaced, so a stop
 		// that reports success but leaves it running stops the rotation
@@ -1273,6 +1281,12 @@ func TestSigningKeyRotationRefuses(t *testing.T) {
 		{"a config with half a surrogate pair", func(h *rotationHost) {
 			h.appendMember(rotationConfigPaths["es"], `"audit_note": "a\ud800b"`)
 		}, "half a UTF-16 surrogate pair", false, false},
+		{"a config with half a surrogate pair inside an object", func(h *rotationHost) {
+			h.appendMember(rotationConfigPaths["egs"], `"audit": {"note": "a\udc00b"}`)
+		}, "half a UTF-16 surrogate pair", false, false},
+		{"a config with half a surrogate pair inside a list", func(h *rotationHost) {
+			h.appendMember(rotationConfigPaths["ags"], `"audit_notes": ["ok", "a\ud800b"]`)
+		}, "half a UTF-16 surrogate pair", false, false},
 		{"a config with a number too large for the services", func(h *rotationHost) {
 			h.appendMember(rotationConfigPaths["egs"], `"audit_note": 1e400`)
 		}, "too large for the services to read", false, false},
@@ -1346,6 +1360,11 @@ func TestSigningKeyRotationRefuses(t *testing.T) {
 		{"ES runs another program under its binary's name", func(h *rotationHost) {
 			h.markWith("execstart-es", "ExecStart={ path=/usr/local/sbin/es-shim ; argv[]=/usr/local/lib/execution-substrate/bin/es -config /etc/execution-substrate/es.json ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }\n")
 		}, "es.service does not start /usr/local/lib/execution-substrate/bin/es with -config /etc/execution-substrate/es.json (its ExecStart runs /usr/local/sbin/es-shim as", false, false},
+		// A second -config after the expected one is the one the binary
+		// reads (red-team RT10-8, mutant N05).
+		{"ES is started with a second -config", func(h *rotationHost) {
+			h.markWith("execstart-es", "ExecStart={ path=/usr/local/lib/execution-substrate/bin/es ; argv[]=/usr/local/lib/execution-substrate/bin/es -config /etc/execution-substrate/es.json -config /etc/execution-substrate/other.json ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }\n")
+		}, "es.service does not start /usr/local/lib/execution-substrate/bin/es with -config /etc/execution-substrate/es.json", false, false},
 		{"ARS's ExecStart is not in the form systemctl show prints", func(h *rotationHost) {
 			h.markWith("execstart-ars", "ExecStart=/usr/local/lib/execution-substrate/bin/ars -config /etc/execution-substrate/ars.json\n")
 		}, "ars.service does not start /usr/local/lib/execution-substrate/bin/ars", false, false},
@@ -1546,7 +1565,7 @@ func TestSigningKeyRotationAfterAKill(t *testing.T) {
 		setup func(*rotationHost)
 		left  int
 	}{
-		{"while AGS starts", func(h *rotationHost) { h.mark("signal-KILL-at-start-ags") }, 0},
+		{"while AGS starts", func(h *rotationHost) { h.mark("signal-KILL-at-restart-ags") }, 0},
 		{"between writing ags.json and renaming it", func(h *rotationHost) {
 			h.env = append(h.env, "SIGNING_KEY_ROTATION_TEST_KILL_AT=config-temp-written:ags")
 		}, 1},
@@ -1659,7 +1678,7 @@ func TestSigningKeyRotationRollbackTriesEveryStep(t *testing.T) {
 		t.Fatal("the rollback did not put the configs and the index back")
 	}
 	calls := h.serviceCalls()
-	if got := strings.Join(calls[len(calls)-3:], " | "); got != "systemctl restart egs | systemctl start ags | systemctl start es" {
+	if got := strings.Join(calls[len(calls)-3:], " | "); got != "systemctl restart egs | systemctl restart ags | systemctl restart es" {
 		t.Fatalf("the rollback stopped at the failed restart: %v", calls)
 	}
 	steps := fmt.Sprint(report["rollback_steps"])
