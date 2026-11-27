@@ -42,8 +42,10 @@ func TestPolicyGovernanceContractIsDocumented(t *testing.T) {
 		"ES stores the new revision number durably before it first uses the new policy",
 		"It never passes through another service.",
 		"ES reloads it without a restart and applies the newest valid revision at once.",
-		"refuses a different pin unless a revision signed by both the old and the new key introduced it.",
+		"refuses a different pin unless a revision introduced it that is signed by the new everyday key and by either the old everyday key or the recovery key.",
+		"After losing the everyday key, the owner replaces it with a revision signed by the recovery key and the new everyday key. The old everyday key is not needed.",
 		"The recovery key may sign only a revision whose single change is replacing the everyday key.",
+		"Replacing the recovery key is a revision signed by the everyday key and the new recovery key.",
 	)
 
 	assertContainsAll(t, "D2 classes and application", section("## 5. Publisher classes", "## 7. Revocations"),
@@ -84,6 +86,8 @@ func TestPolicyGovernanceContractIsDocumented(t *testing.T) {
 		"`prev` (the SHA-256 of the previous line's exact bytes; 64 zeros for the first)",
 		"sshd's `ForceCommand`, with no shell, terminal or forwarding.",
 		"The program answers three requests: `head`, `after N M` (up to 1,000 entries after entry N) and `entry N`.",
+		"in pages of up to 1,000. Each page continues from the last entry it accepted, until a page reaches the head that page's header reports, or a per-run cap is reached",
+		"that no page goes beyond the head its header reports, and that a page reaching that head ends at the head's hash.",
 		"The host's answer is only ever parsed as data.",
 		"After an alert it stops pulling and keeps the bad answer as evidence.",
 		"The workstation opens every connection.",

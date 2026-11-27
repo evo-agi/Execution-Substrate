@@ -70,6 +70,7 @@ enforces that (section 15).
   `verification.provenance` in `es.json`; it moves into the policy. The two
   verifier keys ES loads and never uses, `verification.derivation_attestation`
   and `verification.workload_identity_binding`, are removed.
+- The public half of the owner's recovery key (section 4.5).
 - The publisher classes of section 5, each with its identity rule or member
   list and its limits.
 - The workload grants of `.docs/execution_lifecycle/contracts.md`, section
@@ -115,12 +116,18 @@ enforces that (section 15).
 - The owner's key is Ed25519, the signature ES already verifies on evidence.
 - `es.json` pins the public half of the owner's everyday key. ES also stores
   the fingerprint of the key it last accepted, and refuses a different pin
-  unless a revision signed by both the old and the new key introduced it. A
-  rolled-back `es.json` therefore cannot bring back an old key.
-- A planned key change is a revision signed by the old and the new key. The
-  same `es-owner` command updates the pin.
+  unless a revision introduced it that is signed by the new everyday key and
+  by either the old everyday key or the recovery key. A rolled-back `es.json`
+  therefore cannot bring back an old key.
+- A planned key change is a revision signed by the old and the new everyday
+  key. The same `es-owner` command updates the pin.
+- After losing the everyday key, the owner replaces it with a revision signed
+  by the recovery key and the new everyday key. The old everyday key is not
+  needed.
 - The recovery key may sign only a revision whose single change is replacing
   the everyday key. ES checks that by comparing it with the revision it holds.
+- Replacing the recovery key is a revision signed by the everyday key and the
+  new recovery key.
 - `es-owner` shows the owner a plain-words summary computed from the exact
   bytes it is about to sign, from a clean checkout, and changes nothing before
   the owner confirms by typing the new revision number.
@@ -321,12 +328,16 @@ key is an online key. With the switch off it decides nothing.
 
 The log anchor runs on the owner's workstation every hour and at login:
 
-1. It asks the host for the entries after the last one it holds.
-2. It checks that the first new entry's `prev` is the hash of its own last
-   entry, that each later entry follows the one before, and that the last one
-   matches the head the host reported.
-3. It appends what passed to its own copy and syncs it to disk. The host's
-   answer is only ever parsed as data.
+1. It asks the host for the entries after the last one it holds, in pages of
+   up to 1,000. Each page continues from the last entry it accepted, until a
+   page reaches the head that page's header reports, or a per-run cap is
+   reached; the next run continues from there.
+2. It checks that each page's first entry's `prev` is the hash of its own
+   last entry, that each later entry follows the one before, that no page
+   goes beyond the head its header reports, and that a page reaching that
+   head ends at the head's hash.
+3. It appends each page that passed to its own copy and syncs it to disk.
+   The host's answer is only ever parsed as data.
 4. Once a day it asks for three old entries again and compares them byte for
    byte, so that a rewrite on the host is caught even if the host keeps
    feeding the old chain.
@@ -458,7 +469,7 @@ Each test must fail on a version without the rule it covers.
 | Revision numbers | A revision that is not the previous plus one is refused |
 | Revocations | A subject revoked again after a lift stays revoked. A revocation naming the owner's key is refused. The same payload under a new intent digest is refused when its payload digest is revoked. A revoked publisher name issued again stays revoked |
 | Reliable submit | The claim-scoped rule holds when a revocation lands |
-| Owner key | A recovery-key-only revision with any change other than the everyday key is refused. A pin different from the stored fingerprint is refused unless a revision signed by both keys introduced it |
+| Owner key | A revision signed by the recovery key and a new everyday key, without the old everyday key, replaces the everyday key and the pin. A revision the recovery key signs with any other change is refused. A pin different from the stored fingerprint is refused unless a revision signed by the new key and by the old key or the recovery key introduced it |
 | Decoding | A policy with an unknown, repeated or differently spelled key is refused; a policy for another installation ID is refused |
 | Crash and downgrade | A crash between accepting and storing a revision does not let an older one in after restart. An older binary refuses newer stored state |
 | EGS classes | With the switch on, an EGS admission for a publisher outside the class's identity rule is ignored, and a publisher matching the rule without an EGS admission is refused. With the switch off, EGS's list changes no decision |
@@ -466,7 +477,7 @@ Each test must fail on a version without the rule it covers.
 | EGS epoch | A new epoch restarts EGS's numbering; a revision under an old epoch is refused |
 | EGS audit | ES refuses an EGS revision whose added audit records are missing or do not match their hashes |
 | Switch | Only a signed standing revision changes the switch; no value in a host configuration file does |
-| Log | The export's answers match the format byte for byte; a changed old entry changes every later hash |
+| Log | The export's answers match the format byte for byte; a changed old entry changes every later hash; more than 1,000 new entries reach the owner's copy in pages, in order, ending at the head's hash |
 
 ## 17. Delivery
 
