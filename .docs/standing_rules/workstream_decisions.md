@@ -242,6 +242,10 @@ Current bounded planning direction:
   is not built.
 - The EGS v1 and CGS v1 surfaces below stay current behavior until D2's build
   steps 7 and 1 remove them.
+- D2 settles the seams that the checkpoint below keeps reopened: the CGS
+  authorize DTO and `id.conf` go with CGS, and EGS v2 is the new versioned
+  contract. The "D2" that the checkpoint names is a slice label from before
+  this contract; as it says, Workstream E planning did not wait for it.
 - Treat the current `POST /v1/credential/authorize` request/response shape as a CGS v1 compatibility surface and the current `GET /v1/trust-model` route plus wrapper/payload shape as an EGS v1 compatibility surface.
 - Do not semantically widen either current v1 surface in place. Semantic expansion requires explicit versioning before implementation.
 - Treat `audit.policy_version` and EGS `publication.version` as service-owned audit/publication metadata, not transport/schema/API versioning.

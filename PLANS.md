@@ -113,7 +113,7 @@ The current reopened-seam plan is complete only when all of the following are tr
 - The new shared kernel or contract layer is settled and explicitly documented.
 - AGS and ARS no longer force the old artifact publication and retrieval choreography by default.
 - ES no longer depends on the current inherited core grammar for its public admission and execution model.
-- EGS and CGS have clearly defined policy and authorization ownership.
+- Policy and authorization ownership is settled: Workstream D's exit criteria hold.
 - The workload-zone Vault runtime-config reference and blob surface has a clearly justified long-term owner.
 - Runtime identity and execution handoff have explicit ownership and no unresolved dependency on current incidental path conventions.
 - Any retained compatibility edges are documented as temporary, with removal conditions.
@@ -477,31 +477,24 @@ slices and the compatibility edges they keep, is in
 
 Purpose:
 
-- Re-derive policy ownership across EGS and CGS.
-- Decide what belongs to trust publication, what belongs to authorization, and what belongs nowhere in the long-term architecture.
-- Reassess the current `id.conf` policy model, authorize DTO, and remaining policy/trust ownership seams.
+- Re-derive policy and authorization ownership. D2, below, is that
+  re-derivation.
 
-Target files and packages:
+Target files and packages: those that D2's build steps change (contract
+section 17): ES's admission, policy state and revocation route under `es/`;
+`egs/`; AGS's evidence under `ags/`; ARS's index under `ars/`; the owner's
+tool; the recovery, migration and log export scripts; and `cgs/`, which is
+deleted.
 
-- `egs/api/`
-- `egs/contract/`
-- `egs/sign/`
-- `cgs/api/`
-- `cgs/policy/`
-- `cgs/config/`
-- `cgs/app/`
-
-Success condition:
-
-- Policy publication and authorization ownership are explicit.
-- EGS and CGS no longer carry accidental compatibility behavior without documented ownership.
-- The current `id.conf` and authorize shape are either intentionally retained, replaced, or explicitly downgraded to temporary compatibility edges.
-- ES can consume policy and authorization outputs through designed contracts rather than through legacy compatibility DTOs.
+Success condition: the exit criteria below.
 
 Dependencies:
 
 - Workstream A
 - Workstream C
+- The open security work on caller identities, network grants, declared env
+  keys and mounts, and per-host signing keys (contract section 17)
+- Workstream F's cut-off of one named workload (exit criterion 3)
 
 The current bounded planning direction, with the accepted D1b to D1d slices and
 the Workstream D seams that remain reopened, is in
@@ -519,21 +512,32 @@ Exit criteria, all required to close Workstream D (contract build steps in
 brackets):
 
 - [ ] CGS is retired [1].
-- [ ] Revoking an artifact or a signer has a runbook, run once on the
-  supported host.
+- [ ] Revoking an artifact, a signer, a publisher key, a caller name or a
+  workload identity name through ES's revocation route (contract section 7)
+  has a runbook, run once on the supported host [4, 10].
 - [ ] Cutting off one named workload passed WI-3's tests
   (`.docs/system_overview/runtime_identity_handoff.md`, section 11.7).
 - [ ] Recovery from a lost Vault unseal key and from a full re-setup is built
-  [12], and each CI rehearsal passed once.
-- [ ] AGS's signing key is in Vault's transit engine [11].
+  [12]; each CI rehearsal passed once, both scripts ran end to end on a
+  throwaway machine once, and `rehearsal-due` is raised when a rehearsal is
+  overdue.
+- [ ] AGS's signing key is in Vault's transit engine, and no file on the host
+  holds it, backups included [11].
 - [ ] The owner's rules are signed and applied by ES, and no host file changes
   them [2, 4, 6, 7, 10].
 - [ ] An older validly signed policy or EGS list cannot be confirmed as
   current (`CP-ROLLBACK`) [2, 4, 8].
 - [ ] ES starts without EGS, and service certificates renew automatically
   [4, 9].
-- [ ] ES loads no unused verifier key [4, 10].
-- [ ] The policy log is copied off the host every hour [5, 6].
+- [ ] ES loads no unused verifier key, and `es.json` holds no
+  `verification.trust_model` [4, 7, 10].
+- [ ] The policy log and the run log are copied off the host every hour while
+  the owner's workstation is awake, through the export account and the log
+  anchor that step 10 installs [5, 6, 10].
+- [ ] A signed standing revision requires the evidence fields of contract
+  section 12 [3, 4].
+- [ ] Every acceptance test of contract section 16 and the class-kind test of
+  section 15 exist and fail on a version without their rule [4 to 12].
 - [ ] The supported host runs steps 1 to 12; the migration run's report is
   linked here.
 - [ ] `README.md` and its diagram describe this design, rewritten in the change
