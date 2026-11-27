@@ -1447,6 +1447,18 @@ func TestLinuxSetupInstallsTheNomadPackageHook(t *testing.T) {
 		if err == nil || !strings.Contains(stderr, "nomad: "+setAsideFolder(data)+" holds what was set aside") {
 			t.Fatalf("the install went on past what was set aside from the data folder: %v %s", err, stderr)
 		}
+		// And a link at that name, even one that leads nowhere: the program
+		// had nothing to set aside, so only the stop sees it.
+		if err := os.Remove(setAsideFolder(data)); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(filepath.Join(t.TempDir(), "gone"), setAsideFolder(data)); err != nil {
+			t.Fatal(err)
+		}
+		_, stderr, err = runNomadPackageHookRegion(t, install, program, hook, config, data)
+		if err == nil || !strings.Contains(stderr, "nomad: "+setAsideFolder(data)+" holds what was set aside") {
+			t.Fatalf("the install went on past a link at the data folder's set-aside folder: %v %s", err, stderr)
+		}
 		// Once it is removed, the install goes through again.
 		if err := os.Remove(setAsideFolder(data)); err != nil {
 			t.Fatal(err)
