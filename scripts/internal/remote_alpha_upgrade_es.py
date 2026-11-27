@@ -544,6 +544,10 @@ NOMAD_TAKE_BACK_PROGRAM = "/usr/local/sbin/execution-substrate-nomad-take-back"
 NOMAD_DPKG_HOOK = "/etc/dpkg/dpkg.cfg.d/execution-substrate-nomad"
 NOMAD_PACKAGE_HOOK_FILES = ((NOMAD_TAKE_BACK_PROGRAM, 0o755), (NOMAD_DPKG_HOOK, 0o644))
 NOMAD_HOOK_COMMAND = "sudo scripts/remote_alpha_upgrade_es.sh nomad-hook"
+# nomad-hook's program puts nomad.env back as a new file of root's, with its
+# contents: the only way that an old write handle no longer reaches it.
+NOMAD_ENV_REMEDY = (f"{NOMAD_HOOK_COMMAND} puts it back as a new file of root's, then check what it sets "
+                    f"(a chown, a chmod or setfacl leaves a handle that another account opened earlier able to write it)")
 # Nor may another account keep an ACL on them. HashiCorp's package gives
 # /etc/nomad.d and the data directory to the nomad account, which may set an
 # ACL on a folder while it owns it, and the owner and mode do not show one.
@@ -1915,9 +1919,11 @@ def inspect_host(payload_dir, commit, allow_downgrade=None):
         block("nomad_hcl", str(exc))
     # HashiCorp's package gives nomad.env to the nomad account, as it does
     # everything in /etc/nomad.d; the setup takes it back (re-check 49 of ES
-    # PR #66, O49-2), and so does nomad-hook's program. check and apply
-    # change nothing there, so they refuse one that another account could
-    # change, as they refuse such a nomad.hcl.
+    # PR #66, O49-2), and so does nomad-hook's program, as a new file: a
+    # chown, a chmod or setfacl in place would leave a handle that account
+    # opened earlier able to write it (re-check 50 of #67, S67-3). check and
+    # apply change nothing there, so they refuse one that another account
+    # could change, as they refuse such a nomad.hcl, and name nomad-hook.
     try:
         st = os.lstat(host(NOMAD_ENV))
         if not stat.S_ISREG(st.st_mode):
@@ -1925,11 +1931,11 @@ def inspect_host(payload_dir, commit, allow_downgrade=None):
                   f"({owner_mode(st)}); remove it")
         elif not owned_by_root(st) or stat.S_IMODE(st.st_mode) & ~0o755:
             block("nomad_env", f"{NOMAD_ENV}, which Nomad's unit reads as root, is not root:root without write for "
-                  f"group or others ({owner_mode(st)}); {NOMAD_HOOK_COMMAND} takes it back")
+                  f"group or others ({owner_mode(st)}); {NOMAD_ENV_REMEDY}")
         else:
             acls = posix_acls(host(NOMAD_ENV))
             if acls:
-                block("nomad_env", f"{NOMAD_ENV} has an ACL ({', '.join(acls)}; setfacl -b -k {NOMAD_ENV} removes it)")
+                block("nomad_env", f"{NOMAD_ENV} has an ACL ({', '.join(acls)}); {NOMAD_ENV_REMEDY}")
     except FileNotFoundError:
         pass
     except OSError as exc:
@@ -2159,8 +2165,7 @@ def backup_host(commit, created):
 
 def load_created(backup_dir):
     created = read_backup_document(backup_dir, CREATED_MANIFEST,
-                                   "the backup's apply stopped before it changed the host, so there is nothing to put back "
-                                   "(or an earlier version of this script, ES PR #54's, made it)")
+                                   "the backup's apply stopped before it changed the host, so there is nothing to put back")
     if not isinstance(created, list) or not set(created) <= set(CREATED_BY_APPLY):
         raise Refusal(f"the backup's {CREATED_MANIFEST} names paths that apply does not create")
     return created

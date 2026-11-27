@@ -55,7 +55,8 @@ func TestRemoteAlphaUpgradeESRefusesANomadFolderWithAnACL(t *testing.T) {
 	}
 	// Each refusal names the ACL and how to remove it (re-check 49 of #67:
 	// Sonnet's O67-5, Opus's O67-3); the upgrade, unlike the setup, does
-	// not remove it itself.
+	// not remove it itself. For nomad.env, a file another account may hold
+	// open, that is putting it back as a new file (re-check 50, S67-3).
 	cases := []struct {
 		name  string
 		plant func(h *upgradeHost)
@@ -84,7 +85,8 @@ func TestRemoteAlphaUpgradeESRefusesANomadFolderWithAnACL(t *testing.T) {
 		}, "nomad_hcl", "nomad.hcl has an ACL (system.posix_acl_access; setfacl -b -k /etc/nomad.d/nomad.hcl removes it)", false},
 		{"nomad.env has an access ACL", func(h *upgradeHost) {
 			setACL(h, "etc/nomad.d/nomad.env", "system.posix_acl_access")
-		}, "nomad_env", "/etc/nomad.d/nomad.env has an ACL (system.posix_acl_access; setfacl -b -k /etc/nomad.d/nomad.env removes it)", false},
+		}, "nomad_env", "/etc/nomad.d/nomad.env has an ACL (system.posix_acl_access); sudo scripts/remote_alpha_upgrade_es.sh nomad-hook puts it back as a new file of root's, then check what it sets " +
+			"(a chown, a chmod or setfacl leaves a handle that another account opened earlier able to write it)", false},
 		{"the take-back program has an access ACL", func(h *upgradeHost) {
 			setACL(h, "usr/local/sbin/execution-substrate-nomad-take-back", "system.posix_acl_access")
 		}, "nomad_package_hook", "/usr/local/sbin/execution-substrate-nomad-take-back has an ACL (system.posix_acl_access)", false},

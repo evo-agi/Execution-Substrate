@@ -1458,15 +1458,35 @@ func TestRemoteAlphaUpgradeESCheckRefusesWhatItWasNotWrittenFor(t *testing.T) {
 		}, "nomad_hcl", "would also load ['tls.hcl']"},
 		// Re-check 49: nomad.env, which Nomad's unit reads as root, as the
 		// package leaves it (another account's to write) or as a link.
+		// Re-check 50 (S67-3): the remedy puts the file back as a new one.
 		{"nomad.env is writable by others", func(h *upgradeHost) {
 			_ = os.Chmod(h.path("etc/nomad.d/nomad.env"), 0o666)
-		}, "nomad_env", "/etc/nomad.d/nomad.env, which Nomad's unit reads as root, is not root:root without write for group or others"},
+		}, "nomad_env", "'mode': '0666'}); sudo scripts/remote_alpha_upgrade_es.sh nomad-hook puts it back as a new file of root's, then check what it sets " +
+			"(a chown, a chmod or setfacl leaves a handle that another account opened earlier able to write it)"},
+		// Re-check 50 (S67-4): each write bit and each kind of entry is
+		// pinned by itself; 0666 is refused while either bit is looked at.
+		{"nomad.env is writable by others only", func(h *upgradeHost) {
+			_ = os.Chmod(h.path("etc/nomad.d/nomad.env"), 0o646)
+		}, "nomad_env", "'mode': '0646'}); sudo scripts/remote_alpha_upgrade_es.sh nomad-hook puts it back"},
+		{"nomad.env is writable by its group only", func(h *upgradeHost) {
+			_ = os.Chmod(h.path("etc/nomad.d/nomad.env"), 0o664)
+		}, "nomad_env", "'mode': '0664'"},
+		{"nomad.env is a folder", func(h *upgradeHost) {
+			_ = os.Remove(h.path("etc/nomad.d/nomad.env"))
+			_ = os.Mkdir(h.path("etc/nomad.d/nomad.env"), 0o755)
+		}, "nomad_env", "/etc/nomad.d/nomad.env, which Nomad's unit reads as root, is not a regular file"},
+		{"nomad.env is a FIFO", func(h *upgradeHost) {
+			_ = os.Remove(h.path("etc/nomad.d/nomad.env"))
+			if err := syscall.Mkfifo(h.path("etc/nomad.d/nomad.env"), 0o644); err != nil {
+				h.t.Fatal(err)
+			}
+		}, "nomad_env", "/etc/nomad.d/nomad.env, which Nomad's unit reads as root, is not a regular file"},
 		{"nomad.env belongs to another group", func(h *upgradeHost) {
 			giveAnotherGroup(h.t, h.path("etc/nomad.d/nomad.env"))
 		}, "nomad_env", "/etc/nomad.d/nomad.env, which Nomad's unit reads as root, is not root:root without write for group or others"},
 		{"nomad.env has the setuid bit", func(h *upgradeHost) {
 			_ = os.Chmod(h.path("etc/nomad.d/nomad.env"), os.ModeSetuid|0o640)
-		}, "nomad_env", "'mode': '4640'}); sudo scripts/remote_alpha_upgrade_es.sh nomad-hook takes it back"},
+		}, "nomad_env", "'mode': '4640'}); sudo scripts/remote_alpha_upgrade_es.sh nomad-hook puts it back"},
 		{"nomad.env is a link", func(h *upgradeHost) {
 			_ = os.Remove(h.path("etc/nomad.d/nomad.env"))
 			_ = os.Symlink(h.path("etc/execution-substrate/ags.json"), h.path("etc/nomad.d/nomad.env"))
