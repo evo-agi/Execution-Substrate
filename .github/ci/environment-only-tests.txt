@@ -197,3 +197,11 @@ skips-itself execution-substrate/scripts TestRemoteAlphaHostFirewallSSHDDropInWi
 # without root, so the test skips itself there. It makes the key files
 # itself, since the go command never runs as root in the step that runs it.
 skips-itself execution-substrate/scripts TestSupportedLocalRendererRefusesASigningKeyFileAnotherUserOwns
+
+# Scripts package: the SPIRE agent helper's pin must refuse a copy directory
+# for its refresh timer that another account owns, as root on the box
+# (scripts/internal/remote_alpha_spire_agent.py, helper_copy_dirs). Giving a
+# directory another owner needs root, and the runner runs the tests without
+# root, so the test skips itself there. Without root,
+# TestRemoteAlphaSPIREAgentTimerInstallChecks covers the same check.
+skips-itself execution-substrate/scripts TestRemoteAlphaSPIREAgentPinRefusesACopyDirectoryAnotherAccountOwns

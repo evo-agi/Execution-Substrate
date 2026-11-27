@@ -306,6 +306,40 @@ func spireAgentGuardCheck(doc map[string]any, name string) (string, string) {
 	return "", ""
 }
 
+// TestRemoteAlphaSPIREAgentPinRefusesACopyDirectoryAnotherAccountOwns runs
+// pin as root, as on the box, against a copy directory that another account
+// owns. Only root can give a directory another owner, so the test skips
+// itself without root. .github/ci/environment-only-tests.txt lists it, and
+// the step "Listed tests pass as root" of go.yml runs it as root;
+// .github/ci/environment-only-tests-macos.txt lists it for the macOS runner.
+// Without root, TestRemoteAlphaSPIREAgentTimerInstallChecks covers the same
+// check by expecting root as the owner of directories the test user owns.
+func TestRemoteAlphaSPIREAgentPinRefusesACopyDirectoryAnotherAccountOwns(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("needs root to give the directory another owner")
+	}
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Fatalf("needs python3: %v", err)
+	}
+	openssl, err := exec.LookPath("openssl")
+	if err != nil {
+		t.Fatalf("needs openssl: %v", err)
+	}
+	a := newSPIREAgentGuardRoot(t, python, openssl)
+	d := filepath.Join(a.root, "usr/local/libexec")
+	if err := os.Mkdir(d, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chown(d, 65534, 65534); err != nil {
+		t.Fatal(err)
+	}
+	_, doc := a.run("inspect")
+	if doc["ok"] != false || !strings.Contains(doc["reason"].(string), d+" is ") {
+		t.Fatalf("want a refusal naming %q, got %v", d, doc)
+	}
+}
+
 func TestRemoteAlphaSPIREAgentTimerAndRefreshGuards(t *testing.T) {
 	python, err := exec.LookPath("python3")
 	if err != nil {
@@ -356,21 +390,6 @@ func TestRemoteAlphaSPIREAgentTimerAndRefreshGuards(t *testing.T) {
 		a.chmod(filepath.Join(a.root, "usr/local"), 0o775)
 		_, doc := a.run("inspect")
 		refusal(t, doc, filepath.Join(a.root, "usr/local")+" is ")
-	})
-	t.Run("pin_refuses_a_copy_directory_another_account_owns", func(t *testing.T) {
-		if os.Geteuid() != 0 {
-			t.Skip("needs root to give the directory another owner")
-		}
-		a := newSPIREAgentGuardRoot(t, python, openssl)
-		d := filepath.Join(a.root, "usr/local/libexec")
-		if err := os.Mkdir(d, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Chown(d, 65534, 65534); err != nil {
-			t.Fatal(err)
-		}
-		_, doc := a.run("inspect")
-		refusal(t, doc, d+" is ")
 	})
 	t.Run("status_flags_a_copy_others_can_write", func(t *testing.T) {
 		a := newSPIREAgentGuardRoot(t, python, openssl)
