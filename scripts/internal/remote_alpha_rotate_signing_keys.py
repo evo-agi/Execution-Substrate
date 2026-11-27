@@ -24,7 +24,10 @@ a key the rotation retires:
             that all four run and answer; on any failure or interrupting
             signal, put the backup back and start them again
   rollback  (root) put a backup back and start the services again, or
-            remove the folder an apply stopped before it changed anything
+            remove the folder an apply stopped before it changed anything;
+            it records its start (rollback-started.json) before it changes
+            anything and its end, with the same ID, in rollback.json, and it
+            refuses a backup whose files a rollback already put back
 
 The keys come from the host's own /usr/bin/openssl, so nothing built from a
 checkout runs as root to make them. Each is written as the signer object
@@ -69,6 +72,7 @@ INDEX_MANIFEST = "ars-index.manifest.json"
 INDEX_COPY = "ars-index.json"
 SUMMARY = "summary.json"
 ROLLBACK_RECORD = "rollback.json"
+ROLLBACK_STARTED = "rollback-started.json"
 # An apply builds its backup under this prefix and renames it to its final
 # name once every copy and the manifest are on disk. No config is written
 # before that rename, so a folder still named this way holds nothing that
@@ -283,19 +287,50 @@ def refuse_constant(name):
     raise ValueError(f"{name} is not JSON")
 
 
+def finite_number(text):
+    value = float(text)
+    if value in (float("inf"), float("-inf")):
+        raise ValueError(f"the number {text[:40]} is too large for the services to read")
+    return value
+
+
+def has_lone_surrogate(doc):
+    """Whether a string in doc holds a UTF-16 surrogate that pairs with
+    nothing, from an escape such as \\ud800. Go's encoding/json reads one as
+    U+FFFD, Python keeps it and cannot write it back as UTF-8. Keys are
+    ASCII already (strict_object)."""
+    stack = [doc]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, dict):
+            stack.extend(item.values())
+        elif isinstance(item, list):
+            stack.extend(item)
+        elif isinstance(item, str):
+            try:
+                item.encode("utf-8")
+            except UnicodeEncodeError:
+                return True
+    return False
+
+
 def parse_strict(data, what):
     try:
         text = data.decode("utf-8")
     except UnicodeDecodeError:
         raise Refusal(f"{what} is not UTF-8") from None
     try:
-        doc = json.loads(text, object_pairs_hook=strict_object, parse_constant=refuse_constant)
+        doc = json.loads(text, object_pairs_hook=strict_object, parse_constant=refuse_constant,
+                         parse_float=finite_number)
     except RecursionError:
         raise Refusal(f"{what} is nested too deeply") from None
     except ValueError as exc:
         raise Refusal(f"{what} is not JSON that every service reads the same way: {exc}") from None
     if not isinstance(doc, dict):
         raise Refusal(f"{what} is not a JSON object")
+    if has_lone_surrogate(doc):
+        raise Refusal(f"{what} is not JSON that every service reads the same way: a string holds a \\u escape "
+                      "of half a UTF-16 surrogate pair, which the services read as U+FFFD")
     return doc
 
 
@@ -523,8 +558,12 @@ def units_active():
 
 def exec_start_problems(unit):
     """Why unit does not start its binary with the config this rotation
-    writes or reads: exactly one ExecStart, whose argv is the binary and
-    -config <path> (or --config, or either with =)."""
+    writes or reads: exactly one ExecStart, whose program (systemd's path=,
+    what it runs) is the binary and whose argv is the binary and -config
+    <path> (or --config, or either with =). systemctl show prints each
+    command as { path=<program> ; argv[]=<words> ; ... }; with systemd's @
+    prefix argv[0] is only the name the program is given, so argv alone does
+    not say what runs."""
     binary = f"{BINARY_DIR}/{unit}"
     config = f"{CONFIG_DIR}/{unit}.json"
     out = systemctl("show", f"{unit}.service", "-p", "ExecStart")
@@ -533,13 +572,21 @@ def exec_start_problems(unit):
     if len(commands) != 1:
         return [f"{unit}.service has {len(commands)} ExecStart commands, not one"]
     text = commands[0]
-    start = text.find("argv[]=")
-    end = text.find(" ;", start)
-    argv = text[start + len("argv[]="):end].split() if start >= 0 and end > start else []
+    path, argv = "?", []
+    if text.startswith("{ path="):
+        path_end = text.find(" ; ")
+        if path_end > 0:
+            path = text[len("{ path="):path_end]
+            rest = text[path_end + len(" ; "):]
+            if rest.startswith("argv[]="):
+                argv_end = rest.find(" ;")
+                if argv_end > 0:
+                    argv = rest[len("argv[]="):argv_end].split()
     allowed = [[binary, flag, config] for flag in ("-config", "--config")] + \
         [[binary, f"{flag}={config}"] for flag in ("-config", "--config")]
-    if argv not in allowed:
-        return [f"{unit}.service does not start {binary} with -config {config} (its ExecStart runs {' '.join(argv) or '?'})"]
+    if path != binary or argv not in allowed:
+        return [f"{unit}.service does not start {binary} with -config {config} (its ExecStart runs {path} "
+                f"as {' '.join(argv) or '?'})"]
     return []
 
 
@@ -924,19 +971,57 @@ def backup_entries():
     return [(name, os.path.join(root, name)) for name in names]
 
 
+def recorded(path, name, shown):
+    """The record name in the backup folder path, or None."""
+    if not os.path.lexists(os.path.join(path, name)):
+        return None
+    data, _ = read_regular_file(os.path.join(path, name), shown=os.path.join(shown, name))
+    return parse_strict(data, os.path.join(shown, name))
+
+
+def last_outcome(path, shown):
+    """(the result the last apply or rollback recorded in the backup folder
+    path, whether a rollback started there and recorded no end). A rollback
+    writes rollback-started.json before it changes anything and
+    rollback.json, with the same rollback_id, when it ends; rollback.json is
+    later than summary.json."""
+    started = recorded(path, ROLLBACK_STARTED, shown)
+    rollback = recorded(path, ROLLBACK_RECORD, shown)
+    summary = recorded(path, SUMMARY, shown)
+    unfinished = started is not None and (rollback is None or rollback.get("rollback_id") != started.get("rollback_id"))
+    latest = rollback if rollback is not None else summary
+    return (latest or {}).get("result"), unfinished
+
+
 def unfinished_problems():
-    """A rotation that a SIGKILL, a crash or a lost summary left without an
-    end: its backup has no summary.json and no rollback.json, or is still
-    being built."""
+    """A rotation or rollback that a SIGKILL, a crash or a lost record left
+    without an end, or a rollback that could not put everything back: a
+    backup that is still being built, that has no summary.json and no
+    rollback.json, whose rollback started and recorded no end, or whose
+    last result is rollback_failed."""
     problems = []
     for name, path in backup_entries():
         shown = os.path.join(BACKUP_ROOT, name)
         if name.startswith(INCOMPLETE_PREFIX):
             problems.append(f"{shown} is the backup of an apply that stopped before it changed anything; "
                             f"`rollback --backup-dir {shown}` removes it")
-        elif not os.path.lexists(os.path.join(path, SUMMARY)) and not os.path.lexists(os.path.join(path, ROLLBACK_RECORD)):
+            continue
+        if not os.path.lexists(os.path.join(path, SUMMARY)) and not os.path.lexists(os.path.join(path, ROLLBACK_RECORD)):
             problems.append(f"a rotation did not finish (it was stopped, or its summary could not be written): its "
                             f"backup is {shown}; `rollback --backup-dir {shown}` puts that backup back")
+            continue
+        try:
+            result, unfinished = last_outcome(path, shown)
+        except Refusal as exc:
+            problems.append(f"cannot read the records of {shown}: {exc}")
+            continue
+        if unfinished:
+            problems.append(f"a rollback of {shown} did not finish (it was stopped, or its record could not be "
+                            f"written); `rollback --backup-dir {shown}` finishes it")
+        elif result == "rollback_failed":
+            problems.append(f"the last rollback of {shown} could not put everything back (rollback_failed); "
+                            f"`rollback --backup-dir {shown}` tries again, or, once the host is settled by hand, "
+                            f"move {shown} out of {BACKUP_ROOT}")
     return problems
 
 
@@ -1044,6 +1129,7 @@ def make_backup(state, rotated_data, ags_new):
         write_new_file(os.path.join(incomplete, BACKUP_MANIFEST),
                        (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode())
         sync_dir(incomplete)
+        test_point("backup-copied")
         for config, path, _ in CONFIGS:
             now, _ = read_regular_file(host(path), shown=path)
             if sha256_hex(now) != state["files"][config]["sha256"]:
@@ -1176,7 +1262,11 @@ def require_root():
 
 
 # The checkout. check, apply and rollback run this file as root, so nobody
-# but root may be able to change it: red-team RT60-2, as the ES upgrade does.
+# but root may be able to change it (red-team RT60-2). The wrapper,
+# scripts/remote_alpha_rotate_signing_keys.sh, checks that before any of
+# this file runs, which is the check that counts: a check in this file is
+# gone once someone replaces the file. This one is the second line, for this
+# file started on its own, and it covers the whole scripts folder.
 
 SCRIPTS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -1340,6 +1430,7 @@ def restore(report, docs, configs, index, leftovers):
 
 def restore_config(entry, copy):
     replace_config(entry["path"], copy, entry["uid"], entry["gid"], int(entry["mode"], 8))
+    test_point("restored-" + os.path.basename(entry["path"]))
     after, _ = read_regular_file(host(entry["path"]), shown=entry["path"])
     if sha256_hex(after) != entry["sha256"]:
         raise Failed(f"{entry['path']} does not match its backup after the restore")
@@ -1351,7 +1442,12 @@ def restore_index(record, copy):
     try:
         if problems:
             raise Failed("; ".join(problems))
-        replace_file(dir_fd, os.path.basename(record["path"]), copy, record["uid"], record["gid"], int(record["mode"], 8))
+        name = os.path.basename(record["path"])
+        replace_file(dir_fd, name, copy, record["uid"], record["gid"], int(record["mode"], 8))
+        test_point("restored-index")
+        after, _ = read_regular_file(name, INDEX_MAX_BYTES, dir_fd=dir_fd, shown=record["path"])
+        if after != copy:
+            raise Failed(f"{record['path']} does not match its backup after the restore")
     finally:
         os.close(dir_fd)
 
@@ -1443,7 +1539,9 @@ def cmd_apply(_args):
         backup_dir = make_backup(state, data, ags_new)
     except Interrupted as exc:
         raise Refusal(f"{exc} before any change; nothing was changed") from None
-    except (Refusal, OSError) as exc:
+    except (Refusal, OSError, ValueError) as exc:
+        # ValueError: a config that cannot be written back as it was read,
+        # which the strict reader should already have refused in check.
         raise Refusal(f"{exc}; nothing was changed") from None
     report["backup_dir"] = backup_dir
     log("backup written to " + backup_dir)
@@ -1535,6 +1633,15 @@ def cmd_rollback(args):
     problems = stale_problems(entries)
     if problems:
         raise Refusal("; ".join(problems) + "; this backup is not the latest rotation's, so it is not put back")
+    result, unfinished = last_outcome(backup_dir, backup_dir)
+    # Both results mean every file is back; only a rollback_failed one, or
+    # one that did not finish, has something left to put back.
+    if result in ("rolled_back", "rolled_back_unhealthy") and not unfinished:
+        hint = "" if result == "rolled_back" else (
+            "; the services did not all start or answer then: start the ones that do not run"
+            " (systemctl start ars, then egs, ags and es) and run check")
+        raise Refusal(f"{backup_dir} was rolled back already (result {result}): its files are back, and putting its "
+                      f"index back again would drop the records ARS took since, so nothing was changed{hint}")
     current_docs = {}
     for config, path, group in CONFIGS + (("ars", ARS_CONFIG, "ars"),):
         data, _ = read_regular_file(host(path), shown=path)
@@ -1546,9 +1653,15 @@ def cmd_rollback(args):
     current = {role: (current_docs[role].get("signer") or {}).get("key_id") for role in ("ags", "egs")}
     say(f"rollback: putting back AGS key {restoring['ags']} and EGS key {restoring['egs']} from {backup_dir} "
         f"(now {current['ags']} and {current['egs']})", sys.stderr)
-    report = {"schema": SCHEMA, "mode": "rollback", "backup_dir": backup_dir, "restoring": restoring, "replacing": current}
+    rollback_id = secrets.token_hex(8)
+    report = {"schema": SCHEMA, "mode": "rollback", "backup_dir": backup_dir, "restoring": restoring, "replacing": current,
+              "rollback_id": rollback_id}
     docs = {name: backup_docs[path] for name, path, _ in CONFIGS}
     docs["ars"] = current_docs["ars"]
+    # Written before anything changes, so that check names a rollback that a
+    # SIGKILL or a crash stops, and ended by rollback.json with the same ID.
+    write_record(backup_dir, ROLLBACK_STARTED, {"schema": SCHEMA, "rollback_id": rollback_id,
+                                                "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
     try:
         restore(report, docs, entries, index, find_leftovers(current_docs["ars"]))
     except Exception as exc:  # noqa: BLE001 - recorded in the result

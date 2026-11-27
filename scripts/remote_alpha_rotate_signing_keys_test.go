@@ -1267,6 +1267,23 @@ func TestSigningKeyRotationRefuses(t *testing.T) {
 		{"a config with NaN", func(h *rotationHost) {
 			h.appendMember(rotationConfigPaths["egs"], `"x": NaN`)
 		}, "NaN is not JSON", false, false},
+		// Go reads \ud800 alone as U+FFFD; Python keeps it and could not
+		// write the config back, so check must refuse what apply cannot do
+		// (audit S76-2).
+		{"a config with half a surrogate pair", func(h *rotationHost) {
+			h.appendMember(rotationConfigPaths["es"], `"audit_note": "a\ud800b"`)
+		}, "half a UTF-16 surrogate pair", false, false},
+		{"a config with a number too large for the services", func(h *rotationHost) {
+			h.appendMember(rotationConfigPaths["egs"], `"audit_note": 1e400`)
+		}, "too large for the services to read", false, false},
+		{"a config that is not UTF-8", func(h *rotationHost) {
+			h.appendMember(rotationConfigPaths["egs"], "\"audit_note\": \"x\xffy\"")
+		}, "egs.json is not UTF-8", false, false},
+		{"EGS's signer policy has a field the rotation does not know", func(h *rotationHost) {
+			h.edit("egs", func(d map[string]any) {
+				d["runtime_trust"].(map[string]any)["signer_policy"].(map[string]any)["allowed_signers_next"] = []any{"ags-key-1"}
+			})
+		}, "signer_policy has fields other than", false, false},
 		{"AGS's signer with an extra field", func(h *rotationHost) {
 			h.edit("ags", func(d map[string]any) { d["signer"].(map[string]any)["extra"] = "x" })
 		}, "not exactly", false, false},
@@ -1316,9 +1333,22 @@ func TestSigningKeyRotationRefuses(t *testing.T) {
 				t.Fatal(err)
 			}
 		}, "healthcheck.env is not a file root owns", false, false},
+		{"healthcheck.env has a second link", func(h *rotationHost) {
+			if err := os.Link(h.path("etc/execution-substrate/healthcheck.env"), h.path("var/healthcheck-second-name")); err != nil {
+				t.Fatal(err)
+			}
+		}, "healthcheck.env is not a file root owns with one link", false, false},
 		{"EGS starts with another config", func(h *rotationHost) {
 			h.markWith("execstart-egs", "ExecStart={ path=/usr/local/lib/execution-substrate/bin/egs ; argv[]=/usr/local/lib/execution-substrate/bin/egs -config /etc/execution-substrate/egs.unit.json ; ignore_errors=no }\n")
 		}, "egs.service does not start /usr/local/lib/execution-substrate/bin/egs with -config /etc/execution-substrate/egs.json", false, false},
+		// With systemd's @ prefix, argv[0] is only the name the program gets;
+		// path= is what runs (Opus re-audit F2).
+		{"ES runs another program under its binary's name", func(h *rotationHost) {
+			h.markWith("execstart-es", "ExecStart={ path=/usr/local/sbin/es-shim ; argv[]=/usr/local/lib/execution-substrate/bin/es -config /etc/execution-substrate/es.json ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }\n")
+		}, "es.service does not start /usr/local/lib/execution-substrate/bin/es with -config /etc/execution-substrate/es.json (its ExecStart runs /usr/local/sbin/es-shim as", false, false},
+		{"ARS's ExecStart is not in the form systemctl show prints", func(h *rotationHost) {
+			h.markWith("execstart-ars", "ExecStart=/usr/local/lib/execution-substrate/bin/ars -config /etc/execution-substrate/ars.json\n")
+		}, "ars.service does not start /usr/local/lib/execution-substrate/bin/ars", false, false},
 		{"AGS starts two commands", func(h *rotationHost) {
 			line := "ExecStart={ path=/usr/local/lib/execution-substrate/bin/ags ; argv[]=/usr/local/lib/execution-substrate/bin/ags -config /etc/execution-substrate/ags.json ; ignore_errors=no }\n"
 			h.markWith("execstart-ags", line+line)
@@ -1336,6 +1366,21 @@ func TestSigningKeyRotationRefuses(t *testing.T) {
 				t.Fatal(err)
 			}
 		}, "the folder /var/lib/ars is writable by its group or others", false, false},
+		{"others can write ARS's index", func(h *rotationHost) {
+			if err := os.Chmod(h.path(rotationIndex), 0o620); err != nil {
+				t.Fatal(err)
+			}
+		}, "index.json is writable by its group or others", false, false},
+		{"ARS's index path is not in normal form", func(h *rotationHost) {
+			data := bytes.Replace(h.read("etc/execution-substrate/ars.json"), []byte(`/var/lib/ars/index.json`), []byte(`/var/lib/ars/../ars/index.json`), 1)
+			h.write("etc/execution-substrate/ars.json", data, 0o640)
+		}, "storage.index_file is not an absolute path in normal form", false, false},
+		// Above the index's own folder only root may own a folder: ARS's
+		// account could otherwise swap the index folder.
+		{"a folder above ARS's index folder belongs to ARS's account", func(h *rotationHost) {
+			h.env = append(h.env, fmt.Sprintf("SIGNING_KEY_ROTATION_TEST_UID_ARS=%d", os.Getuid()),
+				fmt.Sprintf("SIGNING_KEY_ROTATION_TEST_ROOT_UID=%d", os.Getuid()+1))
+		}, fmt.Sprintf("the folder /var/lib belongs to uid %d", os.Getuid()), false, false},
 		{"ARS's index has a second link", func(h *rotationHost) {
 			if err := os.Link(h.path(rotationIndex), h.path("var/lib/ars/index.json.old")); err != nil {
 				t.Fatal(err)
@@ -1354,6 +1399,33 @@ func TestSigningKeyRotationRefuses(t *testing.T) {
 				t.Fatal(err)
 			}
 		}, "a rotation did not finish", false, false},
+		// A rollback writes rollback-started.json before it changes
+		// anything and rollback.json, with the same ID, when it ends (Opus
+		// re-audit F3).
+		{"a rollback did not finish", func(h *rotationHost) {
+			dir := rotationBackupRoot + "/20261127T000000Z-ags-x"
+			if err := os.MkdirAll(h.path(dir), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			h.writeJSON(dir+"/summary.json", map[string]any{"result": "rotated"}, 0o600)
+			h.writeJSON(dir+"/rollback-started.json", map[string]any{"rollback_id": "second"}, 0o600)
+			h.writeJSON(dir+"/rollback.json", map[string]any{"result": "rollback_failed", "rollback_id": "first"}, 0o600)
+		}, "a rollback of /var/backups/execution-substrate-signing-keys/20261127T000000Z-ags-x did not finish", false, false},
+		{"a rollback did not finish: it could not put everything back", func(h *rotationHost) {
+			dir := rotationBackupRoot + "/20261127T000000Z-ags-x"
+			if err := os.MkdirAll(h.path(dir), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			h.writeJSON(dir+"/summary.json", map[string]any{"result": "rotated"}, 0o600)
+			h.writeJSON(dir+"/rollback-started.json", map[string]any{"rollback_id": "first"}, 0o600)
+			h.writeJSON(dir+"/rollback.json", map[string]any{"result": "rollback_failed", "rollback_id": "first"}, 0o600)
+		}, "could not put everything back (rollback_failed)", false, false},
+		{"a rotation did not finish: its own rollback could not put everything back", func(h *rotationHost) {
+			if err := os.MkdirAll(h.path(rotationBackupRoot+"/20261127T000000Z-ags-x"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			h.writeJSON(rotationBackupRoot+"/20261127T000000Z-ags-x/summary.json", map[string]any{"result": "rollback_failed"}, 0o600)
+		}, "could not put everything back (rollback_failed)", false, false},
 		{"an apply stopped while it made its backup", func(h *rotationHost) {
 			if err := os.MkdirAll(h.path(rotationBackupRoot+"/.incomplete-20261127T000000Z-ags-x"), 0o700); err != nil {
 				t.Fatal(err)
@@ -1369,6 +1441,18 @@ func TestSigningKeyRotationRefuses(t *testing.T) {
 		}, "must all run", false, false},
 		{"ES does not answer", func(h *rotationHost) { h.mark("unhealthy") }, "must all run", false, false},
 		{"openssl gives a known key", func(h *rotationHost) { h.fakeOpenSSL(strings.Repeat("11", 32)) }, "known key", true, true},
+		{"openssl gives AGS and EGS the same key", func(h *rotationHost) {
+			h.fakeOpenSSL("8f1d2c3b4a596877e6d5c4b3a2918f7e6d5c4b3a29180716253443526170819a")
+		}, "openssl gave AGS and EGS the same key", true, true},
+		{"others can write the folder above the backup root", func(h *rotationHost) {
+			if err := os.Chmod(h.path("var/backups"), 0o777); err != nil {
+				t.Fatal(err)
+			}
+		}, "the folder /var/backups is writable by its group or others", true, true},
+		// A backup that fails before it is complete leaves no folder.
+		{"the disk fills while the backup is written", func(h *rotationHost) {
+			h.env = append(h.env, "SIGNING_KEY_ROTATION_TEST_FAIL_AT=backup-written")
+		}, "No space left on device; nothing was changed", true, true},
 		{"openssl gives something other than an Ed25519 key", func(h *rotationHost) { h.mark("openssl-bad-der") },
 			"did not give an Ed25519 PKCS #8 private key", true, true},
 		{"openssl gives something other than an Ed25519 public key", func(h *rotationHost) { h.mark("openssl-bad-pub-der") },
@@ -1383,7 +1467,8 @@ func TestSigningKeyRotationRefuses(t *testing.T) {
 				tc.setup(h)
 				before := h.snapshot()
 				stdout, stderr, code := h.run(mode)
-				if code != 1 || !strings.Contains(stdout+stderr, tc.want) || !strings.Contains(stderr, "refused") {
+				if code != 1 || !strings.Contains(stdout+stderr, tc.want) || !strings.Contains(stderr, "refused") ||
+					strings.Contains(stderr, "Traceback") {
 					t.Fatalf("%s exit %d, want 1 naming %q\nstdout %s\nstderr %s", mode, code, tc.want, stdout, stderr)
 				}
 				if !tc.noReport {
@@ -1758,6 +1843,12 @@ func TestSigningKeyRotationRefusesACheckoutOthersCanChange(t *testing.T) {
 				t.Fatal(err)
 			}
 		}, "is writable by its group or others"},
+		// Opus A57: the folders above scripts are checked too.
+		{"a folder above scripts is writable by others", func(t *testing.T, root string) {
+			if err := os.Chmod(root, 0o777); err != nil {
+				t.Fatal(err)
+			}
+		}, " is writable by its group or others (0777) without the sticky bit"},
 	} {
 		for _, command := range [][]string{{"check"}, {"apply"}, {"rollback", "--backup-dir", "/nonexistent"}} {
 			t.Run(tc.name+"/"+command[0], func(t *testing.T) {

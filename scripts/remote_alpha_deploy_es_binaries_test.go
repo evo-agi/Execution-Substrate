@@ -672,3 +672,54 @@ func TestRemoteAlphaESBinaryDeploymentStopsOnAConfigTheNewBinariesRefuse(t *test
 		})
 	}
 }
+
+// runESBinaryDeploymentCheckOnly runs the deployment in check-only mode
+// after mutate has changed the fixture, and returns its report.
+func runESBinaryDeploymentCheckOnly(t *testing.T, mutate func(t *testing.T, f esBinaryDeploymentFixture), extraEnv ...string) map[string]any {
+	t.Helper()
+	tmpDir := t.TempDir()
+	fakeBin := filepath.Join(tmpDir, "bin")
+	if err := os.MkdirAll(fakeBin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fixture := setupESBinaryDeploymentFixture(t, tmpDir)
+	setupFakeESBinaryDeploymentCommands(t, fakeBin, fixture)
+	mutate(t, fixture)
+	summaryPath := filepath.Join(tmpDir, "check-summary.json")
+	output, _ := runSourcedESBinaryDeploymentHelper(t, envWithPath(fakeBin, extraEnv...),
+		esBinaryDeploymentExpectedSliceShell(fixture)+fmt.Sprintf("remote_alpha_deploy_es_binaries_main --summary-path %q\n", summaryPath))
+	return parseESBinaryDeploymentOutput(t, output)
+}
+
+// A staged config check that is there but cannot run is a blocker, not a
+// pass (Sonnet shadow audit D08; a check missing from the payload is
+// another branch, tested above).
+func TestRemoteAlphaESBinaryDeploymentConfigCheckThatCannotRunIsABlocker(t *testing.T) {
+	t.Parallel()
+	payload := runESBinaryDeploymentCheckOnly(t, func(t *testing.T, f esBinaryDeploymentFixture) {
+		if err := os.Chmod(filepath.Join(f.PayloadDir, "agsconfigcheck"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	})
+	ags := nestedMap(t, nestedMap(t, nestedMap(t, payload, "validation"), "config_checks"), "ags")
+	if ags["classification"] != "blocker" || !strings.Contains(fmt.Sprint(ags["summary"]), "the config check agsconfigcheck could not run") {
+		t.Fatalf("a config check that cannot run is not a blocker: %v", ags)
+	}
+}
+
+// The staged config checks run with an environment of their own, not the
+// caller's (Sonnet shadow audit D05): a check that fails when a variable of
+// the caller is set must still pass.
+func TestRemoteAlphaESBinaryDeploymentConfigChecksDoNotSeeTheCallersEnvironment(t *testing.T) {
+	t.Parallel()
+	payload := runESBinaryDeploymentCheckOnly(t, func(t *testing.T, f esBinaryDeploymentFixture) {
+		script := "#!/bin/sh\nif [ -n \"${DEPLOYMENT_TEST_CALLER_VARIABLE:-}\" ]; then echo \"saw the caller's environment\" >&2; exit 1; fi\nexit 0\n"
+		if err := os.WriteFile(filepath.Join(f.PayloadDir, "esconfigcheck"), []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}, "DEPLOYMENT_TEST_CALLER_VARIABLE=1")
+	es := nestedMap(t, nestedMap(t, nestedMap(t, payload, "validation"), "config_checks"), "es")
+	if es["classification"] != "pass" {
+		t.Fatalf("the config check saw the caller's environment: %v", es)
+	}
+}
