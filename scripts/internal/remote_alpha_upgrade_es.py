@@ -2866,12 +2866,15 @@ def cmd_nomad_hook(args):
         raise Refusal("run as root (sudo -n)")
     proc = nomad_package_hook("install_nomad_package_hook", host(NOMAD_TAKE_BACK_PROGRAM), host(NOMAD_DPKG_HOOK),
                               host(NOMAD_DIR), host(NOMAD_DATA_DIR))
+    # Every line, in full: what the program set aside, and why, is in its
+    # words, one line each, and a cut would leave a path half shown.
     for line in proc.stdout.splitlines():
         say(line)
+    for line in proc.stderr.splitlines():
+        say(line, sys.stderr)
     if proc.returncode != 0:
-        raise Refusal(f"the program and its dpkg configuration were not installed, or the program failed or set "
-                      f"something aside: "
-                      f"{(proc.stderr or proc.stdout).strip()[-800:]}")
+        raise Refusal("the program and its dpkg configuration were not installed, or the program failed or set "
+                      "something aside: see the lines above")
 
 
 def changeable_refusal(owners, what, problems):
