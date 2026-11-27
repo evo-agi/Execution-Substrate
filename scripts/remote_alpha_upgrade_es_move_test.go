@@ -889,6 +889,29 @@ func TestRemoteAlphaUpgradeESRollsBackOnlyTheApplyThatLeftTheHost(t *testing.T) 
 		return h, before, backupDir
 	}
 
+	// A folder that a backed-up file goes back into, gone since the apply,
+	// is refused before a service is touched or a record written (re-check
+	// 51 of #67, S51-3): not after ES and Nomad are stopped.
+	t.Run("a folder a file goes back into, gone since the apply", func(t *testing.T) {
+		h, _, backupDir := applied(t)
+		if err := os.RemoveAll(h.path("etc/execution-substrate")); err != nil {
+			t.Fatal(err)
+		}
+		before, files := h.snapshot(), backupFiles(t, h)
+		h.clearCalls()
+		_, stderr, code := h.run("rollback", "--backup-dir", backupDir)
+		want := "remote alpha ES upgrade refused: " + h.path("etc/execution-substrate") + ", where the backup puts " +
+			h.path("etc/execution-substrate/es.json") + " back, is not a folder; nothing was changed"
+		if code != 1 || strings.Contains(stderr, "Traceback") || !strings.Contains(stderr, want) {
+			t.Fatalf("rollback exited %d, want %q: %s", code, want, stderr)
+		}
+		onlyReads(t, h, "a refused rollback")
+		assertRestored(t, before, h.snapshot())
+		if after := backupFiles(t, h); fmt.Sprint(after) != fmt.Sprint(files) {
+			t.Fatalf("a refused rollback changed the backups: %q -> %q", files, after)
+		}
+	})
+
 	t.Run("an older backup after a later apply, in and out of order", func(t *testing.T) {
 		h, before, first := applied(t)
 		afterFirst := h.snapshot()

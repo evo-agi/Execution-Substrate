@@ -7593,7 +7593,9 @@ and nothing recorded:
   (`es.json`, `es`, `es-runtime-support` and `nomad.hcl`, in that order);
   one whose copy is missing from `files/`, is not a regular file there or
   does not match its digest and size; and a `created.json` that is not a
-  list of the paths `apply` creates. Each is refused before a service is
+  list of the paths `apply` creates. It also refuses a backup with a file
+  whose folder is gone from the host, since the file cannot go back there.
+  Each is refused before a service is
   stopped, so no value the check admits ends a restore part way; one cut off
   after `earlier.json` counts as a later backup, so it is put back first
   (it puts back the files it found). If
@@ -7916,8 +7918,10 @@ boolean, an unknown schema, a manifest that is a string, a boolean or a
 fraction), and values of the right type that a restore could not use (an
 owner of 2^32 - 1, which `chown` reads as "leave it as it is", a group far too large, an empty or relative
 path, a copy missing from `files/`), and a `created.json` naming a list or
-a number, each refused with nothing changed, and a `restore` into a folder
-that is gone refused before the first file is put back; an https restore
+a number, each refused with nothing changed, a `rollback` with a folder a
+file goes back into gone since the apply, refused before a service is
+touched, and a `restore` into a folder that is gone refused before the
+first file is put back; an https restore
 whose `es.json` does not hold against Nomad, by `rollback` and by `apply`'s
 own rollback; a rollback after which ES does not answer; an installed
 binary missing, and a rollback record's name taken, each refused; the
