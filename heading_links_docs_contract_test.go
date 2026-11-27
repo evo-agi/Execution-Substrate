@@ -190,7 +190,8 @@ const (
 // each ES citation, on every line, and each cell of the Execution Substrate
 // source baseline table that cites by line. A ledger without that table is a
 // problem too. TestClaimLedgerCitesThisRepositoryBySection runs it on the
-// real ledger and on small synthetic ones.
+// real ledger, and TestClaimLedgerLineGuardFindsEachCitation on small
+// synthetic ones.
 func claimLedgerLineProblems(ledger string) []string {
 	var problems []string
 	lines := strings.Split(ledger, "\n")
@@ -311,8 +312,11 @@ func TestClaimLedgerLineGuardFindsEachCitation(t *testing.T) {
 		}
 	}
 
-	// The whole check on small ledgers: every line is scanned, every row of
-	// the baseline table and only that table, and a missing table is found.
+	// The whole check on small ledgers: every line is scanned, table rows and
+	// other lines alike, including the first, the last and the lines between
+	// the baseline headings; every cell of every row of the baseline table is
+	// checked, first, middle and last, and only that table; and a missing
+	// table is found.
 	clean := strings.Join([]string{
 		"# Ledger",
 		"| C1 | claim | " + a + "; CP `README.md:1-12` |",
@@ -331,10 +335,11 @@ func TestClaimLedgerLineGuardFindsEachCitation(t *testing.T) {
 		"| C1 | claim | " + a + ", `51-82`; " + b + ", `README.md:3` |",
 		"| C2 | claim | " + a + "; " + b + "; " + c + ", `L70` |",
 		claimLedgerBaselineStart,
+		"Sources: ES `x.md:5`.",
 		"| Source | Sections inspected | Why |",
 		"| --- | --- | --- |",
 		"| `x.md` | `229` | reason |",
-		"| `y.md` | The whole file | reason |",
+		"| `y.md:3` | The whole file | reason |",
 		"| `z.md` | Lines 1-229 | reason |",
 		"| `w.md` | `L12` | `1-12` |",
 		claimLedgerBaselineEnd,
@@ -346,14 +351,16 @@ func TestClaimLedgerLineGuardFindsEachCitation(t *testing.T) {
 		"line 2 cites this repository by line (`51-82`); link the section heading instead",
 		"line 2 cites this repository by line (`README.md:3`); link the section heading instead",
 		"line 3 cites this repository by line (`L70`); link the section heading instead",
-		"line 13 cites this repository by line (`90-95`); link the section heading instead",
-		"line 7: a source baseline cell cites this repository by line (`229`)",
-		"line 9: a source baseline cell cites this repository by line (Lines 1-229)",
-		"line 10: a source baseline cell cites this repository by line (`L12`)",
-		"line 10: a source baseline cell cites this repository by line (`1-12`)",
+		"line 5 cites this repository by line (`x.md:5`); link the section heading instead",
+		"line 14 cites this repository by line (`90-95`); link the section heading instead",
+		"line 8: a source baseline cell cites this repository by line (`229`)",
+		"line 9: a source baseline cell cites this repository by line (`y.md:3`)",
+		"line 10: a source baseline cell cites this repository by line (Lines 1-229)",
+		"line 11: a source baseline cell cites this repository by line (`L12`)",
+		"line 11: a source baseline cell cites this repository by line (`1-12`)",
 	}
 	if got := claimLedgerLineProblems(dirty); strings.Join(got, "\n") != strings.Join(want, "\n") {
-		t.Errorf("claimLedgerLineProblems on a ledger with eight line citations = %q, want %q", got, want)
+		t.Errorf("claimLedgerLineProblems on a ledger with %d line citations = %q, want %q", len(want), got, want)
 	}
 	if got := claimLedgerLineProblems("# Ledger\n| C1 | claim | " + a + " |\n"); len(got) != 1 || !strings.Contains(got[0], "no source baseline table") {
 		t.Errorf("claimLedgerLineProblems on a ledger without a baseline table = %q, want the missing table", got)
