@@ -2,6 +2,7 @@ package contract_test
 
 import (
 	"os"
+	"slices"
 	"strings"
 	"testing"
 
@@ -88,25 +89,64 @@ func TestRuntimeTrustPolicyAcceptsARevokedArtifactAndARevokedSigner(t *testing.T
 const revocationRunbookPath = "../../.runbooks/system/Governed Execution ES Revoke An Artifact Or Signer.md"
 
 // ES accepts a request's digest only in lower-case hex and compares revoked
-// digests as exact text. The runbook's note says what EGS does with an
-// upper-case digest; this test keeps that note equal to what the contract
-// check does, so a change to the check changes the note in the same change.
+// digests as exact text. What EGS does with an upper-case digest decides which
+// note the runbook must carry; the other lines that mention upper case must
+// hold either way. This test keeps every line of the runbook's procedure (all
+// of it before "## Test Evidence", which records what ran) that mentions upper
+// case equal to one of these, so a change to the check changes the runbook in
+// the same change.
+const (
+	runbookUpperCaseNoteWhenEGSAccepts = "- EGS accepts upper-case hex in a digest, but ES compares the exact text, so an upper-case entry would pass EGS and never match an artifact. Step 2 accepts lower-case only."
+	runbookUpperCaseNoteWhenEGSRefuses = "- EGS refuses upper-case hex in a digest, as step 2 does: ES compares the exact text, so an upper-case entry could never match an artifact."
+)
+
+var runbookUpperCaseLinesEitherWay = []string{
+	"To find the problems in the lists without showing any other field, run the check below. It also flags a digest in upper-case hex, which ES would never match.",
+}
+
+// Failure-table row 1 names the only spelling ES matches, whatever EGS does.
+const runbookRefusedDigestRow = "| Step 2 exits with \"an artifact digest is sha256: followed by 64 lowercase hex characters\" | The value is not `sha256:` and 64 lower-case hex characters, the only spelling ES matches | Copy the `artifact_digest` from the publish response; nothing was changed |"
+
 func TestRevocationRunbookNoteOnUpperCaseDigestsMatchesEGS(t *testing.T) {
 	data, err := os.ReadFile(revocationRunbookPath)
 	if err != nil {
 		t.Fatalf("read runbook: %v", err)
 	}
-	runbook := string(data)
-	const accepts = "EGS accepts upper-case hex in a digest"
-	const refuses = "EGS refuses upper-case hex in a digest"
-	upper := contract.RuntimeTrustPolicy{ArtifactPolicy: contract.ArtifactPolicy{RevokedArtifacts: []string{"sha256:" + strings.Repeat("AB", 32)}}}
-	if upper.Validate() == nil {
-		if !strings.Contains(runbook, accepts) || strings.Contains(runbook, refuses) {
-			t.Fatalf("EGS accepts an upper-case digest, so the runbook must say %q and not %q", accepts, refuses)
-		}
-		return
+	lines := strings.Split(string(data), "\n")
+	evidence := slices.Index(lines, "## Test Evidence")
+	if evidence < 0 || slices.Index(lines[evidence+1:], "## Test Evidence") >= 0 {
+		t.Fatal(`the runbook must have exactly one "## Test Evidence" heading`)
 	}
-	if !strings.Contains(runbook, refuses) || strings.Contains(runbook, accepts) {
-		t.Fatalf("EGS refuses an upper-case digest, so the runbook must say %q and not %q", refuses, accepts)
+	procedure := lines[:evidence]
+
+	upper := contract.RuntimeTrustPolicy{ArtifactPolicy: contract.ArtifactPolicy{RevokedArtifacts: []string{"sha256:" + strings.Repeat("AB", 32)}}}
+	what, note := "accepts", runbookUpperCaseNoteWhenEGSAccepts
+	if upper.Validate() != nil {
+		what, note = "refuses", runbookUpperCaseNoteWhenEGSRefuses
+	}
+	allowed := append([]string{note}, runbookUpperCaseLinesEitherWay...)
+
+	count := func(want string) int {
+		n := 0
+		for _, line := range procedure {
+			if line == want {
+				n++
+			}
+		}
+		return n
+	}
+	for _, want := range allowed {
+		if got := count(want); got != 1 {
+			t.Errorf("EGS %s an upper-case digest, so the runbook's procedure must hold this line exactly once, found %d times:\n%s", what, got, want)
+		}
+	}
+	if got := count(runbookRefusedDigestRow); got != 1 {
+		t.Errorf("the runbook's procedure must hold failure-table row 1 exactly once, found %d times:\n%s", got, runbookRefusedDigestRow)
+	}
+	for number, line := range procedure {
+		if !strings.Contains(strings.ToLower(line), "upper") || slices.Contains(allowed, line) {
+			continue
+		}
+		t.Errorf("runbook line %d mentions upper case but is not one of the lines this test allows while EGS %s an upper-case digest; make it hold either way and add it to runbookUpperCaseLinesEitherWay, or remove it:\n%s", number+1, what, line)
 	}
 }
