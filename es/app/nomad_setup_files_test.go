@@ -3,6 +3,7 @@ package app_test
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -18,12 +19,16 @@ import (
 // /etc/nomad.d to the nomad account, and the setup took back only nomad.hcl,
 // so nomad.env (the unit's EnvironmentFile) and any other *.hcl or *.json
 // Nomad loads stayed that account's to write. The setup now takes them back
-// too, right after the folder.
+// too. Since audit 51 of #83 (O51-2) it does so by running, as root, the
+// take-back program it installs for dpkg (nomad_take_back_program), before
+// it writes there: one set of rules, and what the program cannot take back
+// it sets aside, which stops the setup until someone has looked.
 
-// The re-check's proposed test, with the files' take-back added: it
-// redefines sudo to record what it runs, and requires, for each of Nomad's
-// three folders, install -d and then python3 on it, both under sudo, and, for
-// the config folder, the files' take-back's python3 under sudo after them.
+// The re-check's proposed test, with the take-back program added: it
+// redefines sudo to record what it runs, and requires the program's install
+// and run under sudo's bash first, then, for each of Nomad's three folders,
+// install -d and then python3 on it, both under sudo, and last the removal of
+// the stand-in that a move of Nomad's state leaves (A52-2 of #83).
 func TestLinuxSetupTakesEachFolderBackAsRootAndRemovesItsACLsAfterwards(t *testing.T) {
 	data := t.TempDir()
 	config := filepath.Join(data, "etc")
@@ -42,18 +47,23 @@ func TestLinuxSetupTakesEachFolderBackAsRootAndRemovesItsACLsAfterwards(t *testi
 	}
 	var got []string
 	for _, line := range strings.Split(strings.TrimSpace(string(body)), "\n") {
-		if strings.HasPrefix(line, "install ") || strings.HasPrefix(line, "python3 ") {
+		if strings.HasPrefix(line, "install ") || strings.HasPrefix(line, "python3 ") || strings.HasPrefix(line, "bash ") {
 			got = append(got, line)
 		}
 	}
-	tlsDir := filepath.Join(config, "tls")
-	want := []string{"install " + config, "python3 " + config, "python3 " + config}
-	for _, folder := range []string{data, tlsDir} {
+	// The program's install and run end with the data folder, its last
+	// argument.
+	want := []string{"bash " + data}
+	for _, folder := range []string{config, data, filepath.Join(config, "tls")} {
 		want = append(want, "install "+folder, "python3 "+folder)
 	}
+	// Once nomad.hcl is written, the stand-in a move of Nomad's state leaves
+	// in the package's data folder is removed, by nomad_data_move under
+	// sudo's bash ("$1" here).
+	want = append(want, "bash "+data)
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
-		t.Fatalf("sudo ran\n%s\nwant, for each folder, install -d and then python3, and the config files' python3 "+
-			"after the config folder's, all under sudo:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+		t.Fatalf("sudo ran\n%s\nwant the take-back program first, then, for each folder, install -d and then python3, "+
+			"then the stand-in's removal, all under sudo:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
 }
 
@@ -92,13 +102,22 @@ func requireOwner(t *testing.T, path string, uid, gid int) {
 func tookBack(output string) []string {
 	var lines []string
 	for _, line := range strings.Split(output, "\n") {
-		if strings.HasPrefix(line, "nomad: took ") {
+		if strings.HasPrefix(line, "execution-substrate: took ") && strings.HasSuffix(line, "; Nomad reads it as root, so check what it sets") {
 			lines = append(lines, line)
 		}
 	}
 	return lines
 }
 
+// tookBackLine is the take-back program's line for a file it took back from
+// was ("uid U, gid G, MODE").
+func tookBackLine(path, was string) string {
+	return "execution-substrate: took " + path + " back (it was " + was + "); Nomad reads it as root, so check what it sets"
+}
+
+// The setup's take-back program takes back each file in the config folder
+// that Nomad's unit reads as root and that is not the caller's alone,
+// nomad.hcl included, before the setup backs nomad.hcl up and writes it new.
 func TestLinuxSetupTakesBackTheFilesNomadReadsAsRoot(t *testing.T) {
 	data := t.TempDir()
 	config := filepath.Join(data, "etc")
@@ -145,7 +164,8 @@ func TestLinuxSetupTakesBackTheFilesNomadReadsAsRoot(t *testing.T) {
 		}
 		inodes[entry.name] = inode(t, path)
 	}
-	// nomad.hcl is left to the step that backs it up and writes it new.
+	// nomad.hcl is taken back first too; the setup then backs it up and
+	// writes it new.
 	nomadHCL := filepath.Join(config, "nomad.hcl")
 	if err := os.WriteFile(nomadHCL, []byte("# the operator's own config\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -173,10 +193,11 @@ func TestLinuxSetupTakesBackTheFilesNomadReadsAsRoot(t *testing.T) {
 		t.Fatalf("install_nomad_service_config: %v %s", err, stderr)
 	}
 	want := []string{
-		"nomad: took " + filepath.Join(config, "extra.hcl") + " back (uid 65534, gid 65534, 0666); Nomad's unit reads it as root, so check what it sets",
-		"nomad: took " + filepath.Join(config, "loose.hcl") + " back (" + me + ", 0666); Nomad's unit reads it as root, so check what it sets",
-		"nomad: took " + filepath.Join(config, "nomad.env") + " back (uid 65534, gid 65534, 0644); Nomad's unit reads it as root, so check what it sets",
-		"nomad: took " + filepath.Join(config, "setuid.json") + " back (" + me + ", 4775); Nomad's unit reads it as root, so check what it sets",
+		tookBackLine(filepath.Join(config, "extra.hcl"), "uid 65534, gid 65534, 0666"),
+		tookBackLine(filepath.Join(config, "loose.hcl"), me+", 0666"),
+		tookBackLine(filepath.Join(config, "nomad.env"), "uid 65534, gid 65534, 0644"),
+		tookBackLine(nomadHCL, "uid 65534, gid 65534, 0666"),
+		tookBackLine(filepath.Join(config, "setuid.json"), me+", 4775"),
 	}
 	if got := tookBack(stdout); strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("the setup reported\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
@@ -223,7 +244,7 @@ func TestLinuxSetupTakesBackTheFilesNomadReadsAsRoot(t *testing.T) {
 	}
 	sort.Strings(names)
 	for _, name := range names {
-		if strings.HasSuffix(name, ".execution-substrate-new") {
+		if strings.HasPrefix(name, ".execution-substrate-take-back-") {
 			t.Fatalf("a temporary file was left: %v", names)
 		}
 	}
@@ -251,7 +272,12 @@ func TestLinuxSetupTakesBackTheFilesNomadReadsAsRoot(t *testing.T) {
 	}
 }
 
-func TestLinuxSetupStopsAtAFileNomadReadsThatItCannotTakeBack(t *testing.T) {
+// What the program cannot take back where Nomad reads (a link, a FIFO, a
+// file it cannot read) it sets aside, out of Nomad's reach, and the setup
+// stops before it records a restart or writes nomad.hcl, and again on each
+// rerun, until someone has looked and removed what was set aside; then a
+// rerun goes through (audit 51 of #83, A51-4).
+func TestLinuxSetupStopsAfterTheProgramSetsAsideAFileNomadReads(t *testing.T) {
 	setup := func(t *testing.T) (data, config string) {
 		t.Helper()
 		data = t.TempDir()
@@ -261,24 +287,47 @@ func TestLinuxSetupStopsAtAFileNomadReadsThatItCannotTakeBack(t *testing.T) {
 		}
 		return data, config
 	}
-	stopped := func(t *testing.T, data, config, want string) {
+	aside := func(config string) string { return config + ".execution-substrate-set-aside" }
+	stop := func(config string) string {
+		return "nomad: " + aside(config) + " holds what was set aside from Nomad's folders, where Nomad would have read it as root; " +
+			"look at it, then remove it (rm -rf -- " + aside(config) + ") and rerun\n"
+	}
+	stopped := func(t *testing.T, data, config, at, why string) {
 		t.Helper()
 		_, stderr, err := runLinuxSetupServiceHarness(t, data, "install_nomad_service_config\n")
-		if err == nil || !strings.Contains(stderr, want) {
-			t.Fatalf("install_nomad_service_config went on (%v); want %q in: %s", err, want, stderr)
+		line := regexp.QuoteMeta("execution-substrate: set aside "+at+" ("+why+"): it is "+aside(config)+"/") +
+			`[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}/` + regexp.QuoteMeta(filepath.Base(at)+" now, which Nomad does not read")
+		if err == nil || !regexp.MustCompile(`(?m)^`+line+`$`).MatchString(stderr) || !strings.HasSuffix(stderr, stop(config)) {
+			t.Fatalf("install_nomad_service_config went on (%v), or did not say why: %s", err, stderr)
 		}
-		if _, err := os.Lstat(filepath.Join(config, "nomad.hcl")); !os.IsNotExist(err) {
-			t.Fatalf("nomad.hcl was written: %v", err)
+		requireNotWritten := func() {
+			t.Helper()
+			if _, err := os.Lstat(filepath.Join(config, "nomad.hcl")); !os.IsNotExist(err) {
+				t.Fatalf("nomad.hcl was written: %v", err)
+			}
+			if _, err := os.Lstat(filepath.Join(data, "execution-substrate-restart-pending")); !os.IsNotExist(err) {
+				t.Fatalf("a restart was recorded: %v", err)
+			}
 		}
-		if _, err := os.Lstat(filepath.Join(data, "execution-substrate-restart-pending")); !os.IsNotExist(err) {
-			t.Fatalf("a restart was recorded: %v", err)
+		requireNotWritten()
+		if _, err := os.Lstat(at); !os.IsNotExist(err) {
+			t.Fatalf("%s is still where Nomad reads it: %v", at, err)
 		}
-	}
-	notRegular := func(path string) string {
-		return "nomad: " + path + " is not a regular file, and Nomad's unit reads it as root; remove it, or put a regular file there, and rerun"
+		// A rerun stops too, though it sets nothing aside itself.
+		_, stderr, err = runLinuxSetupServiceHarness(t, data, "install_nomad_service_config\n")
+		if err == nil || stderr != stop(config) {
+			t.Fatalf("a rerun went on past what an earlier run set aside (%v): %s", err, stderr)
+		}
+		requireNotWritten()
+		// Once that is removed, a rerun goes through.
+		runTestSudo(t, "rm", "-rf", "--", aside(config))
+		if _, stderr, err := runLinuxSetupServiceHarness(t, data, "install_nomad_service_config\n"); err != nil {
+			t.Fatalf("with nothing set aside, install_nomad_service_config: %v %s", err, stderr)
+		}
+		requireRegularFile(t, filepath.Join(config, "nomad.hcl"), renderedNomadConfig(t, data, config)+"\n", 0o640)
 	}
 
-	for _, name := range []string{"extra.hcl", "extra.json", "nomad.env"} {
+	for _, name := range []string{"extra.hcl", "extra.json", "nomad.env", "nomad.hcl"} {
 		t.Run("a link at "+name+" to a file outside", func(t *testing.T) {
 			data, config := setup(t)
 			victim := filepath.Join(t.TempDir(), "victim")
@@ -292,11 +341,8 @@ func TestLinuxSetupStopsAtAFileNomadReadsThatItCannotTakeBack(t *testing.T) {
 			if err := os.Symlink(victim, at); err != nil {
 				t.Fatal(err)
 			}
-			stopped(t, data, config, notRegular(at))
+			stopped(t, data, config, at, "a link, not a regular file")
 			requireRegularFile(t, victim, "victim\n", 0o666)
-			if target, err := os.Readlink(at); err != nil || target != victim {
-				t.Fatalf("the link was changed: %q %v", target, err)
-			}
 		})
 	}
 	t.Run("a FIFO at nomad.env, which is not opened", func(t *testing.T) {
@@ -305,7 +351,19 @@ func TestLinuxSetupStopsAtAFileNomadReadsThatItCannotTakeBack(t *testing.T) {
 		if err := syscall.Mkfifo(at, 0o666); err != nil {
 			t.Fatal(err)
 		}
-		stopped(t, data, config, notRegular(at))
+		stopped(t, data, config, at, "a FIFO, not a regular file")
+	})
+	t.Run("a link at the TLS folder", func(t *testing.T) {
+		data, config := setup(t)
+		folder := t.TempDir()
+		at := filepath.Join(config, "tls")
+		if err := os.Symlink(folder, at); err != nil {
+			t.Fatal(err)
+		}
+		stopped(t, data, config, at, "a link, not a folder")
+		if entries, err := os.ReadDir(folder); err != nil || len(entries) != 0 {
+			t.Fatalf("something was written into the linked folder: %v %v", entries, err)
+		}
 	})
 	t.Run("a file the caller cannot read", func(t *testing.T) {
 		data, config := setup(t)
@@ -314,8 +372,7 @@ func TestLinuxSetupStopsAtAFileNomadReadsThatItCannotTakeBack(t *testing.T) {
 			t.Fatal(err)
 		}
 		runTestSudo(t, "chown", "65534:65534", at)
-		stopped(t, data, config, "nomad: cannot take back the files Nomad reads in "+config+": [Errno 13] Permission denied: '"+at+"'")
-		requireOwner(t, at, 65534, 65534)
+		stopped(t, data, config, at, "it could not be taken back: Permission denied")
 	})
 }
 
@@ -347,17 +404,19 @@ func TestLinuxSetupTakesBackNomadLoadedNamesThatLookHidden(t *testing.T) {
 	got := strings.Join(tookBack(stdout), "\n")
 	for _, name := range names {
 		path := filepath.Join(config, name)
-		if !strings.Contains(got, "nomad: took "+path+" back (") {
+		if !strings.Contains(got, "execution-substrate: took "+path+" back (it was ") {
 			t.Fatalf("%s, which Nomad loads, was not taken back: %q", name, got)
 		}
 		requireRegularFile(t, path, "# "+name+"\n", 0o644)
 	}
 }
 
-// Re-check 50 (T50-2, S50-1): a setup killed after it made a file's
-// temporary name leaves that name behind. The next run removes it first,
-// so a stale file, or a link the former owner left there, neither stops
-// the setup nor is written through.
+// Re-check 50 (T50-2, S50-1), with the program's temporary names (audit 51
+// of #83, A51-1): a run killed after it made a file's temporary name leaves
+// that name behind. The next run removes it, so a stale file, or a link the
+// former owner left there, neither stops the setup nor is written through.
+// The name an earlier version used, which Nomad never reads, is left as it
+// is.
 func TestLinuxSetupClearsATemporaryNameAKilledRunLeft(t *testing.T) {
 	for _, stale := range []string{"a file", "a link to a file outside"} {
 		t.Run(stale, func(t *testing.T) {
@@ -381,25 +440,33 @@ func TestLinuxSetupClearsATemporaryNameAKilledRunLeft(t *testing.T) {
 				t.Fatal(err)
 			}
 			runTestSudo(t, "chown", "65534:65534", target)
-			temporary := target + ".execution-substrate-new"
-			if stale == "a file" {
-				if err := os.WriteFile(temporary, []byte("half"), 0o600); err != nil {
+			temporary := filepath.Join(config, ".execution-substrate-take-back-0123456789abcdef")
+			earlier := target + ".execution-substrate-new"
+			for _, path := range []string{temporary, earlier} {
+				if stale == "a file" {
+					if err := os.WriteFile(path, []byte("half"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				} else if err := os.Symlink(victim, path); err != nil {
 					t.Fatal(err)
 				}
-			} else if err := os.Symlink(victim, temporary); err != nil {
-				t.Fatal(err)
 			}
 			stdout, stderr, err := runLinuxSetupServiceHarness(t, data, "install_nomad_service_config\n")
 			if err != nil {
 				t.Fatalf("install_nomad_service_config stopped at the stale temporary name: %v %s", err, stderr)
 			}
-			if got := tookBack(stdout); len(got) != 1 || !strings.HasPrefix(got[0], "nomad: took "+target+" back") {
+			if got := tookBack(stdout); len(got) != 1 || !strings.HasPrefix(got[0], "execution-substrate: took "+target+" back") {
 				t.Fatalf("the setup reported %v", got)
 			}
 			requireRegularFile(t, target, "acl { enabled = true }\n", 0o644)
 			requireRegularFile(t, victim, "victim\n", 0o666)
 			if _, err := os.Lstat(temporary); !os.IsNotExist(err) {
 				t.Fatalf("the temporary name is still there: %v", err)
+			}
+			if stale == "a file" {
+				requireRegularFile(t, earlier, "half", 0o600)
+			} else if link, err := os.Readlink(earlier); err != nil || link != victim {
+				t.Fatalf("the earlier version's temporary name was changed: %q %v", link, err)
 			}
 		})
 	}
@@ -425,7 +492,7 @@ func TestLinuxSetupTakesBackAFileOfAnotherGroup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("install_nomad_service_config: %v %s", err, stderr)
 	}
-	want := "nomad: took " + path + " back (uid " + strconv.Itoa(uid) + ", gid 65534, 0640); Nomad's unit reads it as root, so check what it sets"
+	want := tookBackLine(path, "uid "+strconv.Itoa(uid)+", gid 65534, 0640")
 	if got := tookBack(stdout); len(got) != 1 || got[0] != want {
 		t.Fatalf("the setup reported %v, want %q", got, want)
 	}
@@ -440,7 +507,7 @@ func TestLinuxSetupTakesBackAFileOfAnotherGroup(t *testing.T) {
 // one that is not UTF-8 could not be printed, and one with a letter that
 // only looks like ASCII ("nom\u0430d.hcl", a Cyrillic a) could pass for another
 // file, so a name that is not plain printable ASCII is shown quoted, with
-// Python's escapes, in the report and in a refusal.
+// Python's escapes, in the report and in a set-aside line.
 func TestLinuxSetupShowsANameThatIsNotPlainPrintableASCIIEscaped(t *testing.T) {
 	t.Run("in the report", func(t *testing.T) {
 		data := t.TempDir()
@@ -448,7 +515,7 @@ func TestLinuxSetupShowsANameThatIsNotPlainPrintableASCIIEscaped(t *testing.T) {
 		if err := os.Mkdir(config, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		forged := filepath.Join(config, "a\nnomad: took forged back.hcl")
+		forged := filepath.Join(config, "a\nexecution-substrate: took forged back.hcl")
 		undecodable := filepath.Join(config, "bad\xff.json")
 		lookalike := filepath.Join(config, "nom\u0430d.hcl")
 		for _, path := range []string{forged, undecodable, lookalike} {
@@ -463,11 +530,11 @@ func TestLinuxSetupShowsANameThatIsNotPlainPrintableASCIIEscaped(t *testing.T) {
 		if err != nil {
 			t.Fatalf("install_nomad_service_config: %v %s", err, stderr)
 		}
-		was := " back (uid " + strconv.Itoa(os.Getuid()) + ", gid " + strconv.Itoa(os.Getgid()) + ", 0666); Nomad's unit reads it as root, so check what it sets"
+		was := "uid " + strconv.Itoa(os.Getuid()) + ", gid " + strconv.Itoa(os.Getgid()) + ", 0666"
 		want := []string{
-			"nomad: took '" + config + "/a\\nnomad: took forged back.hcl'" + was,
-			"nomad: took '" + config + "/bad\\udcff.json'" + was,
-			"nomad: took '" + config + "/nom\\u0430d.hcl'" + was,
+			tookBackLine("'"+config+"/a\\nexecution-substrate: took forged back.hcl'", was),
+			tookBackLine("'"+config+"/bad\\udcff.json'", was),
+			tookBackLine("'"+config+"/nom\\u0430d.hcl'", was),
 		}
 		if got := tookBack(stdout); strings.Join(got, "\n") != strings.Join(want, "\n") {
 			t.Fatalf("the setup reported\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
@@ -508,10 +575,10 @@ func TestLinuxSetupShowsANameThatIsNotPlainPrintableASCIIEscaped(t *testing.T) {
 		if err != nil {
 			t.Fatalf("install_nomad_service_config: %v %s", err, stderr)
 		}
-		was := " back (uid " + strconv.Itoa(os.Getuid()) + ", gid " + strconv.Itoa(os.Getgid()) + ", 0666); Nomad's unit reads it as root, so check what it sets"
+		was := "uid " + strconv.Itoa(os.Getuid()) + ", gid " + strconv.Itoa(os.Getgid()) + ", 0666"
 		var want []string
 		for _, name := range names {
-			want = append(want, "nomad: took '"+config+"/"+escaped[name]+"'"+was)
+			want = append(want, tookBackLine("'"+config+"/"+escaped[name]+"'", was))
 		}
 		if got := tookBack(stdout); strings.Join(got, "\n") != strings.Join(want, "\n") {
 			t.Fatalf("the setup reported\n%q\nwant\n%q", got, want)
@@ -523,7 +590,7 @@ func TestLinuxSetupShowsANameThatIsNotPlainPrintableASCIIEscaped(t *testing.T) {
 			requireRegularFile(t, filepath.Join(config, name), "# kept\n", 0o644)
 		}
 	})
-	t.Run("in a refusal", func(t *testing.T) {
+	t.Run("in a set-aside line", func(t *testing.T) {
 		data := t.TempDir()
 		config := filepath.Join(data, "etc")
 		if err := os.Mkdir(config, 0o755); err != nil {
@@ -533,7 +600,7 @@ func TestLinuxSetupShowsANameThatIsNotPlainPrintableASCIIEscaped(t *testing.T) {
 			t.Fatal(err)
 		}
 		_, stderr, err := runLinuxSetupServiceHarness(t, data, "install_nomad_service_config\n")
-		want := "nomad: '" + config + "/link\\nx.hcl' is not a regular file, and Nomad's unit reads it as root; remove it, or put a regular file there, and rerun"
+		want := "execution-substrate: set aside '" + config + "/link\\nx.hcl' (a link, not a regular file): it is '" + config + ".execution-substrate-set-aside/"
 		if err == nil || !strings.Contains(stderr, want) {
 			t.Fatalf("install_nomad_service_config went on (%v); want %q in: %s", err, want, stderr)
 		}

@@ -15,7 +15,7 @@ server {
   # Gossip is encrypted with the keyring at <data_dir>/server/serf.keyring,
   # which must be in place (mode 0600) before Nomad starts: Nomad reads it
   # then, so no key appears here. scripts/70_linux_setup.sh writes it for its
-  # own data_dir (/opt/nomad/data); for another data_dir, see the bring-up
+  # own data_dir (/opt/nomad/es-data); for another data_dir, see the bring-up
   # runbook.
 }
 

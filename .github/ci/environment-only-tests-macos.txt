@@ -116,6 +116,14 @@ execution-substrate/scripts TestRemoteAlphaUpgradeESChecksTLSAfterRollingBackAnH
 execution-substrate/scripts TestRemoteAlphaUpgradeESRefusesAGossipKeyringItDidNotExpect
 execution-substrate/scripts TestRemoteAlphaUpgradeESRefusesAHostThatChangedAfterCheck
 execution-substrate/scripts TestRemoteAlphaUpgradeESRollsBackWhenESConfigGainsAKeyAfterCheck
+execution-substrate/scripts TestRemoteAlphaUpgradeESMovesTheStateOfAHostThatHasAKeyring
+# The tests of where Nomad keeps its state move their host to HTTPS with
+# that apply too, and its move of Nomad's state is renameat2's
+# RENAME_EXCHANGE, which macOS does not have.
+execution-substrate/scripts TestRemoteAlphaUpgradeESRefusesANomadDataFolderItCannotTellApart
+execution-substrate/scripts TestRemoteAlphaUpgradeESRollsBackAnApplyCutOffAfterItsSwap
+execution-substrate/scripts TestRemoteAlphaUpgradeESRefusesARollbackThatCannotPutNomadsStateBack
+execution-substrate/scripts TestRemoteAlphaUpgradeESRollsBackNomadsStateBeforeNomadHCL
 # The move and rollback tests apply on a locked-http host, or move their host to HTTPS
 # with that apply first, in at least one case each. They are listed whole:
 # their cases on a locked-http host that only check pass there.

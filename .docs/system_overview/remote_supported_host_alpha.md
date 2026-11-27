@@ -7266,20 +7266,27 @@ router or any other home device.
 
 `Bounded slice rule`: the one existing-host migration contract. It moves the
 Remote Alpha box to one named `trunk_dev` commit with Nomad serving its API
-and RPC only over TLS 1.3 (part 2b of the Nomad lock) and encrypting its
+and RPC only over TLS 1.3 (part 2b of the Nomad lock), encrypting its
 gossip with a keyring that the setup's `nomad_gossip_issue` writes (red-team
-RT60-1): the shape `https-gossip`. It starts from where the upgrade of ES PR
-#54 left the box, ES built from `16cbf739` and Nomad enforcing ACLs on plain
-HTTP (the shape `locked-http`), or from where the upgrade of ES PR #60 left
-it, Nomad on HTTPS with ES's pin and no gossip keyring (the shape `https`,
-which also covers a later run of this upgrade for another commit). Current
+RT60-1), and keeping its state in `/opt/nomad/es-data`, a folder the nomad
+package never gives away (re-check 52 of ES PR #83, A52-2): the shape
+`https-gossip`. It starts from where the upgrade of ES PR #54 left the box,
+ES built from `16cbf739` and Nomad enforcing ACLs on plain HTTP with its
+state in `/opt/nomad/data` (the shape `locked-http`), or from where the
+upgrade of ES PR #60 left it, Nomad on HTTPS with ES's pin, its state still
+in `/opt/nomad/data` and no gossip keyring (the shape `https`, which also
+covers a later run of this upgrade for another commit). Current
 ES requires a loopback `https://` `nomad.base_url` with `nomad.server_name`,
 `nomad.root_ca_file` and `nomad.server_spki_sha256`, and decodes its config
 with unknown fields refused, while the box's ES of `16cbf739` cannot read a
 config that has them, so from `locked-http` the binaries, the config and
 Nomad's listener change together. Without a gossip key, Nomad's serf port
 accepts any process that reaches it as a peer: a local account could start
-its own Nomad server and join the box's as a member and a raft non-voter. It
+its own Nomad server and join the box's as a member and a raft non-voter.
+HashiCorp's nomad package gives `/opt/nomad/data` to the `nomad` account on
+each install or upgrade, and while that account owns it, it can rename
+root's entries there: with Nomad's server folder renamed, Nomad starts a new
+cluster and hands a new ACL bootstrap token to whoever asks first. It
 applies to those host shapes only. It does not redeploy AGS, ARS or EGS,
 change a unit file, move ES storage, or replace Nomad's ACL token files. The
 first upgrade, from `74748063` to `16cbf739` with the Nomad lock, has run on
@@ -7294,9 +7301,10 @@ Scripts:
   calls ES's own `config.Load` on a file and reports its answer, so the
   upgrade accepts exactly the configs the new ES accepts. Tests keep it to
   that one call.
-- reused: the `nomad_tls` and `nomad_gossip` functions of
-  `scripts/70_linux_setup.sh`, which issue and check Nomad's TLS material
-  and write and check its gossip keyring on every supported host,
+- reused: the `nomad_tls`, `nomad_gossip` and `nomad_data_move` functions
+  of `scripts/70_linux_setup.sh`, which issue and check Nomad's TLS
+  material, write and check its gossip keyring, and move Nomad's state out
+  of the package's data folder on every supported host,
   `scripts/nomad_acl_setup.sh` and `scripts/internal/nomad_tls_identity.py`,
   all from the same checkout.
 
@@ -7390,6 +7398,44 @@ Operator interface:
   for a move that is not forward (below).
 - `sudo scripts/remote_alpha_upgrade_es.sh rollback --backup-dir <dir>`
   puts back the backup of the apply that left the host as it is (below).
+- `sudo scripts/remote_alpha_upgrade_es.sh nomad-hook` installs what
+  `scripts/70_linux_setup.sh` installs on a supported host so that a later
+  install or upgrade of HashiCorp's nomad package cannot leave Nomad's
+  folders and files to the `nomad` account: the program
+  `/usr/local/sbin/execution-substrate-nomad-take-back` (root:root 0755)
+  and `/etc/dpkg/dpkg.cfg.d/execution-substrate-nomad` (0644), which has
+  dpkg run it as root at the end of each dpkg run (a dpkg run by another
+  account, a `--dry-run` say, runs nothing; the package's postinst
+  runs `chown -R nomad:nomad /etc/nomad.d` and `chown nomad:nomad
+  /opt/nomad/data`). It then runs the program once: it takes `/etc/nomad.d`,
+  `/etc/nomad.d/tls` and `/opt/nomad/data` back (root:root, 0755, 0755,
+  0700, no ACL) and each file Nomad reads there (`nomad.env`, the `.hcl`
+  and `.json` files Nomad loads, the TLS files) as a new root-owned file
+  with its contents kept, no write for group or others and no ACL,
+  reporting each one. Once Nomad's state has moved to `/opt/nomad/es-data`,
+  `/opt/nomad/data` holds nothing of Nomad's: a dpkg run makes it again,
+  empty, and the program makes it root's. A file at that path (the stand-in
+  that `nomad_data_move` leaves while it moves Nomad's state, which the
+  postinst gives away like the folder it expects there) is made root's,
+  0600 with no ACL, in place, and otherwise left as it is. Each entry is
+  handled on its own: what it does not
+  take back (an entry Nomad would read that is not a regular file, a file
+  larger than 1 MiB, any file once the run has copied 4 MiB in all, an
+  entry it fails on, an entry directly in
+  `/opt/nomad/data` that is not root's) it moves, unread, into
+  `/etc/nomad.d.execution-substrate-set-aside` or
+  `/opt/nomad/data.execution-substrate-set-aside` (root:root 0700), where
+  Nomad does not read it, and names it. The command fails while either of
+  those folders is there, as `check` does, until the operator has looked
+  and removed it; under dpkg the program exits 0 after setting entries
+  aside, so package runs go on. A step of the command that does not
+  finish within 120 seconds is ended, with every process it started, and
+  refused. It changes nothing
+  else, and running it again writes the same files. Run it before `check`:
+  `check` and `apply` refuse a host without the two files as this clone's
+  setup writes them, and on the box it also takes back the package's
+  `nomad.env`, which `check` otherwise refuses. It is not undone by
+  `rollback`; remove the two files together to take it out.
 
 `backup` and `restore` are steps of `apply` and `rollback`, not commands:
 the wrapper refuses them, since `restore` would put back any backup without
@@ -7401,8 +7447,8 @@ no prefix stands in for `--allow-downgrade`.
 Hand the clone and the payload to root before `check` (`chown -R root:root`
 and `chmod -R go-w`) so that no other account can change them between the
 check and the run. `check`, `apply` and `rollback` run code from the clone
-as root (the upgrade itself, the setup's `nomad_tls` and `nomad_gossip`
-functions, `nomad_acl_setup.sh` with `nomad_acl.py`, and
+as root (the upgrade itself, the setup's `nomad_tls`, `nomad_gossip` and
+`nomad_data_move` functions, `nomad_acl_setup.sh` with `nomad_acl.py`, and
 `nomad_tls_identity.py`), so
 each first refuses, changing nothing, unless no account but root can change
 that code: every folder from `/` down to the clone's `scripts` belongs to
@@ -7447,23 +7493,38 @@ import path), so the upgrade's own checks above see the clone's real path.
 `apply` under `systemd-run` so that a dropped SSH session does not stop it;
 its output then goes to the journal, and its summary to the backup folder.
 
-`check` and `apply` first read the host's shape from five parts, each on its
+`check` and `apply` first read the host's shape from six parts, each on its
 own:
 
 | Part | `locked-http` | `https` | `https-gossip` |
 | --- | --- | --- | --- |
-| `/etc/nomad.d/nomad.hcl` | the box's file after the lock and the host-network repair of 2026-11-24 (SHA-256 `ea333055…5163`, 1126 bytes) | that file with the `tls` block of `scripts/70_linux_setup.sh` appended | as `https` |
+| `/etc/nomad.d/nomad.hcl` | the box's file after the lock and the host-network repair of 2026-11-24 (SHA-256 `ea333055…5163`, 1126 bytes), whose `data_dir` is `/opt/nomad/data` | that file with the `tls` block of `scripts/70_linux_setup.sh` appended, with its `data_dir` `/opt/nomad/data` or `/opt/nomad/es-data` | that file with its `data_dir` `/opt/nomad/es-data` |
 | `/etc/nomad.d/tls` | absent | `root:root 0755` with no ACL, holding exactly `ca.pem`, `server.pem` and `server-key.pem`, which pass the setup's `nomad_tls_material_ok` | as `https` |
 | `/etc/execution-substrate/es.json` | the box build's 49 key paths and the four that ES PR #54's upgrade added (`nomad.token_file` `/etc/execution-substrate/nomad-acl/es-token`, `execution.retained_result_auth` `{store_id: remote-alpha, key_id: k1, key_file: /etc/execution-substrate/retained-result-auth/es.key}`), with `nomad.base_url` `http://127.0.0.1:4646` | the same, with `nomad.base_url` `https://127.0.0.1:4646` and `nomad.server_name` `server.global.nomad`, `nomad.root_ca_file` `/etc/nomad.d/tls/ca.pem` and `nomad.server_spki_sha256` the SHA-256 of the public key of the certificate on disk | as `https` |
 | `es` and `es-runtime-support` | clean builds of `16cbf739` by their own Go build info | clean builds of one commit other than `16cbf739` (which `apply` replaces), or the verified payload's builds of `<commit>` | the verified payload's builds of `<commit>` |
-| `/opt/nomad/data/server/serf.keyring` | absent | absent, or sound when the builds are not the payload's | sound |
+| where Nomad keeps its state | `/opt/nomad/data`, which `nomad.hcl` names, with `/opt/nomad/es-data` missing | as on `locked-http`, or as on `https-gossip` when the builds are not the payload's | `/opt/nomad/es-data`, which `nomad.hcl` names, holding Nomad's state, with `/opt/nomad/data` missing or an empty folder |
+| `server/serf.keyring` in that folder | absent | in `/opt/nomad/data`, absent or sound; in `/opt/nomad/es-data`, sound | sound |
 
 The keyring is sound when it is root's and passes the setup's
 `nomad_gossip_keyring_ok`: a regular file (not a link), mode `0600`, holding
-a JSON list of one or more base64 32-byte keys. Its folder
-`/opt/nomad/data/server`, which Nomad makes when it first starts, must be a
-`root:root` folder that neither its group nor others can write, whatever the
-shape.
+a JSON list of one or more base64 32-byte keys. Its folder, `server` in the
+folder that holds Nomad's state, which Nomad makes when it first starts,
+must be a `root:root` folder that neither its group nor others can write,
+whatever the shape.
+
+Where Nomad keeps its state is read with the setup's `nomad_data_move plan`,
+which looks at both folders, side by side in `/opt/nomad`. On `locked-http`,
+and on an `https` host that has not moved, `nomad.hcl` names
+`/opt/nomad/data`, which alone holds Nomad's state, and `/opt/nomad/es-data`
+is missing. Once moved, `nomad.hcl` names `/opt/nomad/es-data`, which holds
+Nomad's state, and `/opt/nomad/data` is missing or an empty folder (a dpkg
+run makes it again). Anything else is refused: both folders holding
+entries, a link or a file at either, a folder at `/opt/nomad/es-data`
+before the move, `/opt/nomad/es-data` empty or missing while `nomad.hcl`
+names it, `nomad.hcl` naming the folder that does not hold Nomad's state,
+and the stand-in that `nomad_data_move` leaves while it moves Nomad's state
+(below). Only an `apply` cut off while it moved Nomad's state leaves the
+host so; the refusal says that rolling back its backup undoes it.
 
 On `locked-http` and `https`, `check` reports what `apply` will change. On
 `https-gossip` for the named commit there is nothing to do: `check` and
@@ -7482,7 +7543,8 @@ standard input (`--config -`), never on a command line. Anything else is
 refused, and the refusal names the state of every part: the pre-lock
 `nomad.hcl` (SHA-256 `5d5e106c…96b8`, ES PR #54's upgrade has not run), a
 file of unknown content, a keyring that fails `nomad_gossip_keyring_ok`, a
-missing server folder, or parts that disagree, such as TLS material left by
+missing server folder, Nomad's state where `nomad_data_move` cannot tell it
+apart, or parts that disagree, such as TLS material left by
 an `apply` that was cut off before its rollback, a keyring on a
 `locked-http` host, or builds of `16cbf739` on an `https` one.
 
@@ -7643,34 +7705,46 @@ write that record; `apply`'s own rollback logs why and goes on.
   `/etc/nomad.d` holds another `.hcl` or `.json` file that Nomad would load,
   `/etc/nomad.d/nomad.env` (the `EnvironmentFile` of Nomad's unit, which
   Nomad reads as root; the package gives it to the `nomad` account and the
-  setup takes it back) is there but is not a regular file (the refusal
-  says whether it is a link, a folder or a FIFO, and to remove it), is
-  not `root:root` without write for group or others, or has an ACL (for
-  these two the refusal gives the commands that put it back as a new file
-  of root's with its contents, `0600`: a `chown`, `chmod` or `setfacl` in
-  place leaves a handle that another account opened earlier able to write
-  it; the package's `0644` also passes), or `/etc/nomad.d`, `/opt/nomad`
-  (0755) and `/opt/nomad/data` (0700) are not `root:root` folders with
-  those modes and no ACL, or `nomad.hcl` has an ACL (audit INF-16; an
-  account that owned one of these folders could leave a default ACL there,
-  which decides the mode of each file root then creates in it, whatever the
-  umask, and the mode bits do not show it). Nomad's TLS directory and
-  `/opt/nomad/data/server` with an ACL make the host's shape unknown, with
-  the keyring in place or not. Each of these refusals names the path and
-  the ACL, and `setfacl -b -k <path>` removes it, but for the two files
-  Nomad reads as root that `apply` may leave in place: `nomad.env`, above,
-  and `nomad.hcl`, which `apply` replaces only on a host it moves to HTTPS.
-  For `nomad.hcl` not `root:root 0640` or with an ACL, the refusal gives the
-  commands that put it back as a new file of root's, `0640`, for the same
-  reason (access to a folder is checked at each use, so a folder needs no
-  such remedy)
+  setup and `nomad-hook` take it back) is there but is not a regular file
+  (the refusal says whether it is a link, a folder or a FIFO, and to
+  remove it), is not `root:root` without write for group or others, or
+  has an ACL (for these two the refusal names `nomad-hook`, which puts it
+  back as a new file of root's with its contents: a `chown`, `chmod` or
+  `setfacl` in place leaves a handle that another account opened earlier
+  able to write it),
+  `/usr/local/sbin/execution-substrate-nomad-take-back` or
+  `/etc/dpkg/dpkg.cfg.d/execution-substrate-nomad` is missing, a link, not
+  `root:root` 0755 or 0644, has an ACL, sits in a folder that is not
+  `root:root` and closed to group and others, or is not what this clone's
+  `scripts/70_linux_setup.sh` writes (`nomad-hook` installs them),
+  `/etc/nomad.d.execution-substrate-set-aside` or
+  `/opt/nomad/data.execution-substrate-set-aside` is there (what the
+  take-back program set aside, which Nomad would have read as root: the
+  refusal says to look at it, then remove it with `rm -rf --`),
+  or `/etc/nomad.d`, `/opt/nomad` (0755), the folder that holds Nomad's
+  state and `/opt/nomad/data` when it is there (0700) are not `root:root`
+  folders with those modes and no ACL, or `nomad.hcl` has an ACL
+  (audit INF-16; an account that owned one of these folders could leave a
+  default ACL there, which decides the mode of each file root then creates
+  in it, whatever the umask, and the mode bits do not show it). Nomad's TLS
+  directory and Nomad's server folder with an ACL make the host's shape
+  unknown, with the keyring in place or not. Each of these refusals names
+  the path and the ACL, and `setfacl -b -k <path>` removes it, but for the
+  two files Nomad reads as root that `apply` may leave in place:
+  `nomad.env`, above, and `nomad.hcl`, which `apply` replaces only on a
+  host whose Nomad it moves to HTTPS or whose Nomad's state it moves. For `nomad.hcl` not `root:root 0640` or with an
+  ACL, the refusal gives the commands that put it back as a new file of
+  root's, `0640`, for the same reason (`nomad-hook`'s program keeps a
+  file's mode less write for group and others, so it would leave a `0644`
+  `nomad.hcl` as it is; access to a folder is checked at each use, so a
+  folder needs no such remedy)
 - on `locked-http`: the new ES's `config.Load` refuses the migrated
   `es.json` (with a stand-in pin, since the key does not exist yet); a token
   file under `/etc/execution-substrate/nomad-acl` is not as provision left it
   (`management-token` root 0600, `es-token` `es` 0400, `observer-token` root
   0400); the retained-result key is missing or breaks ES's rules for it;
-  `openssl` or the setup's `nomad_tls` or `nomad_gossip` functions are
-  missing; Nomad names no
+  `openssl` or the setup's `nomad_tls`, `nomad_gossip` or
+  `nomad_data_move` functions are missing; Nomad names no
   leader at `http://127.0.0.1:4646`; or a container of a Nomad allocation is
   running (`docker ps --filter label=com.hashicorp.nomad.alloc_id`, which
   needs no Nomad token)
@@ -7682,11 +7756,12 @@ write that record; `apply`'s own rollback logs why and goes on.
   allocations fails
 - on `https-gossip`: one of the in-place checks above fails
 
-`apply` runs the same check first. What it does to the keyring follows from
-what that check found, so before the backup it reads the keyring once more
-and refuses, with nothing changed, one that no longer has the form the check
-found: one that appeared, went away or no longer passes
-`nomad_gossip_keyring_ok`, on either start. It refuses a path it would
+`apply` runs the same check first. What it does to Nomad's state and its
+keyring follows from what that check found, so before the backup it reads
+both once more and refuses, with nothing changed, either one that no longer
+has the form the check found: a folder made where Nomad's state goes or a
+file where it was, and a keyring that appeared, went away or no longer
+passes `nomad_gossip_keyring_ok`, on either start. It refuses a path it would
 create that exists already (`/etc/nomad.d/tls` on `locked-http`) at the same
 point, before it writes the backup folder or the folder above it.
 
@@ -7705,16 +7780,25 @@ point, before it writes the backup folder or the folder above it.
    a server certificate for `server.global.nomad`, `localhost`, `127.0.0.1`
    and `::1`, valid 825 days, all root's, the key 0600. It requires
    `nomad_tls_material_ok` and reads the server key's SHA-256, the pin.
-4. checks `nomad.hcl` with the `tls` block appended with
-   `nomad config validate`, refusing its warnings about TLS files it cannot
-   read or a config without TLS (it exits 0 with both); writes Nomad's
-   gossip keyring to `/opt/nomad/data/server/serf.keyring` with the setup's
+4. checks `nomad.hcl` with the `tls` block appended and its `data_dir`
+   `/opt/nomad/es-data` with `nomad config validate`, refusing its warnings
+   about TLS files it cannot read or a config without TLS (it exits 0 with
+   both); writes Nomad's gossip keyring to
+   `/opt/nomad/data/server/serf.keyring` with the setup's
    `nomad_gossip_issue` (one new 32-byte key from `openssl rand`, as a JSON
    list, root's, `0600`, through a temporary file and a rename; the key
    never appears on a command line or in the output) and requires it sound;
-   stops Nomad, writes the new `nomad.hcl` (`root:root 0640`), starts Nomad,
-   which reads the keyring as it starts (`nomad.hcl` names no key), and
-   waits up to 90 seconds for a named leader over HTTPS (`curl
+   stops Nomad; moves Nomad's state, the keyring with it, from
+   `/opt/nomad/data` to `/opt/nomad/es-data` with the setup's
+   `nomad_data_move swap`: one `renameat2` `RENAME_EXCHANGE`, which leaves a
+   stand-in at `/opt/nomad/data`, a file of root's, `0600`, so that a Nomad
+   started before the new `nomad.hcl` is in place (by a dpkg run's postrm,
+   which restarts it, or a reboot) finds a file where its old `nomad.hcl`
+   keeps its state and does not start, rather than starting a new cluster
+   in an empty folder; writes the new `nomad.hcl` (`root:root 0640`);
+   removes the stand-in (`nomad_data_move finish`); starts Nomad, which
+   reads the keyring as it starts (`nomad.hcl` names no key), and waits up
+   to 90 seconds for a named leader over HTTPS (`curl
    --proto =https --tlsv1.3 --cacert /etc/nomad.d/tls/ca.pem --capath
    /dev/null`). A test keeps the `tls` block equal to the setup script's.
 5. runs `scripts/nomad_acl_setup.sh` against `https://127.0.0.1:4646` with
@@ -7751,11 +7835,16 @@ point, before it writes the backup folder or the folder above it.
 1. backs up as on `locked-http`; `created.json` names the keyring when the
    host has none, and nothing otherwise
 2. stops ES and reads the pin from the server certificate on disk
-3. when the host has no keyring: writes it with `nomad_gossip_issue` as in
-   step 4 above, restarts Nomad and waits up to 90 seconds for a named
-   leader over HTTPS, runs `nomad_acl_setup.sh check` (the token files and
+3. when Nomad's state is in `/opt/nomad/data`: checks `nomad.hcl` with its
+   `data_dir` `/opt/nomad/es-data` with `nomad config validate`, writes the
+   keyring with `nomad_gossip_issue` as in step 4 above when the host has
+   none, stops Nomad, moves its state and writes the new `nomad.hcl` as in
+   step 4 above, starts Nomad and waits up to 90 seconds for a named leader
+   over HTTPS, runs `nomad_acl_setup.sh check` (the token files and
    policies stay as they are), requires Nomad to report its gossip
-   encrypted, and runs `placement` as in step 5 above
+   encrypted, and runs `placement` as in step 5 above. Once Nomad's state
+   has moved, a later `apply` (for another commit) leaves Nomad, its state
+   and its keyring as they are.
 4. requires the retained-result key and ES's token file to be ES's own and
    the new ES's `config.Load` to accept `es.json`, which it rewrites only if
    its bytes would change (an `https` host's `es.json` already has its final
@@ -7768,23 +7857,33 @@ anything else happens, so no child of it keeps changing the host. If any step
 after the backup fails, or `apply` gets `SIGTERM`, `SIGHUP` or `SIGINT`, it
 ignores further signals and rolls back: it verifies the whole backup (every
 copy's SHA-256, and that `created.json` names only `/etc/nomad.d/tls` and
-the keyring)
+the keyring) and where Nomad's state goes back (the backup's `nomad.hcl`
+must name `/opt/nomad/data` or `/opt/nomad/es-data` once as its
+`data_dir`, and Nomad's state must be in that folder, or in
+`/opt/nomad/es-data` when the backup names `/opt/nomad/data`, by
+`nomad_data_move plan`; anything else is refused)
 before it touches a service, stops ES and Nomad and confirms that both are
 stopped (if either will not stop, nothing is put back and the result is
-`rollback_failed`), puts every backed-up file back with its owner and mode,
-removes what `created.json` names, starts Nomad and ES, and requires Nomad
+`rollback_failed`), moves Nomad's state back to `/opt/nomad/data` with
+`nomad_data_move swap` when `apply` had moved it, before `nomad.hcl` goes
+back, so that a Nomad started in between finds the stand-in, puts every
+backed-up file back with its owner and mode, removes the stand-in, removes
+what `created.json` names, starts Nomad and ES, and requires Nomad
 to name a leader within 90 seconds at the address the restored `nomad.hcl`
 serves (plain HTTP after the restore of a `locked-http` host, HTTPS after
-that of an `https` one), because ES's `/health` does not ask Nomad. Nomad
-starts without the keyring it removed, so its gossip is plain again, as it
+that of an `https` one), because ES's `/health` does not ask Nomad. Its
+result says whether it moved Nomad's state back (`moved_back`). Nomad
+starts on the state it had, without the keyring it removed, so its gossip is plain again, as it
 was before `apply`; a single server has no peer that still needs the
 key. It records `rolled_back`, `rolled_back_unhealthy` when the endpoints
 do not answer 200 within 60 seconds or, when the restored `nomad.hcl` serves
 HTTPS, when `scripts/internal/nomad_tls_identity.py check` finds that the
 restored `es.json` does not hold against the running Nomad, or
 `rollback_failed`, with the failure.
-`rollback` does the same from a backup folder, after the check and the
-record above, ignoring `SIGHUP`, and exits 1 on any of those failures. It refuses a backup of ES PR #54's upgrade
+`rollback` does the same from a backup folder, checking the two rules
+above before where Nomad's state goes back (the `nomad.hcl` of a backup the
+rules refuse need not name the folder Nomad's state is in) and writing the
+record above after both, ignoring `SIGHUP`, and exits 1 on any of those failures. It refuses a backup of ES PR #54's upgrade
 (schema v1), which the script at `16cbf739` restores. Output that can no
 longer be written never stops either one: a terminal that hangs up sends
 `SIGHUP`, so `apply` rolls back, while a closed output pipe alone does not,
@@ -7806,15 +7905,37 @@ token.
 The tests (`scripts/remote_alpha_upgrade_es_test.go`,
 `scripts/remote_alpha_upgrade_es_host_test.go`,
 `scripts/remote_alpha_upgrade_es_gossip_test.go`,
+`scripts/remote_alpha_upgrade_es_data_test.go`,
 `scripts/remote_alpha_upgrade_es_move_test.go` and
 `scripts/remote_alpha_upgrade_es_config_check_test.go`) read the move from
 a git history built for them, in which a stand-in for `16cbf739` comes
 first, and run `check`,
 `apply`, the in-place check of a migrated host, the automatic rollback, an
 interrupted apply and `rollback` on a host-shaped folder with fake
-`systemctl`, `curl`, `nomad`, `docker`, ACL setup and identity check, and the
-real `nomad_tls_issue` and `nomad_gossip_issue`: hosts of every refused
-shape, each named part by part; `https` hosts without a keyring (with the
+`systemctl`, `curl`, `nomad`, `docker`, ACL setup and identity check (the
+fake Nomad, like a real one, does not start when its `data_dir` is a file,
+and records a start that made its `data_dir` anew), and the real
+`nomad_tls_issue`, `nomad_gossip_issue` and `nomad_data_move`: hosts of
+every refused shape, each named part by part; Nomad's state moved, with its
+keyring, from either start and from an `https` host that has a keyring, no
+Nomad ever starting in a new data folder, and moved back by each rollback;
+a folder (empty or not), a link or the stand-in where Nomad's state goes,
+and Nomad's state moved with `nomad.hcl` not yet naming it, on
+`locked-http`; on a host whose state moved, the package's folder holding
+entries or a file, the stand-in left there, the moved folder empty,
+missing, a link or group-readable, the package's folder made again
+group-readable, no keyring, and `nomad.hcl` naming the package's folder
+again, each refused, and the package's folder made again empty by dpkg,
+accepted; a folder made where Nomad's state goes, or a file where it was,
+between the check and `apply`'s own reading, refused before the backup; an
+`apply` cut off right after its swap, whose Nomad start in that moment
+fails on the stand-in, rolled back by itself, or killed there, its host
+refused by `check` and put back by `rollback`; a rollback refused, before a
+service is touched, when the package's folder holds entries again or the
+moved folder is gone, and a later apply's backup, whose `nomad.hcl` names
+the moved folder, refused when that folder is gone or Nomad's state is back
+in the package's folder; a rollback whose move back fails, leaving
+`nomad.hcl` naming the moved folder, and run again, put back; `https` hosts without a keyring (with the
 box's builds of an earlier commit, and with the payload's), with a sound
 keyring and earlier builds, and with a keyring that is readable by others,
 holds a 16-byte key, is a symbolic link or is a dangling one (on
@@ -7901,15 +8022,26 @@ binary missing, and a rollback record's name taken, each refused; the
 wrapper refusing `backup` and `restore`; `es.json` gaining a key after
 `check`; `es_config_target` refusing a shape its `es.json` does not match;
 a `nomad.env` others can write, writable by its group or by others only,
-of another group or with the setuid bit, each refused (the remedy putting
-it back as a new file), a link, a folder or a FIFO there, each refused
-(naming which it is, and "remove it"), and a host without one, which is
-not refused; a Nomad folder, the TLS directory or
-`/opt/nomad/data/server` with an ACL (the server folder also with the
-keyring in place), each refused before anything changes and naming
+of another group or with the setuid bit, each refused (the remedy naming
+`nomad-hook`), a link, a folder or a FIFO there, each refused (naming
+which it is, and "remove it"), and a host without one, which is not
+refused; the take-back program or its dpkg configuration missing,
+changed, a link, of another mode or group, or in a folder its group or
+others can write or of another group, each refused, and `nomad-hook`
+installing both as the setup writes them, taking back a `nomad.env`
+others can write, changing nothing else, writing the same files again on
+a rerun, setting aside a link it cannot take back and failing while what
+it set aside is there, refusing to run without root on a host, and ending
+a setup function that does not finish within its timeout, with what it
+started, refused by name (for `nomad-hook`'s install and for `check`);
+a set-aside folder beside `/etc/nomad.d` or `/opt/nomad/data` (a folder,
+or a link), each refused; a Nomad folder, the TLS directory or Nomad's
+server folder with an ACL (the server folder also with the keyring in
+place, in `/opt/nomad/es-data`), `/opt/nomad/es-data` with an ACL, and
+`/opt/nomad/data` made again by dpkg with one, each refused before anything changes and naming
 `setfacl -b -k`, and `nomad.env` and `nomad.hcl` with an access ACL, and a
 `nomad.hcl` others can read, refused with the remedy putting it back as a
-new file; no gossip key or Nomad token in the output, the
+new file (for `nomad.env`, `nomad-hook`); no gossip key or Nomad token in the output, the
 fakes' logged calls or any `curl` command line; payload binaries whose Go build info names another commit, another Go
 or a modified build, or shows a replaced module, a workspace module or a
 vendored dependency; payload files of another owner or group; a clone that
@@ -7990,12 +8122,16 @@ token files in a root-owned folder, and the observer policy without
 hide a broken step; the test then proves that Nomad answers only over
 HTTPS, that the observer token, kept, now lists ES's jobs, and that Nomad
 read the keyring `apply` wrote and reports its gossip encrypted. It then
-takes the box's own path: with the keyring taken away, builds of an earlier
-commit installed and Nomad restarted (gossip plain, the shape `https`),
+takes the box's own path: with Nomad's state moved back to
+`/opt/nomad/data`, the keyring taken away, builds of an earlier commit
+installed and Nomad restarted (gossip plain, the shape `https`),
 `apply` writes a keyring and Nomad encrypts its gossip, and that apply's
 `rollback` brings back the `https` host with plain gossip; the first
-`rollback` then returns the host to `locked-http`. CI runs it with Nomad
-2.1.1 and passwordless `sudo`.
+`rollback` then returns the host to `locked-http`. Each `apply` moves the
+real Nomad's state to `/opt/nomad/es-data` and each `rollback` moves it
+back, with Nomad stopped, and the tokens made before stay valid across
+both, which a new cluster would not honour. CI runs it with Nomad 2.1.1
+and passwordless `sudo`.
 
 ## Python In The Scripts
 

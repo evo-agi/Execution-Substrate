@@ -384,7 +384,7 @@ func TestRemoteAlphaUpgradeESRefusesACloneOthersCanChange(t *testing.T) {
 		refused(t, "check", stdout, stderr, code, filepath.Join(alias, "scripts")+" is reached through a symbolic link ("+c.scripts+")")
 	})
 
-	t.Run("apply and rollback refuse the same clone", func(t *testing.T) {
+	t.Run("apply, rollback and nomad-hook refuse the same clone", func(t *testing.T) {
 		c := newUpgradeClone(t)
 		c.chmod(c.python, 0o664)
 		want := c.python + " is writable by its group or others (0664)"
@@ -392,6 +392,9 @@ func TestRemoteAlphaUpgradeESRefusesACloneOthersCanChange(t *testing.T) {
 		refused(t, "apply", stdout, stderr, code, want)
 		stdout, stderr, code = c.run(c.python, c.host, uid, "rollback", "--backup-dir", filepath.Join(c.host, "backup"))
 		refused(t, "rollback", stdout, stderr, code, want)
+		// nomad-hook runs the setup's nomad_package_hook functions as root.
+		stdout, stderr, code = c.run(c.python, c.host, uid, "nomad-hook")
+		refused(t, "nomad-hook", stdout, stderr, code, want)
 	})
 
 	t.Run("on a host the guard always runs, for root", func(t *testing.T) {

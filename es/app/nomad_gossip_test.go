@@ -680,11 +680,14 @@ func TestLinuxSetupWritesTheNomadGossipKeyringBeforeNomadStarts(t *testing.T) {
 		t.Fatal("70_linux_setup.sh does not keep the gossip keyring where Nomad reads it")
 	}
 	service := linuxSetupFunction(t, text, "install_nomad_service_config")
-	dataDir := strings.Index(service, `nomad_folder_take_back 0700 "${NOMAD_DATA_DIR}"`)
+	dataDir := strings.Index(service, "\n  install_nomad_data_folder\n")
 	install := strings.Index(service, "\n  install_nomad_gossip_keyring\n")
 	config := strings.Index(service, `| nomad_config_write "${NOMAD_CONFIG_PATH}"`)
 	if dataDir < 0 || install < dataDir || config < install {
 		t.Fatalf("install_nomad_service_config must create the data directory, then write the keyring, then the config (offsets %d %d %d)", dataDir, install, config)
+	}
+	if !strings.HasSuffix(strings.TrimSpace(linuxSetupFunction(t, text, "install_nomad_data_folder")), "nomad_folder_take_back 0700 \"${NOMAD_DATA_DIR}\"\n}") {
+		t.Fatal("install_nomad_data_folder does not end by making the data directory root's, 0700")
 	}
 	for _, rel := range []string{filepath.Join("scripts", "70_linux_setup.sh"), filepath.Join(".examples", "config", "nomad.hcl")} {
 		data, err := os.ReadFile(filepath.Join(root, rel))

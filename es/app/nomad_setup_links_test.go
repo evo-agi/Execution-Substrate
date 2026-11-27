@@ -30,6 +30,27 @@ func linuxSetupText(t *testing.T) string {
 	return string(body)
 }
 
+// nomadPackageHookRegion is the setup's nomad_package_hook region. It is here,
+// not in the Linux-only hook tests, because the service harness below uses it
+// on every platform the package builds for.
+func nomadPackageHookRegion(t *testing.T) string {
+	t.Helper()
+	return linuxSetupRegion(t, "nomad_package_hook")
+}
+
+// linuxSetupRegion returns the functions of one region of the setup
+// script, between its "# BEGIN <name>" and "# END <name>" lines.
+func linuxSetupRegion(t *testing.T, name string) string {
+	t.Helper()
+	text := linuxSetupText(t)
+	start := strings.Index(text, "\n# BEGIN "+name+" ")
+	end := strings.Index(text, "\n# END "+name+"\n")
+	if start < 0 || end < start {
+		t.Fatalf("70_linux_setup.sh has no %s region", name)
+	}
+	return text[start+1 : end+1]
+}
+
 // linuxSetupDefinitions returns the script's own top-level definitions of
 // the named variables, one line each.
 func linuxSetupDefinitions(t *testing.T, text string, names ...string) string {
@@ -46,22 +67,39 @@ func linuxSetupDefinitions(t *testing.T, text string, names ...string) string {
 }
 
 // linuxSetupServiceHarness is linuxSetupGossipHarness with
-// nomad_folder_take_back, nomad_config_files_take_back, nomad_config_write
-// and install_nomad_service_config added, and Nomad's config folder at
+// nomad_folder_take_back, nomad_config_write, install_nomad_service_config
+// and the nomad_package_hook region added, and Nomad's config folder at
 // "$1/etc" (nomad.hcl, its backup name and the TLS folder defined from it as
-// the script does). install stands in for itself as install -d: it makes the
-// folder, following a link there as the real one does, and applies -m. date
-// prints a fixed time, and the TLS and keyring steps do nothing.
+// the script does). The take-back program and its dpkg configuration go to
+// "$1/sbin" and "$1/dpkg.cfg.d", which the harness makes. install stands in
+// for itself as install -d: it makes the folder, following a link there as
+// the real one does, and applies -m. date prints a fixed time, and the TLS
+// and keyring steps do nothing. Nomad's data folder is "$1" whichever of
+// its two names the setup uses: install_nomad_data_folder only takes it back
+// (nomad_data_move_linux_test.go runs the real one), and the stand-in's
+// removal finds none.
 func linuxSetupServiceHarness(t *testing.T) string {
 	t.Helper()
 	text := linuxSetupText(t)
-	harness := linuxSetupGossipHarness(t)
-	for _, name := range []string{"nomad_folder_take_back", "nomad_config_files_take_back", "nomad_config_write", "install_nomad_service_config"} {
+	harness := linuxSetupGossipHarness(t) + nomadPackageHookRegion(t) + linuxSetupRegion(t, "nomad_data_move")
+	for _, name := range []string{"nomad_folder_take_back", "nomad_config_write", "install_nomad_service_config"} {
 		harness += linuxSetupFunction(t, text, name)
 	}
-	return harness + "NOMAD_CONFIG_DIR=\"$1/etc\"\n" +
+	return harness + "NOMAD_CONFIG_DIR=\"$1/etc\"\nNOMAD_PACKAGE_DATA_DIR=\"$1\"\n" +
+		"NOMAD_TAKE_BACK_PROGRAM=\"$1/sbin/execution-substrate-nomad-take-back\"\n" +
+		"NOMAD_DPKG_HOOK=\"$1/dpkg.cfg.d/execution-substrate-nomad\"\n" +
+		"mkdir -p -m 0755 \"$1/sbin\" \"$1/dpkg.cfg.d\"\n" +
 		linuxSetupDefinitions(t, text, "NOMAD_CONFIG_PATH", "NOMAD_CONFIG_BACKUP_PATH", "NOMAD_TLS_DIR", "NOMAD_MANAGED_MARKER") + `
-install() {
+` + linuxSetupInstallStandIn + `date() { echo 20261127000000; }
+install_nomad_tls_material() { :; }
+install_nomad_gossip_keyring() { :; }
+install_nomad_data_folder() { nomad_folder_take_back 0700 "${NOMAD_DATA_DIR}"; }
+`
+}
+
+// linuxSetupInstallStandIn stands in for install -d: it makes the folder,
+// following a link there as the real one does, and applies -m.
+const linuxSetupInstallStandIn = `install() {
   local mode=""
   while [[ $# -gt 1 ]]; do
     case "$1" in
@@ -74,11 +112,7 @@ install() {
   mkdir -p -- "$1"
   [[ -z "${mode}" ]] || chmod "${mode}" -- "$1"
 }
-date() { echo 20261127000000; }
-install_nomad_tls_material() { :; }
-install_nomad_gossip_keyring() { :; }
 `
-}
 
 // runLinuxSetupServiceHarness runs steps after linuxSetupServiceHarness for
 // the data directory dataDir.
@@ -288,7 +322,11 @@ printf '%s' "${NOMAD_CONFIG_CHANGED}"
 		return paths{data, config, filepath.Join(config, "nomad.hcl"),
 			filepath.Join(data, "execution-substrate-restart-pending"), t.TempDir()}
 	}
-	run := func(t *testing.T, p paths) (string, string) {
+	// guards runs the setup without its take-back program, which sets aside
+	// a link where Nomad reads and stops the setup (nomad_take_back_program),
+	// so that the setup's own guards behind it are tested too.
+	const guards = "nomad_package_hook_as_root() { :; }\n"
+	runSteps := func(t *testing.T, p paths, steps string) (string, string) {
 		t.Helper()
 		newConfig := filepath.Join(p.outside, "new-config")
 		if err := os.WriteFile(newConfig, []byte(renderedNomadConfig(t, p.data, p.config)+"\n"), 0o600); err != nil {
@@ -302,6 +340,10 @@ printf '%s' "${NOMAD_CONFIG_CHANGED}"
 			t.Fatalf("install_nomad_service_config: %v %s", err, stderr.String())
 		}
 		return stdout.String(), stderr.String()
+	}
+	run := func(t *testing.T, p paths) (string, string) {
+		t.Helper()
+		return runSteps(t, p, steps)
 	}
 	written := func(t *testing.T, p paths) string {
 		t.Helper()
@@ -505,10 +547,10 @@ printf '%s' "${NOMAD_CONFIG_CHANGED}"
 			}
 		}},
 	} {
-		t.Run("nomad.hcl is "+test.name, func(t *testing.T) {
+		t.Run("nomad.hcl is "+test.name+", without the take-back program", func(t *testing.T) {
 			p := setup(t)
 			untouched := test.place(t, p.nomadHCL, p.outside)
-			changed, messages := run(t, p)
+			changed, messages := runSteps(t, p, guards+steps)
 			if !strings.Contains(messages, p.nomadHCL+" is a link; replacing it") {
 				t.Errorf("the run did not say it replaced the link: %s", messages)
 			}
@@ -529,7 +571,7 @@ printf '%s' "${NOMAD_CONFIG_CHANGED}"
 		})
 	}
 
-	t.Run("the TLS folder is a link to a folder outside", func(t *testing.T) {
+	t.Run("the TLS folder is a link to a folder outside, without the take-back program", func(t *testing.T) {
 		p := setup(t)
 		folder := filepath.Join(p.outside, "folder")
 		if err := os.Mkdir(folder, 0o700); err != nil {
@@ -539,7 +581,7 @@ printf '%s' "${NOMAD_CONFIG_CHANGED}"
 		if err := os.Symlink(folder, tlsDir); err != nil {
 			t.Fatal(err)
 		}
-		_, messages := run(t, p)
+		_, messages := runSteps(t, p, guards+steps)
 		if !strings.Contains(messages, tlsDir+" is a link; replacing it with a folder") {
 			t.Errorf("the run did not say it replaced the link: %s", messages)
 		}
@@ -681,13 +723,15 @@ func TestLinuxSetupSummaryClaimsGossipEncryptionOnlyAfterQualification(t *testin
 // setup reads and backs up the old nomad.hcl only when it is a regular file.
 // A FIFO at nomad.hcl, which the package's former owner can plant, must not
 // make the setup block on reading it; a folder there is refused, and no
-// temporary name is left behind.
+// temporary name is left behind. The take-back program, which the setup runs
+// first, sets a FIFO aside without opening it, and the setup stops; without
+// the program, the setup's own step replaces it.
 func TestLinuxSetupReadsNomadConfigOnlyWhenItIsARegularFile(t *testing.T) {
-	run := func(t *testing.T, dataDir string) (string, error) {
+	runSteps := func(t *testing.T, dataDir, steps string) (string, error) {
 		t.Helper()
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		command := exec.CommandContext(ctx, "bash", "-c", linuxSetupServiceHarness(t)+"install_nomad_service_config\n", "bash", dataDir)
+		command := exec.CommandContext(ctx, "bash", "-c", linuxSetupServiceHarness(t)+steps+"install_nomad_service_config\n", "bash", dataDir)
 		command.Env = []string{"PATH=" + os.Getenv("PATH")}
 		command.WaitDelay = time.Second
 		output, err := command.CombinedOutput()
@@ -695,6 +739,10 @@ func TestLinuxSetupReadsNomadConfigOnlyWhenItIsARegularFile(t *testing.T) {
 			t.Fatalf("install_nomad_service_config did not finish: it blocked on what is at nomad.hcl: %s", output)
 		}
 		return string(output), err
+	}
+	run := func(t *testing.T, dataDir string) (string, error) {
+		t.Helper()
+		return runSteps(t, dataDir, "")
 	}
 	setup := func(t *testing.T) (data, config, hcl string) {
 		t.Helper()
@@ -706,12 +754,26 @@ func TestLinuxSetupReadsNomadConfigOnlyWhenItIsARegularFile(t *testing.T) {
 		return data, config, filepath.Join(config, "nomad.hcl")
 	}
 
-	t.Run("a FIFO is replaced, not read", func(t *testing.T) {
+	t.Run("a FIFO is set aside, not read, and the setup stops", func(t *testing.T) {
 		data, config, hcl := setup(t)
 		if err := syscall.Mkfifo(hcl, 0o644); err != nil {
 			t.Fatal(err)
 		}
-		if output, err := run(t, data); err != nil {
+		output, err := run(t, data)
+		if err == nil || !strings.Contains(output, "execution-substrate: set aside "+hcl+" (a FIFO, not a regular file): it is "+config+".execution-substrate-set-aside/") {
+			t.Fatalf("install_nomad_service_config went on past a FIFO at nomad.hcl: %v %s", err, output)
+		}
+		if _, err := os.Lstat(hcl); !os.IsNotExist(err) {
+			t.Fatalf("the FIFO is still at nomad.hcl: %v", err)
+		}
+	})
+
+	t.Run("a FIFO is replaced, not read, without the take-back program", func(t *testing.T) {
+		data, config, hcl := setup(t)
+		if err := syscall.Mkfifo(hcl, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if output, err := runSteps(t, data, "nomad_package_hook_as_root() { :; }\n"); err != nil {
 			t.Fatalf("install_nomad_service_config: %v %s", err, output)
 		}
 		requireRegularFile(t, hcl, renderedNomadConfig(t, data, config)+"\n", 0o640)
