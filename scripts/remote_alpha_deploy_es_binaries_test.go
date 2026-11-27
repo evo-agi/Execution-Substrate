@@ -623,10 +623,13 @@ func TestRemoteAlphaESBinaryDeploymentStopsOnAConfigTheNewBinariesRefuse(t *test
 				fixture := setupESBinaryDeploymentFixture(t, tmpDir)
 				setupFakeESBinaryDeploymentCommands(t, fakeBin, fixture)
 				tc.setup(t, fixture)
+				// Both modes get a summary path in the test's folder: the
+				// default one is under /var/tmp, which macOS reaches through
+				// a symbolic link that the output folder check refuses.
 				summaryPath := filepath.Join(tmpDir, "apply-summary.json")
-				args := ""
+				args := fmt.Sprintf("--summary-path %q", summaryPath)
 				if mode == "apply" {
-					args = fmt.Sprintf("--apply --summary-path %q", summaryPath)
+					args = "--apply " + args
 				}
 				output, err := runSourcedESBinaryDeploymentHelper(t, envWithPath(fakeBin,
 					"REMOTE_ALPHA_TEST_MUTATION_LOG_PATH="+fixture.MutationLogPath,

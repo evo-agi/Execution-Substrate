@@ -1791,7 +1791,20 @@ func TestSigningKeyRotationOnTheRealHostNeedsRoot(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("as root this would read the machine's own /etc/execution-substrate")
 	}
-	for _, hostRoot := range []string{"/", "//", "/.", "/etc/.."} {
+	// A dotted path names the real root only where its folder is not a
+	// link: on macOS /etc is a link to /private/etc, so /etc/.. is /private
+	// there. Each dotted path is used only where it resolves to /, and at
+	// least one must.
+	hostRoots := []string{"/", "//", "/."}
+	for _, dotted := range []string{"/etc/..", "/usr/.."} {
+		if real, err := filepath.EvalSymlinks(dotted); err == nil && real == "/" {
+			hostRoots = append(hostRoots, dotted)
+		}
+	}
+	if len(hostRoots) == 3 {
+		t.Fatal("neither /etc/.. nor /usr/.. resolves to /")
+	}
+	for _, hostRoot := range hostRoots {
 		for _, command := range [][]string{{"check"}, {"apply"}, {"rollback", "--backup-dir", "/x"}} {
 			cmd := exec.Command("python3", append([]string{"-I", "-B", repoPath(rotateSigningKeysPython), "--host-root", hostRoot}, command...)...)
 			cmd.Dir = t.TempDir()
