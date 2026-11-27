@@ -184,6 +184,15 @@ func TestNomadTakeBackProgramTakesBackWhatThePackageGaveAway(t *testing.T) {
 		}
 		inodes[e.path] = inode(t, e.path)
 	}
+	// A file of root's but of another group: the group alone is reason to
+	// take it back (re-check 50 of #66, O50-2, for the program).
+	// It is made before the folder's default ACL, which it would inherit.
+	grouped := entry{filepath.Join(config, "grouped.hcl"), "# grouped\n", 0o640, 0o640}
+	if err := os.WriteFile(grouped.path, []byte(grouped.content), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	runTestSudo(t, "chown", "0:65534", "--", grouped.path)
+	inodes[grouped.path] = inode(t, grouped.path)
 	reading := encodedACL([][3]uint32{
 		{aclUserObj, 6, aclNoID},
 		{aclUser, 7, 65534},
@@ -213,14 +222,6 @@ func TestNomadTakeBackProgramTakesBackWhatThePackageGaveAway(t *testing.T) {
 	}
 	runTestSudo(t, "chown", "0:0", "--", aclOnly.path)
 	inodes[aclOnly.path] = inode(t, aclOnly.path)
-	// A file of root's but of another group: the group alone is reason to
-	// take it back (re-check 50 of #66, O50-2, for the program).
-	grouped := entry{filepath.Join(config, "grouped.hcl"), "# grouped\n", 0o640, 0o640}
-	if err := os.WriteFile(grouped.path, []byte(grouped.content), 0o640); err != nil {
-		t.Fatal(err)
-	}
-	runTestSudo(t, "chown", "0:65534", "--", grouped.path)
-	inodes[grouped.path] = inode(t, grouped.path)
 	// What Nomad does not read either: a folder, and an editor's lock file,
 	// which is a link.
 	folder := filepath.Join(config, "conf.d.hcl")
