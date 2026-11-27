@@ -52,8 +52,10 @@ func TestOnlyTestFilesImportTestutil(t *testing.T) {
 }
 
 // rootTestFiles are the test files that the repository root keeps besides
-// its docs tests, which are named *_docs_contract_test.go.
-var rootTestFiles = []string{"artifact_hygiene_test.go", "docs_contract_test.go", "testtmpdir_main_test.go"}
+// its docs tests, which are named *_docs_contract_test.go. Two of them are
+// repository-wide guards that belong to no one package: artifact hygiene and
+// the layout of the service directories.
+var rootTestFiles = []string{"artifact_hygiene_test.go", "docs_contract_test.go", "service_layout_test.go", "testtmpdir_main_test.go"}
 
 // TestRootKeepsOnlyItsDocsTests holds the layout of the repository root's
 // tests: the root keeps the tests that check the repository's docs, named
@@ -88,6 +90,7 @@ func TestRootLayoutCheckFindsEachKindOfProblem(t *testing.T) {
 		"docs_contract_test.go",
 		"host_access_docs_contract_test.go",
 		"outside_observer_docs_contract_test.go",
+		"service_layout_test.go",
 		"testtmpdir_main_test.go",
 	}
 	if problems := rootLayoutProblems(good); len(problems) != 0 {
@@ -106,6 +109,7 @@ func TestRootLayoutCheckFindsEachKindOfProblem(t *testing.T) {
 		"remote_alpha_firewall_docs_contract_test.go: " + rootLayoutRule,
 		"hygiene_test.go: " + rootLayoutRule,
 		"helpers.go: " + rootLayoutRule,
+		"service_layout_test.go is missing from the repository root",
 		"testtmpdir_main_test.go is missing from the repository root",
 	}
 	if problems := rootLayoutProblems(bad); strings.Join(problems, "\n") != strings.Join(want, "\n") {
@@ -114,7 +118,7 @@ func TestRootLayoutCheckFindsEachKindOfProblem(t *testing.T) {
 }
 
 const rootLayoutRule = "the repository root keeps only the tests of its docs, named *_docs_contract_test.go " +
-	"and without remote_alpha in the name, and artifact_hygiene_test.go, docs_contract_test.go and testtmpdir_main_test.go; " +
+	"and without remote_alpha in the name, and artifact_hygiene_test.go, docs_contract_test.go, service_layout_test.go and testtmpdir_main_test.go; " +
 	"a test of a script belongs in scripts/, next to the script"
 
 // rootLayoutProblems checks the names of the Go files at the repository
