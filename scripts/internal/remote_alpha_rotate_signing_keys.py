@@ -1657,6 +1657,7 @@ def cmd_apply(_args):
     # left records or changed configs: the records are read again here, and
     # each config is checked again before it is copied and before it is
     # written.
+    test_point("inspected")
     take_lock(backup_root_ready())
     late = unfinished_problems()
     if late:

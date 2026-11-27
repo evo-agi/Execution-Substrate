@@ -7785,7 +7785,9 @@ follows; an ARS that something else starts while `apply` or a rollback
 writes the index, restarted so that the ARS that runs at the end read the
 index on disk (the fake's `start` does nothing to a running unit, as
 systemd's); a second `apply`, a `rollback` and `check` while an `apply`
-holds the lock, and while another process holds it; a time limit that ends
+holds the lock, and while another process holds it; a backup that appears
+between `apply`'s reading and its lock, and one whose records cannot be
+read, each named; a time limit that ends
 a command's whole process group; the health calls' TLS arguments; every
 refused host and every refused backup above, each leaving the configs, the
 index, the backups and the units alone; and, as root, the owners and groups

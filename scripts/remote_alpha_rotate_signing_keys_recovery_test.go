@@ -616,3 +616,48 @@ func TestSigningKeyRotationLeavesAFolderNamedLikeATemporaryFile(t *testing.T) {
 	}
 	h.requireReady()
 }
+
+// A run that ends between apply's inspection and its lock can leave a
+// backup that is not settled; apply reads the backups again under the lock
+// and refuses, changing nothing (red-team RT10-5).
+func TestSigningKeyRotationRereadsTheBackupsUnderTheLock(t *testing.T) {
+	h := newRotationHost(t)
+	before := h.snapshot()
+	calls := len(h.serviceCalls())
+	late := filepath.Join(h.path(rotationBackupRoot), "20261127T000000Z-late")
+	stdout, stderr, code := h.runPausedAt("inspected", func() {
+		if err := os.MkdirAll(late, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}, "apply")
+	shown := "/" + rotationBackupRoot + "/" + filepath.Base(late)
+	if code != 1 || !strings.Contains(stderr, "a rotation did not finish") || !strings.Contains(stderr, shown) ||
+		!strings.Contains(stderr, "nothing was changed") {
+		t.Fatalf("apply with a backup that appeared after its inspection: exit %d\nstdout %s\nstderr %s", code, stdout, stderr)
+	}
+	if !reflect.DeepEqual(h.snapshot(), before) || len(h.serviceCalls()) != calls {
+		t.Fatal("the refused apply changed something")
+	}
+	if dirs := h.backupDirs(); len(dirs) != 1 {
+		t.Fatalf("backup folders after the refused apply: %v", dirs)
+	}
+}
+
+// A backup whose records cannot be read is named by check, never passed
+// over: it may hold the only record of an unfinished rollback (red-team
+// RT10-9, push mutant P19).
+func TestSigningKeyRotationNamesABackupWhoseRecordsCannotBeRead(t *testing.T) {
+	h := newRotationHost(t)
+	backup := h.apply()["backup_dir"].(string)
+	summary := filepath.Join(backup, "summary.json")
+	if err := os.WriteFile(summary, []byte("{\"result\": \"rotated\""), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	shown := "/" + rotationBackupRoot + "/" + filepath.Base(backup)
+	for _, mode := range []string{"check", "apply"} {
+		stdout, stderr, code := h.run(mode)
+		if r := h.report(stdout, stderr, code); code != 1 || !strings.Contains(rotationProblems(r), "cannot read the records of "+shown) {
+			t.Fatalf("%s with an unreadable summary: exit %d problems %v", mode, code, r["problems"])
+		}
+	}
+}
