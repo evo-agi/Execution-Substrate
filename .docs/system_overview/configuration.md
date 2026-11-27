@@ -406,7 +406,8 @@ only while those keys are secret to the host.
     must be `static-script/default` or `control-plane-normal-shell/v1`.
   - A rule's `caller_principal` must be a caller that
     `authorization.allowed_spiffe_path_prefixes` admits, and both principals
-    need at least two path segments.
+    need at least two path segments. Neither may be a workload identity:
+    workload identities are never callers (`contracts.md` section 3A).
   - The registered workload identity names (`workload_identities`) and a
     rule's `workload_identity` land with WI-3; until then ES refuses both as
     unknown keys.

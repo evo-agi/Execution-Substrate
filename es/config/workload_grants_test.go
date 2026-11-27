@@ -140,6 +140,20 @@ func TestWorkloadGrantsRefuseInvalidConfiguration(t *testing.T) {
 		"principal of one segment": {func(g *WorkloadGrantsConfig) {
 			g.Rules[0].PublisherPrincipal = "spiffe://execution.internal/operator"
 		}, "publisher_principal must be a caller SPIFFE ID in trust domain execution.internal with at least 2 path segments"},
+		// Workload identities are never callers (WI-3a), so AGS never signs
+		// for one and ES is never called by one.
+		"principal is a workload identity": {func(g *WorkloadGrantsConfig) {
+			g.Rules[0].PublisherPrincipal = "spiffe://execution.internal/workload/codex-agent"
+		}, "rules[0].publisher_principal must not be a workload identity"},
+		"principal is a workload identity in another letter case": {func(g *WorkloadGrantsConfig) {
+			g.Rules[0].PublisherPrincipal = "spiffe://execution.internal/WorkLoad/codex-agent"
+		}, "rules[0].publisher_principal must not be a workload identity"},
+		"caller is a workload identity": {func(g *WorkloadGrantsConfig) {
+			g.Rules[0].CallerPrincipal = "spiffe://execution.internal/workload/codex-agent"
+		}, "rules[0].caller_principal must not be a workload identity"},
+		"caller is a workload identity in another letter case": {func(g *WorkloadGrantsConfig) {
+			g.Rules[0].CallerPrincipal = "spiffe://execution.internal/WORKLOAD/codex-agent"
+		}, "rules[0].caller_principal must not be a workload identity"},
 		"missing caller":     {func(g *WorkloadGrantsConfig) { g.Rules[0].CallerPrincipal = "" }, "caller_principal is required"},
 		"caller path only":   {func(g *WorkloadGrantsConfig) { g.Rules[0].CallerPrincipal = "operator/local" }, "caller_principal must be a caller SPIFFE ID"},
 		"caller padded":      {func(g *WorkloadGrantsConfig) { g.Rules[0].CallerPrincipal += "\t" }, "caller_principal must not contain leading or trailing whitespace"},

@@ -632,6 +632,8 @@ func TestPrivateDeliveryMatchesGrantsOnTheCallerItIsBoundTo(t *testing.T) {
 		"padded bound caller":                 {testCallerContext(), " " + testGrantCaller, ""},
 		"bound caller in another case":        {testCallerContext(), "SPIFFE://execution.internal/operator/local", ""},
 		"empty bound caller":                  {testCallerContext(), "", ""},
+		"workload bound caller":               {testCallerContext(), "spiffe://execution.internal/workload/codex-agent", ""},
+		"workload bound caller in other case": {testCallerContext(), "spiffe://execution.internal/Workload/codex-agent", ""},
 	} {
 		if got := authenticatedCallerPrincipal(withDeliveryCaller(test.ctx, test.bound)); got != test.want {
 			t.Errorf("%s: grant caller %q, want %q", name, got, test.want)

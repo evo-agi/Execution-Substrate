@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"unicode"
@@ -184,12 +185,18 @@ func (r WorkloadGrantRuleConfig) validate(field string) error {
 // validateWorkloadGrantPrincipal requires a caller SPIFFE ID written
 // exactly in its canonical form, with at least as many path segments as the
 // shortest prefix a caller allowlist may hold: AGS and ES admit no caller
-// with fewer, so a rule naming one could never match.
+// with fewer, so a rule naming one could never match. A workload identity
+// is refused with its own message: the caller authentication contract gives
+// it no caller identity at any service, so it is never a publisher or an ES
+// caller.
 func validateWorkloadGrantPrincipal(field string, value string) error {
 	if err := validateWorkloadGrantMatchValue(field, value); err != nil {
 		return err
 	}
 	id, err := callerauth.ParseSPIFFEID(value)
+	if errors.Is(err, callerauth.ErrWorkloadIdentity) {
+		return fmt.Errorf("%s must not be a workload identity: workload identities are never callers, so none publishes a run or asks ES for one", field)
+	}
 	if err != nil || id.String() != value || strings.Count(id.Path(), "/")+1 < callerallowlist.MinimumSegments {
 		return fmt.Errorf("%s must be a caller SPIFFE ID in trust domain %s with at least %d path segments, written exactly in its canonical form", field, callerauth.TrustDomain, callerallowlist.MinimumSegments)
 	}

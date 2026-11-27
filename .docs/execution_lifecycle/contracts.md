@@ -884,7 +884,8 @@ Grants live in ES deployment configuration at
 - ES startup refuses: more than 32 rules; a duplicate rule ID; two rules with
   the same five match fields, so at most one rule matches a run; a missing or
   empty match field; a match value with surrounding white space; a principal
-  with fewer than two path segments; a `caller_principal` that
+  with fewer than two path segments; a principal that is a workload
+  identity, since workload identities are never callers; a `caller_principal` that
   `authorization.allowed_spiffe_path_prefixes` does not admit, since ES would
   refuse that caller before admission; a name not
   in its list; a lane other than `unrestricted`, or `unrestricted` with
