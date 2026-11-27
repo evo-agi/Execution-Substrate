@@ -437,8 +437,9 @@ F1 - Named Workload Identities And Workload Grants:
   grants; WI-3a caller refusal; WI-3 named identities; WI-4 egress lanes;
   WI-5 the durable format revision, before D3 makes those formats live state.
 - WI-3 also delivers the owner's cut-off of one named workload, proved by CI
-  integration tests with real SPIRE, Vault and Docker and rehearsed in its
-  host run. No named identity goes live on a host before those tests pass
+  integration tests with real SPIRE, Vault, Nomad and Docker and rehearsed in
+  its box run. No named identity goes live on any host, the Remote Alpha box
+  or a supported-local host, before those tests pass
   (`.docs/system_overview/runtime_identity_handoff.md`, section 11.7).
 - F1 keeps `EXEC_WORKLOAD_IDENTITY_ENDPOINT`, the root-start helper, the Nomad
   task user `0:0`, the fixed `10000:10000` workload user, helper-private SPIRE

@@ -336,7 +336,9 @@ F1 replaces this with:
   lacks the label selector, or while the registered names differ from the
   names ES configuration lists, in either direction: an entry that names an
   identity ES configuration does not list, and a listed identity with no
-  registered entry, Vault role or Vault policy.
+  registered entry, Vault role or Vault policy. A Vault role or Vault policy
+  left for an identity ES configuration does not list counts as a
+  difference, the same as such an entry.
 - The SPIRE agent enables the Docker workload attestor. That attestor reads
   container labels through the Docker API, which is root-equivalent access.
   How the agent gets that access, and how it is limited, is decided and
@@ -357,50 +359,97 @@ F1 replaces this with:
 
 The owner can cut off one named workload without touching any other, and
 WI-3 proves it with tests. The owner does it with the setup scripts, because
-ES holds no SPIRE or Vault administrative access (section 11.3). Cutting off
-a name has these outcomes:
+ES holds no SPIRE or Vault administrative access (section 11.3).
 
-- ES hands the identity to no run. The name leaves the configured list, and
-  every grant rule that names it is removed, lane included, so a run whose
-  profile needs a credential is refused with
-  `403 workload_identity_not_granted` (section 11.5). ES reads its
-  configuration at startup, so the cut-off restarts ES.
-- SPIRE issues no new JWT-SVID for the name: its entry is deleted, so the
-  runtime helper of a new run cannot obtain one (section 11.6).
-- Vault gives the name nothing. Its role `workload-<name>` is deleted, so no
-  login succeeds, including one with a JWT-SVID issued before the cut-off
-  that has not expired yet.
+A cut-off runs four steps, in this order:
+
+1. Vault: the policy `workload-<name>` is deleted, then the role
+   `workload-<name>`.
+2. ES configuration: the name leaves the configured list, every grant rule
+   that names it is removed, lane included, and the name joins the record of
+   cut-off names. ES reads its configuration at startup, so this step
+   restarts ES.
+3. Runs in flight: each is cancelled through ES and followed to a terminal
+   status.
+4. SPIRE: the name's entry is deleted.
+
+Cutting off a name has these outcomes:
+
+- ES hands the identity to no run. A run whose profile needs a credential is
+  refused with `403 workload_identity_not_granted` (section 11.5). Every
+  delivery that can cause an effect evaluates the grants again with the
+  configuration ES runs with (`.docs/execution_lifecycle/contracts.md`,
+  section 5B), so after the restart a replay, or a prepared run not yet
+  submitted, is refused too.
 - A Vault token issued before the cut-off loses access to the name's secrets
   at once. Deleting the policy `workload-<name>` is expected to do this,
   because Vault looks up a token's policies on every request; WI-3's tests
   are the proof. If they show that such a token keeps access, WI-3 stops and
   brings the owner the choice between revoking each such token and accepting
   access until the role's `token_max_ttl` ends.
-- A run that holds the identity when the cut-off starts is found by the
-  container label of section 11.4 and cancelled through ES.
+- With the role deleted, no Vault login succeeds for the name, including one
+  with a JWT-SVID issued before the cut-off that has not expired yet. The
+  policy goes before the role, so a cut-off that stops between the two still
+  leaves every token without the name's secrets.
+- A run in flight is one admitted with the identity and not yet terminal.
+  Step 3 starts only after ES has restarted without the identity, so no new
+  one can start. It finds every such run from the Nomad jobs whose task
+  carries the container label of section 11.4, including jobs not yet
+  placed; a job's ID is `exec-<run_id>`. It cancels each run through ES and
+  reads its status until it is terminal. A run that is not terminal within
+  the limit the WI-3 pull request sets is reported by its run ID, and the
+  step fails.
+- SPIRE issues no new JWT-SVID for the name once its agent has seen the
+  deletion, so the runtime helper of a new run cannot obtain one (section
+  11.6). A JWT-SVID issued earlier stays valid until it expires, but it can
+  no longer log in to Vault.
 - The name's secrets under `<name>/shared/` stay in Vault: a cut-off removes
   access, not data. Anything the workload could read is treated as seen, and
   the runbook says to rotate it where it was issued.
-- The name is never registered again. The setup scripts keep a record of
-  cut-off names and refuse to register one, so an old grant, an old record or
-  the old secrets under `<name>/shared/` never apply to a different workload.
-  A full re-setup keeps that record.
-- The Vault step runs first, so a cut-off that stops halfway leaves the
-  workload without secrets. Readiness refuses `submit-ready` until every step
-  is done, because until then the names registered in SPIRE and Vault differ
-  from the names ES configuration lists.
+- The name is never registered again. The record of cut-off names lives in
+  ES deployment configuration, next to the configured list, not in Vault or
+  SPIRE, so a Vault reset or a new SPIRE datastore does not lose it, and a
+  full re-setup carries it over. ES startup refuses a configuration that
+  lists a recorded name, the setup scripts refuse to register one, and
+  readiness refuses `submit-ready` while SPIRE or Vault holds an entry, role
+  or policy for one, including one made by hand. So an old grant, an old
+  record or the old secrets under `<name>/shared/` never apply to a
+  different workload.
+- A cut-off that stops halfway leaves the workload without secrets, because
+  the Vault step runs first. Readiness refuses `submit-ready` until every
+  step is done, because until then the names registered in SPIRE and Vault
+  differ from the names ES configuration lists.
+- Every other name keeps working: its Vault role, policy and secrets, its
+  SPIRE entry, its grants and its runs in flight are not touched.
 
-WI-3's CI integration tests, with real SPIRE, Vault and Docker, register two
-names, cut one off with the setup scripts, and prove each outcome: ES refuses
-a run that needs the cut-off identity with
-`403 workload_identity_not_granted`; a runtime helper cannot obtain a
-JWT-SVID for its ID; a Vault login with a JWT-SVID issued before the cut-off
-fails; a Vault token issued before the cut-off can no longer read
-`<name>/shared/`; registering the name again is refused; readiness reports
-`submit-ready` only once every step is done; and the other name still logs in
-and reads its own secrets. No named identity goes live on a box before these
-tests pass. WI-3's box run also cuts off one throwaway name, with one of its
-runs in flight, and WI-3 adds the cut-off to the runbooks.
+WI-3's CI integration tests use real SPIRE, Vault, Nomad and Docker. They
+register two names, one a prefix of the other (such as `codex` and
+`codex-agent`), cut off the shorter one with the setup scripts, and prove
+each outcome:
+
+- ES refuses a run that needs the cut-off identity with
+  `403 workload_identity_not_granted`, and ES configuration holds no grant
+  rule that names it.
+- A Vault token issued before the cut-off can no longer read
+  `<name>/shared/`, and the secrets are still in Vault.
+- A Vault login with a JWT-SVID issued before the cut-off fails.
+- A run in flight with the identity, started before the cut-off, is
+  cancelled and reaches a terminal status.
+- Once the SPIRE agent has seen the deletion, a runtime helper cannot obtain
+  a JWT-SVID for the name's ID.
+- A cut-off stopped after each of its four steps leaves a token issued before
+  it unable to read `<name>/shared/`, and readiness refusing `submit-ready`.
+- Registering the name again is refused; an entry, role or policy made for it
+  by hand makes readiness refuse `submit-ready`; and after a fresh setup from
+  scratch with the same ES configuration, registering it is still refused.
+- Readiness reports `submit-ready` only once every step is done.
+- The other name still logs in and reads its own secrets, ES still admits a
+  run for it, and a run of it in flight keeps running through the cut-off.
+
+No named identity goes live on any host, the Remote Alpha box or a
+supported-local host, before these tests pass. WI-3's box run (section
+11.10) also cuts off one throwaway name, with one of its runs in flight, and
+WI-3 adds the cut-off to the runbooks.
 
 ### 11.8 Adding per-run identities later
 
