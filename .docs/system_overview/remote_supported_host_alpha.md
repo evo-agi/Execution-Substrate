@@ -6869,15 +6869,25 @@ agent's server address; with `trust_bundle_path` it refuses a server whose
 certificate does not chain to the bundle. With cached agent data, the
 bundle file is not read at all.
 
+The bundle file is a copy of the server's CA certificates, and the server
+replaces its CA on a schedule: it prepares the next CA at half of the
+current CA's life and makes it active at about five sixths. With the
+host's `ca_ttl = "168h"` a new CA appears every 84 hours and is used 56
+hours later, so a copy taken once lacks the CA a fresh bootstrap must
+trust within days (on 2026-11-27 the host's copy, taken on 2026-11-24,
+lacked the prepared CA and still held an expired one). The helper keeps
+the copy current with a timer.
+
 Operator interface (run as root on the host):
 
 - `sudo scripts/remote_alpha_spire_agent.sh status`
 - `sudo scripts/remote_alpha_spire_agent.sh pin` and `sudo scripts/remote_alpha_spire_agent.sh pin --apply`
 - `sudo scripts/remote_alpha_spire_agent.sh recover` and `sudo scripts/remote_alpha_spire_agent.sh recover --apply`, optionally with `--evict-old-agent`
+- `sudo scripts/remote_alpha_spire_agent.sh refresh` and `sudo scripts/remote_alpha_spire_agent.sh refresh --apply`
 - `--json` prints the report as JSON with schema `execution-substrate.remote-alpha.spire-agent.v1`
 
-Without `--apply`, `pin` and `recover` run every check and print their plan,
-and change nothing. The wrapper runs the Python core with `python3 -I -B`.
+Without `--apply`, `pin`, `recover` and `refresh` run every check and print
+their plan, and change nothing. The wrapper runs the Python core with `python3 -I -B`.
 Every path, account, unit and command the helper uses is fixed in its
 `Layout`; it reads no environment variable and accepts no path option. Exit
 status: 0 for success, a plan, or a status with nothing to act on; 1 for a
@@ -6895,7 +6905,15 @@ counts as pinned only when `spire-agent validate` accepts it both plain and
 with `-trustBundle /etc/spire/agent/bootstrap-bundle.pem`, so SPIRE's own
 parser confirms that it reads a trust bundle and no `insecure_bootstrap`);
 whether
-`/etc/spire/agent/bootstrap-bundle.pem` matches the server's current bundle;
+`/etc/spire/agent/bootstrap-bundle.pem` matches the server's current bundle,
+and if not, whether that matters: a file that lacks an unexpired server CA
+issued more than 12 hours ago, or holds an unexpired CA the server no longer
+publishes, is attention; one that lacks only a CA issued in the last 12
+hours is info (the timer's next run adds it); one that differs only in
+expired CAs is ok; on a pinned host, whether the bundle refresh timer is
+installed as `pin` installs it (the helper copy and both unit files present
+with `pin`'s bytes, owner `root` and mode `0644`, the timer enabled and
+active) and whether its last run succeeded (attention otherwise);
 whether every SPIRE runtime directory (`/run/spire`, `/run/spire/server`,
 `/run/spire/server/private`, `/run/spire/sockets`) is recreated at boot by a
 tmpfiles.d rule (as `systemd-tmpfiles --cat-config` merges them) or by a
@@ -6941,8 +6959,48 @@ valid SVID and an unbanned server record. In this order it:
    `spiffe://execution.internal/workload` served to root, and `es.service`
    active again. On a failure it restores the original `agent.conf`,
    restarts again and reports a failure.
+5. Installs the bundle refresh timer, unless it is already installed as
+   described here. It copies its own file, which must be owned by `root`
+   and writable by no one else, to
+   `/usr/local/libexec/execution-substrate/remote_alpha_spire_agent.py`
+   (`root:root 0644`; it creates `/usr/local/libexec` and
+   `/usr/local/libexec/execution-substrate` as `root:root 0755` if they
+   are missing, and refuses either when it exists with another owner or is
+   writable by group or others). It writes
+   `execution-substrate-spire-bundle-refresh.service` and
+   `execution-substrate-spire-bundle-refresh.timer` in `/etc/systemd/system`
+   (`root:root 0644`), each starting with a marker line; a file of that name
+   without the marker is refused for a hand check. It then runs
+   `systemctl daemon-reload` and `systemctl enable --now
+   execution-substrate-spire-bundle-refresh.timer`, and requires both units
+   loaded and the timer enabled and active. The service is a oneshot that
+   runs `/usr/bin/python3 -I -B
+   /usr/local/libexec/execution-substrate/remote_alpha_spire_agent.py
+   refresh --apply` as root with `NoNewPrivileges=yes`, `PrivateTmp=yes`,
+   `ProtectHome=yes` and `ProtectSystem=strict`, writable only in
+   `/etc/spire/agent` and `/run`. The timer, `OnCalendar=*-*-* 00/6:00:00`
+   with `RandomizedDelaySec=15min` and `Persistent=true`, runs it every 6
+   hours and once after a boot that missed a run. On a failure `pin` puts
+   each of these files and directories back as it was, disables the timer
+   if it was not enabled before, and reports a failure that names the pin
+   steps already done, which stay. Run the service once by hand after a
+   first install (`systemctl start
+   execution-substrate-spire-bundle-refresh.service`) to prove it on the
+   host; `status` then shows its result.
 
 A second `pin --apply` changes nothing. `pin` never needs a join token.
+
+`refresh --apply` is what the timer runs. It requires an active server with
+the admin socket checks of `pin`, and an `agent.conf` that is pinned to
+`/etc/spire/agent/bootstrap-bundle.pem` and confirmed by `spire-agent
+validate` as for `status`; it refuses an `insecure_bootstrap` or
+unrecognized `agent.conf` (that is `pin`'s job). It does not need a healthy
+agent. It reads the server bundle as `pin` step 1 does and, only when the
+file does not already hold exactly those certificates, writes it atomically
+as `root:root 0644`. It edits no config, unit or boot rule and restarts
+nothing, since SPIRE reads the file only at a fresh bootstrap. A run that
+another run of the helper holds the lock for is refused, and the timer's
+next run tries again.
 
 `recover --apply` runs only when the server is active and the agent's own
 SVID has expired or the agent never attested; it refuses a valid SVID, an
@@ -7003,16 +7061,20 @@ Operator rule: If the box or `spire-server.service` has been off for more
 than a day, run `sudo scripts/remote_alpha_spire_agent.sh status` before
 expecting ES to work, and `sudo scripts/remote_alpha_spire_agent.sh recover --apply`
 when it reports an expired agent SVID. `recover` is never automatic.
+`recover` pins `agent.conf` but leaves the refresh timer to `pin`: on a host
+without the timer, `status` asks for `pin --apply` after a `recover`.
 
 Evidence: the repository tests drive the helper against real SPIRE 1.14.4
 binaries (the pinned release in `scripts/internal/spire_release.sha256`)
 with the host's server, agent and registration shape and short SVID
 lifetimes. They include a fresh bootstrap with the pinned `agent.conf`
 refusing an impostor server on the real server's port, while the same
-bootstrap with the original `agent.conf` attests to it. systemd and
-`setpriv` are replaced by test fakes there, so `Requires=` propagation,
-privilege dropping and boot-time directory creation are proved only by a
-run on the host.
+bootstrap with the original `agent.conf` attests to it, and a server that
+prepares a new CA (`spire-server localauthority x509 prepare`), which
+`status` reports and the refresh service's run copies into the file. systemd
+and `setpriv` are replaced by test fakes there, so `Requires=` propagation,
+privilege dropping, boot-time directory creation and the refresh units'
+sandbox and schedule are proved only by a run on the host.
 
 Not covered (long-term work owned elsewhere): a node attestor that can
 re-attest so that expiry heals itself, expiry alerting from the Maintenance

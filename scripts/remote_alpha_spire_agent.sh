@@ -3,6 +3,7 @@
 #   sudo scripts/remote_alpha_spire_agent.sh status
 #   sudo scripts/remote_alpha_spire_agent.sh pin [--apply]
 #   sudo scripts/remote_alpha_spire_agent.sh recover [--apply] [--evict-old-agent]
+#   sudo scripts/remote_alpha_spire_agent.sh refresh [--apply]
 # Contract: .docs/system_overview/remote_supported_host_alpha.md, section
 # "Remote SPIRE Agent Bootstrap Trust And Recovery Helper".
 set -euo pipefail

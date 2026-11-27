@@ -3,17 +3,23 @@
 Run through scripts/remote_alpha_spire_agent.sh as root on the box. Modes:
 
   status            read-only report: units, agent SVID expiry, bootstrap
-                    mode, bootstrap bundle file, boot-time runtime directories
+                    mode, bootstrap bundle file and its freshness, the bundle
+                    refresh timer, boot-time runtime directories
   pin [--apply]     export the server bundle over the admin socket, write it
                     to the bootstrap bundle file, replace insecure_bootstrap
                     with trust_bundle_path, add a tmpfiles.d rule for the
-                    SPIRE runtime directories if none exists, restart the agent
+                    SPIRE runtime directories if none exists, restart the
+                    agent, install the bundle refresh timer
+  refresh [--apply] rewrite the bootstrap bundle file from the server bundle
+                    when they differ, on a host already pinned; nothing else.
+                    The refresh timer runs it every 6 hours
   recover [--apply] [--evict-old-agent]
                     re-attest an agent whose SVID expired (or that never
                     attested) with a fresh single-use join token, after the
                     same pinning steps
 
-pin and recover only check and print their plan unless --apply is given.
+pin, recover and refresh only check and print their plan unless --apply is
+given.
 The contract is in .docs/system_overview/remote_supported_host_alpha.md,
 section "Remote SPIRE Agent Bootstrap Trust And Recovery Helper".
 
@@ -107,6 +113,25 @@ class Layout:
     openssl_bin: str = "/usr/bin/openssl"
     tmpfiles_bin: str = "/usr/bin/systemd-tmpfiles"
     command_path_env: str = "/usr/sbin:/usr/bin:/sbin:/bin"
+
+    # The bundle refresh timer that pin installs. The SPIRE server prepares
+    # its next CA at half of the current CA's life and makes it active at
+    # about five sixths, so a copy of the bundle goes stale within a third of
+    # the CA lifetime (56 h for the host's ca_ttl of 168h). The timer runs
+    # refresh every 6 hours from a root-owned copy of this file.
+    systemd_unit_dir: str = "/etc/systemd/system"
+    refresh_unit_name: str = "execution-substrate-spire-bundle-refresh"
+    refresh_on_calendar: str = "*-*-* 00/6:00:00"
+    installed_helper_path: str = "/usr/local/libexec/execution-substrate/remote_alpha_spire_agent.py"
+    # Directories pin may create for the copy, outermost first; each must be
+    # owned by file_owner and writable by no one else.
+    installed_helper_dirs: tuple = ("/usr/local/libexec", "/usr/local/libexec/execution-substrate")
+    # The interpreter and its isolation options for the timer's runs, as the
+    # wrapper script uses them.
+    python_argv: tuple = ("/usr/bin/python3", "-I", "-B")
+    # status: a server CA missing from the bundle file that was issued longer
+    # ago than this is attention, since the timer should have added it.
+    bundle_refresh_grace_seconds: int = 12 * 3600
 
     join_token_ttl_seconds: int = 120
     # status reports "attention" below this many seconds of agent SVID life.
@@ -453,6 +478,15 @@ class Runner:
                 props[key] = value
         return props
 
+    def unit_props(self, unit: str, props: list[str]) -> dict:
+        out = self.text([self.L.systemctl_bin, "show", unit, "--property=" + ",".join(props)])
+        values = {}
+        for line in out.splitlines():
+            key, sep, value = line.partition("=")
+            if sep:
+                values[key] = value
+        return values
+
     def unit_action(self, action: str, unit: str, timeout: float | None = None) -> None:
         self.run([self.L.systemctl_bin, action, unit], timeout=timeout or 120)
 
@@ -514,18 +548,19 @@ def list_entries(r: Runner) -> list[dict]:
 
 
 def openssl_cert_fields(r: Runner, data: bytes, der: bool) -> dict:
-    argv = [r.L.openssl_bin, "x509", "-noout", "-enddate", "-ext", "subjectAltName,basicConstraints"]
+    argv = [r.L.openssl_bin, "x509", "-noout", "-startdate", "-enddate", "-ext", "subjectAltName,basicConstraints"]
     if der:
         argv[2:2] = ["-inform", "DER"]
     out = r.text(argv, stdin=data)
     fields = {"uris": re.findall(r"URI:([^,\s]+)", out), "ca": bool(re.search(r"\bCA:TRUE\b", out))}
-    match = re.search(r"^notAfter=(.+)$", out, re.MULTILINE)
-    if not match:
-        raise CommandError("openssl printed no notAfter")
-    try:
-        fields["not_after"] = float(ssl.cert_time_to_seconds(match.group(1).strip()))
-    except ValueError:
-        raise CommandError("openssl printed an unreadable notAfter") from None
+    for key, label in (("not_before", "notBefore"), ("not_after", "notAfter")):
+        match = re.search(rf"^{label}=(.+)$", out, re.MULTILINE)
+        if not match:
+            raise CommandError(f"openssl printed no {label}")
+        try:
+            fields[key] = float(ssl.cert_time_to_seconds(match.group(1).strip()))
+        except ValueError:
+            raise CommandError(f"openssl printed an unreadable {label}") from None
     return fields
 
 
@@ -679,7 +714,50 @@ def bundle_file_state(r: Runner, server_ders: list[bytes] | None) -> dict:
         return {"state": "unknown", "meta": meta}
     if set(file_ders) == set(server_ders) and len(file_ders) == len(server_ders):
         return {"state": "matches", "meta": meta}
-    return {"state": "differs", "meta": meta}
+    return {"state": "differs", "meta": meta, "ders": file_ders}
+
+
+def bundle_coverage(r: Runner, file_ders: list[bytes], server_ders: list[bytes]) -> dict:
+    """How a bundle file that differs from the server bundle serves a fresh
+    bootstrap. The server's own certificate chains to its active CA, which is
+    always an unexpired CA of the server bundle, and a CA the server has
+    prepared becomes active at about five sixths of its predecessor's life.
+    So the file needs every unexpired server CA, and should trust no
+    unexpired CA the server no longer publishes. A missing CA issued within
+    the grace period is the timer's next run to add (info); one issued
+    earlier, or an extra CA, needs attention. A difference in expired CAs
+    alone is harmless (ok)."""
+    L = r.L
+    now = utc_now()
+    fresh, stale, extra = [], [], []
+    for der in server_ders:
+        if der in file_ders:
+            continue
+        fields = openssl_cert_fields(r, der, der=True)
+        if fields["not_after"] <= now:
+            continue
+        (fresh if fields["not_before"] > now - L.bundle_refresh_grace_seconds else stale).append(fields)
+    for der in file_ders:
+        if der in server_ders:
+            continue
+        fields = openssl_cert_fields(r, der, der=True)
+        if fields["not_after"] > now:
+            extra.append(fields)
+    fix = f"run sudo {PUBLIC_SCRIPT} refresh --apply"
+    hours = L.bundle_refresh_grace_seconds / 3600
+    problems = []
+    if stale:
+        issued = ", ".join(iso_utc(f["not_before"]) for f in stale)
+        problems.append(f"lacks {len(stale)} unexpired server CA certificate(s) issued more than {hours:g} h ago ({issued}); a fresh bootstrap fails once the server signs with it")
+    if extra:
+        until = ", ".join(iso_utc(f["not_after"]) for f in extra)
+        problems.append(f"trusts {len(extra)} unexpired CA certificate(s) the server no longer publishes (valid until {until})")
+    if problems:
+        return {"state": "attention", "detail": "; ".join(problems) + f"; {fix}"}
+    if fresh:
+        issued = ", ".join(iso_utc(f["not_before"]) for f in fresh)
+        return {"state": "info", "detail": f"lacks {len(fresh)} server CA certificate(s) issued in the last {hours:g} h ({issued}); the refresh timer adds it, or {fix}"}
+    return {"state": "ok", "detail": "differs from the server bundle only in expired CA certificates"}
 
 
 _BOOTSTRAP_KEYS = ("insecure_bootstrap", "trust_bundle_path", "trust_bundle_url",
@@ -1005,14 +1083,9 @@ class Pinning:
             self.rep.planned(f"replace insecure_bootstrap = true with trust_bundle_path = \"{L.bundle_path}\" in {L.agent_config}, keeping a timestamped backup, then run spire-agent validate as {L.spire_user}, plain and with -trustBundle {L.bundle_path}, and restore the backup if either refuses")
 
     def apply_bundle(self) -> None:
-        L = self.L
         if self.bundle_state["state"] == "matches":
             return
-        uid, gid = resolve_ids(L.file_owner, L.file_group)
-        atomic_write(L.bundle_path, pem_encode(self.server_ders), 0o644, uid, gid)
-        if bundle_file_state(self.r, self.server_ders)["state"] != "matches":
-            raise Failure(f"{L.bundle_path} does not match the server bundle after writing it")
-        self.rep.action(f"wrote {L.bundle_path} ({len(self.server_ders)} CA certificate(s))")
+        write_bundle(self.r, self.rep, self.server_ders)
 
     def apply_config(self) -> None:
         L = self.L
@@ -1069,6 +1142,250 @@ class Pinning:
             os.unlink(L.tmpfiles_path)
             raise Failure(f"systemd-tmpfiles does not read the new {L.tmpfiles_path}; it was removed")
         self.rep.action(f"wrote {L.tmpfiles_path}: " + "; ".join(entry[0] for entry in self.tmpfiles_new))
+
+
+
+def write_bundle(r: Runner, rep: Report, server_ders: list[bytes]) -> None:
+    L = r.L
+    uid, gid = resolve_ids(L.file_owner, L.file_group)
+    atomic_write(L.bundle_path, pem_encode(server_ders), 0o644, uid, gid)
+    if bundle_file_state(r, server_ders)["state"] != "matches":
+        raise Failure(f"{L.bundle_path} does not match the server bundle after writing it")
+    rep.action(f"wrote {L.bundle_path} ({len(server_ders)} CA certificate(s))")
+
+
+# --------------------------------------------------------------------------
+# Bundle refresh timer
+
+
+# This file, as loaded. pin installs a copy of exactly these bytes for the
+# timer, and status compares the installed copy with them.
+HELPER_SOURCE = os.path.abspath(__file__)
+UNIT_MARKER = f"# Written by {PUBLIC_SCRIPT} pin, which rewrites it; do not edit."
+
+
+def refresh_unit_paths(L: Layout) -> tuple[str, str]:
+    base = os.path.join(L.systemd_unit_dir, L.refresh_unit_name)
+    return base + ".service", base + ".timer"
+
+
+def refresh_unit_texts(L: Layout) -> dict:
+    """The two unit files pin writes. The service runs refresh as root with
+    the rest of the file system read-only: refresh writes only the bundle
+    file (through a temporary file in its directory) and the lock file."""
+    service, timer = refresh_unit_paths(L)
+    writable = " ".join(sorted({os.path.dirname(L.bundle_path), os.path.dirname(L.lock_path)}))
+    service_text = (
+        f"{UNIT_MARKER}\n"
+        "[Unit]\n"
+        "Description=Refresh the SPIRE agent bootstrap bundle from the SPIRE server (Execution Substrate)\n"
+        f"After={L.server_unit}\n"
+        "\n"
+        "[Service]\n"
+        "Type=oneshot\n"
+        f"ExecStart={' '.join(L.python_argv)} {L.installed_helper_path} refresh --apply\n"
+        "NoNewPrivileges=yes\n"
+        "PrivateTmp=yes\n"
+        "ProtectHome=yes\n"
+        "ProtectSystem=strict\n"
+        f"ReadWritePaths={writable}\n"
+    )
+    timer_text = (
+        f"{UNIT_MARKER}\n"
+        "[Unit]\n"
+        "Description=Refresh the SPIRE agent bootstrap bundle every 6 hours (Execution Substrate)\n"
+        "\n"
+        "[Timer]\n"
+        f"OnCalendar={L.refresh_on_calendar}\n"
+        "RandomizedDelaySec=15min\n"
+        "Persistent=true\n"
+        "\n"
+        "[Install]\n"
+        "WantedBy=timers.target\n"
+    )
+    return {service: service_text.encode("ascii"), timer: timer_text.encode("ascii")}
+
+
+def read_own_helper(L: Layout, *, for_install: bool) -> bytes:
+    got = read_regular_file(HELPER_SOURCE, limit=4 << 20)
+    if got is None:
+        raise Refusal(f"cannot read this helper's own file {HELPER_SOURCE}")
+    data, st = got
+    if for_install:
+        uid, _ = resolve_ids(L.file_owner, L.file_group)
+        if st.st_uid != uid or stat.S_IMODE(st.st_mode) & 0o022:
+            raise Refusal(f"{HELPER_SOURCE} is {describe(st)}; pin installs a copy of it for the refresh timer only when it is owned by {L.file_owner} and writable by no one else")
+    return data
+
+
+def refresh_timer_state(r: Runner, own: bytes) -> dict:
+    """The helper copy and the two unit files (each absent, matches,
+    differs, foreign or unreadable; matches includes owner file_owner and
+    mode 0644), and systemd's view of the two units."""
+    L = r.L
+    uid, _ = resolve_ids(L.file_owner, L.file_group)
+    wanted = [(L.installed_helper_path, own)] + list(refresh_unit_texts(L).items())
+    files = {}
+    for path, want in wanted:
+        try:
+            got = read_regular_file(path, limit=4 << 20)
+        except Refusal:
+            files[path] = "unreadable"
+            continue
+        if got is None:
+            files[path] = "absent"
+        elif got[0] == want and got[1].st_uid == uid and stat.S_IMODE(got[1].st_mode) == 0o644:
+            files[path] = "matches"
+        elif path != L.installed_helper_path and not got[0].startswith(UNIT_MARKER.encode("ascii") + b"\n"):
+            files[path] = "foreign"
+        else:
+            files[path] = "differs"
+    timer = r.unit_props(L.refresh_unit_name + ".timer", ["LoadState", "ActiveState", "UnitFileState"])
+    service = r.unit_props(L.refresh_unit_name + ".service", ["LoadState", "Result", "ExecMainStartTimestamp", "ExecMainStatus"])
+    return {"files": files, "wanted": dict(wanted), "timer": timer, "service": service}
+
+
+def timer_enabled(state: dict) -> bool:
+    return state["timer"].get("UnitFileState") == "enabled" and state["timer"].get("ActiveState") == "active"
+
+
+def check_refresh_timer(r: Runner, rep: Report) -> None:
+    L = r.L
+    service_unit = L.refresh_unit_name + ".service"
+    timer_unit = L.refresh_unit_name + ".timer"
+    try:
+        state = refresh_timer_state(r, read_own_helper(L, for_install=False))
+    except (Refusal, CommandError) as exc:
+        rep.check("refresh timer", "fail", str(exc))
+        return
+    problems = [f"{path} is {s}" for path, s in state["files"].items() if s != "matches"]
+    if not timer_enabled(state):
+        problems.append(f"{timer_unit} is {state['timer'].get('UnitFileState') or 'unknown'} and {state['timer'].get('ActiveState') or 'unknown'}")
+    hints = [f"run sudo {PUBLIC_SCRIPT} pin --apply"] if problems else []
+    result = state["service"].get("Result", "")
+    if result != "success":
+        problems.append(f"its last run failed (Result={result or 'unknown'}, exit status {state['service'].get('ExecMainStatus') or 'unknown'})")
+        hints.append(f"see journalctl -u {service_unit}")
+    if problems:
+        rep.check("refresh timer", "attention", "; ".join(problems) + "; " + " and ".join(hints))
+        return
+    last = state["service"].get("ExecMainStartTimestamp") or "none since boot or since pin installed it"
+    rep.check("refresh timer", "ok", f"{timer_unit} enabled and active ({L.refresh_on_calendar}), runs refresh --apply from {L.installed_helper_path}; last run: {last}")
+
+
+class TimerInstall:
+    """pin's last step: a root-owned copy of this helper and the two units
+    that run refresh --apply from it every 6 hours."""
+
+    def __init__(self, r: Runner, rep: Report):
+        self.r = r
+        self.rep = rep
+        self.L = r.L
+        self.own = b""
+        self.state: dict = {}
+        self.new_dirs: list[str] = []
+        self.writes: list[str] = []
+        self.enable = False
+
+    def needed(self) -> bool:
+        return bool(self.new_dirs or self.writes or self.enable)
+
+    def inspect(self) -> None:
+        L = self.L
+        timer_unit = L.refresh_unit_name + ".timer"
+        if os.path.dirname(L.installed_helper_path) != L.installed_helper_dirs[-1]:
+            raise Refusal(f"{L.installed_helper_path} is not directly in {L.installed_helper_dirs[-1]}")
+        self.own = read_own_helper(L, for_install=True)
+        uid, _ = resolve_ids(L.file_owner, L.file_group)
+        for d in (os.path.dirname(L.installed_helper_dirs[0]),) + tuple(L.installed_helper_dirs):
+            st = lstat_or_none(d)
+            if st is None and d in L.installed_helper_dirs:
+                self.new_dirs.append(d)
+                continue
+            if st is None or not stat.S_ISDIR(st.st_mode) or st.st_uid not in (0, uid) or stat.S_IMODE(st.st_mode) & 0o022:
+                what = describe(st) if st is not None else "missing"
+                raise Refusal(f"{d} is {what}; the refresh timer's helper copy needs directories owned by {L.file_owner} that no one else can write")
+        ust = lstat_or_none(L.systemd_unit_dir)
+        if ust is None or not stat.S_ISDIR(ust.st_mode):
+            raise Refusal(f"{L.systemd_unit_dir} is not a directory")
+        self.state = refresh_timer_state(self.r, self.own)
+        for path, s in self.state["files"].items():
+            if s == "foreign":
+                raise Refusal(f"{path} exists and was not written by {PUBLIC_SCRIPT}; move it away by hand")
+            if s == "unreadable":
+                raise Refusal(f"{path} exists and is not a regular file")
+            if s != "matches":
+                self.writes.append(path)
+        self.enable = bool(self.writes) or not timer_enabled(self.state)
+        if not self.needed():
+            self.rep.check("refresh timer", "ok", f"{timer_unit} installed, enabled and active")
+            return
+        self.rep.check("refresh timer", "info", "; ".join(f"{p} is {s}" for p, s in self.state["files"].items() if s != "matches") or f"{timer_unit} is not enabled and active")
+        dirs = f"create {', '.join(self.new_dirs)} as {L.file_owner}:{L.file_group} 0755, " if self.new_dirs else ""
+        files = f"write {', '.join(self.writes)} as {L.file_owner}:{L.file_group} 0644 (the helper copy is this helper's own bytes), " if self.writes else ""
+        self.rep.planned(f"install the bundle refresh timer: {dirs}{files}run systemctl daemon-reload and enable --now {timer_unit}, so that systemd runs refresh --apply from {L.installed_helper_path} at {L.refresh_on_calendar}; on a failure put these files back as they were")
+
+    def apply(self) -> bool:
+        if not self.needed():
+            return False
+        L = self.L
+        timer_unit = L.refresh_unit_name + ".timer"
+        uid, gid = resolve_ids(L.file_owner, L.file_group)
+        before = {}
+        for path in self.writes:
+            got = read_regular_file(path, limit=4 << 20)
+            before[path] = got
+        was_enabled = self.state["timer"].get("UnitFileState") == "enabled"
+        made: list[str] = []
+        try:
+            for d in self.new_dirs:
+                os.mkdir(d, 0o700)
+                made.append(d)
+                take_new_dir(d, uid, gid, 0o755)
+                self.rep.action(f"created {d}")
+            # The copy first, so the units never name a missing file.
+            for path in sorted(self.writes, key=lambda p: p != L.installed_helper_path):
+                atomic_write(path, self.state["wanted"][path], 0o644, uid, gid)
+                self.rep.action(f"wrote {path}")
+            self.r.run([L.systemctl_bin, "daemon-reload"], timeout=120)
+            self.r.run([L.systemctl_bin, "enable", "--now", timer_unit], timeout=120)
+            after = refresh_timer_state(self.r, self.own)
+            off = [f"{p} is {s}" for p, s in after["files"].items() if s != "matches"]
+            if after["service"].get("LoadState") != "loaded" or after["timer"].get("LoadState") != "loaded" or not timer_enabled(after):
+                off.append(f"{timer_unit} is {after['timer'].get('LoadState')}, {after['timer'].get('UnitFileState')} and {after['timer'].get('ActiveState')}")
+            if off:
+                raise Failure("; ".join(off))
+            self.rep.action(f"enabled and started {timer_unit}: systemd runs refresh --apply at {L.refresh_on_calendar}")
+            return True
+        except BaseException as exc:
+            self.rollback(before, was_enabled, made)
+            if isinstance(exc, Interrupted):
+                raise
+            if isinstance(exc, (Failure, CommandError, OSError)):
+                detail = str(exc) if not isinstance(exc, OSError) else f"{exc.strerror}: {exc.filename}"
+                raise Failure(f"the bundle refresh timer was not installed ({detail}); its files were put back as they were") from None
+            raise
+
+    def rollback(self, before: dict, was_enabled: bool, made: list[str]) -> None:
+        L = self.L
+        timer_unit = L.refresh_unit_name + ".timer"
+        with signals_deferred():
+            try:
+                if not was_enabled:
+                    self.r.run([L.systemctl_bin, "disable", "--now", timer_unit], timeout=120, check=False)
+                for path, got in before.items():
+                    if got is None:
+                        with contextlib.suppress(FileNotFoundError):
+                            os.unlink(path)
+                    else:
+                        atomic_write(path, got[0], stat.S_IMODE(got[1].st_mode), got[1].st_uid, got[1].st_gid)
+                for d in reversed(made):
+                    os.rmdir(d)
+                self.r.run([L.systemctl_bin, "daemon-reload"], timeout=120, check=False)
+            except (OSError, CommandError) as exc:
+                detail = str(exc) if not isinstance(exc, OSError) else f"{exc.strerror}: {exc.filename}"
+                raise Failure(f"installing the bundle refresh timer failed and putting its files back failed too ({detail}); the box needs a hand check") from None
+            self.rep.action("put the refresh timer's files back as they were")
 
 
 # --------------------------------------------------------------------------
@@ -1155,9 +1472,16 @@ def mode_status(r: Runner, rep: Report) -> None:
     elif bstate["state"] == "absent" and analysis.get("state") == "pinned":
         rep.check("bundle file", "attention", f"{L.bundle_path} is absent although agent.conf names it; a fresh bootstrap would fail; recover writes it")
     elif bstate["state"] == "differs":
-        rep.check("bundle file", "info", f"{L.bundle_path} differs from the current server bundle ({bstate['meta']}); it is read only at a fresh bootstrap, and recover re-exports it first")
+        try:
+            coverage = bundle_coverage(r, bstate["ders"], server_ders)
+            rep.check("bundle file", coverage["state"], f"{L.bundle_path} ({bstate['meta']}) {coverage['detail']}")
+        except CommandError as exc:
+            rep.check("bundle file", "fail", f"{L.bundle_path} differs from the server bundle, and its certificates cannot be read: {exc}")
     else:
         rep.check("bundle file", "info" if bstate["state"] in ("absent", "unknown") else "attention", f"{L.bundle_path}: {bstate['state']}")
+
+    if analysis.get("state") == "pinned":
+        check_refresh_timer(r, rep)
 
     try:
         coverage = tmpfiles_coverage(r)
@@ -1190,6 +1514,8 @@ def mode_pin(r: Runner, rep: Report, apply: bool) -> None:
     pinning.inspect()
     if pinning.config_state["state"] == "insecure":
         rep.planned(f"restart {L.agent_unit} (systemd restarts {', '.join(L.dependent_units)} with it), then check that the agent ID is unchanged, the agent is healthy and serves a workload SVID, and these units are active again: {', '.join(L.dependent_units)}; on a failure restore the original config and restart again")
+    timer = TimerInstall(r, rep)
+    timer.inspect()
     if not apply:
         rep.result = "planned" if rep.plan else "ok"
         rep.message = "no changes made; rerun with --apply" if rep.plan else "nothing to change"
@@ -1201,26 +1527,72 @@ def mode_pin(r: Runner, rep: Report, apply: bool) -> None:
     pinning.apply_bundle()
     pinning.apply_tmpfiles()
     pinning.apply_config()
-    if not pinning.config_changed:
-        rep.result = "ok"
-        rep.message = "pinned; no restart needed"
-        return
-    before = {u: unit_active(r, u) for u in L.dependent_units}
-    try:
-        r.unit_action("restart", L.agent_unit)
-        verify_after_start(r, rep, expect_agent_id=local["agent_id"], dependents_before=before)
-    except (CommandError, Failure) as exc:
-        rep.action(f"verification after restart failed: {exc}")
+    message = "pinned; no restart needed"
+    if pinning.config_changed:
+        before = {u: unit_active(r, u) for u in L.dependent_units}
         try:
-            pinning.restore_config()
             r.unit_action("restart", L.agent_unit)
             verify_after_start(r, rep, expect_agent_id=local["agent_id"], dependents_before=before)
-            rep.action("rolled back to the original config; the agent runs again with its original identity")
-        except (CommandError, Failure) as exc2:
-            raise Failure(f"pin failed ({exc}) and the rollback failed too ({exc2}); the box needs a hand check") from None
-        raise Failure(f"pin failed and was rolled back: {exc}") from None
+        except (CommandError, Failure) as exc:
+            rep.action(f"verification after restart failed: {exc}")
+            try:
+                pinning.restore_config()
+                r.unit_action("restart", L.agent_unit)
+                verify_after_start(r, rep, expect_agent_id=local["agent_id"], dependents_before=before)
+                rep.action("rolled back to the original config; the agent runs again with its original identity")
+            except (CommandError, Failure) as exc2:
+                raise Failure(f"pin failed ({exc}) and the rollback failed too ({exc2}); the box needs a hand check") from None
+            raise Failure(f"pin failed and was rolled back: {exc}") from None
+        message = "pinned; the agent restarted with its original identity"
+    # The timer comes last: its refresh refuses an agent.conf that is not
+    # pinned. A failure here leaves the pin in place and is reported.
+    try:
+        if timer.apply():
+            message += "; the bundle refresh timer is installed"
+    except Failure as exc:
+        raise Failure(f"{message}, but {exc}") from None
     rep.result = "ok"
-    rep.message = "pinned; the agent restarted with its original identity"
+    rep.message = message
+
+
+def mode_refresh(r: Runner, rep: Report, apply: bool) -> None:
+    """Rewrite the bootstrap bundle file from the server bundle when they
+    differ, on a host whose agent.conf is already pinned to it. The agent
+    reads the file only at a fresh bootstrap, so nothing restarts; refresh
+    needs a running server but not a healthy agent. It edits no config, unit
+    or boot rule: that is pin's job."""
+    L = r.L
+    require_server(r, rep)
+    _, cst, analysis = read_agent_config(r)
+    if analysis["state"] != "pinned":
+        reason = analysis.get("reason") or "it uses insecure_bootstrap"
+        raise Refusal(f"{L.agent_config} is not pinned to {L.bundle_path} ({reason}); run sudo {PUBLIC_SCRIPT} pin")
+    confirmed, detail = spire_confirms_pinned(r)
+    if not confirmed:
+        raise Refusal(f"{L.agent_config} reads as pinned to this helper, but SPIRE's own parser does not confirm it ({detail}); inspect it by hand")
+    rep.check("bootstrap", "ok", f"trust_bundle_path = \"{L.bundle_path}\" in {L.agent_config} ({describe(cst)}), confirmed by spire-agent validate, plain and with -trustBundle")
+    bundle_dir = os.path.dirname(L.bundle_path)
+    dst = lstat_or_none(bundle_dir)
+    if dst is None or not stat.S_ISDIR(dst.st_mode):
+        raise Refusal(f"{bundle_dir} is not a directory")
+    server_ders = export_server_bundle(r)
+    state = bundle_file_state(r, server_ders)
+    if state["state"] == "not_regular":
+        raise Refusal(f"{L.bundle_path} exists and is not a regular file")
+    if state["state"] == "matches":
+        rep.check("bundle file", "ok", f"{L.bundle_path} matches the server bundle ({len(server_ders)} CA certificate(s))")
+        rep.result = "ok"
+        rep.message = "nothing to change"
+        return
+    rep.check("bundle file", "info", f"{L.bundle_path}: {state['state']}")
+    rep.planned(f"write the server bundle ({len(server_ders)} CA certificate(s), read over the admin socket) to {L.bundle_path} as {L.file_owner}:{L.file_group} 0644 (file is {state['state']})")
+    if not apply:
+        rep.result = "planned"
+        rep.message = "no changes made; rerun with --apply"
+        return
+    write_bundle(r, rep, server_ders)
+    rep.result = "ok"
+    rep.message = "refreshed; SPIRE reads the file only at a fresh bootstrap, so nothing restarted"
 
 
 def verify_after_start(r: Runner, rep: Report, *, expect_agent_id: str, dependents_before: dict, start_dependents: bool = False) -> None:
@@ -1470,8 +1842,8 @@ def build_parser() -> argparse.ArgumentParser:
         prog=PUBLIC_SCRIPT,
         description="SPIRE agent bootstrap trust and recovery on the Remote Alpha box. Run with sudo.",
     )
-    parser.add_argument("mode", choices=("status", "pin", "recover"))
-    parser.add_argument("--apply", action="store_true", help="pin/recover: make the changes (default: check and print the plan)")
+    parser.add_argument("mode", choices=("status", "pin", "recover", "refresh"))
+    parser.add_argument("--apply", action="store_true", help="pin/recover/refresh: make the changes (default: check and print the plan)")
     parser.add_argument("--evict-old-agent", action="store_true", help="recover: also evict the expired agent record and delete its alias entry")
     parser.add_argument("--json", action="store_true", help="print the report as JSON")
     return parser
@@ -1485,7 +1857,7 @@ def main(argv: list[str], layout: Layout) -> int:
         return 2 if exc.code not in (0, None) else 0
     if args.apply and args.mode == "status":
         parser.print_usage(sys.stderr)
-        print(f"{PUBLIC_SCRIPT}: --apply is only for pin and recover", file=sys.stderr)
+        print(f"{PUBLIC_SCRIPT}: --apply is only for pin, recover and refresh", file=sys.stderr)
         return 2
     if args.evict_old_agent and args.mode != "recover":
         parser.print_usage(sys.stderr)
@@ -1515,6 +1887,8 @@ def main(argv: list[str], layout: Layout) -> int:
                 code = 0 if rep.result == "ok" else 1
             elif args.mode == "pin":
                 mode_pin(runner, rep, args.apply)
+            elif args.mode == "refresh":
+                mode_refresh(runner, rep, args.apply)
             else:
                 mode_recover(runner, rep, args.apply, args.evict_old_agent)
         except Refusal as exc:
