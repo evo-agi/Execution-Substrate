@@ -408,7 +408,7 @@ var policyGovernanceContractText = []string{
 	"The installation ID is not seeded:",
 	"ES creates it at first install (section 8).",
 	"- **A lost unseal key** (`es-recover-vault`, extending the disposable-Vault reset helper): show the plan; reset and initialize Vault; pause while the owner stores the new key; unseal and re-seed; create EGS's new key, and after build step 11 AGS's new key; re-create each named workload's Vault role and policy from its declared settings, except those of cut-off or revoked names; list the vendor secrets to re-enter, by name only; run the checks; print the `es-owner` commands for the owner to run: a new EGS epoch, and after step 11 the pin of AGS's new key, with the list of artifacts to publish again.",
-	"- **A Vault or SPIRE restore** from a backup or the daily snapshot applies every workload cut-off and every revoked workload identity name again before readiness can report `submit-ready` (`.docs/system_overview/runtime_identity_handoff.md`, section 11.7).",
+	"- **A Vault or SPIRE restore** from a backup or the daily snapshot applies every workload cut-off and every revoked workload identity name again, with workload traffic to Vault blocked until it has, before readiness can report `submit-ready` (`.docs/system_overview/runtime_identity_handoff.md`, section 11.7).",
 	"- **A full re-setup** (`es-resetup`, from a freshly installed host): look for the old host's policy log first, when the old disk still exists; seed every secret; install the services and initialize Vault; run ES's first-install step, which makes a new installation ID; hand the owner the command that signs revision 1 under that ID, the anchor reinstall, and the list of artifacts to publish again.",
 	"- **What revision 1 carries over.** The rules of the last revision the owner signed, which the owner's workstation holds, with the new AGS and EGS keys pinned in place of the old ones.",
 	"Revocations and revoked caller and workload identity names, which narrow, may also come from the owner's log copy; lifts and clears, which widen, come only from revisions the owner signed.",
@@ -481,7 +481,7 @@ var policyGovernanceContractText = []string{
 	"| EGS epoch | A new epoch restarts EGS's numbering with an empty list; a revision under an old epoch is refused |",
 	"| EGS audit | ES refuses an EGS revision whose added audit records are missing or do not match their hashes |",
 	"| Switch | Only a signed standing revision changes the switch; no value in a host configuration file does |",
-	"| Recovery | A rehearsed lost unseal key after build step 11 ends with AGS signing under a new key the owner pinned. A re-setup's revision 1 pins the new keys. After a Vault restore, a cut-off name's role and policy are deleted again before readiness reports `submit-ready` |",
+	"| Recovery | A rehearsed lost unseal key after build step 11 ends with AGS signing under a new key the owner pinned. A re-setup's revision 1 pins the new keys. After a Vault restore, a cut-off name's role and policy are deleted again before any workload reaches Vault and before readiness reports `submit-ready` |",
 	"| Workstation | `es-owner` refuses to sign without Touch ID or the login password, refuses to run from a build whose hash differs from the one recorded at install, shows the decoded difference before it signs, and delivers the same bytes on a re-run |",
 
 	// 17. Delivery
@@ -507,7 +507,8 @@ var policyGovernanceContractText = []string{
 	"At step 10, two procedures that edit `es.json` today move to ES's revocation route.",
 	"When the identity tooling revokes a user, it revokes the caller name instead of removing the grant rules that name the user.",
 	"Step 1 of the workload cut-off (`.docs/system_overview/runtime_identity_handoff.md`, section 11.7) becomes a revocation of the workload identity name, and the name's list entry and grant rules leave the policy at the owner's next revision.",
-	"The record of cut-off names becomes those revocations, so checkpoints carry them and a re-setup restores them, and readiness compares SPIRE and Vault with the policy's names minus the revoked ones.",
+	"The record of cut-off names becomes those revocations, so checkpoints carry them and a re-setup restores them, and the owner's signed revisions take the place of the owner's copy of the record.",
+	"Readiness compares SPIRE and Vault with the policy's names minus the revoked ones.",
 	"Step 10 updates both procedures' text.",
 
 	// 18. What this contract does not change
