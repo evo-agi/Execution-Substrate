@@ -843,6 +843,14 @@ def say(text):
     print(f"execution-substrate: {text}", flush=True)
 
 
+def shown(path):
+    """path as this program reports it: the nomad account chose the names in
+    Nomad's folders, so one that is not plain printable ASCII (a newline,
+    say, which could forge a line of the report) is shown quoted, with
+    Python's escapes."""
+    return path if path.isascii() and path.isprintable() else ascii(path)
+
+
 def posix_acls(target, **kwargs):
     """The ACLs that target (a path or a descriptor) has. os has listxattr
     only on Linux; elsewhere (macOS, where the tests also run) nothing has
@@ -870,24 +878,24 @@ def take_back_folder(path, mode, uid, gid, refusals):
     except FileNotFoundError:
         return False
     if not stat.S_ISDIR(st.st_mode):
-        refusals.append(f"{path} is {kind(st)}, not a folder")
+        refusals.append(f"{shown(path)} is {kind(st)}, not a folder")
         return False
     fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
         opened = os.fstat(fd)
         if (opened.st_dev, opened.st_ino) != (st.st_dev, st.st_ino):
-            refusals.append(f"{path} changed while it was taken back")
+            refusals.append(f"{shown(path)} changed while it was taken back")
             return False
         if (opened.st_uid, opened.st_gid) != (uid, gid) or stat.S_IMODE(opened.st_mode) != mode:
             # The owner first: until then the former owner may change the
             # mode or set an ACL again.
             os.fchown(fd, uid, gid)
             os.fchmod(fd, mode)
-            say(f"took {path} back (it was uid {opened.st_uid}, gid {opened.st_gid}, "
+            say(f"took {shown(path)} back (it was uid {opened.st_uid}, gid {opened.st_gid}, "
                 f"{stat.S_IMODE(opened.st_mode):04o})")
         for name, acl in posix_acls(fd):
             os.removexattr(fd, name)
-            say(f"removed the {acl} that was left on {path}")
+            say(f"removed the {acl} that was left on {shown(path)}")
     finally:
         os.close(fd)
     return True
@@ -904,7 +912,7 @@ def take_back_files(folder, uid, gid, reads, refusals):
         if stat.S_ISDIR(st.st_mode):
             continue
         if not stat.S_ISREG(st.st_mode):
-            refusals.append(f"{path} is {kind(st)}, not a regular file")
+            refusals.append(f"{shown(path)} is {kind(st)}, not a regular file")
             continue
         mode = stat.S_IMODE(st.st_mode) & 0o755
         acl = bool(posix_acls(path, follow_symlinks=False))
@@ -914,7 +922,7 @@ def take_back_files(folder, uid, gid, reads, refusals):
         try:
             opened = os.fstat(source)
             if (opened.st_dev, opened.st_ino) != (st.st_dev, st.st_ino):
-                refusals.append(f"{path} changed while it was taken back")
+                refusals.append(f"{shown(path)} changed while it was taken back")
                 continue
             chunks = []
             while chunk := os.read(source, 65536):
@@ -941,7 +949,7 @@ def take_back_files(folder, uid, gid, reads, refusals):
         os.rename(tmp, path)
         renamed = True
         was = f"uid {st.st_uid}, gid {st.st_gid}, {stat.S_IMODE(st.st_mode):04o}" + (", with an ACL" if acl else "")
-        say(f"took {path} back (it was {was}); Nomad reads it as root, so check what it sets")
+        say(f"took {shown(path)} back (it was {was}); Nomad reads it as root, so check what it sets")
     if renamed:
         fd = os.open(folder, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:

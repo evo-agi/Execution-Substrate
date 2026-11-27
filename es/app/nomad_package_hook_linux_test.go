@@ -830,3 +830,60 @@ exec(compile(code, "<nomad_new_file_write>", "exec"))
 		t.Fatalf("nomad_new_file_write synced and renamed\n%s\nwant\n%s", output, want)
 	}
 }
+
+// Re-check 50 (Sonnet's O50-1 on #66, for the program): the nomad account
+// chose the names the program reports. A name with a newline would forge a
+// line of dpkg's output, one that is not UTF-8 would print raw bytes, and
+// one with a letter that only looks like ASCII (a Cyrillic a) could pass for
+// another file, so a name that is not plain printable ASCII is shown
+// quoted, with Python's escapes, in a take-back line and in a refusal.
+func TestNomadTakeBackProgramShowsANameThatIsNotPlainPrintableASCIIEscaped(t *testing.T) {
+	root := rootTempDir(t)
+	config := filepath.Join(root, "etc")
+	data := filepath.Join(root, "data")
+	if err := os.Mkdir(config, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(data, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	names := []string{"a\nexecution-substrate: took forged back.hcl", "bad\xff.json", "nomаd.hcl"}
+	var paths []string
+	for _, name := range names {
+		path := filepath.Join(config, name)
+		if err := os.WriteFile(path, []byte("# kept\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(path, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		paths = append(paths, path)
+	}
+	if err := os.Symlink("/etc/hostname", filepath.Join(config, "link\nx.hcl")); err != nil {
+		t.Fatal(err)
+	}
+	runTestSudo(t, append([]string{"chown", "65534:65534", "--"}, paths...)...)
+	runTestSudo(t, "chown", "0:0", "--", config, data)
+	program := nomadTakeBackProgram(t)
+
+	stdout, stderr, err := runTakeBack(t, program, true, config, data)
+	if err == nil {
+		t.Fatalf("the program took a link back: %s %s", stdout, stderr)
+	}
+	was := " back (it was uid 65534, gid 65534, 0644); Nomad reads it as root, so check what it sets"
+	want := []string{
+		"execution-substrate: took '" + config + "/a\\nexecution-substrate: took forged back.hcl'" + was,
+		"execution-substrate: took '" + config + "/bad\\udcff.json'" + was,
+		"execution-substrate: took '" + config + "/nom\\u0430d.hcl'" + was,
+	}
+	if got := takeBackReports(stdout); strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("the program reported\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	refusal := "execution-substrate: '" + config + "/link\\nx.hcl' is a link, not a regular file, and Nomad's unit reads it as root"
+	if !strings.Contains(stderr, refusal) {
+		t.Fatalf("want %q in: %s", refusal, stderr)
+	}
+	for _, path := range paths {
+		requireTaken(t, path, "# kept\n", 0o644, 0)
+	}
+}
