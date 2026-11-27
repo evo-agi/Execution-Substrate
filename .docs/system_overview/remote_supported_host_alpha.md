@@ -7801,7 +7801,8 @@ through a folder its group can write, and as a folder holding
 `__main__.py` (Python runs such a folder) in the helper's place; each is
 refused, or the clone's own helper runs; and, as root, code of another account, an ordinary user's
 clone included, is refused by the wrapper before it runs, and a folder
-above `scripts/` of another account by the helper started on its own.
+above `scripts/` of another account by the helper started on its own (as a
+normal user too, with the helper judging for another owner).
 One test makes the keys with the machine's own `/usr/bin/openssl`.
 `ags/app/signing_key_rotation_e2e_test.go` runs the real script against
 real ARS, EGS, AGS and ES that load the files it writes: an artifact

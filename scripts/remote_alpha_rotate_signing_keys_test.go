@@ -1887,6 +1887,23 @@ func TestSigningKeyRotationRefusesACheckoutOthersCanChange(t *testing.T) {
 			})
 		}
 	}
+	// The folders above scripts must belong to root or the owner as well
+	// (red-team RT10-9, mutant N41). Judged for another owner, the clone's
+	// own top folder, which is above scripts, is named. Root's folders always
+	// pass, so as root the wrapper test's helper case covers this instead.
+	if os.Getuid() != 0 {
+		t.Run("a folder above scripts of another account", func(t *testing.T) {
+			h := newRotationHost(t)
+			root, helper := clone(t)
+			h.helper = helper
+			h.env = []string{fmt.Sprintf("SIGNING_KEY_ROTATION_TEST_CHECKOUT_OWNER=%d", os.Getuid()+1)}
+			stdout, stderr, code := h.run("check")
+			want := fmt.Sprintf("%s belongs to uid %d", root, os.Getuid())
+			if code != 1 || stdout != "" || !strings.Contains(stderr, want) {
+				t.Fatalf("check judged for another owner: exit %d, want %q\nstdout %s\nstderr %s", code, want, stdout, stderr)
+			}
+		})
+	}
 	h := newRotationHost(t)
 	_, helper := clone(t)
 	h.helper = helper
