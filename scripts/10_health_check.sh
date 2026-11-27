@@ -69,6 +69,13 @@ else
   echo "prepare-ready: skipped (VERIFY_RUNTIME_CONFIG=0; workload-zone Vault runtime-config verification was not requested)"
 fi
 
+print_check_section "workload grants"
+if [[ -n "${ES_CONFIG:-}" ]]; then
+  workload_egress_line "${ES_CONFIG}"
+else
+  echo "workload_egress_unrestricted: skipped (ES_CONFIG is not set)"
+fi
+
 print_check_section "submit readiness"
 if [[ "${PROFILE}" == "full" ]]; then
   check_es_submit_config_once "${ES_CONFIG}"

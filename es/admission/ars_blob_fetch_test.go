@@ -571,7 +571,7 @@ func TestSubmitStagesOnlyThePayloadBytesThatHashToTheSignedDigest(t *testing.T) 
 			request := fixture.prepareRequest()
 			request.Mode = ExecutionModeAsync
 
-			result, publicErr := service.Submit(context.Background(), request)
+			result, publicErr := service.Submit(testCallerContext(), request)
 			payloadPath := "/v1/blobs/" + fixture.discovery.Payload.Digest + ":bytes"
 			if handler.log.count(payloadPath) != 1 {
 				t.Fatalf("expected exactly one primary payload read, got %d", handler.log.count(payloadPath))
@@ -615,10 +615,10 @@ func TestAdmissionPolicyInspectsOnlyPayloadBytesThatHashToTheSignedDigest(t *tes
 				var publicErr *Error
 				var submitted bool
 				if mode == ExecutionModeAsync {
-					result, err := service.Submit(context.Background(), request)
+					result, err := service.Submit(testCallerContext(), request)
 					publicErr, submitted = err, result.Submitted
 				} else {
-					_, publicErr = service.Prepare(context.Background(), request)
+					_, publicErr = service.Prepare(testCallerContext(), request)
 				}
 				payloadPath := "/v1/blobs/" + fixture.discovery.Payload.Digest + ":bytes"
 				if handler.log.count(payloadPath) != 1 {
@@ -673,7 +673,7 @@ func TestSubmitRefusesMountBytesAndEvidenceThatDoNotHashToTheirDigests(t *testin
 				ReadOnly:   true,
 			}}
 
-			result, publicErr := service.Submit(context.Background(), request)
+			result, publicErr := service.Submit(testCallerContext(), request)
 			if test.wantCode == "" {
 				if publicErr != nil || !result.Submitted || nomad.count() != 1 {
 					t.Fatalf("signed mount was not submitted: result=%+v err=%+v nomad=%d", result, publicErr, nomad.count())
@@ -738,7 +738,7 @@ func TestSubmitRefusesAMountDiscoveryRecordForAnotherArtifact(t *testing.T) {
 					ReadOnly:   true,
 				}}
 
-				result, publicErr := service.Submit(context.Background(), request)
+				result, publicErr := service.Submit(testCallerContext(), request)
 				mu.Lock()
 				gotAsked := asked
 				mu.Unlock()
@@ -805,13 +805,13 @@ func TestPrepareRefusesEvidenceAndVaultBlobsThatDoNotHashToTheirDigests(t *testi
 
 				var publicErr *Error
 				if mode == ExecutionModeAsync {
-					result, err := service.Submit(context.Background(), request)
+					result, err := service.Submit(testCallerContext(), request)
 					if result.Submitted || result.RunID != "" {
 						t.Fatalf("refused dependency blob produced a run receipt: %+v", result)
 					}
 					publicErr = err
 				} else {
-					_, publicErr = service.Prepare(context.Background(), request)
+					_, publicErr = service.Prepare(testCallerContext(), request)
 				}
 				assertAdmissionError(t, publicErr, http.StatusServiceUnavailable, test.wantCode)
 				if publicErr.Message != test.wantMessage {

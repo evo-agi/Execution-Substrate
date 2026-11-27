@@ -1,7 +1,6 @@
 package admission
 
 import (
-	"context"
 	"net/http"
 	"strings"
 	"testing"
@@ -36,7 +35,7 @@ func TestWorkstreamBAdmissionHotPathUsesDiscoveryAndEvidenceNotSupportTupleGramm
 		t.Fatalf("prepare must not call nomad, got %s %q", r.Method, r.URL.Path)
 	}))
 
-	result, err := service.Prepare(context.Background(), request)
+	result, err := service.Prepare(testCallerContext(), request)
 	if err != nil {
 		t.Fatalf("prepare: %+v", err)
 	}

@@ -70,7 +70,7 @@ Workstream A decision explicitly classifies it that way.
   `payload_digest` identifies payload bytes or payload content identity, while
   `artifact_digest` identifies artifact/package identity as currently derived
   and documented.
-- `claims.package.publication` remains AGS-owned publish-time meaning carried inside the signed record; ES must not treat those publication claims as ES public admission grammar. From WI-2, workload grants (`.docs/execution_lifecycle/contracts.md`, section 5B) read one of them, `claims.package.publication.invoker.principal`, as an exact-match fact against ES configuration; that read adds nothing to ES request or response grammar, and no other publication claim reaches ES admission.
+- `claims.package.publication` remains AGS-owned publish-time meaning carried inside the signed record; ES must not treat those publication claims as ES public admission grammar. Workload grants (`.docs/execution_lifecycle/contracts.md`, section 5B) read one of them, `claims.package.publication.invoker.principal`, as an exact-match fact against ES configuration; that read adds nothing to ES request or response grammar, and no other publication claim reaches ES admission.
 - `claims.admission.authorization` is intentionally limited to `derivation_spec_digest` and `output_id`.
 - `claims.admission.execution` is intentionally limited to runtime env allowlist, declared mount targets, required capabilities, `target_platform`, and `network_access`. The env allowlist and the declared mount targets are the only source of what a caller may set or mount in a run of the artifact (`.docs/execution_lifecycle/contracts.md`, section 5).
 
@@ -132,6 +132,14 @@ route, stays with each service and is described in that service's section.
 - ARS, AGS, EGS, CGS, and ES authenticate the caller of every route that
   checks a caller with the one shared package `internal/callerauth`. No
   service keeps its own copy of these rules.
+- ES reads the caller from the TLS connection its server accepted: its
+  server accepts each connection through `internal/callerauth`, which does
+  the TLS handshake, hands the connection's TLS state to no other code and
+  keeps the connection with its requests (the `http.Server` ConnContext
+  hook); its API reads the caller from that connection, never from the
+  request, which carries no TLS state. ARS, AGS, EGS, and CGS read it from
+  the TLS state Go's TLS server records on the request. The rules below are
+  the same on both paths.
 
 ### Public surface
 
@@ -492,7 +500,7 @@ Current response shape:
 - AGS signs aggregate artifact evidence using `internal/contracts/evidence/v1`.
 - AGS derives publication caller binding directly from the authenticated caller SPIFFE identity, records the caller path as `claims.package.publication.invoker.service`, and always emits `claims.package.publication.builder_service = "artifact-governance"` in aggregate evidence.
 - AGS now rejects non-docker `admission.workload.target_platform` values at publish time because the active shared runtime contract only admits empty or `docker` target platforms.
-- AGS publish requests currently carry execution access at `admission.access.network_access`; that runtime-facing input is emitted into `claims.admission.execution.access` rather than into shared authorization claims.
+- AGS publish requests currently carry execution access at `admission.access.network_access`; that runtime-facing input is emitted into `claims.admission.execution.access` rather than into shared authorization claims. It is the publisher's request, signed as the publisher declared it: AGS checks nothing about networks, and a signed `network_access=true` gives no network by itself. ES gives a network only through its own workload grants, which name both the publisher and the ES caller (`.docs/execution_lifecycle/contracts.md`, section 5B).
 - AGS publish requests carry the runtime interface at `admission.runtime`: `environment_variables`, `required_capabilities` and the optional `mount_targets`. AGS signs them as given into `claims.admission.execution.runtime` and does not judge them; ES decides what it admits from them. AGS omits `mount_targets` from the evidence and the manifest when the list is empty, so an artifact that declares none has the same evidence bytes as before the field existed.
 - Non-runtime workload metadata such as `artifact_class`, `workload_type`, `service_name`, `workload_identity_id`, and `description` no longer live inside the shared execution/runtime evidence claims.
 - `policy_decisions` are caller-supplied and are normalized structurally for signing, but AGS does not semantically evaluate them.
@@ -1037,14 +1045,16 @@ Current successful response shapes:
 - B2's finite assurance is source-bounded and reviewable, not a general
   analyzer. Reliable keyed-submit runtime remains unwired, and native Linux
   runtime validation of the combined candidate remains pending.
-- Runtime network mode is derived directly from signed execution access claims:
+- Runtime network mode is derived from signed execution access claims of
+  admitted runs:
   - `network_access=false -> network_mode=none`
   - `network_access=true -> network_mode=bridge`
-  Workstream F slice F1 changes this mapping
-  (`.docs/execution_lifecycle/contracts.md`, section 5B). From WI-2, a run
-  that requests the network also needs an owner grant in ES configuration and
-  is otherwise refused with `network_access_not_granted`. From WI-4, a granted
-  run joins its egress lane's network instead of `bridge`.
+  A run that requests the network is admitted only with an owner grant in ES
+  configuration that names its publisher and its ES caller and grants an
+  egress lane, and is otherwise refused with
+  `network_access_not_granted` (`.docs/execution_lifecycle/contracts.md`,
+  section 5B). The only lane, `unrestricted`, is this `bridge` mapping. From
+  WI-4, a granted run joins its egress lane's network instead of `bridge`.
 - Caller runtime mounts are currently limited to governed artifact-backed mounts that are:
   - read-only
   - absolute

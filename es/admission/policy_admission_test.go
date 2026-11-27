@@ -1,7 +1,6 @@
 package admission
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"testing"
@@ -39,7 +38,7 @@ func TestAdmissionPolicyPrepareRejectsSelectedStaticScriptPayloadSafely(t *testi
 		t.Fatalf("prepare policy denial must not call nomad, got %s %q", r.Method, r.URL.Path)
 	}))
 
-	result, err := service.Prepare(context.Background(), request)
+	result, err := service.Prepare(testCallerContext(), request)
 	assertAdmissionError(t, err, http.StatusForbidden, codeDestructiveShellCommandDenied)
 	if result.Success {
 		t.Fatalf("expected denied prepare result to remain unsuccessful")
@@ -97,7 +96,7 @@ func TestAdmissionPolicySubmitBackstopRejectsBeforeStagingAndNomad(t *testing.T)
 		t.Fatalf("submit policy denial must not call nomad, got %s %q", r.Method, r.URL.Path)
 	}))
 
-	result, err := service.Submit(context.Background(), request)
+	result, err := service.Submit(testCallerContext(), request)
 	assertAdmissionError(t, err, http.StatusForbidden, codeDestructiveShellCommandDenied)
 	if result.RunID != "" || result.Submitted {
 		t.Fatalf("expected denied submit to create no run receipt")
@@ -148,7 +147,7 @@ func TestConfiguredStaticScriptLiteralDenyPrepareRejectsConfiguredMarkerSafely(t
 		t.Fatalf("configured literal prepare denial must not call nomad, got %s %q", r.Method, r.URL.Path)
 	}))
 
-	result, err := service.Prepare(context.Background(), request)
+	result, err := service.Prepare(testCallerContext(), request)
 	assertAdmissionError(t, err, http.StatusForbidden, codeConfiguredStaticScriptDenied)
 	if result.Success {
 		t.Fatalf("prepare must not report success on configured literal denial")
@@ -204,7 +203,7 @@ func TestConfiguredStaticScriptLiteralDenySubmitBackstopRejectsBeforeStagingAndN
 		t.Fatalf("configured literal submit denial must not call nomad, got %s %q", r.Method, r.URL.Path)
 	}))
 
-	result, err := service.Submit(context.Background(), request)
+	result, err := service.Submit(testCallerContext(), request)
 	assertAdmissionError(t, err, http.StatusForbidden, codeConfiguredStaticScriptDenied)
 	if result.RunID != "" || result.Submitted {
 		t.Fatalf("submit denial must not create run ID or submitted receipt")
@@ -255,7 +254,7 @@ func TestConfiguredStaticScriptLiteralDenyDisabledModeAllowsMatchingPayload(t *t
 		t.Fatalf("prepare must not call nomad, got %s %q", r.Method, r.URL.Path)
 	}))
 
-	result, err := service.Prepare(context.Background(), request)
+	result, err := service.Prepare(testCallerContext(), request)
 	if err != nil {
 		t.Fatalf("expected disabled configured literal policy to allow prepare, got %+v", err)
 	}
@@ -306,7 +305,7 @@ func TestAdmissionPolicyAllowsBenignControlPlaneNormalShellCompatibilityPath(t *
 		t.Fatalf("prepare must not call nomad, got %s %q", r.Method, r.URL.Path)
 	}))
 
-	result, err := service.Prepare(context.Background(), request)
+	result, err := service.Prepare(testCallerContext(), request)
 	if err != nil {
 		t.Fatalf("expected benign control-plane normal-shell compatibility prepare to succeed, got %+v", err)
 	}
@@ -350,7 +349,7 @@ func TestAdmissionPolicyPreservesUnsupportedRuntimeProfileResult(t *testing.T) {
 		t.Fatalf("unsupported runtime-profile prepare must not call nomad, got %s %q", r.Method, r.URL.Path)
 	}))
 
-	_, err := service.Prepare(context.Background(), request)
+	_, err := service.Prepare(testCallerContext(), request)
 	assertAdmissionError(t, err, http.StatusBadRequest, codeUnsupportedRuntimeProfile)
 	assertDirectoryEmpty(t, stagingRoot)
 	assertDirectoryEmpty(t, resultsRoot)

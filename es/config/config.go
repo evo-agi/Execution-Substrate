@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
@@ -78,6 +79,7 @@ type DependencyConfig struct {
 
 type AdmissionPolicyConfig struct {
 	ConfiguredStaticScriptLiteralDeny *ConfiguredStaticScriptLiteralDenyPolicyConfig `json:"configured_static_script_literal_deny,omitempty"`
+	WorkloadGrants                    *WorkloadGrantsConfig                          `json:"workload_grants,omitempty"`
 }
 
 type ConfiguredStaticScriptLiteralDenyPolicyMode string
@@ -203,14 +205,13 @@ func Load(path string) (Config, error) {
 		return Config{}, fmt.Errorf("config path is required")
 	}
 
-	file, err := os.Open(path)
+	document, err := os.ReadFile(path)
 	if err != nil {
 		return Config{}, fmt.Errorf("open config: %w", err)
 	}
-	defer file.Close()
 
 	var cfg Config
-	decoder := json.NewDecoder(file)
+	decoder := json.NewDecoder(bytes.NewReader(document))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&cfg); err != nil {
 		return Config{}, fmt.Errorf("decode config: %w", err)
@@ -218,6 +219,9 @@ func Load(path string) (Config, error) {
 	var trailing json.RawMessage
 	if err := decoder.Decode(&trailing); err != io.EOF {
 		return Config{}, fmt.Errorf("decode config: trailing data after first JSON document")
+	}
+	if err := refuseAmbiguousKeys(document, cfg); err != nil {
+		return Config{}, fmt.Errorf("decode config: %w", err)
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -288,6 +292,11 @@ func (c Config) Validate() error {
 	if err := c.Verification.WorkloadIdentityBinding.Validate("verification.workload_identity_binding"); err != nil {
 		return err
 	}
+	if c.AdmissionPolicy != nil && c.AdmissionPolicy.WorkloadGrants != nil {
+		if err := c.AdmissionPolicy.WorkloadGrants.validateAgainstConfig("admission_policy.workload_grants", c.Verification.Provenance.KeyID, c.Authorization.AllowedSPIFFEPathPrefixes); err != nil {
+			return err
+		}
+	}
 
 	if err := c.WorkloadVaultAuth.Validate(); err != nil {
 		return err
@@ -347,6 +356,11 @@ func (c DependencyConfig) Validate(field string) error {
 func (c AdmissionPolicyConfig) Validate() error {
 	if c.ConfiguredStaticScriptLiteralDeny != nil {
 		if err := c.ConfiguredStaticScriptLiteralDeny.Validate("admission_policy.configured_static_script_literal_deny"); err != nil {
+			return err
+		}
+	}
+	if c.WorkloadGrants != nil {
+		if err := c.WorkloadGrants.Validate("admission_policy.workload_grants"); err != nil {
 			return err
 		}
 	}

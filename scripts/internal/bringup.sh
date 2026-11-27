@@ -549,6 +549,68 @@ if normal_shell.get("enabled") is True:
 PY
 }
 
+# workload_egress_line reports the temporary compatibility edge of the
+# workload grants contract (.docs/execution_lifecycle/contracts.md, section
+# 5B): while any grant rule in ES configuration gives the egress lane
+# "unrestricted", granted runs have no egress filter of their own. Egress
+# lanes (Workstream F slice F1, WI-4) remove that lane. ES startup validates
+# the grants; this only reports them. It reads the keys it needs exactly:
+# like ES (es/config/exact_keys.go), it refuses a file with a key repeated in
+# any object, or with a key spelled in another letter case along the path it
+# reads (admission_policy, workload_grants, rules, egress_lane). ES also
+# refuses a key in another letter case anywhere else in the file; for such a
+# file this line still prints its answer. So for every file ES starts with,
+# the line reports the lanes ES reads.
+workload_egress_line() {
+  local config_path=$1
+  python3 -I - "${config_path}" <<'PY'
+import json
+import sys
+
+REFUSED = "; ES refuses such a file"
+
+
+def exact_pairs(pairs):
+    seen = set()
+    for key, _ in pairs:
+        if key in seen:
+            raise SystemExit(f"es config: the key {key!r} appears more than once in one object{REFUSED}")
+        seen.add(key)
+    return dict(pairs)
+
+
+def refuse_constant(name):
+    raise SystemExit(f"es config: {name} is not JSON{REFUSED}")
+
+
+def member(value, key, where):
+    if not isinstance(value, dict):
+        return None
+    for other in value:
+        if other != key and other.casefold() == key.casefold():
+            raise SystemExit(f"es config: {where}{other!r} must be spelled exactly {key!r}{REFUSED}")
+    return value.get(key)
+
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    cfg = json.load(handle, object_pairs_hook=exact_pairs, parse_constant=refuse_constant)
+policy = member(cfg, "admission_policy", "")
+grants = member(policy, "workload_grants", "admission_policy.")
+rules = member(grants, "rules", "admission_policy.workload_grants.")
+if rules is not None and not isinstance(rules, list):
+    raise SystemExit("es config: admission_policy.workload_grants.rules must be a list")
+unrestricted = [
+    rule for index, rule in enumerate(rules or [])
+    if member(rule, "egress_lane", f"admission_policy.workload_grants.rules[{index}].") == "unrestricted"
+]
+if unrestricted:
+    print(f"workload_egress_unrestricted=true ({len(unrestricted)} workload grant rule(s) give the egress lane "
+          "unrestricted: granted runs have no egress filter of their own until egress lanes land)")
+else:
+    print("workload_egress_unrestricted=false (no workload grant rule gives the egress lane unrestricted)")
+PY
+}
+
 check_runtime_profile_images_once() {
   local config_path=$1
   local images

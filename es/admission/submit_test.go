@@ -119,7 +119,7 @@ func TestTrancheB2SubmitPublicNomadFailureIsFixedAndProviderBodyFree(t *testing.
 		log.SetPrefix(previousPrefix)
 	})
 
-	_, publicErr := service.Submit(context.Background(), fixture.prepareRequest())
+	_, publicErr := service.Submit(testCallerContext(), fixture.prepareRequest())
 	if publicErr == nil || publicErr.Status != http.StatusServiceUnavailable || publicErr.Code != codeSubmissionFailed || publicErr.Message != "execution submission failed" {
 		t.Fatalf("unexpected public Nomad failure: %+v", publicErr)
 	}
@@ -166,7 +166,7 @@ func TestSubmitRejectsUnexpectedStagingChildBeforeNomadAndRetainsTree(t *testing
 	}
 	defer func() { beforeStagingHandoffValidationForTest = nil }()
 
-	result, publicErr := service.Submit(context.Background(), fixture.prepareRequest())
+	result, publicErr := service.Submit(testCallerContext(), fixture.prepareRequest())
 	if publicErr == nil || publicErr.Status != http.StatusInternalServerError || publicErr.Code != codeSubmissionFailed || publicErr.Message != "stage artifact payload failed" {
 		t.Fatalf("unexpected public custody error: %+v", publicErr)
 	}
@@ -218,7 +218,7 @@ func TestSubmitRejectsSpecialBitMutationBeforeNomadAndRetainsTree(t *testing.T) 
 	}
 	defer func() { beforeStagingHandoffValidationForTest = nil }()
 
-	result, publicErr := service.Submit(context.Background(), fixture.prepareRequest())
+	result, publicErr := service.Submit(testCallerContext(), fixture.prepareRequest())
 	if publicErr == nil || publicErr.Status != http.StatusInternalServerError || publicErr.Code != codeSubmissionFailed || publicErr.Message != "stage artifact payload failed" {
 		t.Fatalf("unexpected public custody error: %+v", publicErr)
 	}
@@ -274,7 +274,7 @@ func TestSubmitRejectsRegistrationWindowSpecialBitBeforeNomadAndRetainsTree(t *t
 		}
 	}
 	t.Cleanup(func() { beforeStagingChildRegistrationStatForTest = nil })
-	result, publicErr := service.Submit(context.Background(), fixture.prepareRequest())
+	result, publicErr := service.Submit(testCallerContext(), fixture.prepareRequest())
 	beforeStagingChildRegistrationStatForTest = nil
 	if hookCalls != 1 || !mutation.called || mutation.err != nil {
 		t.Fatalf("registration-window payload mutation calls=%d, called=%t, error=%v", hookCalls, mutation.called, mutation.err)
@@ -331,7 +331,7 @@ func TestResolvedPlanCustodyRepairWideTreeSubmitHandoff(t *testing.T) {
 		}
 	}
 	defer func() { beforeStagingHandoffValidationForTest = nil }()
-	result, publicErr := service.Submit(context.Background(), fixture.prepareRequest())
+	result, publicErr := service.Submit(testCallerContext(), fixture.prepareRequest())
 	if publicErr != nil || !result.Submitted || registrations != 1 {
 		t.Fatalf("wide tree handoff did not dispatch once: result=%+v err=%+v calls=%d", result, publicErr, registrations)
 	}
@@ -364,7 +364,7 @@ func TestResolvedPlanCustodyRepairMountNamesSubmitHandoff(t *testing.T) {
 		}
 		_, _ = w.Write([]byte(`{"EvalID":"eval-mount-names"}`))
 	}))
-	result, publicErr := service.Submit(context.Background(), request)
+	result, publicErr := service.Submit(testCallerContext(), request)
 	if publicErr != nil || !result.Submitted || registrations != 1 {
 		t.Fatalf("mount-name handoff did not dispatch once: result=%+v err=%+v calls=%d", result, publicErr, registrations)
 	}
@@ -392,7 +392,7 @@ func TestSubmitRejectsRootTopologyDriftBeforeStagingClaimAndNomad(t *testing.T) 
 		t.Fatalf("root-topology refusal reached Nomad: %s %s", request.Method, request.URL.Path)
 	}))
 
-	result, publicErr := service.Submit(context.Background(), fixture.prepareRequest())
+	result, publicErr := service.Submit(testCallerContext(), fixture.prepareRequest())
 	if publicErr == nil || publicErr.Code != codeSubmissionFailed || publicErr.Message != "claim execution staging root failed" {
 		t.Fatalf("unexpected topology-refusal error: %+v", publicErr)
 	}

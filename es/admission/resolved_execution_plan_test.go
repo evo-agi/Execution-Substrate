@@ -445,7 +445,7 @@ func TestResolvedExecutionPrepareAdmissionRetainsExactVaultReferenceAndAdmittedR
 		}
 	}))
 
-	prepared, admissionErr := service.prepareAdmission(context.Background(), request, admissionIntentPrepare)
+	prepared, admissionErr := service.prepareAdmission(testCallerContext(), request, admissionIntentPrepare)
 	if admissionErr != nil {
 		t.Fatal("prepare admission failed")
 	}
@@ -480,7 +480,7 @@ func TestSubmitStopsBeforeFreezeWithoutRunOrFilesystemEffects(t *testing.T) {
 		nomadCalls++
 	}))
 
-	result, submitErr := service.Submit(context.Background(), request)
+	result, submitErr := service.Submit(testCallerContext(), request)
 	if submitErr == nil || submitErr.Status != http.StatusInternalServerError || submitErr.Code != codeSubmissionFailed || submitErr.Message != "stage artifact payload failed" {
 		t.Fatal("runtime-support capture failure did not preserve the fixed submit failure")
 	}
@@ -524,7 +524,7 @@ func TestSubmitAmbiguousNomadFailurePreservesPrimaryErrorAndRetainsRoot(t *testi
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}))
 
-	result, submitErr := service.Submit(context.Background(), request)
+	result, submitErr := service.Submit(testCallerContext(), request)
 	if result.Submitted || result.RunID != "" {
 		t.Fatal("failed submit returned a successful receipt")
 	}
@@ -567,7 +567,7 @@ func TestResolvedSubmitLegacyEquivalenceOneNomadRegistrationAndAuthorityRecovery
 		_, _ = w.Write([]byte(`{"EvalID":"eval-123"}`))
 	}))
 
-	result, submitErr := service.Submit(context.Background(), request)
+	result, submitErr := service.Submit(testCallerContext(), request)
 	if submitErr != nil {
 		t.Fatal("resolved legacy submit failed")
 	}
@@ -848,7 +848,7 @@ func TestTrancheB1QualifiedHostCaptureNormalizesEquivalentConfiguration(t *testi
 	service.arsClient = newResolvedPlanDependencyClient(t, resolvedPlanArtifactHandler(t, fixture, policyPayload, nil))
 	service.nomadClient = newResolvedPlanNomadClient(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 
-	canonical, canonicalErr := service.resolveExecutionForSubmit(context.Background(), fixture.prepareRequest())
+	canonical, canonicalErr := service.resolveExecutionForSubmit(testCallerContext(), fixture.prepareRequest())
 	if canonicalErr != nil {
 		t.Fatalf("canonical host capture failed: %+v", canonicalErr)
 	}
@@ -856,7 +856,7 @@ func TestTrancheB1QualifiedHostCaptureNormalizesEquivalentConfiguration(t *testi
 	service.cfg.Execution.ResultsRootDir = "\t" + filepath.Join(resultsRoot, "unused", "..") + "\n"
 	service.cfg.Execution.SPIREWorkloadAPISocketPath = "  /run/spire/sockets/../sockets/agent.sock  "
 	service.cfg.Nomad.Datacenter = "  dc1\t"
-	normalized, normalizedErr := service.resolveExecutionForSubmit(context.Background(), fixture.prepareRequest())
+	normalized, normalizedErr := service.resolveExecutionForSubmit(testCallerContext(), fixture.prepareRequest())
 	if normalizedErr != nil {
 		t.Fatalf("whitespace/path-cleaning host capture failed: %+v", normalizedErr)
 	}
@@ -919,7 +919,7 @@ func TestTrancheB1PayloadDigestLineageIsDistinctPrivateAndPreEffect(t *testing.T
 		t.Fatal("plan resolution must not register a Nomad job")
 	}))
 
-	resolved, resolveErr := service.resolveExecutionForSubmit(context.Background(), request)
+	resolved, resolveErr := service.resolveExecutionForSubmit(testCallerContext(), request)
 	if resolveErr != nil {
 		t.Fatalf("resolve execution for submit failed: %+v", resolveErr)
 	}
@@ -986,7 +986,7 @@ func TestResolvedMountProvenanceCarriesSignedPayloadDigest(t *testing.T) {
 		t.Fatal("source resolver must not register a Nomad job")
 	}))
 
-	resolved, resolveErr := service.resolveExecutionForSubmit(context.Background(), request)
+	resolved, resolveErr := service.resolveExecutionForSubmit(testCallerContext(), request)
 	if resolveErr != nil {
 		t.Fatalf("resolve signed multiple mounts: %+v", resolveErr)
 	}
@@ -1124,7 +1124,7 @@ func TestTrancheB1AdmissionOwnedCopyIsolatesPostCopyCallerMutation(t *testing.T)
 		}
 		resolvedPlanArtifactHandler(t, fixture, policyPayload, nil).ServeHTTP(w, r)
 	}))
-	prepared, admissionErr := service.prepareAdmission(context.Background(), request, admissionIntentSubmit)
+	prepared, admissionErr := service.prepareAdmission(testCallerContext(), request, admissionIntentSubmit)
 	if admissionErr != nil {
 		t.Fatalf("submit-intent admission failed: %+v", admissionErr)
 	}
@@ -1142,7 +1142,7 @@ func TestTrancheB1AdmissionOwnedCopyIsolatesPostCopyCallerMutation(t *testing.T)
 	prepareService.arsClient = newResolvedPlanDependencyClient(t, resolvedPlanArtifactHandler(t, fixture, policyPayload, nil))
 	prepareRequest := fixture.prepareRequest()
 	prepareRequest.Mode = ExecutionModeSync
-	preparedForPrepare, prepareErr := prepareService.prepareAdmission(context.Background(), prepareRequest, admissionIntentPrepare)
+	preparedForPrepare, prepareErr := prepareService.prepareAdmission(testCallerContext(), prepareRequest, admissionIntentPrepare)
 	if prepareErr != nil || preparedForPrepare.admittedRequest.Mode != ExecutionModeSync {
 		t.Fatalf("Prepare intent changed its existing mode behavior: prepared=%v err=%+v", preparedForPrepare.admittedRequest.Mode, prepareErr)
 	}
@@ -1157,12 +1157,12 @@ func TestTrancheB1AdmissionOwnedCopyIsolatesPostCopyCallerMutation(t *testing.T)
 	}))
 	unsupported := fixture.prepareRequest()
 	unsupported.Mode = ExecutionModeSync
-	_, unsupportedErr := unsupportedService.Submit(context.Background(), unsupported)
+	_, unsupportedErr := unsupportedService.Submit(testCallerContext(), unsupported)
 	if unsupportedErr == nil || unsupportedErr.Status != http.StatusBadRequest || unsupportedErr.Code != codeUnsupportedExecutionMode || unsupportedErr.Message != "only async submission is supported in this execution slice" || dependencyCalls != 0 {
 		t.Fatalf("unsupported Submit mode changed error or dependency-I/O precedence: err=%+v calls=%d", unsupportedErr, dependencyCalls)
 	}
 	unsupportedService.nomadClient = nil
-	_, unavailableErr := unsupportedService.Submit(context.Background(), unsupported)
+	_, unavailableErr := unsupportedService.Submit(testCallerContext(), unsupported)
 	if unavailableErr == nil || unavailableErr.Code != codeExecutionRuntimeUnavailable {
 		t.Fatalf("runtime-unavailable precedence changed: %+v", unavailableErr)
 	}
@@ -1256,7 +1256,7 @@ func TestTrancheB2PreSubmissionOperationalCausesUseFixedPublicMessages(t *testin
 		service.nomadClient = newResolvedPlanNomadClient(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 			t.Fatal("host-context failure reached Nomad")
 		}))
-		_, publicErr := service.Submit(context.Background(), fixture.prepareRequest())
+		_, publicErr := service.Submit(testCallerContext(), fixture.prepareRequest())
 		trancheB2AssertFixedPublicError(t, publicErr, http.StatusInternalServerError, codeSubmissionFailed, "derive execution host context failed", marker)
 		assertMarkerAbsentFromLogs(t)
 	})
@@ -1300,7 +1300,7 @@ func TestTrancheB2PreSubmissionOperationalCausesUseFixedPublicMessages(t *testin
 		service.nomadClient = newResolvedPlanNomadClient(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 			t.Fatal("trust-capture failure reached Nomad")
 		}))
-		_, publicErr := service.Submit(context.Background(), fixture.prepareRequest())
+		_, publicErr := service.Submit(testCallerContext(), fixture.prepareRequest())
 		trancheB2AssertFixedPublicError(t, publicErr, http.StatusInternalServerError, codeSubmissionFailed, "stage workload vault trust material failed", marker)
 		assertMarkerAbsentFromLogs(t)
 	})
@@ -1313,7 +1313,7 @@ func TestTrancheB2PreSubmissionOperationalCausesUseFixedPublicMessages(t *testin
 		service.nomadClient = newResolvedPlanNomadClient(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 			t.Fatal("owner-derivation failure reached Nomad")
 		}))
-		_, publicErr := service.Submit(context.Background(), fixture.prepareRequest())
+		_, publicErr := service.Submit(testCallerContext(), fixture.prepareRequest())
 		trancheB2AssertFixedPublicError(t, publicErr, http.StatusInternalServerError, codeSubmissionFailed, "derive execution platform state owner failed", marker)
 		assertMarkerAbsentFromLogs(t)
 	})
@@ -1375,7 +1375,7 @@ func TestTrancheB1DefaultProfileLiteralNomadJobAndAuthorityHandoff(t *testing.T)
 		_, _ = w.Write([]byte(`{"EvalID":"eval-b1"}`))
 	}))
 
-	result, submitErr := service.Submit(context.Background(), request)
+	result, submitErr := service.Submit(testCallerContext(), request)
 	if submitErr != nil {
 		t.Fatalf("default-profile Submit failed: %+v", submitErr)
 	}
@@ -1473,7 +1473,7 @@ func TestTrancheB2ControlPlaneNormalShellLiteralNomadJobAndAuthorityHandoff(t *t
 		_, _ = w.Write([]byte(`{"EvalID":"eval-b2"}`))
 	}))
 
-	result, submitErr := service.Submit(context.Background(), request)
+	result, submitErr := service.Submit(testCallerContext(), request)
 	if submitErr != nil {
 		t.Fatalf("control-plane profile Submit failed: %+v", submitErr)
 	}
@@ -2659,7 +2659,7 @@ func TestSubmitUsesSingleCapturedPlacementSnapshot(t *testing.T) {
 		nomadCalls++
 		_, _ = w.Write([]byte(`{"EvalID":"eval-123"}`))
 	}))
-	result, submitErr := service.Submit(context.Background(), request)
+	result, submitErr := service.Submit(testCallerContext(), request)
 	if submitErr != nil || !result.Submitted || nomadCalls != 1 {
 		t.Fatalf("Submit did not use one captured root pair: result=%+v err=%+v calls=%d", result, submitErr, nomadCalls)
 	}
@@ -2668,7 +2668,7 @@ func TestSubmitUsesSingleCapturedPlacementSnapshot(t *testing.T) {
 	}
 
 	// Mutation after the resolver returns cannot rewrite its private placement.
-	resolved, resolveErr := service.resolveExecutionForSubmit(context.Background(), request)
+	resolved, resolveErr := service.resolveExecutionForSubmit(testCallerContext(), request)
 	if resolveErr != nil {
 		t.Fatalf("resolve for post-capture check: %+v", resolveErr)
 	}
@@ -2693,7 +2693,7 @@ func TestSubmitArtifactAndProfileErrorsPrecedePlacementValidation(t *testing.T) 
 		service.nomadClient = newResolvedPlanNomadClient(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 			t.Fatal("invalid artifact must not reach Nomad")
 		}))
-		_, submitErr := service.Submit(context.Background(), fixture.prepareRequest())
+		_, submitErr := service.Submit(testCallerContext(), fixture.prepareRequest())
 		if submitErr == nil || submitErr.Code != codeUnsupportedCapabilities || submitErr.Status != http.StatusBadRequest {
 			t.Fatalf("placement error displaced artifact gate: %+v", submitErr)
 		}
@@ -2710,7 +2710,7 @@ func TestSubmitArtifactAndProfileErrorsPrecedePlacementValidation(t *testing.T) 
 		}))
 		request := fixture.prepareRequest()
 		request.Invocation.Annotations = map[string]string{runtimeProfileAnnotationKey: "unsupported/v1"}
-		_, submitErr := service.Submit(context.Background(), request)
+		_, submitErr := service.Submit(testCallerContext(), request)
 		if submitErr == nil || submitErr.Code != codeUnsupportedRuntimeProfile || submitErr.Status != http.StatusBadRequest {
 			t.Fatalf("placement error displaced profile gate: %+v", submitErr)
 		}
@@ -2736,7 +2736,7 @@ func TestSubmitPreservesExplicitNonblankLegacySchemasWithoutReliableEnablement(t
 		request := fixture.prepareRequest()
 		request.SchemaVersion = schema
 		request.Invocation.SchemaVersion = "invocation-compat-v2"
-		result, submitErr := service.Submit(context.Background(), request)
+		result, submitErr := service.Submit(testCallerContext(), request)
 		if submitErr != nil || !result.Submitted || result.RunID == "" {
 			t.Fatalf("nonblank schema %q changed legacy Submit: result=%+v err=%+v", schema, result, submitErr)
 		}

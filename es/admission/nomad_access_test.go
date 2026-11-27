@@ -680,7 +680,7 @@ func TestSubmitRefusesBeforeRunAssignmentWhenNomadAccessControlFails(t *testing.
 			jobRequests := 0
 			service.nomadClient = newAccessControlScenarioClient(t, tc.scenario, &jobRequests)
 
-			result, publicErr := service.Submit(context.Background(), fixture.prepareRequest())
+			result, publicErr := service.Submit(testCallerContext(), fixture.prepareRequest())
 			if publicErr == nil || publicErr.Status != http.StatusServiceUnavailable ||
 				publicErr.Code != codeExecutionRuntimeUnavailable || publicErr.Message != tc.wantError {
 				t.Fatalf("unexpected access-control refusal: %+v", publicErr)

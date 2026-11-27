@@ -551,6 +551,7 @@ func startResolvedPlanCustodyHermeticStack(t *testing.T, handler http.Handler) *
 		Authorization: esconfig.AuthorizationConfig{
 			AllowedSPIFFEPathPrefixes: allowedExecutionCallerPrefixes,
 		},
+		AdmissionPolicy: todaysWorkloadGrants(allowedExecutionCallerPrefixes, fixture.agsKeyID),
 		Dependencies: esconfig.DependenciesConfig{
 			ArtifactRegistry: esconfig.DependencyConfig{
 				BaseURL:        "https://" + stack.ars.Addr(),

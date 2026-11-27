@@ -3,7 +3,6 @@ package admission
 import (
 	"archive/tar"
 	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -88,13 +87,13 @@ func TestA2PrepareAndSubmitRejectAmbiguousEntrypoint(t *testing.T) {
 				request := artifact.prepareRequest()
 				if operation == "submit" {
 					request.Mode = ExecutionModeAsync
-					result, err := service.Submit(context.Background(), request)
+					result, err := service.Submit(testCallerContext(), request)
 					a2AssertUnavailable(t, err)
 					if result.RunID != "" || result.Submitted {
 						t.Fatalf("ambiguous input got receipt %+v", result)
 					}
 				} else {
-					result, err := service.Prepare(context.Background(), request)
+					result, err := service.Prepare(testCallerContext(), request)
 					a2AssertUnavailable(t, err)
 					if result.Success {
 						t.Fatalf("ambiguous input prepared successfully: %+v", result)

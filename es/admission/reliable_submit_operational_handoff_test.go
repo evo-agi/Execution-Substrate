@@ -144,7 +144,9 @@ func makeOperationalFixture(t *testing.T, mode string, argv ...string) *operatio
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = custody.Close() })
-	peer, err := spiffeid.FromString("spiffe://synthetic.test/ns/admission")
+	// The synthetic replay fixture binds its claims to the same caller, so a
+	// synthetic winner occupies the operational loser's claim.
+	peer, err := spiffeid.FromString(testGrantCaller)
 	if err != nil {
 		t.Fatal(err)
 	}

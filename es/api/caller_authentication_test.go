@@ -7,6 +7,10 @@ import (
 	"execution-substrate/internal/callerauth/callerauthtest"
 )
 
+// ES reads its caller from the TLS connection its server accepted (callerauth's
+// AuthenticateConnection), so every route is checked over real connections:
+// the shared refusals, and a request whose TLS state names an allowed caller
+// that its connection did not present.
 func TestESRoutesApplyTheSharedCallerAuthenticationRule(t *testing.T) {
 	var producerContractCalls, prepareCalls, submitCalls, statusCalls, logsCalls, resultCalls, cancelCalls int
 	service := fakeLifecycleService{
@@ -38,7 +42,7 @@ func TestESRoutesApplyTheSharedCallerAuthenticationRule(t *testing.T) {
 			if allowed != "service/control-plane" {
 				route.Name += "_subpath"
 			}
-			callerauthtest.CheckRoute(t, server.Handler(), route, "bootstrap-ca", reached)
+			callerauthtest.CheckConnectionRoute(t, server.Handler(), route, "bootstrap-ca", reached)
 		}
 	}
 }
@@ -51,8 +55,8 @@ func TestESAllowlistPrefixThatFailsTheSharedRuleMatchesNothing(t *testing.T) {
 	var producerContractCalls int
 	service := fakeLifecycleService{producerContractCalls: &producerContractCalls}
 	server := NewServer(service, "bootstrap-ca", []string{"service", "/service/control-plane", "service/control-plane/"}, func() bool { return true })
-	state := callerauthtest.State(callerauthtest.Certificate(t, callerauthtest.RuntimeIssuer, callerauthtest.SPIFFEID("service/control-plane")))
-	response := callerauthtest.Serve(t, server.Handler(), http.MethodGet, "/v1/executions:contract", "", state)
+	credential := callerauthtest.IssueCredential(t, callerauthtest.RuntimeIssuer, callerauthtest.LeafProfile{}, callerauthtest.SPIFFEID("service/control-plane"))
+	response := callerauthtest.ServeConnection(t, server.Handler(), http.MethodGet, "/v1/executions:contract", "", credential)
 	if response.Code != http.StatusForbidden || response.Body.String() != "Caller not authorized for this operation" {
 		t.Fatalf("contract as service/control-plane: %d %q", response.Code, response.Body.String())
 	}

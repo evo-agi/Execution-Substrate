@@ -9,15 +9,27 @@
 // The package owns authentication only: who is calling. Which authenticated
 // callers may use which route (authorization) stays with each service.
 //
+// ES reads its caller from the TLS connection its server accepted, not from
+// the request: its server accepts connections through NewListener, which
+// does each connection's TLS handshake in this package and hands that
+// connection's TLS state to no other code, and sets ConnContext as its
+// ConnContext hook; its API calls AuthenticateConnection, which returns a
+// ConnectionCaller. Only this package can make a ConnectionCaller, and only
+// from a connection that NewListener accepted and ConnContext kept, so no
+// code elsewhere can build one from a SPIFFE ID, a string, a connection
+// state or a request, or change the certificates it is read from.
+//
 // The rules are the contract in .docs/system_overview/contracts.md, section
 // "3A. Caller Authentication". The five services use this package and keep
 // no copy of these rules.
 package callerauth
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -215,8 +227,140 @@ func NewAuthenticator(bootstrapIssuerCommonName string) Authenticator {
 //     identity" when the client certificate's issuer common name is the
 //     bootstrap issuer.
 //
-// Both bodies are plain text.
+// Both bodies are plain text. Authenticate reads r.TLS, the connection state
+// Go's TLS server records on the request.
 func (a Authenticator) Authenticate(w http.ResponseWriter, r *http.Request) (Caller, bool) {
+	return a.authenticateState(w, r.TLS)
+}
+
+// NewListener returns a listener that accepts connections from inner and
+// serves TLS on each with config, as tls.NewListener does, except that the
+// handshake and the connection's TLS state stay in this package: the
+// connection it returns is not a *tls.Conn and has no method that returns
+// its TLS state, its certificates or the connection beneath it. Go's HTTP
+// server therefore leaves r.TLS nil for its requests, and Hijack hands out
+// only this connection, so no code outside this package can read or change
+// the certificates its handshake verified. AuthenticateConnection reads the
+// caller from them.
+//
+// NewListener copies config, so later changes to config do not reach the
+// listener. It refuses a config that sets GetConfigForClient,
+// VerifyPeerCertificate or VerifyConnection, which see the verified chains
+// during the handshake and could change them, and one that offers an ALPN
+// protocol other than http/1.1, which Go's HTTP server would not speak on
+// this connection.
+func NewListener(inner net.Listener, config *tls.Config) (net.Listener, error) {
+	switch {
+	case inner == nil:
+		return nil, errors.New("callerauth: no listener")
+	case config == nil:
+		return nil, errors.New("callerauth: no TLS configuration")
+	case config.GetConfigForClient != nil || config.VerifyPeerCertificate != nil || config.VerifyConnection != nil:
+		return nil, errors.New("callerauth: the TLS configuration sets a callback that sees the verified chains")
+	}
+	for _, protocol := range config.NextProtos {
+		if protocol != "http/1.1" {
+			return nil, errors.New("callerauth: the TLS configuration offers the ALPN protocol " + protocol)
+		}
+	}
+	return &listener{inner: inner, config: config.Clone()}, nil
+}
+
+type listener struct {
+	inner  net.Listener
+	config *tls.Config
+}
+
+func (l *listener) Accept() (net.Conn, error) {
+	c, err := l.inner.Accept()
+	if err != nil {
+		return nil, err
+	}
+	return &serverConn{tls: tls.Server(c, l.config)}, nil
+}
+
+func (l *listener) Close() error   { return l.inner.Close() }
+func (l *listener) Addr() net.Addr { return l.inner.Addr() }
+
+// serverConn is a connection NewListener accepted. It keeps its *tls.Conn in
+// an unexported field and forwards only the net.Conn methods and CloseWrite,
+// so neither its TLS state nor the connection beneath it leaves this
+// package.
+type serverConn struct {
+	tls *tls.Conn
+}
+
+func (c *serverConn) Read(b []byte) (int, error)         { return c.tls.Read(b) }
+func (c *serverConn) Write(b []byte) (int, error)        { return c.tls.Write(b) }
+func (c *serverConn) Close() error                       { return c.tls.Close() }
+func (c *serverConn) CloseWrite() error                  { return c.tls.CloseWrite() }
+func (c *serverConn) LocalAddr() net.Addr                { return c.tls.LocalAddr() }
+func (c *serverConn) RemoteAddr() net.Addr               { return c.tls.RemoteAddr() }
+func (c *serverConn) SetDeadline(t time.Time) error      { return c.tls.SetDeadline(t) }
+func (c *serverConn) SetReadDeadline(t time.Time) error  { return c.tls.SetReadDeadline(t) }
+func (c *serverConn) SetWriteDeadline(t time.Time) error { return c.tls.SetWriteDeadline(t) }
+
+// connectionKey is the context key under which ConnContext keeps the
+// connection a server accepted. It is unexported, so no code outside this
+// package can put a connection, or anything else, there.
+type connectionKey struct{}
+
+// ConnContext is the ConnContext hook of an http.Server whose handler calls
+// AuthenticateConnection. The server calls it once for each connection it
+// accepts, before the TLS handshake, and every request on that connection
+// carries the context it returns. When c is a connection that NewListener
+// accepted, ConnContext keeps c in the context; otherwise, a *tls.Conn
+// included, it returns ctx unchanged, and requests on c have no caller
+// identity.
+func ConnContext(ctx context.Context, c net.Conn) context.Context {
+	if conn, ok := c.(*serverConn); ok && conn != nil {
+		return context.WithValue(ctx, connectionKey{}, conn)
+	}
+	return ctx
+}
+
+// ConnectionCaller is a caller that AuthenticateConnection read from the TLS
+// connection a server accepted. Its field is unexported and
+// AuthenticateConnection is the only code that makes a non-zero one, so the
+// Go compiler keeps code outside this package from making one from a SPIFFE
+// ID, a string, a Caller, a connection state or a request. The zero
+// ConnectionCaller is no caller: its ID is the zero SPIFFEID.
+type ConnectionCaller struct {
+	caller Caller
+}
+
+// ID returns the caller's SPIFFE ID.
+func (c ConnectionCaller) ID() SPIFFEID {
+	return c.caller.id
+}
+
+// AuthenticateConnection is Authenticate for a server that accepts
+// connections through NewListener and sets ConnContext: it reads the caller
+// from the TLS state of the connection that ConnContext kept in r's context,
+// at the time of the request, and never reads r.TLS. That state is set by
+// the connection's own handshake, and no code outside this package can reach
+// it, so the caller is the identity whose certificate chain the server
+// verified on that connection. A request whose context holds no such
+// connection, or whose connection has not completed its handshake, has no
+// caller identity. The refusals are Authenticate's.
+func (a Authenticator) AuthenticateConnection(w http.ResponseWriter, r *http.Request) (ConnectionCaller, bool) {
+	var state *tls.ConnectionState
+	if conn, ok := r.Context().Value(connectionKey{}).(*serverConn); ok && conn != nil {
+		if current := conn.tls.ConnectionState(); current.HandshakeComplete {
+			state = &current
+		}
+	}
+	caller, ok := a.authenticateState(w, state)
+	if !ok {
+		return ConnectionCaller{}, false
+	}
+	return ConnectionCaller{caller: caller}, true
+}
+
+// authenticateState applies the caller authentication rules to state, the
+// TLS connection state of a request, and writes the refusal when they refuse
+// it (see Authenticate).
+func (a Authenticator) authenticateState(w http.ResponseWriter, state *tls.ConnectionState) (Caller, bool) {
 	if a.bootstrapIssuerCommonName == "" {
 		httpx.WriteText(w, http.StatusUnauthorized, unauthenticatedBody)
 		return Caller{}, false
@@ -225,7 +369,7 @@ func (a Authenticator) Authenticate(w http.ResponseWriter, r *http.Request) (Cal
 	if a.now != nil {
 		now = a.now
 	}
-	caller, err := CallerFromConnectionState(r.TLS, now())
+	caller, err := CallerFromConnectionState(state, now())
 	if err != nil {
 		httpx.WriteText(w, http.StatusUnauthorized, unauthenticatedBody)
 		return Caller{}, false

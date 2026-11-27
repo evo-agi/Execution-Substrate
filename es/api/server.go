@@ -109,12 +109,12 @@ func (s *Server) handleProducerContract(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) handlePrepare(w http.ResponseWriter, r *http.Request) {
-	request, ok := s.decodeAuthorizedExecutionRequest(w, r)
+	ctx, request, ok := s.decodeAuthorizedExecutionRequest(w, r)
 	if !ok {
 		return
 	}
 
-	result, err := s.service.Prepare(r.Context(), request)
+	result, err := s.service.Prepare(ctx, request)
 	if err != nil {
 		httpx.WriteJSON(w, err.Status, admission.ErrorResponse{
 			Success: false,
@@ -128,12 +128,12 @@ func (s *Server) handlePrepare(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSubmit(w http.ResponseWriter, r *http.Request) {
-	request, ok := s.decodeAuthorizedExecutionRequest(w, r)
+	ctx, request, ok := s.decodeAuthorizedExecutionRequest(w, r)
 	if !ok {
 		return
 	}
 
-	result, err := s.service.Submit(r.Context(), request)
+	result, err := s.service.Submit(ctx, request)
 	if err != nil {
 		httpx.WriteJSON(w, err.Status, admission.ErrorResponse{
 			Success: false,
@@ -247,9 +247,14 @@ func (s *Server) handleLifecyclePost(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, result)
 }
 
-func (s *Server) decodeAuthorizedExecutionRequest(w http.ResponseWriter, r *http.Request) (admission.PrepareRequest, bool) {
-	if !s.authorizeExecutionCaller(w, r) {
-		return admission.PrepareRequest{}, false
+// decodeAuthorizedExecutionRequest authorizes the caller and decodes the
+// request. The returned context carries the caller the connection
+// authenticated, which ES admission matches workload grants on: the caller
+// identity comes from the mTLS connection only, never from the body.
+func (s *Server) decodeAuthorizedExecutionRequest(w http.ResponseWriter, r *http.Request) (context.Context, admission.PrepareRequest, bool) {
+	caller, ok := s.authorizedExecutionCaller(w, r)
+	if !ok {
+		return nil, admission.PrepareRequest{}, false
 	}
 
 	var request admission.PrepareRequest
@@ -259,21 +264,30 @@ func (s *Server) decodeAuthorizedExecutionRequest(w http.ResponseWriter, r *http
 			Error:   "invalid request body",
 			Code:    "invalid_request",
 		})
-		return admission.PrepareRequest{}, false
+		return nil, admission.PrepareRequest{}, false
 	}
-	return request, true
+	return admission.WithAuthenticatedCaller(r.Context(), caller), request, true
 }
 
 func (s *Server) authorizeExecutionCaller(w http.ResponseWriter, r *http.Request) bool {
-	caller, ok := s.callers.Authenticate(w, r)
+	_, ok := s.authorizedExecutionCaller(w, r)
+	return ok
+}
+
+// authorizedExecutionCaller authenticates the caller from the TLS connection
+// the request arrived on, which ES's server accepts through
+// callerauth.NewListener and hands callerauth through its ConnContext hook
+// (es/app), and checks it against the allowlist.
+func (s *Server) authorizedExecutionCaller(w http.ResponseWriter, r *http.Request) (callerauth.ConnectionCaller, bool) {
+	caller, ok := s.callers.AuthenticateConnection(w, r)
 	if !ok {
-		return false
+		return callerauth.ConnectionCaller{}, false
 	}
 	if !callerallowlist.MatchesAny(caller.ID(), s.allowedPathPrefixes) {
 		httpx.WriteText(w, http.StatusForbidden, "Caller not authorized for this operation")
-		return false
+		return callerauth.ConnectionCaller{}, false
 	}
-	return true
+	return caller, true
 }
 
 func parseLifecycleRequest(requestPath string) (runID string, action string, ok bool) {

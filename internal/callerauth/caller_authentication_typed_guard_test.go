@@ -92,6 +92,108 @@ var callerIdentityAPIPackages = func() []string {
 	return paths
 }()
 
+// callerConnectionServerPackages are the packages whose http.Server accepts
+// TLS connections through callerauth.NewListener and hands them to
+// callerauth.ConnContext: ES's server setup. Each refers to NewListener
+// exactly once and sets the hook exactly once, as the ConnContext field of an
+// http.Server composite literal, and no other code refers to either.
+var callerConnectionServerPackages = []string{callerIdentityModule + "/es/app"}
+
+// callerConnectionAPIPackages are the service API packages that read their
+// caller from the connection with Authenticator.AuthenticateConnection:
+// ES's. No other code refers to AuthenticateConnection, and these packages
+// do not refer to Authenticate, which reads r.TLS.
+var callerConnectionAPIPackages = []string{callerIdentityModule + "/es/api"}
+
+// callerauthFunctionName returns the name of the callerauth function, or of
+// the callerauth method as Type.Method, that object is, or "".
+func callerauthFunctionName(object types.Object) string {
+	function, ok := object.(*types.Func)
+	if !ok || function.Pkg() == nil || function.Pkg().Path() != callerauthImportPath {
+		return ""
+	}
+	receiver := function.Signature().Recv()
+	if receiver == nil {
+		return function.Name()
+	}
+	typ := types.Unalias(receiver.Type())
+	if pointer, ok := typ.(*types.Pointer); ok {
+		typ = types.Unalias(pointer.Elem())
+	}
+	if named, ok := typ.(*types.Named); ok {
+		return named.Obj().Name() + "." + function.Name()
+	}
+	return function.Name()
+}
+
+// isNamedType reports whether t, through any alias, is the named type
+// pkg.name.
+func isNamedType(t types.Type, pkg, name string) bool {
+	named, ok := types.Unalias(t).(*types.Named)
+	return ok && named.Obj().Pkg() != nil && named.Obj().Pkg().Path() == pkg && named.Obj().Name() == name
+}
+
+// connContextHooks returns the identifiers in files that are the value of
+// the ConnContext field in a composite literal of net/http.Server: the one
+// place ES's server setup may refer to callerauth.ConnContext.
+func connContextHooks(files []*ast.File, info *types.Info) map[*ast.Ident]bool {
+	hooks := map[*ast.Ident]bool{}
+	for _, file := range files {
+		ast.Inspect(file, func(node ast.Node) bool {
+			literal, ok := node.(*ast.CompositeLit)
+			if !ok || !isNamedType(info.TypeOf(literal), "net/http", "Server") {
+				return true
+			}
+			for _, element := range literal.Elts {
+				pair, ok := element.(*ast.KeyValueExpr)
+				if !ok {
+					continue
+				}
+				key, ok := pair.Key.(*ast.Ident)
+				if !ok {
+					continue
+				}
+				field, ok := info.Uses[key].(*types.Var)
+				if !ok || !field.IsField() || field.Pkg() == nil || field.Pkg().Path() != "net/http" || field.Name() != "ConnContext" || !isFieldOf(field, "Server") {
+					continue
+				}
+				switch value := ast.Unparen(pair.Value).(type) {
+				case *ast.Ident:
+					hooks[value] = true
+				case *ast.SelectorExpr:
+					hooks[value.Sel] = true
+				}
+			}
+			return true
+		})
+	}
+	return hooks
+}
+
+// calledFunctions returns the identifiers in files that name the function
+// a call expression calls, as f or as pkg.f: the one way ES's server setup
+// may refer to callerauth.NewListener, so the listener constructor cannot
+// leave it as a value.
+func calledFunctions(files []*ast.File) map[*ast.Ident]bool {
+	called := map[*ast.Ident]bool{}
+	for _, file := range files {
+		ast.Inspect(file, func(node ast.Node) bool {
+			call, ok := node.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			switch function := call.Fun.(type) {
+			case *ast.Ident:
+				called[function] = true
+			case *ast.SelectorExpr:
+				called[function.Sel] = true
+			}
+			return true
+		})
+	}
+	return called
+}
+
 type callerIdentityBuildTarget struct {
 	goos   string
 	goarch string
@@ -231,6 +333,9 @@ func callerIdentityTypedViolations(t *testing.T, target callerIdentityBuildTarge
 
 	var violations []callerIdentityViolation
 	var checked []string
+	connContextHooksSet := map[string]int{}
+	newListenerUses := map[string]int{}
+	authenticateConnectionUses := map[string]int{}
 	for _, item := range selected {
 		checked = append(checked, item.ImportPath)
 		if len(item.GoFiles) == 0 {
@@ -254,7 +359,7 @@ func callerIdentityTypedViolations(t *testing.T, target callerIdentityBuildTarge
 			}
 			files = append(files, file)
 		}
-		info := &types.Info{Selections: map[*ast.SelectorExpr]*types.Selection{}, Uses: map[*ast.Ident]types.Object{}}
+		info := &types.Info{Selections: map[*ast.SelectorExpr]*types.Selection{}, Uses: map[*ast.Ident]types.Object{}, Types: map[ast.Expr]types.TypeAndValue{}}
 		lookup := func(importPath string) (io.ReadCloser, error) {
 			dependency, ok := metadata[importPath]
 			if !ok || dependency.Export == "" {
@@ -285,10 +390,53 @@ func callerIdentityTypedViolations(t *testing.T, target callerIdentityBuildTarge
 				}
 			}
 		}
+		connectionServer := slices.Contains(callerConnectionServerPackages, item.ImportPath)
+		connectionAPI := slices.Contains(callerConnectionAPIPackages, item.ImportPath)
+		hooks, called := map[*ast.Ident]bool{}, map[*ast.Ident]bool{}
+		if connectionServer {
+			hooks, called = connContextHooks(files, info), calledFunctions(files)
+		}
 		for ident, object := range info.Uses {
 			function, ok := object.(*types.Func)
 			if ok && function.Pkg() != nil && slices.Contains(callerIdentityTokenReaders[function.Pkg().Path()], function.Name()) {
 				at(ident.Pos(), "reads a JWT-SVID with "+function.Pkg().Path()+"."+function.Name())
+			}
+			// Where a callerauth.Caller or a callerauth.ConnectionCaller can
+			// be produced, by what each identifier refers to: a dot import,
+			// an import alias, a function or method value and a method
+			// expression are the same reference as the plain call.
+			switch name := callerauthFunctionName(object); name {
+			case "CallerFromConnectionState":
+				at(ident.Pos(), "refers to callerauth.CallerFromConnectionState")
+			case "NewAuthenticator":
+				if !inAPI {
+					at(ident.Pos(), "refers to callerauth.NewAuthenticator outside the service API packages")
+				}
+			case "Authenticator.Authenticate":
+				if !inAPI || connectionAPI {
+					at(ident.Pos(), "refers to callerauth.Authenticator.Authenticate outside the service API packages that read r.TLS")
+				}
+			case "Authenticator.AuthenticateConnection":
+				if !connectionAPI {
+					at(ident.Pos(), "refers to callerauth.Authenticator.AuthenticateConnection outside ES's API")
+				} else {
+					authenticateConnectionUses[item.ImportPath]++
+				}
+			case "NewListener":
+				switch {
+				case !connectionServer:
+					at(ident.Pos(), "refers to callerauth.NewListener outside ES's server setup")
+				case !called[ident]:
+					at(ident.Pos(), "refers to callerauth.NewListener other than by calling it")
+				default:
+					newListenerUses[item.ImportPath]++
+				}
+			case "ConnContext":
+				if !hooks[ident] {
+					at(ident.Pos(), "refers to callerauth.ConnContext other than as the ConnContext hook of an http.Server literal in ES's server setup")
+				} else {
+					connContextHooksSet[item.ImportPath]++
+				}
 			}
 		}
 		for selector, selection := range info.Selections {
@@ -306,9 +454,30 @@ func callerIdentityTypedViolations(t *testing.T, target callerIdentityBuildTarge
 			switch {
 			case object.Pkg().Path() == "net/http" && object.Name() == "TLS" && isFieldOf(field, "Request"):
 				at(selector.Sel.Pos(), "reads net/http.Request.TLS")
+			case object.Pkg().Path() == "net/http" && object.Name() == "ConnContext" && isFieldOf(field, "Server"):
+				// The hook is set as a field of an http.Server literal
+				// (connContextHooks), which is no selection; reading the
+				// field would hand callerauth.ConnContext on as a value.
+				at(selector.Sel.Pos(), "reads or sets net/http.Server.ConnContext")
 			case object.Pkg().Path() == "crypto/x509" && slices.Contains(callerIdentityCertificateFields, object.Name()) && isFieldOf(field, "Certificate"):
 				at(selector.Sel.Pos(), "reads crypto/x509.Certificate."+object.Name())
 			}
+		}
+	}
+	// The wiring itself: ES's server accepts its connections through
+	// callerauth once and hands them to callerauth once, and ES's API reads
+	// its caller from them.
+	for _, importPath := range callerConnectionServerPackages {
+		if count := newListenerUses[importPath]; count != 1 {
+			violations = append(violations, callerIdentityViolation{file: strings.TrimPrefix(importPath, callerIdentityModule+"/"), rule: fmt.Sprintf("refers to callerauth.NewListener %d times, want once", count)})
+		}
+		if count := connContextHooksSet[importPath]; count != 1 {
+			violations = append(violations, callerIdentityViolation{file: strings.TrimPrefix(importPath, callerIdentityModule+"/"), rule: fmt.Sprintf("sets callerauth.ConnContext as an http.Server's ConnContext hook %d times, want once", count)})
+		}
+	}
+	for _, importPath := range callerConnectionAPIPackages {
+		if authenticateConnectionUses[importPath] == 0 {
+			violations = append(violations, callerIdentityViolation{file: strings.TrimPrefix(importPath, callerIdentityModule+"/"), rule: "does not read its caller with callerauth.Authenticator.AuthenticateConnection"})
 		}
 	}
 	sort.Slice(violations, func(i, j int) bool { return violations[i].String() < violations[j].String() })
@@ -320,6 +489,30 @@ func callerIdentityTypedViolations(t *testing.T, target callerIdentityBuildTarge
 // callerauth test support or a go-spiffe package off the closed list, or
 // reads a peer's JWT-SVID; and the five service API packages use nothing
 // from crypto/tls.
+//
+// It also checks, by what each identifier refers to, where a caller can be
+// produced. No production package outside internal/callerauth refers to
+// CallerFromConnectionState; only the five service API packages refer to
+// NewAuthenticator, and only the four that read r.TLS to Authenticate. Only
+// ES's API (callerConnectionAPIPackages) refers to AuthenticateConnection,
+// and it does. Only ES's server setup (callerConnectionServerPackages)
+// refers to NewListener, exactly once, by calling it, and to ConnContext,
+// exactly once, as the ConnContext field of an http.Server composite
+// literal; no code selects an http.Server's ConnContext field, so neither
+// leaves ES's server setup as a value. A call through an interface that an
+// Authenticator satisfies does not refer to callerauth's method: it needs an
+// Authenticator value, and AuthenticateConnection reads only a connection
+// that NewListener accepted and ConnContext kept, whatever request it is
+// given. With the compiler's part (a ConnectionCaller has no exported field,
+// and neither do NewListener's connections or the context key ConnContext
+// uses), a caller that ES's API hands on comes from a connection that ES's
+// server accepted, read from certificates no code outside callerauth can
+// reach. Reflection, unsafe and cgo
+// are outside what this sees; the import inventory in es/admission
+// (TestOperationalGuardImportInventoryIsExact) pins each production file
+// that imports one. Edits to callerauth itself, and to ES's server setup
+// (which CA its listener trusts, which listener it serves), are reviewed as
+// the trust root.
 func TestCallerIdentityIsReadOnlyByCallerauthByType(t *testing.T) {
 	for _, target := range callerIdentityBuildTargets {
 		t.Run(target.goos+"_"+target.goarch, func(t *testing.T) {
@@ -619,6 +812,345 @@ func TestCallerIdentityTypedGuardCoversTheScriptsBuildTargets(t *testing.T) {
 	for value, where := range foundArch {
 		if !coveredLinuxArch[value] {
 			t.Errorf("%s builds for linux/%s, which callerIdentityBuildTargets does not cover", where, value)
+		}
+	}
+}
+
+// The typed rules on where a caller can be produced catch each spelling of
+// the shapes that re-checks 33 of ES PR #73 used to forge a caller one layer
+// below the grant caller (a dot import, an import alias, a function or
+// method value, a method expression, a new package), moved onto the
+// connection path: a new reference to NewListener, ConnContext or
+// AuthenticateConnection outside the places the rules allow, a second
+// listener or ConnContext hook in ES's server setup, a hook set or read other
+// than as an http.Server literal's field, the listener constructor taken as
+// a value, and Authenticate in ES's API. The probe files exist only in a go build
+// overlay. The rules do not depend on the platform, so one target is enough
+// here; TestCallerIdentityIsReadOnlyByCallerauthByType runs them on all
+// three.
+func TestCallerConnectionTypedGuardCatchesForgedConnectionCallers(t *testing.T) {
+	probes := map[string]string{
+		"es/admission/zz_connprobe_dot.go": `package admission
+
+import (
+	"context"
+	"net"
+	"net/http"
+	"time"
+
+	. "execution-substrate/internal/callerauth"
+)
+
+func zzDotHook(ctx context.Context, c net.Conn) context.Context { return ConnContext(ctx, c) }
+
+func zzDotCaller(w http.ResponseWriter, r *http.Request) context.Context {
+	caller, _ := NewAuthenticator("zz-bootstrap").AuthenticateConnection(w, r)
+	return WithAuthenticatedCaller(r.Context(), caller)
+}
+
+func zzDotState() error { _, err := CallerFromConnectionState(nil, time.Time{}); return err }
+
+var zzDotListener = NewListener
+`,
+		"es/admission/zz_connprobe_alias.go": `package admission
+
+import (
+	"context"
+	"net/http"
+
+	ca "execution-substrate/internal/callerauth"
+	"execution-substrate/internal/zzconnprobe"
+)
+
+var zzHookValue = ca.ConnContext
+
+var zzMethodExpression = ca.Authenticator.AuthenticateConnection
+
+func zzMethodValue(ctx context.Context, w http.ResponseWriter, r *http.Request, a ca.Authenticator) context.Context {
+	read := a.AuthenticateConnection
+	caller, _ := read(w, r)
+	return WithAuthenticatedCaller(zzconnprobe.Hook(ctx, nil), caller)
+}
+
+var zzAliasListener = ca.NewListener
+`,
+		"internal/zzconnprobe/probe.go": `package zzconnprobe
+
+import (
+	"context"
+	"net"
+	"time"
+
+	"execution-substrate/internal/callerauth"
+)
+
+func Hook(ctx context.Context, c net.Conn) context.Context { return callerauth.ConnContext(ctx, c) }
+
+func State() error {
+	_, err := callerauth.CallerFromConnectionState(nil, time.Time{})
+	return err
+}
+
+var Listen = callerauth.NewListener
+`,
+		"es/api/zz_connprobe.go": `package api
+
+import (
+	"context"
+	"net/http"
+
+	"execution-substrate/internal/callerauth"
+)
+
+func zzAPIRebind(w http.ResponseWriter, r *http.Request, a callerauth.Authenticator) context.Context {
+	_, _ = a.Authenticate(w, r)
+	return callerauth.ConnContext(r.Context(), nil)
+}
+`,
+		"es/app/zz_connprobe.go": `package app
+
+import (
+	"context"
+	"net"
+	"net/http"
+
+	"execution-substrate/internal/callerauth"
+)
+
+type zzServer = http.Server
+
+var zzSecondServer = &zzServer{ConnContext: (callerauth.ConnContext)}
+
+type zzHooks struct {
+	ConnContext func(context.Context, net.Conn) context.Context
+}
+
+var zzOtherStruct = zzHooks{ConnContext: callerauth.ConnContext}
+
+func zzAssignHook(server *http.Server) { server.ConnContext = callerauth.ConnContext }
+
+var zzSecondListener = callerauth.NewListener
+
+func zzLeakHook(server *http.Server) func(context.Context, net.Conn) context.Context {
+	return server.ConnContext
+}
+
+func zzSecondListen(inner net.Listener) (net.Listener, error) { return callerauth.NewListener(inner, nil) }
+`,
+	}
+	dir := t.TempDir()
+	replace := map[string]string{}
+	for rel, content := range probes {
+		source := filepath.Join(dir, strings.ReplaceAll(rel, "/", "_"))
+		if err := os.WriteFile(source, []byte(content), 0o600); err != nil {
+			t.Fatalf("write probe %s: %v", rel, err)
+		}
+		replace[filepath.Join(testutil.Root, filepath.FromSlash(rel))] = source
+	}
+	overlay, err := json.Marshal(map[string]any{"Replace": replace})
+	if err != nil {
+		t.Fatalf("encode overlay: %v", err)
+	}
+	overlayPath := filepath.Join(dir, "overlay.json")
+	if err := os.WriteFile(overlayPath, overlay, 0o600); err != nil {
+		t.Fatalf("write overlay: %v", err)
+	}
+
+	const dot = "es/admission/zz_connprobe_dot.go"
+	const alias = "es/admission/zz_connprobe_alias.go"
+	const newPackage = "internal/zzconnprobe/probe.go"
+	const api = "es/api/zz_connprobe.go"
+	const app = "es/app/zz_connprobe.go"
+	const hook = "refers to callerauth.ConnContext other than as the ConnContext hook of an http.Server literal in ES's server setup"
+	const read = "refers to callerauth.Authenticator.AuthenticateConnection outside ES's API"
+	const listen = "refers to callerauth.NewListener outside ES's server setup"
+	want := []string{
+		dot + ":12: " + hook,
+		dot + ":15: refers to callerauth.NewAuthenticator outside the service API packages",
+		dot + ":15: " + read,
+		dot + ":19: refers to callerauth.CallerFromConnectionState",
+		alias + ":11: " + hook,
+		alias + ":13: " + read,
+		alias + ":16: " + read,
+		newPackage + ":11: " + hook,
+		newPackage + ":14: refers to callerauth.CallerFromConnectionState",
+		api + ":11: refers to callerauth.Authenticator.Authenticate outside the service API packages that read r.TLS",
+		api + ":12: " + hook,
+		app + ":19: " + hook,
+		app + ":21: " + hook,
+		"es/app:0: sets callerauth.ConnContext as an http.Server's ConnContext hook 2 times, want once",
+		dot + ":21: " + listen,
+		alias + ":21: " + listen,
+		newPackage + ":18: " + listen,
+		app + ":21: reads or sets net/http.Server.ConnContext",
+		app + ":23: refers to callerauth.NewListener other than by calling it",
+		app + ":26: reads or sets net/http.Server.ConnContext",
+		"es/app:0: refers to callerauth.NewListener 2 times, want once",
+	}
+	target := callerIdentityBuildTarget{"linux", "amd64"}
+	violations, _ := callerIdentityTypedViolations(t, target, overlayPath)
+	got := map[string]bool{}
+	for _, violation := range violations {
+		got[violation.String()] = true
+	}
+	for _, violation := range want {
+		if !got[violation] {
+			t.Errorf("the typed guard missed %s", violation)
+		}
+	}
+	for _, violation := range violations {
+		if !slices.Contains(want, violation.String()) {
+			t.Errorf("unexpected violation %s", violation)
+		}
+	}
+}
+
+// mentionsNamedType reports whether t is target, or is built from it as a
+// pointer, slice, array, map, channel, struct field, function result or
+// tuple element, without looking inside another named type.
+func mentionsNamedType(t types.Type, target *types.TypeName) bool {
+	switch t := types.Unalias(t).(type) {
+	case *types.Named:
+		return t.Obj() == target
+	case *types.Pointer:
+		return mentionsNamedType(t.Elem(), target)
+	case *types.Slice:
+		return mentionsNamedType(t.Elem(), target)
+	case *types.Array:
+		return mentionsNamedType(t.Elem(), target)
+	case *types.Map:
+		return mentionsNamedType(t.Key(), target) || mentionsNamedType(t.Elem(), target)
+	case *types.Chan:
+		return mentionsNamedType(t.Elem(), target)
+	case *types.Struct:
+		for i := 0; i < t.NumFields(); i++ {
+			if mentionsNamedType(t.Field(i).Type(), target) {
+				return true
+			}
+		}
+	case *types.Signature:
+		return mentionsNamedType(t.Results(), target)
+	case *types.Tuple:
+		for i := 0; i < t.Len(); i++ {
+			if mentionsNamedType(t.At(i).Type(), target) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// Only callerauth's two readers of a TLS connection state produce a
+// callerauth.Caller, and only AuthenticateConnection produces a
+// ConnectionCaller, among the exported functions, methods and variables of
+// callerauth; the test support adds ConnectionCaller, which no production
+// package can import (TestCallerIdentityIsReadOnlyByCallerauthByType). No
+// exported name is an alias of either type, and neither type has an
+// exported field. The check reads the packages' export data, so it sees
+// their exported surface as the compiler does.
+func TestOnlyAuthenticateConnectionMakesAConnectionCaller(t *testing.T) {
+	target := callerIdentityBuildTarget{runtime.GOOS, runtime.GOARCH}
+	command := exec.Command(filepath.Join(runtime.GOROOT(), "bin", "go"), "list", "-deps", "-export", "-json=ImportPath,Export", callerauthImportPath+"/...")
+	command.Dir = testutil.Root
+	command.Env = callerIdentityGoListEnvironment(target)
+	var stdout, stderr bytes.Buffer
+	command.Stdout = &stdout
+	command.Stderr = &stderr
+	if err := command.Run(); err != nil {
+		t.Fatalf("go list: %v: %s", err, stderr.String())
+	}
+	exports := map[string]string{}
+	decoder := json.NewDecoder(&stdout)
+	for {
+		var item struct{ ImportPath, Export string }
+		err := decoder.Decode(&item)
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		exports[item.ImportPath] = item.Export
+	}
+	imports := importer.ForCompiler(token.NewFileSet(), "gc", func(importPath string) (io.ReadCloser, error) {
+		export, ok := exports[importPath]
+		if !ok || export == "" {
+			return nil, fmt.Errorf("no export data for %s", importPath)
+		}
+		return os.Open(export)
+	})
+	callerauthPackage, err := imports.Import(callerauthImportPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	connectionCaller, _ := callerauthPackage.Scope().Lookup("ConnectionCaller").(*types.TypeName)
+	caller, _ := callerauthPackage.Scope().Lookup("Caller").(*types.TypeName)
+	if connectionCaller == nil || caller == nil {
+		t.Fatal("callerauth declares no ConnectionCaller or Caller type")
+	}
+	for _, typeName := range []*types.TypeName{connectionCaller, caller} {
+		structure, ok := typeName.Type().Underlying().(*types.Struct)
+		if !ok {
+			t.Fatalf("callerauth.%s is not a struct", typeName.Name())
+		}
+		for i := 0; i < structure.NumFields(); i++ {
+			if structure.Field(i).Exported() {
+				t.Errorf("callerauth.%s has the exported field %s", typeName.Name(), structure.Field(i).Name())
+			}
+		}
+	}
+
+	producers := map[*types.TypeName][]string{}
+	for _, importPath := range []string{callerauthImportPath, callerauthImportPath + "/callerauthtest"} {
+		pkg, err := imports.Import(importPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		record := func(name string, typ types.Type) {
+			for _, produced := range []*types.TypeName{connectionCaller, caller} {
+				if mentionsNamedType(typ, produced) {
+					producers[produced] = append(producers[produced], pkg.Name()+"."+name)
+				}
+			}
+		}
+		scope := pkg.Scope()
+		for _, name := range scope.Names() {
+			object := scope.Lookup(name)
+			if !object.Exported() {
+				continue
+			}
+			switch object := object.(type) {
+			case *types.Func:
+				record(name, object.Signature())
+			case *types.Var:
+				record(name, object.Type())
+			case *types.TypeName:
+				if object.IsAlias() {
+					for _, produced := range []*types.TypeName{connectionCaller, caller} {
+						if mentionsNamedType(object.Type(), produced) {
+							t.Errorf("%s.%s is an alias built from callerauth.%s", pkg.Name(), name, produced.Name())
+						}
+					}
+					continue
+				}
+				if named, ok := object.Type().(*types.Named); ok {
+					for i := 0; i < named.NumMethods(); i++ {
+						if method := named.Method(i); method.Exported() {
+							record(name+"."+method.Name(), method.Signature())
+						}
+					}
+				}
+			}
+		}
+	}
+	for produced, want := range map[*types.TypeName][]string{
+		connectionCaller: {"callerauth.Authenticator.AuthenticateConnection", "callerauthtest.ConnectionCaller"},
+		caller:           {"callerauth.Authenticator.Authenticate", "callerauth.CallerFromConnectionState"},
+	} {
+		got := producers[produced]
+		sort.Strings(got)
+		if !slices.Equal(got, want) {
+			t.Errorf("exported producers of callerauth.%s: %q, want %q", produced.Name(), got, want)
 		}
 	}
 }

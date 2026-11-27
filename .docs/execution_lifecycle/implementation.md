@@ -255,12 +255,31 @@ What the app layer delegates:
 5. Read the workload-zone Vault config reference captured from validated ES startup config.
 6. Fetch the workload-zone Vault config blob from ARS using that reference, and decode it only after its bytes hash to the reference digest.
 7. Decode and validate the workload-zone Vault blob through `internal/contracts/runtimeconfig/v1`, then resolve the workload-vault auth plan from that typed config plus ES `workload_vault_auth.default_mode`, including optional non-secret Vault CA trust material.
-8. Evaluate ES Admission Policy Layer v0 in the same shared admission helper
+8. Evaluate the network grant policy of contracts section 5B
+   (`decideWorkloadGrants`): signed `network_access=true` needs a workload
+   grant that names the run's publisher and its authenticated ES caller and
+   grants an egress lane, else `403 network_access_not_granted`. ES's
+   server accepts each TLS connection through `callerauth.NewListener`,
+   which does the handshake and hands the connection's TLS state to no
+   other code, and keeps the connection with its requests
+   (`callerauth.ConnContext`, its `http.Server` ConnContext hook, both in
+   `es/app`), and the ES API reads the caller from that connection
+   (`callerauth.Authenticator.AuthenticateConnection`) and puts it in the
+   request context (`admission.WithAuthenticatedCaller`, which takes only a
+   `callerauth.ConnectionCaller`, a type only callerauth can make).
+   Admission keeps it as a `grantcaller.Caller`
+   (`es/admission/internal/grantcaller`), which has no exported field and
+   is built only from such a caller or from a private delivery's bound
+   caller; a context without one matches no grant. The runtime-profile check runs first in
+   this step, and a request it refuses gets its
+   `400 unsupported_runtime_profile` here. It reads ES configuration only,
+   so a refused run fetches no payload.
+9. Evaluate ES Admission Policy Layer v0 in the same shared admission helper
    used by `Prepare` and `Submit`. If an enabled policy requires payload
    inspection, read only bounded static-script payload text through the
    explicit payload digest already discovered through ARS and cross-checked
    against aggregate evidence, from payload bytes that hash to that digest.
-9. Assemble and return `PrepareResult`.
+10. Assemble and return `PrepareResult`.
 
 There is no ACS hop in this runtime-config path.
 
@@ -917,7 +936,8 @@ Current job-spec assumptions:
   - `none` when signed aggregate evidence execution claims carry
     `network_access=false`
   - `bridge` when signed aggregate evidence execution claims carry
-    `network_access=true`
+    `network_access=true`; admission admits such a run only with a workload
+    grant whose egress lane is `unrestricted`, the only lane until WI-4
 - image:
   - default executions use `execution.base_image`
   - `control-plane-normal-shell/v1` executions use `execution.runtime_profiles.control_plane_normal_shell.image`
@@ -1095,6 +1115,7 @@ Operator helper ownership in the current slice:
 - `.out/` is the repo-local generated-artifact sink in the current slice; `.out/Dockerfile` is the only tracked generated projection there and must not be treated as independent runtime authority, while kept integration harness workspaces (for example `es-submit-*`) are created beneath `.out/`.
 - `scripts/10_health_check.sh` is the unified readiness verifier for service health, runtime-config blob availability including any supplied Vault CA bundle shape, Nomad, Docker, and required enabled runtime-profile images.
 - For enabled runtime-profile images, the same readiness verifier also checks the supported-local Nomad Docker image-cleanup guardrail before claiming submit-ready.
+- When it has ES's configuration (`ES_CONFIG`), the same readiness verifier prints, in its "workload grants" section, `workload_egress_unrestricted=true` with the number of workload grant rules that give the egress lane `unrestricted`, or `workload_egress_unrestricted=false`. This reports the temporary compatibility edge of contracts section 5B; it does not change `submit-ready`.
 - `scripts/20_publish.sh`, `scripts/30_prepare.sh`, `scripts/40_submit.sh`, `scripts/50_lifecycle.sh`, and `scripts/60_execute_loop.sh` are operator-facing workflow helpers over the current public AGS and ES APIs; they classify failures into bounded operator categories instead of changing those APIs.
 - `scripts/70_diagnostics.sh` is the bounded diagnostics collector for that same operator slice; category bundles gather only the logs/checks already named by the troubleshooting matrix, and `run_id` bundles use the public ES lifecycle endpoints plus local staging inspection when relevant.
 - `scripts/71_diagnostics_summary.sh` is the tiny bundle consumer for that same slice; it reads `bundle.json` from `scripts/70_diagnostics.sh` and prints a compact summary of the collected signals.

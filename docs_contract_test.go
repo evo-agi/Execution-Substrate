@@ -2862,8 +2862,8 @@ func TestReliableSubmitPublicOptInAndVersioningDocsContract(t *testing.T) {
 	)
 	assertContainsAll(t, "current submit handler source", serverSource,
 		"func (s *Server) handleSubmit",
-		"request, ok := s.decodeAuthorizedExecutionRequest(w, r)",
-		"result, err := s.service.Submit(r.Context(), request)",
+		"ctx, request, ok := s.decodeAuthorizedExecutionRequest(w, r)",
+		"result, err := s.service.Submit(ctx, request)",
 	)
 	assertContainsAll(t, "current schema version default source", serviceSource,
 		"func validatePrepareRequest(req *PrepareRequest) *Error",
@@ -7691,7 +7691,7 @@ func TestWorkstreamCRuntimeProfileCompatibilityMatrixIsDocumented(t *testing.T) 
 		"| `execution_substrate.runtime_profile` | `Temporary compatibility edge` | The only current request annotation key for opt-in runtime-profile selection. Omitted or empty keeps the default current `static-script` runtime behavior.",
 		"| omitted or empty `execution_substrate.runtime_profile` | `Bounded slice rule` | Accepted. Resolves to the current default runtime name `static-script/default`, uses `execution.base_image`, and injects no profile-specific Codex credential-location metadata.",
 		"| `static-script/default` | `Bounded slice rule` | The current default runtime name used in producer declarations, submit metadata, and `authority_handoff`. It is selected by omitting the annotation or leaving it empty; current source does not treat a non-empty annotation value of `static-script/default` as a separate opt-in selector.",
-		"| `control-plane-normal-shell/v1` | `Temporary compatibility edge` | Accepted only as an explicit opt-in annotation when submit is configured, `execution.runtime_profiles.control_plane_normal_shell.enabled=true`, the artifact is `static-script`, and signed evidence has `network_access=true`.",
+		"| `control-plane-normal-shell/v1` | `Temporary compatibility edge` | Accepted only as an explicit opt-in annotation when submit is configured, `execution.runtime_profiles.control_plane_normal_shell.enabled=true`, the artifact is `static-script`, signed evidence has `network_access=true`, and a workload grant for the run names an egress lane (section 5B).",
 		"| `execution.runtime_profiles.control_plane_normal_shell.*` | `Bounded slice rule` | ES deployment/admin config for enabling and parameterizing the bounded Control Plane normal-shell profile image, Codex CLI path metadata, and workload-Vault credential-location metadata.",
 		"| `execution-substrate/control-plane-normal-shell:supported-local`, `execution-substrate/control-plane-normal-shell:local`, and the supported-local proof Codex shim | `Proof-only or bounded local proof` | Runtime support image/shim values that can realize the configured Control Plane normal-shell profile in local proof paths. They are not accepted runtime-profile annotation values.",
 		"| unsupported or unknown non-empty profile values | `Rejected/unsupported` | Rejected by `:prepare` and by the configured `:submit` path as `unsupported_runtime_profile` before run ID creation, staging, scheduler handoff, or CP run failure.",

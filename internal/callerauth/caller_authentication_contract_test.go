@@ -94,7 +94,13 @@ func TestCallerIdentityIsReadOnlyByCallerauth(t *testing.T) {
 			return true
 		})
 		if inAPI && filepath.Base(path) == "server.go" {
-			for _, required := range []string{`"execution-substrate/internal/callerauth"`, "callerauth.NewAuthenticator(bootstrapIssuerCN)", ".callers.Authenticate(w, r)"} {
+			// ES reads its caller from the connection its server accepted;
+			// the other four services read it from the request's TLS state.
+			authenticate := ".callers.Authenticate(w, r)"
+			if dir == "es/api" {
+				authenticate = ".callers.AuthenticateConnection(w, r)"
+			}
+			for _, required := range []string{`"execution-substrate/internal/callerauth"`, "callerauth.NewAuthenticator(bootstrapIssuerCN)", authenticate} {
 				if !strings.Contains(string(source), required) {
 					t.Errorf("%s does not contain %s", path, required)
 				}

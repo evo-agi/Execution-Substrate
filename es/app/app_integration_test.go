@@ -226,6 +226,114 @@ func TestPrepareAllowsConfiguredControlPlaneCaller(t *testing.T) {
 	}
 }
 
+// The ES caller that a workload grant names is the caller ES authenticated
+// over mTLS for the request: two callers that the allowlist admits, asking
+// for the same artifact that requests the network, get different answers
+// when the one grant names only one of them.
+func TestPrepareGivesTheNetworkOnlyToTheCallerItsGrantNames(t *testing.T) {
+	const operator, controlPlane = "operator/local", "service/control-plane"
+	grantTo := func(caller string) func(string) *esconfig.AdmissionPolicyConfig {
+		return func(keyID string) *esconfig.AdmissionPolicyConfig {
+			reaches := true
+			return &esconfig.AdmissionPolicyConfig{WorkloadGrants: &esconfig.WorkloadGrantsConfig{
+				EgressLanes: []esconfig.WorkloadEgressLaneConfig{{Name: esconfig.WorkloadEgressLaneUnrestricted, ReachesWorkloadVault: &reaches}},
+				Rules: []esconfig.WorkloadGrantRuleConfig{{
+					ID:                 "one-caller",
+					PublisherPrincipal: "spiffe://execution.internal/" + operator,
+					CallerPrincipal:    "spiffe://execution.internal/" + caller,
+					SignerKeyID:        keyID,
+					ArtifactType:       "static-service",
+					RuntimeProfile:     esconfig.WorkloadGrantRuntimeProfileDefault,
+					EgressLane:         esconfig.WorkloadEgressLaneUnrestricted,
+				}},
+			}}
+		}
+	}
+	for _, granted := range []string{operator, controlPlane} {
+		t.Run("grant names "+granted, func(t *testing.T) {
+			stack := startStack(t, stackOptions{
+				AllowedExecutionCallerPrefixes: []string{operator, controlPlane},
+				NetworkAccess:                  true,
+				AdmissionPolicy:                grantTo(granted),
+			})
+			for _, caller := range []string{operator, controlPlane} {
+				response := doJSONRequest(t, stack.es.Addr(), http.MethodPost, "/v1/executions:prepare", stack.fixture.clientTLSConfig(t, caller, false), buildPrepareRequestBody(t, stack))
+				body := mustReadBody(t, response.Body)
+				response.Body.Close()
+				if caller == granted {
+					if response.StatusCode != http.StatusOK {
+						t.Fatalf("caller %s, which the grant names: expected 200, got %d body=%s", caller, response.StatusCode, strings.TrimSpace(string(body)))
+					}
+					continue
+				}
+				if response.StatusCode != http.StatusForbidden {
+					t.Fatalf("caller %s, which the grant does not name: expected 403, got %d body=%s", caller, response.StatusCode, strings.TrimSpace(string(body)))
+				}
+				var refusal admission.ErrorResponse
+				if err := json.Unmarshal(body, &refusal); err != nil || refusal.Code != "network_access_not_granted" {
+					t.Fatalf("caller %s: expected network_access_not_granted, got %s (%v)", caller, strings.TrimSpace(string(body)), err)
+				}
+			}
+		})
+	}
+}
+
+// The caller allowlist matches by prefix; a workload grant matches the ES
+// caller exactly. So what the ES API hands admission must be the SPIFFE ID of
+// the caller's own certificate, never the allowlist entry that admitted it:
+// one allowlist entry, three certificates at and below it, and a grant that
+// names each in turn. (Red-team 2 of ES PR #73, RT73B-1: the two-caller test
+// above uses callers that are exact allowlist entries, so it could not tell
+// the two apart.) :submit takes its caller through the same function.
+func TestPrepareMatchesTheGrantOnTheCallersOwnIdentityNotTheAllowlistEntryThatAdmittedIt(t *testing.T) {
+	const entry = "operator/local"
+	callers := []string{entry, entry + "/x", entry + "/x/y"}
+	grantTo := func(caller string) func(string) *esconfig.AdmissionPolicyConfig {
+		return func(keyID string) *esconfig.AdmissionPolicyConfig {
+			reaches := true
+			return &esconfig.AdmissionPolicyConfig{WorkloadGrants: &esconfig.WorkloadGrantsConfig{
+				EgressLanes: []esconfig.WorkloadEgressLaneConfig{{Name: esconfig.WorkloadEgressLaneUnrestricted, ReachesWorkloadVault: &reaches}},
+				Rules: []esconfig.WorkloadGrantRuleConfig{{
+					ID:                 "one-caller",
+					PublisherPrincipal: "spiffe://execution.internal/" + entry,
+					CallerPrincipal:    "spiffe://execution.internal/" + caller,
+					SignerKeyID:        keyID,
+					ArtifactType:       "static-service",
+					RuntimeProfile:     esconfig.WorkloadGrantRuntimeProfileDefault,
+					EgressLane:         esconfig.WorkloadEgressLaneUnrestricted,
+				}},
+			}}
+		}
+	}
+	for _, granted := range callers {
+		t.Run("grant names "+granted, func(t *testing.T) {
+			stack := startStack(t, stackOptions{
+				AllowedExecutionCallerPrefixes: []string{entry},
+				NetworkAccess:                  true,
+				AdmissionPolicy:                grantTo(granted),
+			})
+			for _, caller := range callers {
+				response := doJSONRequest(t, stack.es.Addr(), http.MethodPost, "/v1/executions:prepare", stack.fixture.clientTLSConfig(t, caller, false), buildPrepareRequestBody(t, stack))
+				body := mustReadBody(t, response.Body)
+				response.Body.Close()
+				if caller == granted {
+					if response.StatusCode != http.StatusOK {
+						t.Fatalf("caller %s, which the grant names: expected 200, got %d body=%s", caller, response.StatusCode, strings.TrimSpace(string(body)))
+					}
+					continue
+				}
+				if response.StatusCode != http.StatusForbidden {
+					t.Fatalf("caller %s, which the allowlist entry %s admits and the grant for %s does not name: expected 403, got %d body=%s", caller, entry, granted, response.StatusCode, strings.TrimSpace(string(body)))
+				}
+				var refusal admission.ErrorResponse
+				if err := json.Unmarshal(body, &refusal); err != nil || refusal.Code != "network_access_not_granted" {
+					t.Fatalf("caller %s: expected network_access_not_granted, got %s (%v)", caller, strings.TrimSpace(string(body)), err)
+				}
+			}
+		})
+	}
+}
+
 func TestPrepareReturns403WhenDeploymentCallerIsUsed(t *testing.T) {
 	stack := startStack(t, stackOptions{})
 
@@ -318,6 +426,11 @@ type stackOptions struct {
 	RevokedArtifact                bool
 	DefaultAuthMode                esconfig.WorkloadVaultAuthMode
 	AllowedExecutionCallerPrefixes []string
+	// NetworkAccess makes the signed evidence request the network.
+	NetworkAccess bool
+	// AdmissionPolicy, when set, replaces today's workload grants; it gets
+	// the key ID the fixture signs artifact evidence with.
+	AdmissionPolicy func(signerKeyID string) *esconfig.AdmissionPolicyConfig
 }
 
 type testStack struct {
@@ -346,6 +459,10 @@ func startStack(t *testing.T, opts stackOptions) *testStack {
 		}
 		if len(opts.AllowedExecutionCallerPrefixes) > 0 {
 			cfg.Authorization.AllowedSPIFFEPathPrefixes = append([]string(nil), opts.AllowedExecutionCallerPrefixes...)
+			cfg.AdmissionPolicy = todaysWorkloadGrants(cfg.Authorization.AllowedSPIFFEPathPrefixes, stack.fixture.agsKeyID)
+		}
+		if opts.AdmissionPolicy != nil {
+			cfg.AdmissionPolicy = opts.AdmissionPolicy(stack.fixture.agsKeyID)
 		}
 	})
 
@@ -402,7 +519,7 @@ func startDependencyStack(t *testing.T, opts stackOptions) *testStack {
 	manifestDigest := writeBlobBytes(t, rootDir, manifestBytes)
 
 	writeBlobBytes(t, rootDir, payloadBytes)
-	evidenceBytes := signedArtifactEvidenceJSON(t, fixture, artifactDigest, payloadDigest, intentDigest, derivationSpecDigest)
+	evidenceBytes := signedArtifactEvidenceJSON(t, fixture, artifactDigest, payloadDigest, intentDigest, derivationSpecDigest, opts.NetworkAccess)
 	evidenceDigest := writeBlobBytes(t, rootDir, evidenceBytes)
 	discoveryBytes := artifactDiscoveryJSON(t, artifactDigest, "static-service", intentDigest, evidenceDigest, payloadDigest)
 	discoveryDigest := writeBlobBytes(t, rootDir, discoveryBytes)
@@ -584,6 +701,7 @@ func buildESConfig(stack *testStack, mutate func(*esconfig.Config)) esconfig.Con
 		Authorization: esconfig.AuthorizationConfig{
 			AllowedSPIFFEPathPrefixes: []string{"operator/local"},
 		},
+		AdmissionPolicy: todaysWorkloadGrants([]string{"operator/local"}, stack.fixture.agsKeyID),
 		Dependencies: esconfig.DependenciesConfig{
 			ArtifactRegistry: esconfig.DependencyConfig{
 				BaseURL:        "https://" + stack.ars.Addr(),
@@ -1113,6 +1231,7 @@ func signedArtifactEvidenceJSON(
 	payloadDigest string,
 	intentDigest string,
 	derivationSpecDigest string,
+	networkAccess bool,
 ) []byte {
 	t.Helper()
 
@@ -1154,7 +1273,7 @@ func signedArtifactEvidenceJSON(
 						TargetPlatform: "docker",
 					},
 					Access: evidencev1.ExecutionAccess{
-						NetworkAccess: false,
+						NetworkAccess: networkAccess,
 					},
 				},
 			},

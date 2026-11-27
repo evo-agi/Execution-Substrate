@@ -397,16 +397,51 @@ only while those keys are secret to the host.
   - configured literals and matched content must not be exposed through API
     responses, the producer contract, logs, retained bundles, support bundles,
     docs examples other than harmless placeholder markers, or test output
-- `admission_policy.workload_grants` is decided in Workstream F slice F1 and
-  not yet implemented; ES refuses the key until WI-2 lands. It is ES
-  deployment/admin configuration for the owner's workload grants: the list of
-  registered workload identity names, the list of egress lanes, and at most
-  32 exact-match rules, each keyed on publisher principal, evidence signer key
-  ID, artifact type and runtime profile. The field rules, the startup
-  refusals and the evaluation are in
+- `admission_policy.workload_grants` is ES deployment/admin configuration
+  for the owner's workload grants (Workstream F slice F1): the list of egress
+  lanes and at most 32 exact-match rules, each keyed on publisher principal
+  (the AGS caller that published the artifact), caller principal (the ES
+  caller, as ES authenticated it over mTLS), evidence signer key ID, artifact
+  type and runtime profile. A run whose signed evidence requests the network
+  needs a rule that names its publisher and its caller and grants an egress
+  lane, and is otherwise refused with `403 network_access_not_granted`. The
+  signed request alone gives no network. The
+  field rules, the startup refusals and the evaluation are in
   `.docs/execution_lifecycle/contracts.md`, section 5B. No setting turns
-  grants off: once WI-2 lands, a configuration without grants admits only runs
-  that request no network and need no credential.
+  grants off: a configuration without grants admits only runs that request
+  no network.
+  - A rule's `signer_key_id` must be `verification.provenance.key_id`, the
+    only key ES admits artifact evidence from, and its `runtime_profile`
+    must be `static-script/default` or `control-plane-normal-shell/v1`.
+  - A rule's `caller_principal` must be a caller that
+    `authorization.allowed_spiffe_path_prefixes` admits, and both principals
+    need at least two path segments. Neither may be a workload identity:
+    workload identities are never callers (`contracts.md` section 3A).
+  - The registered workload identity names (`workload_identities`) and a
+    rule's `workload_identity` land with WI-3; until then ES refuses both as
+    unknown keys.
+  - Today's grants, written by the example configurations,
+    `scripts/72_supported_local_setup.sh` and the Remote Alpha ES upgrade
+    (`scripts/internal/remote_alpha_upgrade_es.py migrate-config`), give the
+    lane `unrestricted` to `static-script` runs on both runtime profiles,
+    for each `<prefix>` in `authorization.allowed_spiffe_path_prefixes`,
+    where `spiffe://execution.internal/<prefix>` is both the publisher and
+    the caller, signed with the provenance key. A prefix whose first segment
+    is `user`, in any letter case, gets no grant: a person's caller gets a
+    network only where the owner writes a rule that names it. A tool that
+    writes its own ES configuration must write grants for the runs that need
+    a network.
+  - ES reads `es.json` with exact keys: it refuses a key repeated in one
+    object and a key that matches a field only in another letter case,
+    anywhere in the file. `scripts/10_health_check.sh` refuses a repeated key
+    anywhere too, and a key in another letter case along the path it reads
+    (`admission_policy`, `workload_grants`, `rules`, `egress_lane`). So for
+    every file ES starts with, it reports the lanes ES reads; for a file ES
+    refuses only for a key elsewhere, it still prints its line.
+  - While any rule grants the lane `unrestricted`, readiness reports
+    `workload_egress_unrestricted=true`: `scripts/10_health_check.sh`
+    prints that line in its "workload grants" section. It is a `Temporary
+    compatibility edge` that WI-4 removes.
 - `verification.derivation_attestation.*` and `verification.workload_identity_binding.*` remain required because the current ES startup path still constructs those verifier shapes
 - those two verifier config groups are current configuration/startup-verifier residue, not active shared-kernel authorization meaning, not CGS policy truth, and not a settlement of Workstream E runtime-config ownership or Workstream F runtime-identity handoff
 - `runtime_config.workload_zone_vault_config_ref.digest` must point at the current workload-zone Vault config blob in ARS

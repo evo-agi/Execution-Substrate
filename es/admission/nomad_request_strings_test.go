@@ -8,7 +8,6 @@ package admission
 // exactly the request strings that reach the Nomad job.
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -90,7 +89,7 @@ func nomadStringsSubmit(t *testing.T, fixture preparedArtifactFixture, payload [
 		bodies = append(bodies, body)
 		_, _ = w.Write([]byte(`{"EvalID":"eval-nomad-strings"}`))
 	}))
-	result, err := service.Submit(context.Background(), request)
+	result, err := service.Submit(testCallerContext(), request)
 	return result, err, bodies
 }
 

@@ -1556,7 +1556,7 @@ func validateTrancheB1LiteralGoldenSource(resolvedTestSource string, submitTestS
 	}
 	section := resolvedTestSource[guardPosition(fset, goldenTest.Pos()).Offset:guardPosition(fset, goldenTest.End()).Offset]
 	for _, required := range []string{
-		"service.Submit(context.Background(), request)",
+		"service.Submit(testCallerContext(), request)",
 		"json.Unmarshal(submittedBody, &actualJob)",
 		"json.Unmarshal([]byte(trancheB1DefaultNomadJobGolden), &expectedJob)",
 		"json.Unmarshal([]byte(trancheB1DefaultAuthorityHandoffGolden), &expectedHandoff)",
@@ -4229,7 +4229,11 @@ func TestOperationalGuardImportInventoryIsExact(t *testing.T) {
 	}
 	want := map[string]string{
 		"es/admission/execution_roots_darwin.go": "unsafe sha256:ef4eb848684af759689740b9c7526dccff3a8c063fb3cf55485fa60ecd78531c",
-		"es/runtimehelper/privilege_linux.go":    "unsafe sha256:e7c05914ec8734e71d23147c99ed7a3c330110130f470a252c3835806e9f8c60",
+		// Reviewed: the ES config loader walks the reflect.Type of the
+		// configuration to refuse keys encoding/json would match only by
+		// letter case. It reads types only and holds no reflect.Value.
+		"es/config/exact_keys.go":             "reflect sha256:6d78e77d67933646d1f140410506decab47af1355d1793b564a9183153e32aba",
+		"es/runtimehelper/privilege_linux.go": "unsafe sha256:e7c05914ec8734e71d23147c99ed7a3c330110130f470a252c3835806e9f8c60",
 	}
 	got, err := operationalGuardImportPins(sources)
 	if err != nil {
@@ -4322,7 +4326,7 @@ func TestOperationalGuardImportInventoryIsExact(t *testing.T) {
 				t.Fatal(err)
 			}
 			if reflect.DeepEqual(got, want) {
-				t.Fatal("the inventory did not depend on the known unsafe import")
+				t.Fatal("the inventory did not depend on the known inventoried import")
 			}
 		})
 		// The import list of the file is unchanged in both cases: only the hash
@@ -4341,15 +4345,15 @@ func TestOperationalGuardImportInventoryIsExact(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if !reflect.DeepEqual(inventory[known], []string{"unsafe"}) {
-					t.Fatalf("the change altered the import list: %v", inventory[known])
+				if wantImports := strings.Split(strings.Fields(want[known])[0], ","); !reflect.DeepEqual(inventory[known], wantImports) {
+					t.Fatalf("the change altered the import list: %v, want %v", inventory[known], wantImports)
 				}
 				got, err := operationalGuardImportPins(mutated)
 				if err != nil {
 					t.Fatal(err)
 				}
 				if reflect.DeepEqual(got, want) {
-					t.Fatal("a changed file that imports unsafe passed the inventory")
+					t.Fatal("a changed file with an inventoried import passed the inventory")
 				}
 			})
 		}
@@ -10945,7 +10949,7 @@ func TestWorkstreamCPrepareStaysBoundedAndAvoidsDescriptorGrammar(t *testing.T) 
 		t.Fatalf("prepare must not call nomad, got %s %q", r.Method, r.URL.Path)
 	}))
 
-	result, err := service.Prepare(context.Background(), request)
+	result, err := service.Prepare(testCallerContext(), request)
 	if err != nil {
 		t.Fatalf("prepare: %+v", err)
 	}
@@ -11100,12 +11104,15 @@ func TestWorkstreamCPrepareRejectsUnsupportedRuntimeProfileWithoutRunState(t *te
 		t.Fatalf("prepare must not call nomad, got %s %q", r.Method, r.URL.Path)
 	}))
 
-	_, err := service.Prepare(context.Background(), request)
+	_, err := service.Prepare(testCallerContext(), request)
 	assertAdmissionError(t, err, http.StatusBadRequest, codeUnsupportedRuntimeProfile)
 	assertDirectoryEmpty(t, stagingRoot)
 	assertDirectoryEmpty(t, resultsRoot)
-	if len(arsCalls) != 4 {
-		t.Fatalf("expected runtime-profile failure to remain admission-bounded, got ARS calls %v", arsCalls)
+	// The runtime-profile refusal comes at the grant step, before the
+	// content policies, so the payload is never read (red-team 2 of ES PR
+	// #73, RT73B-2): discovery, evidence and the workload-zone Vault config.
+	if len(arsCalls) != 3 || arsCalls["/v1/blobs/"+fixture.discovery.Payload.Digest+":bytes"] != 0 {
+		t.Fatalf("expected runtime-profile failure to remain admission-bounded without a payload read, got ARS calls %v", arsCalls)
 	}
 }
 
@@ -11124,7 +11131,7 @@ func TestWorkstreamCSubmitRejectsSyncModeBeforeAdmission(t *testing.T) {
 		t.Fatalf("sync submit must not call nomad, got %s %q", r.Method, r.URL.Path)
 	}))
 
-	_, err := service.Submit(context.Background(), request)
+	_, err := service.Submit(testCallerContext(), request)
 	assertAdmissionError(t, err, http.StatusBadRequest, codeUnsupportedExecutionMode)
 	if arsCalled {
 		t.Fatal("expected sync submit to reject before admission reads")
@@ -11156,7 +11163,7 @@ func TestWorkstreamCSubmitDoesNotBypassAdmissionBeforePayloadOrNomad(t *testing.
 		t.Fatalf("submit must not call nomad when admission fails, got %s %q", r.Method, r.URL.Path)
 	}))
 
-	_, err := service.Submit(context.Background(), request)
+	_, err := service.Submit(testCallerContext(), request)
 	assertAdmissionError(t, err, http.StatusBadRequest, codeInvalidRequest)
 	assertDirectoryEmpty(t, stagingRoot)
 	assertDirectoryEmpty(t, resultsRoot)
@@ -11208,7 +11215,7 @@ func TestWorkstreamCSubmitReceiptRemainsBoundedAndHidesSchedulerIdentifiers(t *t
 		_, _ = w.Write([]byte(`{"EvalID":"eval-123"}`))
 	}))
 
-	result, err := service.Submit(context.Background(), request)
+	result, err := service.Submit(testCallerContext(), request)
 	if err != nil {
 		t.Fatalf("submit: %+v", err)
 	}
@@ -12317,6 +12324,7 @@ func newWorkstreamCTestService(t *testing.T, fixture preparedArtifactFixture) (*
 			SPIREWorkloadAPISocketPath: "/run/spire/sockets/agent.sock",
 		},
 	}
+	grantFixtureNetwork(&service.cfg, fixture)
 	service.workloadZoneVaultConfigRef = service.cfg.RuntimeConfig.WorkloadZoneVaultConfigRef
 	service.trustModel = &fixture.trustModel
 

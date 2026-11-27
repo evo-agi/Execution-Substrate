@@ -27,8 +27,8 @@ host steps:
 
 and the host-independent pieces they are built on:
 
-  migrate-config  add the Nomad TLS keys current ES requires to the box's
-                  es.json
+  migrate-config  add the Nomad TLS keys and today's workload grants
+                  current ES requires to the box's es.json
   provision-key   create the retained-result key file, or accept an
                   existing one that already meets ES's rules (check and
                   apply use it to verify the key the first upgrade made)
@@ -166,7 +166,7 @@ def migrate_config(doc, spki_sha256, expected_source_paths=None):
               "root_ca_file": NOMAD_CA_FILE, "server_spki_sha256": spki_sha256}
     if any(key in nomad for key in NOMAD_TLS_KEYS):
         if all(nomad.get(key) == value for key, value in target.items()):
-            return doc, []
+            return add_workload_grants(doc)
         raise Refusal(
             "es.json already has Nomad TLS settings with other values; "
             "it was changed by something other than this upgrade"
@@ -190,7 +190,80 @@ def migrate_config(doc, spki_sha256, expected_source_paths=None):
         after = key
     new_doc = dict(doc)
     new_doc["nomad"] = new_nomad
-    return new_doc, ["nomad.base_url", *[f"nomad.{key}" for key in NOMAD_TLS_KEYS]]
+    new_doc, grant_changes = add_workload_grants(new_doc)
+    return new_doc, ["nomad.base_url", *[f"nomad.{key}" for key in NOMAD_TLS_KEYS], *grant_changes]
+
+
+# Today's workload grants (.docs/execution_lifecycle/contracts.md, section
+# 5B). Current ES admits a run that requests the network only with a grant
+# that names its publisher and its caller, and no setting turns grants off,
+# so the upgrade writes the grants that keep the box's flows as they are: for
+# each <prefix> in ES's allowlist, the publisher
+# spiffe://execution.internal/<prefix> may run its own static-script runs
+# that request the network, called by that same principal, on both runtime
+# profiles, through the only lane before egress lanes land. A user caller
+# (a prefix whose first segment is "user", in any letter case, so that a
+# look-alike is not granted either) gets no grant here: the owner
+# writes a rule naming the user when a user should have the network. They
+# are the rules scripts/72_supported_local_setup.sh writes; a test keeps the
+# two equal.
+WORKLOAD_GRANT_LANE = "unrestricted"
+WORKLOAD_GRANT_PROFILES = (("default", "static-script/default"), ("normal-shell", "control-plane-normal-shell/v1"))
+
+
+def today_workload_grants(doc):
+    """The workload grants for es.json: one exact grant per allowlist entry
+    that is not a user, and runtime profile, with that principal as both
+    publisher and caller, sealed with the key ES verifies artifact evidence
+    with. ES's own config check refuses what it would not run, and check
+    runs it on the migrated es.json before apply changes anything."""
+    authorization = doc.get("authorization") if isinstance(doc.get("authorization"), dict) else {}
+    prefixes = authorization.get("allowed_spiffe_path_prefixes")
+    if not isinstance(prefixes, list) or not prefixes or not all(isinstance(p, str) and p for p in prefixes):
+        raise Refusal("es.json's authorization.allowed_spiffe_path_prefixes is not a list of caller paths")
+    verification = doc.get("verification") if isinstance(doc.get("verification"), dict) else {}
+    provenance = verification.get("provenance") if isinstance(verification.get("provenance"), dict) else {}
+    key_id = provenance.get("key_id")
+    if not isinstance(key_id, str) or not key_id:
+        raise Refusal("es.json has no verification.provenance.key_id")
+    return {
+        "egress_lanes": [{"name": WORKLOAD_GRANT_LANE, "reaches_workload_vault": True}],
+        "rules": [
+            {
+                "id": f"{prefix.replace('/', '-')}-{profile_id}",
+                "publisher_principal": f"spiffe://execution.internal/{prefix}",
+                "caller_principal": f"spiffe://execution.internal/{prefix}",
+                "signer_key_id": key_id,
+                "artifact_type": "static-script",
+                "runtime_profile": profile,
+                "egress_lane": WORKLOAD_GRANT_LANE,
+            }
+            for prefix in prefixes if prefix.split("/", 1)[0].casefold() != "user"
+            for profile_id, profile in WORKLOAD_GRANT_PROFILES
+        ],
+    }
+
+
+def add_workload_grants(doc):
+    """Return (new_doc, changes): doc with today's workload grants as its
+    admission_policy. A document that already carries exactly them is
+    returned unchanged; one with any other admission_policy is refused."""
+    grants = today_workload_grants(doc)
+    if "admission_policy" not in doc:
+        return insert_after(doc, "workload_vault_auth", "admission_policy", {"workload_grants": grants}), \
+            ["admission_policy.workload_grants"]
+    policy = doc["admission_policy"]
+    if policy == {"workload_grants": grants}:
+        return doc, []
+    raise Refusal(
+        "es.json already has an admission_policy other than the workload grants this upgrade writes; "
+        "it was changed by something other than this upgrade"
+    )
+
+
+def workload_grant_paths(doc):
+    """The key paths today's workload grants add to doc."""
+    return leaf_paths({"admission_policy": {"workload_grants": today_workload_grants(doc)}})
 
 
 def render_json(doc):
@@ -1064,13 +1137,26 @@ def es_config_shape(doc, pin):
         if nomad.get("base_url") == nomad_http_addr():
             return "locked-http", f"locked-http (Nomad at {nomad_http_addr()})"
         return None, f"unknown (nomad.base_url {nomad.get('base_url')!r})"
-    if found == start | {f"nomad.{key}" for key in NOMAD_TLS_KEYS}:
+    https_keys = start | {f"nomad.{key}" for key in NOMAD_TLS_KEYS}
+    if found == https_keys:
+        # Where an upgrade before workload grants (ES PR #60's) left the box.
+        # It is not this upgrade's end state, because current ES refuses every
+        # network run without grants, and this upgrade starts only from
+        # locked-http. The upgrade that moves ES between https commits (ES PR
+        # #67) moves it and writes the grants.
+        return None, ("https without workload grants (where an upgrade before workload grants left it; "
+                      "this upgrade starts from locked-http, and the upgrade between https commits moves it)")
+    try:
+        grant_paths = workload_grant_paths(doc)
+    except Refusal as exc:
+        return None, f"unknown ({exc})"
+    if found == https_keys | grant_paths:
         try:
             _, changes = migrate_config(doc, nomad.get("server_spki_sha256"))
         except Refusal as exc:
             return None, f"unknown ({exc})"
         if changes:
-            return None, "unknown (Nomad TLS keys this upgrade did not write)"
+            return None, "unknown (Nomad TLS keys or workload grants this upgrade did not write)"
         if pin != nomad["server_spki_sha256"]:
             return None, "https keys, but nomad.server_spki_sha256 is not the key of the server certificate on disk"
         return "https", f"https (Nomad at {nomad_https_addr()}, its server key pinned)"

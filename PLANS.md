@@ -640,11 +640,12 @@ Current bounded decision status for Milestone 2C.1:
   user-defined API messages, CP prompt/workspace parsing, workspace archive
   decoding, binary payload inspection, or raw configured-literal/matched-
   content disclosure. Denials remain redacted.
-- The C6 workload-grant follow-up is part of Workstream F slice F1 and is
-  not yet implemented: two built-in policies read exact-match owner grants
-  from ES deployment/admin configuration, keep every absence listed for the
-  configurable-input follow-up, and cannot be turned off. Their contract is
-  section 5B of `.docs/execution_lifecycle/contracts.md`.
+- The C6 workload-grant follow-up is part of Workstream F slice F1: two
+  built-in policies read exact-match owner grants from ES deployment/admin
+  configuration, keep every absence listed for the configurable-input
+  follow-up, and cannot be turned off. The network policy is implemented;
+  the identity policy is not yet implemented. Their contract is section 5B
+  of `.docs/execution_lifecycle/contracts.md`.
 - C7 is a docs/static-test-only consolidation checkpoint recorded in
   `.docs/execution_lifecycle/workstream_c7_checkpoint.md`. It records that
   Workstream A/B gates are satisfied, C0-C6 are present, Remote Alpha
@@ -934,8 +935,8 @@ F0 - Runtime Identity Handoff Ownership Decision:
 F1 - Named Workload Identities And Workload Grants:
 
 - F1 is the next behavior-changing Workstream F slice, approved by the project
-  owner. Its caller refusal (WI-3a) is implemented; the rest is not yet
-  implemented. The decision is section 11 of
+  owner. Its caller refusal (WI-3a) and network grants (WI-2) are
+  implemented; the rest is not yet implemented. The decision is section 11 of
   `.docs/system_overview/runtime_identity_handoff.md`; the workload grants it
   adds to C6 are section 5B of `.docs/execution_lifecycle/contracts.md`.
 - It closes two gaps that existed before F1: every workload run shared one
@@ -948,8 +949,8 @@ F1 - Named Workload Identities And Workload Grants:
   The entry that gives `spiffe://execution.internal/workload` to every root
   process on the host is removed. ES picks the name from owner grant rules and
   holds no SPIRE or Vault administrative access; publishers request no name.
-- Network: `network_access=true` also needs an owner grant naming an egress
-  lane. Until lanes land, the only lane is `unrestricted`, a `Temporary
+- Network: `network_access=true` is only a request; it also needs an owner
+  grant naming the publisher, the ES caller and an egress lane. Until lanes land, the only lane is `unrestricted`, a `Temporary
   compatibility edge` that readiness reports as
   `workload_egress_unrestricted=true`; its removal condition is WI-4.
 - Workload identities are never callers, a run without an identity grant

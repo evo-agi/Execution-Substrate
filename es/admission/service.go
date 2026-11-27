@@ -495,6 +495,8 @@ type preparedArtifact struct {
 	payloadDigest  string
 	targetPlatform string
 	networkAccess  bool
+	// Two of the five facts a workload grant rule matches on, as signed.
+	grantFacts workloadGrantEvidenceFacts
 	// Owned full signed record from the same successful artifact admission.
 	provenanceRecord string
 }
@@ -773,6 +775,13 @@ func (s *Service) prepareAdmission(ctx context.Context, req PrepareRequest, inte
 		}
 	}
 
+	// Until named identities land, nothing reads the decision itself: the
+	// only egress lane is realized as the network mode the signed
+	// network_access already selects.
+	if _, grantErr := s.decideWorkloadGrants(ctx, req, artifact); grantErr != nil {
+		return preparedAdmission{}, grantErr
+	}
+
 	policyPayloadBytes, policyPayloadBytesAvailable, policyErr := s.enforceAdmissionPolicy(ctx, req, artifact)
 	if policyErr != nil {
 		return preparedAdmission{}, policyErr
@@ -1007,6 +1016,7 @@ func (s *Service) prepareArtifactFromEvidenceRecord(trustModel egscontract.Runti
 		payloadDigest:  strings.TrimSpace(discovery.Payload.Digest),
 		targetPlatform: execution.Workload.TargetPlatform,
 		networkAccess:  execution.Access.NetworkAccess,
+		grantFacts:     workloadGrantEvidenceFactsFrom(evidence),
 	}, nil
 }
 
