@@ -5967,7 +5967,15 @@ The required operator flow for this binary-deployment surface is:
    `es_config_check`, `ags_config_check` or `egs_config_check`, and apply
    then installs nothing and restarts nothing. On the box this puts the
    signing key rotation ("Remote Signing Key Rotation") before a binary
-   deployment from a tree that refuses the published keys. The checks are
+   deployment from a tree that refuses the published keys. It also stops a
+   deployment on an `egs.json` whose `revoked_artifacts` holds a digest in
+   any spelling but `sha256:` and 64 lower-case hex characters
+   (`.docs/system_overview/configuration.md`, EGS), naming the entry: the
+   deployment replaces ES and not EGS, so an older EGS that accepted the
+   entry would keep serving it, the new ES would refuse that trust model and
+   not start, and nothing would put the old ES back.
+   `scripts/remote_alpha_deploy_es_binaries_revoked_digest_test.go` runs the
+   deployment with the real `egsconfigcheck` to hold this. The checks are
    worth something only if `es.service` starts that binary with that
    `es.json`, so `es_service_posture` is a blocker unless the unit has
    exactly one `ExecStart`, whose program (systemd's `path=` in
@@ -7368,7 +7376,11 @@ deletes short-lived probe tokens. Anything else is refused, and the refusal name
 of every part: the pre-lock `nomad.hcl` (SHA-256 `5d5e106c…96b8`, ES PR
 #54's upgrade has not run), a file of unknown content, or parts that
 disagree, such as TLS material left by an `apply` that was cut off before
-its rollback.
+its rollback. That includes the box after this upgrade once a later commit
+is named: Nomad and `es.json` are `https`, but `es` and `es-runtime-support`
+are builds of the commit installed before, so `check` and `apply` refuse it
+and stop and change nothing. A later ES reaches the box through the ES
+binary deployment ("Remote ES Binary Deployment Surface").
 
 `check` refuses when:
 

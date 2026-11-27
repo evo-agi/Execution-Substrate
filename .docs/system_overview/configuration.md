@@ -231,7 +231,11 @@ AGS no longer exposes a legacy-signing compatibility control. The current publis
   on a host, check its `revoked_artifacts` for upper-case hex (the check in
   the revocation runbook flags it). Write any such entry in lower case, or
   delete it if the list already holds its lower-case form: a duplicate is
-  refused too.
+  refused too. On the Remote Alpha box the ES binary deployment makes this
+  check itself: its EGS config check refuses such an entry, and names it,
+  before it installs anything
+  (`.docs/system_overview/remote_supported_host_alpha.md`, "Remote ES Binary
+  Deployment Surface").
 - `publication.version` and `publication.update_revision` configure
   EGS-owned publication metadata. They are not trust-contract/schema/API
   versioning for the current EGS v1 surface.
