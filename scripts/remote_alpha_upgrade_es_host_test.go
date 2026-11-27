@@ -28,6 +28,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"execution-substrate/internal/testutil"
 )
 
 // boxNomadHCL is the box's /etc/nomad.d/nomad.hcl as the read-only
@@ -645,6 +647,9 @@ func boxStartESConfig(t *testing.T, baseURL string) []byte {
 	if err := json.Unmarshal(data, &doc); err != nil {
 		t.Fatal(err)
 	}
+	// The box verifies with its own keys; the example's are known keys,
+	// which ES refuses (contracts.md section 3B).
+	testutil.WithFreshSigningKeys(t, doc)
 	nomad := doc["nomad"].(map[string]any)
 	nomad["base_url"] = baseURL
 	for _, key := range []string{"server_name", "root_ca_file", "server_spki_sha256"} {
