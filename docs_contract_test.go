@@ -717,7 +717,7 @@ func TestTrancheAFilesystemAndResourceCustodyDocsContract(t *testing.T) {
 		"retained staging is not proof that Nomad accepted the job, and absence of staging is not proof that no provider effect occurred",
 		"no current automatic whole-run-root reclamation path exists",
 	)
-	assertContainsNone(t, "removed whole-root cleanup vocabulary", compactText(mustRead(t, "PLANS.md"))+" "+admissionRules+" "+contracts+" "+implementation+" "+configuration+" "+writableState+" "+normalization,
+	assertContainsNone(t, "removed whole-root cleanup vocabulary", plansAndStandingRules(t)+" "+contracts+" "+implementation+" "+configuration+" "+writableState+" "+normalization,
 		".execution-substrate-stage-claim-v1",
 		"no-replace quarantine rename is the cleanup commit point",
 		"Only marker-bearing roots",
@@ -4723,7 +4723,7 @@ func TestPrimaryMilestoneRealignmentPreservesESOwnership(t *testing.T) {
 		"They must not parse or order it, infer scheduler or backend state from it",
 		"or treat it as a Nomad identifier or index.",
 	)
-	assertOmitsLifecycleProjectionSchedulerDerivation(t, "PLANS lifecycle projection authority", plans)
+	assertOmitsLifecycleProjectionSchedulerDerivation(t, "PLANS and standing rules lifecycle projection authority", plansAndStandingRules(t))
 
 	for _, required := range []string{
 		"Execution Substrate is the primary governed execution system in this repository.",

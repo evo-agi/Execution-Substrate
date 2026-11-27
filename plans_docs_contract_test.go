@@ -58,7 +58,7 @@ const (
 // section of standingHostRuntimePath. Checks of that text read the section.
 // standingStep4BaseCommit is the trunk_dev commit from which the workstream
 // decision records and the host and runtime boundary slice rules moved.
-const standingStep4BaseCommit = "0b9278c"
+const standingStep4BaseCommit = "0b9278ca74404b46b5e9f0e1701874b52687f5e8"
 
 const (
 	supportedLocalRootsHeading = "## Supported-local execution roots and launcher users"
@@ -106,7 +106,7 @@ const plansRecordSHA256 = "0b13566795d1233f91c293f4b5ea79134af73013d75fea2e7f74f
 // plansMaxBytes caps PLANS.md a little above its size once the record, the
 // standing rules, the last two standing-rule sections and then the workstream
 // decision records and the host and runtime boundary slice rules moved out
-// (71,974 bytes). PLANS.md holds intent and order, is edited in place to
+// (72,387 bytes). PLANS.md holds intent and order, is edited in place to
 // stay current, and must not regrow into a log or a rule book. Raising the
 // cap is a deliberate, reviewed change; prefer putting a standing rule in the
 // file that owns it.
@@ -504,9 +504,24 @@ func TestStandingRulesKeepPlansAuthority(t *testing.T) {
 			t.Errorf("README.md does not link %s", rule.path)
 		}
 	}
-	assertContainsAll(t, "PLANS.md pointer to "+standingHostRuntimePath, compactText(markedDocSection(t, "PLANS.md", plans, "## Host And Runtime Boundary Rules", "## Future ES Privilege-Boundary Design Track")),
-		"Each has a section of the same name there.",
-	)
+	// The host pointer section links every section of the host file by its
+	// exact title, except the named slice rules, which the pointer bullet in
+	// "Document Scope And Current Implementation" links.
+	hostPointer := markedDocSection(t, "PLANS.md", plans, "## Host And Runtime Boundary Rules", "## Future ES Privilege-Boundary Design Track")
+	hostSections := 0
+	for _, heading := range markdownHeadingTitles(mustRead(t, standingHostRuntimePath)) {
+		if !strings.HasPrefix(heading, "## ") || heading == supportedLocalRootsHeading {
+			continue
+		}
+		hostSections++
+		title := strings.TrimPrefix(heading, "## ")
+		if link := "[" + title + "](" + standingHostRuntimePath + "#" + githubHeadingSlug(title) + ")"; !strings.Contains(hostPointer, link) {
+			t.Errorf("the PLANS.md section \"## Host And Runtime Boundary Rules\" does not link the %s section %q as %s", standingHostRuntimePath, title, link)
+		}
+	}
+	if hostSections != 4 {
+		t.Errorf("%s has %d sections after the named slice rules, want 4", standingHostRuntimePath, hostSections)
+	}
 }
 
 // TestStandingRulesPinEachOtherwiseUncheckedRule pins the standing rule

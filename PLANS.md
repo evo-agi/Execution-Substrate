@@ -582,13 +582,15 @@ Dependencies:
 ## Host And Runtime Boundary Rules
 
 The standing rules of the current host and runtime boundary slices are in
-[`.docs/standing_rules/host_and_runtime_boundary.md`](.docs/standing_rules/host_and_runtime_boundary.md):
-the Remote Alpha hardening history and current retirement, Milestone 1 (the
-least-privilege runtime/security boundary closeout) with its boundary posture
-matrix and posture checker, the Remote Alpha ES config/TLS ownership prep
-slice, and the Remote Alpha host network boundary slice with its host firewall
-and its P0q workload-auth bootstrap refinements. Each has a section of the same
-name there.
+[`.docs/standing_rules/host_and_runtime_boundary.md`](.docs/standing_rules/host_and_runtime_boundary.md),
+one section each:
+
+- [Remote Alpha Hardening History and Current Retirement](.docs/standing_rules/host_and_runtime_boundary.md#remote-alpha-hardening-history-and-current-retirement)
+- [Milestone 1: Least-Privilege Runtime/Security Boundary Closeout](.docs/standing_rules/host_and_runtime_boundary.md#milestone-1-least-privilege-runtimesecurity-boundary-closeout),
+  with its boundary posture matrix and posture checker
+- [Current Remote Alpha ES Config/TLS Ownership Prep Slice](.docs/standing_rules/host_and_runtime_boundary.md#current-remote-alpha-es-configtls-ownership-prep-slice)
+- [Current Remote Alpha Host Network Boundary Slice](.docs/standing_rules/host_and_runtime_boundary.md#current-remote-alpha-host-network-boundary-slice),
+  with its host firewall and its P0q workload-auth bootstrap refinements
 
 ## Future ES Privilege-Boundary Design Track
 

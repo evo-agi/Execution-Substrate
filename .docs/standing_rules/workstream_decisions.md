@@ -4,9 +4,10 @@ These are the decision records of redesign Workstreams A to F: the current
 bounded decision status or planning direction that each workstream has reached,
 with the slices it accepted and what remains open in it. They moved here
 unreworded from the `PLANS.md` sections of Workstreams A to F at `trunk_dev`
-commit `0b9278c`, so that `PLANS.md` holds intent and order: each workstream's
-purpose, target files and packages, success condition and dependencies stay
-there, and its section there points to its record here.
+commit `0b9278ca74404b46b5e9f0e1701874b52687f5e8`, so that `PLANS.md` holds
+intent and order: each workstream's purpose, target files and packages, success
+condition and dependencies stay there, and its section there points to its
+record here.
 
 Edit a rule here in place when it changes. Do not add dated status entries: say
 what a change did in its pull request description. Cite this file by section

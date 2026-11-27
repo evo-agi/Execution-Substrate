@@ -6,11 +6,11 @@ bring-up launchers run as, the Remote Alpha hardening history and current
 retirement, Milestone 1 (the least-privilege runtime/security boundary
 closeout), the Remote Alpha ES config/TLS ownership prep slice, and the Remote
 Alpha host network boundary slice. They moved here unreworded from `PLANS.md`
-at `trunk_dev` commit `0b9278c`, so that `PLANS.md` holds intent and order. The
-first section holds the four named rules that were bullets of "Current bounded
-implementation status" in the `PLANS.md` section "Document Scope And Current
-Implementation"; the other sections are the `PLANS.md` sections of the same
-names.
+at `trunk_dev` commit `0b9278ca74404b46b5e9f0e1701874b52687f5e8`, so that
+`PLANS.md` holds intent and order. The first section holds the four named rules
+that were bullets of "Current bounded implementation status" in the `PLANS.md`
+section "Document Scope And Current Implementation"; the other sections are the
+`PLANS.md` sections of the same names.
 
 The detailed Remote Alpha host contracts are in
 `.docs/system_overview/remote_supported_host_alpha.md`.
