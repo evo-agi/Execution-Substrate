@@ -198,6 +198,7 @@ func TestWorkstreamFF1IsPlannedAndPointedTo(t *testing.T) {
 		"Workload identities exist so that workloads can log in to the workload-zone Vault; they are never callers, and a later design that lets a workload call a service must change this rule explicitly.",
 		"A configured prefix whose first segment is `workload`, in any letter case, is refused at startup like any other prefix no caller could match, with its own message, and `id.conf` loading refuses a workload identity as a principal the same way.",
 		"A path that only contains the word later, such as `service/workload`, or whose first segment is longer, such as `workloads`, is not affected.",
+		"The comparison ignores letter case on purpose, so no configuration can name a workload identity in another letter case. It closes letter-case variants only: a different word, such as `workloads/x` or `work-load/x`, is a different SPIFFE ID and stays a valid path.",
 	)
 	// Every page that restates the caller identity or the allowlist-prefix
 	// rule restates the workload exclusion too.
@@ -214,6 +215,7 @@ func TestWorkstreamFF1IsPlannedAndPointedTo(t *testing.T) {
 	)
 	assertContainsAll(t, "PLANS restates the workload exclusion", plans,
 		"exactly one URI SAN that is a conforming SPIFFE ID in the trust domain `execution.internal` and not a workload identity, identifies a caller;",
+		"a prefix must be a canonical SPIFFE ID path of at least two segments whose first segment is not `workload` in any letter case, and a prefix that fails the rule matches nothing.",
 	)
 	assertContainsAll(t, "configuration lists the workload prefix refusal", compactText(mustRead(t, ".docs/system_overview/configuration.md")),
 		"- A prefix whose first segment is `workload`, in any letter case, such as `workload/codex-agent`, is rejected: workload identities are never callers (`contracts.md` section 3A).",

@@ -100,8 +100,9 @@ func ParseSPIFFEID(raw string) (SPIFFEID, error) {
 	}
 	// Letter case is compared loosely on purpose: "Workload" is a different
 	// SPIFFE ID, but no caller needs a path that differs from a workload
-	// identity only in case, and refusing it leaves no near-miss for a
-	// configuration to confuse with a workload identity.
+	// identity only in case, and refusing it leaves no letter-case variant
+	// for a configuration to confuse with a workload identity. A different
+	// word, such as "workloads", is a different identity and is not refused.
 	if first, _, _ := strings.Cut(path, "/"); strings.EqualFold(first, workloadPathSegment) {
 		return SPIFFEID{}, ErrWorkloadIdentity
 	}

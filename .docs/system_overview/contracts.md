@@ -190,8 +190,10 @@ route, stays with each service and is described in that service's section.
   workload call a service must change this rule explicitly. A path that only
   contains the word later, such as `service/workload`, or whose first segment
   is longer, such as `workloads`, is not affected. The comparison ignores
-  letter case on purpose, so no configuration can name a near-miss of a
-  workload identity.
+  letter case on purpose, so no configuration can name a workload identity
+  in another letter case. It closes letter-case variants only: a different
+  word, such as `workloads/x` or `work-load/x`, is a different SPIFFE ID and
+  stays a valid path.
 - The rule applies to the URI as Go's certificate parser hands it over. That
   parser lower-cases the URI scheme and drops an empty fragment (a trailing
   `#`), so such a SAN names the same ID as without them. go-spiffe's
