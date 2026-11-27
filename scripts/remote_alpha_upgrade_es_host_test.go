@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -20,6 +21,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -148,7 +150,86 @@ tls {
 // boxNomadHCLHTTPS is the box's nomad.hcl where this upgrade leaves it.
 const boxNomadHCLHTTPS = boxNomadHCLLocked + boxNomadTLSBlock
 
-const upgradeTestCommit = "0123456789abcdef0123456789abcdef01234567"
+// upgradeTestCommit is the commit the payload is built from: the one commit
+// of the module fixture (moduleFixture), whose go.mod and go.sum are what
+// check compares the payload's build info with. Git names a commit by its
+// content, so the fixture always has this name.
+const upgradeTestCommit = "766ab59feb35d8dc1b5443e0639a6c23bed5a4d8"
+
+// The fixture module's go.mod and go.sum: x/sys at v0.46.0 with its real
+// hashes; a go.sum hash for an older x/sys and for x/text, which go.mod does
+// not require; and a hash of a kind Go does not write (h2).
+const (
+	moduleFixtureGoMod = "module execution-substrate\n\ngo 1.26.5\n\nrequire golang.org/x/sys v0.46.0\n"
+	moduleFixtureGoSum = "golang.org/x/sys v0.45.0 h1:BEyM4CBJdbAcKj4fNjxRsm1MGW9IPdfZoJXw3lVTQ0U=\n" +
+		"golang.org/x/sys v0.46.0 h1:noSf2Fq6F8DBgS+LysIkx7rIExoNHJsxOAtPp4rthXw=\n" +
+		"golang.org/x/sys v0.46.0 h2:noSf2Fq6F8DBgS+LysIkx7rIExoNHJsxOAtPp4rthXw=\n" +
+		"golang.org/x/sys v0.46.0/go.mod h1:4GL1E5IUh+htKOUEOaiffhrAeqysfVGipDYzABqnCmw=\n" +
+		"golang.org/x/text v0.17.0 h1:XtiM5bkSOt+ewxlOE/aE/AKEHibwj/6gvWMl9Rsh0Qc=\n"
+)
+
+// fixtureGit runs git in dir with neither the system's nor the user's
+// config, and a fixed author, committer and time, so that a commit of the
+// same files always has the same name. Automatic maintenance is off: newer
+// git (2.56 on the macOS runner) starts it detached after a commit, and it
+// would add and remove files in .git while a test reads or checks them.
+func fixtureGit(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir, "-c", "maintenance.auto=false", "-c", "gc.auto=0"}, args...)...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL="+os.DevNull,
+		"GIT_AUTHOR_NAME=fixture", "GIT_AUTHOR_EMAIL=fixture@example.invalid", "GIT_AUTHOR_DATE=1700000000 +0000",
+		"GIT_COMMITTER_NAME=fixture", "GIT_COMMITTER_EMAIL=fixture@example.invalid", "GIT_COMMITTER_DATE=1700000000 +0000")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v %s", args, err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// denyGroupOtherWrite takes write access from group and others on
+// everything under root, so that the test process's umask decides nothing.
+func denyGroupOtherWrite(t *testing.T, root string) {
+	t.Helper()
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.Type()&fs.ModeSymlink != 0 {
+			return err
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		return os.Chmod(path, info.Mode().Perm()&^0o022)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// moduleFixture makes a git repository whose one commit, upgradeTestCommit,
+// holds the fixture go.mod and go.sum, and that nobody but the test user
+// can change: what check reads the commit's go.mod and go.sum from in
+// place of the clone (ES_UPGRADE_TEST_MODULE_REPO).
+func moduleFixture(t *testing.T) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), "modules")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range map[string]string{"go.mod": moduleFixtureGoMod, "go.sum": moduleFixtureGoSum} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fixtureGit(t, dir, "init", "-q")
+	fixtureGit(t, dir, "add", "go.mod", "go.sum")
+	commit := fixtureGit(t, dir, "commit-tree", fixtureGit(t, dir, "write-tree"), "-m", "module fixture")
+	if commit != upgradeTestCommit {
+		t.Fatalf("the module fixture's commit is %s; upgradeTestCommit must name it", commit)
+	}
+	denyGroupOtherWrite(t, dir)
+	return dir
+}
 
 // boxESCommit is the ES build that ES PR #54's upgrade installed on the box.
 const boxESCommit = "16cbf739eea8c6a673aef8048aefb69cebd5121b"
@@ -368,6 +449,7 @@ type upgradeHost struct {
 	payload string
 	helper  string
 	commit  string
+	modules string // the module fixture (moduleFixture)
 	// env overrides the environment the upgrade runs with; an empty value
 	// removes the variable.
 	env map[string]string
@@ -500,14 +582,48 @@ func goBinaryWithBuildInfo(version, modinfo string) []byte {
 	return out.Bytes()
 }
 
+// cleanDep is a dependency line as a clean build writes it: the version
+// go.mod requires and its go.sum hash.
+const cleanDep = "dep\tgolang.org/x/sys\tv0.46.0\th1:noSf2Fq6F8DBgS+LysIkx7rIExoNHJsxOAtPp4rthXw=\n"
+
 // stampedBinary is a payload binary whose own build info names a Go
-// version, a commit and whether the checkout was modified.
+// version, a commit and whether the checkout was modified, with one clean
+// dependency.
 func stampedBinary(name, goVersion, revision, modified string) []byte {
+	return stampedBinaryWithModules(name, goVersion, revision, modified, cleanDep)
+}
+
+// stampedBinaryWithModules is stampedBinary with the dependency lines deps
+// (dep and => lines, as the Go linker writes them).
+func stampedBinaryWithModules(name, goVersion, revision, modified, deps string) []byte {
 	return goBinaryWithBuildInfo(goVersion, "path\texecution-substrate/cmd/"+name+"\n"+
-		"mod\texecution-substrate\t(devel)\t\n"+
+		"mod\texecution-substrate\t(devel)\t\n"+deps+
 		"build\t-buildmode=exe\nbuild\t-compiler=gc\nbuild\tCGO_ENABLED=0\nbuild\tGOARCH=amd64\nbuild\tGOOS=linux\n"+
 		"build\tvcs=git\nbuild\tvcs.revision="+revision+"\nbuild\tvcs.modified="+modified+"\n")
 }
+
+// The dependency lines a go.work leaves (audit 32, A32-1): a
+// replace (the dependency loses its go.sum hash and a "=>" line names the
+// folder used instead), and a workspace module in place of a dependency.
+// vendoredDep is what a -mod=vendor build leaves: the version, with an
+// empty hash, for code taken from a vendor folder.
+const (
+	replacedDep  = "dep\tgolang.org/x/sys\tv0.46.0\n=>\t/tmp/elsewhere/sys\t(devel)\t\n"
+	workspaceDep = "dep\tgolang.org/x/sys\t(devel)\t\n"
+	vendoredDep  = "dep\tgolang.org/x/sys\tv0.46.0\t\n"
+)
+
+// Dependency lines that look clean but are not what the module fixture's
+// go.mod and go.sum pin (audit 33, A33-2): a version go.sum has a
+// hash for but go.mod does not require, as a go.work that raises a version
+// leaves; a module go.mod does not require; the required version with a hash
+// of another kind (mutant C4); and with another h1 hash.
+const (
+	olderDep      = "dep\tgolang.org/x/sys\tv0.45.0\th1:BEyM4CBJdbAcKj4fNjxRsm1MGW9IPdfZoJXw3lVTQ0U=\n"
+	unrequiredDep = "dep\tgolang.org/x/text\tv0.17.0\th1:XtiM5bkSOt+ewxlOE/aE/AKEHibwj/6gvWMl9Rsh0Qc=\n"
+	h2Dep         = "dep\tgolang.org/x/sys\tv0.46.0\th2:noSf2Fq6F8DBgS+LysIkx7rIExoNHJsxOAtPp4rthXw=\n"
+	otherHashDep  = "dep\tgolang.org/x/sys\tv0.46.0\th1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\n"
+)
 
 // newESBuild and newRuntimeSupportBuild are the payload's binaries: clean
 // go1.26.5 builds of upgradeTestCommit by their own build info. boxESBuild
@@ -540,7 +656,7 @@ func (h *upgradeHost) replacePayloadFile(name string, data []byte) {
 func newUpgradeHost(t *testing.T, helper string) *upgradeHost {
 	t.Helper()
 	h := &upgradeHost{t: t, root: t.TempDir(), state: t.TempDir(), bin: t.TempDir(), payload: filepath.Join(t.TempDir(), "payload"),
-		helper: helper, commit: upgradeTestCommit, env: map[string]string{}}
+		helper: helper, commit: upgradeTestCommit, modules: moduleFixture(t), env: map[string]string{}}
 	if err := os.WriteFile(filepath.Join(h.state, "calls.log"), nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -606,6 +722,7 @@ func (h *upgradeHost) environ() []string {
 		"ES_UPGRADE_TEST_ACL_SETUP":    filepath.Join(h.bin, "acl-setup"),
 		"ES_UPGRADE_TEST_TLS_IDENTITY": filepath.Join(h.bin, "tls-identity"),
 		"ES_UPGRADE_TEST_WAIT_SECONDS": "1",
+		"ES_UPGRADE_TEST_MODULE_REPO":  h.modules,
 	}
 	for key, value := range h.env {
 		env[key] = value
@@ -845,11 +962,21 @@ func onlyReads(t *testing.T, h *upgradeHost, label string) {
 // on a real Go binary, and on the fixture binaries the other tests install.
 func TestRemoteAlphaUpgradeESReadsGoBuildInfoLikeGoVersion(t *testing.T) {
 	dir := t.TempDir()
-	fixture := filepath.Join(dir, "es")
-	if err := os.WriteFile(fixture, newESBuild, 0o755); err != nil {
-		t.Fatal(err)
+	var fixtures []string
+	for name, data := range map[string][]byte{
+		"es":          newESBuild,
+		"es-replaced": stampedBinaryWithModules("es", "go1.26.5", upgradeTestCommit, "false", cleanDep+replacedDep),
+		"es-work":     stampedBinaryWithModules("es", "go1.26.5", upgradeTestCommit, "false", workspaceDep),
+		"es-vendored": stampedBinaryWithModules("es", "go1.26.5", upgradeTestCommit, "false", vendoredDep),
+	} {
+		fixture := filepath.Join(dir, name)
+		if err := os.WriteFile(fixture, data, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		fixtures = append(fixtures, fixture)
 	}
-	for _, binary := range []string{buildESConfigCheck(t), fixture} {
+	sort.Strings(fixtures)
+	for _, binary := range append([]string{buildESConfigCheck(t)}, fixtures...) {
 		goVersion := exec.Command("go", "version", "-m", binary)
 		goVersion.Dir = dir
 		out, err := goVersion.Output()
@@ -857,14 +984,21 @@ func TestRemoteAlphaUpgradeESReadsGoBuildInfoLikeGoVersion(t *testing.T) {
 			t.Fatalf("go version -m %s: %v", binary, err)
 		}
 		lines := strings.Split(strings.TrimRight(string(out), "\n"), "\n")
-		want := map[string]any{"version": strings.TrimPrefix(lines[0], binary+": "), "build": []any{}}
+		want := map[string]any{"version": strings.TrimPrefix(lines[0], binary+": "), "build": []any{}, "modules": []any{}}
 		for _, line := range lines[1:] {
 			if setting, ok := strings.CutPrefix(line, "\tbuild\t"); ok {
 				want["build"] = append(want["build"].([]any), setting)
 			}
+			if module, ok := strings.CutPrefix(line, "\t"); ok {
+				switch strings.SplitN(module, "\t", 2)[0] {
+				case "path", "mod", "dep", "=>":
+					want["modules"] = append(want["modules"].([]any), module)
+				}
+			}
 		}
-		if len(want["build"].([]any)) < 3 {
-			t.Fatalf("go version -m shows %d build settings for %s; the comparison would check nothing:\n%s", len(want["build"].([]any)), binary, out)
+		if len(want["build"].([]any)) < 3 || len(want["modules"].([]any)) < 2 {
+			t.Fatalf("go version -m shows %d build settings and %d module lines for %s; the comparison would check little:\n%s",
+				len(want["build"].([]any)), len(want["modules"].([]any)), binary, out)
 		}
 
 		code := `import importlib.util, json, sys
@@ -872,8 +1006,11 @@ spec = importlib.util.spec_from_file_location("upgrade", sys.argv[1])
 m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
 with open(sys.argv[2], "rb") as handle:
-    version, build = m.go_build_info(handle.read())
-print(json.dumps({"version": version, "build": build}))`
+    blob = handle.read()
+version, build = m.go_build_info(blob)
+_, lines = m.go_modinfo(blob)
+modules = [line for line in lines if line.split("\t")[0] in ("path", "mod", "dep", "=>")]
+print(json.dumps({"version": version, "build": build, "modules": modules}))`
 		read := exec.Command("python3", "-I", "-c", code, repoPath(upgradeESPython), binary)
 		read.Dir = dir
 		got, err := read.Output()
@@ -956,6 +1093,11 @@ print(json.dumps({"prelock": m.NOMAD_HCL_PRELOCK_SHA256, "locked": m.NOMAD_HCL_L
 
 func TestRemoteAlphaUpgradeESCheckChangesNothing(t *testing.T) {
 	h := newUpgradeHost(t, buildESConfigCheck(t))
+	// git settings in check's environment do not decide where the commit's
+	// go.mod and go.sum are read from: git runs with GIT_ENV alone.
+	h.env["GIT_DIR"] = t.TempDir()
+	h.env["GIT_OBJECT_DIRECTORY"] = t.TempDir()
+	h.env["GIT_ALTERNATE_OBJECT_DIRECTORIES"] = t.TempDir()
 	before := h.snapshot()
 	report, stderr, code := h.check()
 	if code != 0 {
@@ -1148,6 +1290,112 @@ func TestRemoteAlphaUpgradeESCheckRefusesWhatItWasNotWrittenFor(t *testing.T) {
 		{"es carries no Go build info", func(h *upgradeHost) {
 			h.replacePayloadFile("es", []byte("new es build\n"))
 		}, "payload", "not a 64-bit little-endian ELF file"},
+		// Each installed binary's build info against the commit's go.mod and
+		// go.sum (audits 32 and 33, A32-1 and A33-2).
+		{"es was built with a replaced module", func(h *upgradeHost) {
+			h.replacePayloadFile("es", stampedBinaryWithModules("es", "go1.26.5", upgradeTestCommit, "false", replacedDep))
+		}, "payload", "the payload file es was not built from the modules " + upgradeTestCommit + " pins, by its own Go build info: " +
+			"the dependency golang.org/x/sys v0.46.0 without a hash the commit's go.sum holds for it; a replaced module (/tmp/elsewhere/sys (devel))"},
+		{"es-runtime-support was built with a workspace module for a dependency", func(h *upgradeHost) {
+			h.replacePayloadFile("es-runtime-support", stampedBinaryWithModules("es-runtime-support", "go1.26.5", upgradeTestCommit, "false", workspaceDep))
+		}, "payload", "the payload file es-runtime-support was not built from the modules " + upgradeTestCommit + " pins, by its own Go build info: " +
+			"the dependency golang.org/x/sys (devel), where the commit's go.mod requires v0.46.0"},
+		{"es was built from a vendor folder", func(h *upgradeHost) {
+			h.replacePayloadFile("es", stampedBinaryWithModules("es", "go1.26.5", upgradeTestCommit, "false", vendoredDep))
+		}, "payload", "the payload file es was not built from the modules " + upgradeTestCommit + " pins, by its own Go build info: " +
+			"the dependency golang.org/x/sys v0.46.0 without a hash the commit's go.sum holds for it"},
+		{"es-runtime-support holds a dependency at a version go.sum knows but go.mod does not require", func(h *upgradeHost) {
+			h.replacePayloadFile("es-runtime-support", stampedBinaryWithModules("es-runtime-support", "go1.26.5", upgradeTestCommit, "false", olderDep))
+		}, "payload", "the dependency golang.org/x/sys v0.45.0 h1:BEyM4CBJdbAcKj4fNjxRsm1MGW9IPdfZoJXw3lVTQ0U=, where the commit's go.mod requires v0.46.0"},
+		{"es holds a dependency go.mod does not require", func(h *upgradeHost) {
+			h.replacePayloadFile("es", stampedBinaryWithModules("es", "go1.26.5", upgradeTestCommit, "false", cleanDep+unrequiredDep))
+		}, "payload", "the dependency golang.org/x/text v0.17.0 h1:XtiM5bkSOt+ewxlOE/aE/AKEHibwj/6gvWMl9Rsh0Qc=, which the commit's go.mod does not require"},
+		{"es holds a dependency with a hash of a kind Go does not write", func(h *upgradeHost) {
+			h.replacePayloadFile("es", stampedBinaryWithModules("es", "go1.26.5", upgradeTestCommit, "false", h2Dep))
+		}, "payload", "the dependency golang.org/x/sys v0.46.0 h2:noSf2Fq6F8DBgS+LysIkx7rIExoNHJsxOAtPp4rthXw= without a hash the commit's go.sum holds for it"},
+		{"es-runtime-support holds a dependency with another hash", func(h *upgradeHost) {
+			h.replacePayloadFile("es-runtime-support", stampedBinaryWithModules("es-runtime-support", "go1.26.5", upgradeTestCommit, "false", otherHashDep))
+		}, "payload", "the dependency golang.org/x/sys v0.46.0 h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= without a hash the commit's go.sum holds for it"},
+		{"es is a build of es-runtime-support", func(h *upgradeHost) {
+			h.replacePayloadFile("es", stampedBinary("es-runtime-support", "go1.26.5", upgradeTestCommit, "false"))
+		}, "payload", "the program execution-substrate/cmd/es-runtime-support, not execution-substrate/cmd/es"},
+		{"es is a build of another module", func(h *upgradeHost) {
+			h.replacePayloadFile("es", goBinaryWithBuildInfo("go1.26.5", "path\texample.com/other/cmd/es\nmod\texample.com/other\t(devel)\t\n"+cleanDep+
+				"build\tvcs.revision="+upgradeTestCommit+"\nbuild\tvcs.modified=false\n"))
+		}, "payload", "the program example.com/other/cmd/es, not execution-substrate/cmd/es; the main module example.com/other (devel), not execution-substrate"},
+		{"es names no program or main module", func(h *upgradeHost) {
+			h.replacePayloadFile("es", goBinaryWithBuildInfo("go1.26.5", cleanDep+"build\tvcs.revision="+upgradeTestCommit+"\nbuild\tvcs.modified=false\n"))
+		}, "payload", "no program path; no main module"},
+		{"the clone's files differ from the commit", func(h *upgradeHost) {
+			// What the commit holds counts, not the clone's working files.
+			path := filepath.Join(h.modules, "go.mod")
+			_ = os.Chmod(path, 0o644)
+			_ = os.WriteFile(path, []byte(strings.Replace(moduleFixtureGoMod, "v0.46.0", "v0.45.0", 1)), 0o644)
+			h.replacePayloadFile("es", stampedBinaryWithModules("es", "go1.26.5", upgradeTestCommit, "false", olderDep))
+		}, "payload", "the dependency golang.org/x/sys v0.45.0 h1:BEyM4CBJdbAcKj4fNjxRsm1MGW9IPdfZoJXw3lVTQ0U=, where the commit's go.mod requires v0.46.0"},
+		{"a replace ref in the clone's git stands in for the commit's go.mod", func(h *upgradeHost) {
+			// git reads the blob the commit names, not what refs/replace
+			// puts in its place.
+			fake := filepath.Join(h.t.TempDir(), "go.mod")
+			_ = os.WriteFile(fake, []byte(strings.Replace(moduleFixtureGoMod, "v0.46.0", "v0.45.0", 1)), 0o644)
+			real := fixtureGit(h.t, h.modules, "rev-parse", upgradeTestCommit+":go.mod")
+			fixtureGit(h.t, h.modules, "replace", real, fixtureGit(h.t, h.modules, "hash-object", "-w", fake))
+			denyGroupOtherWrite(h.t, h.modules)
+			h.replacePayloadFile("es", stampedBinaryWithModules("es", "go1.26.5", upgradeTestCommit, "false", olderDep))
+		}, "payload", "the dependency golang.org/x/sys v0.45.0 h1:BEyM4CBJdbAcKj4fNjxRsm1MGW9IPdfZoJXw3lVTQ0U=, where the commit's go.mod requires v0.46.0"},
+		{"the clone does not hold the commit", func(h *upgradeHost) {
+			other := strings.Repeat("d", 40)
+			h.commit = other
+			h.replacePayloadFile("es", stampedBinary("es", "go1.26.5", other, "false"))
+			h.replacePayloadFile("es-runtime-support", stampedBinary("es-runtime-support", "go1.26.5", other, "false"))
+			var prov map[string]any
+			if err := json.Unmarshal([]byte(mustRead(t, filepath.Join(h.payload, "provenance.json"))), &prov); err != nil {
+				t.Fatal(err)
+			}
+			prov["commit"] = other
+			writeJSONFile(t, filepath.Join(h.payload, "provenance.json"), prov)
+		}, "payload", "does not hold the commit " + strings.Repeat("d", 40)},
+		{"another account can change the clone's git objects", func(h *upgradeHost) {
+			_ = os.Chmod(filepath.Join(h.modules, ".git", "objects"), 0o777)
+		}, "payload", string(filepath.Separator) + filepath.Join(".git", "objects") + " is writable by its group or others (0777)"},
+		{"the clone's git reads objects from elsewhere", func(h *upgradeHost) {
+			path := filepath.Join(h.modules, ".git", "objects", "info", "alternates")
+			_ = os.MkdirAll(filepath.Dir(path), 0o755)
+			_ = os.WriteFile(path, []byte("/tmp/elsewhere/objects\n"), 0o644)
+		}, "payload", "objects/info/alternates exists, which makes git read objects from elsewhere"},
+		{"the clone's .git is a file naming another folder", func(h *upgradeHost) {
+			// As git worktree add and git clone --separate-git-dir leave it.
+			// The folder it names holds the commit and is the stand-in
+			// root's alone, and the payload is clean, so only the .git file
+			// is refused: git follows it to whatever folder it names
+			// (audit 34, A34-2).
+			clone := filepath.Join(h.t.TempDir(), "clone")
+			if err := os.Mkdir(clone, 0o755); err != nil {
+				h.t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(clone, ".git"), []byte("gitdir: "+filepath.Join(h.modules, ".git")+"\n"), 0o644); err != nil {
+				h.t.Fatal(err)
+			}
+			h.modules = clone
+		}, "payload", string(filepath.Separator) + "clone" + string(filepath.Separator) + ".git is not a folder, so git would read the objects of a folder it names"},
+		{"the clone has no .git", func(h *upgradeHost) {
+			clone := filepath.Join(h.t.TempDir(), "clone")
+			if err := os.Mkdir(clone, 0o755); err != nil {
+				h.t.Fatal(err)
+			}
+			h.modules = clone
+		}, "payload", string(filepath.Separator) + "clone" + string(filepath.Separator) + ".git does not exist"},
+		{"the clone's git takes its objects from a commondir", func(h *upgradeHost) {
+			// The repository commondir names holds the commit and is the
+			// stand-in root's alone, and the payload is clean, so only the
+			// commondir is refused (audit 34, A34-2).
+			common := filepath.Join(h.t.TempDir(), "common.git")
+			fixtureGit(h.t, h.modules, "clone", "-q", "--bare", h.modules, common)
+			denyGroupOtherWrite(h.t, common)
+			if err := os.WriteFile(filepath.Join(h.modules, ".git", "commondir"), []byte(common+"\n"), 0o644); err != nil {
+				h.t.Fatal(err)
+			}
+		}, "payload", string(filepath.Separator) + filepath.Join(".git", "commondir") + " exists, which makes git read objects from elsewhere"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -2022,6 +2270,8 @@ func TestRemoteAlphaUpgradeESBuildRefusals(t *testing.T) {
 	}{
 		{[]string{"build", "--out", repoPath("scripts/payload"), "--commit", upgradeTestCommit}, "outside the checkout"},
 		{[]string{"build", "--out", filepath.Join(t.TempDir(), "payload"), "--commit", "cacf5c1"}, "full lower-case 40-character SHA-1"},
+		{[]string{"build", "--out", filepath.Join(t.TempDir(), "payload"), "--commit", upgradeTestCommit, "--go", "go"},
+			"--go names the go command by its path (such as /usr/local/go/bin/go): 'go' would be a file in the current folder"},
 	}
 	for _, tc := range cases {
 		_, stderr, code := runUpgradeESPython(t, tc.args...)
@@ -2034,98 +2284,699 @@ func TestRemoteAlphaUpgradeESBuildRefusals(t *testing.T) {
 	}
 }
 
-// fakeGo stands in for the Go toolchain in the build tests: it reports
-// FAKE_GOVERSION, writes a small binary per package, and prints build info
-// with FAKE_REVISION and FAKE_MODIFIED.
+// fakeGo stands in for the Go toolchain in the build tests. It reads its
+// settings from fake-go.conf beside it (the environment build gives it
+// holds none of the test's): for `go env -json GOVERSION GOROOT GONOPROXY`
+// FAKE_GO_ENV_JSON, which writeFakeGoConf makes from FAKE_GOVERSION,
+// FAKE_GOROOT and FAKE_GONOPROXY unless a test gives it (with
+// FAKE_BREAK_WORK=1, `go env` also moves the
+// private folder that holds its HOME aside, to moved-<name>, and puts a file
+// in its place, which build then cannot remove as a folder; it refuses any
+// HOME that is not in such a folder), FAKE_VERIFY_EXIT for `go mod verify`,
+// and for `go
+// version -m` the module lines FAKE_MODULES (printf %b escapes), FAKE_PATH
+// (else the package the binary was built from), FAKE_REVISION and
+// FAKE_MODIFIED. `go build` takes only -trimpath, -buildvcs=true and -o, and
+// writes a small binary naming its package. Each
+// run writes the environment it was given to env-<command> beside it,
+// `ls -ld` of the folders that environment names to folders-<command>, and
+// the telemetry mode file it finds where Go looks for it (os.UserConfigDir
+// under that HOME) to telemetry-<command>.
 const fakeGo = `#!/usr/bin/env bash
 set -eu
+here=$(cd "$(dirname "$0")" && pwd -P)
+. "$here/fake-go.conf"
+env | LC_ALL=C sort > "$here/env-$1"
+ls -ld "$HOME" "$TMPDIR" "$GOTMPDIR" "$GOCACHE" "$GOPATH" "$GOMODCACHE" > "$here/folders-$1" 2>&1 || true
+case "$(uname)" in Darwin) config="$HOME/Library/Application Support" ;; *) config="$HOME/.config" ;; esac
+cat "$config/go/telemetry/mode" > "$here/telemetry-$1" 2>&1 || echo "no mode file" > "$here/telemetry-$1"
 case "$1" in
-  env) [[ "$2" == GOVERSION ]] && echo "$FAKE_GOVERSION" ;;
-  build) out="$4"; printf 'binary of %s\n' "$5" > "$out" ;;
-  version) printf '%s: go1.26.5\n\tbuild\tvcs.revision=%s\n\tbuild\tvcs.modified=%s\n' "$3" "$FAKE_REVISION" "$FAKE_MODIFIED" ;;
+  env) if [[ "${FAKE_BREAK_WORK:-}" == 1 ]]; then
+      # Only build's own private folder, found by its name, and moved, not
+      # deleted: a build that gave Go another HOME (the operator's) must
+      # fail here, never touch that home's folder.
+      work=$(dirname "$HOME")
+      case "$(basename "$work")/$(basename "$HOME")" in
+        es-upgrade-build-*/home) mv "$work" "$(dirname "$work")/moved-$(basename "$work")" && echo "not a folder" > "$work" ;;
+        *) echo "fake go: HOME $HOME is not in a private build folder" >&2; exit 2 ;;
+      esac
+    fi
+    [[ "$2 $3 $4 $5" == "-json GOVERSION GOROOT GONOPROXY" ]] && printf '%s\n' "$FAKE_GO_ENV_JSON" ;;
+  mod) [[ "$2" == verify ]] && echo "fake verify" && exit "$FAKE_VERIFY_EXIT" ;;
+  build) [[ "$2 $3 $4" == "-trimpath -buildvcs=true -o" ]] || { echo "fake go: unexpected build flags: $*" >&2; exit 2; }
+    printf 'binary of %s\n' "$6" > "$5" ;;
+  version) pkg=$(sed -n 's|^binary of \./||p' "$3")
+    printf '%s: go1.26.5\n\tpath\t%s\n%b\tbuild\tvcs.revision=%s\n\tbuild\tvcs.modified=%s\n' "$3" "${FAKE_PATH:-execution-substrate/$pkg}" "$FAKE_MODULES" "$FAKE_REVISION" "$FAKE_MODIFIED" ;;
   *) exit 2 ;;
 esac
 `
 
+// buildGoSettings are the fixed Go and git settings build gives the
+// toolchain, whatever its own environment holds (audits 32 and 33,
+// A32-1 and A33-1). buildPrivateFolders are the variables that name the
+// private folders build makes for one build.
+var (
+	buildGoSettings = []string{"CGO_ENABLED=0", "GIT_CONFIG_GLOBAL=" + os.DevNull, "GIT_CONFIG_NOSYSTEM=1", "GIT_NO_REPLACE_OBJECTS=1", "GOARCH=amd64",
+		"GOENV=off", "GOFLAGS=-mod=readonly", "GOOS=linux", "GOPROXY=https://proxy.golang.org", "GOTOOLCHAIN=local", "GOVCS=*:off", "GOWORK=off",
+		"PATH=/usr/bin:/bin"}
+	buildPrivateFolders = []string{"GOCACHE", "GOMODCACHE", "GOPATH", "GOTMPDIR", "HOME", "TMPDIR"}
+)
+
 // buildRepo makes a throwaway git repository holding the upgrade script at
-// its place in the tree, with one commit, and a fake go next to it.
+// its place in the tree and the module fixture's go.mod and go.sum, with
+// one commit, and a fake go and an empty stand-in GOROOT beside it; nothing
+// in it can be changed by group or others.
 func buildRepo(t *testing.T) (repo, script, goBin, commit string) {
 	t.Helper()
 	dir := t.TempDir()
 	repo = filepath.Join(dir, "repo")
 	script = filepath.Join(repo, "scripts", "internal", "remote_alpha_upgrade_es.py")
-	if err := os.MkdirAll(filepath.Dir(script), 0o755); err != nil {
-		t.Fatal(err)
+	files := map[string]string{
+		"scripts/internal/remote_alpha_upgrade_es.py": mustRead(t, repoPath(upgradeESPython)),
+		"go.mod": moduleFixtureGoMod,
+		"go.sum": moduleFixtureGoSum,
 	}
-	source, err := os.ReadFile(repoPath(upgradeESPython))
-	if err != nil {
-		t.Fatal(err)
+	for rel, content := range files {
+		path := filepath.Join(repo, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if err := os.WriteFile(script, source, 0o644); err != nil {
-		t.Fatal(err)
+	for _, sub := range []string{"bin", "goroot/bin", "goroot/pkg/tool"} {
+		if err := os.MkdirAll(filepath.Join(dir, filepath.FromSlash(sub)), 0o755); err != nil {
+			t.Fatal(err)
+		}
 	}
-	goBin = filepath.Join(dir, "go")
+	goBin = filepath.Join(dir, "bin", "go")
 	if err := os.WriteFile(goBin, []byte(fakeGo), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	git := func(args ...string) string {
-		cmd := exec.Command("git", append([]string{"-C", repo, "-c", "user.name=test", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false"}, args...)...)
-		cmd.Dir = repo
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			t.Fatalf("git %v: %v %s", args, err, out)
-		}
-		return strings.TrimSpace(string(out))
+	fixtureGit(t, repo, "init", "-q")
+	fixtureGit(t, repo, "add", ".")
+	fixtureGit(t, repo, "commit", "-q", "-m", "fixture")
+	denyGroupOtherWrite(t, dir)
+	return repo, script, goBin, fixtureGit(t, repo, "rev-parse", "HEAD")
+}
+
+// writeFakeGoConf writes the fake go's settings: defaults for a clean
+// build of head, then settings. FAKE_GOVERSION, FAKE_GOROOT and
+// FAKE_GONOPROXY become the JSON answer FAKE_GO_ENV_JSON, as Go encodes
+// it, unless settings give that answer itself.
+func writeFakeGoConf(t *testing.T, goBin, head string, settings map[string]string) {
+	t.Helper()
+	conf := map[string]string{"FAKE_GOVERSION": "go1.26.5", "FAKE_GOROOT": filepath.Join(filepath.Dir(filepath.Dir(goBin)), "goroot"),
+		"FAKE_GONOPROXY": "", "FAKE_VERIFY_EXIT": "0", "FAKE_REVISION": head, "FAKE_MODIFIED": "false",
+		"FAKE_MODULES": `\tmod\texecution-substrate\t(devel)\t\n\t` + strings.TrimSuffix(cleanDep, "\n") + `\n`}
+	for k, v := range settings {
+		conf[k] = v
 	}
-	git("init", "-q")
-	git("add", ".")
-	git("commit", "-q", "-m", "fixture")
-	return repo, script, goBin, git("rev-parse", "HEAD")
+	if _, given := conf["FAKE_GO_ENV_JSON"]; !given {
+		answer, err := json.Marshal(map[string]string{"GOVERSION": conf["FAKE_GOVERSION"], "GOROOT": conf["FAKE_GOROOT"], "GONOPROXY": conf["FAKE_GONOPROXY"]})
+		if err != nil {
+			t.Fatal(err)
+		}
+		conf["FAKE_GO_ENV_JSON"] = string(answer)
+	}
+	delete(conf, "FAKE_GOVERSION")
+	delete(conf, "FAKE_GOROOT")
+	delete(conf, "FAKE_GONOPROXY")
+	keys := make([]string, 0, len(conf))
+	for k := range conf {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var text strings.Builder
+	for _, k := range keys {
+		if strings.Contains(conf[k], "'") {
+			t.Fatalf("fake go setting %s holds a quote", k)
+		}
+		text.WriteString(k + "='" + conf[k] + "'\n")
+	}
+	if err := os.WriteFile(filepath.Join(filepath.Dir(goBin), "fake-go.conf"), []byte(text.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// fakeGoEnv is the environment the fake go was given for command, as a map.
+func fakeGoEnv(t *testing.T, goBin, command string) map[string]string {
+	t.Helper()
+	env := map[string]string{}
+	for _, line := range strings.Split(strings.TrimSpace(mustRead(t, filepath.Join(filepath.Dir(goBin), "env-"+command))), "\n") {
+		key, value, _ := strings.Cut(line, "=")
+		switch key {
+		case "PWD", "OLDPWD", "SHLVL", "_", "__CF_USER_TEXT_ENCODING":
+			// What bash and macOS add to every process's environment.
+		default:
+			env[key] = value
+		}
+	}
+	return env
+}
+
+// TestRemoteAlphaUpgradeESBuildIgnoresAGoWorkAbove builds with the real Go
+// a clone kept, as the box procedure of ES PR #60 kept it, in a fresh
+// folder inside a sticky folder that any account can write. There another
+// account can leave a go.work beside the clone's folder, and Go reads a
+// go.work from any folder above the module unless GOWORK=off; a go.work can
+// put any folder in place of a dependency, unchecked by go.sum, and the
+// build would still be stamped as a clean build of the commit
+// (audit 32, A32-1). The go.work here names only another module, so Go
+// refuses to build the clone if it reads it; build must not read it, even
+// when its own environment names it. The same account can leave a git
+// config with a hook and a cache folder, and the operator's environment may
+// name them in XDG_CONFIG_HOME and XDG_CACHE_HOME: git must not run the
+// hook and Go must not use that cache (audit 33, A33-1). build
+// runs a copy of the toolchain that only the test user can change, since
+// the one a CI runner offers may be writable by any account. Last, that
+// copy's go.env names a private module, whose toolchain build must refuse
+// (audit 35, A35-1).
+func TestRemoteAlphaUpgradeESBuildIgnoresAGoWorkAbove(t *testing.T) {
+	pathGo, err := exec.LookPath("go")
+	if err != nil {
+		t.Fatalf("go: %v", err)
+	}
+	query := exec.Command(pathGo, "env", "GOROOT")
+	query.Dir = t.TempDir()
+	rootOut, err := query.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	goroot := filepath.Join(t.TempDir(), "go")
+	copyTree(t, strings.TrimSpace(string(rootOut)), goroot)
+	goBin := filepath.Join(goroot, "bin", "go")
+
+	shared := filepath.Join(t.TempDir(), "shared")
+	if err := os.Mkdir(shared, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(shared, 0o777|os.ModeSticky); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(shared, "es-upgrade.test"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	repo := filepath.Join(shared, "es-upgrade.test", "repo")
+	files := map[string]string{
+		"go.mod":                                 "module example.com/fixture\n\ngo 1.26.5\n",
+		"go.sum":                                 "",
+		"cmd/es/main.go":                         "package main\n\nfunc main() {}\n",
+		"cmd/es-runtime-support/main.go":         "package main\n\nfunc main() {}\n",
+		"scripts/internal/esconfigcheck/main.go": "package main\n\nfunc main() {}\n",
+		"scripts/internal/remote_alpha_upgrade_es.py": mustRead(t, repoPath(upgradeESPython)),
+	}
+	for rel, content := range files {
+		path := filepath.Join(repo, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fixtureGit(t, repo, "init", "-q")
+	fixtureGit(t, repo, "add", ".")
+	fixtureGit(t, repo, "commit", "-q", "-m", "fixture")
+	denyGroupOtherWrite(t, repo)
+	head := fixtureGit(t, repo, "rev-parse", "HEAD")
+
+	// What another account leaves in the sticky folder.
+	if err := os.MkdirAll(filepath.Join(shared, "elsewhere"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(shared, "elsewhere", "go.mod"), []byte("module example.com/elsewhere\n\ngo 1.26.5\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	work := filepath.Join(shared, "go.work")
+	if err := os.WriteFile(work, []byte("go 1.26.5\n\nuse ./elsewhere\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(shared, "hook-ran")
+	xdgConfig := filepath.Join(shared, "xdg-config")
+	if err := os.MkdirAll(filepath.Join(xdgConfig, "git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(xdgConfig, "hook.sh"), []byte("#!/bin/sh\necho ran >> "+marker+"\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(xdgConfig, "git", "config"), []byte("[core]\n\tfsmonitor = "+filepath.Join(xdgConfig, "hook.sh")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	xdgCache := filepath.Join(shared, "xdg-cache")
+	if err := os.Mkdir(xdgCache, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Controls: Go itself reads that go.work and refuses the clone, and git
+	// itself runs the hook that XDG_CONFIG_HOME names.
+	control := exec.Command(goBin, "build", "-o", os.DevNull, filepath.Join(repo, "cmd", "es"))
+	control.Dir = repo
+	control.Env = append(os.Environ(), "GOWORK=", "GOFLAGS=-mod=readonly", "GOTOOLCHAIN=local", "CGO_ENABLED=0")
+	if out, err := control.CombinedOutput(); err == nil || !strings.Contains(string(out), "go.work") {
+		t.Fatalf("Go built the clone below %s without a word about it (%v): %s", work, err, out)
+	}
+	status := exec.Command("git", "-C", repo, "status", "--porcelain")
+	status.Dir = repo
+	status.Env = append(os.Environ(), "XDG_CONFIG_HOME="+xdgConfig)
+	if out, err := status.CombinedOutput(); err != nil {
+		t.Fatalf("git status: %v %s", err, out)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("git did not run the hook of the config XDG_CONFIG_HOME names: %v", err)
+	}
+	if err := os.Remove(marker); err != nil {
+		t.Fatal(err)
+	}
+
+	out := filepath.Join(t.TempDir(), "payload")
+	cmd := exec.Command("python3", "-I", filepath.Join(repo, "scripts", "internal", "remote_alpha_upgrade_es.py"),
+		"build", "--out", out, "--commit", head, "--go", goBin)
+	cmd.Dir = repo
+	cmd.Env = append(os.Environ(), "GOWORK="+work, "GOFLAGS=-mod=mod", "XDG_CONFIG_HOME="+xdgConfig, "XDG_CACHE_HOME="+xdgCache)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("build below a go.work: %v\n%s", err, stderr.String())
+	}
+	if data, err := os.ReadFile(marker); err == nil {
+		t.Fatalf("the git hook of the config XDG_CONFIG_HOME names ran during build: %q", data)
+	}
+	if entries, err := os.ReadDir(xdgCache); err != nil || len(entries) != 0 {
+		t.Fatalf("build used the cache folder XDG_CACHE_HOME names: %v %v", entries, err)
+	}
+	version := exec.Command(goBin, "version", "-m", filepath.Join(out, "es"))
+	version.Dir = t.TempDir()
+	info, err := version.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"\tpath\texample.com/fixture/cmd/es\n", "\tbuild\t-trimpath=true\n",
+		"\tbuild\tvcs.revision=" + head + "\n", "\tbuild\tvcs.modified=false\n"} {
+		if !strings.Contains(string(info), want) {
+			t.Fatalf("es's build info lacks %q:\n%s", want, info)
+		}
+	}
+	if leftovers, _ := filepath.Glob(filepath.Join(filepath.Dir(out), "es-upgrade-build-*")); len(leftovers) != 0 {
+		t.Fatalf("build left its private folder: %v", leftovers)
+	}
+
+	// Another clone of the commit in another folder gives the same bytes,
+	// so a payload can be checked by building it again anywhere.
+	again := filepath.Join(t.TempDir(), "again")
+	if err := os.Mkdir(again, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	fixtureGit(t, again, "clone", "-q", "--no-checkout", repo, "repo")
+	fixtureGit(t, filepath.Join(again, "repo"), "checkout", "-q", "--detach", head)
+	denyGroupOtherWrite(t, filepath.Join(again, "repo"))
+	againOut := filepath.Join(again, "payload")
+	// This build runs Go through a wrapper that lists, after each go
+	// command, what is in Go's telemetry folder under build's private
+	// HOME: only the mode file build wrote, so Go collected nothing and
+	// started no telemetry child (audit 34, A34-1).
+	config := "$HOME/.config"
+	if runtime.GOOS == "darwin" {
+		config = "$HOME/Library/Application Support"
+	}
+	wrapDir := filepath.Join(t.TempDir(), "wrap")
+	if err := os.Mkdir(wrapDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	telemetryLog := filepath.Join(wrapDir, "telemetry.log")
+	wrapper := filepath.Join(wrapDir, "go")
+	if err := os.WriteFile(wrapper, []byte("#!/bin/sh\n'"+goBin+"' \"$@\"\nrc=$?\nls -A \""+config+"/go/telemetry\" >> '"+telemetryLog+"' 2>&1\nexit $rc\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rebuild := exec.Command("python3", "-I", filepath.Join(again, "repo", "scripts", "internal", "remote_alpha_upgrade_es.py"),
+		"build", "--out", againOut, "--commit", head, "--go", wrapper)
+	rebuild.Dir = again
+	if output, err := rebuild.CombinedOutput(); err != nil {
+		t.Fatalf("build in another clone: %v\n%s", err, output)
+	}
+	listed := strings.Fields(mustRead(t, telemetryLog))
+	if len(listed) == 0 {
+		t.Fatal("the wrapper around go never ran")
+	}
+	for _, name := range listed {
+		if name != "mode" {
+			t.Fatalf("Go wrote in its telemetry folder under build's HOME: %q", listed)
+		}
+	}
+	if leftovers, _ := filepath.Glob(filepath.Join(again, "es-upgrade-build-*")); len(leftovers) != 0 {
+		t.Fatalf("build left its private folder: %v", leftovers)
+	}
+	for _, name := range []string{"es", "es-runtime-support", "esconfigcheck"} {
+		first, second := mustRead(t, filepath.Join(out, name)), mustRead(t, filepath.Join(againOut, name))
+		if first != second {
+			t.Errorf("%s built in %s differs from %s built in %s", name, repo, name, filepath.Join(again, "repo"))
+		}
+	}
+
+	// GOPRIVATE in the toolchain's go.env makes Go fetch the modules it
+	// names from the servers their paths name, whatever GOPROXY says, and
+	// build cannot override it with an empty value, so build must refuse
+	// that toolchain (audit 35, A35-1), also when the value starts
+	// with a vertical tab and a comma, which Go keeps and skips while it
+	// still names the module after it (audit 36, A36-2).
+	stockEnv, err := os.ReadFile(filepath.Join(goroot, "go.env"))
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		t.Fatal(err)
+	}
+	for i, private := range []struct{ value, shown string }{
+		{"example.com/private", "'example.com/private'"},
+		{"\v,example.com/private", `'\x0b,example.com/private'`},
+	} {
+		if err := os.WriteFile(filepath.Join(goroot, "go.env"), append(append([]byte{}, stockEnv...), "\nGOPRIVATE="+private.value+"\n"...), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		refused := exec.Command("python3", "-I", filepath.Join(again, "repo", "scripts", "internal", "remote_alpha_upgrade_es.py"),
+			"build", "--out", filepath.Join(again, fmt.Sprintf("payload-private-%d", i)), "--commit", head, "--go", goBin)
+		refused.Dir = again
+		want := "sets GONOPROXY or GOPRIVATE to " + private.shown + " in its go.env, which makes Go fetch the modules it names from their own servers"
+		if output, err := refused.CombinedOutput(); err == nil || !strings.Contains(string(output), want) {
+			t.Fatalf("build with GOPRIVATE=%q in the toolchain's go.env: %v\n%s", private.value, err, output)
+		}
+		if leftovers, _ := filepath.Glob(filepath.Join(again, "es-upgrade-build-*")); len(leftovers) != 0 {
+			t.Fatalf("build left its private folder: %v", leftovers)
+		}
+	}
+}
+
+// copyTree copies the folder src to dst, which must not exist, with modes
+// that neither group nor others can write.
+func copyTree(t *testing.T, src, dst string) {
+	t.Helper()
+	err := filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, rel)
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		switch {
+		case d.IsDir():
+			if err := os.Mkdir(target, 0o755); err != nil {
+				return err
+			}
+			return os.Chmod(target, 0o755)
+		case info.Mode().IsRegular():
+			in, err := os.Open(path)
+			if err != nil {
+				return err
+			}
+			defer in.Close()
+			mode := (info.Mode().Perm() | 0o200) &^ 0o022
+			outFile, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
+			if err != nil {
+				return err
+			}
+			if _, err := io.Copy(outFile, in); err != nil {
+				outFile.Close()
+				return err
+			}
+			if err := outFile.Close(); err != nil {
+				return err
+			}
+			return os.Chmod(target, mode)
+		default:
+			return fmt.Errorf("%s is neither a folder nor a regular file", path)
+		}
+	})
+	if err != nil {
+		t.Fatalf("copy %s: %v", src, err)
+	}
 }
 
 func TestRemoteAlphaUpgradeESBuildChecksToolchainCheckoutAndBuildInfo(t *testing.T) {
+	// What the operator's environment may hold; none of it may reach Go or
+	// git (audits 32 and 33, A32-1 and A33-1). A git first on PATH
+	// leaves a marker if it runs.
+	hostile := map[string]string{
+		"GOWORK": "/tmp/go.work", "GOFLAGS": "-mod=mod", "GOENV": "/tmp/go-env", "GOROOT": "/tmp/goroot", "GOPATH": "/tmp/gopath",
+		"GOMODCACHE": "/tmp/modcache", "GOCACHE": "/tmp/gocache", "GOPROXY": "file:///tmp/proxy", "GONOSUMDB": "*",
+		"GONOSUMCHECK": "1", "GOINSECURE": "*", "GOPRIVATE": "*", "GOEXPERIMENT": "nocoverageredesign", "GOTOOLCHAIN": "auto",
+		"GOOS": "darwin", "GOARCH": "arm64", "CGO_ENABLED": "1", "GOTMPDIR": "/tmp/gotmp", "GODEBUG": "gocachehash=1",
+		"HOME": "/tmp/elsewhere-home", "TMPDIR": "/tmp", "XDG_CACHE_HOME": "/tmp/xdg-cache", "XDG_CONFIG_HOME": "/tmp/xdg-config",
+		"XDG_DATA_HOME": "/tmp/xdg-data", "GIT_DIR": "/tmp/git-dir", "GIT_WORK_TREE": "/tmp", "GIT_CONFIG_PARAMETERS": "'core.fsmonitor=/bin/false'",
+		"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "core.fsmonitor", "GIT_CONFIG_VALUE_0": "/bin/false", "GIT_EXEC_PATH": "/tmp/git-exec",
+		"CC": "/tmp/cc", "CGO_CFLAGS": "-I/tmp", "NETRC": "/tmp/netrc",
+	}
+	// What build passes on: the module proxy's way out of the network.
+	passed := map[string]string{"HTTPS_PROXY": "http://proxy.invalid:3128", "no_proxy": "localhost", "SSL_CERT_FILE": "/tmp/ca.pem"}
+	writable := func(path string, mode os.FileMode) { _ = os.Chmod(path, mode) }
+	goroot := func(goBin string) string { return filepath.Join(filepath.Dir(filepath.Dir(goBin)), "goroot") }
 	cases := []struct {
-		name     string
-		prepare  func(repo string)
-		env      map[string]string
-		commit   func(head string) string
-		says     string
-		succeeds bool
+		name string
+		// prepare changes the clone, the fake go or the folders; it may
+		// commit, and build is then asked for the new HEAD.
+		prepare     func(t *testing.T, repo, goBin, out string)
+		fake        map[string]string
+		env         map[string]string
+		commit      func(head string) string
+		out         func(t *testing.T) string
+		moduleCache func(t *testing.T, repo string) string
+		umask       string
+		says        string
+		succeeds    bool
+		// leavesWork: the refusal must name the private folder it could
+		// not remove, the one that is left.
+		leavesWork bool
+		after      func(t *testing.T, goBin, out, moduleCache string)
 	}{
 		{name: "a clean build", succeeds: true},
-		{name: "another Go", env: map[string]string{"FAKE_GOVERSION": "go1.26.1"}, says: "the build needs go1.26.5, found go1.26.1"},
+		{name: "another Go", fake: map[string]string{"FAKE_GOVERSION": "go1.26.1"}, says: "the build needs go1.26.5, found go1.26.1"},
+		{name: "a refusal says when the private folder could not be removed", fake: map[string]string{"FAKE_GOVERSION": "go1.26.1", "FAKE_BREAK_WORK": "1"},
+			says: "the build needs go1.26.5, found go1.26.1; and the build's private folder ", leavesWork: true},
 		{name: "the checkout is at another commit", commit: func(string) string { return strings.Repeat("b", 40) }, says: "the checkout is at"},
-		{name: "an untracked file", prepare: func(repo string) {
+		{name: "an untracked file", prepare: func(t *testing.T, repo, goBin, out string) {
 			_ = os.WriteFile(filepath.Join(repo, "stray.txt"), []byte("x"), 0o644)
-		}, says: "uncommitted or untracked files"},
-		{name: "a changed tracked file", prepare: func(repo string) {
+		}, says: "uncommitted, untracked or ignored files"},
+		{name: "an ignored file", prepare: func(t *testing.T, repo, goBin, out string) {
+			// As .gitignore ignores coverage.*: an ignored Go file in a
+			// package is compiled, and Go's vcs.modified does not see it.
+			_ = os.WriteFile(filepath.Join(repo, ".git", "info", "exclude"), []byte("coverage.*\n"), 0o644)
+			_ = os.WriteFile(filepath.Join(repo, "coverage.go"), []byte("package main\n"), 0o644)
+		}, says: "uncommitted, untracked or ignored files"},
+		{name: "a changed tracked file", prepare: func(t *testing.T, repo, goBin, out string) {
 			f, _ := os.OpenFile(filepath.Join(repo, "scripts", "internal", "remote_alpha_upgrade_es.py"), os.O_APPEND|os.O_WRONLY, 0)
 			_, _ = f.WriteString("\n# local change\n")
 			_ = f.Close()
-		}, says: "uncommitted or untracked files"},
-		{name: "build info names another commit", env: map[string]string{"FAKE_REVISION": strings.Repeat("c", 40)}, says: "es does not carry the commit as a clean build"},
-		{name: "build info says modified", env: map[string]string{"FAKE_MODIFIED": "true"}, says: "es does not carry the commit as a clean build"},
+		}, says: "uncommitted, untracked or ignored files"},
+		{name: "build info names another commit", fake: map[string]string{"FAKE_REVISION": strings.Repeat("c", 40)}, says: "es does not carry the commit as a clean build"},
+		{name: "build info says modified", fake: map[string]string{"FAKE_MODIFIED": "true"}, says: "es does not carry the commit as a clean build"},
+
+		// Build info against the commit's go.mod and go.sum
+		// (audits 32 and 33, A32-1 and A33-2).
+		{name: "build info shows a replaced module", fake: map[string]string{"FAKE_MODULES": `\tmod\texecution-substrate\t(devel)\t\n\tdep\tgolang.org/x/sys\tv0.46.0\n\t=>\t/tmp/elsewhere/sys\t(devel)\t\n`},
+			says: "es was not built from the modules the commit pins: the dependency golang.org/x/sys v0.46.0 without a hash the commit's go.sum holds for it; a replaced module (/tmp/elsewhere/sys (devel))"},
+		{name: "build info shows a workspace module for a dependency", fake: map[string]string{"FAKE_MODULES": `\tmod\texecution-substrate\t(devel)\t\n\tdep\tgolang.org/x/sys\t(devel)\t\n`},
+			says: "es was not built from the modules the commit pins: the dependency golang.org/x/sys (devel), where the commit's go.mod requires v0.46.0"},
+		{name: "build info shows a vendored dependency", fake: map[string]string{"FAKE_MODULES": `\tmod\texecution-substrate\t(devel)\t\n\tdep\tgolang.org/x/sys\tv0.46.0\t\n`},
+			says: "es was not built from the modules the commit pins: the dependency golang.org/x/sys v0.46.0 without a hash the commit's go.sum holds for it"},
+		{name: "build info shows a version go.sum knows but go.mod does not require", fake: map[string]string{"FAKE_MODULES": `\tmod\texecution-substrate\t(devel)\t\n\t` + strings.TrimSuffix(olderDep, "\n") + `\n`},
+			says: "the dependency golang.org/x/sys v0.45.0 h1:BEyM4CBJdbAcKj4fNjxRsm1MGW9IPdfZoJXw3lVTQ0U=, where the commit's go.mod requires v0.46.0"},
+		{name: "build info shows a dependency go.mod does not require", fake: map[string]string{"FAKE_MODULES": `\tmod\texecution-substrate\t(devel)\t\n\t` + strings.TrimSuffix(cleanDep, "\n") + `\n\t` + strings.TrimSuffix(unrequiredDep, "\n") + `\n`},
+			says: "the dependency golang.org/x/text v0.17.0 h1:XtiM5bkSOt+ewxlOE/aE/AKEHibwj/6gvWMl9Rsh0Qc=, which the commit's go.mod does not require"},
+		{name: "build info shows a hash of a kind Go does not write", fake: map[string]string{"FAKE_MODULES": `\tmod\texecution-substrate\t(devel)\t\n\t` + strings.TrimSuffix(h2Dep, "\n") + `\n`},
+			says: "the dependency golang.org/x/sys v0.46.0 h2:noSf2Fq6F8DBgS+LysIkx7rIExoNHJsxOAtPp4rthXw= without a hash the commit's go.sum holds for it"},
+		{name: "build info shows another hash", fake: map[string]string{"FAKE_MODULES": `\tmod\texecution-substrate\t(devel)\t\n\t` + strings.TrimSuffix(otherHashDep, "\n") + `\n`},
+			says: "the dependency golang.org/x/sys v0.46.0 h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= without a hash the commit's go.sum holds for it"},
+		{name: "build info names another program", fake: map[string]string{"FAKE_PATH": "execution-substrate/cmd/other"},
+			says: "es was not built from the modules the commit pins: the program execution-substrate/cmd/other, not execution-substrate/cmd/es"},
+		{name: "build info names another main module", fake: map[string]string{"FAKE_MODULES": `\tmod\texample.com/other\t(devel)\t\n\t` + strings.TrimSuffix(cleanDep, "\n") + `\n`},
+			says: "es was not built from the modules the commit pins: the main module example.com/other (devel), not execution-substrate"},
+		{name: "the commit's go.mod replaces a module", prepare: func(t *testing.T, repo, goBin, out string) {
+			mod := moduleFixtureGoMod + "\nreplace golang.org/x/sys => ../sys\n"
+			if err := os.WriteFile(filepath.Join(repo, "go.mod"), []byte(mod), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			fixtureGit(t, repo, "commit", "-q", "-a", "-m", "replace")
+		}, says: "the commit's go.mod replaces a module, and build and check take only modules that go.sum pins"},
+		{name: "the commit's go.mod has a line this does not read", prepare: func(t *testing.T, repo, goBin, out string) {
+			if err := os.WriteFile(filepath.Join(repo, "go.mod"), []byte(moduleFixtureGoMod+"frobnicate golang.org/x/sys\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			fixtureGit(t, repo, "commit", "-q", "-a", "-m", "unknown line")
+		}, says: "line 6 of the commit's go.mod is not read here: 'frobnicate golang.org/x/sys'"},
+
+		// The environment (audits 32 and 33, A32-1 and A33-1).
+		{name: "nothing from the environment but the proxy and CA variables reaches the toolchain", env: mergeMaps(hostile, passed), succeeds: true,
+			prepare: func(t *testing.T, repo, goBin, out string) {
+				fakeGit := filepath.Join(filepath.Dir(goBin), "path-bin", "git")
+				if err := os.MkdirAll(filepath.Dir(fakeGit), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(fakeGit, []byte("#!/bin/sh\ntouch "+filepath.Join(filepath.Dir(goBin), "path-git-ran")+"\nexit 1\n"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			},
+			after: func(t *testing.T, goBin, out, _ string) {
+				if _, err := os.Lstat(filepath.Join(filepath.Dir(goBin), "path-git-ran")); err == nil {
+					t.Fatal("build ran the git first on its own PATH")
+				}
+				env := fakeGoEnv(t, goBin, "build")
+				for k, v := range passed {
+					if env[k] != v {
+						t.Errorf("build did not pass %s=%s on: %q", k, v, env[k])
+					}
+				}
+			}},
+		{name: "a umask that lets anyone write does not reach the payload", umask: "000", succeeds: true,
+			after: func(t *testing.T, goBin, out, _ string) {
+				for _, path := range []string{out, filepath.Join(out, "es"), filepath.Join(out, "provenance.json")} {
+					if mode := modeOf(t, path); mode&0o022 != 0 {
+						t.Errorf("%s has the mode %04o", path, mode)
+					}
+				}
+			}},
+
+		// What build compiles and runs, and where the payload goes
+		// (audit 33): nothing that another account can change.
+		{name: "a folder of the clone that others can write", prepare: func(t *testing.T, repo, goBin, out string) {
+			writable(filepath.Join(repo, "scripts"), 0o777)
+		}, says: "can change the clone build compiles: "},
+		{name: "a folder above the clone that others can write", prepare: func(t *testing.T, repo, goBin, out string) {
+			writable(filepath.Dir(repo), 0o777)
+		}, says: "can change the clone build compiles: " + "%DIR% is writable by its group or others (0777) without the sticky bit"},
+		{name: "a file of the clone's .git that its group can write", prepare: func(t *testing.T, repo, goBin, out string) {
+			writable(filepath.Join(repo, ".git", "config"), 0o664)
+		}, says: string(filepath.Separator) + filepath.Join(".git", "config") + " is writable by its group or others (0664)"},
+		{name: "a symbolic link in the clone", prepare: func(t *testing.T, repo, goBin, out string) {
+			_ = os.Symlink("/tmp", filepath.Join(repo, "scripts", "link"))
+		}, says: string(filepath.Separator) + filepath.Join("scripts", "link") + " is a symbolic link"},
+		{name: "a clone without its own .git", prepare: func(t *testing.T, repo, goBin, out string) {
+			_ = os.Rename(filepath.Join(repo, ".git"), filepath.Join(filepath.Dir(repo), "git-elsewhere"))
+		}, says: string(filepath.Separator) + ".git is not a folder"},
+		{name: "a go command others can write", prepare: func(t *testing.T, repo, goBin, out string) {
+			writable(goBin, 0o777)
+		}, says: "can change the go command build runs: "},
+		{name: "a Go toolchain others can write", prepare: func(t *testing.T, repo, goBin, out string) {
+			writable(filepath.Join(goroot(goBin), "pkg", "tool"), 0o777)
+		}, says: "can change the Go toolchain "},
+		{name: "a Go toolchain whose go.env names modules to fetch from their own servers", fake: map[string]string{"FAKE_GONOPROXY": "example.com/private"},
+			// GOPRIVATE or GONOPROXY in the toolchain's go.env would make Go
+			// fetch those modules from the servers their paths name, not
+			// through the module proxy, whatever GOPROXY says
+			// (audit 35, A35-1).
+			says: "sets GONOPROXY or GOPRIVATE to 'example.com/private' in its go.env, which makes Go fetch the modules it names from their own servers, not through https://proxy.golang.org; build refuses any value there"},
+		// Go keeps a vertical tab, a carriage return or U+2028 in the value
+		// and splits its pattern list only at commas, so each of these
+		// still names example.com/private; a reader of go env's lines
+		// would take them for line ends and see nothing (audit 36,
+		// A36-2).
+		{name: "a36: GONOPROXY after a vertical tab and a comma", fake: map[string]string{"FAKE_GONOPROXY": "\v,example.com/private"},
+			says: `sets GONOPROXY or GOPRIVATE to '\x0b,example.com/private' in its go.env, which makes Go fetch the modules it names`},
+		{name: "a36: GONOPROXY after a carriage return and a comma", fake: map[string]string{"FAKE_GONOPROXY": "\r,example.com/private"},
+			says: `sets GONOPROXY or GOPRIVATE to '\r,example.com/private' in its go.env, which makes Go fetch the modules it names`},
+		{name: "a36: GONOPROXY after a line separator and a comma", fake: map[string]string{"FAKE_GONOPROXY": "\u2028,example.com/private"},
+			says: `sets GONOPROXY or GOPRIVATE to '\u2028,example.com/private' in its go.env, which makes Go fetch the modules it names`},
+		{name: "go env -json leaves out GONOPROXY", fake: map[string]string{"FAKE_GO_ENV_JSON": `{"GOROOT": "/nowhere", "GOVERSION": "go1.26.5"}`},
+			says: "go env -json did not report GOVERSION, GOROOT, GONOPROXY: "},
+		{name: "go env answers in lines, not JSON", fake: map[string]string{"FAKE_GO_ENV_JSON": "go1.26.5\n/nowhere\n"},
+			says: "go env -json did not report GOVERSION, GOROOT, GONOPROXY: 'go1.26.5\\n/nowhere'"},
+		// Audit 37: the reader's other stated rules. Real go1.26.5 prints
+		// one JSON object of strings, so these answers come only from a
+		// Go that is not the one build was written for.
+		{name: "a37: go env -json reports GONOPROXY as null", fake: map[string]string{"FAKE_GO_ENV_JSON": `{"GONOPROXY": null, "GOROOT": "/nowhere", "GOVERSION": "go1.26.5"}`},
+			says: "go env -json did not report GOVERSION, GOROOT, GONOPROXY: "},
+		{name: "a37: go env -json prints more after its answer", fake: map[string]string{"FAKE_GO_ENV_JSON": "{\"GONOPROXY\": \"\", \"GOROOT\": \"/nowhere\", \"GOVERSION\": \"go1.26.5\"}\nmore"},
+			says: "go env -json did not report GOVERSION, GOROOT, GONOPROXY: "},
+		{name: "a37: a Go toolchain whose GONOPROXY is a space", fake: map[string]string{"FAKE_GONOPROXY": " "},
+			says: "sets GONOPROXY or GOPRIVATE to ' ' in its go.env"},
+		{name: "a37: a Go toolchain whose GONOPROXY is none", fake: map[string]string{"FAKE_GONOPROXY": "none"},
+			says: "sets GONOPROXY or GOPRIVATE to 'none' in its go.env"},
+		{name: "a payload folder in a folder others can write", out: func(t *testing.T) string {
+			dir := filepath.Join(t.TempDir(), "open")
+			if err := os.Mkdir(dir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			writable(dir, 0o777)
+			return filepath.Join(dir, "payload")
+		}, says: "can change the folder the payload goes in: "},
+		{name: "a payload folder in a sticky folder", succeeds: true, out: func(t *testing.T) string {
+			dir := filepath.Join(t.TempDir(), "sticky")
+			if err := os.Mkdir(dir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			writable(dir, 0o777|os.ModeSticky)
+			return filepath.Join(dir, "payload")
+		}},
+
+		// A module cache build keeps (the coordinator's request after audit 33).
+		{name: "a new module cache is made private, checked by go mod verify and kept", succeeds: true,
+			moduleCache: func(t *testing.T, repo string) string { return filepath.Join(t.TempDir(), "go-mod") },
+			after: func(t *testing.T, goBin, out, moduleCache string) {
+				if mode := modeOf(t, moduleCache); mode != 0o700 {
+					t.Errorf("the module cache has the mode %v", mode)
+				}
+				if env := fakeGoEnv(t, goBin, "mod"); env["GOMODCACHE"] != moduleCache {
+					t.Errorf("go mod verify ran with GOMODCACHE %q", env["GOMODCACHE"])
+				}
+				if env := fakeGoEnv(t, goBin, "build"); env["GOMODCACHE"] != moduleCache {
+					t.Errorf("go build ran with GOMODCACHE %q", env["GOMODCACHE"])
+				}
+			}},
+		{name: "a module cache others can write", moduleCache: func(t *testing.T, repo string) string {
+			dir := filepath.Join(t.TempDir(), "go-mod")
+			if err := os.MkdirAll(filepath.Join(dir, "cache", "download"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			writable(filepath.Join(dir, "cache", "download"), 0o777)
+			return dir
+		}, says: "can change the module cache: "},
+		{name: "a module cache go mod verify refuses", fake: map[string]string{"FAKE_VERIFY_EXIT": "1"},
+			moduleCache: func(t *testing.T, repo string) string { return filepath.Join(t.TempDir(), "go-mod") },
+			says:        "go mod verify refused the module cache "},
+		{name: "a module cache in the checkout", moduleCache: func(t *testing.T, repo string) string { return filepath.Join(repo, "go-mod") },
+			says: "the module cache must be outside the checkout"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			repo, script, goBin, head := buildRepo(t)
+			repo, script, goBin, _ := buildRepo(t)
+			out := filepath.Join(t.TempDir(), "payload")
+			if tc.out != nil {
+				out = tc.out(t)
+			}
+			if tc.prepare != nil {
+				tc.prepare(t, repo, goBin, out)
+			}
+			head := strings.Repeat("0", 40)
+			if _, err := os.Lstat(filepath.Join(repo, ".git")); err == nil {
+				head = fixtureGit(t, repo, "rev-parse", "HEAD")
+			}
 			commit := head
 			if tc.commit != nil {
 				commit = tc.commit(head)
 			}
-			env := map[string]string{"FAKE_GOVERSION": "go1.26.5", "FAKE_REVISION": head, "FAKE_MODIFIED": "false"}
-			for k, v := range tc.env {
-				env[k] = v
+			writeFakeGoConf(t, goBin, head, tc.fake)
+			moduleCache := ""
+			args := []string{"-I", script, "build", "--out", out, "--commit", commit, "--go", goBin}
+			if tc.moduleCache != nil {
+				moduleCache = tc.moduleCache(t, repo)
+				args = append(args, "--module-cache", moduleCache)
 			}
-			if tc.prepare != nil {
-				tc.prepare(repo)
+			name := "python3"
+			if tc.umask != "" {
+				args = append([]string{"-c", `umask ` + tc.umask + `; exec "$0" "$@"`, "python3"}, args...)
+				name = "/bin/sh"
 			}
-			out := filepath.Join(t.TempDir(), "payload")
-			cmd := exec.Command("python3", "-I", script, "build", "--out", out, "--commit", commit, "--go", goBin)
+			cmd := exec.Command(name, args...)
 			cmd.Dir = t.TempDir()
 			cmd.Env = os.Environ()
-			for k, v := range env {
+			for k, v := range tc.env {
 				cmd.Env = append(cmd.Env, k+"="+v)
+			}
+			if _, set := tc.env["HOME"]; set {
+				// PATH as the operator's may hold it: a folder with a git in it first.
+				cmd.Env = append(cmd.Env, "PATH="+filepath.Join(filepath.Dir(goBin), "path-bin")+string(os.PathListSeparator)+os.Getenv("PATH"))
 			}
 			var stdout, stderr bytes.Buffer
 			cmd.Stdout, cmd.Stderr = &stdout, &stderr
@@ -2147,17 +2998,122 @@ func TestRemoteAlphaUpgradeESBuildChecksToolchainCheckoutAndBuildInfo(t *testing
 						t.Errorf("%s sha256 %v", name, sums[name])
 					}
 				}
+				assertBuildEnvironment(t, goBin, out, moduleCache)
+				required := []string{"env", "build", "version"}
+				if moduleCache != "" {
+					required = append(required, "mod")
+				}
+				assertTelemetryOff(t, goBin, required...)
+				if tc.after != nil {
+					tc.after(t, goBin, out, moduleCache)
+				}
 				return
 			}
+			says := strings.ReplaceAll(tc.says, "%DIR%", filepath.Dir(repo))
 			exitErr, ok := err.(*exec.ExitError)
-			if !ok || exitErr.ExitCode() != 1 || !strings.Contains(stderr.String(), tc.says) {
+			if !ok || exitErr.ExitCode() != 1 || !strings.Contains(stderr.String(), says) {
 				t.Fatalf("build: %v, stderr %q", err, stderr.String())
 			}
 			if _, err := os.Lstat(filepath.Join(out, "provenance.json")); err == nil {
 				t.Fatalf("a refused build wrote provenance")
 			}
+			leftovers, _ := filepath.Glob(filepath.Join(filepath.Dir(out), "es-upgrade-build-*"))
+			if tc.leavesWork {
+				if len(leftovers) != 1 || !strings.Contains(stderr.String(), string(filepath.Separator)+filepath.Base(leftovers[0])+" could not be removed (") {
+					t.Fatalf("the refusal does not name the private folder left behind (%v): %q", leftovers, stderr.String())
+				}
+			} else if len(leftovers) != 0 {
+				t.Fatalf("a refused build left its private folder: %v", leftovers)
+			}
+			assertTelemetryOff(t, goBin)
 		})
 	}
+}
+
+// assertTelemetryOff checks that every command the fake go ran found Go's
+// telemetry mode "off" in the private HOME, and that the commands named in
+// required ran. With telemetry on, a go command under a fresh HOME starts
+// a child in a session of its own that writes in HOME after the command
+// has exited, after build may have removed the folder (audit 34,
+// A34-1).
+func assertTelemetryOff(t *testing.T, goBin string, required ...string) {
+	t.Helper()
+	ran := map[string]bool{}
+	seen, _ := filepath.Glob(filepath.Join(filepath.Dir(goBin), "telemetry-*"))
+	for _, path := range seen {
+		command := strings.TrimPrefix(filepath.Base(path), "telemetry-")
+		ran[command] = true
+		if mode := mustRead(t, path); mode != "off\n" {
+			t.Errorf("go %s ran with the telemetry mode file %q, want \"off\"", command, mode)
+		}
+	}
+	for _, command := range required {
+		if !ran[command] {
+			t.Errorf("go %s did not run", command)
+		}
+	}
+}
+
+// assertBuildEnvironment checks the environment the fake go was given for
+// its last build: exactly the fixed settings, the passed variables the test
+// set, and private folders, each its own and none other's, made for this
+// build in a folder beside the payload and gone afterwards. A module cache
+// build was told to keep is the one exception.
+func assertBuildEnvironment(t *testing.T, goBin, out, moduleCache string) {
+	t.Helper()
+	env := fakeGoEnv(t, goBin, "build")
+	for _, setting := range buildGoSettings {
+		key, value, _ := strings.Cut(setting, "=")
+		if env[key] != value {
+			t.Errorf("the toolchain was given %s=%q, want %q", key, env[key], value)
+		}
+		delete(env, key)
+	}
+	// The variables build passes on; a case that sets them checks their values.
+	for _, key := range []string{"HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "NO_PROXY", "no_proxy", "SSL_CERT_FILE", "SSL_CERT_DIR"} {
+		delete(env, key)
+	}
+	work := filepath.Dir(env["HOME"])
+	if filepath.Dir(work) != filepath.Dir(out) || !strings.HasPrefix(filepath.Base(work), "es-upgrade-build-") {
+		t.Fatalf("build's private folders are not in a folder of its own beside the payload: HOME=%s", env["HOME"])
+	}
+	want := map[string]string{"HOME": "home", "TMPDIR": "tmp", "GOTMPDIR": "tmp", "GOCACHE": "go-build", "GOPATH": "gopath", "GOMODCACHE": "go-mod"}
+	for _, key := range buildPrivateFolders {
+		expected := filepath.Join(work, want[key])
+		if key == "GOMODCACHE" && moduleCache != "" {
+			expected = moduleCache
+		}
+		if env[key] != expected {
+			t.Errorf("the toolchain was given %s=%q, want %q", key, env[key], expected)
+		}
+		delete(env, key)
+	}
+	if len(env) != 0 {
+		t.Errorf("the toolchain was given more of the environment: %v", env)
+	}
+	folders := strings.Split(strings.TrimSpace(mustRead(t, filepath.Join(filepath.Dir(goBin), "folders-build"))), "\n")
+	if len(folders) != 6 {
+		t.Fatalf("ls -ld of the private folders: %q", folders)
+	}
+	for _, line := range folders {
+		if !strings.HasPrefix(line, "drwx------") {
+			t.Errorf("a private folder others can reach during the build: %s", line)
+		}
+	}
+	if _, err := os.Lstat(work); err == nil {
+		t.Errorf("build left its private folder %s", work)
+	}
+}
+
+// mergeMaps is the union of maps, later ones winning.
+func mergeMaps(maps ...map[string]string) map[string]string {
+	out := map[string]string{}
+	for _, m := range maps {
+		for k, v := range m {
+			out[k] = v
+		}
+	}
+	return out
 }
 
 // ptyDriver runs a command the way an SSH session does and drops the

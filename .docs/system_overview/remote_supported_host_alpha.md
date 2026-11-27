@@ -7294,14 +7294,84 @@ Scripts:
 
 Operator interface:
 
-- `scripts/remote_alpha_upgrade_es.sh build --out <dir> --commit <sha>`,
-  unprivileged, in a fresh clone checked out at `<sha>`. It requires Go
-  `go1.26.5` (`/usr/local/go/bin/go` by default; `--go` names another), a
-  clean checkout and an output folder outside it. It builds `es`,
-  `es-runtime-support` and `esconfigcheck` for linux/amd64 with
-  `CGO_ENABLED=0`, `GOTOOLCHAIN=local`, `-mod=readonly` and
-  `-buildvcs=true`, checks that each binary's build info names `<sha>` with
-  `vcs.modified=false`, and writes `provenance.json` with their SHA-256.
+- `scripts/remote_alpha_upgrade_es.sh build --out <dir> --commit <sha> [--module-cache <dir>]`,
+  unprivileged, in a fresh clone checked out at `<sha>` that only you and
+  root can change (run `chmod -R go-w` on it if your umask lets your group
+  write). It requires Go `go1.26.5` (`/usr/local/go/bin/go` by default;
+  `--go` names another by its path, not by a name looked up on `PATH`), a
+  clean checkout and an output folder outside it.
+  It builds `es`, `es-runtime-support` and `esconfigcheck` for linux/amd64
+  with `CGO_ENABLED=0`, `GOTOOLCHAIN=local`, `-mod=readonly`,
+  `-buildvcs=true` and `-trimpath` (which keeps the folders it builds in
+  out of the binaries, so two builds of one commit give the same bytes
+  wherever they run, and a payload can be checked by building it again),
+  and it takes nothing that an account other than root and you can change
+  (audits 32 and 33):
+  - it refuses, before Go runs, unless the whole clone (`.git` included),
+    the `go` command, the Go toolchain folder that `go` reports
+    (`GOROOT`: the standard library's source, the compiler, `go.env`),
+    the module cache that `--module-cache` names, and every folder above
+    each of them and above the payload folder belong to root or you and
+    are writable by neither their group nor others (a folder above may
+    have the sticky bit instead), with no symbolic link inside them; the
+    clone must have its own `.git` and no uncommitted, untracked or
+    ignored file (Go's `vcs.modified` does not see an ignored file, and
+    `.gitignore` ignores `coverage.*`, a name a Go file can have);
+  - Go and git get none of your environment but the proxy and CA
+    variables (`HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY`, in either case,
+    `SSL_CERT_FILE` and `SSL_CERT_DIR`), which cannot change what is
+    compiled, since Go checks every module against `go.sum`: `PATH` is
+    `/usr/bin:/bin`; `GOWORK=off` (Go would otherwise read a `go.work`
+    from any folder above the clone, and a `go.work` can put any folder in
+    place of a dependency, unchecked by `go.sum`), `GOENV=off` (no go env
+    file), `GOPROXY=https://proxy.golang.org` with no `direct` after it (Go
+    fetches modules only through the module proxy at `proxy.golang.org`: a
+    module the proxy does not have fails the build, where `direct` would
+    make Go look the module's path up on the server the path names, whose
+    `go-import` tag can send Go to any server. The proxy serves some large
+    downloads by a redirect to its own storage on `storage.googleapis.com`,
+    which Go follows, and `go.sum` checks every byte wherever it comes from.
+    build refuses a toolchain whose `go.env` sets `GOPRIVATE` or `GONOPROXY`
+    to any value, as `go env -json` reports it, since either makes Go fetch
+    the modules it names from their own servers), `GOVCS=*:off` (Go runs no
+    git or other VCS tool to fetch a module), and no other `GO*` variable;
+    git reads neither the system's nor your config (`GIT_CONFIG_NOSYSTEM=1`,
+    `GIT_CONFIG_GLOBAL=/dev/null`), so a hook in a config that
+    `XDG_CONFIG_HOME` names never runs, and it reads the objects a commit
+    names, not what `refs/replace` puts in their place
+    (`GIT_NO_REPLACE_OBJECTS=1`); `HOME`, `TMPDIR`, `GOTMPDIR`, `GOPATH`
+    and the build cache (`GOCACHE`) are
+    fresh `0700` folders that build makes beside the payload folder for
+    this build and removes before it writes `provenance.json`, and when it
+    refuses (the refusal says so if the removal failed), so no
+    `XDG_CACHE_HOME` or home of yours decides where Go keeps or finds
+    compiled packages, which Go reuses without checking them again; Go's
+    telemetry is off in that `HOME` (build writes `off` to Go's mode file
+    there, as `go telemetry off` does), since with it on a go command
+    under a fresh home starts a child process of its own that writes there
+    after the command has ended (audit 34);
+  - the module cache is a fresh private folder too, so every build
+    downloads the modules (about 60 MB of zips, about 400 MB once
+    extracted) through `proxy.golang.org`, unless `--module-cache` names a
+    cache to keep: build makes it (`0700`) if it does not exist, takes an
+    existing one only under the rule above, and runs `go mod verify` on
+    it first, which checks
+    each module's files and zip against the hash recorded when it was
+    downloaded, while Go checks that hash against `go.sum` when it uses
+    the module. With a cache that holds the commit's modules the build
+    needs no network; the box needs the module proxy only to fill the
+    cache, the first time and when a commit changes the modules;
+  - it sets its own umask to `022`, so the payload is not writable by
+    group or others whatever yours is.
+  It checks that each binary's build info names `<sha>` with
+  `vcs.modified=false`, its own package, and only the modules that the
+  commit's `go.mod` and `go.sum` pin (as `check` does, below), and writes
+  `provenance.json` with their SHA-256. Make the folder that holds the
+  clone and the payload one that only root and you can change, not a
+  folder under the sticky `/tmp` where other accounts can leave files
+  beside it: for example `sudo mkdir -m 0700 /var/lib/es-upgrade/<UTC time>`
+  (under a `root:root` `0755` `/var/lib/es-upgrade`) handed to you with
+  `sudo chown`, as the box procedure does.
 - `sudo scripts/remote_alpha_upgrade_es.sh check --payload <dir> --commit <sha>`
   reads only. It prints a JSON report (schema
   `execution-substrate.remote-alpha.es-upgrade-summary.v2`) with the host's
@@ -7312,9 +7382,50 @@ Operator interface:
 - `sudo scripts/remote_alpha_upgrade_es.sh rollback --backup-dir <dir>`
   puts a backup back.
 
-Hand the clone and the payload to root before `check` (`chown -R root:root`)
-so that no other account can change them between the check and the run;
-`check` refuses a payload that is not root's. Run
+Hand the clone and the payload to root before `check` (`chown -R root:root`
+and `chmod -R go-w`) so that no other account can change them between the
+check and the run. `check`, `apply` and `rollback` run code from the clone
+as root (the upgrade itself, the setup's `nomad_tls` functions,
+`nomad_acl_setup.sh` with `nomad_acl.py`, and `nomad_tls_identity.py`), so
+each first refuses, changing nothing, unless no account but root can change
+that code: every folder from `/` down to the clone's `scripts` belongs to
+root and is writable by neither its group nor others, unless it has the
+sticky bit (as `/tmp` has); everything under `scripts` belongs to root, is a
+folder or a regular file, and is writable by neither its group nor others
+(the sticky bit does not help there); and no symbolic link leads to or sits
+under `scripts`. `check` and `apply` also read the commit's `go.mod` and
+`go.sum` from the clone's git objects (`git cat-file`, with neither the
+system's nor root's git config, no `refs/replace` and `PATH`
+`/usr/bin:/bin`), so they refuse
+unless the clone's `.git` is a folder (not a `.git` file, which sends git
+to the folder it names) whose content is root's alone by the same rule,
+holds the commit, and has no `commondir` or object `alternates` (which would
+make git read objects from elsewhere): git does not check an object's bytes
+against its name when it reads it, so the folder it reads decides what
+`go.mod` and `go.sum` say.
+
+The wrapper `scripts/remote_alpha_upgrade_es.sh` checks on its own, for
+every command (`build` too, since root installs what it builds), before any
+of the clone's code runs. It finds that code by the physical path of the
+file it was started as: the start path read from the kernel's working
+folder (never an inherited `PWD`, never `CDPATH`), with every symbolic link
+resolved, as the kernel did when it opened the wrapper. It refuses, running
+nothing of the clone, unless no account but root (for a run by another
+user: root and that user) can change that code: every folder from `/` down
+to the wrapper's folder belongs to one of them and is writable by neither
+its group nor others unless it has the sticky bit; the wrapper's folder,
+its `internal` folder, the wrapper and `internal/remote_alpha_upgrade_es.py`
+belong to one of them, are not symbolic links and are writable by neither
+group nor others (the sticky bit does not help there). It then refuses a
+start path that is not that physical path: a symbolic link to the wrapper,
+or a path through one. A hard link to the wrapper in another folder makes
+that folder the wrapper's folder, which must then pass on its own. It also
+refuses a path with `..`, whose folder the kernel and a reading of the text
+can tell apart after a symbolic link. Only then does it run
+`internal/remote_alpha_upgrade_es.py` by the physical path, with Python's
+`-I` (no `PYTHON*` variables, user site folder or current folder on the
+import path), so the upgrade's own checks above see the clone's real path.
+`check` also refuses a payload that is not root's. Run
 `apply` under `systemd-run` so that a dropped SSH session does not stop it;
 its output then goes to the journal, and its summary to the backup folder.
 
@@ -7356,7 +7467,19 @@ its rollback.
   `vcs.modified=false`. A test keeps that reader in agreement with
   `go version -m`. `apply` repeats the check and installs copies with the
   same SHA-256. `esconfigcheck` is bound by its owner and SHA-256 only, since the
-  upgrade runs it and does not install it
+  upgrade runs it and does not install it; it uses no module but the
+  repository's own (a test keeps it so), so no `go.work` or `replace` can
+  change it
+- `es` or `es-runtime-support` shows in its Go build info a program other
+  than its own package (`cmd/es`, `cmd/es-runtime-support` of the module
+  `go.mod` names), or a module other than what the commit's `go.mod` and
+  `go.sum` pin: each dependency must have the version `go.mod` requires
+  and an `h1:` hash that `go.sum` holds for that version, so a version
+  that a `go.work` raised, a module `go.mod` does not require, a module a
+  `go.work` puts in place of a dependency (version `(devel)`), a
+  `-mod=vendor` build (no hash), a hash of another kind and a replaced
+  module (a `=>` line) are all refused. A commit whose `go.mod` replaces a
+  module is refused by `build` and `check` alike
 - the named commit is `16cbf739`, or the host has no shape it knows
 - one of `ars`, `ags`, `egs`, `es`, `vault`, `spire-server`, `spire-agent`,
   `nomad` and `docker` is not active, or `es.service` does not run
@@ -7465,11 +7588,74 @@ interrupted apply and `rollback` on a host-shaped folder with fake
 `systemctl`, `curl`, `nomad`, `docker`, ACL setup and identity check, and the
 real `nomad_tls_issue`: hosts of every refused shape, each named part by
 part; payload binaries whose Go build info names another commit, another Go
-or a modified build; payload files of another owner or group; a validation
+or a modified build, or shows a replaced module, a workspace module or a
+vendored dependency; payload files of another owner or group; a clone that
+another account could change (a file or folder writable by its group or
+others, one of another owner, a folder above the clone writable by its
+group or others without the sticky bit, a sticky folder under `scripts`
+that anyone can write, a symbolic link under `scripts` or on the way to
+it), for `check`, `apply` and `rollback`; the wrapper refusing, with the
+upgrade's own guard off and before any of the clone's Python runs, code of
+another account, an upgrade file, the wrapper, its folder (with the sticky
+bit too, and an `internal` folder with the sticky bit) or its `internal`
+folder writable by group or others, a folder above the clone that only
+others can write, an `internal` folder that is a symbolic link, `build`
+from such a clone, the upgrade file, the wrapper, the `internal` folder or
+the folder above `scripts` belonging to another account (one with a uid
+below 1000 too), and, through `sudo`, a clone of the user running
+`sudo`; the wrapper refusing a symbolic link to it (beside
+it, and in a shared sticky folder that holds another
+`internal/remote_alpha_upgrade_es.py`, which never runs), a hard link to it
+in such a folder, a path through a symbolic link, and a path with `..`
+(leading, too, from a folder entered through a symbolic link into the
+clone, and one whose `..` follows such a link); the wrapper going to its
+own folder whatever an inherited `PWD`, `CDPATH` or `PYTHONPATH` says, and
+taking a leading `//` for `/`; and the guard on for root when the host is named
+another way (`//`, `/.`, a symbolic link to `/`); a validation
 warning about unreadable TLS files; failures at each step after the backup;
 damaged backups; an `apply` whose terminal hangs up and one whose output
-pipe closes; and `build` with a fake Go against a dirty checkout and build
-info that names another commit or a modified build.
+pipe closes; `check` and `apply` against a payload whose `es` or
+`es-runtime-support` shows a replaced module, a workspace module, a
+vendored dependency, a version `go.sum` knows but `go.mod` does not
+require, a module `go.mod` does not require, a hash of another kind or
+another hash, another program, another main module or none, and against a
+clone that does not hold the commit, whose git objects others can change,
+whose git reads objects from elsewhere (object `alternates`, a `commondir`
+naming a repository that holds the commit), whose `.git` is a file naming
+the fixture's own `.git` or that has no `.git`, all read from a fixture
+repository whose one
+commit is the payload's; `build` refusing `--go go`; `build` with a fake Go
+against a dirty checkout, an ignored file, build info that names another
+commit, a modified build, another program or another main module or shows
+any of those modules, a commit whose `go.mod` replaces a module, a clone,
+a `.git` file, a `go` command, a toolchain, a payload folder's parent or a
+module cache that others can change, a toolchain whose `go.env` names
+modules to fetch from their own servers (also after a vertical tab, a
+carriage return or U+2028 and a comma, which Go keeps in the value) and
+ones whose `GONOPROXY` is a space or `none` (any value is refused), a `go
+env -json` answer without `GONOPROXY`, with `GONOPROXY` null, not JSON, or
+with more after its JSON object, a symbolic link in the clone, a clone
+without its own `.git`, a module cache in the clone and one that
+`go mod verify` refuses, and a refusal after which the private folder
+cannot be removed, which the refusal names; `build` with an environment of
+`GO*`, `XDG_*`, `GIT_*`, `HOME`, `TMPDIR`, `CC` and other variables and a
+`PATH` whose first `git` leaves a mark, none of which may reach Go or git,
+where the fake Go reads back its whole environment (only the fixed
+settings, the proxy and CA variables, and private folders made for this
+build and gone after it, and Go's telemetry mode `off` for every go
+command), and with a umask of `000`; and `build` with a private copy of the
+real Go in a clone under a sticky folder that holds a `go.work` that
+names another module, with `GOWORK` and `GOFLAGS=-mod=mod` in its
+environment, and an `XDG_CONFIG_HOME` whose git config names a hook and an
+`XDG_CACHE_HOME` folder, where a plain `go build` fails on that `go.work`
+and a plain `git status` runs the hook, while `build` succeeds with a
+clean build of the commit, runs no hook and leaves that cache folder
+empty, and a second clone of the commit, built through a wrapper that lists
+Go's telemetry folder after each go command (only the mode file `build`
+wrote), gives the same bytes, and `build` refuses that copy of Go once its
+`go.env` sets `GOPRIVATE`, also to a value that starts with a vertical tab
+and a comma; and `esconfigcheck` built from no module but the repository's
+own.
 `TestRemoteAlphaUpgradeESMovesARealNomadToHTTPS` runs `check`, `apply`, the
 in-place check and `rollback` against a real Nomad agent started on the
 box's own `nomad.hcl` (with a data folder, free ports and the TLS paths under

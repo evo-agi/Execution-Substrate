@@ -885,6 +885,10 @@ func byPathOwnershipChangeLines(source string) []string {
 // /etc/nomad.d is root:root 0755 and that the folder does not exist yet),
 // and the other sets the modes of the new files inside the caller's own
 // mktemp -d folder (0700), which no one else can enter.
+//
+// remote_alpha_upgrade_es.sh's two lines came with RT60-2's wrapper check
+// (ES PR #63, audit 31). Both are the text of its refusals, which tell the
+// operator how to hand the clone over; the wrapper changes no owner or mode.
 var byPathOwnershipChangeAllowance = map[string]int{
 	"scripts/01_bringup.sh":                                           1,
 	"scripts/70_linux_setup.sh":                                       11,
@@ -907,6 +911,7 @@ var byPathOwnershipChangeAllowance = map[string]int{
 	"scripts/nomad_acl_setup.sh":                                      1,
 	"scripts/remote_alpha_operator.sh":                                10,
 	"scripts/remote_alpha_runtime_identity_helper_summary.sh":         2,
+	"scripts/remote_alpha_upgrade_es.sh":                              2,
 }
 
 // Red-team section 9 item 5: a source guard. Scripts may not add by-name

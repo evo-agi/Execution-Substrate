@@ -218,6 +218,43 @@ func TestESConfigCheckAgreesWithConfigLoad(t *testing.T) {
 	}
 }
 
+// TestESConfigCheckNeedsNoModuleButTheRepository keeps esconfigcheck,
+// which check and apply run as root, free of every module but this
+// repository's own. The upgrade reads the module lines of the binaries it
+// installs, es and es-runtime-support, but not of esconfigcheck, which it
+// binds by owner and SHA-256 (the tests run a host build of it, a Mach-O
+// file on macOS); build refuses a replaced or unhashed module in all three.
+// With no module outside the repository, neither a go.work nor a replace
+// can change esconfigcheck's code (audit 32, A32-1). A module
+// added here fails this test, and with it that reasoning.
+func TestESConfigCheckNeedsNoModuleButTheRepository(t *testing.T) {
+	cmd := exec.Command("go", "list", "-deps", "-f", "{{with .Module}}{{.Path}}{{end}}", "execution-substrate/scripts/internal/esconfigcheck")
+	cmd.Dir = executionSubstrateRepoRoot
+	cmd.Env = append(os.Environ(), "GOWORK=off", "GOFLAGS=-mod=readonly", "CGO_ENABLED=0", "GOOS=linux", "GOARCH=amd64")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("go list -deps esconfigcheck: %v\n%s", err, stderr.String())
+	}
+	modules := map[string]bool{}
+	for _, module := range strings.Fields(string(out)) {
+		modules[module] = true
+	}
+	if len(modules) != 1 || !modules["execution-substrate"] {
+		t.Fatalf("esconfigcheck's packages come from the modules %v; want execution-substrate alone", sortedKeys(modules))
+	}
+}
+
+func sortedKeys(set map[string]bool) []string {
+	keys := make([]string, 0, len(set))
+	for key := range set {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
 func buildESConfigCheck(t *testing.T) string {
 	t.Helper()
 	out := filepath.Join(t.TempDir(), "esconfigcheck")
