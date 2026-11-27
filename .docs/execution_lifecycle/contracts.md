@@ -262,18 +262,22 @@ These labels are intentionally different. A contract may be live today, relied o
   caller authentication contract in
   `.docs/system_overview/contracts.md` section 3A: the verified client
   certificate carries exactly one URI SAN, and that URI is a conforming SPIFFE
-  ID with a path in the trust domain `execution.internal`. Anything else,
-  including a certificate with several URI SANs or a non-canonical path such
-  as one with a trailing slash, is `401` before allowlist matching.
+  ID with a path in the trust domain `execution.internal` whose first segment
+  is not `workload` in any letter case. Anything else, including a
+  certificate with several URI SANs, a non-canonical path such as one with a
+  trailing slash, or a workload identity such as
+  `spiffe://execution.internal/workload/codex-agent`, is `401` before
+  allowlist matching.
 - Bootstrap PKI callers are rejected for execution operations.
 - Accepted caller identities are the SPIFFE paths whose prefixes match `authorization.allowed_spiffe_path_prefixes` in ES config.
 - Prefix matching is exact-or-subpath: a caller path is accepted only when it
   equals a configured prefix or starts with that prefix followed by `/`.
 - ES startup config validation keeps those prefixes narrow. Each configured
   prefix must be a relative SPIFFE path prefix with at least two non-empty path
-  segments, no leading or trailing slash, and no `.` or `..` segment, and
-  every segment uses only the SPIFFE ID path characters, under the
-  allowlist-prefix rule in `.docs/system_overview/contracts.md` section 3A.
+  segments, no leading or trailing slash, no `.` or `..` segment, and no first
+  segment `workload` in any letter case, and every segment uses only the
+  SPIFFE ID path characters, under the allowlist-prefix rule in
+  `.docs/system_overview/contracts.md` section 3A.
 - Single-segment prefixes such as `service` or `operator`, root-like prefixes
   such as `/`, and traversal-like prefixes are rejected because exact-or-subpath
   matching would make them broad namespace grants.
