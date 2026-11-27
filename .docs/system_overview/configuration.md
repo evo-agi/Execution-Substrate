@@ -293,6 +293,9 @@ For a minimal active system, `runtime_trust.signer_policy.allowed_signers` must 
   `spiffe://execution.internal/...` ID, a query, or percent encoding is also
   rejected: no authenticated caller path could match such a prefix. ARS, AGS,
   and ES share this rule through `internal/callerallowlist`.
+- A prefix whose first segment is `workload`, in any letter case, such as
+  `workload/codex-agent`, is rejected: workload identities are never callers
+  (`contracts.md` section 3A).
 - ES authorization keeps exact-or-subpath matching after config validation:
   `service/control-plane` authorizes `service/control-plane` and
   `service/control-plane/provider`, but not `service/control-plane-evil`.
