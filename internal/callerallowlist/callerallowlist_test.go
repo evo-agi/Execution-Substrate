@@ -31,6 +31,20 @@ var validPrefixes = []string{
 	"x/..y",
 	"x/y..",
 	"x/.y",
+	"workloads/codex-agent",
+	"service/workload",
+	"a/workload/b",
+}
+
+// workloadPrefixes name workload identities, which are never callers
+// (.docs/system_overview/contracts.md, section 3A).
+var workloadPrefixes = []string{
+	"workload",
+	"workload/codex-agent",
+	"workload/codex-agent/run/r1",
+	"Workload/codex-agent",
+	"WORKLOAD/codex-agent",
+	"wOrKlOaD/x",
 }
 
 var notCanonicalPrefixes = []string{
@@ -83,6 +97,21 @@ func TestValidatePrefixRefusesPathsNoCallerCanPresent(t *testing.T) {
 		if err := callerallowlist.ValidatePrefix(prefix); !errors.Is(err, callerallowlist.ErrNotCanonical) {
 			t.Errorf("ValidatePrefix(%q) = %v, want ErrNotCanonical", prefix, err)
 		}
+	}
+}
+
+func TestValidatePrefixRefusesWorkloadIdentities(t *testing.T) {
+	for _, prefix := range workloadPrefixes {
+		if err := callerallowlist.ValidatePrefix(prefix); !errors.Is(err, callerallowlist.ErrWorkloadPrefix) {
+			t.Errorf("ValidatePrefix(%q) = %v, want ErrWorkloadPrefix", prefix, err)
+		}
+	}
+	// No workload caller can reach MatchesAny at all: callerauth.ParseSPIFFEID
+	// refuses every workload identity, so no callerauth.SPIFFEID with a
+	// workload path exists (TestParseSPIFFEIDRefusesEverythingElse). The
+	// guarantee is structural, and this test does not try to restate it.
+	if err := callerallowlist.ValidatePrefixes("allowed_caller_prefixes", []string{"operator/local", "workload/codex-agent"}); !errors.Is(err, callerallowlist.ErrWorkloadPrefix) || !strings.Contains(err.Error(), "allowed_caller_prefixes[1]") {
+		t.Errorf("ValidatePrefixes with a workload prefix = %v, want ErrWorkloadPrefix naming entry 1", err)
 	}
 }
 
