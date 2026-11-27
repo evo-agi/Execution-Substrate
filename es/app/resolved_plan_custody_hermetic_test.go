@@ -618,7 +618,7 @@ func startResolvedPlanCustodyHermeticStack(t *testing.T, handler http.Handler) *
 	startService(t, esService.Start, esService.Addr, fixture.clientTLSConfigForServer(t, fixture.esServerName, "operator/local", false))
 	stack.esRunning = true
 
-	publishSubmitArtifact(t, stack, opts.networkAccess)
+	publishSubmitArtifact(t, stack, opts.networkAccess, opts.mountTargets)
 
 	t.Cleanup(func() { stack.shutdownAll(t) })
 	return stack
