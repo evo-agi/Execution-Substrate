@@ -126,8 +126,9 @@ resolved plan. A future reliable
 canonical encoding, replay custody, keyed dispatch, producer enablement or
 recovery path is selected here. Reliable submit remains unavailable and runtime
 unwired. The plan must not synthesize `PrepareRequest` or `Manifest` proof, create
-a parallel admission engine, tighten the empty-environment-allowlist contract,
-or infer authority-handoff inapplicability contrary to current `Submit`.
+a parallel admission engine, change environment or mount admission (which the
+shared admission path owns, `.docs/execution_lifecycle/contracts.md`, section
+5), or infer authority-handoff inapplicability contrary to current `Submit`.
 
 **Current invariant:** real artifact, capability, target, runtime-profile,
 policy and trust admission remain authoritative; successful legacy receipt,
@@ -136,10 +137,11 @@ legacy decoder rejects a structural `reliable_submit` body, even when a schema
 string alone is supplied. Blank schema/version still defaults to v1, explicit
 nonblank legacy versions remain compatible, mode defaults to async, timeout to
 zero, and omitted CPU/memory to 10/128. Request maps, slices and resources are
-owned after the admission copy. Caller, profile and platform environment
-precedence, empty allowlist behavior, policy-fetched payload reuse and both
-implicit default and explicit `control-plane-normal-shell/v1` profile behavior
-remain in force.
+owned after the admission copy. Environment and mount admission are those of
+the shared admission path (`.docs/execution_lifecycle/contracts.md`, section
+5); the foundation adds no rule of its own. Caller, profile and platform
+environment precedence, policy-fetched payload reuse and both implicit default
+and explicit `control-plane-normal-shell/v1` profile behavior remain in force.
 
 **Bounded slice rule:** `prepareAdmission` first owns a copy of the request and
 performs its established artifact, trust, Vault/auth and policy reads and gates.
@@ -1028,7 +1030,8 @@ identity, state-path configuration, TTL, public reliable-submit vocabulary,
 HTTP or recovery routes, Nomad ambiguity reconciliation, reliable dispatch,
 Coordinator integration, or cross-repository behavior. It must not synthesize
 `PrepareRequest` or `Manifest` proof from the plan, create a parallel admission
-engine, silently tighten the current empty-environment-allowlist contract, or
+engine, change environment or mount admission (which the shared admission
+path owns, `.docs/execution_lifecycle/contracts.md`, section 5), or
 infer authority-handoff inapplicability contrary to current `Submit` behavior.
 
 The `reliable-submit-durable-same-operation-replay-repair` source tranche is
