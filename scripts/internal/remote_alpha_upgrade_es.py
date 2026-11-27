@@ -438,6 +438,21 @@ BACKUP_SHA256 = re.compile(r"[0-9a-f]{64}")
 BACKUP_ID_LIMIT = 2**32 - 1
 
 
+def file_name_problem(text):
+    """What in text no file name can hold, or None: a NUL, or a lone
+    surrogate (JSON "\\ud800"), which os.open and os.lstat refuse with
+    UnicodeEncodeError, not OSError (re-check 52 of ES PR #67, N67-10). A
+    surrogate that stands for a byte the file system encoding cannot decode
+    (U+DC80 to U+DCFF) is that byte, as os.fsencode reads it, and passes."""
+    if "\x00" in text:
+        return "a NUL"
+    try:
+        os.fsencode(text)
+    except UnicodeEncodeError:
+        return "a character no file name can hold"
+    return None
+
+
 def check_backup_manifest(manifest, path):
     """Refuse a manifest, read from path, that is valid JSON but not the
     document backup_files writes, naming what is wrong, rather than fail
@@ -448,7 +463,8 @@ def check_backup_manifest(manifest, path):
     size, mode, and an owner and group that chown takes. Each value it
     admits is one restore_files can use, so it is refused here, before
     anything stops, rather than by open() or chown later, after the first
-    file was put back (re-check 51, N67-9 and S51-3)."""
+    file was put back (re-check 51, N67-9 and S51-3; re-check 52, N67-10:
+    a path or copy name no file name can hold)."""
     def refuse(what):
         raise Refusal(f"{path} is not the manifest apply writes ({what}); nothing was changed")
 
@@ -463,8 +479,9 @@ def check_backup_manifest(manifest, path):
     for index, entry in enumerate(files):
         if not isinstance(entry, dict) or not isinstance(entry.get("path"), str) or type(entry.get("exists")) is not bool:
             refuse(f"file {index} is not an object with a path and whether it existed")
-        if "\x00" in entry["path"]:
-            refuse(f"file {index}'s path holds a NUL")
+        problem = file_name_problem(entry["path"])
+        if problem:
+            refuse(f"file {index}'s path holds {problem}")
         if not clean_absolute(entry["path"]):
             refuse(f"file {index}'s path, {entry['path']!r}, is not a clean absolute path")
         if not entry["exists"]:
@@ -476,6 +493,9 @@ def check_backup_manifest(manifest, path):
                 and all(type(entry.get(key)) is int and entry[key] >= 0 for key in ("size", "uid", "gid"))
                 and entry["uid"] < BACKUP_ID_LIMIT and entry["gid"] < BACKUP_ID_LIMIT):
             refuse(f"file {index}, {entry['path']!r}, lacks its copy's name, digest, size, mode, owner or group")
+        problem = file_name_problem(copy)
+        if problem:
+            refuse(f"file {index}'s copy name holds {problem}")
 
 
 def load_backup(backup_dir):
@@ -500,13 +520,27 @@ def load_backup(backup_dir):
     return manifest
 
 
-def restore_folder_problem(manifest):
-    """Why a file of the manifest cannot go back into its folder (the folder
-    is gone), or None."""
+def restore_target_problem(manifest):
+    """Why a file of the manifest cannot be put back, or None: its folder is
+    gone or not a folder, or a folder stands at its path (a rename cannot
+    replace a folder; a link or another non-file there is replaced, re-check
+    52 of ES PR #67, O52-1), or its path cannot be looked at. A file that was
+    absent at backup time is not put back, so it needs neither."""
     for entry in manifest["files"]:
-        parent = os.path.dirname(entry["path"])
-        if entry["exists"] and not os.path.isdir(parent):
-            return f"{parent}, where the backup puts {entry['path']} back, is not a folder"
+        if not entry["exists"]:
+            continue
+        path = entry["path"]
+        parent = os.path.dirname(path)
+        if not os.path.isdir(parent):
+            return f"{parent}, where the backup puts {path} back, is not a folder"
+        try:
+            st = os.lstat(path)
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            return f"{path}, which the backup puts back, cannot be looked at ({exc.strerror})"
+        if stat.S_ISDIR(st.st_mode):
+            return f"{path}, which the backup puts back as a file, is a folder now; remove it"
     return None
 
 
@@ -516,11 +550,12 @@ def restore_files(backup_dir):
     The whole backup is verified before anything is written. Files that
     were absent at backup time are left as they are and reported."""
     manifest = load_backup(backup_dir)
-    # Each file goes back into the folder it was taken from: one that is
-    # gone is refused before the first file is put back. restore_host has
-    # refused it before it stopped a service; this is for the restore
-    # command, and for a folder removed in between.
-    problem = restore_folder_problem(manifest)
+    # Each file goes back into the folder it was taken from, by a rename: a
+    # folder that is gone, or a folder at the file's path, is refused before
+    # the first file is put back. restore_host has refused it before it
+    # stopped a service; this is for the restore command, and for a change
+    # in between.
+    problem = restore_target_problem(manifest)
     if problem:
         raise Refusal(f"{problem}; no file was put back")
     restored, left = [], []
@@ -2550,7 +2585,7 @@ def restore_host(backup_dir, log, by):
     if [entry["path"] for entry in manifest["files"]] != backed_up:
         raise Refusal(f"{backup_dir}'s manifest does not name the files apply backs up ({', '.join(backed_up)}), "
                       "in that order; nothing was changed")
-    problem = restore_folder_problem(manifest)
+    problem = restore_target_problem(manifest)
     if problem:
         raise Refusal(f"{problem}; nothing was changed")
     created = load_created(backup_dir)
