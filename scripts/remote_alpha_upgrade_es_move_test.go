@@ -952,6 +952,50 @@ m.write_new_file = _cut`
 		requireRollbackRefused(t, h, cutOff)
 	})
 
+	// The same finding: earlier.json is renamed into place and its folder is
+	// synced right after, before apply changes the host. Without that sync a
+	// power cut could leave the backup of an apply that went through
+	// without earlier.json, and the order rule skips such a folder.
+	t.Run("earlier.json is renamed into place and its folder synced", func(t *testing.T) {
+		h := newUpgradeHost(t, helper)
+		events := filepath.Join(h.state, "renames-and-syncs.json")
+		record := fmt.Sprintf(`import atexit, json, os, stat
+_events = []
+_rename, _fsync = os.rename, os.fsync
+def _renamed(src, dst, *args, **kwargs):
+    _rename(src, dst, *args, **kwargs)
+    _events.append({"renamed": dst, "folder": os.stat(os.path.dirname(dst)).st_ino})
+def _synced(fd):
+    _fsync(fd)
+    st = os.fstat(fd)
+    if stat.S_ISDIR(st.st_mode):
+        _events.append({"synced folder": st.st_ino})
+os.rename, os.fsync = _renamed, _synced
+atexit.register(lambda: open(%q, "w").write(json.dumps(_events)))`, events)
+		if stdout, stderr, code := runWithPatchedUpgrade(h, record, "apply", "--payload", h.payload, "--commit", h.commit); code != 0 {
+			t.Fatalf("apply exited %d\nstdout %s\nstderr %s", code, stdout, stderr)
+		}
+		backupDir, _ := readSummary(t, h)
+		data, err := os.ReadFile(events)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var seen []map[string]any
+		if err := json.Unmarshal(data, &seen); err != nil {
+			t.Fatalf("%v: %s", err, data)
+		}
+		for i, event := range seen {
+			if event["renamed"] != filepath.Join(backupDir, "earlier.json") {
+				continue
+			}
+			if i+1 == len(seen) || seen[i+1]["synced folder"] == nil || seen[i+1]["synced folder"] != event["folder"] {
+				t.Fatalf("the rename to earlier.json is not followed by a sync of its folder: %v", seen[i:])
+			}
+			return
+		}
+		t.Fatalf("earlier.json was not renamed into place: %v", seen)
+	})
+
 	// Audit 47, A47-1: builds are reproducible, so after B1 and B2 were put
 	// back, a new apply B3 of B2's commit installs bytes equal to B2's
 	// staged payload. B2 is still refused while B3 is in effect, whatever
