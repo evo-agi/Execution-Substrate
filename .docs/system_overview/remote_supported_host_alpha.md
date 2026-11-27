@@ -39,7 +39,8 @@ repaired-helper mounted-alias evidence remains required where the operational
 claim depends on it.
 
 These are environment-bound operational qualification requirements under
-`PLANS.md` and `.docs/execution_lifecycle/contracts.md`. They are not an
+`.docs/standing_rules/execution_admission_and_custody.md` and
+`.docs/execution_lifecycle/contracts.md`. They are not an
 independent blanket prerequisite to a separately authorized local source-
 preservation or integration commit. At that historical gate, the H/C/T
 integrated source was unaccepted and required focused changed-interaction

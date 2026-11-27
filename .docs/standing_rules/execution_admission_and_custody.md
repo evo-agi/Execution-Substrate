@@ -6,7 +6,9 @@ the outside-observer Stage A slice and the reliable-submit tranche status they
 began with. They moved here unreworded from the `PLANS.md` section
 "Cross-Repo Hybrid Integration ADR Pointer" at `trunk_dev` commit
 `8129b82d79b5700049621b6d4e95b6bf37ada7ac`, so that `PLANS.md` holds intent and
-order.
+order. The last section, "Current paired-root custody and acceptance scope",
+moved here the same way, unreworded, from `PLANS.md` at `trunk_dev` commit
+`923e9c3366775664c8a85f19273e3dd4fc04eb22`.
 
 The detailed lifecycle contract for these rules is
 `.docs/execution_lifecycle/contracts.md`.
@@ -872,3 +874,184 @@ supported-local profile. Cross-compilation is compile evidence only. These
 environment-bound lanes are not an automatic pre-commit condition for local
 source preservation or integration; a new bounded witness for this candidate
 requires a concrete changed-interaction selection.
+
+### Current paired-root custody and acceptance scope
+
+**Superseded CUST-1/CUST-2 gate history.** The earlier final-audit sequence
+allowed repository implementation and local validation before a running-
+deployment topology observation, then treated that observation, repaired-helper
+mounted fixtures, sequential native Linux lanes, and a fresh audit as blanket
+pre-commit gates. That pre-integration linkage is not a current local commit
+rule. The accepted predecessor tree supplied source evidence for the
+then-current-base candidate, which at that gate remained uncommitted and
+pending independent audit. That historical source gate closed with PR #8;
+its source publication did not close operating gates. Focused changed-interaction
+assessment, validation, and separately authorized commit were required there.
+C's selected native observations remain historical evidence
+for exact C source and command identities, not executions of this tree. Any
+new bounded witness must be selected for a concrete changed interaction rather
+than inferred from merge ancestry. Operational topology, key exposure,
+capacity, residence, reclamation, and publication gates remain open for their
+operational scope; none is waived by local source work. The one-time WIP
+checkpoint exception is consumed and supplies no authority here.
+
+**Current invariant — staging non-mutation and retained-output independence.**
+Result retention, publication, and read do not mutate a claimed staging root;
+result-side proof supplies no independent deletion or existing-object repair
+authority.
+
+**Bounded slice rule pending integrated review — paired-root qualification.**
+`execution.staging_root_dir` and `execution.results_root_dir` form one
+operation-local qualified root set. Lexical absolute/non-overlap validation is
+an early shape check, not physical proof. Before submit-enabled startup
+provisioning, Submit run-root claim, or current retained-result directory
+creation, new-object initialization, no-replace publication, and authenticated
+read/check, ES qualifies both configured paths component-by-component without
+symlink traversal and proves that they are neither the same backing object nor
+ancestor and descendant in either direction. Every named result operation uses
+the descriptor-held root that participated in a fresh visible-object and
+topology proof; ES does not validate one pathname and reopen an unrelated
+pathname for the operation. Pair proof is a prerequisite, not deletion or
+repair authority. Existing result directories, finals, and normalization
+evidence are validated without metadata repair or adoption.
+
+Linux binds each held descriptor to `fstat`, a complete
+`statx(AT_EMPTY_PATH)` identity including `STATX_MNT_ID`, a no-follow rewalk of
+its `/proc/self/fd` canonical presentation, and the uniquely selected record
+from a stable, at-most-8-MiB/65,536-record `/proc/self/mountinfo` acquisition.
+Mountinfo record integrity is separate from root-coordinate eligibility. Every
+bounded record retains its filesystem type, absolute component-clean
+mountpoint, parent/stack relationships, and classified root value. Ordinary
+canonical pathname roots are coordinate-eligible. An `nsfs` root with the
+source-grounded namespace-object envelope `<kind>:[<canonical decimal inode>]`
+is retained as opaque, where `<kind>` is exactly `mnt`, `net`, `uts`, `ipc`,
+`pid`, `user`, `cgroup`, or `time`; the decimal label is structurally checked
+but not numerically interpreted or given a separate ES width limit.
+`pid_for_children` and `time_for_children` are not root kinds because the
+kernel's namespace-object rendering uses their canonical `pid` and `time`
+operations. Malformed `nsfs` labels and every other non-path root class reject.
+Opaque records still count toward byte/record limits, ID and parent/cycle
+integrity, stacking, and canonical descendant-mount checks. If descriptor
+selection names an opaque record, proof refuses before device shortcuts,
+coordinate arithmetic, or any governed effect; ES never prefixes `/`, joins,
+cleans, substitutes the mountpoint for, or otherwise converts that label into
+a directory coordinate. This recognition does not make `nsfs` a supported
+configured execution-root filesystem.
+Source coordinates derive from the selected record and canonical descriptor
+presentation, never configured spelling. Equal or component-prefix
+coordinates reject; component-disjoint coordinates, including provable sibling
+bind sources, are accepted. The parser permits one unambiguous `/` top-of-tree
+self-parent terminal and parents hidden outside the process view, while
+rejecting duplicate IDs, nontrivial cycles, non-top self-parent records,
+malformed escapes, incomplete identity masks, device disagreement, unstable
+snapshots, ambiguity, and canonical descendant mounts. Darwin binds
+`F_GETPATH`, no-follow descriptor identity, `fstatfs`, and bounded `getfsstat`;
+same-FSID distinct presentations remain unprovable and reject. Neither platform
+uses OS-label branching or a fallback proof.
+
+Missing suffixes are validated intent, not canonical objects. A first absent
+component must be observed as `ENOENT`. Two missing roots under the same
+deepest existing object, or otherwise dependent on comparing unobserved names
+in one lookup context, reject; canonically disjoint existing parents may
+proceed. Startup plans without mutation, provisions one descriptor-relative
+component at a time, and reacquires the pair after every component before any
+later effect. Submit acquires after freeze and reobserves immediately before
+the exclusive staging claim. Retained reads may serve an existing bundle when
+staging or its run is absent, but never provision a missing results root and
+never turn a topology failure into Nomad fallback. Result-side operations use
+a fresh pair at each current named directory creation, new-object metadata
+initialization, temporary creation, final/record publication, and authenticated
+read/check boundary; bytes streamed through an already-held descriptor do not
+rescan topology. New unpublished result temporaries/records and newly created
+normalization evidence may receive their selected owner and mode through
+`Fchown`/`Fchmod`. Existing objects are checked without metadata mutation or
+adoption. Incomplete leaves, uncertain unpublished temporaries, and startup
+probe fixtures remain retained where exact-object cleanup ownership is
+unproved. No result pathname cleanup or whole-root reclamation is selected.
+
+The mount-archive namespace validator uses one invocation-local iterative
+compressed byte-radix ledger. Labels are substring views into retained
+normalized entry names, branching is byte-keyed, ancestry is recognized only
+at `/` boundaries, and commit follows all fallible per-entry work. It retains
+existing namespace/error precedence and the 16/64-MiB complete decompressed-
+stream budgets without adding an ES name or entry cap. Reachable PAX/GNU and
+32,768-header EOF cases exercise production probe/commit counters. The pinned
+`archive/tar` implementation's 1-MiB hidden special-file processing ceiling is
+dependency behavior, not an ES resolved-name or entry-count policy.
+
+**App-fixture migration and local revalidation scope.** The positive app
+integration stack closes its test-fixture `Temporary compatibility edge` by
+exclusively creating exactly two independent, empty execution-root directories
+before `esapp.New`. Regression coverage must prove their configured paths,
+directory type, distinct filesystem identity, current test-owner identity,
+expected mode, and emptiness. This is a fixture refinement that aligns positive
+integration paths with the dual-root `Current invariant` and active `Bounded
+slice rule`; it does not relax dual-missing rejection, pre-create a run object,
+or change production admission, provisioning, custody, or capability behavior.
+The correction is confined to the shared constructor in
+`es/app/submit_integration_test.go`; pre-edit inventory found no identical
+direct-construction defect in another app test.
+
+The corresponding external validation runner must use short, unique,
+mode-`0700` lane scratch roots under `/private/tmp` and preserve the inherited
+umask. This removes runner-created Unix-socket pathname inflation without
+changing `TestProofCodexShimAcquiresCredentialAndMutatesWorkspace` or widening
+its capability skip. Passing local app, admission, default, physical-temp, and race lanes does not
+qualify an operational deployment or turn C's historical native observations
+into integrated-source execution. Running-deployment topology, key exposure,
+capacity, residence, reclamation, publication, and claimed-architecture native
+witnesses remain operational gates. A new integrated-source bounded witness is
+selected only for a concrete changed interaction; these gates do not
+collectively become a blanket local pre-commit requirement.
+
+**CUST-2 nsfs assurance continuation.** The current continuation is a bounded
+test-assurance refinement only: it may align the explicit Linux post-freeze
+semantic-call ledger with the already documented nsfs implementation and may
+replace the proof-Codex test's caller-temp-derived Unix-socket path with a
+unique, owner-only, test-owned short physical fixture beneath `/tmp`.
+Production nsfs behavior, capability policy, lifecycle contracts, credential
+flow assertions, and all external gates remain unchanged. Allocation and
+listener failures in that required local test fail rather than masquerade as a
+capability skip. After a single freeze, validation remains ordered local
+default, local physical-temp, local race, native linux/amd64, then native
+linux/arm64. One distinct successor generation is allowed only after closing
+and preserving a causally demonstrated defect confined to the authorized test
+expectation, socket fixture, or minimal validation plumbing; at most two final
+generations may run, unchanged failures are never retried, and no earlier pass
+is credited to changed bytes. This continuation does not pass or waive the
+running-deployment observation, mounted-topology fixtures, supported-local
+consumer/operator proof, fresh independent audit, or exact-byte publication
+authority.
+
+This foundation does not select or implement canonical effective-plan
+encoding, `PlanBinding`, a complete effective-plan witness, durable material or
+replay-envelope custody, host-context replay treatment, mutable image-content
+identity, state-path configuration, TTL, public reliable-submit vocabulary,
+HTTP or recovery routes, Nomad ambiguity reconciliation, reliable dispatch,
+Coordinator integration, or cross-repository behavior. It must not synthesize
+`PrepareRequest` or `Manifest` proof from the plan, create a parallel admission
+engine, change environment or mount admission (which the shared admission
+path owns, `.docs/execution_lifecycle/contracts.md`, section 5), or
+infer authority-handoff inapplicability contrary to current `Submit` behavior.
+
+The `reliable-submit-durable-same-operation-replay-repair` source tranche is
+implemented inside the private durable source and remains required before
+reliable-submit config/store lifecycle wiring, producer enablement, or public
+runtime enablement. The committed private durable service now derives a
+latest-operation descriptor, recognizes the current latest committed mutation
+before stale-revision and inactive-state refusal, returns exact replay for same
+mutation plus same operation kind/input binding, returns mutation conflict for
+same-mutation/different-kind-or-binding reuse, reloads CAS losers through the
+same classification, and keeps COMMIT-unknown recovery on stricter full-record
+equality including the descriptor. SQLite schema v2 persists the descriptor for
+codec-2 rows and preserves migrated v1 rows as legacy/unbound without inventing
+operation semantics. Historical mutation retention remains out of scope, and
+the private store remains runtime-unwired, so this repair does not affect
+current public execution behavior.
+
+Reliable dispatch remains blocked until later implementation and audit. Both
+caller-to-ES response loss and ES-to-Nomad registration-response uncertainty
+are in scope for the target contract. The target must prevent duplicate
+semantic execution from transport redelivery while preserving the current
+no-key submit compatibility path, `control-plane-normal-shell/v1`, Nomad
+lifecycle authority, and the prohibition on a broad ES lifecycle store.

@@ -2327,7 +2327,8 @@ require a separately selected bounded witness; merge ancestry alone does not
 create a blanket native campaign. No integrated native observation,
 supported-host qualification, or rollout readiness is inferred here. Operational topology,
 key exposure, capacity, sensitive-material residence, reclamation, and
-publication gates remain open for their operational scope. See `PLANS.md` under
+publication gates remain open for their operational scope. See
+`.docs/standing_rules/execution_admission_and_custody.md` under
 "Current paired-root custody and acceptance scope" and the current gates in
 `.docs/system_overview/remote_supported_host_alpha.md` and
 `.docs/system_overview/supported_linux_host_qualification.md`.
