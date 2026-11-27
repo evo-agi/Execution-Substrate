@@ -992,7 +992,9 @@ func TestRemoteAlphaUpgradeESRollsBackOnlyTheApplyThatLeftTheHost(t *testing.T) 
 	t.Run("a backup outside the backup folder", func(t *testing.T) {
 		h, _, backupDir := applied(t)
 		copied := filepath.Join(t.TempDir(), filepath.Base(backupDir))
-		if out, err := exec.Command("cp", "-a", backupDir, copied).CombinedOutput(); err != nil {
+		cp := exec.Command("cp", "-a", backupDir, copied)
+		cp.Dir = t.TempDir()
+		if out, err := cp.CombinedOutput(); err != nil {
 			t.Fatalf("cp: %v %s", err, out)
 		}
 		requireRollbackRefused(t, h, copied, "host as it is: it is not a folder of /var/backups/execution-substrate-es-upgrade, so the backups made after it cannot be told")
