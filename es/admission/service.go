@@ -207,16 +207,18 @@ var (
 		// section (gcc/doc/gcc.texi and the files it includes), not only in its
 		// section on environment variables, among them MAKE, the program
 		// lto-wrapper runs for a parallel link, CXX_MODULE_MAPPER, whose
-		// "|program" form names a program cc1plus starts, and
+		// "|program" form names a program cc1plus starts,
 		// MSP430_GCC_INCLUDE_DIR, a header and linker-script directory of the
-		// msp430 port; and LPATH and OBJCPLUS_INCLUDE_PATH, which gcc reads and
-		// the manual leaves out; and the directory, domain and language list
-		// bash reads the translations of $"..." strings from, which it expands
-		// as double-quoted text, so a catalog the caller chooses could run
-		// commands in a script that translates its messages. Upstream glibc's
-		// gettext skips a LANGUAGE entry that holds a path only in set-user-ID
-		// programs (intl/dcigettext.c, 2.39 and 2.42), so LANGUAGE=../x can name
-		// a catalog outside the directory; the one Ubuntu build tested ignored
+		// msp430 port, and VSB_DIR, which gcc's VxWorks 7 specs read for header
+		// directories and to choose a library (the manual's spec-file example);
+		// and LPATH and OBJCPLUS_INCLUDE_PATH, which gcc reads and the manual
+		// leaves out; and the directory, domain and language list bash reads the
+		// translations of $"..." strings from, which it expands as double-quoted
+		// text, so a catalog the caller chooses could run commands in a script
+		// that translates its messages. Upstream glibc's gettext skips a
+		// LANGUAGE entry that holds a path only in set-user-ID programs
+		// (intl/dcigettext.c, 2.39 and 2.42), so LANGUAGE=../x can name a
+		// catalog outside the directory; the one Ubuntu build tested ignored
 		// such entries, and a backstop does not rest on one build.
 		"WORKLOAD_VAULT_INSECURE_SKIP_VERIFY": {},
 		"WGETRC":                              {},
@@ -316,6 +318,7 @@ var (
 		"MAKE":                                {},
 		"CXX_MODULE_MAPPER":                   {},
 		"MSP430_GCC_INCLUDE_DIR":              {},
+		"VSB_DIR":                             {},
 		"TEXTDOMAINDIR":                       {},
 		"TEXTDOMAIN":                          {},
 		"LANGUAGE":                            {},

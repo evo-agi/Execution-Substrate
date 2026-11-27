@@ -228,8 +228,8 @@ var mustBeReservedEnvironmentKeys = []string{
 	"GOWORK", "GOAUTH", "GOVCS", "GOEXPERIMENT", "GOTMPDIR", "GCCGO", "GCCGOTOOLDIR", "FC",
 	"GCC_EXEC_PREFIX", "COMPILER_PATH", "LIBRARY_PATH", "CPATH", "C_INCLUDE_PATH", "CPLUS_INCLUDE_PATH",
 	"OBJC_INCLUDE_PATH", "GCC_COMPARE_DEBUG", "LPATH", "OBJCPLUS_INCLUDE_PATH", "DEPENDENCIES_OUTPUT",
-	"SUNPRO_DEPENDENCIES", "MAKE", "CXX_MODULE_MAPPER", "MSP430_GCC_INCLUDE_DIR", "TEXTDOMAINDIR",
-	"TEXTDOMAIN", "LANGUAGE",
+	"SUNPRO_DEPENDENCIES", "MAKE", "CXX_MODULE_MAPPER", "MSP430_GCC_INCLUDE_DIR", "VSB_DIR",
+	"TEXTDOMAINDIR", "TEXTDOMAIN", "LANGUAGE",
 }
 
 var mustBeReservedEnvironmentPrefixes = []string{
@@ -373,9 +373,9 @@ func TestReservedEnvironmentKeysAreRefusedEvenWhenTheArtifactDeclaresThem(t *tes
 		// kinds, and pkg-config's search keys.
 		"FC", "PKG_CONFIG", "pkg_config_path", "PKG_CONFIG_LIBDIR", "GCCGOTOOLDIR", "LPATH",
 		"OBJCPLUS_INCLUDE_PATH", "DEPENDENCIES_OUTPUT", "SUNPRO_DEPENDENCIES",
-		// Re-check 27: the keys the GCC 14.2.0 manual names outside its
-		// section on environment variables.
-		"MAKE", "make", "CXX_MODULE_MAPPER", "MSP430_GCC_INCLUDE_DIR",
+		// Re-checks 27 and 28: the keys the GCC 14.2.0 manual names outside
+		// its section on environment variables, VSB_DIR in a spec example.
+		"MAKE", "make", "CXX_MODULE_MAPPER", "MSP430_GCC_INCLUDE_DIR", "VSB_DIR", "vsb_dir",
 	} {
 		t.Run(key, func(t *testing.T) {
 			fixture := base.withEnvironmentVariables(t, []string{key})

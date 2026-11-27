@@ -2,6 +2,7 @@ package executionsubstrate_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -31,24 +32,20 @@ func TestCallerDeclarationRulesAreInTheLifecycleContract(t *testing.T) {
 		"Every environment key must be a portable name: an ASCII letter or underscore, followed by ASCII letters, digits and underscores.",
 		"Environment keys must not use reserved keys, whether or not the artifact declares them.",
 		"ES matches reserved keys with ASCII letters folded to upper case",
-		"`TestReservedEnvironmentKeySetIsPinned` pins it.",
-		// Re-check 25 Opus N1: the sentences on keys left open follow the one
-		// that calls the list a backstop.
-		"It is a backstop for a publisher's mistake, not the boundary: no list can name every variable every program reads. The boundary is the allowlist in the next rule. Some keys of these kinds stay open on purpose.",
+		// Re-check 25 Opus N1 and re-check 28 Sonnet N28-2: the sentences on
+		// keys left open follow the one that calls the list a backstop, in
+		// this order, so the paragraph is pinned whole.
+		"`TestReservedEnvironmentKeySetIsPinned` pins it. It is a backstop for a publisher's mistake, not the boundary: no list can name every variable every program reads. The boundary is the allowlist in the next rule. Some keys of these kinds stay open on purpose. `LANG` and `LC_ALL` stay open: glibc refuses a locale name that climbs out of the locale directory and looks a name up only under that directory unless `LOCPATH`, which is reserved, is set (`locale/findlocale.c`), so they select only installed locales. `GOOS`, `GOARCH` and the other target keys, `GO111MODULE` and `GOFIPS140` choose only among code the artifact or the Go toolchain already holds. gcc's `SOURCE_DATE_EPOCH` and `GCC_EXTRA_DIAGNOSTIC_OUTPUT` change only a timestamp and the text of its diagnostics. The gcc keys above are the ones a GCC program reads: keys the GCC manual names that a program built with gcc reads when it runs, such as the sanitizer runtime's `ASAN_OPTIONS` and the coverage runtime's `GCOV_PREFIX`, are outside that class and are not reserved.",
 		"They do not include every such key; the families below add more",
 		"A family is reserved as a whole, so that the list does not have to keep up with each program's next key",
 		"every key that ends in `INSECURE_SKIP_VERIFY`",
-		// Report 24 on PR #74: why LANGUAGE is reserved and LANG and LC_ALL
-		// are not.
+		// Report 24 on PR #74: why LANGUAGE is reserved (why LANG and LC_ALL
+		// are not is in the paragraph above).
 		"skips a `LANGUAGE` entry that holds a path only in set-user-ID programs",
-		"`LANG` and `LC_ALL` stay open: glibc refuses a locale name that climbs out of the locale directory and looks a name up only under that directory unless `LOCPATH`, which is reserved, is set (`locale/findlocale.c`), so they select only installed locales.",
-		// Re-checks 25 and 27 on PR #74: the Go and gcc sentences name their
-		// sources, and say which keys of those kinds stay open and why.
+		// Re-checks 25, 27 and 28 on PR #74: the Go and gcc sentences name
+		// their sources.
 		"every such key `go help environment` lists in Go 1.26.5",
-		"the GNU C compiler's keys that choose the programs it runs, the headers and libraries it builds with, extra options, or a file it writes with text the caller chooses (`GCC_EXEC_PREFIX`, `COMPILER_PATH`, `LIBRARY_PATH`, `LPATH`, `CPATH`, `C_INCLUDE_PATH`, `CPLUS_INCLUDE_PATH`, `OBJC_INCLUDE_PATH`, `OBJCPLUS_INCLUDE_PATH`, `MSP430_GCC_INCLUDE_DIR`, `GCC_COMPARE_DEBUG`, `DEPENDENCIES_OUTPUT`, `SUNPRO_DEPENDENCIES`, `MAKE`, which names the program gcc's link-time optimizer runs for a parallel link, and `CXX_MODULE_MAPPER`, whose `|program` form names a program the C++ compiler starts: every such key a GCC program reads that the GCC 14.2.0 manual, `gcc/doc/gcc.texi` and the files it includes, names in any section, not only in its section on environment variables, and the two that gcc's driver and preprocessor read and the manual leaves out, `LPATH` and `OBJCPLUS_INCLUDE_PATH`);",
-		"`GOOS`, `GOARCH` and the other target keys, `GO111MODULE` and `GOFIPS140` choose only among code the artifact or the Go toolchain already holds.",
-		"gcc's `SOURCE_DATE_EPOCH` and `GCC_EXTRA_DIAGNOSTIC_OUTPUT` change only a timestamp and the text of its diagnostics.",
-		"The gcc keys above are the ones a GCC program reads: keys the GCC manual names that a program built with gcc reads when it runs, such as the sanitizer runtime's `ASAN_OPTIONS` and the coverage runtime's `GCOV_PREFIX`, are outside that class and are not reserved.",
+		"the GNU C compiler's keys that choose the programs it runs, the headers and libraries it builds with, extra options, or a file it writes with text the caller chooses (`GCC_EXEC_PREFIX`, `COMPILER_PATH`, `LIBRARY_PATH`, `LPATH`, `CPATH`, `C_INCLUDE_PATH`, `CPLUS_INCLUDE_PATH`, `OBJC_INCLUDE_PATH`, `OBJCPLUS_INCLUDE_PATH`, `MSP430_GCC_INCLUDE_DIR`, `VSB_DIR`, `GCC_COMPARE_DEBUG`, `DEPENDENCIES_OUTPUT`, `SUNPRO_DEPENDENCIES`, `MAKE`, which names the program gcc's link-time optimizer runs for a parallel link, and `CXX_MODULE_MAPPER`, whose `|program` form names a program the C++ compiler starts: every such key a GCC program reads that the GCC 14.2.0 manual, `gcc/doc/gcc.texi` and the files it includes, names in any section, not only in its section on environment variables, and the two that gcc's driver and preprocessor read and the manual leaves out, `LPATH` and `OBJCPLUS_INCLUDE_PATH`);",
 		// Re-check 25 on PR #74: pkg-config's search keys are reserved with
 		// its program, as a family.
 		"`PKG_CONFIG` (the pkg-config program a cgo build runs, and the keys that choose the `.pc` files that give it flags and libraries)",
@@ -219,10 +216,9 @@ func TestLifecycleContractNamesOnlyReservedKeysTheCodeReserves(t *testing.T) {
 // Re-check 25 on PR #74: a runbook or example that declares a reserved key
 // publishes fine, because AGS signs the declaration as given, and its caller
 // is refused only at submit. This keeps the repository's own publish requests
-// free of reserved keys. Re-check 27: the scan reads an entry as a publish
-// request carries it (JSON escapes decoded; ES then trims and folds it, as the
-// matcher does), reads single-quoted (Python) lists too, and fails on a
-// declaration in a spelling it cannot read.
+// free of reserved keys. Re-checks 27 and 28: scanEnvironmentDeclarations
+// below reads each declaration the way AGS and ES read it, and reports one it
+// counts but cannot read, within the limits its comment states.
 func TestRunbooksAndExamplesDeclareNoReservedEnvironmentKey(t *testing.T) {
 	reservesKey := reservedEnvironmentKeyMatcher(reservedEnvironmentEntriesInSource(t))
 	// The matcher must read a declared entry as ES does: trimmed, with only
@@ -235,12 +231,8 @@ func TestRunbooksAndExamplesDeclareNoReservedEnvironmentKey(t *testing.T) {
 	if reservesKey("\u017fhell") {
 		t.Fatal("the matcher folds a non-ASCII letter, which ES does not")
 	}
-	declaration := regexp.MustCompile(`["']environment_variables["']\s*:\s*\[([^\]]*)\]`)
-	// Any spelling of a declaration: quoted or not, escaped quotes, ":" or "=".
-	anyDeclaration := regexp.MustCompile(`environment_variables[\\"']*\s*[:=]\s*\[`)
-	entry := regexp.MustCompile(`"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'`)
 	declared := map[string][]string{}
-	lists := map[string]int{}
+	lists, files := map[string]int{}, map[string]int{}
 	for _, root := range []string{".runbooks", ".examples", ".docs", "scripts"} {
 		err := filepath.WalkDir(root, func(path string, dirEntry fs.DirEntry, err error) error {
 			if err != nil {
@@ -257,16 +249,14 @@ func TestRunbooksAndExamplesDeclareNoReservedEnvironmentKey(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			found := declaration.FindAllStringSubmatch(string(data), -1)
-			if spelled := len(anyDeclaration.FindAllStringIndex(string(data), -1)); spelled != len(found) {
-				t.Errorf("%s holds %d environment_variables declarations, but the scan reads %d; teach the scan that spelling", path, spelled, len(found))
+			files[root]++
+			found, entries, problems := scanEnvironmentDeclarations(string(data))
+			for _, problem := range problems {
+				t.Errorf("%s: %s", path, problem)
 			}
-			lists[root] += len(found)
-			for _, list := range found {
-				for _, match := range entry.FindAllStringSubmatch(list[1], -1) {
-					key := declaredEnvironmentEntry(match)
-					declared[key] = append(declared[key], path)
-				}
+			lists[root] += found
+			for _, key := range entries {
+				declared[key] = append(declared[key], path)
 			}
 			return nil
 		})
@@ -274,8 +264,13 @@ func TestRunbooksAndExamplesDeclareNoReservedEnvironmentKey(t *testing.T) {
 			t.Fatalf("walk %s: %v", root, err)
 		}
 	}
-	// The scan must see the declarations it guards: in each root that holds
-	// some today, and the known keys.
+	// The scan must read every root and see the declarations it guards: in
+	// each root that holds some today, and the known keys.
+	for _, root := range []string{".runbooks", ".examples", ".docs", "scripts"} {
+		if files[root] == 0 {
+			t.Fatalf("scanned no file in %s", root)
+		}
+	}
 	for _, root := range []string{".runbooks", ".examples", "scripts"} {
 		if lists[root] == 0 {
 			t.Fatalf("found no environment_variables declaration in %s", root)
@@ -298,24 +293,116 @@ func TestRunbooksAndExamplesDeclareNoReservedEnvironmentKey(t *testing.T) {
 	}
 }
 
-// declaredEnvironmentEntry decodes one quoted list entry that the guard above
-// matched: a double-quoted entry as JSON, the form a publish request carries,
-// and a single-quoted one as a Python string, whose escapes a key could use
-// Go's string syntax also reads.
-func declaredEnvironmentEntry(match []string) string {
+var (
+	// A declaration the scan reads: a quoted environment_variables key in any
+	// letter case, then ":" and a list. AGS decodes a publish request with
+	// encoding/json, which matches a field name that way, U+017F as s
+	// included, and so does (?i). Entries are quoted, and may hold "]".
+	environmentDeclaration = regexp.MustCompile(`(?i)["']environment_variables["']\s*:\s*\[((?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^\]"'])*)\]`)
+	// Every spelling of a declaration the scan counts, after \u escapes are
+	// decoded: the key in any letter case, quoted or not, with escaped quotes
+	// or as an index, then ":" or "=", then a list or a YAML block list.
+	anyEnvironmentDeclaration = regexp.MustCompile(`(?i)environment_variables[\\"']*\]?\s*[:=]\s*(?:\[|-\s)`)
+	jsonUnicodeEscape         = regexp.MustCompile(`\\u([0-9A-Fa-f]{4})`)
+	quotedDeclaredEntry       = regexp.MustCompile(`"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'`)
+)
+
+// scanEnvironmentDeclarations reads the environment_variables declarations in
+// a file. It returns how many it read, their entries decoded as a publish
+// request carries them, and a problem for each declaration it counts but
+// cannot read (a key name written with an escape, an unquoted key, a keyword
+// argument, an indexed assignment, a YAML block list), each list item that is
+// not a quoted string, and each entry neither decoder reads. It is a pattern
+// scan, not a parser. It does not read a YAML block list or a key name written
+// with an escape; it only counts them, so they fail. It does not see a key name
+// written with an escape other than \uXXXX, a declaration built in code
+// (a variable key, a joined string) or YAML in other forms: those would need a
+// real parser for each format.
+func scanEnvironmentDeclarations(text string) (int, []string, []string) {
+	var entries, problems []string
+	lists := environmentDeclaration.FindAllStringSubmatch(text, -1)
+	unescaped := jsonUnicodeEscape.ReplaceAllStringFunc(text, func(escape string) string {
+		code, _ := strconv.ParseUint(escape[2:], 16, 32)
+		return string(rune(code))
+	})
+	if spelled := len(anyEnvironmentDeclaration.FindAllStringIndex(unescaped, -1)); spelled != len(lists) {
+		problems = append(problems, fmt.Sprintf("%d environment_variables declarations, but the scan reads %d; teach the scan that spelling", spelled, len(lists)))
+	}
+	for _, list := range lists {
+		if rest := quotedDeclaredEntry.ReplaceAllString(list[1], ""); strings.Trim(rest, " \t\r\n,") != "" {
+			problems = append(problems, fmt.Sprintf("the list [%s] holds something other than quoted entries", list[1]))
+		}
+		for _, match := range quotedDeclaredEntry.FindAllStringSubmatch(list[1], -1) {
+			entry, ok := decodeDeclaredEnvironmentEntry(match)
+			if !ok {
+				problems = append(problems, "cannot decode the entry "+match[0])
+				continue
+			}
+			entries = append(entries, entry)
+		}
+	}
+	return len(lists), entries, problems
+}
+
+// decodeDeclaredEnvironmentEntry decodes one quoted list entry: a
+// double-quoted entry as JSON, the form a publish request carries, then as a Go
+// string; a single-quoted one as a Python string, whose escapes a key could use
+// Go's string syntax also reads. An entry with no backslash is its own text.
+func decodeDeclaredEnvironmentEntry(match []string) (string, bool) {
 	if strings.HasPrefix(match[0], `"`) {
 		var decoded string
 		if json.Unmarshal([]byte(match[0]), &decoded) == nil {
-			return decoded
+			return decoded, true
 		}
 		if decoded, err := strconv.Unquote(match[0]); err == nil {
-			return decoded
+			return decoded, true
 		}
-		return match[1]
+		return match[1], !strings.Contains(match[1], `\`)
 	}
 	body := strings.ReplaceAll(strings.ReplaceAll(match[2], `\'`, `'`), `"`, `\"`)
 	if decoded, err := strconv.Unquote(`"` + body + `"`); err == nil {
-		return decoded
+		return decoded, true
 	}
-	return match[2]
+	return match[2], !strings.Contains(match[2], `\`)
+}
+
+// The guard above reads each spelling it claims to read, and reports each one
+// it cannot (re-checks 27 and 28 on PR #74).
+func TestEnvironmentDeclarationScanReadsEachSpelling(t *testing.T) {
+	for _, test := range []struct {
+		name, text string
+		entries    []string
+		problem    bool
+	}{
+		{"JSON", `{"environment_variables": ["APP_MODE", "OTHER"]}`, []string{"APP_MODE", "OTHER"}, false},
+		{"multi-line Python", "\"environment_variables\": [\n    \"APP_MODE\",\n    \"OTHER\",\n],", []string{"APP_MODE", "OTHER"}, false},
+		{"empty", `"environment_variables": []`, nil, false},
+		{"prose", "its signed `environment_variables` list", nil, false},
+		{"padded entry", `"environment_variables": [" LD_PRELOAD"]`, []string{" LD_PRELOAD"}, false},
+		{"JSON escape in an entry", `"environment_variables": ["LD_\u0050RELOAD"]`, []string{"LD_PRELOAD"}, false},
+		{"single-quoted", `{'environment_variables': ['LD_PRELOAD']}`, []string{"LD_PRELOAD"}, false},
+		{"JSON-only escape", `"environment_variables": ["A\/B"]`, []string{"A/B"}, false},
+		{"hex escape, single-quoted", `{'environment_variables': ['LD_\x50RELOAD']}`, []string{"LD_PRELOAD"}, false},
+		{"upper-case key", `{"ENVIRONMENT_VARIABLES": ["LD_PRELOAD"]}`, []string{"LD_PRELOAD"}, false},
+		{"mixed-case key", `{"Environment_Variables": ["LD_PRELOAD"]}`, []string{"LD_PRELOAD"}, false},
+		{"key with U+017F", "{\"environment_variable\u017f\": [\"LD_PRELOAD\"]}", []string{"LD_PRELOAD"}, false},
+		{"second key, upper case", `{"environment_variables": ["APP_MODE"], "ENVIRONMENT_VARIABLES": ["LD_PRELOAD"]}`, []string{"APP_MODE", "LD_PRELOAD"}, false},
+		{"entry holding ]", `"environment_variables": ["X]", "LD_PRELOAD"]`, []string{"X]", "LD_PRELOAD"}, false},
+		{"key written with an escape", `{"environment\u005fvariables": ["LD_PRELOAD"]}`, nil, true},
+		{"unquoted key", "environment_variables: [LD_PRELOAD]", nil, true},
+		{"keyword argument", `publish(environment_variables=["LD_PRELOAD"])`, nil, true},
+		{"indexed assignment", `request["environment_variables"] = ["LD_PRELOAD"]`, nil, true},
+		{"YAML block list", "environment_variables:\n  - LD_PRELOAD\n", nil, true},
+		{"escaped quotes", `BODY="{\"environment_variables\": [\"LD_PRELOAD\"]}"`, nil, true},
+		{"unquoted list item", `"environment_variables": [PRELOAD_KEY]`, nil, true},
+		{"Python named escape", `"environment_variables": ["\N{LATIN CAPITAL LETTER L}D_PRELOAD"]`, nil, true},
+	} {
+		_, entries, problems := scanEnvironmentDeclarations(test.text)
+		if test.problem != (len(problems) > 0) {
+			t.Errorf("%s: problems %q, want a problem: %v", test.name, problems, test.problem)
+		}
+		if !test.problem && strings.Join(entries, "\x00") != strings.Join(test.entries, "\x00") {
+			t.Errorf("%s: entries %q, want %q", test.name, entries, test.entries)
+		}
+	}
 }
