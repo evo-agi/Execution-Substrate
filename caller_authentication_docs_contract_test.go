@@ -134,7 +134,8 @@ func TestNamespaceIssuerBindingAndUserCATrustAreDocumented(t *testing.T) {
 		"What holds it to `user/` is the namespace binding that `allow` writes.",
 		"a leaked user CA key can then pass as any `user/<name>` that is allowed, and as no other identity.",
 		"the user CA key is as strong as the operator's certificate.",
-		"`allow` never leaves that state: it writes the binding in the same change that installs the user CA",
+		"No step of `allow` or `revoke` leaves that state on disk, even when the run is killed between two file writes",
+		"`status` checks each service on its own",
 		"it carries the user CA over only when both client CA files being replaced end with that exact certificate (`/etc/execution-substrate/user-ca/ca-cert.pem`), and otherwise installs the new external client CA alone.",
 		"That the file exists is not enough",
 		"`revoke` is forward-only.",
@@ -147,6 +148,7 @@ func TestNamespaceIssuerBindingAndUserCATrustAreDocumented(t *testing.T) {
 	assertContainsAll(t, "user identity runbook", runbook,
 		"Its external reissue carries the user CA over only when both client CA files being replaced end with that exact certificate (`/etc/execution-substrate/user-ca/ca-cert.pem`), and otherwise installs the new external client CA alone",
 		"`revoke` never puts a removal back.",
+		"Revoke by hand.",
 		"The user CA key can sign a certificate for any identity in `execution.internal`, the operator's included.",
 	)
 }

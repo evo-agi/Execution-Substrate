@@ -90,6 +90,34 @@ if sys.argv[2] == "--with-fault":
         def backup(self, mode, name):
             raise OSError(errno.ENOSPC, "No space left on device", self.ca.backups_dir)
         mod.Box.backup = backup
+    elif fault.startswith("write-fails="):
+        # Every replacement of one box file fails, as on a read-only or
+        # immutable file or directory; the file keeps its bytes.
+        base, write = fault.split("=", 1)[1], mod.atomic_write
+        def atomic_write(path, *args, **kwargs):
+            if os.path.basename(path) == base:
+                raise OSError(errno.EROFS, "Read-only file system", path)
+            return write(path, *args, **kwargs)
+        mod.atomic_write = atomic_write
+    elif fault.startswith("restore-fails="):
+        # The rollback cannot put one box file back.
+        base, restore = fault.split("=", 1)[1], mod.FileState.restore
+        def restore_or_fail(self):
+            if os.path.basename(self.path) == base:
+                raise OSError(errno.EIO, "Input/output error", self.path)
+            return restore(self)
+        mod.FileState.restore = restore_or_fail
+    elif fault.startswith("exit-after-writes="):
+        # The process dies, as by SIGKILL or a power cut, right after its
+        # Nth replacement of a service file (the registry not counted).
+        limit, write, count = int(fault.split("=", 1)[1]), mod.atomic_write, [0]
+        def atomic_write(path, *args, **kwargs):
+            write(path, *args, **kwargs)
+            if os.path.basename(path) != "registry.json":
+                count[0] += 1
+                if count[0] == limit:
+                    os._exit(137)
+        mod.atomic_write = atomic_write
     elif fault.startswith("owned-by-another-uid="):
         # One box file reads as owned by the next UID; its directory and
         # mode stay as they are. A test that is not root cannot chown.
@@ -404,7 +432,9 @@ func (b *userIdentityBox) runDriver(python string, lead []string, args ...string
 		b.t.Fatalf("helper output carries private key text:\n%s", run)
 	}
 	for _, arg := range args {
-		if arg == "--json" && !(run.code == 2 && run.stdout == "") {
+		// Exit 2 is a usage error and 137 a fault's simulated kill: neither
+		// prints a report.
+		if arg == "--json" && !((run.code == 2 || run.code == 137) && run.stdout == "") {
 			var doc map[string]any
 			if err := json.Unmarshal(stdout.Bytes(), &doc); err != nil {
 				b.t.Fatalf("run %v printed no JSON report: %v\n%s", args, err, run)
@@ -2550,6 +2580,25 @@ func TestUserIdentityIssueChecksWhatOpenSSLSigned(t *testing.T) {
 	b.mustOK(b.caller("install", "--name", "claude", "--cert", out), "install")
 }
 
+// userIdentityESHasWorkloadGrants reports whether es/config has
+// admission_policy.workload_grants (ES PR #73).
+func userIdentityESHasWorkloadGrants() bool {
+	policy := reflect.TypeOf(esconfig.AdmissionPolicyConfig{})
+	for i := 0; i < policy.NumField(); i++ {
+		if name, _, _ := strings.Cut(policy.Field(i).Tag.Get("json"), ","); name == "workload_grants" {
+			return true
+		}
+	}
+	return false
+}
+
+// userIdentityLoadESConfig loads an es.json with ES's own loader, as ES does
+// at startup.
+func userIdentityLoadESConfig(path string) error {
+	_, err := esconfig.Load(path)
+	return err
+}
+
 // TestUserIdentityDocsTrackWorkloadGrants keeps the user identity docs in
 // step with network grants. While ES has no admission_policy.workload_grants,
 // the docs section and the runbook must say that grants are not in this
@@ -2558,13 +2607,7 @@ func TestUserIdentityIssueChecksWhatOpenSSLSigned(t *testing.T) {
 // goes.
 func TestUserIdentityDocsTrackWorkloadGrants(t *testing.T) {
 	const notYet = "Network grants are not in this build"
-	grants := false
-	policy := reflect.TypeOf(esconfig.AdmissionPolicyConfig{})
-	for i := 0; i < policy.NumField(); i++ {
-		if name, _, _ := strings.Cut(policy.Field(i).Tag.Get("json"), ","); name == "workload_grants" {
-			grants = true
-		}
-	}
+	grants := userIdentityESHasWorkloadGrants()
 	for _, rel := range []string{
 		".docs/system_overview/remote_supported_host_alpha.md",
 		".runbooks/system/Governed Execution ES Remote Alpha User Identity.md",

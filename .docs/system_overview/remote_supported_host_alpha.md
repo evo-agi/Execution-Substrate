@@ -4713,11 +4713,13 @@ Box modes run as root on the box and change nothing without `--apply`:
   good, remove every entry for `user/<name>` from both allowlists (repeated
   copies and spellings with extra leading or trailing slashes included) and
   every workload grant rule whose `publisher_principal` or
-  `caller_principal` is `spiffe://execution.internal/user/<name>`, and
-  restart both services. `--remove-ca` also removes the user CA from both
-  client CA files and the `user` binding from both services, and retires the
-  CA; it is refused while any other name is active or any other `user/`
-  entry remains.
+  `caller_principal` is `spiffe://execution.internal/user/<name>` or a path
+  below it, and restart both services. `--remove-ca` also retires the CA and
+  removes it from each client CA file that holds it, then the `user` binding
+  of each service whose file no longer holds it; it is refused while any
+  other name is active or any other `user/` entry remains. Once the CA is
+  retired, every `revoke` finishes that removal from wherever an earlier run
+  stopped or failed.
 
 Caller modes run as the caller (refused as root), on the machine that will
 call AGS and ES, and support the Mac's `/usr/bin/python3` (3.9) and its
@@ -4768,12 +4770,19 @@ with `401` a caller whose chain ends at the user CA unless its path is in
 CA key can then pass as any `user/<name>` that is allowed, and as no other
 identity. Without it, which is the state of a client CA file that holds the
 user CA with no binding beside it, or of an AGS or ES build older than the
-binding, the user CA key is as strong as the operator's certificate. `allow`
-never leaves that state: it writes the binding in the same change that
-installs the user CA, and an AGS or ES build without the binding refuses the
+binding, the user CA key is as strong as the operator's certificate. No step
+of `allow` or `revoke` leaves that state on disk, even when the run is killed
+between two file writes: `allow` writes the binding before it adds the user
+CA to a client CA file; `revoke --remove-ca` removes the user CA from a
+client CA file before it removes that service's binding, and keeps the
+binding when the file cannot be written; and the rollback of a failed `allow`
+keeps a service's config, binding included, while its client CA file may
+still hold the user CA. An AGS or ES build without the binding refuses the
 unknown field at startup, so `allow` fails and rolls back on it (redeploy AGS
-and ES from `trunk_dev` first). `status` reports a user CA that is trusted
-without its binding.
+and ES from `trunk_dev` first). `status` checks each service on its own and
+reports a client CA file that holds the user CA while that service's config
+does not bind `user` to it alone, and `revoke` does not end `ok` in that
+state.
 
 Custody: the CA key stays on the box, root-only and without a passphrase, in
 `/etc/execution-substrate/user-ca/` (directory `root:root 0700`, key `0600`).
@@ -4782,7 +4791,9 @@ would add a secret to keep without protecting against anyone who can reach
 the file. The CA key never leaves the box. Guard every copy of it (a backup,
 a disk image) like the operator's key: until `revoke --remove-ca`, whoever
 holds one can pass as any allowed user name, and as the operator wherever the
-binding is not in force.
+binding is not in force. The recovery runbook's host archives in
+`/var/backups/execution-substrate-remote-alpha/` are such copies: each holds
+all of `/etc/execution-substrate`, the user CA key and the registry included.
 
 Leaves: critical `CA:FALSE`, critical `digitalSignature` only, EKU
 `clientAuth` only, exactly one SAN, the URI
@@ -4791,8 +4802,9 @@ authority key identifiers, a random 127-bit serial (126 random bits, top bit
 set), and 90 days that may not outlast the CA. `issue` copies no CSR
 extension, requires the CSR subject to be exactly `CN=<name>` and its
 self-signature to verify, accepts RSA keys of 3072 to 8192 bits or EC
-P-256/P-384 keys, refuses a key that the CA, a retired CA or any earlier
-issued certificate already uses, and checks every field of the signed leaf,
+P-256/P-384 keys, each only in its one canonical encoding (EC keys as
+uncompressed points, the only form Go reads), refuses a key that the CA, a
+retired CA or any earlier issued certificate already uses, and checks every field of the signed leaf,
 its key included, before it records or writes it. A malformed CSR is
 refused, never a crash. Names are 1 to 32 characters of `a-z`, `0-9` and
 `-`, starting with a letter and not ending with `-`.
@@ -4806,12 +4818,13 @@ certificate is already recorded and the message names its file there.
 
 `revoke --remove-ca` retires the CA: `issue` and `allow` refuse a retired
 CA, and `init-ca --replace` makes a new one. The replacement keeps the old
-certificate in `retired/<sha256>.pem` and deletes the old key; it stages the
-new CA in `next/`, names it in the registry, and then moves it into place, so
-a stop at any point leaves either the old CA in force (the next `init-ca
---replace` discards `next/`) or the new one named (the next `init-ca
---replace --apply` finishes the move), and every other mode refuses until it
-is finished.
+certificate in `retired/<sha256>.pem` and deletes the old key; it builds the
+new CA in a staging directory, puts it in place whole as `next/`, names it in
+the registry, and then moves it into place, so a stop at any point leaves
+either the old CA in force (the next `init-ca --replace` discards `next/` or
+the staging directory) or the new one named (the next `init-ca --replace
+--apply` finishes the move, also when both files have moved and only the
+empty `next/` is left), and every other mode refuses until it is finished.
 
 ### Trust installation
 
@@ -4821,8 +4834,10 @@ startup. On the box these are
 `/etc/execution-substrate/es-tls/server-client-ca.pem`, which the recovery
 runbook keeps byte-identical. `allow` appends the user CA certificate to the
 end of both files and keeps them identical; it refuses unless both services
-point at exactly those files, the two files are identical before the change,
-every block in them is a certificate, and the user CA is either absent or
+point at exactly those files, the two files are identical before the change
+or differ only by the user CA at the end of one (an `allow` stopped between
+its two client CA file writes, which the next `allow` finishes), every block
+in them is a certificate, and the user CA is either absent or
 present exactly once as the final block. The external client CA stays first,
 so tools that read only the first certificate of these files (expiry checks
 and `openssl x509`) still see it.
@@ -4878,7 +4893,14 @@ registry cannot be saved, the service files go back too.
 registry that the name is revoked, that the CA is retired (with
 `--remove-ca`), and which services it still has to restart. A failure or a
 stop after that keeps every removal already written, so a service that
-starts later starts without the name; nothing is put back. The report says
+starts later starts without the name; nothing is put back. A stop signal
+that arrives while `revoke` writes the files is held until the writes end and
+then stops it before the restarts. `revoke` needs no CA key: a CA key file
+whose owner or mode has drifted is reported as `attention`, not a reason to
+stop. What can still refuse a revocation (a service file with an ACL or a
+`user.` attribute, a directory writable by group or others, an unreadable
+registry or CA certificate, an unfinished `init-ca --replace`) is listed in
+the runbook, with the steps to revoke by hand. The report says
 what did not come back and to run `revoke` again; `status` lists the
 services still to restart; `allow` and `init-ca --replace` refuse while any
 revocation is unfinished; and the next `revoke` of that name restarts what is
@@ -4896,9 +4918,12 @@ certificates stay cryptographically valid until they expire. While the user
 CA stays installed, those certificates still complete the TLS handshake, and
 `GET /health`, which asks for no allowlist entry, stays readable with them
 until they expire or `revoke --remove-ca` removes the CA. One certificate
-cannot be revoked alone: revoke the name and issue a new name. A compromised
-user CA key means revoking every name, `revoke --remove-ca`, and `init-ca
---replace` before the next name.
+cannot be revoked alone: revoke the name and issue a new name. `revoke` does
+not stop or list the runs the caller already submitted (there is no
+per-caller run ownership); cancel any that must not finish. A compromised
+user CA key means revoking every name, `revoke --remove-ca`, deleting the
+recovery archives made before it (they hold the old CA key and the old trust
+state), and `init-ca --replace` before the next name.
 
 User certificates are not SPIRE-issued, like the operator and Control Plane
 certificates. ES accepts them because their issuer Common Name is not the
@@ -4917,7 +4942,18 @@ new external client CA alone. That the file exists is not enough: `init-ca`
 creates it before any `allow`, and `revoke --remove-ca` keeps it, because the
 registry beside it is what keeps revoked names revoked. Until the runbook
 does this, its topology check refuses a box with user identities, and an
-external reissue drops user access (and only user access).
+external reissue drops user access (and only user access). The reissue holds
+the helper's lock from just before it installs until AGS and ES are back, and
+first checks again that `ags.json` and both client CA files are as it staged
+them, so a `revoke` between its staging and its install is never half undone.
+Its saved rollback commands leave `/etc/execution-substrate/user-ca` out, so a
+rollback cannot undo a revocation in the registry or bring back a deleted CA
+key. The service files it puts back may still allow a name revoked since, or
+trust a user CA removed or replaced since, with the `user` binding the archive
+holds beside it; `status` reports each. The owner runs `revoke` again for each
+name it lists, which also finishes removing a retired user CA, and removes an
+older user CA that `init-ca --replace` replaced by hand, as the user identity
+runbook says.
 
 ### Network grants for user callers
 
