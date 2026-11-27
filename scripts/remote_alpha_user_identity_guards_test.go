@@ -402,6 +402,7 @@ func TestUserIdentityRefusesUnsafeStates(t *testing.T) {
 			// An ACL is an extended attribute too (system.posix_acl_access);
 			// replacing the file would drop it.
 			cmd := exec.Command("/usr/bin/python3", "-I", "-c", "import os, sys; os.setxattr(sys.argv[1], 'user.test', b'1')", b.esConfig)
+			cmd.Dir = b.root
 			if out, err := cmd.CombinedOutput(); err != nil {
 				t.Fatalf("cannot set an extended attribute on %s: %v\n%s", b.esConfig, err, out)
 			}
