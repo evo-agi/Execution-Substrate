@@ -318,3 +318,118 @@ func TestLinuxSetupStopsAtAFileNomadReadsThatItCannotTakeBack(t *testing.T) {
 		requireOwner(t, at, 65534, 65534)
 	})
 }
+
+// Re-check 50 (T50-1): Nomad 2.1.1 loads every *.hcl and *.json in its
+// config folder but an editor's ".#" lock file, names that look hidden or
+// temporary to a person included (`nomad config validate` loads
+// ".hidden.hcl" and "#hash.hcl"), so the take-back covers them too.
+func TestLinuxSetupTakesBackNomadLoadedNamesThatLookHidden(t *testing.T) {
+	data := t.TempDir()
+	config := filepath.Join(data, "etc")
+	if err := os.Mkdir(config, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	names := []string{".hidden.hcl", "#hash.json"}
+	for _, name := range names {
+		path := filepath.Join(config, name)
+		if err := os.WriteFile(path, []byte("# "+name+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(path, 0o666); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stdout, stderr, err := runLinuxSetupServiceHarness(t, data, "install_nomad_service_config\n")
+	if err != nil {
+		t.Fatalf("install_nomad_service_config: %v %s", err, stderr)
+	}
+	got := strings.Join(tookBack(stdout), "\n")
+	for _, name := range names {
+		path := filepath.Join(config, name)
+		if !strings.Contains(got, "nomad: took "+path+" back (") {
+			t.Fatalf("%s, which Nomad loads, was not taken back: %q", name, got)
+		}
+		requireRegularFile(t, path, "# "+name+"\n", 0o644)
+	}
+}
+
+// Re-check 50 (T50-2, S50-1): a setup killed after it made a file's
+// temporary name leaves that name behind. The next run removes it first,
+// so a stale file, or a link the former owner left there, neither stops
+// the setup nor is written through.
+func TestLinuxSetupClearsATemporaryNameAKilledRunLeft(t *testing.T) {
+	for _, stale := range []string{"a file", "a link to a file outside"} {
+		t.Run(stale, func(t *testing.T) {
+			data := t.TempDir()
+			config := filepath.Join(data, "etc")
+			if err := os.Mkdir(config, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			victim := filepath.Join(t.TempDir(), "victim")
+			if err := os.WriteFile(victim, []byte("victim\n"), 0o666); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(victim, 0o666); err != nil {
+				t.Fatal(err)
+			}
+			target := filepath.Join(config, "extra.hcl")
+			if err := os.WriteFile(target, []byte("acl { enabled = true }\n"), 0o666); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(target, 0o666); err != nil {
+				t.Fatal(err)
+			}
+			runTestSudo(t, "chown", "65534:65534", target)
+			temporary := target + ".execution-substrate-new"
+			if stale == "a file" {
+				if err := os.WriteFile(temporary, []byte("half"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := os.Symlink(victim, temporary); err != nil {
+				t.Fatal(err)
+			}
+			stdout, stderr, err := runLinuxSetupServiceHarness(t, data, "install_nomad_service_config\n")
+			if err != nil {
+				t.Fatalf("install_nomad_service_config stopped at the stale temporary name: %v %s", err, stderr)
+			}
+			if got := tookBack(stdout); len(got) != 1 || !strings.HasPrefix(got[0], "nomad: took "+target+" back") {
+				t.Fatalf("the setup reported %v", got)
+			}
+			requireRegularFile(t, target, "acl { enabled = true }\n", 0o644)
+			requireRegularFile(t, victim, "victim\n", 0o666)
+			if _, err := os.Lstat(temporary); !os.IsNotExist(err) {
+				t.Fatalf("the temporary name is still there: %v", err)
+			}
+		})
+	}
+}
+
+// Re-check 50 (O50-2): a file of the caller's but of another group is
+// taken back too. The documented end state is the caller's group, and #67's
+// check refuses a nomad.env of another group, so the two agree.
+func TestLinuxSetupTakesBackAFileOfAnotherGroup(t *testing.T) {
+	data := t.TempDir()
+	config := filepath.Join(data, "etc")
+	if err := os.Mkdir(config, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	uid, gid := os.Getuid(), os.Getgid()
+	path := filepath.Join(config, "grouped.hcl")
+	if err := os.WriteFile(path, []byte("acl { enabled = true }\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	runTestSudo(t, "chown", strconv.Itoa(uid)+":65534", path)
+	before := inode(t, path)
+	stdout, stderr, err := runLinuxSetupServiceHarness(t, data, "install_nomad_service_config\n")
+	if err != nil {
+		t.Fatalf("install_nomad_service_config: %v %s", err, stderr)
+	}
+	want := "nomad: took " + path + " back (uid " + strconv.Itoa(uid) + ", gid 65534, 0640); Nomad's unit reads it as root, so check what it sets"
+	if got := tookBack(stdout); len(got) != 1 || got[0] != want {
+		t.Fatalf("the setup reported %v, want %q", got, want)
+	}
+	requireOwner(t, path, uid, gid)
+	if inode(t, path) == before {
+		t.Fatalf("%s was changed in place, not replaced by a new file", path)
+	}
+}
